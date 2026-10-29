@@ -9,3 +9,5 @@
 当前切片：`/daemon/connect` 和只读 HTTP。鉴权决策在 `RaftConnectAuth`，SwiftNIO 监听在 `RaftMachineSocket`。拒绝时写出和 Node 相同的 401/500 字节；接受时回 101、`raft-server-capabilities`，再发一帧 `machine:context`。`RaftDaemonClient` 按 `packages/daemon/src/connection.ts` 完成客户端握手：默认 `Authorization: Bearer`，也可走旧的 `?key=`；拒绝时交出状态码和 `Slock-Reason`，错误文本不含 api key；101 时读能力头和第一帧 `machine:context`。重连、看门狗、出站重放、代理和 TLS 还没移植。
 
 `RaftHTTP` 按 `app.ts` 给出 `/robots.txt`、`/livez`、`/health` 和 JSON 404，每条响应都带 `X-Robots-Tag: noindex, nofollow`。`/health` 的数据库探测是注入的；`/livez` 不在请求路径上探测。这些函数还没有挂到 Vapor 进程上。
+
+Vapor `5.0.0-beta.1`（`bce76e99119568a3c782b76bcf4c9891f757fdbe`）在本机 Swift 6.4.1 上还编不过。那个 tag 用 revision 依赖 `swift-http-server`，后者把 `swift-http-api-proposal` 限制在 0.2.x，而 0.2.1 在 Swift 6.4 的 `MemberImportVisibility` 下缺 `SpanPreview`。等上游能编过再挂进程。
