@@ -317,7 +317,9 @@ func interpretUpgradeBytes(_ bytes: [UInt8], clientKey: String) -> DaemonUpgrade
 /// Daemon-side `ws://host:port/daemon/connect` handshake.
 /// Ported from `DaemonConnection.doConnect` in `packages/daemon/src/connection.ts`.
 /// Returns when the first `machine:context` text frame arrives, then closes.
-/// Reconnect, watchdog, replay, proxy, and TLS are not in this slice.
+/// Reconnect, watchdog, duplicate-key, and migrated-key decisions live on
+/// `DaemonLink`. This call does not run that loop. Replay, proxy, and TLS
+/// are not in this slice.
 public enum DaemonClient {
     public static func connect(
         host: String = "127.0.0.1",
