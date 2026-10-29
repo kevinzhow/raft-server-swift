@@ -231,6 +231,12 @@ private func rejected(_ decision: UpgradeDecision) -> (PrincipalKind, AuthDenyRe
     #expect(classifyRuntimeCohort([:]) == "unknown")
 }
 
+@Test func rfcWebSocketAcceptAndContextJSON() {
+    #expect(secWebSocketAccept("dGhlIHNhbXBsZSBub25jZQ==") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+    #expect(machineContextJSON(machineId: "m1", serverId: "s1", capabilities: [serverCapabilityRuntimeDetectionAsyncV1])
+        == "{\"type\":\"machine:context\",\"machineId\":\"m1\",\"serverId\":\"s1\",\"capabilities\":[\"machine:runtime-detection-async-v1\"]}")
+}
+
 @Test func fingerprintMatchesSha256Prefix() {
     // hashlib.sha256(b"sk_machine_example").hexdigest()[:16]
     #expect(apiKeyFingerprint("sk_machine_example") == "2663b082cfdbe3f7")

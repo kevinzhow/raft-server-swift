@@ -8,6 +8,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
     ],
     targets: [
         .target(
@@ -16,9 +17,22 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto"),
             ]
         ),
+        .target(
+            name: "RaftMachineSocket",
+            dependencies: [
+                "RaftConnectAuth",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "NIOHTTP1", package: "swift-nio"),
+            ]
+        ),
         .testTarget(
             name: "RaftConnectAuthTests",
             dependencies: ["RaftConnectAuth"]
+        ),
+        .testTarget(
+            name: "RaftMachineSocketTests",
+            dependencies: ["RaftMachineSocket", "RaftConnectAuth"]
         ),
     ]
 )

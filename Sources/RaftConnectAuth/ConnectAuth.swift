@@ -289,6 +289,71 @@ public func apiKeyFingerprint(_ apiKey: String) -> String {
     return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
 }
 
+/// RFC 6455 accept value. `Insecure.SHA1` is the hash the handshake specifies.
+public func secWebSocketAccept(_ clientKey: String) -> String {
+    let material = Data((clientKey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").utf8)
+    let digest = Insecure.SHA1.hash(data: material)
+    return Data(digest).base64EncodedString()
+}
+
+/// `machine:context` JSON in `JSON.stringify` key order.
+/// Source: `sendAuthenticatedMachineContext`. Epoch is omitted unless the
+/// caller passes it, matching the flag-off server (`RUNTIME_OUTCOME_ACK_ENABLED` is false).
+public func machineContextJSON(machineId: String, serverId: String, capabilities: [String], connectionEpochId: String? = nil) -> String {
+    func json(_ value: String) -> String {
+        let escaped = value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
+    }
+    var fields = [
+        "\"type\":\"machine:context\"",
+        "\"machineId\":\(json(machineId))",
+        "\"serverId\":\(json(serverId))",
+    ]
+    if !capabilities.isEmpty {
+        let list = capabilities.map(json).joined(separator: ",")
+        fields.append("\"capabilities\":[\(list)]")
+    }
+    if let connectionEpochId {
+        fields.append("\"connectionEpochId\":\(json(connectionEpochId))")
+    }
+    return "{\(fields.joined(separator: ","))}"
+}
+
+public func machineUpgradeSwitchingProtocols(clientKey: String, capabilities: [String]) -> String {
+    var lines = [
+        "HTTP/1.1 101 Switching Protocols",
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        "Sec-WebSocket-Accept: \(secWebSocketAccept(clientKey))",
+    ]
+    if !capabilities.isEmpty {
+        lines.append("\(raftServerCapabilitiesHeader): \(capabilities.joined(separator: " "))")
+    }
+    return lines.joined(separator: "\r\n") + "\r\n\r\n"
+}
+
+public func websocketTextFrame(_ text: String) -> [UInt8] {
+    let payload = Array(text.utf8)
+    var frame: [UInt8] = [0x81]
+    if payload.count < 126 {
+        frame.append(UInt8(payload.count))
+    } else if payload.count <= Int(UInt16.max) {
+        frame.append(126)
+        frame.append(UInt8((payload.count >> 8) & 0xff))
+        frame.append(UInt8(payload.count & 0xff))
+    } else {
+        frame.append(127)
+        let length = UInt64(payload.count)
+        for shift in stride(from: 56, through: 0, by: -8) {
+            frame.append(UInt8((length >> shift) & 0xff))
+        }
+    }
+    frame.append(contentsOf: payload)
+    return frame
+}
+
 /// Bytes written on the raw socket before it is destroyed.
 /// Source: the 401 and 500 branches in `setupMachineWebSocket`.
 public func machineUpgradeFailurePrelude(_ result: Result<UpgradeAuthResult, any Error>) -> String? {
