@@ -514,6 +514,38 @@ public func configure(_ app: Application, services: FallbackServices) {
         }
         return routeResponse(directory.serverList(authorization: request.headers[.authorization]))
     }
+    app.get("api", "servers", ":id", "settings") { request -> Response in
+        routeResponse(services.emailAccounts.serverSettings(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
+    app.get("api", "servers", ":id", "notification-settings") { request -> Response in
+        routeResponse(services.emailAccounts.memberNotificationSettings(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
+    app.get("api", "servers", ":id", "onboarding-settings") { request -> Response in
+        routeResponse(services.emailAccounts.memberNotificationSettings(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
+    app.get("api", "servers", ":id", "machines") { request -> Response in
+        routeResponse(services.emailAccounts.listServerMachines(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
+    app.patch("api", "servers", ":id", "machines", ":machineId") { request -> Response in
+        routeResponse(services.emailAccounts.patchServerMachine(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            machineId: request.parameters.get("machineId") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("api", "servers", ":id") { request -> Response in
         routeResponse(services.emailAccounts.serverDetails(
             authorization: request.headers[.authorization],

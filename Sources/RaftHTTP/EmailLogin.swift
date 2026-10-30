@@ -200,6 +200,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public var fcmPushAvailable = true
     public var webPushEnabled = true
     private var webPushSubscriptions: [WebPushSubscription] = []
+    private var machines: [MachineRecord] = []
     /// `MOBILE_APP_EMAIL_UNSUBSCRIBE_SECRET`, or `JWT_SECRET`. The test harness uses `test-jwt-secret`.
     public var mobileAppEmailUnsubscribeSecret: String = "test-jwt-secret"
     /// Cancels one scheduled mobile-app lifecycle email. Unset means there is no provider call to make.
@@ -5996,6 +5997,89 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             context["$country"] = normalizedCountry
         }
         return context
+    }
+
+    public func registerMachine(serverId: String, userId: String, name: String) -> String {
+        let id = UUID().uuidString.lowercased()
+        lock.lock()
+        machines.append(MachineRecord(id: id, serverId: serverId, userId: userId, name: name, description: nil))
+        lock.unlock()
+        return id
+    }
+
+    public func serverSettings(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        return Self.json(200, "{\"serverId\":\(jsonString(serverId))}")
+    }
+
+    public func memberNotificationSettings(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        return Self.json(200, "{\"serverId\":\(jsonString(serverId)),\"userId\":\(jsonString(userId))}")
+    }
+
+    public func listServerMachines(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        guard role != "guest" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        lock.lock()
+        let rows = machines.filter { $0.serverId == serverId }
+        lock.unlock()
+        let json = rows.map { machine in
+            "{\"id\":\(jsonString(machine.id)),\"name\":\(jsonString(machine.name)),\"userId\":\(jsonString(machine.userId)),\"description\":\(machine.description.map { jsonString($0) } ?? "null")}"
+        }.joined(separator: ",")
+        return Self.json(200, "{\"machines\":[\(json)]}")
+    }
+
+    public func patchServerMachine(authorization: String?, serverId: String, machineId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        lock.lock()
+        guard let index = machines.firstIndex(where: { $0.id == machineId && $0.serverId == serverId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Machine not found\"}")
+        }
+        if role == "guest", machines[index].userId != userId {
+            lock.unlock()
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        if let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+           let description = object["description"] as? String {
+            machines[index].description = description
+        }
+        let machine = machines[index]
+        lock.unlock()
+        return Self.json(200, "{\"id\":\(jsonString(machine.id)),\"name\":\(jsonString(machine.name)),\"description\":\(machine.description.map { jsonString($0) } ?? "null")}")
+    }
+
+    private struct MachineRecord {
+        var id: String
+        var serverId: String
+        var userId: String
+        var name: String
+        var description: String?
     }
 
     public func serverDetails(authorization: String?, serverId: String) -> HTTPReply {
