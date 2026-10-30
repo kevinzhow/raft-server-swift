@@ -508,6 +508,44 @@ public final class OAuthLedger: @unchecked Sendable {
         return json(200, document)
     }
 
+    /// `GET /api/oauth/clients/lookup`. A server member reads one App and the
+    /// requested scopes it may not ask for.
+    public func clientLookup(session: OAuthSession, clientId: String, serverId: String, scope: String) -> HTTPReply {
+        switch session {
+        case .missing:
+            return json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        case .invalid:
+            return json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        case .user(let human):
+            lock.lock()
+            defer { lock.unlock() }
+            guard members["\(serverId)\n\(human.id)"] != nil else {
+                return json(404, "{\"error\":\"OAuth client not found for server\"}")
+            }
+            guard let client = clients.first(where: { candidate in
+                guard candidate.clientId == clientId, isUserManaged(candidate) else { return false }
+                if candidate.appType == "server_local" && candidate.serverId == serverId { return true }
+                return installations.contains(where: {
+                    $0.clientId == candidate.id && $0.serverId == serverId && $0.status == "active"
+                })
+            }) else {
+                return json(404, "{\"error\":\"OAuth client not found for server\"}")
+            }
+            let allowed = client.allowedScopes ?? ["openid", "profile", "identity"]
+            let requested = scope.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            let validation = validateScopes(requested, allowed: allowed)
+            let allowedJSON = allowed.map { jsonString($0) }.joined(separator: ",")
+            var document = "{\"clientId\":\(jsonString(client.clientId)),\"appType\":\(jsonString(client.appType)),\"name\":\(jsonString(client.name)),\"description\":null,\"homepageUrl\":null,\"returnUrl\":null,\"logoUrl\":null,\"setupUrl\":null,\"setupDescription\":null,\"allowedScopes\":[\(allowedJSON)],\"availability\":\"ready\""
+            if !requested.isEmpty {
+                let reasonJSON = validation.reason.map { jsonString($0) } ?? "null"
+                let disallowedJSON = validation.disallowed.map { jsonString($0) }.joined(separator: ",")
+                document += ",\"scopeValidation\":{\"allowed\":\(validation.allowed ? "true" : "false"),\"reason\":\(reasonJSON),\"disallowedScopes\":[\(disallowedJSON)]}"
+            }
+            document += "}"
+            return json(200, document)
+        }
+    }
+
     /// `POST /api/oauth/token`. Form fields, camelCase JSON, and HTTP Basic all name the same client.
     public func exchangeToken(authorization: String?, body: String, issuer: String) -> HTTPReply {
         let fields = tokenFields(body)
@@ -679,10 +717,14 @@ public final class OAuthLedger: @unchecked Sendable {
         if requested == nil || requested is NSNull {
             scopes = ["openid", "profile"]
         } else {
-            guard let normalized = normalizeScopes(requested, allowed: client.allowedScopes ?? ["openid", "profile", "identity"]) else {
-                return json(400, "{\"error\":\"invalid_scope\"}")
+            let validation = validateScopes(requested, allowed: client.allowedScopes ?? ["openid", "profile", "identity"])
+            guard validation.allowed, !validation.scopes.isEmpty else {
+                if validation.disallowed.isEmpty {
+                    return json(400, "{\"error\":\"invalid_scope\"}")
+                }
+                return scopeError(validation)
             }
-            scopes = normalized
+            scopes = validation.scopes
         }
         guard let server = servers[serverId], !server.deleted, let role = members["\(serverId)\n\(human.id)"] else {
             return json(404, "{\"error\":\"User is not a member of this server\"}")
@@ -705,26 +747,81 @@ public final class OAuthLedger: @unchecked Sendable {
         return json(200, document)
     }
 
-    private func normalizeScopes(_ value: Any?, allowed: [String]) -> [String]? {
+    private struct ScopeValidation {
+        var scopes: [String]
+        var allowed: Bool
+        var reason: String?
+        var disallowed: [String]
+    }
+
+    private func validateScopes(_ value: Any?, allowed: [String]) -> ScopeValidation {
         let rawList: [Any]
         if let list = value as? [String] {
             rawList = list
         } else if let list = value as? [Any] {
             rawList = list
         } else {
-            return nil
+            return ScopeValidation(scopes: [], allowed: false, reason: nil, disallowed: [])
         }
         var seen = Set<String>()
         var scopes: [String] = []
+        var unsupported = false
+        var notAllowed = false
+        var disallowed: [String] = []
         for item in rawList {
-            guard let text = item as? String else { return nil }
+            guard let text = item as? String else {
+                return ScopeValidation(scopes: [], allowed: false, reason: nil, disallowed: [])
+            }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
-            guard Self.raftScopes.contains(trimmed), allowed.contains(trimmed) else { return nil }
+            if !Self.raftScopes.contains(trimmed) {
+                unsupported = true
+                disallowed.append(trimmed)
+                continue
+            }
+            if !allowed.contains(trimmed) {
+                notAllowed = true
+                disallowed.append(trimmed)
+                continue
+            }
             scopes.append(trimmed)
         }
-        guard !scopes.isEmpty else { return nil }
-        return scopes.sorted()
+        let reason: String?
+        if unsupported && notAllowed {
+            reason = "mixed"
+        } else if unsupported {
+            reason = "unsupported"
+        } else if notAllowed {
+            reason = "not_allowed"
+        } else {
+            reason = nil
+        }
+        return ScopeValidation(scopes: scopes, allowed: disallowed.isEmpty, reason: reason, disallowed: disallowed)
+    }
+
+    private func scopeError(_ validation: ScopeValidation) -> HTTPReply {
+        let scopeList = validation.disallowed.joined(separator: ", ")
+        let code: String
+        let description: String
+        switch validation.reason {
+        case "unsupported":
+            code = "OAUTH_SCOPE_UNSUPPORTED"
+            description = "Raft does not support the requested OAuth scope: \(scopeList). Update the requested scopes and try again."
+        case "not_allowed":
+            code = "OAUTH_SCOPE_NOT_ALLOWED"
+            description = "This OAuth client is not allowed to request: \(scopeList). Update the client's allowed scopes and try again."
+        default:
+            code = "OAUTH_SCOPE_INVALID"
+            description = "Some requested OAuth scopes are unsupported or not allowed for this client: \(scopeList). Update the requested scopes or client permissions and try again."
+        }
+        let disallowedJSON = validation.disallowed.map { jsonString($0) }.joined(separator: ",")
+        return json(400, "{\"error\":\"invalid_scope\",\"errorCode\":\(jsonString(code)),\"error_description\":\(jsonString(description)),\"disallowedScopes\":[\(disallowedJSON)]}")
+    }
+
+    private func normalizeScopes(_ value: Any?, allowed: [String]) -> [String]? {
+        let validation = validateScopes(value, allowed: allowed)
+        guard validation.allowed, !validation.scopes.isEmpty else { return nil }
+        return validation.scopes.sorted()
     }
 
     private static let raftScopes: Set<String> = [

@@ -588,6 +588,14 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.get("api", "oauth", "clients", "lookup") { request -> Response in
+        routeResponse(services.emailAccounts.oauth.clientLookup(
+            session: services.emailAccounts.oauthSession(authorization: request.headers[.authorization]),
+            clientId: desktopQuery(request.url.query, "client_id") ?? desktopQuery(request.url.query, "clientId") ?? "",
+            serverId: desktopQuery(request.url.query, "server_id") ?? desktopQuery(request.url.query, "serverId") ?? "",
+            scope: desktopQuery(request.url.query, "scope") ?? ""
+        ))
+    }
     app.get("api", "oauth", ".well-known", "openid-configuration") { _ -> Response in
         routeResponse(OAuthDiscovery.openIDConfiguration(serverURL: services.emailAccounts.serverURL))
     }
