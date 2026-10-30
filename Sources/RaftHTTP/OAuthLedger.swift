@@ -180,6 +180,15 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func publishClient(clientRecordId: String, humanMarketplaceVisible: Bool = true) {
+        lock.lock()
+        if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
+            clients[index].publishStatus = "published"
+            clients[index].humanMarketplaceVisible = humanMarketplaceVisible
+        }
+        lock.unlock()
+    }
+
     public func registerExternalApp(clientRecordId: String, provider: String, state: String) {
         lock.lock()
         if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
@@ -535,32 +544,49 @@ public final class OAuthLedger: @unchecked Sendable {
         case .user(let human):
             lock.lock()
             defer { lock.unlock() }
-            guard members["\(serverId)\n\(human.id)"] != nil else {
+            guard let role = members["\(serverId)\n\(human.id)"] else {
                 return json(404, "{\"error\":\"OAuth client not found for server\"}")
             }
-            guard let client = clients.first(where: { candidate in
+            let requested = scope.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            if let client = clients.first(where: { candidate in
                 guard candidate.clientId == clientId, isUserManaged(candidate) else { return false }
                 if candidate.appType == "server_local" && candidate.serverId == serverId { return true }
                 return installations.contains(where: {
                     $0.clientId == candidate.id && $0.serverId == serverId && $0.status == "active"
                 })
+            }) {
+                let allowed = client.allowedScopes ?? ["openid", "profile", "identity"]
+                let validation = validateScopes(requested, allowed: allowed, clientId: client.clientId)
+                let allowedJSON = allowed.map { jsonString($0) }.joined(separator: ",")
+                let descriptionJSON = client.descriptionText.map { jsonString($0) } ?? "null"
+                let homepageJSON = client.homepageUrl.map { jsonString($0) } ?? "null"
+                let returnJSON = client.returnUrl.map { jsonString($0) } ?? "null"
+                var document = "{\"clientId\":\(jsonString(client.clientId)),\"appType\":\(jsonString(client.appType)),\"name\":\(jsonString(client.name)),\"description\":\(descriptionJSON),\"homepageUrl\":\(homepageJSON),\"returnUrl\":\(returnJSON),\"logoUrl\":null,\"setupUrl\":null,\"setupDescription\":null,\"allowedScopes\":[\(allowedJSON)]"
+                if isMarketplaceVisible(client) {
+                    document += ",\"marketplace\":true"
+                }
+                document += ",\"availability\":\"ready\""
+                if !requested.isEmpty {
+                    let reasonJSON = validation.reason.map { jsonString($0) } ?? "null"
+                    let disallowedJSON = validation.disallowed.map { jsonString($0) }.joined(separator: ",")
+                    document += ",\"scopeValidation\":{\"allowed\":\(validation.allowed ? "true" : "false"),\"reason\":\(reasonJSON),\"disallowedScopes\":[\(disallowedJSON)]}"
+                }
+                document += "}"
+                return json(200, document)
+            }
+            guard let published = clients.first(where: {
+                $0.clientId == clientId && isUserManaged($0) && isMarketplaceVisible($0)
             }) else {
                 return json(404, "{\"error\":\"OAuth client not found for server\"}")
             }
-            let allowed = client.allowedScopes ?? ["openid", "profile", "identity"]
-            let requested = scope.split(whereSeparator: { $0.isWhitespace }).map(String.init)
-            let validation = validateScopes(requested, allowed: allowed, clientId: client.clientId)
-            let allowedJSON = allowed.map { jsonString($0) }.joined(separator: ",")
-            let descriptionJSON = client.descriptionText.map { jsonString($0) } ?? "null"
-            let homepageJSON = client.homepageUrl.map { jsonString($0) } ?? "null"
-            let returnJSON = client.returnUrl.map { jsonString($0) } ?? "null"
-            var document = "{\"clientId\":\(jsonString(client.clientId)),\"appType\":\(jsonString(client.appType)),\"name\":\(jsonString(client.name)),\"description\":\(descriptionJSON),\"homepageUrl\":\(homepageJSON),\"returnUrl\":\(returnJSON),\"logoUrl\":null,\"setupUrl\":null,\"setupDescription\":null,\"allowedScopes\":[\(allowedJSON)],\"availability\":\"ready\""
-            if !requested.isEmpty {
-                let reasonJSON = validation.reason.map { jsonString($0) } ?? "null"
-                let disallowedJSON = validation.disallowed.map { jsonString($0) }.joined(separator: ",")
-                document += ",\"scopeValidation\":{\"allowed\":\(validation.allowed ? "true" : "false"),\"reason\":\(reasonJSON),\"disallowedScopes\":[\(disallowedJSON)]}"
-            }
-            document += "}"
+            let allowedJSON = published.allowedScopes.map { scopes in
+                "[" + scopes.map { jsonString($0) }.joined(separator: ",") + "]"
+            } ?? "null"
+            let descriptionJSON = published.descriptionText.map { jsonString($0) } ?? "null"
+            let homepageJSON = published.homepageUrl.map { jsonString($0) } ?? "null"
+            let returnJSON = published.returnUrl.map { jsonString($0) } ?? "null"
+            let canInstall = role == "owner" || role == "admin"
+            let document = "{\"id\":\(jsonString(published.id)),\"clientId\":\(jsonString(published.clientId)),\"appType\":\(jsonString(published.appType)),\"name\":\(jsonString(published.name)),\"description\":\(descriptionJSON),\"homepageUrl\":\(homepageJSON),\"returnUrl\":\(returnJSON),\"logoUrl\":null,\"allowedScopes\":\(allowedJSON),\"marketplace\":true,\"availability\":\"install_required\",\"setupUrl\":null,\"setupDescription\":null,\"installation\":{\"serverId\":\(jsonString(serverId)),\"canInstall\":\(canInstall ? "true" : "false")}}"
             return json(200, document)
         }
     }
@@ -1013,12 +1039,21 @@ public final class OAuthLedger: @unchecked Sendable {
         var enabled: Bool = true
         var externalProvider: String? = nil
         var externalState: String? = nil
+        var publishStatus: String = "draft"
+        var humanMarketplaceVisible: Bool = false
     }
 
     /// Mirrors `oauthClientIsUserManagedPredicate`: the tombstone class and
     /// any platform registration both remove installation authority.
     private func isUserManaged(_ client: Client) -> Bool {
         client.appType != "slock_builtin" && client.externalProvider == nil
+    }
+
+    private func isMarketplaceVisible(_ client: Client) -> Bool {
+        client.appType == "third_party_global"
+            && client.enabled
+            && client.publishStatus == "published"
+            && client.humanMarketplaceVisible
     }
 
     private struct InstallationToken {
