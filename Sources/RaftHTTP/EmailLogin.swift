@@ -6531,6 +6531,32 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var apiKey: String?
     }
 
+    public func createChannelRoute(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role != "guest" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let name = object["name"] as? String,
+              name.wholeMatch(of: /^[a-z0-9][a-z0-9-]{0,79}$/) != nil
+        else {
+            return Self.json(400, "{\"error\":\"Invalid channel\"}")
+        }
+        let description = object["description"] as? String
+        let channelId = oauth.createChannel(
+            serverId: serverId,
+            name: name,
+            creatorUserId: userId,
+            description: description
+        )
+        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name)),\"joined\":true,\"activityMuteSupported\":true,\"activityMuted\":false,\"muteFromSeq\":null,\"prefsVersion\":0,\"maxReadSeq\":0,\"readStateVersion\":0}")
+    }
+
     public func listChannels(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

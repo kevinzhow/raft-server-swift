@@ -364,10 +364,10 @@ public final class OAuthLedger: @unchecked Sendable {
         public var lastMessageAt: Date?
     }
 
-    public func createChannel(serverId: String, name: String, creatorUserId: String, type: String = "channel") -> String {
+    public func createChannel(serverId: String, name: String, creatorUserId: String, type: String = "channel", description: String? = nil) -> String {
         let id = UUID().uuidString.lowercased()
         lock.lock()
-        channelRecords.append(ChannelRecord(id: id, serverId: serverId, name: name, type: type))
+        channelRecords.append(ChannelRecord(id: id, serverId: serverId, name: name, type: type, description: description))
         if type == "channel" {
             channelHumans.insert("\(id)\n\(creatorUserId)")
         }
@@ -414,6 +414,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var serverId: String
         var name: String
         var type: String
+        var description: String?
         var archived = false
     }
 
