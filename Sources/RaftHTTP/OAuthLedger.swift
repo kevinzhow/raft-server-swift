@@ -57,6 +57,7 @@ public final class OAuthLedger: @unchecked Sendable {
     private var channelRecords: [ChannelRecord] = []
     private var channelHumans: Set<String> = []
     private var channelMessages: [ChannelMessageRecord] = []
+    private var channelSystemMessages: [ChannelSystemMessageRecord] = []
 
     private var clients: [Client] = []
     private var requests: [AccessRequest] = []
@@ -387,6 +388,46 @@ public final class OAuthLedger: @unchecked Sendable {
         channelMessages.append(ChannelMessageRecord(channelId: channelId, content: content, createdAt: createdAt))
         lock.unlock()
         return createdAt
+    }
+
+    public func channelInfo(id: String) -> (serverId: String, name: String, description: String?)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let channel = channelRecords.first(where: { $0.id == id }) else { return nil }
+        return (channel.serverId, channel.name, channel.description)
+    }
+
+    @discardableResult
+    public func updateChannel(id: String, name: String?, description: String?, systemMessage: String?) -> Int? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = channelRecords.firstIndex(where: { $0.id == id }) else { return nil }
+        if let name { channelRecords[index].name = name }
+        if let description { channelRecords[index].description = description }
+        guard let systemMessage else { return nil }
+        let seq = channelMessages.filter { $0.channelId == id }.count + channelSystemMessages.filter { $0.channelId == id }.count + 1
+        channelSystemMessages.append(ChannelSystemMessageRecord(
+            channelId: id,
+            content: systemMessage,
+            seq: seq,
+            createdAt: Date()
+        ))
+        return seq
+    }
+
+    public func systemMessages(channelId: String) -> [(id: String, content: String, seq: Int)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return channelSystemMessages
+            .filter { $0.channelId == channelId }
+            .map { (UUID().uuidString.lowercased(), $0.content, $0.seq) }
+    }
+
+    private struct ChannelSystemMessageRecord {
+        var channelId: String
+        var content: String
+        var seq: Int
+        var createdAt: Date
     }
 
     public func channelsForServer(serverId: String, userId: String) -> [ChannelListInfo] {

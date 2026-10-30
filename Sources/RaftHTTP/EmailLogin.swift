@@ -6531,6 +6531,45 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var apiKey: String?
     }
 
+    public func patchChannelRoute(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil,
+              let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId
+        else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid channel update\"}")
+        }
+        lock.lock()
+        let actorName = accounts.values.first(where: { $0.id == userId })?.name ?? "Someone"
+        lock.unlock()
+        var newName: String?
+        if let name = object["name"] as? String, name != channel.name {
+            guard name.wholeMatch(of: /^[a-z0-9][a-z0-9-]{0,79}$/) != nil else {
+                return Self.json(400, "{\"error\":\"Invalid channel name\"}")
+            }
+            newName = name
+        }
+        let newDescription = object["description"] as? String
+        var systemMessage: String?
+        if let newName {
+            systemMessage = "@\(actorName) renamed this channel from #\(channel.name) to #\(newName)."
+        }
+        let seq = oauth.updateChannel(
+            id: channelId,
+            name: newName,
+            description: newDescription,
+            systemMessage: systemMessage
+        )
+        let latest = oauth.channelInfo(id: channelId)
+        let nameJSON = jsonString(latest?.name ?? channel.name)
+        let descriptionJSON = latest?.description.map { jsonString($0) } ?? "null"
+        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(nameJSON),\"description\":\(descriptionJSON),\"systemMessageSeq\":\(seq.map(String.init) ?? "null")}")
+    }
+
     public func createChannelRoute(authorization: String?, serverId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
