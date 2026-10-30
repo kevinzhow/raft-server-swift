@@ -529,12 +529,15 @@ public final class OAuthLedger: @unchecked Sendable {
         return json(200, "{\"agents\":[\(entries)]}", cacheControl: "no-store")
     }
 
-    /// `GET /api/oauth/authorize`. The browser flow validates the registered
-    /// redirect, PKCE shape, and nonce bound, then hands off to the web app.
-    public func browserAuthorize(query: String, appURL: String) -> HTTPReply {
+    /// `GET /api/oauth/authorize`. The browser flow hands off to the web app
+    /// after shape checks; the setup page owns client lookup.
+    public func browserAuthorize(query: String, appURL: String, serverScope: String? = nil) -> HTTPReply {
         let params = queryParameters(query)
         func invalidRequest(_ message: String) -> HTTPReply {
             json(400, "{\"error\":\"invalid_request\",\"error_description\":\(jsonString(message))}")
+        }
+        if serverScope == nil, let legacyServer = params["server"], !legacyServer.isEmpty {
+            return invalidRequest("The server query parameter is no longer supported; use the /oidc/<server> mount")
         }
         guard params["response_type"] == "code" else { return invalidRequest("response_type must be code") }
         let clientKey = (params["client_id"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -543,21 +546,8 @@ public final class OAuthLedger: @unchecked Sendable {
         guard !redirectURI.isEmpty, !redirectURI.contains("#"), let redirectURL = URLComponents(string: redirectURI),
               let redirectScheme = redirectURL.scheme?.lowercased(), redirectScheme == "https" || redirectScheme == "http"
         else { return invalidRequest("redirect_uri is invalid") }
-        lock.lock()
-        defer { lock.unlock() }
-        guard let client = clients.first(where: { $0.clientId == clientKey && isUserManaged($0) }) else {
-            return invalidRequest("client_id is unknown")
-        }
-        guard let registered = client.returnUrl, registered == redirectURI else {
-            return invalidRequest("redirect_uri does not match the registered client")
-        }
         let scopeText = (params["scope"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !scopeText.isEmpty else { return invalidRequest("scope is required") }
-        let requestedScopes = scopeText.split(whereSeparator: { $0.isWhitespace }).map(String.init)
-        let validation = validateScopes(requestedScopes, allowed: client.allowedScopes ?? ["openid", "profile", "identity"], clientId: client.clientId)
-        guard validation.allowed, !validation.scopes.isEmpty else {
-            return invalidRequest("scope is invalid for this client")
-        }
         let challenge = params["code_challenge"] ?? ""
         if !challenge.isEmpty {
             guard challenge.wholeMatch(of: /^[A-Za-z0-9_-]{43}$/) != nil else {
@@ -574,7 +564,7 @@ public final class OAuthLedger: @unchecked Sendable {
         components?.path = basePath + "/login-with-raft/setup"
         var items: [URLQueryItem] = [
             URLQueryItem(name: "flow", value: "oidc"),
-            URLQueryItem(name: "client_id", value: client.clientId),
+            URLQueryItem(name: "client_id", value: clientKey),
             URLQueryItem(name: "return_to", value: redirectURI),
             URLQueryItem(name: "scope", value: scopeText),
         ]
@@ -583,6 +573,9 @@ public final class OAuthLedger: @unchecked Sendable {
         if !challenge.isEmpty {
             items.append(URLQueryItem(name: "code_challenge", value: challenge))
             items.append(URLQueryItem(name: "code_challenge_method", value: "S256"))
+        }
+        if let serverScope, !serverScope.isEmpty {
+            items.append(URLQueryItem(name: "server", value: serverScope))
         }
         components?.queryItems = items
         guard let location = components?.string else {

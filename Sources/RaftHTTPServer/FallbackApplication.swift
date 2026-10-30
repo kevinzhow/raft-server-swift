@@ -663,6 +663,18 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("api", "oauth", ".well-known", "openid-configuration") { _ -> Response in
         routeResponse(OAuthDiscovery.openIDConfiguration(serverURL: services.emailAccounts.serverURL))
     }
+    app.get("oidc", ":server", ".well-known", "openid-configuration") { request -> Response in
+        let segment = request.parameters.get("server") ?? ""
+        switch resolveOIDCScope(segment, oauth: services.emailAccounts.oauth) {
+        case .failure(let response):
+            return response
+        case .resolved:
+            return routeResponse(OAuthDiscovery.openIDConfiguration(
+                serverURL: services.emailAccounts.serverURL,
+                serverScope: segment
+            ))
+        }
+    }
     app.get("oidc", ":server", "api", "oauth", ".well-known", "openid-configuration") { request -> Response in
         let segment = request.parameters.get("server") ?? ""
         switch resolveOIDCScope(segment, oauth: services.emailAccounts.oauth) {
@@ -726,7 +738,8 @@ public func configure(_ app: Application, services: FallbackServices) {
         case .resolved:
             return routeResponse(services.emailAccounts.oauth.browserAuthorize(
                 query: request.url.query ?? "",
-                appURL: services.emailAccounts.appURL
+                appURL: services.emailAccounts.appURL,
+                serverScope: request.parameters.get("server")
             ))
         }
     }
