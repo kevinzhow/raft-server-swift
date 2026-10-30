@@ -714,6 +714,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
         ))
     }
+    app.get("api", "servers", ":id", "sidebar-order") { request -> Response in
+        routeResponse(services.emailAccounts.sidebarOrder(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
     app.get("api", "servers", ":id", "settings") { request -> Response in
         routeResponse(services.emailAccounts.serverSettings(
             authorization: request.headers[.authorization],

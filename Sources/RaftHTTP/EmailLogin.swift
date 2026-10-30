@@ -6545,6 +6545,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var apiKey: String?
     }
 
+    public func sidebarOrder(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let order = oauth.sanitizedSidebarOrder(serverId: serverId, userId: userId)
+        func array(_ values: [String]) -> String {
+            values.map { jsonString($0) }.joined(separator: ",")
+        }
+        return Self.json(200, "{\"channelOrder\":[\("\(array(order.channelOrder))")],\"agentOrder\":[\("\(array(order.agentOrder))")],\"dmOrder\":[\("\(array(order.dmOrder))")],\"pinnedOrder\":[\("\(array(order.pinnedOrder))")],\"hiddenDmIds\":[\("\(array(order.hiddenDmIds))")]}")
+    }
+
     public func addReminder(serverId: String, ownerAgentId: String, title: String, fireAt: Date) {
         lock.lock()
         reminderRecords.append(ReminderRecord(
