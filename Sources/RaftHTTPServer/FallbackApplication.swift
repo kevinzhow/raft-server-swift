@@ -597,6 +597,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             agentId: request.parameters.get("id") ?? ""
         ))
     }
+    app.get("api", "reminders") { request -> Response in
+        routeResponse(services.emailAccounts.listReminders(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            ownerAgentId: desktopQuery(request.url.query, "ownerAgentId")
+        ))
+    }
     app.post("api", "channels", "saved") { request -> Response in
         routeResponse(services.emailAccounts.saveChannelMessage(
             authorization: request.headers[.authorization],

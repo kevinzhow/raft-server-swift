@@ -196,6 +196,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public var providerConnectionsEnabledServers: Set<String> = []
     private var providerConnections: [ProviderConnection] = []
     private var providerAssignments: [ProviderAssignment] = []
+    private var reminderRecords: [ReminderRecord] = []
     private var pushRegistrations: [PushRegistration] = []
     public var fcmPushAvailable = true
     public var webPushEnabled = true
@@ -6542,6 +6543,67 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var name: String
         var description: String?
         var apiKey: String?
+    }
+
+    public func addReminder(serverId: String, ownerAgentId: String, title: String, fireAt: Date) {
+        lock.lock()
+        reminderRecords.append(ReminderRecord(
+            id: UUID().uuidString.lowercased(),
+            serverId: serverId,
+            ownerAgentId: ownerAgentId,
+            title: title,
+            fireAt: fireAt
+        ))
+        lock.unlock()
+    }
+
+    public func listReminders(authorization: String?, serverId: String, ownerAgentId: String?) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let agents = oauth.serverAgents(serverId: serverId)
+        if let ownerAgentId, !ownerAgentId.isEmpty {
+            guard let agent = agents.first(where: { $0.id == ownerAgentId }) else {
+                return Self.json(404, "{\"error\":\"Agent not found\"}")
+            }
+            guard role == "owner" || role == "admin" || agent.creatorUserId == userId else {
+                return Self.json(403, "{\"error\":\"Forbidden\"}")
+            }
+            return Self.reminderListJSON(remindersFor([ownerAgentId]))
+        }
+        let visibleAgentIds: Set<String>
+        if role == "owner" || role == "admin" {
+            visibleAgentIds = Set(agents.map { $0.id })
+        } else {
+            visibleAgentIds = Set(agents.filter { $0.creatorUserId == userId }.map { $0.id })
+        }
+        return Self.reminderListJSON(remindersFor(visibleAgentIds))
+    }
+
+    private func remindersFor(_ agentIds: Set<String>) -> [ReminderRecord] {
+        lock.lock()
+        defer { lock.unlock() }
+        return reminderRecords.filter { agentIds.contains($0.ownerAgentId) }
+    }
+
+    private static func reminderListJSON(_ rows: [ReminderRecord]) -> HTTPReply {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let items = rows.map { reminder in
+            "{\"id\":\(jsonString(reminder.id)),\"title\":\(jsonString(reminder.title)),\"ownerAgentId\":\(jsonString(reminder.ownerAgentId)),\"fireAt\":\(jsonString(formatter.string(from: reminder.fireAt)))}"
+        }.joined(separator: ",")
+        return Self.json(200, "{\"reminders\":[\("\(items)")]}")
+    }
+
+    private struct ReminderRecord {
+        var id: String
+        var serverId: String
+        var ownerAgentId: String
+        var title: String
+        var fireAt: Date
     }
 
     public func saveChannelMessage(authorization: String?, serverId: String, body: String) -> HTTPReply {
