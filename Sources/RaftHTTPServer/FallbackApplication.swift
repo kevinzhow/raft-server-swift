@@ -597,6 +597,26 @@ public func configure(_ app: Application, services: FallbackServices) {
             agentId: request.parameters.get("id") ?? ""
         ))
     }
+    app.post("api", "channels", "dm") { request -> Response in
+        routeResponse(services.emailAccounts.createDirectChannelRoute(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.get("api", "channels", "dm") { request -> Response in
+        routeResponse(services.emailAccounts.listDirectChannels(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+        ))
+    }
+    app.get("api", "channels", ":channelId") { request -> Response in
+        routeResponse(services.emailAccounts.getChannelRoute(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? ""
+        ))
+    }
     app.get("api", "channels", "unread") { request -> Response in
         routeResponse(services.emailAccounts.channelUnread(
             authorization: request.headers[.authorization],

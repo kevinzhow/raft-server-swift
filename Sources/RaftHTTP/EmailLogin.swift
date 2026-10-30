@@ -6544,6 +6544,54 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var apiKey: String?
     }
 
+    public func createDirectChannelRoute(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let peerId = object["userId"] as? String,
+              oauth.memberRole(serverId: serverId, userId: peerId) != nil
+        else {
+            return Self.json(400, "{\"error\":\"Invalid DM peer\"}")
+        }
+        let channelId = oauth.createDirectChannel(serverId: serverId, firstUserId: userId, secondUserId: peerId)
+        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"type\":\"dm\",\"activityMuteSupported\":false}")
+    }
+
+    public func listDirectChannels(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let rows = oauth.channelsForServer(serverId: serverId, userId: userId)
+            .filter { $0.type == "dm" }
+            .map { channel in
+                "{\"id\":\(jsonString(channel.id)),\"type\":\"dm\",\"joined\":\(channel.joined),\"activityMuteSupported\":false}"
+            }
+            .joined(separator: ",")
+        return Self.json(200, "[\(rows)]")
+    }
+
+    public func getChannelRoute(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        let type = oauth.channelType(id: channelId) ?? "channel"
+        let supported = type == "channel"
+        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"activityMuteSupported\":\(supported)}")
+    }
+
     public func channelDisplaySettings(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -6615,12 +6663,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
-        guard oauth.channelType(id: channelId) == "channel" else {
+        let channelType = oauth.channelType(id: channelId) ?? "channel"
+        guard channelType != "thread" else {
             return Self.json(400, "{\"error\":\"Threads use follow/unfollow instead of activity mute\"}")
         }
+        let supported = channelType == "channel"
         let prefs = oauth.notificationPrefs(channelId: channelId, userId: userId)
         let muteSeq = prefs.muteFromSeq.map(String.init) ?? "null"
-        return Self.json(200, "{\"activityMuted\":\(prefs.activityMuted),\"muteFromSeq\":\(muteSeq),\"prefsVersion\":\(prefs.prefsVersion),\"activityMuteSupported\":true}")
+        return Self.json(200, "{\"activityMuted\":\(prefs.activityMuted),\"muteFromSeq\":\(muteSeq),\"prefsVersion\":\(prefs.prefsVersion),\"activityMuteSupported\":\(supported)}")
     }
 
     public func patchChannelNotificationSettings(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
@@ -6633,7 +6683,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
-        guard oauth.channelType(id: channelId) == "channel" else {
+        let channelType = oauth.channelType(id: channelId) ?? "channel"
+        guard channelType != "thread" else {
             return Self.json(400, "{\"error\":\"Threads use follow/unfollow instead of activity mute\"}")
         }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
@@ -6643,7 +6694,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let result = oauth.setActivityMuted(channelId: channelId, userId: userId, muted: muted)
         let muteSeq = result.prefs.muteFromSeq.map(String.init) ?? "null"
-        return Self.json(200, "{\"activityMuted\":\(result.prefs.activityMuted),\"muteFromSeq\":\(muteSeq),\"prefsVersion\":\(result.prefs.prefsVersion),\"activityMuteSupported\":true}")
+        let supported = channelType == "channel"
+        return Self.json(200, "{\"activityMuted\":\(result.prefs.activityMuted),\"muteFromSeq\":\(muteSeq),\"prefsVersion\":\(result.prefs.prefsVersion),\"activityMuteSupported\":\(supported)}")
     }
 
     public func patchChannelRoute(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
