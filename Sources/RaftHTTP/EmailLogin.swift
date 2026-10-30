@@ -4299,6 +4299,55 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"mentions\":[\(mentions)]}")
     }
 
+    /// `GET /internal/agent-api/wake-hints`. A read credential sees the
+    /// undrained third-party events as wake hints.
+    public func agentWakeHints(authorization: String?, since: String?) -> HTTPReply {
+        switch agentReadCredential(authorization) {
+        case .failure(let reply):
+            return reply
+        case .success(let agentId):
+            let hints = oauth.pendingThirdPartyEventMessages(agentId: agentId).map {
+                "{\"seq\":null,\"message_id\":\(jsonString($0.id)),\"wake_reason\":\"message_pending\"}"
+            }.joined(separator: ",")
+            return Self.json(200, "{\"wake_hints\":[\(hints)]}")
+        }
+    }
+
+    /// `GET /internal/agent-api/events`. Draining marks each third-party
+    /// event delivered, so a replay is empty.
+    public func agentThirdPartyEvents(authorization: String?) -> HTTPReply {
+        switch agentReadCredential(authorization) {
+        case .failure(let reply):
+            return reply
+        case .success(let agentId):
+            let events = oauth.takeThirdPartyEventMessages(agentId: agentId).map { message in
+                let resource = "urn:raft:server:\(message.serverId):agent-inbound"
+                let content = "Third-party event from \(message.clientKey): \(message.summary)\nresource: \(resource)"
+                return "{\"message_id\":\(jsonString(message.id)),\"sender_type\":\"third_party_app\",\"content\":\(jsonString(content)),\"third_party_event\":{\"id\":\(jsonString(message.id)),\"kind\":\(jsonString(message.kind)),\"summary\":\(jsonString(message.summary)),\"source\":{\"client_id\":\(jsonString(message.clientKey)),\"client_name\":\(jsonString(message.clientName)),\"oauth_client_id\":\(jsonString(message.clientRecordId)),\"resource\":\(jsonString(resource))}}}"
+            }.joined(separator: ",")
+            return Self.json(200, "{\"events\":[\(events)]}")
+        }
+    }
+
+    private enum AgentRead {
+        case failure(HTTPReply)
+        case success(String)
+    }
+
+    private func agentReadCredential(_ authorization: String?) -> AgentRead {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return .failure(Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}"))
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let credential = agentCredentials[token]
+        lock.unlock()
+        guard let credential, credential.scopes.contains("read") else {
+            return .failure(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
+        }
+        return .success(credential.agentId)
+    }
+
     /// A raw agent API key. The mentions inbox accepts it when `mentions` is one of the scopes.
     public func mintAgentCredential(agentId: String, scopes: [String], name: String) -> String {
         let key = "sk_agent_" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")

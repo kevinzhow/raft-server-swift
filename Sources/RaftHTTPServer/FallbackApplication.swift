@@ -426,6 +426,15 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("internal", "agent-api", "mentions") { request -> Response in
         routeResponse(services.emailAccounts.agentMentionInbox(authorization: request.headers[.authorization]))
     }
+    app.get("internal", "agent-api", "wake-hints") { request -> Response in
+        routeResponse(services.emailAccounts.agentWakeHints(
+            authorization: request.headers[.authorization],
+            since: desktopQuery(request.url.query, "since")
+        ))
+    }
+    app.get("internal", "agent-api", "events") { request -> Response in
+        routeResponse(services.emailAccounts.agentThirdPartyEvents(authorization: request.headers[.authorization]))
+    }
     app.delete("api", "channels", ":channelId") { request -> Response in
         routeResponse(services.emailAccounts.deleteChannel(
             channelId: request.parameters.get("channelId") ?? "",

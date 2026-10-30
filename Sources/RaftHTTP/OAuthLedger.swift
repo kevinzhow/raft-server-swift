@@ -1,6 +1,16 @@
 import Crypto
 import Foundation
 
+public struct ThirdPartyEventMessage: Sendable {
+    public var id: String
+    public var serverId: String
+    public var clientKey: String
+    public var clientName: String
+    public var clientRecordId: String
+    public var kind: String
+    public var summary: String
+}
+
 public struct OAuthHuman: Sendable {
     public var id: String
     public var email: String
@@ -768,6 +778,43 @@ public final class OAuthLedger: @unchecked Sendable {
         return json(202, document)
     }
 
+    public func pendingThirdPartyEventMessages(agentId: String) -> [ThirdPartyEventMessage] {
+        lock.lock()
+        defer { lock.unlock() }
+        return agentEvents
+            .filter { $0.agentId == agentId && $0.status == "delivering" && $0.expiresAt > Date() }
+            .map { projectionLocked($0) }
+    }
+
+    public func takeThirdPartyEventMessages(agentId: String) -> [ThirdPartyEventMessage] {
+        lock.lock()
+        defer { lock.unlock() }
+        let now = Date()
+        var messages: [ThirdPartyEventMessage] = []
+        for index in agentEvents.indices where
+            agentEvents[index].agentId == agentId
+                && agentEvents[index].status == "delivering"
+                && agentEvents[index].expiresAt > now {
+            messages.append(projectionLocked(agentEvents[index]))
+            agentEvents[index].status = "delivered"
+            agentEvents[index].deliveredAt = now
+        }
+        return messages
+    }
+
+    private func projectionLocked(_ event: AgentEvent) -> ThirdPartyEventMessage {
+        let client = clients.first(where: { $0.id == event.clientId })
+        return ThirdPartyEventMessage(
+            id: event.id,
+            serverId: event.serverId,
+            clientKey: client?.clientId ?? "",
+            clientName: client?.name ?? "",
+            clientRecordId: event.clientId,
+            kind: event.kind,
+            summary: event.summary
+        )
+    }
+
     private func iso8601(_ date: Date) -> String {
         ISO8601DateFormatter().string(from: date)
     }
@@ -1245,6 +1292,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var status: String
         var expiresAt: Date
         var createdAt: Date
+        var deliveredAt: Date? = nil
     }
 
     private struct Client {
