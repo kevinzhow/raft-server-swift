@@ -6063,6 +6063,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
         }
         if !external {
+            if let command = config["command"] as? String, !command.isEmpty,
+               let configRuntime = config["runtime"] as? String, configRuntime != "claude" {
+                return Self.json(400, "{\"error\":\"runtimeConfig.command is not supported for runtime: \(configRuntime)\"}")
+            }
             let userEnv = (config["envVars"] as? [String: String]) ?? [:]
             envVars = Self.derivedAgentEnvVars(config, userEnv: userEnv)
         }
@@ -6096,7 +6100,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let rows = oauth.serverAgents(serverId: serverId).map { agent -> String in
             let canSeeConfig = role == "owner" || role == "admin" || agent.creatorUserId == userId
-            let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"external\":\(agent.runtime == "external"),\"serverRole\":\"member\",\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
+            let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"model\":\(jsonString(Self.agentModel(from: agent.runtimeConfigJSON, external: agent.runtime == "external"))),\"external\":\(agent.runtime == "external"),\"serverRole\":\"member\",\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
             if canSeeConfig {
                 return base + ",\"runtimeConfig\":\(agent.runtimeConfigJSON ?? "null"),\"envVars\":\(agent.envVarsJSON ?? "null")}"
             }
@@ -6119,7 +6123,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         let canSeeConfig = role == "owner" || role == "admin" || agent.creatorUserId == userId
-        let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"external\":\(agent.runtime == "external"),\"serverRole\":\"member\",\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
+        let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"model\":\(jsonString(Self.agentModel(from: agent.runtimeConfigJSON, external: agent.runtime == "external"))),\"external\":\(agent.runtime == "external"),\"serverRole\":\"member\",\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
         let body = canSeeConfig
             ? base + ",\"runtimeConfig\":\(agent.runtimeConfigJSON ?? "null"),\"envVars\":\(agent.envVarsJSON ?? "null")}"
             : base + "}"
@@ -6183,6 +6187,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return "{}"
         }
         return String(decoding: data, as: UTF8.self)
+    }
+
+    private static func agentModel(from runtimeConfigJSON: String?, external: Bool) -> String {
+        if external { return "external" }
+        guard let runtimeConfigJSON,
+              let config = (try? JSONSerialization.jsonObject(with: Data(runtimeConfigJSON.utf8))) as? [String: Any],
+              let model = config["model"] as? [String: Any]
+        else { return "" }
+        return (model["name"] as? String) ?? (model["id"] as? String) ?? ""
     }
 
     private static func agentRuntimeJSON(
@@ -6291,6 +6304,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
             var runtimeConfigJSON = info.runtimeConfigJSON
             var envVarsJSON = info.envVarsJSON
+            var replacedRuntime: String?
+            if let rawConfig = object["runtimeConfig"] as? [String: Any] {
+                let config = Self.normalizeRuntimeConfig(rawConfig)
+                if let command = config["command"] as? String, !command.isEmpty,
+                   let configRuntime = config["runtime"] as? String, configRuntime != "claude" {
+                    return Self.json(400, "{\"error\":\"runtimeConfig.command is not supported for runtime: \(configRuntime)\"}")
+                }
+                let userEnv = (config["envVars"] as? [String: String]) ?? [:]
+                let env = Self.derivedAgentEnvVars(config, userEnv: userEnv)
+                runtimeConfigJSON = Self.serializeJSON(config)
+                envVarsJSON = Self.serializeJSON(env)
+                replacedRuntime = config["runtime"] as? String
+                oauth.updateAgentRuntime(id: agentId, runtimeConfigJSON: runtimeConfigJSON, envVarsJSON: envVarsJSON)
+                if let replacedRuntime { oauth.updateAgentRuntimeId(id: agentId, runtime: replacedRuntime) }
+            }
             if object["envVars"] != nil {
                 let validation = Self.validatedEnvVars(object["envVars"])
                 if let error = validation.error {
@@ -6309,7 +6337,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 oauth.updateAgentRuntime(id: agentId, runtimeConfigJSON: runtimeConfigJSON, envVarsJSON: envVarsJSON)
             }
             let descriptionJSON = description.map { jsonString($0) } ?? "null"
-            return Self.json(200, "{\"id\":\(jsonString(info.id)),\"description\":\(descriptionJSON),\"runtimeConfig\":\(runtimeConfigJSON ?? "null"),\"envVars\":\(envVarsJSON ?? "null")}")
+            let latest = oauth.agentRuntimeInfo(id: agentId)
+            let runtimeForResponse = latest?.runtime ?? info.runtime
+            let configForModel = runtimeConfigJSON ?? latest?.runtimeConfigJSON ?? info.runtimeConfigJSON
+            let model = Self.agentModel(from: configForModel, external: runtimeForResponse == "external")
+            return Self.json(200, "{\"id\":\(jsonString(info.id)),\"model\":\(jsonString(model)),\"runtime\":\(jsonString(runtimeForResponse)),\"description\":\(descriptionJSON),\"runtimeConfig\":\(runtimeConfigJSON ?? "null"),\"envVars\":\(envVarsJSON ?? "null")}")
         }
     }
 

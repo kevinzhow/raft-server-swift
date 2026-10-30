@@ -251,6 +251,12 @@ public final class OAuthLedger: @unchecked Sendable {
             }
     }
 
+    public func updateAgentRuntimeId(id: String, runtime: String) {
+        lock.lock()
+        agents[id]?.runtime = runtime
+        lock.unlock()
+    }
+
     public func updateAgentRuntime(id: String, runtimeConfigJSON: String?, envVarsJSON: String?) {
         lock.lock()
         agents[id]?.runtimeConfigJSON = runtimeConfigJSON
