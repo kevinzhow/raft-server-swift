@@ -1020,19 +1020,30 @@ public final class OAuthLedger: @unchecked Sendable {
         }
         guard let index = requests.firstIndex(where: { $0.id == code && $0.clientId == client.id }) else {
             lock.unlock()
+            if isOIDC {
+                return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization request is invalid or has expired\"}")
+            }
             return json(404, "{\"error\":\"Access request not found\"}")
         }
         let request = requests[index]
         if isOIDC {
-            guard request.oidc,
-                  let verifier = fields["code_verifier"], !verifier.isEmpty,
-                  let challenge = request.codeChallenge,
-                  challenge == Self.pkceChallenge(verifier),
-                  let redirect = fields["redirect_uri"],
-                  redirect == request.oidcRedirectURI
-            else {
+            guard request.oidc else {
                 lock.unlock()
                 return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization code, redirect URI, or PKCE verifier is invalid\"}")
+            }
+            if let challenge = request.codeChallenge {
+                guard let verifier = fields["code_verifier"], !verifier.isEmpty,
+                      challenge == Self.pkceChallenge(verifier)
+                else {
+                    lock.unlock()
+                    return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization code, redirect URI, or PKCE verifier is invalid\"}")
+                }
+            }
+            if let redirect = request.oidcRedirectURI {
+                guard fields["redirect_uri"] == redirect else {
+                    lock.unlock()
+                    return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization code, redirect URI, or PKCE verifier is invalid\"}")
+                }
             }
         }
         if let scopeServerId, scopeServerId != request.serverId {
@@ -1046,6 +1057,9 @@ public final class OAuthLedger: @unchecked Sendable {
         let now = Date()
         if now.timeIntervalSince(request.createdAt) > 10 * 60 {
             lock.unlock()
+            if isOIDC {
+                return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization request is invalid or has expired\"}")
+            }
             return json(400, "{\"error\":\"authorization_code_expired\",\"error_description\":\"This Login with Raft authorization code has expired. Obtain a fresh human authorization before retrying.\",\"next_action\":\"obtain_fresh_authorization\"}")
         }
         guard let server = servers[request.serverId], !server.deleted,
