@@ -67,6 +67,34 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func updateServer(id: String, name: String, avatarUrl: String?) {
+        lock.lock()
+        if var server = servers[id] {
+            server.name = name
+            server.avatarUrl = avatarUrl
+            servers[id] = server
+        }
+        lock.unlock()
+    }
+
+    public func setServerPlan(id: String, plan: String) {
+        lock.lock()
+        if var server = servers[id] {
+            server.plan = plan
+            servers[id] = server
+        }
+        lock.unlock()
+    }
+
+    public func deleteServer(id: String) {
+        lock.lock()
+        if var server = servers[id] {
+            server.deleted = true
+            servers[id] = server
+        }
+        lock.unlock()
+    }
+
     public func createClient(serverId: String, createdByUserId: String, name: String, clientId: String, appType: String = "server_local") throws -> CreatedOAuthClient {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw OAuthClientRejection(message: "name is required") }
@@ -249,6 +277,35 @@ public final class OAuthLedger: @unchecked Sendable {
         else { return nil }
         let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
         return base + avatar
+    }
+
+    /// `GET /api/oauth/serverinfo`. The token names the Server; a query cannot
+    /// redirect the read. Fields come from the live Server row.
+    public func serverinfo(authorization: String?, baseURL: String) -> HTTPReply {
+        guard let raw = bearerToken(authorization) else {
+            return json(401, "{\"error\":\"Missing bearer token\"}")
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let token = principalTokenLocked(raw),
+              let server = servers[token.serverId], !server.deleted,
+              members["\(token.serverId)\n\(token.userId)"] != nil
+        else {
+            return json(401, "{\"error\":\"Invalid or expired access token\"}")
+        }
+        let avatarJSON = server.avatarUrl.map { jsonString($0) } ?? "null"
+        let pictureJSON = absolutePicture(server.avatarUrl, baseURL: baseURL).map { jsonString($0) } ?? "null"
+        let paid = server.plan != "free"
+        let document = "{\"id\":\(jsonString(server.id)),\"slug\":\(jsonString(server.slug)),\"name\":\(jsonString(server.name)),\"avatar_url\":\(avatarJSON),\"picture\":\(pictureJSON),\"is_paid\":\(paid ? "true" : "false"),\"plan_tier\":\(jsonString(paid ? "paid" : "free"))}"
+        return json(200, document)
+    }
+
+    private func absolutePicture(_ path: String?, baseURL: String) -> String? {
+        guard let path else { return nil }
+        if path.hasPrefix("http://") || path.hasPrefix("https://") { return path }
+        guard path.hasPrefix("/") else { return nil }
+        let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
+        return base + path
     }
 
     /// `GET /api/oauth/agents`. Directory authority is the `agent:read` login
@@ -646,6 +703,8 @@ public final class OAuthLedger: @unchecked Sendable {
         var id: String
         var slug: String
         var name: String
+        var avatarUrl: String? = nil
+        var plan: String = "free"
         var deleted = false
     }
 
