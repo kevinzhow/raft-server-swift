@@ -665,36 +665,85 @@ public func configure(_ app: Application, services: FallbackServices) {
     }
     app.get("oidc", ":server", "api", "oauth", ".well-known", "openid-configuration") { request -> Response in
         let segment = request.parameters.get("server") ?? ""
-        guard services.emailAccounts.oauth.serverScopeId(segment) != nil else {
-            return pixelAvatarError(404, "Not found")
+        switch resolveOIDCScope(segment, oauth: services.emailAccounts.oauth) {
+        case .failure(let response):
+            return response
+        case .resolved:
+            return routeResponse(OAuthDiscovery.openIDConfiguration(
+                serverURL: services.emailAccounts.serverURL,
+                serverScope: segment
+            ))
         }
-        return routeResponse(OAuthDiscovery.openIDConfiguration(
-            serverURL: services.emailAccounts.serverURL,
-            serverScope: segment
-        ))
     }
     app.get("oidc", ":server", "api", "oauth", "agents") { request -> Response in
-        guard let scope = services.emailAccounts.oauth.serverScopeId(request.parameters.get("server") ?? "") else {
-            return pixelAvatarError(404, "Not found")
+        switch resolveOIDCScope(request.parameters.get("server") ?? "", oauth: services.emailAccounts.oauth) {
+        case .failure(let response):
+            return response
+        case .resolved(let scope):
+            return routeResponse(services.emailAccounts.oauth.agentDirectory(
+                authorization: request.headers[.authorization],
+                baseURL: services.emailAccounts.serverURL,
+                scopeServerId: scope
+            ))
         }
-        return routeResponse(services.emailAccounts.oauth.agentDirectory(
-            authorization: request.headers[.authorization],
-            baseURL: services.emailAccounts.serverURL,
-            scopeServerId: scope
-        ))
+    }
+    app.get("oidc", ":server", "api", "oauth", "jwks") { request -> Response in
+        switch resolveOIDCScope(request.parameters.get("server") ?? "", oauth: services.emailAccounts.oauth) {
+        case .failure(let response):
+            return response
+        case .resolved:
+            return routeResponse(services.emailAccounts.oauth.jwks())
+        }
+    }
+    app.get("oidc", ":server", "api", "oauth", "userinfo") { request -> Response in
+        switch resolveOIDCScope(request.parameters.get("server") ?? "", oauth: services.emailAccounts.oauth) {
+        case .failure(let response):
+            return response
+        case .resolved(let scope):
+            return routeResponse(services.emailAccounts.oauth.userinfo(
+                authorization: request.headers[.authorization],
+                baseURL: services.emailAccounts.serverURL,
+                scopeServerId: scope
+            ))
+        }
+    }
+    app.get("oidc", ":server", "api", "oauth", "serverinfo") { request -> Response in
+        switch resolveOIDCScope(request.parameters.get("server") ?? "", oauth: services.emailAccounts.oauth) {
+        case .failure(let response):
+            return response
+        case .resolved(let scope):
+            return routeResponse(services.emailAccounts.oauth.serverinfo(
+                authorization: request.headers[.authorization],
+                baseURL: services.emailAccounts.serverURL,
+                scopeServerId: scope
+            ))
+        }
+    }
+    app.get("oidc", ":server", "api", "oauth", "authorize") { request -> Response in
+        switch resolveOIDCScope(request.parameters.get("server") ?? "", oauth: services.emailAccounts.oauth) {
+        case .failure(let response):
+            return response
+        case .resolved:
+            return routeResponse(services.emailAccounts.oauth.browserAuthorize(
+                query: request.url.query ?? "",
+                appURL: services.emailAccounts.appURL
+            ))
+        }
     }
     app.post("oidc", ":server", "api", "oauth", "token") { request -> Response in
         let segment = request.parameters.get("server") ?? ""
-        guard let scope = services.emailAccounts.oauth.serverScopeId(segment) else {
-            return pixelAvatarError(404, "Not found")
+        switch resolveOIDCScope(segment, oauth: services.emailAccounts.oauth) {
+        case .failure(let response):
+            return response
+        case .resolved(let scope):
+            let origin = OAuthDiscovery.issuerOrigin(services.emailAccounts.serverURL) ?? ""
+            return routeResponse(services.emailAccounts.oauth.exchangeToken(
+                authorization: request.headers[.authorization],
+                body: request.body.string ?? "",
+                issuer: "\(origin)/oidc/\(segment)",
+                scopeServerId: scope
+            ))
         }
-        let origin = OAuthDiscovery.issuerOrigin(services.emailAccounts.serverURL) ?? ""
-        return routeResponse(services.emailAccounts.oauth.exchangeToken(
-            authorization: request.headers[.authorization],
-            body: request.body.string ?? "",
-            issuer: "\(origin)/oidc/\(segment)",
-            scopeServerId: scope
-        ))
     }
     app.post("api", "auth", "mobile", "oauth", "apple", "native", "start") { request -> Response in
         routeResponse(services.emailAccounts.startNativeApple(
@@ -967,6 +1016,21 @@ private struct FallbackMiddleware: Middleware {
             }
         }
     }
+}
+
+private enum OIDCScopeResolution {
+    case resolved(String)
+    case failure(Response)
+}
+
+private func resolveOIDCScope(_ segment: String, oauth: OAuthLedger) -> OIDCScopeResolution {
+    guard segment.wholeMatch(of: /^[a-z0-9][a-z0-9-]{0,63}$/) != nil else {
+        return .failure(pixelAvatarError(400, "invalid_server_scope"))
+    }
+    guard let scope = oauth.serverScopeId(segment) else {
+        return .failure(pixelAvatarError(404, "Not found"))
+    }
+    return .resolved(scope)
 }
 
 private func pixelAvatarError(_ status: Int, _ error: String) -> Response {

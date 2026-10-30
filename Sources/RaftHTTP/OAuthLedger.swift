@@ -364,7 +364,7 @@ public final class OAuthLedger: @unchecked Sendable {
 
     /// `GET /api/oauth/userinfo`. Only principal access tokens resolve; an App
     /// installation credential is not a principal and stays 401.
-    public func userinfo(authorization: String?, baseURL: String) -> HTTPReply {
+    public func userinfo(authorization: String?, baseURL: String, scopeServerId: String? = nil) -> HTTPReply {
         guard let raw = bearerToken(authorization) else {
             return json(401, "{\"error\":\"Missing bearer token\"}")
         }
@@ -376,6 +376,9 @@ public final class OAuthLedger: @unchecked Sendable {
               let server = servers[token.serverId], !server.deleted
         else {
             return json(401, "{\"error\":\"Invalid or expired access token\"}")
+        }
+        if let scopeServerId, scopeServerId != token.serverId {
+            return json(401, "{\"error\":\"Access token was issued for a different Server than this issuer\"}")
         }
         if token.principalType == "agent" {
             guard let agentId = token.agentId,
@@ -429,7 +432,7 @@ public final class OAuthLedger: @unchecked Sendable {
 
     /// `GET /api/oauth/serverinfo`. The token names the Server; a query cannot
     /// redirect the read. Fields come from the live Server row.
-    public func serverinfo(authorization: String?, baseURL: String) -> HTTPReply {
+    public func serverinfo(authorization: String?, baseURL: String, scopeServerId: String? = nil) -> HTTPReply {
         guard let raw = bearerToken(authorization) else {
             return json(401, "{\"error\":\"Missing bearer token\"}")
         }
@@ -441,6 +444,9 @@ public final class OAuthLedger: @unchecked Sendable {
               let server = servers[token.serverId], !server.deleted
         else {
             return json(401, "{\"error\":\"Invalid or expired access token\"}")
+        }
+        if let scopeServerId, scopeServerId != token.serverId {
+            return json(401, "{\"error\":\"Access token was issued for a different Server than this issuer\"}")
         }
         if token.principalType == "agent" {
             guard let agentId = token.agentId,
