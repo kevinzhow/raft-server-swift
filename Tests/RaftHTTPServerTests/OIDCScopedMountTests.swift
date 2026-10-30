@@ -80,6 +80,29 @@ private func scopedObject(_ response: ClientResponse) throws -> [String: Any] {
 
             var bearerHeaders = HTTPFields()
             bearerHeaders[.authorization] = "Bearer \(accessToken)"
+            func mintCode() async throws -> String {
+                let response = try await client.send(.post, headers: authorizeHeaders, to: "/api/oauth/authorize/human") { request in
+                    request.body = .init(string: "{\"clientId\":\"oidc-client-237\",\"serverId\":\"\(serverId)\",\"returnUrl\":\"\(redirectURI)\",\"scopes\":[\"openid\",\"profile\",\"email\"],\"oidc\":true,\"nonce\":\"scoped-nonce\",\"codeChallenge\":\"\(scopedChallenge)\",\"codeChallengeMethod\":\"S256\"}")
+                }
+                return try scopedObject(response)["code"] as? String ?? ""
+            }
+            func exchangeAt(_ mount: String, code: String) async throws -> ClientResponse {
+                var headers = HTTPFields()
+                headers[.contentType] = "application/json"
+                return try await client.send(.post, headers: headers, to: URI(string: "\(mount)/api/oauth/token")) { request in
+                    request.body = .init(string: "{\"clientId\":\"oidc-client-237\",\"clientSecret\":\"\(created.clientSecret)\",\"grantType\":\"authorization_code\",\"code\":\"\(code)\",\"redirect_uri\":\"\(redirectURI)\",\"code_verifier\":\"\(scopedVerifier)\"}")
+                }
+            }
+
+            let foreignCode = try await mintCode()
+            let foreign = try await exchangeAt("/oidc/other-oidc-237", code: foreignCode)
+            #expect(foreign.status == .badRequest)
+            #expect(try scopedObject(foreign)["error"] as? String == "invalid_grant")
+
+            let idCode = try await mintCode()
+            let byId = try await exchangeAt("/oidc/\(serverId)", code: idCode)
+            #expect(byId.status == .ok)
+
             let userinfo = try await client.send(.get, headers: bearerHeaders, to: "/oidc/oidc-237/api/oauth/userinfo")
             #expect(userinfo.status == .ok)
             #expect(try scopedObject(userinfo)["sub"] as? String == ownerId)
