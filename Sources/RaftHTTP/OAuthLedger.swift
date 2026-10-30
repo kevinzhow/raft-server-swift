@@ -446,7 +446,16 @@ public final class OAuthLedger: @unchecked Sendable {
 
     /// `GET /api/oauth/agents`. Directory authority is the `agent:read` login
     /// scope, never an installation credential.
-    public func agentDirectory(authorization: String?, baseURL: String) -> HTTPReply {
+    /// Resolves an `/oidc/:server` segment by id or slug.
+    public func serverScopeId(_ segment: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return servers.values.first(where: {
+            ($0.id == segment || $0.slug == segment) && !$0.deleted
+        })?.id
+    }
+
+    public func agentDirectory(authorization: String?, baseURL: String, scopeServerId: String? = nil) -> HTTPReply {
         guard let raw = bearerToken(authorization) else {
             return json(401, "{\"error\":\"Missing bearer token\"}", cacheControl: "no-store")
         }
@@ -461,6 +470,9 @@ public final class OAuthLedger: @unchecked Sendable {
         }
         guard client.enabled, token.scopes.contains("agent:read") else {
             return json(403, "{\"error\":\"agent:read permission is required from an enabled App\"}", cacheControl: "no-store")
+        }
+        if let scopeServerId, scopeServerId != token.serverId {
+            return json(401, "{\"error\":\"Access token was issued for a different Server than this issuer\"}", cacheControl: "no-store")
         }
         if token.principalType == "agent" {
             guard let agentId = token.agentId,

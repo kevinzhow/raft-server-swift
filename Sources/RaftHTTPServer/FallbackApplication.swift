@@ -651,6 +651,26 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("api", "oauth", ".well-known", "openid-configuration") { _ -> Response in
         routeResponse(OAuthDiscovery.openIDConfiguration(serverURL: services.emailAccounts.serverURL))
     }
+    app.get("oidc", ":server", "api", "oauth", ".well-known", "openid-configuration") { request -> Response in
+        let segment = request.parameters.get("server") ?? ""
+        guard services.emailAccounts.oauth.serverScopeId(segment) != nil else {
+            return pixelAvatarError(404, "Not found")
+        }
+        return routeResponse(OAuthDiscovery.openIDConfiguration(
+            serverURL: services.emailAccounts.serverURL,
+            serverScope: segment
+        ))
+    }
+    app.get("oidc", ":server", "api", "oauth", "agents") { request -> Response in
+        guard let scope = services.emailAccounts.oauth.serverScopeId(request.parameters.get("server") ?? "") else {
+            return pixelAvatarError(404, "Not found")
+        }
+        return routeResponse(services.emailAccounts.oauth.agentDirectory(
+            authorization: request.headers[.authorization],
+            baseURL: services.emailAccounts.serverURL,
+            scopeServerId: scope
+        ))
+    }
     app.post("api", "auth", "mobile", "oauth", "apple", "native", "start") { request -> Response in
         routeResponse(services.emailAccounts.startNativeApple(
             body: request.body.string ?? "",

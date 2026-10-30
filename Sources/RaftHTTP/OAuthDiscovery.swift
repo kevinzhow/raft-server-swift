@@ -15,10 +15,11 @@ public enum OAuthDiscovery {
         "agent:notification:write",
     ]
 
-    public static func openIDConfiguration(serverURL: String) -> HTTPReply {
-        guard let issuer = issuerOrigin(serverURL) else {
+    public static func openIDConfiguration(serverURL: String, serverScope: String? = nil) -> HTTPReply {
+        guard let origin = issuerOrigin(serverURL) else {
             return json(503, "{\"error\":\"oidc_not_configured\"}")
         }
+        let issuer = serverScope.map { "\(origin)/oidc/\($0)" } ?? origin
         let scopes = publicScopes.map { jsonString($0) }.joined(separator: ",")
         let grants = ["authorization_code", "urn:slock:grant-type:agent_request"].map { jsonString($0) }.joined(separator: ",")
         let claims = [

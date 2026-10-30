@@ -84,6 +84,28 @@ private func directoryObject(_ response: ClientResponse) throws -> [String: Any]
             #expect(rows.first.map { $0.keys.sorted() } == ["avatar_url", "display_name", "handle", "id", "picture"])
             #expect(rows.first?["handle"] as? String == "DirectoryAgent")
 
+            let scoped = try await client.send(
+                .get,
+                headers: headers,
+                to: "/oidc/directory-231/api/oauth/agents?server_id=\(otherServerId)"
+            )
+            #expect(scoped.status == .ok)
+            #expect((try directoryObject(scoped)["agents"] as? [[String: Any]])?.map { $0["id"] as? String } == [agentId])
+
+            let crossServer = try await client.send(.get, headers: headers, to: "/oidc/other-231/api/oauth/agents")
+            #expect(crossServer.status == .unauthorized)
+            #expect((try directoryObject(crossServer))["agents"] == nil)
+
+            let discovery = try await client.send(
+                .get,
+                headers: HTTPFields(),
+                to: "/oidc/directory-231/api/oauth/.well-known/openid-configuration"
+            )
+            #expect(discovery.status == .ok)
+            let document = try directoryObject(discovery)
+            #expect((document["scopes_supported"] as? [String])?.contains("agent:read") == true)
+            #expect((document["agents_endpoint"] as? String)?.hasSuffix("/oidc/directory-231/api/oauth/agents") == true)
+
             let identityOnly = try await mintHumanToken(scopes: "\"openid\",\"profile\"")
             var identityHeaders = HTTPFields()
             identityHeaders[.authorization] = "Bearer \(identityOnly)"
