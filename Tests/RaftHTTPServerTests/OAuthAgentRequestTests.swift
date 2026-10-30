@@ -185,3 +185,61 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
         }
     }
 }
+
+@Test func inboundAgentTokenRequiresTheServerResource() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111224"
+    let serverId = "33333333-3333-4333-8333-333333333418"
+    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-resource-224", name: "OAuth Resource Binding", ownerId: ownerId)
+    _ = accounts.oauth.createAgent(serverId: serverId, name: "OauthResourceBot")
+    let created = try accounts.oauth.createClient(
+        serverId: serverId,
+        createdByUserId: ownerId,
+        name: "OAuth Resource Client",
+        clientId: "oauth-resource-224",
+        allowedScopes: ["openid", "profile", "identity", "agent:event:write"]
+    )
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.contentType] = "application/json"
+
+            func request(_ scopes: String) async throws -> String {
+                let response = try await client.send(.post, headers: headers, to: "/api/oauth/requests/agent") { request in
+                    request.body = .init(string: "{\"clientId\":\"\(created.clientId)\",\"clientSecret\":\"\(created.clientSecret)\",\"serverSlug\":\"oauth-resource-224\",\"agentName\":\"OauthResourceBot\",\"scopes\":[\(scopes)]}")
+                }
+                #expect(response.status == .ok)
+                return try agentRequestBody(response)["requestId"] as? String ?? ""
+            }
+
+            func exchange(_ requestId: String, resource: String? = nil) async throws -> ClientResponse {
+                let extra = resource.map { ",\"resource\":\"\($0)\"" } ?? ""
+                return try await client.send(.post, headers: headers, to: "/api/oauth/token") { request in
+                    request.body = .init(string: "{\"clientId\":\"\(created.clientId)\",\"clientSecret\":\"\(created.clientSecret)\",\"grantType\":\"urn:slock:grant-type:agent_request\",\"requestId\":\"\(requestId)\"\(extra)}")
+                }
+            }
+
+            let identityRequest = try await request("\"openid\",\"profile\"")
+            let identityToken = try await exchange(identityRequest)
+            #expect(identityToken.status == .ok)
+            #expect(try agentRequestBody(identityToken)["resource"] == nil)
+
+            let inboundRequest = try await request("\"agent:event:write\"")
+            let missingResource = try await exchange(inboundRequest)
+            #expect(missingResource.status == .badRequest)
+            #expect(try agentRequestBody(missingResource)["error"] as? String == "resource is required for requested scopes")
+
+            let resource = "urn:raft:server:\(serverId):agent-inbound"
+            let resourceToken = try await exchange(inboundRequest, resource: resource)
+            #expect(resourceToken.status == .ok)
+            #expect(try agentRequestBody(resourceToken)["resource"] as? String == resource)
+        }
+    }
+}

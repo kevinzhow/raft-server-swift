@@ -148,7 +148,8 @@ public final class OAuthLedger: @unchecked Sendable {
         appType: String = "server_local",
         description: String? = nil,
         homepageUrl: String? = nil,
-        returnUrl: String? = nil
+        returnUrl: String? = nil,
+        allowedScopes: [String]? = nil
     ) throws -> CreatedOAuthClient {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw OAuthClientRejection(message: "name is required") }
@@ -171,7 +172,8 @@ public final class OAuthLedger: @unchecked Sendable {
             createdByUserId: createdByUserId,
             descriptionText: description,
             homepageUrl: homepageUrl,
-            returnUrl: returnUrl
+            returnUrl: returnUrl,
+            allowedScopes: allowedScopes
         ))
         lock.unlock()
         return CreatedOAuthClient(id: id, clientId: normalized, clientSecret: secret)
@@ -793,6 +795,22 @@ public final class OAuthLedger: @unchecked Sendable {
         guard let agentId = request.agentId, let agent = agents[agentId], !agent.deleted else {
             return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization identity is no longer available\"}")
         }
+        let resource = fields["resource"].flatMap { $0.isEmpty ? nil : $0 }
+        let requiresResource = request.scopes.contains(where: {
+            ["agent:event:write", "agent:notification:write", "agent:action_request:write"].contains($0)
+        })
+        let boundResource: String?
+        if requiresResource {
+            guard let resource else {
+                return json(400, "{\"error\":\"resource is required for requested scopes\"}")
+            }
+            guard resource == "urn:raft:server:\(request.serverId):agent-inbound" else {
+                return json(400, "{\"error\":\"resource does not match requested server\"}")
+            }
+            boundResource = resource
+        } else {
+            boundResource = resource
+        }
         var raw = Data(count: 32)
         for index in raw.indices { raw[index] = UInt8.random(in: 0...255) }
         let accessToken = "slock_at_" + raw.map { String(format: "%02x", $0) }.joined()
@@ -810,7 +828,11 @@ public final class OAuthLedger: @unchecked Sendable {
         ))
         requests[index].consumedAt = now
         let scope = request.scopes.joined(separator: " ")
-        let document = "{\"access_token\":\(jsonString(accessToken)),\"token_type\":\"Bearer\",\"expires_in\":3600,\"scope\":\(jsonString(scope))}"
+        var document = "{\"access_token\":\(jsonString(accessToken)),\"token_type\":\"Bearer\",\"expires_in\":3600,\"scope\":\(jsonString(scope))"
+        if let boundResource {
+            document += ",\"resource\":\(jsonString(boundResource))"
+        }
+        document += "}"
         return json(200, document, cacheControl: "no-store")
     }
 
