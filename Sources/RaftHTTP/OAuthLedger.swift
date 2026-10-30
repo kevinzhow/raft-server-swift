@@ -175,6 +175,9 @@ public final class OAuthLedger: @unchecked Sendable {
         guard normalized.wholeMatch(of: /^[a-z][a-z0-9-]{2,63}$/) != nil else {
             throw OAuthClientRejection(message: "clientId must start with a letter and contain only lowercase letters, numbers, and hyphens")
         }
+        if let returnUrl, !Self.isSafeReturnURL(returnUrl) {
+            throw OAuthClientRejection(message: "returnUrl must be HTTPS (or loopback HTTP), without credentials or fragment")
+        }
         var bytes = Data(count: 24)
         for index in bytes.indices { bytes[index] = UInt8.random(in: 0...255) }
         let secret = "raft_secret_" + bytes.map { String(format: "%02x", $0) }.joined()
@@ -280,6 +283,14 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.lock()
         if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
             clients[index].allowedScopes = scopes
+        }
+        lock.unlock()
+    }
+
+    public func setClientReturnUrl(clientRecordId: String, returnUrl: String?) {
+        lock.lock()
+        if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
+            clients[index].returnUrl = returnUrl
         }
         lock.unlock()
     }
@@ -1109,6 +1120,11 @@ public final class OAuthLedger: @unchecked Sendable {
             }
             scopes = validation.scopes
         }
+        if let requestedReturnURL = (object?["returnUrl"] as? String).flatMap({ $0.isEmpty ? nil : $0 }) {
+            guard client.returnUrl == requestedReturnURL, Self.isSafeReturnURL(requestedReturnURL) else {
+                return json(400, "{\"error\":\"returnUrl is not allowed\"}")
+            }
+        }
         guard let server = servers[serverId], !server.deleted, let role = members["\(serverId)\n\(human.id)"] else {
             return json(404, "{\"error\":\"User is not a member of this server\"}")
         }
@@ -1126,7 +1142,8 @@ public final class OAuthLedger: @unchecked Sendable {
             createdAt: Date()
         ))
         let scopeJSON = scopes.map { jsonString($0) }.joined(separator: ",")
-        let document = "{\"code\":\(jsonString(code)),\"client\":{\"clientId\":\(jsonString(client.clientId)),\"appType\":\(jsonString(client.appType)),\"name\":\(jsonString(client.name)),\"description\":null,\"homepageUrl\":null},\"server\":{\"id\":\(jsonString(server.id)),\"slug\":\(jsonString(server.slug)),\"role\":\(jsonString(role))},\"scopes\":[\(scopeJSON)],\"returnUrl\":null}"
+        let returnJSON = client.returnUrl.map { jsonString($0) } ?? "null"
+        let document = "{\"code\":\(jsonString(code)),\"client\":{\"clientId\":\(jsonString(client.clientId)),\"appType\":\(jsonString(client.appType)),\"name\":\(jsonString(client.name)),\"description\":null,\"homepageUrl\":null},\"server\":{\"id\":\(jsonString(server.id)),\"slug\":\(jsonString(server.slug)),\"role\":\(jsonString(role))},\"scopes\":[\(scopeJSON)],\"returnUrl\":\(returnJSON)}"
         return json(200, document)
     }
 
@@ -1416,6 +1433,21 @@ public final class OAuthLedger: @unchecked Sendable {
     /// any platform registration both remove installation authority.
     private func isUserManaged(_ client: Client) -> Bool {
         client.appType != "slock_builtin" && client.externalProvider == nil
+    }
+
+    private static func isSafeReturnURL(_ value: String) -> Bool {
+        guard let components = URLComponents(string: value),
+              let scheme = components.scheme?.lowercased(),
+              let host = components.host, !host.isEmpty,
+              components.user == nil,
+              components.password == nil,
+              components.fragment == nil
+        else { return false }
+        if scheme == "https" { return true }
+        if scheme == "http" {
+            return ["localhost", "127.0.0.1", "::1"].contains(host.lowercased())
+        }
+        return false
     }
 
     private func isMarketplaceVisible(_ client: Client) -> Bool {
