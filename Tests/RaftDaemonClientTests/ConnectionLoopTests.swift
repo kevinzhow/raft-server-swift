@@ -490,6 +490,255 @@ private func delaysAfter(closes: [(code: Int, reason: String)]) -> (delays: [Int
     #expect(link.sockets.count == 2)
 }
 
+private func readyFrame() -> DaemonOutboundFrame {
+    DaemonOutboundFrame(type: "ready", capabilities: [], runtimes: [], runningAgents: [])
+}
+
+private func activity(
+    _ agent: String,
+    _ name: String,
+    launch: String,
+    seq: Int,
+    detail: String = "Running",
+    fact: String? = nil
+) -> DaemonOutboundFrame {
+    DaemonOutboundFrame(
+        type: "agent:activity",
+        agentId: agent,
+        activity: name,
+        detail: detail,
+        launchId: launch,
+        clientSeq: seq,
+        producerFactId: fact
+    )
+}
+
+private func status(_ agent: String, _ name: String, launch: String, seq: Int) -> DaemonOutboundFrame {
+    DaemonOutboundFrame(
+        type: "agent:status",
+        agentId: agent,
+        status: name,
+        launchId: launch,
+        daemonInstanceId: "d-1",
+        clientSeq: seq
+    )
+}
+
+@Test func onConnectFiresAgainAfterReconnect() {
+    let link = pinnedLink(minReconnectDelayMs: 10, inboundWatchdogMs: 50_000)
+    var rounds = 0
+    link.onConnect = { rounds += 1 }
+    link.connect()
+    link.emitOpen(socket: 0)
+    #expect(rounds == 1)
+    link.serverClose(socket: 0, code: 1000)
+    link.advance(10)
+    link.emitOpen(socket: 1)
+    #expect(rounds == 2)
+}
+
+@Test func sessionInvalidationReplaysBeforeTheReconnectSession() {
+    let link = pinnedLink(inboundWatchdogMs: 50_000)
+    link.onConnect = {
+        link.send(DaemonOutboundFrame(
+            type: "agent:session",
+            agentId: "agent-1",
+            sessionId: "fresh-session",
+            launchId: "launch-1"
+        ))
+    }
+    link.send(DaemonOutboundFrame(
+        type: "agent:session:invalidate",
+        agentId: "agent-1",
+        sessionId: "stale-session",
+        launchId: "launch-1",
+        reason: "missing"
+    ))
+    link.connect()
+    link.emitOpen(socket: 0)
+    #expect(link.sockets[0].frames == [
+        DaemonOutboundFrame(
+            type: "agent:session:invalidate",
+            agentId: "agent-1",
+            sessionId: "stale-session",
+            launchId: "launch-1",
+            reason: "missing"
+        ),
+        DaemonOutboundFrame(
+            type: "agent:session",
+            agentId: "agent-1",
+            sessionId: "fresh-session",
+            launchId: "launch-1"
+        ),
+    ])
+}
+
+@Test func oldLaunchInvalidationIsNotReplayed() {
+    let link = pinnedLink(inboundWatchdogMs: 50_000)
+    link.onConnect = {
+        link.send(DaemonOutboundFrame(
+            type: "agent:session",
+            agentId: "agent-1",
+            sessionId: "shared-session",
+            launchId: "launch-new"
+        ))
+    }
+    let stale = DaemonOutboundFrame(
+        type: "agent:session:invalidate",
+        agentId: "agent-1",
+        sessionId: "shared-session",
+        launchId: "launch-old",
+        reason: "missing"
+    )
+    link.send(stale)
+    link.send(DaemonOutboundFrame(
+        type: "agent:session",
+        agentId: "agent-1",
+        sessionId: "shared-session",
+        launchId: "launch-new"
+    ))
+    link.send(stale)
+    link.connect()
+    link.emitOpen(socket: 0)
+    #expect(link.sockets[0].frames == [
+        DaemonOutboundFrame(
+            type: "agent:session",
+            agentId: "agent-1",
+            sessionId: "shared-session",
+            launchId: "launch-new"
+        ),
+    ])
+}
+
+@Test func statusAndActivityReplayOnlyAfterReadyInClientSequence() {
+    let link = pinnedLink(inboundWatchdogMs: 50_000)
+    link.send(status("agent-1", "active", launch: "launch-1", seq: 1))
+    link.send(activity("agent-1", "working", launch: "launch-1", seq: 2))
+    link.send(status("agent-1", "inactive", launch: "launch-1", seq: 3))
+    link.send(status("agent-2", "active", launch: "launch-2", seq: 1))
+    link.connect()
+    link.emitOpen(socket: 0)
+    link.send(status("agent-2", "inactive", launch: "launch-2", seq: 2))
+    link.send(activity("agent-3", "working", launch: "launch-3", seq: 1))
+    #expect(link.sockets[0].frames.isEmpty)
+
+    link.send(readyFrame())
+    link.send(status("agent-1", "active", launch: "launch-1b", seq: 4))
+
+    let projected = link.sockets[0].frames.map { frame in
+        [frame.type, frame.agentId ?? "", frame.status ?? "", frame.clientSeq.map(String.init) ?? ""]
+    }
+    #expect(projected == [
+        ["ready", "", "", ""],
+        ["agent:activity", "agent-1", "", "2"],
+        ["agent:status", "agent-1", "inactive", "3"],
+        ["agent:activity", "agent-3", "", "1"],
+        ["agent:status", "agent-2", "inactive", "2"],
+        ["agent:status", "agent-1", "active", "4"],
+    ])
+}
+
+@Test func aNewSocketHoldsStatusUntilItsOwnReady() {
+    let link = pinnedLink(inboundWatchdogMs: 50_000)
+    link.connect()
+    link.emitOpen(socket: 0)
+    link.send(readyFrame())
+    link.send(status("agent-1", "active", launch: "launch-1", seq: 1))
+    #expect(link.sockets[0].frames.map(\.type) == ["ready", "agent:status"])
+
+    link.disconnect()
+    link.connect()
+    link.emitOpen(socket: 1)
+    link.send(status("agent-1", "inactive", launch: "launch-1", seq: 2))
+    #expect(link.sockets[1].frames.isEmpty)
+    link.send(readyFrame())
+    #expect(link.sockets[1].frames.map { [$0.type, $0.status ?? ""] } == [
+        ["ready", ""],
+        ["agent:status", "inactive"],
+    ])
+}
+
+@Test func latestActivityReplaysPerAgentAfterReady() {
+    let link = pinnedLink(inboundWatchdogMs: 50_000)
+    link.send(activity("agent-1", "working", launch: "launch-1", seq: 1, detail: "Starting...", fact: "daemon_activity:agent-1:launch-1:1"))
+    link.send(activity("agent-1", "error", launch: "launch-1", seq: 2, detail: "Startup timed out", fact: "daemon_activity:agent-1:launch-1:2"))
+    link.send(activity("agent-2", "offline", launch: "launch-2", seq: 1, detail: "Stopped", fact: "daemon_activity:agent-2:launch-2:1"))
+    link.connect()
+    link.emitOpen(socket: 0)
+    link.send(readyFrame())
+
+    #expect(Array(link.sockets[0].frames.dropFirst()) == [
+        activity("agent-1", "error", launch: "launch-1", seq: 2, detail: "Startup timed out", fact: "daemon_activity:agent-1:launch-1:2"),
+        activity("agent-2", "offline", launch: "launch-2", seq: 1, detail: "Stopped", fact: "daemon_activity:agent-2:launch-2:1"),
+    ])
+    #expect(link.traces(named: "daemon.connection.outbound_dropped").isEmpty)
+    let queued = link.traces(named: "daemon.connection.outbound_queued")
+    #expect(queued.count == 3)
+    #expect(queued.map { event in
+        [
+            event.attributes["agentId"] ?? .null,
+            event.attributes["replaced_pending"] ?? .null,
+            event.attributes["launch_id_present"] ?? .null,
+        ]
+    } == [
+        [.string("agent-1"), .bool(false), .bool(true)],
+        [.string("agent-1"), .bool(true), .bool(true)],
+        [.string("agent-2"), .bool(false), .bool(true)],
+    ])
+    let replay = link.traces(named: "daemon.connection.outbound_replayed")
+    #expect(replay.count == 1)
+    #expect(replay[0].attributes["outbound_message_kind"] == .string("agent:activity"))
+    #expect(replay[0].attributes["message_count"] == .int(2))
+    let sent = link.traces(named: "daemon.agent.activity.sent")
+    #expect(sent.map { event in
+        [
+            event.attributes["agent_id"] ?? .null,
+            event.attributes["launch_id"] ?? .null,
+            event.attributes["client_seq"] ?? .null,
+            event.attributes["send_path"] ?? .null,
+        ]
+    } == [
+        [.string("agent-1"), .string("launch-1"), .int(2), .string("replay")],
+        [.string("agent-2"), .string("launch-2"), .int(1), .string("replay")],
+    ])
+    #expect(sent.allSatisfy { $0.attributes["producerFactId"] == nil })
+}
+
+@Test func aNewLaunchDropsPendingActivity() {
+    let link = pinnedLink(inboundWatchdogMs: 50_000)
+    link.send(activity("agent-1", "working", launch: "launch-x", seq: 1, detail: "old launch"))
+    link.send(DaemonOutboundFrame(
+        type: "agent:session",
+        agentId: "agent-1",
+        sessionId: "session-y",
+        launchId: "launch-y"
+    ))
+    link.connect()
+    link.emitOpen(socket: 0)
+    #expect(link.sockets[0].frames.isEmpty)
+    #expect(link.traces(named: "daemon.connection.outbound_queued").count == 1)
+    #expect(link.traces(named: "daemon.connection.outbound_dropped").map { event in
+        [event.attributes["outbound_message_kind"] ?? .null, event.attributes["reason"] ?? .null]
+    } == [[.string("agent:session"), .string("not_replayable")]])
+    let invalidated = link.traces(named: "daemon.connection.pending_activity_invalidated")
+    #expect(invalidated.count == 1)
+    #expect(invalidated[0].attributes["reason"] == .string("launch_changed"))
+    #expect(invalidated[0].attributes["outbound_message_kind"] == .string("agent:session"))
+    #expect(invalidated[0].attributes["agentId"] == .string("agent-1"))
+    #expect(link.traces(named: "daemon.connection.outbound_replayed").isEmpty)
+}
+
+@Test func queuedActivityIsLoggedSeparatelyFromADroppedPong() {
+    let link = DaemonLink(nowMs: 10_000, inboundWatchdogMs: 50_000, delayFor: { $0 })
+    link.send(activity("agent-1", "working", launch: "launch-1", seq: 1, detail: "x"))
+    link.send(activity("agent-1", "working", launch: "launch-1", seq: 2, detail: "y"))
+    link.send(DaemonOutboundFrame(type: "pong"))
+    let text = link.logs.joined(separator: "\n")
+    #expect(link.logs.filter { $0.contains("Queued outbound agent:activity for replay while disconnected") }.count == 1)
+    #expect(text.contains("Dropping outbound message while disconnected (no replay path): pong"))
+    #expect(!text.contains("Dropping outbound message while disconnected (no replay path): agent:activity"))
+}
+
 @Test func openAndDisconnectClearTheConnectTimeout() {
     var opened = pinnedLink(minReconnectDelayMs: 10, inboundWatchdogMs: 1_000, connectTimeoutMs: 30)
     opened.connect()
