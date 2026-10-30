@@ -103,3 +103,41 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
         }
     }
 }
+
+@Test func agentRequestRejectsUnknownScopesAndRetiredClients() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111222"
+    let serverId = "33333333-3333-4333-8333-333333333416"
+    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-agent-scope-222", name: "OAuth Agent Scope Contract", ownerId: ownerId)
+    _ = accounts.oauth.createAgent(serverId: serverId, name: "OauthAgentScopeBot")
+    let created = try accounts.oauth.createClient(
+        serverId: serverId,
+        createdByUserId: ownerId,
+        name: "OAuth Agent Scope Client",
+        clientId: "oauth-agent-scope-222"
+    )
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.contentType] = "application/json"
+            let rejected = try await client.send(.post, headers: headers, to: "/api/oauth/requests/agent") { request in
+                request.body = .init(string: "{\"clientId\":\"\(created.clientId)\",\"clientSecret\":\"\(created.clientSecret)\",\"serverSlug\":\"oauth-agent-scope-222\",\"agentName\":\"OauthAgentScopeBot\",\"scopes\":[\"identity\",\"unknown:scope\"]}")
+            }
+            #expect(rejected.status == .badRequest)
+            #expect(try agentRequestBody(rejected)["error"] as? String == "invalid_scope")
+
+            accounts.oauth.setClientAppType(clientRecordId: created.id, appType: "slock_builtin")
+            let retired = try await client.send(.post, headers: headers, to: "/api/oauth/requests/agent") { request in
+                request.body = .init(string: "{\"clientId\":\"\(created.clientId)\",\"clientSecret\":\"\(created.clientSecret)\",\"serverSlug\":\"oauth-agent-scope-222\",\"agentName\":\"OauthAgentScopeBot\",\"scopes\":[\"openid\",\"profile\",\"identity\"]}")
+            }
+            #expect(retired.status == .unauthorized)
+        }
+    }
+}
