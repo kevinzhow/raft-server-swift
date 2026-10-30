@@ -6206,6 +6206,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"runtime\":\(jsonString(runtime)),\"model\":\(jsonString(model)),\"external\":\(external),\"machineId\":null,\"reasoningEffort\":null,\"envVars\":\(env),\"runtimeConfig\":\(runtimeConfigJSON.isEmpty ? "{}" : runtimeConfigJSON)}"
     }
 
+    public func uploadAgentAvatar(authorization: String?, agentId: String, byteCount: Int) -> HTTPReply {
+        switch agentAuthority(authorization, agentId: agentId) {
+        case .denied(let reply):
+            return reply
+        case .allowed:
+            let maxBytes = 5 * 1024 * 1024
+            guard byteCount <= maxBytes else {
+                return Self.json(400, "{\"error\":\"Avatar image must be 5 MB or smaller\",\"errorCode\":\"PROFILE_AVATAR_TOO_LARGE\",\"maxBytes\":\(maxBytes)}")
+            }
+            return Self.json(200, "{\"ok\":true}")
+        }
+    }
+
     public func externalAgentStatus(authorization: String?, agentId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

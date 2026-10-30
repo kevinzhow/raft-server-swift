@@ -533,6 +533,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             agentId: request.parameters.get("id") ?? ""
         ))
     }
+    app.post("api", "agents", ":id", "avatar") { request -> Response in
+        routeResponse(services.emailAccounts.uploadAgentAvatar(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("id") ?? "",
+            byteCount: request.body.string?.utf8.count ?? 0
+        ))
+    }
     app.get("api", "agents", ":id", "external-status") { request -> Response in
         routeResponse(services.emailAccounts.externalAgentStatus(
             authorization: request.headers[.authorization],
