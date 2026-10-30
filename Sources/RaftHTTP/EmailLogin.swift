@@ -6069,6 +6069,86 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(201, Self.providerConnectionJSON(connection))
     }
 
+    public func patchProviderConnection(authorization: String?, serverId: String, connectionId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        let enabled = providerConnectionsEnabledServers.contains(serverId)
+        lock.unlock()
+        guard enabled else {
+            return Self.json(404, "{\"error\":\"Provider connections are not enabled\",\"code\":\"provider_connections_disabled\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId), role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid provider connection\"}")
+        }
+        let allowedKeys: Set<String> = ["name", "providerId", "apiKey", "endpointUrl", "supportsImageInput", "authMethod"]
+        guard Set(object.keys).isSubset(of: allowedKeys) else {
+            return Self.json(400, "{\"error\":\"Invalid provider connection\"}")
+        }
+        if object["apiKey"] != nil, object["providerId"] != nil {
+            return Self.json(400, "{\"error\":\"Rotate the credential separately from provider configuration\"}")
+        }
+        lock.lock()
+        guard let index = providerConnections.firstIndex(where: { $0.id == connectionId && $0.serverId == serverId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Provider connection not found\"}")
+        }
+        if let name = object["name"] as? String, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            providerConnections[index].name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let endpoint = object["endpointUrl"] as? String {
+            providerConnections[index].endpointUrl = endpoint
+        }
+        if let supports = object["supportsImageInput"] as? Bool {
+            providerConnections[index].supportsImageInput = supports
+        }
+        if let apiKey = object["apiKey"] as? String, !apiKey.isEmpty {
+            providerConnections[index].credentialVersion += 1
+            providerConnections[index].status = "unchecked"
+            providerConnections[index].hasCredential = true
+        }
+        providerConnections[index].updatedAt = Date()
+        let updated = providerConnections[index]
+        lock.unlock()
+        return Self.json(200, Self.providerConnectionJSON(updated))
+    }
+
+    public func rotateProviderConnectionCredential(authorization: String?, serverId: String, connectionId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        let enabled = providerConnectionsEnabledServers.contains(serverId)
+        lock.unlock()
+        guard enabled else {
+            return Self.json(404, "{\"error\":\"Provider connections are not enabled\",\"code\":\"provider_connections_disabled\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId), role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let apiKey = object["apiKey"] as? String, !apiKey.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"apiKey is required\"}")
+        }
+        lock.lock()
+        guard let index = providerConnections.firstIndex(where: { $0.id == connectionId && $0.serverId == serverId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Provider connection not found\"}")
+        }
+        providerConnections[index].credentialVersion += 1
+        providerConnections[index].status = "unchecked"
+        providerConnections[index].hasCredential = true
+        providerConnections[index].updatedAt = Date()
+        let updated = providerConnections[index]
+        lock.unlock()
+        return Self.json(200, Self.providerConnectionJSON(updated))
+    }
+
     private static func providerConnectionLabel(_ id: String) -> String {
         switch id {
         case "openai-compatible": return "OpenAI compatible"

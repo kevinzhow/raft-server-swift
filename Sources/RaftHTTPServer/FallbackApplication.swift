@@ -588,6 +588,22 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
         ))
     }
+    app.patch("api", "provider-connections", ":id") { request -> Response in
+        routeResponse(services.emailAccounts.patchProviderConnection(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            connectionId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.post("api", "provider-connections", ":id", "credentials", "rotate") { request -> Response in
+        routeResponse(services.emailAccounts.rotateProviderConnectionCredential(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            connectionId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.post("api", "provider-connections") { request -> Response in
         routeResponse(services.emailAccounts.createProviderConnection(
             authorization: request.headers[.authorization],

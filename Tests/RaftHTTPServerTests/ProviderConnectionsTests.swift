@@ -94,6 +94,31 @@ import VaporTesting
             #expect(options.first { $0["id"] as? String == "google" }?["providerKind"] as? String == "preset")
             #expect(options.first { $0["id"] as? String == "openai-compatible" }?["providerKind"] as? String == "gateway")
             #expect(options.allSatisfy { (($0["label"] as? String) ?? "").isEmpty == false })
+
+            let implicitPatch = try await client.send(.patch, headers: headers(ownerToken), to: "/api/provider-connections/\(createdId)") { request in
+                request.body = .init(string: "{\"apiKey\":\"must-not-enter-metadata\",\"providerId\":\"openai-compatible\"}")
+            }
+            #expect(implicitPatch.status == .badRequest)
+            #expect((implicitPatch.body.string ?? "").contains("must-not-enter-metadata") == false)
+
+            let rotatedResponse = try await client.send(.post, headers: headers(ownerToken), to: "/api/provider-connections/\(createdId)/credentials/rotate") { request in
+                request.body = .init(string: "{\"apiKey\":\"rotated-private-value\"}")
+            }
+            #expect(rotatedResponse.status == .ok)
+            #expect((rotatedResponse.body.string ?? "").contains("rotated-private-value") == false)
+            let rotated = try JSONSerialization.jsonObject(with: Data((rotatedResponse.body.string ?? "").utf8)) as? [String: Any]
+            #expect(rotated?["status"] as? String == "unchecked")
+            #expect(rotated?["credentialVersion"] as? Int == 2)
+
+            let unifiedPatch = try await client.send(.patch, headers: headers(ownerToken), to: "/api/provider-connections/\(createdId)") { request in
+                request.body = .init(string: "{\"name\":\"Patched Team DeepSeek\",\"apiKey\":\"unified-patch-secret\"}")
+            }
+            #expect(unifiedPatch.status == .ok)
+            #expect((unifiedPatch.body.string ?? "").contains("unified-patch-secret") == false)
+            let patched = try JSONSerialization.jsonObject(with: Data((unifiedPatch.body.string ?? "").utf8)) as? [String: Any]
+            #expect(patched?["name"] as? String == "Patched Team DeepSeek")
+            #expect(patched?["credentialVersion"] as? Int == 3)
+            #expect(patched?["status"] as? String == "unchecked")
         }
     }
 }
