@@ -280,6 +280,40 @@ public final class OAuthLedger: @unchecked Sendable {
         }
     }
 
+    /// `POST /api/oauth/installations/lookup`. The authenticated client is the
+    /// App boundary; a miss never discloses another App's installation.
+    public func installationLookup(authorization: String?, body: String) -> HTTPReply {
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        var fields: [String: String] = [:]
+        if let value = object?["client_id"] as? String { fields["client_id"] = value }
+        if let value = object?["client_secret"] as? String { fields["client_secret"] = value }
+        guard let credentials = clientCredentials(authorization: authorization, fields: fields) else {
+            return json(401, "{\"error\":\"Client credentials are required\"}", cacheControl: "private, no-store")
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let client = clients.first(where: {
+            $0.clientId == credentials.clientId && isUserManaged($0) && $0.secretHash == sha256(credentials.clientSecret)
+        }) else {
+            return json(401, "{\"error\":\"Invalid client credentials\"}", cacheControl: "private, no-store")
+        }
+        let raw = object?["server_id"] ?? object?["serverId"]
+        let serverId = (raw as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !serverId.isEmpty else {
+            return json(400, "{\"error\":\"server_id is required\"}", cacheControl: "private, no-store")
+        }
+        guard serverId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
+            return json(400, "{\"error\":\"server_id must be a Server ID\"}", cacheControl: "private, no-store")
+        }
+        guard let installation = installations.first(where: {
+            $0.clientId == client.id && $0.serverId == serverId && $0.status == "active"
+        }) else {
+            return json(404, "{\"error\":\"Active installation not found\"}", cacheControl: "private, no-store")
+        }
+        let document = "{\"installation_id\":\(jsonString(installation.id)),\"server_id\":\(jsonString(installation.serverId)),\"setup\":{\"status\":\"not_required\",\"url\":null,\"description\":null,\"revision\":1,\"completedAt\":null}}"
+        return json(200, document, cacheControl: "private, no-store")
+    }
+
     /// `POST /api/oauth/token`. Form fields, camelCase JSON, and HTTP Basic all name the same client.
     public func exchangeToken(authorization: String?, body: String, issuer: String) -> HTTPReply {
         let fields = tokenFields(body)
