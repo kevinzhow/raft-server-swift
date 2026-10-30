@@ -6546,6 +6546,65 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var apiKey: String?
     }
 
+    public func serverScopeAttestation(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let scope = object["scope"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"Invalid scope attestation request\"}")
+        }
+        let audience: String
+        let resource: String
+        switch scope {
+        case "web-trace-batch:create":
+            audience = "trace-ingest-worker"
+            resource = "servers/\(serverId)/web-traces"
+        case "feedback-report:create":
+            guard role == "owner" || role == "admin" else {
+                return Self.json(403, "{\"error\":\"Forbidden\"}")
+            }
+            audience = "feedback-worker"
+            resource = "servers/\(serverId)/feedback-reports"
+        default:
+            return Self.json(400, "{\"error\":\"Unknown scope\"}")
+        }
+        let expiresAt = Date().addingTimeInterval(300)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let header = ["alg": "HS256", "typ": "JWT"]
+        let claims: [String: Any] = [
+            "scope": scope,
+            "actorType": "user",
+            "sub": userId,
+            "serverId": serverId,
+            "aud": audience,
+            "resource": resource,
+            "exp": Int(expiresAt.timeIntervalSince1970),
+        ]
+        let secret = ProcessInfo.processInfo.environment["SCOPE_ATTESTATION_SECRET"] ?? "scope-attestation-default-secret"
+        let token = Self.signHS256(header: header, claims: claims, secret: secret)
+        return Self.json(200, "{\"attestation\":\(jsonString(token)),\"scope\":\(jsonString(scope)),\"audience\":\(jsonString(audience)),\"resource\":\(jsonString(resource)),\"expiresAt\":\(jsonString(formatter.string(from: expiresAt)))}")
+    }
+
+    private static func signHS256(header: [String: Any], claims: [String: Any], secret: String) -> String {
+        func base64url(_ data: Data) -> String {
+            data.base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+        }
+        let headerJSON = (try? JSONSerialization.data(withJSONObject: header, options: [.sortedKeys])) ?? Data("{}".utf8)
+        let claimsJSON = (try? JSONSerialization.data(withJSONObject: claims, options: [.sortedKeys])) ?? Data("{}".utf8)
+        let signingInput = "\(base64url(headerJSON)).\(base64url(claimsJSON))"
+        let mac = Data(HMAC<SHA256>.authenticationCode(for: Data(signingInput.utf8), using: SymmetricKey(data: Data(secret.utf8))))
+        return "\(signingInput).\(base64url(mac))"
+    }
+
     public func putServerAgreement(authorization: String?, serverId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

@@ -775,6 +775,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             rawQuery: request.url.query
         ))
     }
+    app.post("api", "servers", ":id", "scope-attestation") { request -> Response in
+        routeResponse(services.emailAccounts.serverScopeAttestation(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("api", "servers", ":id", "agreement") { request -> Response in
         routeResponse(services.emailAccounts.getServerAgreement(
             authorization: request.headers[.authorization],
