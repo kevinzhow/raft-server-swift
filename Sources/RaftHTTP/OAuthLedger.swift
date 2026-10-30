@@ -256,6 +256,14 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func setClientAllowedScopes(clientRecordId: String, scopes: [String]?) {
+        lock.lock()
+        if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
+            clients[index].allowedScopes = scopes
+        }
+        lock.unlock()
+    }
+
     public func accessTokenCount(requestId: String) -> Int {
         lock.lock()
         defer { lock.unlock() }

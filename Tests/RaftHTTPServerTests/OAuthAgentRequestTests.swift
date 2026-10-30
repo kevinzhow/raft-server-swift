@@ -141,3 +141,47 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
         }
     }
 }
+
+@Test func agentInboundScopeNeedsAnExplicitClientDeclaration() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111223"
+    let serverId = "33333333-3333-4333-8333-333333333417"
+    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-inbound-223", name: "OAuth Inbound Scope", ownerId: ownerId)
+    _ = accounts.oauth.createAgent(serverId: serverId, name: "OauthInboundScopeBot")
+    let created = try accounts.oauth.createClient(
+        serverId: serverId,
+        createdByUserId: ownerId,
+        name: "OAuth Inbound Client",
+        clientId: "oauth-inbound-223"
+    )
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.contentType] = "application/json"
+            func request() async throws -> ClientResponse {
+                try await client.send(.post, headers: headers, to: "/api/oauth/requests/agent") { request in
+                    request.body = .init(string: "{\"clientId\":\"\(created.clientId)\",\"clientSecret\":\"\(created.clientSecret)\",\"serverSlug\":\"oauth-inbound-223\",\"agentName\":\"OauthInboundScopeBot\",\"scopes\":[\"openid\",\"agent:event:write\"]}")
+                }
+            }
+
+            let rejected = try await request()
+            #expect(rejected.status == .badRequest)
+            #expect(try agentRequestBody(rejected)["error"] as? String == "invalid_scope")
+
+            accounts.oauth.setClientAllowedScopes(
+                clientRecordId: created.id,
+                scopes: ["openid", "profile", "identity", "agent:event:write"]
+            )
+            let accepted = try await request()
+            #expect(accepted.status == .ok)
+            #expect(try agentRequestBody(accepted)["scopes"] as? [String] == ["agent:event:write", "openid"])
+        }
+    }
+}
