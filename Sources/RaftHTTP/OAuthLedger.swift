@@ -467,6 +467,15 @@ public final class OAuthLedger: @unchecked Sendable {
         public var prefsVersion: Int = 0
     }
 
+    @discardableResult
+    public func setChannelType(id: String, type: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = channelRecords.firstIndex(where: { $0.id == id }) else { return false }
+        channelRecords[index].type = type
+        return true
+    }
+
     public func allChannelId(serverId: String) -> String? {
         lock.lock()
         defer { lock.unlock() }

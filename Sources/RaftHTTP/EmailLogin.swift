@@ -6544,6 +6544,23 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var apiKey: String?
     }
 
+    public func setAllChannelVisibility(authorization: String?, serverId: String, visible: Bool) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard let allChannelId = oauth.allChannelId(serverId: serverId) else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        oauth.setChannelType(id: allChannelId, type: visible ? "channel" : "private")
+        return Self.json(200, "{\"id\":\(jsonString(allChannelId)),\"visible\":\(visible)}")
+    }
+
     public func createDirectChannelRoute(authorization: String?, serverId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

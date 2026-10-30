@@ -597,6 +597,20 @@ public func configure(_ app: Application, services: FallbackServices) {
             agentId: request.parameters.get("id") ?? ""
         ))
     }
+    app.post("api", "channels", "system", "all", "hide") { request -> Response in
+        routeResponse(services.emailAccounts.setAllChannelVisibility(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            visible: false
+        ))
+    }
+    app.post("api", "channels", "system", "all", "restore") { request -> Response in
+        routeResponse(services.emailAccounts.setAllChannelVisibility(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            visible: true
+        ))
+    }
     app.post("api", "channels", "dm") { request -> Response in
         routeResponse(services.emailAccounts.createDirectChannelRoute(
             authorization: request.headers[.authorization],
