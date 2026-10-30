@@ -198,6 +198,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var providerAssignments: [ProviderAssignment] = []
     private var pushRegistrations: [PushRegistration] = []
     public var fcmPushAvailable = true
+    public var webPushEnabled = true
+    private var webPushSubscriptions: [WebPushSubscription] = []
     /// `MOBILE_APP_EMAIL_UNSUBSCRIBE_SECRET`, or `JWT_SECRET`. The test harness uses `test-jwt-secret`.
     public var mobileAppEmailUnsubscribeSecret: String = "test-jwt-secret"
     /// Cancels one scheduled mobile-app lifecycle email. Unset means there is no provider call to make.
@@ -6256,6 +6258,56 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"revoke_capability\":\(jsonString(revokeCapability)),\"registration\":\(registration)}")
     }
 
+    public func webPushEndpoints(userId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return webPushSubscriptions.filter { $0.userId == userId }.map { $0.endpoint }
+    }
+
+    public func recordWebPushSubscription(authorization: String?, body: String) -> HTTPReply {
+        guard let principal = pushPrincipal(authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let endpoint = object["endpoint"] as? String,
+              Self.isPublicHTTPSPushEndpoint(endpoint),
+              let keys = object["keys"] as? [String: Any],
+              let p256dh = keys["p256dh"] as? String, !p256dh.isEmpty,
+              let auth = keys["auth"] as? String, !auth.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"Invalid push subscription\"}")
+        }
+        lock.lock()
+        if !webPushSubscriptions.contains(where: { $0.userId == principal.userId && $0.endpoint == endpoint }) {
+            webPushSubscriptions.append(WebPushSubscription(userId: principal.userId, endpoint: endpoint))
+        }
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    private static func isPublicHTTPSPushEndpoint(_ value: String) -> Bool {
+        guard let components = URLComponents(string: value),
+              components.scheme?.lowercased() == "https",
+              let host = components.host?.lowercased(), !host.isEmpty,
+              components.user == nil,
+              components.password == nil
+        else { return false }
+        if host == "localhost" || host.hasSuffix(".local") || host.hasSuffix(".internal") {
+            return false
+        }
+        if host.contains(":") { return false }
+        let octets = host.split(separator: ".")
+        if octets.count == 4, octets.allSatisfy({ UInt8($0) != nil }) {
+            guard let first = UInt8(octets[0]), let second = UInt8(octets[1]) else { return false }
+            if first == 10 || first == 127 || first == 0 { return false }
+            if first == 172, (16...31).contains(second) { return false }
+            if first == 192, second == 168 { return false }
+            if first == 169, second == 254 { return false }
+            return false
+        }
+        return true
+    }
+
     public func revokePushFamily(body: String) -> HTTPReply {
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
               let capability = object["capability"] as? String
@@ -6457,6 +6509,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         providerAssignments.removeAll { $0.connectionId == connectionId && $0.serverId == serverId }
         lock.unlock()
         return Self.json(200, "{\"ok\":true}")
+    }
+
+    private struct WebPushSubscription: Sendable {
+        var userId: String
+        var endpoint: String
     }
 
     public struct PushRegistration: Sendable {
