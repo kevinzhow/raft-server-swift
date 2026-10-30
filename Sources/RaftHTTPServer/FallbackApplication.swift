@@ -582,6 +582,21 @@ public func configure(_ app: Application, services: FallbackServices) {
             baseURL: services.emailAccounts.serverURL
         ))
     }
+    app.get("api", "product-events", "config") { request -> Response in
+        routeResponse(services.emailAccounts.clientEventsConfig(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+        ))
+    }
+    app.post("api", "product-events", "batch") { request -> Response in
+        routeResponse(services.emailAccounts.clientEventsBatch(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            userAgent: request.headers[HTTPField.Name("User-Agent")!] ?? "",
+            country: request.headers[HTTPField.Name("CloudFront-Viewer-Country")!] ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.post("api", "product-events", "onboarding-wizard") { request -> Response in
         routeResponse(services.emailAccounts.recordOnboardingWizard(
             authorization: request.headers[.authorization],

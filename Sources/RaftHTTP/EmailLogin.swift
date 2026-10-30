@@ -105,6 +105,16 @@ public struct RecordedProductEvent: Sendable {
     public var metadataJSON: String
 }
 
+public struct ClientEventRecord: Sendable {
+    public var event: String
+    public var analyticsId: String
+    public var serverId: String
+    public var source: String
+    public var sessionId: String
+    public var appVersion: String?
+    public var propertiesJSON: String
+}
+
 /// `POST /api/auth/login`.
 ///
 /// A non-string or empty email or password is refused before any account lookup.
@@ -115,6 +125,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var accounts: [String: Account] = [:]
     private var analyticsIds: [String: String] = [:]
     private var productEventRecords: [RecordedProductEvent] = []
+    private var clientEventRecords: [ClientEventRecord] = []
+    private var seenClientEventIDs: Set<String> = []
     private var sessions: [String: LiveSession] = [:]
     private var rotationReceipts: [String: RotationReceipt] = [:]
     private var revokedFamilies: Set<String> = []
@@ -5811,6 +5823,160 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return productEventRecords.filter { $0.subjectId == subjectId }
+    }
+
+    /// `GET /api/product-events/config`.
+    public func clientEventsConfig(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        let allowed = accounts.values.first(where: { $0.id == userId })?.shareUsageData == true
+        lock.unlock()
+        return Self.json(200, "{\"clientEventsAllowed\":\(allowed)}")
+    }
+
+    public func recordedClientEvents(serverId: String) -> [ClientEventRecord] {
+        lock.lock()
+        defer { lock.unlock() }
+        return clientEventRecords.filter { $0.serverId == serverId }
+    }
+
+    /// `POST /api/product-events/batch`.
+    public func clientEventsBatch(
+        authorization: String?,
+        serverId: String,
+        userAgent: String,
+        country: String,
+        body: String
+    ) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        let allowed = accounts.values.first(where: { $0.id == userId })?.shareUsageData == true
+        lock.unlock()
+        guard allowed else {
+            return Self.json(202, "{\"accepted\":0}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              object["source"] as? String == "web",
+              let events = object["events"] as? [[String: Any]], !events.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"Invalid event batch\"}")
+        }
+        let appVersion = object["app_version"] as? String
+        if let appVersion, appVersion.wholeMatch(of: /^[0-9]+\.[0-9]+\.[0-9]+$/) == nil {
+            return Self.json(400, "{\"error\":\"Invalid app_version\"}")
+        }
+        let uuidPattern = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plainFormatter = ISO8601DateFormatter()
+        let now = Date()
+        var rows: [ClientEventRecord] = []
+        var batchSeen: Set<String> = []
+        for event in events {
+            guard let uuid = event["uuid"] as? String, uuid.wholeMatch(of: uuidPattern) != nil,
+                  let name = event["event"] as? String,
+                  let timestamp = event["timestamp"] as? String,
+                  let parsed = formatter.date(from: timestamp) ?? plainFormatter.date(from: timestamp),
+                  let session = event["client_session_id"] as? String,
+                  session.wholeMatch(of: uuidPattern) != nil,
+                  let properties = event["properties"] as? [String: Any]
+            else {
+                return Self.json(400, "{\"error\":\"Invalid event batch\"}")
+            }
+            if now.timeIntervalSince(parsed) > 7 * 24 * 60 * 60 { continue }
+            if seenClientEventIDs.contains(uuid) || !batchSeen.insert(uuid).inserted { continue }
+            var sanitized: [String: Any] = [:]
+            let allowedKeys: Set<String>
+            if name == "activity_open" {
+                allowedKeys = ["from"]
+            } else if name == "activity_mark" {
+                allowedKeys = ["action"]
+            } else {
+                continue
+            }
+            guard Set(properties.keys).isSubset(of: allowedKeys) else { continue }
+            for (key, value) in properties {
+                if let text = value as? String { sanitized[key] = text }
+            }
+            for (key, value) in Self.deviceContext(userAgent: userAgent, country: country) {
+                sanitized[key] = value
+            }
+            let propertiesJSON: String
+            if let data = try? JSONSerialization.data(withJSONObject: sanitized, options: [.sortedKeys]) {
+                propertiesJSON = String(decoding: data, as: UTF8.self)
+            } else {
+                propertiesJSON = "{}"
+            }
+            let analyticsId: String
+            lock.lock()
+            if let existing = analyticsIds[userId] {
+                analyticsId = existing
+            } else {
+                let minted = UUID().uuidString.lowercased()
+                analyticsIds[userId] = minted
+                analyticsId = minted
+            }
+            lock.unlock()
+            rows.append(ClientEventRecord(
+                event: name,
+                analyticsId: analyticsId,
+                serverId: serverId,
+                source: "web",
+                sessionId: session,
+                appVersion: appVersion,
+                propertiesJSON: propertiesJSON
+            ))
+        }
+        lock.lock()
+        for row in rows {
+            clientEventRecords.append(row)
+        }
+        for event in events {
+            if let uuid = event["uuid"] as? String, uuid.wholeMatch(of: uuidPattern) != nil {
+                seenClientEventIDs.insert(uuid)
+            }
+        }
+        lock.unlock()
+        return Self.json(202, "{\"accepted\":\(rows.count)}")
+    }
+
+    private static func deviceContext(userAgent: String, country: String) -> [String: Any] {
+        var context: [String: Any] = [:]
+        if let range = userAgent.range(of: "Chrome/") {
+            let rest = userAgent[range.upperBound...]
+            let major = rest.prefix(while: { $0 != "." && !$0.isWhitespace })
+            context["$browser"] = "chrome"
+            if let version = Int(major) { context["$browser_version"] = version }
+        } else if userAgent.contains("Firefox/") {
+            context["$browser"] = "firefox"
+        } else if userAgent.contains("Safari/") {
+            context["$browser"] = "safari"
+        } else {
+            context["$browser"] = "unknown"
+        }
+        if userAgent.contains("Windows") {
+            context["$os"] = "windows"
+        } else if userAgent.contains("Mac OS X") {
+            context["$os"] = "macos"
+        } else if userAgent.contains("Android") {
+            context["$os"] = "android"
+        } else if userAgent.contains("iPhone") || userAgent.contains("iPad") {
+            context["$os"] = "ios"
+        } else if userAgent.contains("Linux") {
+            context["$os"] = "linux"
+        } else {
+            context["$os"] = "unknown"
+        }
+        context["$device_type"] = userAgent.contains("Mobile") ? "mobile" : "desktop"
+        let normalizedCountry = country.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if normalizedCountry.wholeMatch(of: /^[A-Z]{2}$/) != nil {
+            context["$country"] = normalizedCountry
+        }
+        return context
     }
 
     /// `POST /api/product-events/onboarding-wizard`.
