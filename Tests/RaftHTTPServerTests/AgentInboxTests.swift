@@ -193,3 +193,58 @@ private func inboxObject(_ response: ClientResponse) throws -> [String: Any] {
         }
     }
 }
+
+@Test func unboundAgentIdentityTokenCannotPostEvents() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111229"
+    let serverId = "33333333-3333-4333-8333-333333333423"
+    accounts.oauth.addOwnedServer(id: serverId, slug: "agent-reject-229", name: "OAuth Agent Event Reject", ownerId: ownerId)
+    _ = accounts.oauth.createAgent(serverId: serverId, name: "OauthEventRejectBot")
+    let created = try accounts.oauth.createClient(
+        serverId: serverId,
+        createdByUserId: ownerId,
+        name: "OAuth Event Reject Client",
+        clientId: "agent-reject-229"
+    )
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.contentType] = "application/json"
+            let requested = try await client.send(.post, headers: headers, to: "/api/oauth/requests/agent") { request in
+                request.body = .init(string: "{\"clientId\":\"\(created.clientId)\",\"clientSecret\":\"\(created.clientSecret)\",\"serverSlug\":\"agent-reject-229\",\"agentName\":\"OauthEventRejectBot\",\"scopes\":[\"openid\",\"profile\"]}")
+            }
+            #expect(requested.status == .ok)
+            let requestId = try inboxObject(requested)["requestId"] as? String ?? ""
+            let tokenBody: [String: Any] = [
+                "clientId": created.clientId,
+                "clientSecret": created.clientSecret,
+                "grantType": "urn:slock:grant-type:agent_request",
+                "requestId": requestId,
+            ]
+            let tokenData = try JSONSerialization.data(withJSONObject: tokenBody)
+            let exchanged = try await client.send(.post, headers: headers, to: "/api/oauth/token") { request in
+                request.body = .init(string: String(decoding: tokenData, as: UTF8.self))
+            }
+            #expect(exchanged.status == .ok)
+            let accessToken = try inboxObject(exchanged)["access_token"] as? String ?? ""
+
+            var eventHeaders = HTTPFields()
+            eventHeaders[.contentType] = "application/json"
+            eventHeaders[.authorization] = "Bearer \(accessToken)"
+            let posted = try await client.send(.post, headers: eventHeaders, to: "/api/oauth/agent-events") { request in
+                request.body = .init(string: "{\"kind\":\"event\",\"summary\":\"Should not deliver\",\"payload\":{}}")
+            }
+            #expect(posted.status == .forbidden)
+            let body = try inboxObject(posted)
+            #expect(body["error"] as? String == "resource-bound token required")
+            #expect(body["resource"] as? String == "urn:raft:server:\(serverId):agent-inbound")
+        }
+    }
+}
