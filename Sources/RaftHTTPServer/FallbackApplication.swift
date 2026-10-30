@@ -784,6 +784,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("api", "servers", ":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "mention-delivery", ":messageId", "redrive") { request -> Response in
+        routeResponse(services.emailAccounts.redriveMentionDelivery(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            agentId: request.parameters.get("agentId") ?? ""
+        ))
+    }
     app.post("api", "servers", ":id", "scope-attestation") { request -> Response in
         routeResponse(services.emailAccounts.serverScopeAttestation(
             authorization: request.headers[.authorization],

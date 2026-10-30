@@ -6546,6 +6546,22 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var apiKey: String?
     }
 
+    public func redriveMentionDelivery(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId),
+              let agent = oauth.agentRuntimeInfo(id: agentId),
+              agent.serverId == serverId, !agent.deleted
+        else {
+            return Self.json(404, "{\"status\":\"NOT_ACCESSIBLE\"}")
+        }
+        guard role == "owner" || role == "admin" || agent.creatorUserId == userId else {
+            return Self.json(404, "{\"status\":\"NOT_ACCESSIBLE\"}")
+        }
+        return Self.json(404, "{\"status\":\"NOT_JOINABLE\"}")
+    }
+
     public func submitTranscriptFeedback(
         authorization: String?,
         serverId: String,
