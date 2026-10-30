@@ -68,3 +68,107 @@ private func lookupObject(_ response: ClientResponse) throws -> [String: Any] {
         }
     }
 }
+
+@Test func installationLookupHidesOtherClientsAndInactiveInstalls() async throws {
+    let accounts = EmailLoginDirectory()
+    let userId = "11111111-1111-4111-8111-111111111202"
+    let publisherServerId = "33333333-3333-4333-8333-333333333395"
+    let targetServerId = "33333333-3333-4333-8333-333333333396"
+    let otherServerId = "33333333-3333-4333-8333-333333333397"
+    accounts.addAccount(id: userId, email: "oauth-lookup-202@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: userId)
+    accounts.oauth.addOwnedServer(id: publisherServerId, slug: "oauth-lookup-publisher-202", name: "OAuth Lookup Publisher", ownerId: userId)
+    accounts.oauth.addOwnedServer(id: targetServerId, slug: "oauth-lookup-target-202", name: "OAuth Lookup Target", ownerId: userId)
+    accounts.oauth.addOwnedServer(id: otherServerId, slug: "oauth-lookup-other-202", name: "OAuth Lookup Other", ownerId: userId)
+    let primary = try accounts.oauth.createClient(
+        serverId: publisherServerId,
+        createdByUserId: userId,
+        name: "OAuth Lookup Primary",
+        clientId: "oauth-lookup-primary-202",
+        appType: "third_party_global"
+    )
+    let other = try accounts.oauth.createClient(
+        serverId: publisherServerId,
+        createdByUserId: userId,
+        name: "OAuth Lookup Other",
+        clientId: "oauth-lookup-other-202",
+        appType: "third_party_global"
+    )
+    let serverLocal = try accounts.oauth.createClient(
+        serverId: targetServerId,
+        createdByUserId: userId,
+        name: "OAuth Lookup Server Local",
+        clientId: "oauth-lookup-local-202",
+        appType: "server_local"
+    )
+    let installationId = accounts.oauth.installClient(
+        serverId: targetServerId,
+        clientRecordId: primary.id,
+        installedByUserId: userId,
+        groups: ["server"]
+    )
+    _ = accounts.oauth.installClient(
+        serverId: targetServerId,
+        clientRecordId: serverLocal.id,
+        installedByUserId: userId,
+        groups: []
+    )
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            func lookup(
+                _ clientId: String,
+                _ secret: String,
+                serverId: String,
+                extra: String = ""
+            ) async throws -> ClientResponse {
+                let pair = Data("\(clientId):\(secret)".utf8).base64EncodedString()
+                var headers = HTTPFields()
+                headers[.authorization] = "Basic \(pair)"
+                headers[.contentType] = "application/json"
+                return try await client.send(.post, headers: headers, to: "/api/oauth/installations/lookup") { request in
+                    request.body = .init(string: "{\"server_id\":\"\(serverId)\"\(extra)}")
+                }
+            }
+
+            let crossServer = try await lookup(primary.clientId, primary.clientSecret, serverId: otherServerId)
+            #expect(crossServer.status == .notFound)
+            #expect(try lookupObject(crossServer)["error"] as? String == "Active installation not found")
+
+            let crossClient = try await lookup(
+                other.clientId,
+                other.clientSecret,
+                serverId: targetServerId,
+                extra: ",\"client_id\":\"\(primary.clientId)\""
+            )
+            #expect(crossClient.status == .notFound)
+            #expect(try lookupObject(crossClient)["error"] as? String == "Active installation not found")
+
+            accounts.oauth.setInstallationStatus(id: installationId, status: "suspended")
+            let suspended = try await lookup(primary.clientId, primary.clientSecret, serverId: targetServerId)
+            #expect(suspended.status == .notFound)
+            #expect(try lookupObject(suspended)["error"] as? String == "Active installation not found")
+
+            accounts.oauth.setInstallationStatus(id: installationId, status: "active")
+            accounts.oauth.setClientEnabled(clientRecordId: primary.id, enabled: false)
+            let disabledApp = try await lookup(primary.clientId, primary.clientSecret, serverId: targetServerId)
+            #expect(disabledApp.status == .unauthorized)
+
+            accounts.oauth.setClientEnabled(clientRecordId: primary.id, enabled: true)
+            accounts.oauth.setClientEnabled(clientRecordId: serverLocal.id, enabled: false)
+            let disabledServerLocal = try await lookup(serverLocal.clientId, serverLocal.clientSecret, serverId: targetServerId)
+            #expect(disabledServerLocal.status == .notFound)
+            #expect(try lookupObject(disabledServerLocal)["error"] as? String == "Active installation not found")
+
+            let malformed = try await lookup(primary.clientId, primary.clientSecret, serverId: "not-a-server-id")
+            #expect(malformed.status == .badRequest)
+            #expect(try lookupObject(malformed)["error"] as? String == "server_id must be a Server ID")
+        }
+    }
+}

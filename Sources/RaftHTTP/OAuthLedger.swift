@@ -132,6 +132,22 @@ public final class OAuthLedger: @unchecked Sendable {
         return installationTokens.filter { $0.clientId == clientRecordId }.count
     }
 
+    public func setInstallationStatus(id: String, status: String) {
+        lock.lock()
+        if let index = installations.firstIndex(where: { $0.id == id }) {
+            installations[index].status = status
+        }
+        lock.unlock()
+    }
+
+    public func setClientEnabled(clientRecordId: String, enabled: Bool) {
+        lock.lock()
+        if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
+            clients[index].enabled = enabled
+        }
+        lock.unlock()
+    }
+
     public func accessTokenCount(requestId: String) -> Int {
         lock.lock()
         defer { lock.unlock() }
@@ -150,7 +166,7 @@ public final class OAuthLedger: @unchecked Sendable {
         }
         lock.lock()
         guard let client = clients.first(where: {
-            $0.clientId == credentials.clientId && isUserManaged($0) && $0.secretHash == sha256(credentials.clientSecret)
+            $0.clientId == credentials.clientId && isUserManaged($0) && $0.enabled && $0.secretHash == sha256(credentials.clientSecret)
         }) else {
             lock.unlock()
             return json(401, "{\"error\":\"Invalid client credentials\"}", cacheControl: "private, no-store")
@@ -293,7 +309,10 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let client = clients.first(where: {
-            $0.clientId == credentials.clientId && isUserManaged($0) && $0.secretHash == sha256(credentials.clientSecret)
+            $0.clientId == credentials.clientId
+                && isUserManaged($0)
+                && ($0.appType != "third_party_global" || $0.enabled)
+                && $0.secretHash == sha256(credentials.clientSecret)
         }) else {
             return json(401, "{\"error\":\"Invalid client credentials\"}", cacheControl: "private, no-store")
         }
@@ -304,6 +323,9 @@ public final class OAuthLedger: @unchecked Sendable {
         }
         guard serverId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
             return json(400, "{\"error\":\"server_id must be a Server ID\"}", cacheControl: "private, no-store")
+        }
+        guard client.enabled else {
+            return json(404, "{\"error\":\"Active installation not found\"}", cacheControl: "private, no-store")
         }
         guard let installation = installations.first(where: {
             $0.clientId == client.id && $0.serverId == serverId && $0.status == "active"
@@ -530,7 +552,8 @@ public final class OAuthLedger: @unchecked Sendable {
             return nil
         }
         guard let client = clients.first(where: { $0.id == record.clientId }),
-              isUserManaged(client)
+              isUserManaged(client),
+              client.enabled
         else {
             return nil
         }
@@ -617,7 +640,7 @@ public final class OAuthLedger: @unchecked Sendable {
     /// Mirrors `oauthClientIsUserManagedPredicate`: the tombstone class and
     /// any platform registration both remove installation authority.
     private func isUserManaged(_ client: Client) -> Bool {
-        client.enabled && client.appType != "slock_builtin" && client.externalProvider == nil
+        client.appType != "slock_builtin" && client.externalProvider == nil
     }
 
     private struct InstallationToken {
