@@ -752,8 +752,14 @@ public final class OAuthLedger: @unchecked Sendable {
         }
         lock.lock()
         defer { lock.unlock() }
-        guard let client = clients.first(where: {
-            $0.clientId == clientKey.trimmingCharacters(in: .whitespacesAndNewlines) && $0.appType == "server_local" && $0.serverId == serverId && $0.appType != "slock_builtin"
+        guard let client = clients.first(where: { candidate in
+            guard candidate.clientId == clientKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                  isUserManaged(candidate)
+            else { return false }
+            if candidate.appType == "server_local" && candidate.serverId == serverId { return true }
+            return candidate.appType == "third_party_global" && installations.contains(where: {
+                $0.clientId == candidate.id && $0.serverId == serverId && $0.status == "active"
+            })
         }) else {
             return json(404, "{\"error\":\"OAuth client not found for server\"}")
         }
