@@ -93,7 +93,8 @@ public final class OAuthLedger: @unchecked Sendable {
 
     /// The URL-safe key the pixel avatar route uses.
     public static func pixelAvatarKey(_ avatar: String) -> String {
-        Data(avatar.utf8).base64EncodedString()
+        let key = avatar.hasPrefix("pixel:") ? String(avatar.dropFirst("pixel:".count)) : avatar
+        return Data(key.utf8).base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")

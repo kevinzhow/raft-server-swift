@@ -576,6 +576,28 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("api", "app-installation", "channels") { request -> Response in
         routeResponse(services.emailAccounts.oauth.appInstallationChannels(authorization: request.headers[.authorization]))
     }
+    app.get("api", "avatars", "pixel", ":file") { request -> Response in
+        let file = request.parameters.get("file") ?? ""
+        guard file.hasSuffix(".svg") else {
+            return pixelAvatarError(400, "Invalid pixel avatar key")
+        }
+        guard let key = PixelAvatars.decode(String(file.dropLast(4))) else {
+            return pixelAvatarError(400, "Invalid pixel avatar key")
+        }
+        guard let svg = PixelAvatars.render(key: key) else {
+            return pixelAvatarError(404, "Pixel avatar not found")
+        }
+        return routeResponse(HTTPReply(
+            status: 200,
+            headers: [
+                "X-Robots-Tag": AppFallback.robotsTag,
+                "Content-Type": "image/svg+xml; charset=utf-8",
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "Content-Length": String(Data(svg.utf8).count),
+            ],
+            body: svg
+        ))
+    }
     app.post("api", "oauth", "installations", "lookup") { request -> Response in
         routeResponse(services.emailAccounts.oauth.installationLookup(
             authorization: request.headers[.authorization],
@@ -870,6 +892,19 @@ private struct FallbackMiddleware: Middleware {
             }
         }
     }
+}
+
+private func pixelAvatarError(_ status: Int, _ error: String) -> Response {
+    let body = "{\"error\":\"\(error)\"}"
+    return routeResponse(HTTPReply(
+        status: status,
+        headers: [
+            "X-Robots-Tag": AppFallback.robotsTag,
+            "Content-Type": AppFallback.jsonContentType,
+            "Content-Length": String(Data(body.utf8).count),
+        ],
+        body: body
+    ))
 }
 
 private func publicMessageWindow(_ query: String?) -> (limit: Int, before: String?)? {

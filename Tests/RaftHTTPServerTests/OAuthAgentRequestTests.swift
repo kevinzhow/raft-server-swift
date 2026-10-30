@@ -75,6 +75,24 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
             #expect(body["picture"] as? String == "http://localhost:3001/api/avatars/pixel/\(OAuthLedger.pixelAvatarKey(avatarUrl)).svg")
             #expect(body["description"] == nil || body["description"] is NSNull)
 
+            let picturePath = (body["picture"] as? String ?? "")
+                .replacingOccurrences(of: "http://localhost:3001", with: "")
+            let picture = try await client.send(.get, headers: HTTPFields(), to: "\(picturePath)")
+            #expect(picture.status == .ok)
+            #expect((picture.headers[HTTPField.Name("Content-Type")!] ?? "").hasPrefix("image/svg+xml"))
+            #expect(picture.headers[HTTPField.Name("Cache-Control")!] == "public, max-age=31536000, immutable")
+            let svg = picture.body.string ?? ""
+            #expect(svg.hasPrefix("<svg "))
+            #expect(svg.contains("shape-rendering=\"crispEdges\""))
+
+            let namedKey = OAuthLedger.pixelAvatarKey("pixel:cat")
+            let named = try await client.send(
+                .get,
+                headers: HTTPFields(),
+                to: "/api/avatars/pixel/\(namedKey).svg"
+            )
+            #expect(named.status == .ok)
+
             accounts.oauth.setAgentRole(serverId: serverId, agentId: agentId, role: "admin")
             #expect(try agentRequestBody(try await client.send(.get, headers: userinfoHeaders, to: "/api/oauth/userinfo"))["server_role"] as? String == "admin")
             accounts.oauth.setAgentRole(serverId: serverId, agentId: agentId, role: "member")
