@@ -138,6 +138,44 @@ public final class OAuthLedger: @unchecked Sendable {
         public var deleted: Bool
     }
 
+    public struct ManageableAgent: Sendable {
+        public var id: String
+        public var name: String
+        public var serverId: String
+        public var serverName: String?
+    }
+
+    public func manageableAgents(userId: String) -> (agents: [ManageableAgent], serverCount: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        var rows: [ManageableAgent] = []
+        var contributingServers = Set<String>()
+        for key in members.keys {
+            let parts = key.split(separator: "\n", maxSplits: 1).map(String.init)
+            guard parts.count == 2, parts[1] == userId, let server = servers[parts[0]], !server.deleted else { continue }
+            let role = members[key] ?? ""
+            let serverAgents = agents.values.filter { $0.serverId == server.id && !$0.deleted }
+            let visible: [Agent]
+            if role == "owner" || role == "admin" {
+                visible = serverAgents
+            } else {
+                visible = serverAgents.filter { $0.creatorUserId == userId }
+            }
+            if role == "owner" || role == "admin" || !visible.isEmpty {
+                contributingServers.insert(server.id)
+            }
+            for agent in visible {
+                rows.append(ManageableAgent(
+                    id: agent.id,
+                    name: agent.name,
+                    serverId: server.id,
+                    serverName: server.name
+                ))
+            }
+        }
+        return (rows, contributingServers.count)
+    }
+
     public func agentManagementInfo(id: String) -> AgentManagementInfo? {
         lock.lock()
         defer { lock.unlock() }

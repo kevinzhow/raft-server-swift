@@ -514,6 +514,11 @@ public func configure(_ app: Application, services: FallbackServices) {
         }
         return routeResponse(directory.serverList(authorization: request.headers[.authorization]))
     }
+    app.get("api", "agents", "manageable") { request -> Response in
+        routeResponse(services.emailAccounts.manageableAgentList(
+            authorization: request.headers[.authorization]
+        ))
+    }
     app.patch("api", "agents", ":id") { request -> Response in
         routeResponse(services.emailAccounts.patchAgent(
             authorization: request.headers[.authorization],

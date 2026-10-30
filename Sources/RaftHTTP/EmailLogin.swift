@@ -6020,6 +6020,25 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return .denied(Self.json(403, "{\"error\":\"Forbidden\"}"))
     }
 
+    public func manageableAgentList(authorization: String?) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        let result = oauth.manageableAgents(userId: userId)
+        let rows = result.agents.map { agent in
+            "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"serverId\":\(jsonString(agent.serverId)),\"serverName\":\(agent.serverName.map { jsonString($0) } ?? "null")}"
+        }.joined(separator: ",")
+        let reason: String
+        if !result.agents.isEmpty {
+            reason = "ok"
+        } else if result.serverCount > 0 {
+            reason = "no_agents_on_manageable_servers"
+        } else {
+            reason = "no_manageable_server"
+        }
+        return Self.json(200, "{\"ok\":true,\"data\":{\"agents\":[\("\(rows)")],\"reason\":\(jsonString(reason)),\"manageable_server_count\":\(result.serverCount)}}")
+    }
+
     public func patchAgent(authorization: String?, agentId: String, body: String) -> HTTPReply {
         switch agentAuthority(authorization, agentId: agentId) {
         case .denied(let reply):
