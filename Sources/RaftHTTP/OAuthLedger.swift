@@ -139,6 +139,16 @@ public final class OAuthLedger: @unchecked Sendable {
             .replacingOccurrences(of: "=", with: "")
     }
 
+    public func serverIdsForMember(userId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return members.keys.compactMap { key -> String? in
+            let parts = key.split(separator: "\n", maxSplits: 1).map(String.init)
+            guard parts.count == 2, parts[1] == userId else { return nil }
+            return parts[0]
+        }
+    }
+
     public func memberRole(serverId: String, userId: String) -> String? {
         lock.lock()
         defer { lock.unlock() }

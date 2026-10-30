@@ -197,6 +197,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var providerConnections: [ProviderConnection] = []
     private var providerAssignments: [ProviderAssignment] = []
     private var pushRegistrations: [PushRegistration] = []
+    public var fcmPushAvailable = true
     /// `MOBILE_APP_EMAIL_UNSUBSCRIBE_SECRET`, or `JWT_SECRET`. The test harness uses `test-jwt-secret`.
     public var mobileAppEmailUnsubscribeSecret: String = "test-jwt-secret"
     /// Cancels one scheduled mobile-app lifecycle email. Unset means there is no provider call to make.
@@ -6233,6 +6234,25 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
         let registration = "{\"installationId\":\(jsonString(installationId)),\"provider\":\(jsonString(provider)),\"env\":\(jsonString(env)),\"topic\":\(jsonString(topic))}"
         return Self.json(200, "{\"revoke_capability\":\(jsonString(revokeCapability)),\"registration\":\(registration)}")
+    }
+
+    public func pushDeliveryStatus(authorization: String?, installationId: String?) -> HTTPReply {
+        guard let principal = pushPrincipal(authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let installationId, installationId.wholeMatch(of: /^[A-Za-z0-9._:-]{1,128}$/) != nil else {
+            return Self.json(400, "{\"error\":\"Valid installationId is required\"}")
+        }
+        lock.lock()
+        let active = fcmPushAvailable && pushRegistrations.contains {
+            $0.installationId == installationId
+                && $0.provider == "fcm"
+                && $0.userId == principal.userId
+        }
+        lock.unlock()
+        let servers = oauth.serverIdsForMember(userId: principal.userId).sorted()
+        let rows = servers.map { "\"\($0)\":{\"fcmActive\":\(active ? "true" : "false")}" }.joined(separator: ",")
+        return Self.json(200, "{\"servers\":{\(rows)}}")
     }
 
     public func unbindPushInstallation(authorization: String?, serverId: String, installationId: String) -> HTTPReply {
