@@ -73,6 +73,14 @@ private func inboxObject(_ response: ClientResponse) throws -> [String: Any] {
             #expect(hintRows.first?["seq"] == nil || hintRows.first?["seq"] is NSNull)
             #expect(hintRows.first?["wake_reason"] as? String == "message_pending")
 
+            let stream = try await client.send(.get, headers: agentHeaders, to: "/internal/agent-api/wake-hints/stream?since=0")
+            #expect(stream.status == .ok)
+            #expect((stream.headers[HTTPField.Name("Content-Type")!] ?? "").hasPrefix("text/event-stream"))
+            let streamText = stream.body.string ?? ""
+            #expect(streamText.contains(": connected"))
+            #expect(streamText.contains("event: wake-hint"))
+            #expect(streamText.contains("\"message_id\":\"\(eventId)\""))
+
             let events = try await client.send(.get, headers: agentHeaders, to: "/internal/agent-api/events")
             #expect(events.status == .ok)
             let eventRows = try inboxObject(events)["events"] as? [[String: Any]] ?? []

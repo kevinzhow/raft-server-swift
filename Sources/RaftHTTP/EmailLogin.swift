@@ -4329,6 +4329,38 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
+    /// `GET /internal/agent-api/wake-hints/stream`. The SSE projection opens
+    /// with the same pending hints; reading it does not drain the inbox.
+    public func agentWakeHintsStream(authorization: String?, since: String?) -> HTTPReply {
+        switch agentReadCredential(authorization) {
+        case .failure(let reply):
+            return reply
+        case .success(let agentId):
+            let raw = (since ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !raw.isEmpty, raw != "latest" {
+                guard let value = Int(raw), value >= 0 else {
+                    return Self.json(400, "{\"error\":\"since / Last-Event-ID must be a non-negative integer (messageSeq) or 'latest'\",\"code\":\"since_invalid\"}")
+                }
+            }
+            let frames = oauth.pendingThirdPartyEventMessages(agentId: agentId).map { message in
+                let data = "{\"seq\":null,\"message_id\":\(jsonString(message.id)),\"wake_reason\":\"message_pending\"}"
+                return "event: wake-hint\nid: null\ndata: \(data)\n\n"
+            }.joined()
+            let body = ": connected\n\n" + frames
+            return HTTPReply(
+                status: 200,
+                headers: [
+                    "X-Robots-Tag": AppFallback.robotsTag,
+                    "Content-Type": "text/event-stream",
+                    "Cache-Control": "no-cache, no-transform",
+                    "X-Accel-Buffering": "no",
+                    "Content-Length": String(Data(body.utf8).count),
+                ],
+                body: body
+            )
+        }
+    }
+
     private enum AgentRead {
         case failure(HTTPReply)
         case success(String)

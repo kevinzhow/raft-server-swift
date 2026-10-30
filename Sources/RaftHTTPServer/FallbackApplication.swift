@@ -432,6 +432,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             since: desktopQuery(request.url.query, "since")
         ))
     }
+    app.get("internal", "agent-api", "wake-hints", "stream") { request -> Response in
+        routeResponse(services.emailAccounts.agentWakeHintsStream(
+            authorization: request.headers[.authorization],
+            since: desktopQuery(request.url.query, "since")
+        ))
+    }
     app.get("internal", "agent-api", "events") { request -> Response in
         routeResponse(services.emailAccounts.agentThirdPartyEvents(authorization: request.headers[.authorization]))
     }
