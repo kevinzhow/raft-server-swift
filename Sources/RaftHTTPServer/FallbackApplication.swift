@@ -514,6 +514,25 @@ public func configure(_ app: Application, services: FallbackServices) {
         }
         return routeResponse(directory.serverList(authorization: request.headers[.authorization]))
     }
+    app.get("api", "agents") { request -> Response in
+        routeResponse(services.emailAccounts.listServerAgents(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+        ))
+    }
+    app.post("api", "agents") { request -> Response in
+        routeResponse(services.emailAccounts.createAgentRoute(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.get("api", "agents", ":id") { request -> Response in
+        routeResponse(services.emailAccounts.getAgentRoute(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("id") ?? ""
+        ))
+    }
     app.get("api", "agents", "manageable") { request -> Response in
         routeResponse(services.emailAccounts.manageableAgentList(
             authorization: request.headers[.authorization]

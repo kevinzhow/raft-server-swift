@@ -6020,6 +6020,133 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return .denied(Self.json(403, "{\"error\":\"Forbidden\"}"))
     }
 
+    public func createAgentRoute(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role != "guest" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let name = object["name"] as? String, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"Invalid Agent\"}")
+        }
+        let rawConfig = object["runtimeConfig"] as? [String: Any] ?? [:]
+        let config = Self.normalizeRuntimeConfig(rawConfig)
+        let userEnv = (config["envVars"] as? [String: String]) ?? [:]
+        let envVars = Self.derivedAgentEnvVars(config, userEnv: userEnv)
+        let runtime = config["runtime"] as? String ?? "managed"
+        let configJSON = Self.serializeJSON(config)
+        let envJSON = Self.serializeJSON(envVars)
+        let agentId = oauth.createAgent(
+            serverId: serverId,
+            name: name,
+            creatorUserId: userId,
+            runtime: runtime,
+            runtimeConfigJSON: configJSON,
+            envVarsJSON: envJSON
+        )
+        return Self.json(200, Self.agentRuntimeJSON(
+            id: agentId,
+            name: name,
+            runtime: runtime,
+            runtimeConfigJSON: configJSON,
+            envVarsJSON: envJSON
+        ))
+    }
+
+    public func listServerAgents(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let rows = oauth.serverAgents(serverId: serverId).map { agent -> String in
+            let canSeeConfig = role == "owner" || role == "admin" || agent.creatorUserId == userId
+            let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
+            if canSeeConfig {
+                return base + ",\"runtimeConfig\":\(agent.runtimeConfigJSON ?? "null"),\"envVars\":\(agent.envVarsJSON ?? "null")}"
+            }
+            return base + "}"
+        }.joined(separator: ",")
+        return Self.json(200, "[\(rows)]")
+    }
+
+    public func getAgentRoute(authorization: String?, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard agentId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        guard let role = oauth.memberRole(serverId: agent.serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let canSeeConfig = role == "owner" || role == "admin" || agent.creatorUserId == userId
+        let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
+        let body = canSeeConfig
+            ? base + ",\"runtimeConfig\":\(agent.runtimeConfigJSON ?? "null"),\"envVars\":\(agent.envVarsJSON ?? "null")}"
+            : base + "}"
+        return Self.json(200, body)
+    }
+
+    private static func normalizeRuntimeConfig(_ raw: [String: Any]) -> [String: Any] {
+        var config = raw
+        if config["version"] == nil { config["version"] = 1 }
+        if config["mode"] == nil { config["mode"] = ["kind": "default"] }
+        if config["reasoningEffort"] == nil { config["reasoningEffort"] = NSNull() }
+        var userEnv: [String: String] = [:]
+        if let env = config["envVars"] as? [String: String] {
+            for (key, value) in env where !key.hasPrefix("ANTHROPIC_") {
+                userEnv[key] = value
+            }
+        }
+        config["envVars"] = userEnv
+        return config
+    }
+
+    private static func derivedAgentEnvVars(_ config: [String: Any], userEnv: [String: String]) -> [String: String] {
+        var env = userEnv
+        if config["runtime"] as? String == "claude" {
+            if let provider = config["provider"] as? [String: Any], provider["kind"] as? String == "custom" {
+                if let apiUrl = provider["apiUrl"] as? String { env["ANTHROPIC_BASE_URL"] = apiUrl }
+                if let apiKey = provider["apiKey"] as? String { env["ANTHROPIC_API_KEY"] = apiKey }
+            }
+            if let model = config["model"] as? [String: Any], model["kind"] as? String == "custom",
+               let name = model["name"] as? String {
+                env["ANTHROPIC_CUSTOM_MODEL_OPTION"] = name
+            }
+        }
+        return env
+    }
+
+    private static func serializeJSON(_ object: [String: Any]) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
+            return "{}"
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private static func agentRuntimeJSON(
+        id: String,
+        name: String,
+        runtime: String,
+        runtimeConfigJSON: String,
+        envVarsJSON: String
+    ) -> String {
+        let config = (try? JSONSerialization.jsonObject(with: Data(runtimeConfigJSON.utf8))) as? [String: Any] ?? [:]
+        let model = (config["model"] as? [String: Any])?["name"] as? String ?? ""
+        return "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"runtime\":\(jsonString(runtime)),\"model\":\(jsonString(model)),\"envVars\":\(envVarsJSON.isEmpty ? "{}" : envVarsJSON),\"runtimeConfig\":\(runtimeConfigJSON.isEmpty ? "{}" : runtimeConfigJSON)}"
+    }
+
     public func manageableAgentList(authorization: String?) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -6044,13 +6171,31 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         case .denied(let reply):
             return reply
         case .allowed(_, _, let info):
-            guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-                  let description = object["description"] as? String
-            else {
+            guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
                 return Self.json(400, "{\"error\":\"Invalid Agent update\"}")
             }
-            oauth.updateAgentDescription(id: agentId, description: description)
-            return Self.json(200, "{\"id\":\(jsonString(info.id)),\"description\":\(jsonString(description))}")
+            var description: String?
+            if let value = object["description"] as? String {
+                oauth.updateAgentDescription(id: agentId, description: value)
+                description = value
+            }
+            var runtimeConfigJSON = info.runtimeConfigJSON
+            var envVarsJSON = info.envVarsJSON
+            if let rawEnv = object["envVars"] as? [String: Any] {
+                var userEnv: [String: String] = [:]
+                for (key, value) in rawEnv {
+                    if key.hasPrefix("ANTHROPIC_") { continue }
+                    if let text = value as? String { userEnv[key] = text }
+                }
+                var config = (info.runtimeConfigJSON.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) } as? [String: Any]) ?? [:]
+                config["envVars"] = userEnv
+                let env = Self.derivedAgentEnvVars(config, userEnv: userEnv)
+                runtimeConfigJSON = Self.serializeJSON(config)
+                envVarsJSON = Self.serializeJSON(env)
+                oauth.updateAgentRuntime(id: agentId, runtimeConfigJSON: runtimeConfigJSON, envVarsJSON: envVarsJSON)
+            }
+            let descriptionJSON = description.map { jsonString($0) } ?? "null"
+            return Self.json(200, "{\"id\":\(jsonString(info.id)),\"description\":\(descriptionJSON),\"runtimeConfig\":\(runtimeConfigJSON ?? "null"),\"envVars\":\(envVarsJSON ?? "null")}")
         }
     }
 

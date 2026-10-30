@@ -76,7 +76,9 @@ public final class OAuthLedger: @unchecked Sendable {
         avatarUrl: String? = nil,
         description: String? = nil,
         creatorUserId: String? = nil,
-        runtime: String = "managed"
+        runtime: String = "managed",
+        runtimeConfigJSON: String? = nil,
+        envVarsJSON: String? = nil
     ) -> String {
         let id = UUID().uuidString.lowercased()
         lock.lock()
@@ -88,7 +90,9 @@ public final class OAuthLedger: @unchecked Sendable {
             avatarUrl: avatarUrl,
             description: description,
             creatorUserId: creatorUserId,
-            runtime: runtime
+            runtime: runtime,
+            runtimeConfigJSON: runtimeConfigJSON,
+            envVarsJSON: envVarsJSON
         )
         agentRoles["\(serverId)\n\(id)"] = "member"
         lock.unlock()
@@ -135,6 +139,8 @@ public final class OAuthLedger: @unchecked Sendable {
         public var description: String?
         public var creatorUserId: String?
         public var runtime: String
+        public var runtimeConfigJSON: String?
+        public var envVarsJSON: String?
         public var deleted: Bool
     }
 
@@ -187,8 +193,69 @@ public final class OAuthLedger: @unchecked Sendable {
             description: agent.description,
             creatorUserId: agent.creatorUserId,
             runtime: agent.runtime,
+            runtimeConfigJSON: agent.runtimeConfigJSON,
+            envVarsJSON: agent.envVarsJSON,
             deleted: agent.deleted
         )
+    }
+
+    public struct AgentRuntimeInfo: Sendable {
+        public var id: String
+        public var serverId: String
+        public var name: String
+        public var displayName: String
+        public var description: String?
+        public var creatorUserId: String?
+        public var runtime: String
+        public var runtimeConfigJSON: String?
+        public var envVarsJSON: String?
+        public var deleted: Bool
+    }
+
+    public func agentRuntimeInfo(id: String) -> AgentRuntimeInfo? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let agent = agents[id] else { return nil }
+        return AgentRuntimeInfo(
+            id: agent.id,
+            serverId: agent.serverId,
+            name: agent.name,
+            displayName: agent.displayName,
+            description: agent.description,
+            creatorUserId: agent.creatorUserId,
+            runtime: agent.runtime,
+            runtimeConfigJSON: agent.runtimeConfigJSON,
+            envVarsJSON: agent.envVarsJSON,
+            deleted: agent.deleted
+        )
+    }
+
+    public func serverAgents(serverId: String) -> [AgentRuntimeInfo] {
+        lock.lock()
+        defer { lock.unlock() }
+        return agents.values
+            .filter { $0.serverId == serverId && !$0.deleted }
+            .map { agent in
+                AgentRuntimeInfo(
+                    id: agent.id,
+                    serverId: agent.serverId,
+                    name: agent.name,
+                    displayName: agent.displayName,
+                    description: agent.description,
+                    creatorUserId: agent.creatorUserId,
+                    runtime: agent.runtime,
+                    runtimeConfigJSON: agent.runtimeConfigJSON,
+                    envVarsJSON: agent.envVarsJSON,
+                    deleted: agent.deleted
+                )
+            }
+    }
+
+    public func updateAgentRuntime(id: String, runtimeConfigJSON: String?, envVarsJSON: String?) {
+        lock.lock()
+        agents[id]?.runtimeConfigJSON = runtimeConfigJSON
+        agents[id]?.envVarsJSON = envVarsJSON
+        lock.unlock()
     }
 
     public func updateAgentDescription(id: String, description: String) {
@@ -1727,6 +1794,8 @@ public final class OAuthLedger: @unchecked Sendable {
         var description: String?
         var creatorUserId: String? = nil
         var runtime: String = "managed"
+        var runtimeConfigJSON: String? = nil
+        var envVarsJSON: String? = nil
         var deleted = false
     }
 
