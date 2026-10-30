@@ -6554,6 +6554,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             creatorUserId: userId,
             description: description
         )
+        lock.lock()
+        postableChannels[channelId] = PostableChannel(serverId: serverId, memberIds: [userId], name: name)
+        lock.unlock()
         return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name)),\"joined\":true,\"activityMuteSupported\":true,\"activityMuted\":false,\"muteFromSeq\":null,\"prefsVersion\":0,\"maxReadSeq\":0,\"readStateVersion\":0}")
     }
 

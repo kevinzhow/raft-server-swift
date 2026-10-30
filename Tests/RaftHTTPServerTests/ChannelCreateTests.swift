@@ -50,6 +50,22 @@ import VaporTesting
             let list = try await client.send(.get, headers: headers, to: "/api/channels")
             let rows = try JSONSerialization.jsonObject(with: Data((list.body.string ?? "").utf8)) as? [[String: Any]] ?? []
             #expect(rows.contains { $0["name"] as? String == "new-channel-mute" })
+
+            let channelId = body?["id"] as? String ?? ""
+            func send(_ content: String) async throws -> ClientResponse {
+                try await client.send(.post, headers: headers, to: "/api/messages") { request in
+                    request.body = .init(string: "{\"channelId\":\"\(channelId)\",\"content\":\"\(content)\",\"randomId\":\"created-channel-retry\"}")
+                }
+            }
+            let first = try await send("sent to the new channel")
+            #expect(first.status == .ok)
+            let firstBody = try JSONSerialization.jsonObject(with: Data((first.body.string ?? "").utf8)) as? [String: Any]
+            #expect(firstBody?["content"] as? String == "sent to the new channel")
+            let replay = try await send("retry must not overwrite")
+            #expect(replay.status == .ok)
+            let replayBody = try JSONSerialization.jsonObject(with: Data((replay.body.string ?? "").utf8)) as? [String: Any]
+            #expect(replayBody?["id"] as? String == firstBody?["id"] as? String)
+            #expect(replayBody?["content"] as? String == "sent to the new channel")
         }
     }
 }
