@@ -4361,6 +4361,31 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
+    /// `POST /internal/agent-api/third-party-events/delivered`. A managed
+    /// daemon reports the events it served locally so they stop replaying.
+    public func reportThirdPartyEventsDelivered(authorization: String?, body: String) -> HTTPReply {
+        switch agentReadCredential(authorization) {
+        case .failure(let reply):
+            return reply
+        case .success(let agentId):
+            let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+            guard let raw = object?["eventIds"] as? [Any], !raw.isEmpty else {
+                return Self.json(400, "{\"error\":\"eventIds must be a non-empty array\",\"code\":\"event_ids_invalid\"}")
+            }
+            var ids: [String] = []
+            for item in raw {
+                guard let text = item as? String,
+                      text.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil
+                else {
+                    return Self.json(400, "{\"error\":\"eventIds must contain third-party event ids\",\"code\":\"event_ids_invalid\"}")
+                }
+                ids.append(text.lowercased())
+            }
+            let delivered = oauth.markThirdPartyEventsDelivered(agentId: agentId, ids: ids)
+            return Self.json(200, "{\"ok\":true,\"delivered\":\(delivered)}")
+        }
+    }
+
     private enum AgentRead {
         case failure(HTTPReply)
         case success(String)

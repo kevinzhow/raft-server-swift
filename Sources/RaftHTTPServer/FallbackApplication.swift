@@ -441,6 +441,12 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("internal", "agent-api", "events") { request -> Response in
         routeResponse(services.emailAccounts.agentThirdPartyEvents(authorization: request.headers[.authorization]))
     }
+    app.post("internal", "agent-api", "third-party-events", "delivered") { request -> Response in
+        routeResponse(services.emailAccounts.reportThirdPartyEventsDelivered(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? ""
+        ))
+    }
     app.delete("api", "channels", ":channelId") { request -> Response in
         routeResponse(services.emailAccounts.deleteChannel(
             channelId: request.parameters.get("channelId") ?? "",

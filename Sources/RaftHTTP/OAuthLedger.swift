@@ -802,6 +802,24 @@ public final class OAuthLedger: @unchecked Sendable {
         return messages
     }
 
+    public func markThirdPartyEventsDelivered(agentId: String, ids: [String]) -> Int {
+        let wanted = Set(ids.map { $0.lowercased() })
+        guard !wanted.isEmpty else { return 0 }
+        lock.lock()
+        defer { lock.unlock() }
+        let now = Date()
+        var delivered = 0
+        for index in agentEvents.indices where
+            agentEvents[index].agentId == agentId
+                && wanted.contains(agentEvents[index].id)
+                && agentEvents[index].status != "delivered" {
+            agentEvents[index].status = "delivered"
+            agentEvents[index].deliveredAt = now
+            delivered += 1
+        }
+        return delivered
+    }
+
     private func projectionLocked(_ event: AgentEvent) -> ThirdPartyEventMessage {
         let client = clients.first(where: { $0.id == event.clientId })
         return ThirdPartyEventMessage(
