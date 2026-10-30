@@ -41,6 +41,7 @@ public final class OAuthLedger: @unchecked Sendable {
     private var servers: [String: Server] = [:]
     private var agents: [String: Agent] = [:]
     private var agentRoles: [String: String] = [:]
+    private var agentEvents: [AgentEvent] = []
     private var members: [String: String] = [:]
     private var clients: [Client] = []
     private var requests: [AccessRequest] = []
@@ -665,6 +666,86 @@ public final class OAuthLedger: @unchecked Sendable {
         }
     }
 
+    /// `POST /api/oauth/agent-events`. Only a resource-bound agent token with
+    /// the matching inbound scope may enqueue an event.
+    public func postAgentEvent(authorization: String?, body: String) -> HTTPReply {
+        guard let raw = bearerToken(authorization) else {
+            return json(401, "{\"error\":\"Missing bearer token\"}")
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let token = principalTokenLocked(raw) else {
+            return json(401, "{\"error\":\"Invalid or expired access token\"}")
+        }
+        guard token.principalType == "agent", let agentId = token.agentId else {
+            return json(403, "{\"error\":\"agent token required\"}")
+        }
+        let expectedResource = "urn:raft:server:\(token.serverId):agent-inbound"
+        guard token.resource == expectedResource else {
+            return json(403, "{\"error\":\"resource-bound token required\",\"resource\":\(jsonString(expectedResource))}")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        let kind = object?["kind"] as? String ?? ""
+        guard kind == "event" || kind == "notification" else {
+            return json(400, "{\"error\":\"kind must be event or notification\"}")
+        }
+        let requiredScope = kind == "event" ? "agent:event:write" : "agent:notification:write"
+        guard token.scopes.contains(requiredScope) else {
+            return json(403, "{\"error\":\"insufficient_scope\",\"required_scope\":\(jsonString(requiredScope))}")
+        }
+        let target = (object?["agentId"] as? String ?? object?["agent_id"] as? String ?? agentId).lowercased()
+        guard target == agentId else {
+            return json(403, "{\"error\":\"token cannot target a different agent\"}")
+        }
+        let summary = (object?["summary"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !summary.isEmpty, summary.count <= 500 else {
+            return json(400, "{\"error\":\"summary is required\"}")
+        }
+        guard let payload = object?["payload"], JSONSerialization.isValidJSONObject(payload) else {
+            return json(400, "{\"error\":\"payload must be an object\"}")
+        }
+        let external = (object?["externalEventId"] as? String ?? object?["external_event_id"] as? String)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let payloadData = (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])) ?? Data()
+        let payloadHash = sha256(String(decoding: payloadData, as: UTF8.self))
+        let now = Date()
+        if let external, !external.isEmpty,
+           let index = agentEvents.firstIndex(where: {
+               $0.serverId == token.serverId && $0.agentId == agentId
+                   && $0.clientId == token.clientId && $0.externalEventId == external
+                   && $0.expiresAt > now
+           }) {
+            var event = agentEvents[index]
+            let claimed = event.status == "queued"
+            if claimed {
+                event.status = "delivering"
+                agentEvents[index] = event
+            }
+            let document = "{\"id\":\(jsonString(event.id)),\"status\":\(jsonString(claimed ? "queued" : "duplicate")),\"deduped\":true,\"expiresAt\":\(jsonString(iso8601(event.expiresAt))),\"payloadHash\":\(jsonString(event.payloadHash))}"
+            return json(200, document)
+        }
+        let event = AgentEvent(
+            id: UUID().uuidString.lowercased(),
+            serverId: token.serverId,
+            agentId: agentId,
+            clientId: token.clientId,
+            kind: kind,
+            summary: summary,
+            payloadHash: payloadHash,
+            externalEventId: external,
+            status: "delivering",
+            expiresAt: now.addingTimeInterval(24 * 60 * 60),
+            createdAt: now
+        )
+        agentEvents.append(event)
+        let document = "{\"id\":\(jsonString(event.id)),\"status\":\"queued\",\"deduped\":false,\"expiresAt\":\(jsonString(iso8601(event.expiresAt))),\"payloadHash\":\(jsonString(event.payloadHash))}"
+        return json(202, document)
+    }
+
+    private func iso8601(_ date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
+    }
+
     /// `POST /api/oauth/token`. Form fields, camelCase JSON, and HTTP Basic all name the same client.
     public func exchangeToken(authorization: String?, body: String, issuer: String) -> HTTPReply {
         let fields = tokenFields(body)
@@ -824,7 +905,8 @@ public final class OAuthLedger: @unchecked Sendable {
             scopes: request.scopes,
             expiresAt: now.addingTimeInterval(60 * 60),
             principalType: "agent",
-            agentId: agent.id
+            agentId: agent.id,
+            resource: boundResource
         ))
         requests[index].consumedAt = now
         let scope = request.scopes.joined(separator: " ")
@@ -1125,6 +1207,20 @@ public final class OAuthLedger: @unchecked Sendable {
         var deleted = false
     }
 
+    private struct AgentEvent {
+        var id: String
+        var serverId: String
+        var agentId: String
+        var clientId: String
+        var kind: String
+        var summary: String
+        var payloadHash: String
+        var externalEventId: String?
+        var status: String
+        var expiresAt: Date
+        var createdAt: Date
+    }
+
     private struct Client {
         var id: String
         var serverId: String
@@ -1205,6 +1301,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var expiresAt: Date
         var principalType: String = "human"
         var agentId: String? = nil
+        var resource: String? = nil
     }
 
     private func json(_ status: Int, _ body: String, cacheControl: String? = nil) -> HTTPReply {

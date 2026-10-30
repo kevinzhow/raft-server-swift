@@ -610,6 +610,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("api", "oauth", "agent-events") { request -> Response in
+        routeResponse(services.emailAccounts.oauth.postAgentEvent(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("api", "oauth", "clients", "lookup") { request -> Response in
         routeResponse(services.emailAccounts.oauth.clientLookup(
             session: services.emailAccounts.oauthSession(authorization: request.headers[.authorization]),

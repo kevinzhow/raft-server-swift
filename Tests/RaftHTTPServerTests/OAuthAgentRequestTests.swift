@@ -243,3 +243,72 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
         }
     }
 }
+
+@Test func agentEventPostQueuesOncePerExternalId() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111225"
+    let serverId = "33333333-3333-4333-8333-333333333419"
+    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-events-225", name: "OAuth Agent Events", ownerId: ownerId)
+    _ = accounts.oauth.createAgent(serverId: serverId, name: "OauthEventBot")
+    let created = try accounts.oauth.createClient(
+        serverId: serverId,
+        createdByUserId: ownerId,
+        name: "OAuth Event Client",
+        clientId: "oauth-events-225",
+        allowedScopes: ["openid", "agent:event:write"]
+    )
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var jsonHeaders = HTTPFields()
+            jsonHeaders[.contentType] = "application/json"
+            let requested = try await client.send(.post, headers: jsonHeaders, to: "/api/oauth/requests/agent") { request in
+                request.body = .init(string: "{\"clientId\":\"\(created.clientId)\",\"clientSecret\":\"\(created.clientSecret)\",\"serverSlug\":\"oauth-events-225\",\"agentName\":\"OauthEventBot\",\"scopes\":[\"agent:event:write\"]}")
+            }
+            #expect(requested.status == .ok)
+            let requestId = try agentRequestBody(requested)["requestId"] as? String ?? ""
+
+            let tokenBody: [String: Any] = [
+                "clientId": created.clientId,
+                "clientSecret": created.clientSecret,
+                "grantType": "urn:slock:grant-type:agent_request",
+                "requestId": requestId,
+                "resource": "urn:raft:server:\(serverId):agent-inbound",
+            ]
+            let tokenData = try JSONSerialization.data(withJSONObject: tokenBody)
+            let exchanged = try await client.send(.post, headers: jsonHeaders, to: "/api/oauth/token") { request in
+                request.body = .init(string: String(decoding: tokenData, as: UTF8.self))
+            }
+            #expect(exchanged.status == .ok)
+            let accessToken = try agentRequestBody(exchanged)["access_token"] as? String ?? ""
+
+            var headers = HTTPFields()
+            headers[.contentType] = "application/json"
+            headers[.authorization] = "Bearer \(accessToken)"
+            let eventBody = "{\"kind\":\"event\",\"summary\":\"New build is ready\",\"externalEventId\":\"build-225\",\"payload\":{\"url\":\"https://example.test/build/225\",\"nested\":{\"reviewer\":\"@Ray\"}}}"
+            let posted = try await client.send(.post, headers: headers, to: "/api/oauth/agent-events") { request in
+                request.body = .init(string: eventBody)
+            }
+            #expect(posted.status == .accepted)
+            let postedBody = try agentRequestBody(posted)
+            #expect(postedBody["status"] as? String == "queued")
+            #expect((postedBody["id"] as? String)?.isEmpty == false)
+            #expect((postedBody["payloadHash"] as? String)?.wholeMatch(of: /^[0-9a-f]{64}$/) != nil)
+            let eventId = postedBody["id"] as? String ?? ""
+
+            let duplicate = try await client.send(.post, headers: headers, to: "/api/oauth/agent-events") { request in
+                request.body = .init(string: "{\"kind\":\"event\",\"summary\":\"Duplicate build\",\"externalEventId\":\"build-225\",\"payload\":{\"duplicate\":true}}")
+            }
+            #expect(duplicate.status == .ok)
+            let duplicateBody = try agentRequestBody(duplicate)
+            #expect(duplicateBody["id"] as? String == eventId)
+            #expect(duplicateBody["deduped"] as? Bool == true)
+        }
+    }
+}
