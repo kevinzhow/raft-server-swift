@@ -508,6 +508,33 @@ public func configure(_ app: Application, services: FallbackServices) {
         }
         return routeResponse(reply)
     }
+    app.post("api", "share-artifacts", "message-selection") { request -> Response in
+        let baseURL = ProcessInfo.processInfo.environment["SHARE_BASE_URL"]
+            ?? "http://\(request.headers[HTTPField.Name("Host")!] ?? "localhost")"
+        return routeResponse(services.emailAccounts.createShareArtifact(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            body: request.body.string ?? "",
+            baseURL: baseURL
+        ))
+    }
+    app.get("share", ":file") { request -> Response in
+        let baseURL = ProcessInfo.processInfo.environment["SHARE_BASE_URL"]
+            ?? "http://\(request.headers[HTTPField.Name("Host")!] ?? "localhost")"
+        let file = request.parameters.get("file") ?? ""
+        if file.hasSuffix(".png") {
+            let id = String(file.dropLast(4))
+            if services.emailAccounts.shareArtifactExists(id: id) {
+                var headers = HTTPFields()
+                headers[.contentType] = "image/png"
+                headers[.cacheControl] = "public, immutable, max-age=31536000"
+                return Response(status: .ok, headers: headers, body: .init(data: EmailLoginDirectory.sharePNGData))
+            }
+        } else if let reply = services.emailAccounts.shareArtifactPage(id: file, baseURL: baseURL) {
+            return routeResponse(reply)
+        }
+        return Response(status: .notFound, body: .init(string: "{\"error\":\"Not found\"}"))
+    }
     app.post("api", "servers", "join-community") { request -> Response in
         guard let directory = services.publicVisits else {
             return routeResponse(PublicVisits.authRequired(authorization: request.headers[.authorization]))

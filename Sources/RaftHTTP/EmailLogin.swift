@@ -196,6 +196,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public var providerConnectionsEnabledServers: Set<String> = []
     private var providerConnections: [ProviderConnection] = []
     private var providerAssignments: [ProviderAssignment] = []
+    private var shareArtifacts: Set<String> = []
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -6600,6 +6601,81 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         return Self.json(202, "{\"accepted\":true,\"feedbackReportId\":\(jsonString(reportId)),\"agentId\":\(jsonString(agentId))}")
     }
+
+    public func createShareArtifact(authorization: String?, serverId: String, body: String, baseURL: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role != "guest" else {
+            return Self.json(403, "{\"error\":\"Guests cannot create share artifacts\"}")
+        }
+        guard let channelId = Self.multipartField(body, name: "channelId"),
+              let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId
+        else {
+            return Self.json(403, "{\"error\":\"Channel is outside the active server\"}")
+        }
+        let id = UUID().uuidString.lowercased()
+        lock.lock()
+        shareArtifacts.insert(id)
+        lock.unlock()
+        let root = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
+        return Self.json(200, "{\"id\":\(jsonString(id)),\"url\":\(jsonString(root + "/share/" + id)),\"imageUrl\":\(jsonString(root + "/share/" + id + ".png"))}")
+    }
+
+    private static func multipartField(_ body: String, name: String) -> String? {
+        guard let range = body.range(of: "name=\"\(name)\"") else { return nil }
+        let rest = body[range.upperBound...]
+        guard let separator = rest.range(of: "\r\n\r\n") else { return nil }
+        let value = rest[separator.upperBound...]
+        guard let end = value.range(of: "\r\n") else { return nil }
+        return String(value[..<end.lowerBound])
+    }
+
+    public func shareArtifactPage(id: String, baseURL: String) -> HTTPReply? {
+        guard id.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
+            return nil
+        }
+        lock.lock()
+        let exists = shareArtifacts.contains(id.lowercased())
+        lock.unlock()
+        guard exists else { return nil }
+        let root = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
+        let imageURL = root + "/share/" + id + ".png"
+        let html = """
+        <!DOCTYPE html><html><head><meta charset="utf-8">
+        <meta name="robots" content="noindex, nofollow">
+        <meta name="twitter:card" content="summary_large_image">
+        <meta name="twitter:image" content="\(imageURL)">
+        <meta property="og:image:width" content="1">
+        <meta property="og:image:height" content="1">
+        <meta name="twitter:image:alt" content="Slock conversation screenshot">
+        <style>.share-card { width: min(100%, 960px); margin-inline: auto; }</style></head>
+        <body><div class="share-card"><img src="\(imageURL)" alt="Slock conversation screenshot"></div></body></html>
+        """
+        return HTTPReply(
+            status: 200,
+            headers: [
+                "Content-Type": "text/html; charset=utf-8",
+                "X-Robots-Tag": "noindex, nofollow",
+                "Content-Length": String(Data(html.utf8).count),
+            ],
+            body: html
+        )
+    }
+
+    public func shareArtifactExists(id: String) -> Bool {
+        guard id.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
+            return false
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        return shareArtifacts.contains(id.lowercased())
+    }
+
+    public static let sharePNGData = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=") ?? Data()
 
     public func serversUnreadSummary(authorization: String?) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
