@@ -149,3 +149,106 @@ private func directoryObject(_ response: ClientResponse) throws -> [String: Any]
         }
     }
 }
+
+@Test func agentDirectoryRejectsIdentityOnlyExpiredAndRevokedCredentials() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111232"
+    let serverId = "33333333-3333-4333-8333-333333333427"
+    accounts.addAccount(id: ownerId, email: "directory-232@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "directory-232", name: "Directory", ownerId: ownerId)
+    _ = accounts.oauth.createAgent(serverId: serverId, name: "DirectoryAgent")
+    let created = try accounts.oauth.createClient(
+        serverId: serverId,
+        createdByUserId: ownerId,
+        name: "Directory only",
+        clientId: "directory-232",
+        allowedScopes: ["openid", "profile"]
+    )
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var loginHeaders = HTTPFields()
+            loginHeaders[.contentType] = "application/json"
+            let login = try await client.send(.post, headers: loginHeaders, to: "/api/auth/login") { request in
+                request.body = .init(string: "{\"email\":\"directory-232@slock.test\",\"password\":\"password123\"}")
+            }
+            let session = try directoryObject(login)["accessToken"] as? String ?? ""
+
+            func authorize(_ scopes: String) async throws -> ClientResponse {
+                var headers = HTTPFields()
+                headers[.authorization] = "Bearer \(session)"
+                headers[.contentType] = "application/json"
+                return try await client.send(.post, headers: headers, to: "/api/oauth/authorize/human") { request in
+                    request.body = .init(string: "{\"clientId\":\"directory-232\",\"serverId\":\"\(serverId)\",\"scopes\":[\(scopes)]}")
+                }
+            }
+            func exchange(_ code: String) async throws -> String {
+                var headers = HTTPFields()
+                headers[.contentType] = "application/json"
+                let response = try await client.send(.post, headers: headers, to: "/api/oauth/token") { request in
+                    request.body = .init(string: "{\"clientId\":\"directory-232\",\"clientSecret\":\"\(created.clientSecret)\",\"grantType\":\"authorization_code\",\"code\":\"\(code)\"}")
+                }
+                #expect(response.status == .ok)
+                return try directoryObject(response)["access_token"] as? String ?? ""
+            }
+
+            let webhookScope = try await authorize("\"agent:read\"")
+            #expect(webhookScope.status == .badRequest)
+
+            accounts.oauth.setClientAllowedScopes(
+                clientRecordId: created.id,
+                scopes: ["openid", "profile", "agent:read"]
+            )
+            let identityOnlyCode = try directoryObject(try await authorize("\"openid\",\"profile\""))["code"] as? String ?? ""
+            let identityOnly = try await exchange(identityOnlyCode)
+            var identityHeaders = HTTPFields()
+            identityHeaders[.authorization] = "Bearer \(identityOnly)"
+            #expect(try await client.send(.get, headers: identityHeaders, to: "/api/oauth/agents").status == .forbidden)
+
+            for credential in [nil, "not-a-token", created.clientSecret] {
+                var headers = HTTPFields()
+                if let credential { headers[.authorization] = "Bearer \(credential)" }
+                let response = try await client.send(.get, headers: headers, to: "/api/oauth/agents")
+                #expect(response.status == .unauthorized)
+                #expect((try directoryObject(response))["agents"] == nil)
+            }
+
+            let code = try directoryObject(try await authorize("\"openid\",\"profile\",\"agent:read\""))["code"] as? String ?? ""
+            let bearer = try await exchange(code)
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(bearer)"
+            #expect(try await client.send(.get, headers: headers, to: "/api/oauth/agents").status == .ok)
+
+            accounts.oauth.revokeAccessTokens(clientRecordId: created.id)
+            #expect(try await client.send(.get, headers: headers, to: "/api/oauth/agents").status == .unauthorized)
+
+            let renewed = try await exchange(try directoryObject(try await authorize("\"openid\",\"profile\",\"agent:read\""))["code"] as? String ?? "")
+            var renewedHeaders = HTTPFields()
+            renewedHeaders[.authorization] = "Bearer \(renewed)"
+            #expect(try await client.send(.get, headers: renewedHeaders, to: "/api/oauth/agents").status == .ok)
+
+            var requestHeaders = HTTPFields()
+            requestHeaders[.contentType] = "application/json"
+            let requested = try await client.send(.post, headers: requestHeaders, to: "/api/oauth/requests/agent") { request in
+                request.body = .init(string: "{\"clientId\":\"directory-232\",\"clientSecret\":\"\(created.clientSecret)\",\"serverSlug\":\"directory-232\",\"agentName\":\"DirectoryAgent\",\"scopes\":[\"openid\",\"profile\",\"agent:read\"]}")
+            }
+            let requestId = try directoryObject(requested)["requestId"] as? String ?? ""
+            let agentTokenResponse = try await client.send(.post, headers: requestHeaders, to: "/api/oauth/token") { request in
+                request.body = .init(string: "{\"clientId\":\"directory-232\",\"clientSecret\":\"\(created.clientSecret)\",\"grantType\":\"urn:slock:grant-type:agent_request\",\"requestId\":\"\(requestId)\"}")
+            }
+            var agentHeaders = HTTPFields()
+            agentHeaders[.authorization] = "Bearer \(try directoryObject(agentTokenResponse)["access_token"] as? String ?? "")"
+            #expect(try await client.send(.get, headers: agentHeaders, to: "/api/oauth/agents").status == .ok)
+
+            accounts.oauth.revokeAgentGrants(clientRecordId: created.id)
+            #expect(try await client.send(.get, headers: agentHeaders, to: "/api/oauth/agents").status == .unauthorized)
+        }
+    }
+}

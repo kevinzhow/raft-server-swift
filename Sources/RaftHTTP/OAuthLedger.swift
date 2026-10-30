@@ -52,6 +52,7 @@ public final class OAuthLedger: @unchecked Sendable {
     private var agents: [String: Agent] = [:]
     private var agentRoles: [String: String] = [:]
     private var agentEvents: [AgentEvent] = []
+    private var revokedGrantClients: Set<String> = []
     private var members: [String: String] = [:]
     private var clients: [Client] = []
     private var requests: [AccessRequest] = []
@@ -280,6 +281,20 @@ public final class OAuthLedger: @unchecked Sendable {
         if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
             clients[index].allowedScopes = scopes
         }
+        lock.unlock()
+    }
+
+    public func revokeAccessTokens(clientRecordId: String) {
+        lock.lock()
+        for index in tokens.indices where tokens[index].clientId == clientRecordId {
+            tokens[index].revokedAt = Date()
+        }
+        lock.unlock()
+    }
+
+    public func revokeAgentGrants(clientRecordId: String) {
+        lock.lock()
+        revokedGrantClients.insert(clientRecordId)
         lock.unlock()
     }
 
@@ -1211,7 +1226,13 @@ public final class OAuthLedger: @unchecked Sendable {
     /// Caller holds `lock`. Installation tokens live in a different table and never match.
     private func principalTokenLocked(_ raw: String) -> AccessToken? {
         let hash = sha256(raw)
-        guard let token = tokens.last(where: { $0.tokenHash == hash }), token.expiresAt > Date() else {
+        guard let token = tokens.last(where: { $0.tokenHash == hash }),
+              token.expiresAt > Date(),
+              token.revokedAt == nil
+        else {
+            return nil
+        }
+        if token.principalType == "agent", revokedGrantClients.contains(token.clientId) {
             return nil
         }
         return token
@@ -1431,6 +1452,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var principalType: String = "human"
         var agentId: String? = nil
         var resource: String? = nil
+        var revokedAt: Date? = nil
     }
 
     private func json(_ status: Int, _ body: String, cacheControl: String? = nil) -> HTTPReply {
