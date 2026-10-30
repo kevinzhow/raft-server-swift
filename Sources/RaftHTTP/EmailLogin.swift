@@ -192,6 +192,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public let oauth = OAuthLedger()
     /// `APP_URL`. Web OAuth errors redirect here.
     public var appURL: String = "http://localhost:3000"
+    public var handsFeedbackConfigured = false
     /// `MOBILE_APP_EMAIL_UNSUBSCRIBE_SECRET`, or `JWT_SECRET`. The test harness uses `test-jwt-secret`.
     public var mobileAppEmailUnsubscribeSecret: String = "test-jwt-secret"
     /// Cancels one scheduled mobile-app lifecycle email. Unset means there is no provider call to make.
@@ -5977,6 +5978,61 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             context["$country"] = normalizedCountry
         }
         return context
+    }
+
+    /// `POST /api/product-feedback`. The upstream proxy is not ported; the
+    /// route still enforces the auth, form, and configuration contract.
+    public func submitProductFeedback(authorization: String?, contentType: String, body: String) -> HTTPReply {
+        guard sessionUserId(authorization: authorization) != nil else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let fields = Self.multipartFields(body: body, contentType: contentType),
+              let submissionId = fields["submission_id"],
+              submissionId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil,
+              let type = fields["type"], ["idea", "problem"].contains(type),
+              let message = fields["message"], !message.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
+        }
+        if let rawMetadata = fields["metadata"], !rawMetadata.isEmpty {
+            guard let metadata = (try? JSONSerialization.jsonObject(with: Data(rawMetadata.utf8))) as? [String: Any] else {
+                return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
+            }
+            let nativeKinds = ["ios", "android", "macos", "windows", "linux"]
+            if let clientKind = metadata["client_kind"] as? String, nativeKinds.contains(clientKind) {
+                let platform = metadata["platform"] as? String ?? ""
+                if platform != clientKind || metadata["browser"] != nil {
+                    return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
+                }
+            }
+        }
+        guard handsFeedbackConfigured else {
+            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_not_configured\"}")
+        }
+        return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_integration_unavailable\"}")
+    }
+
+    private static func multipartFields(body: String, contentType: String) -> [String: String]? {
+        guard let boundaryRange = contentType.range(of: "boundary=") else { return nil }
+        var boundary = String(contentType[boundaryRange.upperBound...])
+        boundary = boundary.split(separator: ";").first.map(String.init) ?? boundary
+        boundary = boundary.trimmingCharacters(in: CharacterSet(charactersIn: "\" \""))
+        guard !boundary.isEmpty else { return nil }
+        var fields: [String: String] = [:]
+        for part in body.components(separatedBy: "--\(boundary)") {
+            guard part.contains("name=\"") else { continue }
+            let segments = part.components(separatedBy: "\r\n\r\n")
+            guard segments.count >= 2 else { continue }
+            let header = segments[0]
+            guard let nameRange = header.range(of: "name=\"") else { continue }
+            let rest = header[nameRange.upperBound...]
+            guard let closing = rest.firstIndex(of: "\"") else { continue }
+            let name = String(rest[..<closing])
+            var value = segments[1]
+            if value.hasSuffix("\r\n") { value.removeLast() }
+            fields[name] = value
+        }
+        return fields.isEmpty ? nil : fields
     }
 
     /// `POST /api/product-events/onboarding-wizard`.
