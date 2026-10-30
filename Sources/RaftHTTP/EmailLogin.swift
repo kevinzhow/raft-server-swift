@@ -195,6 +195,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public var handsFeedbackConfigured = false
     public var providerConnectionsEnabledServers: Set<String> = []
     private var providerConnections: [ProviderConnection] = []
+    private var providerAssignments: [ProviderAssignment] = []
     /// `MOBILE_APP_EMAIL_UNSUBSCRIBE_SECRET`, or `JWT_SECRET`. The test harness uses `test-jwt-secret`.
     public var mobileAppEmailUnsubscribeSecret: String = "test-jwt-secret"
     /// Cancels one scheduled mobile-app lifecycle email. Unset means there is no provider call to make.
@@ -6147,6 +6148,104 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let updated = providerConnections[index]
         lock.unlock()
         return Self.json(200, Self.providerConnectionJSON(updated))
+    }
+
+    public func assignAgentToProviderConnection(connectionId: String, serverId: String, agentId: String, computerName: String?) {
+        lock.lock()
+        providerAssignments.append(ProviderAssignment(
+            connectionId: connectionId,
+            serverId: serverId,
+            agentId: agentId,
+            computerName: computerName
+        ))
+        lock.unlock()
+    }
+
+    public func listAssignedProviderAgents(authorization: String?, serverId: String, connectionId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner" || oauth.memberRole(serverId: serverId, userId: userId) == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        lock.lock()
+        let known = providerConnections.contains { $0.id == connectionId && $0.serverId == serverId }
+        let assignments = providerAssignments.filter { $0.connectionId == connectionId && $0.serverId == serverId }
+        lock.unlock()
+        guard known else {
+            return Self.json(404, "{\"error\":\"Provider connection not found\"}")
+        }
+        var rows: [String] = []
+        for assignment in assignments {
+            guard let info = oauth.providerAgentInfo(serverId: serverId, agentId: assignment.agentId) else { continue }
+            let computer = assignment.computerName.map { jsonString($0) } ?? "null"
+            rows.append("{\"id\":\(jsonString(assignment.agentId)),\"name\":\(jsonString(info.name)),\"displayName\":\(jsonString(info.displayName)),\"runtime\":\(jsonString(info.runtime)),\"status\":\(jsonString(info.status)),\"computerName\":\(computer),\"deleted\":\(info.deleted)}")
+        }
+        return Self.json(200, "{\"agents\":[\(rows.joined(separator: ","))]}")
+    }
+
+    public func detachProviderAgent(authorization: String?, serverId: String, connectionId: String, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner" || oauth.memberRole(serverId: serverId, userId: userId) == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard agentId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
+            return Self.json(400, "{\"error\":\"Invalid agent id\"}")
+        }
+        lock.lock()
+        let known = providerConnections.contains { $0.id == connectionId && $0.serverId == serverId }
+        let assigned = providerAssignments.contains { $0.connectionId == connectionId && $0.serverId == serverId && $0.agentId == agentId }
+        lock.unlock()
+        guard known else {
+            return Self.json(404, "{\"error\":\"Provider connection not found\"}")
+        }
+        guard assigned else {
+            return Self.json(404, "{\"error\":\"Provider agent assignment not found\"}")
+        }
+        let live = oauth.providerAgentInfo(serverId: serverId, agentId: agentId).map { !$0.deleted } ?? false
+        if live {
+            return Self.json(409, "{\"error\":\"The Agent still uses this provider connection\",\"code\":\"provider_connection_assignment_active\"}")
+        }
+        lock.lock()
+        providerAssignments.removeAll { $0.connectionId == connectionId && $0.serverId == serverId && $0.agentId == agentId }
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    public func deleteProviderConnection(authorization: String?, serverId: String, connectionId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner" || oauth.memberRole(serverId: serverId, userId: userId) == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        lock.lock()
+        let known = providerConnections.contains { $0.id == connectionId && $0.serverId == serverId }
+        let assignments = providerAssignments.filter { $0.connectionId == connectionId && $0.serverId == serverId }
+        lock.unlock()
+        guard known else {
+            return Self.json(404, "{\"error\":\"Provider connection not found\"}")
+        }
+        let liveAssignments = assignments.filter { assignment in
+            oauth.providerAgentInfo(serverId: serverId, agentId: assignment.agentId).map { !$0.deleted } ?? false
+        }
+        guard liveAssignments.isEmpty else {
+            return Self.json(409, "{\"error\":\"Agents still use this provider connection\",\"code\":\"provider_connection_assignment_active\"}")
+        }
+        lock.lock()
+        providerConnections.removeAll { $0.id == connectionId && $0.serverId == serverId }
+        providerAssignments.removeAll { $0.connectionId == connectionId && $0.serverId == serverId }
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    private struct ProviderAssignment {
+        var connectionId: String
+        var serverId: String
+        var agentId: String
+        var computerName: String?
     }
 
     private static func providerConnectionLabel(_ id: String) -> String {

@@ -103,6 +103,27 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    public struct ProviderAgentInfo: Sendable {
+        public var name: String
+        public var displayName: String
+        public var runtime: String
+        public var status: String
+        public var deleted: Bool
+    }
+
+    public func providerAgentInfo(serverId: String, agentId: String) -> ProviderAgentInfo? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let agent = agents[agentId], agent.serverId == serverId else { return nil }
+        return ProviderAgentInfo(
+            name: agent.name,
+            displayName: agent.displayName,
+            runtime: "builtin",
+            status: "inactive",
+            deleted: agent.deleted
+        )
+    }
+
     public func deleteAgent(id: String) {
         lock.lock()
         agents[id]?.deleted = true

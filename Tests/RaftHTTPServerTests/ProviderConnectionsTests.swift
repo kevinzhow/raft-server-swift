@@ -119,6 +119,53 @@ import VaporTesting
             #expect(patched?["name"] as? String == "Patched Team DeepSeek")
             #expect(patched?["credentialVersion"] as? Int == 3)
             #expect(patched?["status"] as? String == "unchecked")
+
+            let otherServerId = "33333333-3333-4333-8333-333333333441"
+            accounts.oauth.addOwnedServer(id: otherServerId, slug: "other-provider", name: "Other Provider", ownerId: ownerId)
+            let agentId = accounts.oauth.createAgent(serverId: serverId, name: "assigned-provider-agent")
+            accounts.assignAgentToProviderConnection(
+                connectionId: createdId,
+                serverId: serverId,
+                agentId: agentId,
+                computerName: "assigned-agent-machine"
+            )
+
+            let unassignedBefore = accounts.oauth.createAgent(serverId: serverId, name: "unassigned-agent")
+            #expect(unassignedBefore.isEmpty == false)
+            let plainList = try await client.send(.get, headers: headers(ownerToken), to: "/api/provider-connections/\(createdId)/agents")
+            #expect(plainList.status == .ok)
+            #expect((plainList.body.string ?? "").contains("assigned-secret-value") == false)
+            let assigned = try JSONSerialization.jsonObject(with: Data((plainList.body.string ?? "").utf8)) as? [String: Any]
+            let assignedRows = assigned?["agents"] as? [[String: Any]] ?? []
+            #expect(assignedRows.map { $0["id"] as? String } == [agentId])
+            #expect(assignedRows.first?["name"] as? String == "assigned-provider-agent")
+            #expect(assignedRows.first?["runtime"] as? String == "builtin")
+            #expect(assignedRows.first?["status"] as? String == "inactive")
+            #expect(assignedRows.first?["computerName"] as? String == "assigned-agent-machine")
+            #expect(assignedRows.first?["deleted"] as? Bool == false)
+
+            let forbiddenAgents = try await client.send(.get, headers: headers(memberToken), to: "/api/provider-connections/\(createdId)/agents")
+            #expect(forbiddenAgents.status == .forbidden)
+            var otherHeaders = headers(ownerToken)
+            otherHeaders[HTTPField.Name("X-Server-Id")!] = otherServerId
+            let crossServerAgents = try await client.send(.get, headers: otherHeaders, to: "/api/provider-connections/\(createdId)/agents")
+            #expect(crossServerAgents.status == .notFound)
+            let unknownConnection = try await client.send(.get, headers: headers(ownerToken), to: "/api/provider-connections/\(UUID().uuidString.lowercased())/agents")
+            #expect(unknownConnection.status == .notFound)
+
+            let malformedAgent = try await client.send(.delete, headers: headers(ownerToken), to: "/api/provider-connections/\(createdId)/agents/not-a-uuid")
+            #expect(malformedAgent.status == .badRequest)
+
+            let activeDetach = try await client.send(.delete, headers: headers(ownerToken), to: "/api/provider-connections/\(createdId)/agents/\(agentId)")
+            #expect(activeDetach.status == .conflict)
+            #expect((try JSONSerialization.jsonObject(with: Data((activeDetach.body.string ?? "").utf8)) as? [String: Any])?["code"] as? String == "provider_connection_assignment_active")
+
+            let blockedDelete = try await client.send(.delete, headers: headers(ownerToken), to: "/api/provider-connections/\(createdId)")
+            #expect(blockedDelete.status == .conflict)
+
+            accounts.oauth.deleteAgent(id: agentId)
+            let freedDelete = try await client.send(.delete, headers: headers(ownerToken), to: "/api/provider-connections/\(createdId)")
+            #expect(freedDelete.status == .ok)
         }
     }
 }
