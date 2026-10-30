@@ -485,7 +485,7 @@ public final class OAuthLedger: @unchecked Sendable {
         guard (client.appType == "server_local" && client.serverId == server.id) || installed else {
             return json(404, "{\"error\":\"OAuth client not found for server\"}")
         }
-        guard let scopes = normalizeScopes(object?["scopes"], allowed: client.allowedScopes ?? ["openid", "profile", "identity"]) else {
+        guard let scopes = normalizeScopes(object?["scopes"], allowed: client.allowedScopes ?? ["openid", "profile", "identity"], clientId: client.clientId) else {
             return json(400, "{\"error\":\"invalid_scope\"}")
         }
         let requestId = UUID().uuidString.lowercased()
@@ -533,7 +533,7 @@ public final class OAuthLedger: @unchecked Sendable {
             }
             let allowed = client.allowedScopes ?? ["openid", "profile", "identity"]
             let requested = scope.split(whereSeparator: { $0.isWhitespace }).map(String.init)
-            let validation = validateScopes(requested, allowed: allowed)
+            let validation = validateScopes(requested, allowed: allowed, clientId: client.clientId)
             let allowedJSON = allowed.map { jsonString($0) }.joined(separator: ",")
             var document = "{\"clientId\":\(jsonString(client.clientId)),\"appType\":\(jsonString(client.appType)),\"name\":\(jsonString(client.name)),\"description\":null,\"homepageUrl\":null,\"returnUrl\":null,\"logoUrl\":null,\"setupUrl\":null,\"setupDescription\":null,\"allowedScopes\":[\(allowedJSON)],\"availability\":\"ready\""
             if !requested.isEmpty {
@@ -717,7 +717,7 @@ public final class OAuthLedger: @unchecked Sendable {
         if requested == nil || requested is NSNull {
             scopes = ["openid", "profile"]
         } else {
-            let validation = validateScopes(requested, allowed: client.allowedScopes ?? ["openid", "profile", "identity"])
+            let validation = validateScopes(requested, allowed: client.allowedScopes ?? ["openid", "profile", "identity"], clientId: client.clientId)
             guard validation.allowed, !validation.scopes.isEmpty else {
                 if validation.disallowed.isEmpty {
                     return json(400, "{\"error\":\"invalid_scope\"}")
@@ -754,7 +754,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var disallowed: [String]
     }
 
-    private func validateScopes(_ value: Any?, allowed: [String]) -> ScopeValidation {
+    private func validateScopes(_ value: Any?, allowed: [String], clientId: String) -> ScopeValidation {
         let rawList: [Any]
         if let list = value as? [String] {
             rawList = list
@@ -774,6 +774,10 @@ public final class OAuthLedger: @unchecked Sendable {
             }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
+            if Self.legacyScopeAllowlist[clientId]?.contains(trimmed) == true {
+                scopes.append(trimmed)
+                continue
+            }
             if !Self.raftScopes.contains(trimmed) {
                 unsupported = true
                 disallowed.append(trimmed)
@@ -818,8 +822,8 @@ public final class OAuthLedger: @unchecked Sendable {
         return json(400, "{\"error\":\"invalid_scope\",\"errorCode\":\(jsonString(code)),\"error_description\":\(jsonString(description)),\"disallowedScopes\":[\(disallowedJSON)]}")
     }
 
-    private func normalizeScopes(_ value: Any?, allowed: [String]) -> [String]? {
-        let validation = validateScopes(value, allowed: allowed)
+    private func normalizeScopes(_ value: Any?, allowed: [String], clientId: String) -> [String]? {
+        let validation = validateScopes(value, allowed: allowed, clientId: clientId)
         guard validation.allowed, !validation.scopes.isEmpty else { return nil }
         return validation.scopes.sorted()
     }
@@ -827,6 +831,20 @@ public final class OAuthLedger: @unchecked Sendable {
     private static let raftScopes: Set<String> = [
         "openid", "profile", "email", "identity", "agent:read",
         "agent:event:write", "agent:notification:write", "agent:action_request:write",
+    ]
+
+    /// Exact legacy tuples still accepted for their original client only.
+    private static let legacyScopeAllowlist: [String: Set<String>] = [
+        "local-collabdoc-1": ["creator", "owner"],
+        "linkerdog-796e47": ["meetings:read"],
+        "winbox": [
+            "winbox:opencli:google", "winbox:opencli:nga",
+            "winbox:opencli:qixin", "winbox:opencli:twitter",
+        ],
+        "winbox-315c18": [
+            "winbox:opencli:nga", "winbox:opencli:qixin", "winbox:opencli:slock",
+            "winbox:opencli:twitter", "winbox:opencli:wcl", "winbox:python:exec",
+        ],
     ]
 
     private func bearerToken(_ authorization: String?) -> String? {
