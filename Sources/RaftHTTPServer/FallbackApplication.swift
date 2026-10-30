@@ -714,6 +714,59 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
         ))
     }
+    app.get("api", "tasks", "channel", ":channelId") { request -> Response in
+        routeResponse(services.emailAccounts.listChannelTasks(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? "",
+            rawQuery: request.url.query
+        ))
+    }
+    app.get("api", "tasks", "channel", ":channelId", "number", ":taskNumber") { request -> Response in
+        routeResponse(services.emailAccounts.getChannelTaskByNumber(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? "",
+            taskNumber: Int(request.parameters.get("taskNumber") ?? "") ?? 0
+        ))
+    }
+    app.post("api", "tasks", "channel", ":channelId") { request -> Response in
+        routeResponse(services.emailAccounts.createChannelTasks(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.patch("api", "tasks", ":taskId", "claim") { request -> Response in
+        routeResponse(services.emailAccounts.claimTask(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            taskId: request.parameters.get("taskId") ?? ""
+        ))
+    }
+    app.patch("api", "tasks", ":taskId", "status") { request -> Response in
+        routeResponse(services.emailAccounts.updateTaskStatus(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            taskId: request.parameters.get("taskId") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.post("api", "tasks", "convert-message") { request -> Response in
+        routeResponse(services.emailAccounts.convertMessageToTask(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.get("api", "tasks", "server") { request -> Response in
+        routeResponse(services.emailAccounts.listServerTasks(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            rawQuery: request.url.query
+        ))
+    }
     app.get("api", "servers", ":id", "sidebar-order") { request -> Response in
         routeResponse(services.emailAccounts.sidebarOrder(
             authorization: request.headers[.authorization],

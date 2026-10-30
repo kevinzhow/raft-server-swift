@@ -197,6 +197,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var providerConnections: [ProviderConnection] = []
     private var providerAssignments: [ProviderAssignment] = []
     private var reminderRecords: [ReminderRecord] = []
+    private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
     public var fcmPushAvailable = true
     public var webPushEnabled = true
@@ -6557,6 +6558,234 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             values.map { jsonString($0) }.joined(separator: ",")
         }
         return Self.json(200, "{\"channelOrder\":[\("\(array(order.channelOrder))")],\"agentOrder\":[\("\(array(order.agentOrder))")],\"dmOrder\":[\("\(array(order.dmOrder))")],\"pinnedOrder\":[\("\(array(order.pinnedOrder))")],\"hiddenDmIds\":[\("\(array(order.hiddenDmIds))")]}")
+    }
+
+    public func addTasks(channelId: String, titles: [String]) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        var ids: [String] = []
+        for title in titles {
+            let taskNumber = taskRecords.filter { $0.channelId == channelId }.count + 1
+            let id = UUID().uuidString.lowercased()
+            taskRecords.append(TaskRecord(
+                id: id,
+                channelId: channelId,
+                title: title,
+                status: "todo",
+                taskNumber: taskNumber
+            ))
+            ids.append(id)
+        }
+        return ids
+    }
+
+    private enum TaskChannelAccess {
+        case readOnly
+        case write
+        case missing
+    }
+
+    private func taskChannelAccess(serverId: String, channelId: String, userId: String) -> TaskChannelAccess {
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return .missing
+        }
+        if oauth.isChannelParticipant(channelId: channelId, userId: userId) {
+            return .write
+        }
+        let type = oauth.channelType(id: channelId) ?? "channel"
+        return type == "channel" ? .readOnly : .missing
+    }
+
+    private static let validTaskStatuses: Set<String> = ["todo", "in_progress", "done", "cancelled"]
+
+    private enum TaskStatusFilterResult {
+        case valid(String?)
+        case invalid(HTTPReply)
+    }
+
+    private static func taskStatusFilter(_ rawQuery: String?) -> TaskStatusFilterResult {
+        guard let rawQuery else { return .valid(nil) }
+        let statusOccurrences = rawQuery.split(separator: "&").filter { $0.hasPrefix("status=") }
+        guard statusOccurrences.count <= 1 else {
+            return .invalid(Self.json(400, "{\"error\":\"status must be a single valid task status\"}"))
+        }
+        guard let occurrence = statusOccurrences.first else { return .valid(nil) }
+        let value = String(occurrence.dropFirst("status=".count)).removingPercentEncoding ?? ""
+        guard validTaskStatuses.contains(value) else {
+            return .invalid(Self.json(400, "{\"error\":\"status must be a single valid task status\"}"))
+        }
+        return .valid(value)
+    }
+
+    private func taskJSON(_ task: TaskRecord) -> String {
+        "{\"id\":\(jsonString(task.id)),\"channelId\":\(jsonString(task.channelId)),\"title\":\(jsonString(task.title)),\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber)}"
+    }
+
+    public func listChannelTasks(authorization: String?, serverId: String, channelId: String, rawQuery: String?) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let status: String?
+        switch Self.taskStatusFilter(rawQuery) {
+        case .invalid(let reply): return reply
+        case .valid(let value): status = value
+        }
+        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
+        case .missing: return Self.json(404, "{\"error\":\"Channel not found\"}")
+        case .readOnly, .write: break
+        }
+        lock.lock()
+        let rows = taskRecords.filter {
+            $0.channelId == channelId && (status == nil || $0.status == status)
+        }
+        lock.unlock()
+        let items = rows.map { taskJSON($0) }.joined(separator: ",")
+        return Self.json(200, "{\"tasks\":[\("\(items)")]}")
+    }
+
+    public func getChannelTaskByNumber(authorization: String?, serverId: String, channelId: String, taskNumber: Int) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
+        case .missing: return Self.json(404, "{\"error\":\"Channel not found\"}")
+        case .readOnly, .write: break
+        }
+        lock.lock()
+        let task = taskRecords.first { $0.channelId == channelId && $0.taskNumber == taskNumber }
+        lock.unlock()
+        guard let task else { return Self.json(404, "{\"error\":\"Task not found\"}") }
+        return Self.json(200, "{\"task\":\(taskJSON(task))}")
+    }
+
+    public func createChannelTasks(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
+        case .missing: return Self.json(404, "{\"error\":\"Channel not found\"}")
+        case .readOnly: return Self.json(403, "{\"error\":\"Join the channel to change tasks\"}")
+        case .write: break
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let tasks = object["tasks"] as? [[String: Any]],
+              !tasks.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"Invalid task list\"}")
+        }
+        let titles = tasks.compactMap { $0["title"] as? String }.filter { !$0.isEmpty }
+        let ids = addTasks(channelId: channelId, titles: titles)
+        return Self.json(200, "{\"taskIds\":[\("\(ids.map { jsonString($0) }.joined(separator: ","))")]}")
+    }
+
+    public func claimTask(authorization: String?, serverId: String, taskId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        guard let index = taskRecords.firstIndex(where: { $0.id == taskId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Task not found\"}")
+        }
+        let channelId = taskRecords[index].channelId
+        lock.unlock()
+        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
+        case .missing: return Self.json(404, "{\"error\":\"Task not found\"}")
+        case .readOnly: return Self.json(403, "{\"error\":\"Join the channel to change tasks\"}")
+        case .write: break
+        }
+        lock.lock()
+        taskRecords[index].assigneeId = userId
+        let task = taskRecords[index]
+        lock.unlock()
+        return Self.json(200, taskJSON(task))
+    }
+
+    public func updateTaskStatus(authorization: String?, serverId: String, taskId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let status = object["status"] as? String, Self.validTaskStatuses.contains(status)
+        else {
+            return Self.json(400, "{\"error\":\"Invalid task status\"}")
+        }
+        lock.lock()
+        guard let index = taskRecords.firstIndex(where: { $0.id == taskId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Task not found\"}")
+        }
+        let channelId = taskRecords[index].channelId
+        lock.unlock()
+        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
+        case .missing: return Self.json(404, "{\"error\":\"Task not found\"}")
+        case .readOnly: return Self.json(403, "{\"error\":\"Join the channel to change tasks\"}")
+        case .write: break
+        }
+        lock.lock()
+        taskRecords[index].status = status
+        let task = taskRecords[index]
+        lock.unlock()
+        return Self.json(200, taskJSON(task))
+    }
+
+    public func convertMessageToTask(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let messageId = object["messageId"] as? String,
+              let channelId = oauth.messageChannelId(messageId)
+        else {
+            return Self.json(404, "{\"error\":\"Message not found\"}")
+        }
+        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
+        case .missing: return Self.json(404, "{\"error\":\"Message not found\"}")
+        case .readOnly: return Self.json(403, "{\"error\":\"Join the channel to change tasks\"}")
+        case .write: break
+        }
+        let ids = addTasks(channelId: channelId, titles: ["Converted message"])
+        return Self.json(200, "{\"taskIds\":[\("\(ids.map { jsonString($0) }.joined(separator: ","))")]}")
+    }
+
+    public func listServerTasks(authorization: String?, serverId: String, rawQuery: String?) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let status: String?
+        switch Self.taskStatusFilter(rawQuery) {
+        case .invalid(let reply): return reply
+        case .valid(let value): status = value
+        }
+        let visibleChannels = Set(oauth.channelsForServer(serverId: serverId, userId: userId).map { $0.id })
+        lock.lock()
+        let rows = taskRecords.filter {
+            visibleChannels.contains($0.channelId) && (status == nil || $0.status == status)
+        }
+        lock.unlock()
+        let items = rows.map { taskJSON($0) }.joined(separator: ",")
+        return Self.json(200, "{\"tasks\":[\("\(items)")]}")
+    }
+
+    private struct TaskRecord {
+        var id: String
+        var channelId: String
+        var title: String
+        var status: String
+        var taskNumber: Int
+        var assigneeId: String? = nil
     }
 
     public func addReminder(serverId: String, ownerAgentId: String, title: String, fireAt: Date) {

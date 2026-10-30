@@ -578,6 +578,12 @@ public final class OAuthLedger: @unchecked Sendable {
         return id
     }
 
+    public func messageChannelId(_ messageId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return channelMessages.first(where: { $0.id == messageId })?.channelId
+    }
+
     public func saveMessage(userId: String, messageId: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -660,6 +666,18 @@ public final class OAuthLedger: @unchecked Sendable {
             channelDisplayPrefs[key] = prefs
         }
         return prefs
+    }
+
+    public func channelServerId(_ channelId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return channelRecords.first(where: { $0.id == channelId })?.serverId
+    }
+
+    public func isChannelParticipant(channelId: String, userId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return channelHumans.contains("\(channelId)\n\(userId)")
     }
 
     public func channelInfo(id: String) -> (serverId: String, name: String, description: String?)? {
