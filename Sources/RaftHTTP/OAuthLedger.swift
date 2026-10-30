@@ -59,6 +59,7 @@ public final class OAuthLedger: @unchecked Sendable {
     private var channelMessages: [ChannelMessageRecord] = []
     private var channelSystemMessages: [ChannelSystemMessageRecord] = []
     private var channelNotificationPrefs: [String: ChannelNotificationPrefs] = [:]
+    private var channelReadCursors: [String: Int] = [:]
 
     private var clients: [Client] = []
     private var requests: [AccessRequest] = []
@@ -393,11 +394,71 @@ public final class OAuthLedger: @unchecked Sendable {
     }
 
     @discardableResult
-    public func createChannelMessage(channelId: String, content: String, createdAt: Date = Date()) -> Date {
+    public func createChannelMessage(
+        channelId: String,
+        content: String,
+        createdAt: Date = Date(),
+        senderId: String = "user"
+    ) -> Date {
         lock.lock()
-        channelMessages.append(ChannelMessageRecord(channelId: channelId, content: content, createdAt: createdAt))
+        let seq = channelMessages.filter { $0.channelId == channelId }.count
+            + channelSystemMessages.filter { $0.channelId == channelId }.count + 1
+        channelMessages.append(ChannelMessageRecord(
+            id: UUID().uuidString.lowercased(),
+            channelId: channelId,
+            content: content,
+            createdAt: createdAt,
+            senderId: senderId,
+            seq: seq
+        ))
         lock.unlock()
         return createdAt
+    }
+
+    public func createDirectChannel(serverId: String, firstUserId: String, secondUserId: String) -> String {
+        lock.lock()
+        if let existing = channelRecords.first(where: {
+            $0.serverId == serverId && $0.type == "dm"
+                && channelHumans.contains("\($0.id)\n\(firstUserId)")
+                && channelHumans.contains("\($0.id)\n\(secondUserId)")
+        }) {
+            lock.unlock()
+            return existing.id
+        }
+        let id = UUID().uuidString.lowercased()
+        channelRecords.append(ChannelRecord(id: id, serverId: serverId, name: "", type: "dm"))
+        channelHumans.insert("\(id)\n\(firstUserId)")
+        channelHumans.insert("\(id)\n\(secondUserId)")
+        lock.unlock()
+        return id
+    }
+
+    public func setChannelReadCursor(channelId: String, userId: String, seq: Int) {
+        lock.lock()
+        channelReadCursors["\(channelId)\n\(userId)"] = seq
+        lock.unlock()
+    }
+
+    public struct ChannelUnreadInfo: Sendable {
+        public var unreadCount: Int
+        public var maxReadSeq: Int
+        public var latestMessageId: String?
+        public var latestSeq: Int?
+    }
+
+    public func channelUnreadInfo(channelId: String, userId: String) -> ChannelUnreadInfo {
+        lock.lock()
+        defer { lock.unlock() }
+        let cursor = channelReadCursors["\(channelId)\n\(userId)"] ?? 0
+        let messages = channelMessages.filter { $0.channelId == channelId }
+        let unread = messages.filter { $0.senderId != userId && $0.seq > cursor }.count
+        let latest = messages.max { $0.seq < $1.seq }
+        return ChannelUnreadInfo(
+            unreadCount: unread,
+            maxReadSeq: cursor,
+            latestMessageId: latest?.id,
+            latestSeq: latest?.seq
+        )
     }
 
     public func channelInfo(id: String) -> (serverId: String, name: String, description: String?)? {
@@ -514,9 +575,12 @@ public final class OAuthLedger: @unchecked Sendable {
     }
 
     private struct ChannelMessageRecord {
+        var id: String
         var channelId: String
         var content: String
         var createdAt: Date
+        var senderId: String
+        var seq: Int
     }
 
     public func memberRole(serverId: String, userId: String) -> String? {

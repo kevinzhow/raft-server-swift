@@ -6182,6 +6182,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return env
     }
 
+    private static func privateJSON(_ body: String) -> HTTPReply {
+        HTTPReply(
+            status: 200,
+            headers: [
+                "X-Robots-Tag": AppFallback.robotsTag,
+                "Content-Type": AppFallback.jsonContentType,
+                "Cache-Control": "private, no-store",
+                "Content-Length": String(Data(body.utf8).count),
+            ],
+            body: body
+        )
+    }
+
     private static func serializeJSON(_ object: [String: Any]) -> String {
         guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
             return "{}"
@@ -6529,6 +6542,34 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var name: String
         var description: String?
         var apiKey: String?
+    }
+
+    public func channelUnread(authorization: String?, serverId: String, summary: Bool) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let channels = oauth.channelsForServer(serverId: serverId, userId: userId).filter { $0.joined }
+        if !summary {
+            let pairs = channels.map { channel -> String in
+                let info = oauth.channelUnreadInfo(channelId: channel.id, userId: userId)
+                return "\(jsonString(channel.id)):\(info.unreadCount)"
+            }.joined(separator: ",")
+            return Self.privateJSON("{\(pairs)}")
+        }
+        let entries = channels.map { channel -> String in
+            let info = oauth.channelUnreadInfo(channelId: channel.id, userId: userId)
+            let latest: String
+            if let messageId = info.latestMessageId, let seq = info.latestSeq {
+                latest = "{\"messageId\":\(jsonString(messageId)),\"seq\":\"\(seq)\"}"
+            } else {
+                latest = "null"
+            }
+            return "\(jsonString(channel.id)):{\"unreadCount\":\(info.unreadCount),\"hasMention\":false,\"hasAnyMention\":false,\"readState\":{\"kind\":\"present\",\"readStateVersion\":0,\"maxReadSeq\":\"\(info.maxReadSeq)\",\"latestActivity\":\(latest)}}"
+        }.joined(separator: ",")
+        return Self.privateJSON("{\"channels\":{\(entries)}}")
     }
 
     public func channelNotificationSettings(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
