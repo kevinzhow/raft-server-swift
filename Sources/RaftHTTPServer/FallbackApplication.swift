@@ -597,6 +597,21 @@ public func configure(_ app: Application, services: FallbackServices) {
             agentId: request.parameters.get("id") ?? ""
         ))
     }
+    app.get("api", "channels", ":channelId", "notification-settings") { request -> Response in
+        routeResponse(services.emailAccounts.channelNotificationSettings(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? ""
+        ))
+    }
+    app.patch("api", "channels", ":channelId", "notification-settings") { request -> Response in
+        routeResponse(services.emailAccounts.patchChannelNotificationSettings(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.patch("api", "channels", ":channelId") { request -> Response in
         routeResponse(services.emailAccounts.patchChannelRoute(
             authorization: request.headers[.authorization],

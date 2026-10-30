@@ -6531,6 +6531,47 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var apiKey: String?
     }
 
+    public func channelNotificationSettings(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        guard oauth.channelType(id: channelId) == "channel" else {
+            return Self.json(400, "{\"error\":\"Threads use follow/unfollow instead of activity mute\"}")
+        }
+        let prefs = oauth.notificationPrefs(channelId: channelId, userId: userId)
+        let muteSeq = prefs.muteFromSeq.map(String.init) ?? "null"
+        return Self.json(200, "{\"activityMuted\":\(prefs.activityMuted),\"muteFromSeq\":\(muteSeq),\"prefsVersion\":\(prefs.prefsVersion),\"activityMuteSupported\":true}")
+    }
+
+    public func patchChannelNotificationSettings(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        guard oauth.channelType(id: channelId) == "channel" else {
+            return Self.json(400, "{\"error\":\"Threads use follow/unfollow instead of activity mute\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let muted = object["activityMuted"] as? Bool
+        else {
+            return Self.json(400, "{\"error\":\"activityMuted must be a boolean\"}")
+        }
+        let result = oauth.setActivityMuted(channelId: channelId, userId: userId, muted: muted)
+        let muteSeq = result.prefs.muteFromSeq.map(String.init) ?? "null"
+        return Self.json(200, "{\"activityMuted\":\(result.prefs.activityMuted),\"muteFromSeq\":\(muteSeq),\"prefsVersion\":\(result.prefs.prefsVersion),\"activityMuteSupported\":true}")
+    }
+
     public func patchChannelRoute(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -6610,7 +6651,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let rows = oauth.channelsForServer(serverId: serverId, userId: userId).map { channel -> String in
             let last = channel.lastMessageAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
-            return "{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(channel.type)),\"joined\":\(channel.joined),\"lastMessageAt\":\(last)}"
+            let muteSeq = channel.muteFromSeq.map(String.init) ?? "null"
+            return "{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(channel.type)),\"joined\":\(channel.joined),\"lastMessageAt\":\(last),\"activityMuted\":\(channel.activityMuted),\"muteFromSeq\":\(muteSeq),\"prefsVersion\":\(channel.prefsVersion),\"activityMuteSupported\":true}"
         }.joined(separator: ",")
         return Self.json(200, "[\(rows)]")
     }

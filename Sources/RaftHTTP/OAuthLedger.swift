@@ -58,6 +58,7 @@ public final class OAuthLedger: @unchecked Sendable {
     private var channelHumans: Set<String> = []
     private var channelMessages: [ChannelMessageRecord] = []
     private var channelSystemMessages: [ChannelSystemMessageRecord] = []
+    private var channelNotificationPrefs: [String: ChannelNotificationPrefs] = [:]
 
     private var clients: [Client] = []
     private var requests: [AccessRequest] = []
@@ -363,6 +364,15 @@ public final class OAuthLedger: @unchecked Sendable {
         public var type: String
         public var joined: Bool
         public var lastMessageAt: Date?
+        public var activityMuted: Bool
+        public var muteFromSeq: Int?
+        public var prefsVersion: Int
+    }
+
+    public struct ChannelNotificationPrefs: Sendable {
+        public var activityMuted: Bool = false
+        public var muteFromSeq: Int? = nil
+        public var prefsVersion: Int = 0
     }
 
     public func createChannel(serverId: String, name: String, creatorUserId: String, type: String = "channel", description: String? = nil) -> String {
@@ -430,6 +440,46 @@ public final class OAuthLedger: @unchecked Sendable {
         var createdAt: Date
     }
 
+    public func channelType(id: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return channelRecords.first(where: { $0.id == id })?.type
+    }
+
+    public func latestChannelSeq(channelId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let messages = channelMessages.filter { $0.channelId == channelId }.count
+        let systems = channelSystemMessages.filter { $0.channelId == channelId }.count
+        return messages + systems
+    }
+
+    public func notificationPrefs(channelId: String, userId: String) -> ChannelNotificationPrefs {
+        lock.lock()
+        defer { lock.unlock() }
+        return channelNotificationPrefs["\(channelId)\n\(userId)"] ?? ChannelNotificationPrefs()
+    }
+
+    public func setActivityMuted(channelId: String, userId: String, muted: Bool) -> (prefs: ChannelNotificationPrefs, changed: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = "\(channelId)\n\(userId)"
+        var prefs = channelNotificationPrefs[key] ?? ChannelNotificationPrefs()
+        if prefs.activityMuted == muted {
+            return (prefs, false)
+        }
+        prefs.activityMuted = muted
+        prefs.muteFromSeq = muted ? latestChannelSeqLocked(channelId: channelId) + 1 : nil
+        prefs.prefsVersion += 1
+        channelNotificationPrefs[key] = prefs
+        return (prefs, true)
+    }
+
+    private func latestChannelSeqLocked(channelId: String) -> Int {
+        channelMessages.filter { $0.channelId == channelId }.count
+            + channelSystemMessages.filter { $0.channelId == channelId }.count
+    }
+
     public func channelsForServer(serverId: String, userId: String) -> [ChannelListInfo] {
         lock.lock()
         defer { lock.unlock() }
@@ -440,12 +490,16 @@ public final class OAuthLedger: @unchecked Sendable {
                     .filter { $0.channelId == channel.id }
                     .map { $0.createdAt }
                     .max()
+                let prefs = channelNotificationPrefs["\(channel.id)\n\(userId)"] ?? ChannelNotificationPrefs()
                 return ChannelListInfo(
                     id: channel.id,
                     name: channel.name,
                     type: channel.type,
                     joined: channelHumans.contains("\(channel.id)\n\(userId)"),
-                    lastMessageAt: last
+                    lastMessageAt: last,
+                    activityMuted: prefs.activityMuted,
+                    muteFromSeq: prefs.muteFromSeq,
+                    prefsVersion: prefs.prefsVersion
                 )
             }
     }
