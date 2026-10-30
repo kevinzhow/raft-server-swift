@@ -94,6 +94,17 @@ public struct EmailLegalAcceptance: Equatable, Sendable {
     }
 }
 
+public struct RecordedProductEvent: Sendable {
+    public var subjectType: String
+    public var subjectId: String
+    public var eventType: String
+    public var actorType: String
+    public var actorId: String
+    public var source: String
+    public var idempotencyKey: String?
+    public var metadataJSON: String
+}
+
 /// `POST /api/auth/login`.
 ///
 /// A non-string or empty email or password is refused before any account lookup.
@@ -103,6 +114,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private let lock = NSLock()
     private var accounts: [String: Account] = [:]
     private var analyticsIds: [String: String] = [:]
+    private var productEventRecords: [RecordedProductEvent] = []
     private var sessions: [String: LiveSession] = [:]
     private var rotationReceipts: [String: RotationReceipt] = [:]
     private var revokedFamilies: Set<String> = []
@@ -5785,6 +5797,76 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public func sessionUserId(authorization: String?) -> String? {
         if case .user(let id) = authorize(authorization) { return id }
         return nil
+    }
+
+    public func setShareUsageData(userId: String, value: Bool?) {
+        lock.lock()
+        if let key = accounts.first(where: { $0.value.id == userId })?.key {
+            accounts[key]?.shareUsageData = value
+        }
+        lock.unlock()
+    }
+
+    public func recordedProductEvents(subjectId: String) -> [RecordedProductEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return productEventRecords.filter { $0.subjectId == subjectId }
+    }
+
+    /// `POST /api/product-events/onboarding-wizard`.
+    public func recordOnboardingWizard(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let serverEnabled = oauth.serverAnalyticsAllowed(id: serverId), serverEnabled else {
+            return Self.json(204, "")
+        }
+        lock.lock()
+        let shareUsageData = accounts.values.first(where: { $0.id == userId })?.shareUsageData
+        lock.unlock()
+        if shareUsageData == false {
+            return Self.json(204, "")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let eventType = object["eventType"] as? String, !eventType.isEmpty,
+              let rawMetadata = object["metadata"] as? [String: Any]
+        else {
+            return Self.json(400, "{\"error\":\"Invalid product event\"}")
+        }
+        let stepId = rawMetadata["step_id"] as? String ?? ""
+        if eventType == "onboarding_wizard.step_shown", stepId == "enable-notifications" {
+            return Self.json(400, "{\"error\":\"Only tracked onboarding wizard steps are accepted\"}")
+        }
+        let allowedKeys = ["step_id", "wizard_version", "session_id", "action", "result", "reason"]
+        var sanitized: [String: Any] = [:]
+        for key in allowedKeys {
+            if let value = rawMetadata[key] as? String { sanitized[key] = value }
+        }
+        if let latency = rawMetadata["latency_ms"] as? Double {
+            sanitized["latency_ms"] = Int(latency)
+        } else if let latency = rawMetadata["latency_ms"] as? Int {
+            sanitized["latency_ms"] = latency
+        }
+        let metadataJSON: String
+        if let data = try? JSONSerialization.data(withJSONObject: sanitized, options: [.sortedKeys]) {
+            metadataJSON = String(decoding: data, as: UTF8.self)
+        } else {
+            metadataJSON = "{}"
+        }
+        let record = RecordedProductEvent(
+            subjectType: "onboarding_wizard",
+            subjectId: serverId,
+            eventType: eventType,
+            actorType: "human",
+            actorId: userId,
+            source: "web",
+            idempotencyKey: object["idempotencyKey"] as? String,
+            metadataJSON: metadataJSON
+        )
+        lock.lock()
+        productEventRecords.append(record)
+        lock.unlock()
+        return Self.json(204, "")
     }
 
     private func authorize(_ authorization: String?) -> Auth {

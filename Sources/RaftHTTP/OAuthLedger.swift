@@ -140,6 +140,20 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func setServerProductAnalytics(id: String, enabled: Bool) {
+        lock.lock()
+        servers[id]?.productAnalyticsEnabled = enabled
+        lock.unlock()
+    }
+
+    /// nil means the Server does not exist.
+    public func serverAnalyticsAllowed(id: String) -> Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let server = servers[id], !server.deleted else { return nil }
+        return server.productAnalyticsEnabled
+    }
+
     public func setServerPlan(id: String, plan: String) {
         lock.lock()
         if var server = servers[id] {
@@ -1539,6 +1553,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var avatarUrl: String? = nil
         var plan: String = "free"
         var deleted = false
+        var productAnalyticsEnabled = true
     }
 
     private struct Agent {

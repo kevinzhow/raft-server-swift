@@ -582,6 +582,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             baseURL: services.emailAccounts.serverURL
         ))
     }
+    app.post("api", "product-events", "onboarding-wizard") { request -> Response in
+        routeResponse(services.emailAccounts.recordOnboardingWizard(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("api", "oauth", "agents") { request -> Response in
         routeResponse(services.emailAccounts.oauth.agentDirectory(
             authorization: request.headers[.authorization],
