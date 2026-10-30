@@ -597,6 +597,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             agentId: request.parameters.get("id") ?? ""
         ))
     }
+    app.get("api", "channels") { request -> Response in
+        routeResponse(services.emailAccounts.listChannels(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+        ))
+    }
     app.get("api", "servers", ":id", "settings") { request -> Response in
         routeResponse(services.emailAccounts.serverSettings(
             authorization: request.headers[.authorization],

@@ -54,6 +54,10 @@ public final class OAuthLedger: @unchecked Sendable {
     private var agentEvents: [AgentEvent] = []
     private var revokedGrantClients: Set<String> = []
     private var members: [String: String] = [:]
+    private var channelRecords: [ChannelRecord] = []
+    private var channelHumans: Set<String> = []
+    private var channelMessages: [ChannelMessageRecord] = []
+
     private var clients: [Client] = []
     private var requests: [AccessRequest] = []
     private var tokens: [AccessToken] = []
@@ -66,6 +70,9 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.lock()
         servers[id] = Server(id: id, slug: slug, name: name, ownerId: ownerId)
         members["\(id)\n\(ownerId)"] = "owner"
+        let allId = UUID().uuidString.lowercased()
+        channelRecords.append(ChannelRecord(id: allId, serverId: id, name: "all", type: "channel"))
+        channelHumans.insert("\(allId)\n\(ownerId)")
         lock.unlock()
     }
 
@@ -347,6 +354,73 @@ public final class OAuthLedger: @unchecked Sendable {
             guard parts.count == 2, parts[1] == userId else { return nil }
             return parts[0]
         }
+    }
+
+    public struct ChannelListInfo: Sendable {
+        public var id: String
+        public var name: String
+        public var type: String
+        public var joined: Bool
+        public var lastMessageAt: Date?
+    }
+
+    public func createChannel(serverId: String, name: String, creatorUserId: String, type: String = "channel") -> String {
+        let id = UUID().uuidString.lowercased()
+        lock.lock()
+        channelRecords.append(ChannelRecord(id: id, serverId: serverId, name: name, type: type))
+        if type == "channel" {
+            channelHumans.insert("\(id)\n\(creatorUserId)")
+        }
+        lock.unlock()
+        return id
+    }
+
+    public func addChannelHuman(channelId: String, userId: String) {
+        lock.lock()
+        channelHumans.insert("\(channelId)\n\(userId)")
+        lock.unlock()
+    }
+
+    @discardableResult
+    public func createChannelMessage(channelId: String, content: String, createdAt: Date = Date()) -> Date {
+        lock.lock()
+        channelMessages.append(ChannelMessageRecord(channelId: channelId, content: content, createdAt: createdAt))
+        lock.unlock()
+        return createdAt
+    }
+
+    public func channelsForServer(serverId: String, userId: String) -> [ChannelListInfo] {
+        lock.lock()
+        defer { lock.unlock() }
+        return channelRecords
+            .filter { $0.serverId == serverId && !$0.archived }
+            .map { channel in
+                let last = channelMessages
+                    .filter { $0.channelId == channel.id }
+                    .map { $0.createdAt }
+                    .max()
+                return ChannelListInfo(
+                    id: channel.id,
+                    name: channel.name,
+                    type: channel.type,
+                    joined: channelHumans.contains("\(channel.id)\n\(userId)"),
+                    lastMessageAt: last
+                )
+            }
+    }
+
+    private struct ChannelRecord {
+        var id: String
+        var serverId: String
+        var name: String
+        var type: String
+        var archived = false
+    }
+
+    private struct ChannelMessageRecord {
+        var channelId: String
+        var content: String
+        var createdAt: Date
     }
 
     public func memberRole(serverId: String, userId: String) -> String? {
