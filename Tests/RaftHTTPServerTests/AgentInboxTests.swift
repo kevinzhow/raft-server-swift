@@ -248,3 +248,66 @@ private func inboxObject(_ response: ClientResponse) throws -> [String: Any] {
         }
     }
 }
+
+@Test func concurrentDuplicateAgentEventsQueueOnlyOnce() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111230"
+    let serverId = "33333333-3333-4333-8333-333333333424"
+    accounts.oauth.addOwnedServer(id: serverId, slug: "agent-concurrent-230", name: "Agent Concurrent", ownerId: ownerId)
+    _ = accounts.oauth.createAgent(serverId: serverId, name: "ConcurrentBot")
+    let created = try accounts.oauth.createClient(
+        serverId: serverId,
+        createdByUserId: ownerId,
+        name: "Concurrent Event Client",
+        clientId: "agent-concurrent-230",
+        allowedScopes: ["openid", "agent:event:write"]
+    )
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.contentType] = "application/json"
+            let requested = try await client.send(.post, headers: headers, to: "/api/oauth/requests/agent") { request in
+                request.body = .init(string: "{\"clientId\":\"\(created.clientId)\",\"clientSecret\":\"\(created.clientSecret)\",\"serverSlug\":\"agent-concurrent-230\",\"agentName\":\"ConcurrentBot\",\"scopes\":[\"agent:event:write\"]}")
+            }
+            let requestId = try inboxObject(requested)["requestId"] as? String ?? ""
+            let tokenBody: [String: Any] = [
+                "clientId": created.clientId,
+                "clientSecret": created.clientSecret,
+                "grantType": "urn:slock:grant-type:agent_request",
+                "requestId": requestId,
+                "resource": "urn:raft:server:\(serverId):agent-inbound",
+            ]
+            let tokenData = try JSONSerialization.data(withJSONObject: tokenBody)
+            let exchanged = try await client.send(.post, headers: headers, to: "/api/oauth/token") { request in
+                request.body = .init(string: String(decoding: tokenData, as: UTF8.self))
+            }
+            let accessToken = try inboxObject(exchanged)["access_token"] as? String ?? ""
+
+            var mutableHeaders = HTTPFields()
+            mutableHeaders[.contentType] = "application/json"
+            mutableHeaders[.authorization] = "Bearer \(accessToken)"
+            let eventHeaders = mutableHeaders
+            let send: @Sendable (String) async throws -> ClientResponse = { body in
+                try await client.send(.post, headers: eventHeaders, to: "/api/oauth/agent-events") { request in
+                    request.body = .init(string: body)
+                }
+            }
+            async let first = send("{\"kind\":\"event\",\"summary\":\"Concurrent build\",\"externalEventId\":\"concurrent-230\",\"payload\":{\"attempt\":1}}")
+            async let second = send("{\"kind\":\"event\",\"summary\":\"Concurrent duplicate\",\"externalEventId\":\"concurrent-230\",\"payload\":{\"attempt\":2}}")
+            let (one, two) = try await (first, second)
+
+            #expect([one.status, two.status].sorted { $0.code < $1.code } == [.ok, .accepted])
+            let oneBody = try inboxObject(one)
+            let twoBody = try inboxObject(two)
+            #expect(oneBody["id"] as? String == twoBody["id"] as? String)
+            #expect([oneBody["deduped"] as? Bool, twoBody["deduped"] as? Bool].compactMap { $0 }.filter { $0 }.count == 1)
+        }
+    }
+}
