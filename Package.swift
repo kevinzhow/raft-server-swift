@@ -7,10 +7,13 @@ let package = Package(
         .library(name: "RaftConnectAuth", targets: ["RaftConnectAuth"]),
         .library(name: "RaftDaemonClient", targets: ["RaftDaemonClient"]),
         .library(name: "RaftHTTP", targets: ["RaftHTTP"]),
+        .library(name: "RaftHTTPServer", targets: ["RaftHTTPServer"]),
+        .executable(name: "RaftServer", targets: ["RaftServer"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
+        .package(url: "https://github.com/vapor/vapor.git", from: "4.122.3"),
     ],
     targets: [
         .target(
@@ -37,9 +40,33 @@ let package = Package(
             ]
         ),
         .target(name: "RaftHTTP"),
+        .target(
+            name: "RaftHTTPServer",
+            dependencies: [
+                "RaftHTTP",
+                .product(name: "Vapor", package: "vapor"),
+            ]
+        ),
+        .executableTarget(
+            name: "RaftServer",
+            dependencies: [
+                "RaftHTTP",
+                "RaftHTTPServer",
+                .product(name: "Vapor", package: "vapor"),
+            ]
+        ),
         .testTarget(
             name: "RaftHTTPTests",
             dependencies: ["RaftHTTP"]
+        ),
+        .testTarget(
+            name: "RaftHTTPServerTests",
+            dependencies: [
+                "RaftHTTP",
+                "RaftHTTPServer",
+                .product(name: "Vapor", package: "vapor"),
+                .product(name: "VaporTesting", package: "vapor"),
+            ]
         ),
         .testTarget(
             name: "RaftConnectAuthTests",
