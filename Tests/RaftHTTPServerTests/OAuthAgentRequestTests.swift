@@ -312,3 +312,66 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
         }
     }
 }
+
+@Test func queuedAgentEventRetryIsReclaimedAndKeepsItsId() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111226"
+    let serverId = "33333333-3333-4333-8333-333333333420"
+    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-retry-226", name: "OAuth Event Retry", ownerId: ownerId)
+    let agentId = accounts.oauth.createAgent(serverId: serverId, name: "OauthRetryBot")
+    let created = try accounts.oauth.createClient(
+        serverId: serverId,
+        createdByUserId: ownerId,
+        name: "OAuth Retry Client",
+        clientId: "oauth-retry-226",
+        allowedScopes: ["openid", "agent:event:write"]
+    )
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var jsonHeaders = HTTPFields()
+            jsonHeaders[.contentType] = "application/json"
+            let requested = try await client.send(.post, headers: jsonHeaders, to: "/api/oauth/requests/agent") { request in
+                request.body = .init(string: "{\"clientId\":\"\(created.clientId)\",\"clientSecret\":\"\(created.clientSecret)\",\"serverSlug\":\"oauth-retry-226\",\"agentName\":\"OauthRetryBot\",\"scopes\":[\"agent:event:write\"]}")
+            }
+            let requestId = try agentRequestBody(requested)["requestId"] as? String ?? ""
+            let tokenBody: [String: Any] = [
+                "clientId": created.clientId,
+                "clientSecret": created.clientSecret,
+                "grantType": "urn:slock:grant-type:agent_request",
+                "requestId": requestId,
+                "resource": "urn:raft:server:\(serverId):agent-inbound",
+            ]
+            let tokenData = try JSONSerialization.data(withJSONObject: tokenBody)
+            let exchanged = try await client.send(.post, headers: jsonHeaders, to: "/api/oauth/token") { request in
+                request.body = .init(string: String(decoding: tokenData, as: UTF8.self))
+            }
+            let accessToken = try agentRequestBody(exchanged)["access_token"] as? String ?? ""
+
+            let eventId = accounts.oauth.seedQueuedAgentEvent(
+                serverId: serverId,
+                agentId: agentId,
+                clientRecordId: created.id,
+                externalEventId: "retry-build-226"
+            )
+
+            var headers = HTTPFields()
+            headers[.contentType] = "application/json"
+            headers[.authorization] = "Bearer \(accessToken)"
+            let retry = try await client.send(.post, headers: headers, to: "/api/oauth/agent-events") { request in
+                request.body = .init(string: "{\"kind\":\"event\",\"summary\":\"Retry build\",\"externalEventId\":\"retry-build-226\",\"payload\":{\"retry\":true}}")
+            }
+            #expect(retry.status == .ok)
+            let body = try agentRequestBody(retry)
+            #expect(body["id"] as? String == eventId)
+            #expect(body["status"] as? String == "queued")
+            #expect(body["deduped"] as? Bool == true)
+        }
+    }
+}

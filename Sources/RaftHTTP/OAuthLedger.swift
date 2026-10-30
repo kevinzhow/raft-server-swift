@@ -666,6 +666,32 @@ public final class OAuthLedger: @unchecked Sendable {
         }
     }
 
+    /// Seeds a queued event for the duplicate-retry contract.
+    public func seedQueuedAgentEvent(
+        serverId: String,
+        agentId: String,
+        clientRecordId: String,
+        externalEventId: String
+    ) -> String {
+        let id = UUID().uuidString.lowercased()
+        lock.lock()
+        agentEvents.append(AgentEvent(
+            id: id,
+            serverId: serverId,
+            agentId: agentId,
+            clientId: clientRecordId,
+            kind: "event",
+            summary: "Queued before delivery failed",
+            payloadHash: String(repeating: "0", count: 64),
+            externalEventId: externalEventId,
+            status: "queued",
+            expiresAt: Date().addingTimeInterval(24 * 60 * 60),
+            createdAt: Date()
+        ))
+        lock.unlock()
+        return id
+    }
+
     /// `POST /api/oauth/agent-events`. Only a resource-bound agent token with
     /// the matching inbound scope may enqueue an event.
     public func postAgentEvent(authorization: String?, body: String) -> HTTPReply {
