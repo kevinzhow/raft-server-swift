@@ -738,6 +738,14 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.patch("api", "tasks", ":taskId", "assignee") { request -> Response in
+        routeResponse(services.emailAccounts.assignTask(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            taskId: request.parameters.get("taskId") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.patch("api", "tasks", ":taskId", "claim") { request -> Response in
         routeResponse(services.emailAccounts.claimTask(
             authorization: request.headers[.authorization],

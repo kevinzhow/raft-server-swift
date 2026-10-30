@@ -6618,7 +6618,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     private func taskJSON(_ task: TaskRecord) -> String {
-        "{\"id\":\(jsonString(task.id)),\"channelId\":\(jsonString(task.channelId)),\"title\":\(jsonString(task.title)),\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber)}"
+        let assignee = task.assigneeId.map { jsonString($0) } ?? "null"
+        let assigneeType = task.assigneeType.map { jsonString($0) } ?? "null"
+        let claimed = task.claimedAt.map { jsonString(ISO8601DateFormatter().string(from: $0)) } ?? "null"
+        return "{\"id\":\(jsonString(task.id)),\"channelId\":\(jsonString(task.channelId)),\"title\":\(jsonString(task.title)),\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber),\"claimedById\":\(assignee),\"claimedByType\":\(assigneeType),\"claimedAt\":\(claimed),\"revision\":\(task.revision)}"
     }
 
     public func listChannelTasks(authorization: String?, serverId: String, channelId: String, rawQuery: String?) -> HTTPReply {
@@ -6687,6 +6690,77 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"taskIds\":[\("\(ids.map { jsonString($0) }.joined(separator: ","))")]}")
     }
 
+    public func assignTask(authorization: String?, serverId: String, taskId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid assignment\"}")
+        }
+        let assignee: (type: String, id: String)?
+        if object["assignee"] is NSNull {
+            assignee = nil
+        } else if let raw = object["assignee"] as? [String: Any],
+                  let type = raw["type"] as? String, type == "user" || type == "agent",
+                  let id = raw["id"] as? String, !id.isEmpty {
+            assignee = (type, id)
+        } else {
+            return Self.json(400, "{\"error\":\"Invalid assignment\"}")
+        }
+        let expectedRevision = object["expectedRevision"] as? Int
+        lock.lock()
+        guard let index = taskRecords.firstIndex(where: { $0.id == taskId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Task not found\"}")
+        }
+        let channelId = taskRecords[index].channelId
+        lock.unlock()
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        if (oauth.channelType(id: channelId) ?? "channel") != "channel",
+           !oauth.isChannelParticipant(channelId: channelId, userId: userId) {
+            return Self.json(404, "{\"error\":\"Task not found\"}")
+        }
+        if let assignee {
+            if assignee.type == "user" {
+                guard oauth.isChannelParticipant(channelId: channelId, userId: assignee.id),
+                      oauth.memberRole(serverId: serverId, userId: assignee.id) != nil
+                else {
+                    return Self.json(409, "{\"error\":\"Assignee is not in this channel\"}")
+                }
+            } else {
+                guard let agent = oauth.agentRuntimeInfo(id: assignee.id), agent.serverId == serverId, !agent.deleted else {
+                    return Self.json(409, "{\"error\":\"Assignee is not in this channel\"}")
+                }
+            }
+        }
+        lock.lock()
+        guard taskRecords[index].status != "done" else {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"A done task cannot be reassigned\"}")
+        }
+        let currentRevision = taskRecords[index].revision
+        if let expectedRevision, expectedRevision != currentRevision {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"Task changed concurrently\",\"currentRevision\":\(currentRevision)}")
+        }
+        let sameAssignee = taskRecords[index].assigneeId == assignee?.id
+            && taskRecords[index].assigneeType == assignee?.type
+        if sameAssignee {
+            let task = taskRecords[index]
+            lock.unlock()
+            return Self.json(200, taskJSON(task))
+        }
+        taskRecords[index].assigneeId = assignee?.id
+        taskRecords[index].assigneeType = assignee?.type
+        taskRecords[index].claimedAt = nil
+        taskRecords[index].revision += 1
+        let task = taskRecords[index]
+        lock.unlock()
+        return Self.json(200, taskJSON(task))
+    }
+
     public func claimTask(authorization: String?, serverId: String, taskId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -6705,6 +6779,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         lock.lock()
         taskRecords[index].assigneeId = userId
+        taskRecords[index].assigneeType = "user"
+        taskRecords[index].claimedAt = Date()
+        taskRecords[index].revision += 1
+        if taskRecords[index].status == "todo" { taskRecords[index].status = "in_progress" }
         let task = taskRecords[index]
         lock.unlock()
         return Self.json(200, taskJSON(task))
@@ -6733,6 +6811,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         lock.lock()
         taskRecords[index].status = status
+        if status == "in_progress", taskRecords[index].claimedAt == nil {
+            taskRecords[index].claimedAt = Date()
+        }
+        taskRecords[index].revision += 1
         let task = taskRecords[index]
         lock.unlock()
         return Self.json(200, taskJSON(task))
@@ -6786,6 +6868,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var status: String
         var taskNumber: Int
         var assigneeId: String? = nil
+        var assigneeType: String? = nil
+        var claimedAt: Date? = nil
+        var revision: Int = 0
     }
 
     public func addReminder(serverId: String, ownerAgentId: String, title: String, fireAt: Date) {
