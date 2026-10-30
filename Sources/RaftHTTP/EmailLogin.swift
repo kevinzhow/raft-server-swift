@@ -6036,7 +6036,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"Invalid Agent\"}")
         }
         let rawConfig = object["runtimeConfig"] as? [String: Any] ?? [:]
-        let config = Self.normalizeRuntimeConfig(rawConfig)
+        var config = Self.normalizeRuntimeConfig(rawConfig)
+        if object["envVars"] != nil {
+            let validation = Self.validatedEnvVars(object["envVars"])
+            if let error = validation.error {
+                return Self.json(400, "{\"error\":\(jsonString(error))}")
+            }
+            if let env = validation.env {
+                config["envVars"] = env
+            }
+        }
         let userEnv = (config["envVars"] as? [String: String]) ?? [:]
         let envVars = Self.derivedAgentEnvVars(config, userEnv: userEnv)
         let runtime = config["runtime"] as? String ?? "managed"
@@ -6096,6 +6105,28 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             ? base + ",\"runtimeConfig\":\(agent.runtimeConfigJSON ?? "null"),\"envVars\":\(agent.envVarsJSON ?? "null")}"
             : base + "}"
         return Self.json(200, body)
+    }
+
+    /// nil means the field was absent and must be ignored.
+    private static func validatedEnvVars(_ value: Any?) -> (env: [String: String]?, error: String?) {
+        guard let value, !(value is NSNull) else { return (nil, nil) }
+        guard let object = value as? [String: Any] else {
+            return (nil, "envVars must be an object")
+        }
+        var env: [String: String] = [:]
+        for (key, raw) in object {
+            guard let text = raw as? String else {
+                return (nil, "envVars keys and values must be strings")
+            }
+            guard key.wholeMatch(of: /^[A-Za-z_][A-Za-z0-9_]*$/) != nil else {
+                return (nil, "Invalid env var key \"\(key)\": must match [A-Za-z_][A-Za-z0-9_]*")
+            }
+            guard !key.contains("\0"), !text.contains("\0") else {
+                return (nil, "envVars keys and values must not contain null bytes")
+            }
+            env[key] = text
+        }
+        return (env, nil)
     }
 
     private static func normalizeRuntimeConfig(_ raw: [String: Any]) -> [String: Any] {
@@ -6181,11 +6212,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
             var runtimeConfigJSON = info.runtimeConfigJSON
             var envVarsJSON = info.envVarsJSON
-            if let rawEnv = object["envVars"] as? [String: Any] {
+            if object["envVars"] != nil {
+                let validation = Self.validatedEnvVars(object["envVars"])
+                if let error = validation.error {
+                    return Self.json(400, "{\"error\":\(jsonString(error))}")
+                }
                 var userEnv: [String: String] = [:]
-                for (key, value) in rawEnv {
+                for (key, value) in validation.env ?? [:] {
                     if key.hasPrefix("ANTHROPIC_") { continue }
-                    if let text = value as? String { userEnv[key] = text }
+                    userEnv[key] = value
                 }
                 var config = (info.runtimeConfigJSON.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) } as? [String: Any]) ?? [:]
                 config["envVars"] = userEnv
