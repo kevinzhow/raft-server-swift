@@ -5643,6 +5643,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var agentId: String
         var scopes: Set<String>
         var name: String
+        var createdAt: Date = Date()
+        var lastUsedAt: Date?
     }
 
     private struct MentionInput {
@@ -6094,7 +6096,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let rows = oauth.serverAgents(serverId: serverId).map { agent -> String in
             let canSeeConfig = role == "owner" || role == "admin" || agent.creatorUserId == userId
-            let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"external\":\(agent.runtime == "external"),\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
+            let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"external\":\(agent.runtime == "external"),\"serverRole\":\"member\",\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
             if canSeeConfig {
                 return base + ",\"runtimeConfig\":\(agent.runtimeConfigJSON ?? "null"),\"envVars\":\(agent.envVarsJSON ?? "null")}"
             }
@@ -6117,7 +6119,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         let canSeeConfig = role == "owner" || role == "admin" || agent.creatorUserId == userId
-        let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"external\":\(agent.runtime == "external"),\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
+        let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"external\":\(agent.runtime == "external"),\"serverRole\":\"member\",\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
         let body = canSeeConfig
             ? base + ",\"runtimeConfig\":\(agent.runtimeConfigJSON ?? "null"),\"envVars\":\(agent.envVarsJSON ?? "null")}"
             : base + "}"
@@ -6202,6 +6204,44 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let env = envVarsJSON.isEmpty ? "{}" : envVarsJSON
         return "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"runtime\":\(jsonString(runtime)),\"model\":\(jsonString(model)),\"external\":\(external),\"machineId\":null,\"reasoningEffort\":null,\"envVars\":\(env),\"runtimeConfig\":\(runtimeConfigJSON.isEmpty ? "{}" : runtimeConfigJSON)}"
+    }
+
+    public func externalAgentStatus(authorization: String?, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let info = oauth.agentRuntimeInfo(id: agentId), !info.deleted else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        guard oauth.memberRole(serverId: info.serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard info.runtime == "external" else {
+            return Self.json(400, "{\"error\":\"Agent is not external\"}")
+        }
+        lock.lock()
+        let credentials = agentCredentials.values.filter { $0.agentId == agentId }
+        let minted = !credentials.isEmpty
+        let lastUsedAt = credentials.compactMap { $0.lastUsedAt }.max()
+        lock.unlock()
+        let setupState: String
+        if lastUsedAt != nil {
+            setupState = "connected"
+        } else if minted {
+            setupState = "credential_minted"
+        } else {
+            setupState = "waiting_for_login"
+        }
+        let usedJSON = lastUsedAt.map { jsonString(ISO8601DateFormatter().string(from: $0)) } ?? "null"
+        return Self.json(200, "{\"setupState\":\(jsonString(setupState)),\"credentialLastUsedAt\":\(usedJSON),\"lastActivityAt\":null}")
+    }
+
+    public func markAgentCredentialUsed(agentId: String) {
+        lock.lock()
+        for key in agentCredentials.keys where agentCredentials[key]?.agentId == agentId {
+            agentCredentials[key]?.lastUsedAt = Date()
+        }
+        lock.unlock()
     }
 
     public func manageableAgentList(authorization: String?) -> HTTPReply {

@@ -533,6 +533,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             agentId: request.parameters.get("id") ?? ""
         ))
     }
+    app.get("api", "agents", ":id", "external-status") { request -> Response in
+        routeResponse(services.emailAccounts.externalAgentStatus(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("id") ?? ""
+        ))
+    }
     app.get("api", "agents", "manageable") { request -> Response in
         routeResponse(services.emailAccounts.manageableAgentList(
             authorization: request.headers[.authorization]
