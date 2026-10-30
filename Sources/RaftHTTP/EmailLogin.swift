@@ -6035,9 +6035,23 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(400, "{\"error\":\"Invalid Agent\"}")
         }
+        let external = object["external"] as? Bool ?? false
+        if external, object["machineId"] != nil {
+            return Self.json(400, "{\"error\":\"External agents cannot be assigned to a Computer\"}")
+        }
         let rawConfig = object["runtimeConfig"] as? [String: Any] ?? [:]
         var config = Self.normalizeRuntimeConfig(rawConfig)
-        if object["envVars"] != nil {
+        var envVars: [String: String] = [:]
+        if external {
+            config = [
+                "version": 1,
+                "runtime": "external",
+                "model": ["kind": "preset", "id": "external"],
+                "mode": ["kind": "default"],
+                "reasoningEffort": NSNull(),
+                "envVars": NSNull(),
+            ]
+        } else if object["envVars"] != nil {
             let validation = Self.validatedEnvVars(object["envVars"])
             if let error = validation.error {
                 return Self.json(400, "{\"error\":\(jsonString(error))}")
@@ -6046,11 +6060,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 config["envVars"] = env
             }
         }
-        let userEnv = (config["envVars"] as? [String: String]) ?? [:]
-        let envVars = Self.derivedAgentEnvVars(config, userEnv: userEnv)
-        let runtime = config["runtime"] as? String ?? "managed"
+        if !external {
+            let userEnv = (config["envVars"] as? [String: String]) ?? [:]
+            envVars = Self.derivedAgentEnvVars(config, userEnv: userEnv)
+        }
+        let runtime = external ? "external" : (config["runtime"] as? String ?? "managed")
         let configJSON = Self.serializeJSON(config)
-        let envJSON = Self.serializeJSON(envVars)
+        let envJSON = external ? "null" : Self.serializeJSON(envVars)
         let agentId = oauth.createAgent(
             serverId: serverId,
             name: name,
@@ -6064,7 +6080,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             name: name,
             runtime: runtime,
             runtimeConfigJSON: configJSON,
-            envVarsJSON: envJSON
+            envVarsJSON: envJSON,
+            external: external
         ))
     }
 
@@ -6077,7 +6094,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let rows = oauth.serverAgents(serverId: serverId).map { agent -> String in
             let canSeeConfig = role == "owner" || role == "admin" || agent.creatorUserId == userId
-            let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
+            let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"external\":\(agent.runtime == "external"),\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
             if canSeeConfig {
                 return base + ",\"runtimeConfig\":\(agent.runtimeConfigJSON ?? "null"),\"envVars\":\(agent.envVarsJSON ?? "null")}"
             }
@@ -6100,7 +6117,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         let canSeeConfig = role == "owner" || role == "admin" || agent.creatorUserId == userId
-        let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
+        let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"external\":\(agent.runtime == "external"),\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
         let body = canSeeConfig
             ? base + ",\"runtimeConfig\":\(agent.runtimeConfigJSON ?? "null"),\"envVars\":\(agent.envVarsJSON ?? "null")}"
             : base + "}"
@@ -6171,11 +6188,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         name: String,
         runtime: String,
         runtimeConfigJSON: String,
-        envVarsJSON: String
+        envVarsJSON: String,
+        external: Bool
     ) -> String {
         let config = (try? JSONSerialization.jsonObject(with: Data(runtimeConfigJSON.utf8))) as? [String: Any] ?? [:]
-        let model = (config["model"] as? [String: Any])?["name"] as? String ?? ""
-        return "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"runtime\":\(jsonString(runtime)),\"model\":\(jsonString(model)),\"envVars\":\(envVarsJSON.isEmpty ? "{}" : envVarsJSON),\"runtimeConfig\":\(runtimeConfigJSON.isEmpty ? "{}" : runtimeConfigJSON)}"
+        let model: String
+        if external {
+            model = "external"
+        } else {
+            model = (config["model"] as? [String: Any])?["name"] as? String
+                ?? (config["model"] as? [String: Any])?["id"] as? String
+                ?? ""
+        }
+        let env = envVarsJSON.isEmpty ? "{}" : envVarsJSON
+        return "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"runtime\":\(jsonString(runtime)),\"model\":\(jsonString(model)),\"external\":\(external),\"machineId\":null,\"reasoningEffort\":null,\"envVars\":\(env),\"runtimeConfig\":\(runtimeConfigJSON.isEmpty ? "{}" : runtimeConfigJSON)}"
     }
 
     public func manageableAgentList(authorization: String?) -> HTTPReply {
