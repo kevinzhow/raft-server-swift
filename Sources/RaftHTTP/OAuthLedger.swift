@@ -61,6 +61,8 @@ public final class OAuthLedger: @unchecked Sendable {
     private var channelNotificationPrefs: [String: ChannelNotificationPrefs] = [:]
     private var channelReadCursors: [String: Int] = [:]
     private var channelDisplayPrefs: [String: ChannelDisplayPrefs] = [:]
+    private var savedMessageRecords: [SavedMessageRecord] = []
+    private var savedMessageCounter = 0
 
     private var clients: [Client] = []
     private var requests: [AccessRequest] = []
@@ -416,6 +418,23 @@ public final class OAuthLedger: @unchecked Sendable {
         return createdAt
     }
 
+    public func createMessageRecord(channelId: String, content: String, senderId: String) -> (id: String, seq: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        let seq = channelMessages.filter { $0.channelId == channelId }.count
+            + channelSystemMessages.filter { $0.channelId == channelId }.count + 1
+        let id = UUID().uuidString.lowercased()
+        channelMessages.append(ChannelMessageRecord(
+            id: id,
+            channelId: channelId,
+            content: content,
+            createdAt: Date(),
+            senderId: senderId,
+            seq: seq
+        ))
+        return (id, seq)
+    }
+
     public func createDirectChannel(serverId: String, firstUserId: String, secondUserId: String) -> String {
         lock.lock()
         if let existing = channelRecords.first(where: {
@@ -474,6 +493,81 @@ public final class OAuthLedger: @unchecked Sendable {
         guard let index = channelRecords.firstIndex(where: { $0.id == id }) else { return false }
         channelRecords[index].type = type
         return true
+    }
+
+    public struct SavedMessageInfo: Sendable {
+        public var messageId: String
+        public var savedAt: Int
+        public var content: String
+        public var channelId: String
+        public var channelType: String
+        public var parentChannelId: String?
+        public var parentMessageId: String?
+        public var parentMessagePreview: String?
+        public var replyCount: Int
+    }
+
+    public func createThreadChannel(parentChannelId: String, parentMessageId: String) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        let id = UUID().uuidString.lowercased()
+        channelRecords.append(ChannelRecord(
+            id: id,
+            serverId: channelRecords.first(where: { $0.id == parentChannelId })?.serverId ?? "",
+            name: "",
+            type: "thread",
+            parentChannelId: parentChannelId,
+            parentMessageId: parentMessageId
+        ))
+        return id
+    }
+
+    public func saveMessage(userId: String, messageId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let message = channelMessages.first(where: { $0.id == messageId }) else { return false }
+        if savedMessageRecords.contains(where: { $0.userId == userId && $0.messageId == messageId }) {
+            return true
+        }
+        savedMessageCounter += 1
+        savedMessageRecords.append(SavedMessageRecord(userId: userId, messageId: messageId, savedAt: savedMessageCounter))
+        _ = message
+        return true
+    }
+
+    public func savedMessages(userId: String) -> [SavedMessageInfo] {
+        lock.lock()
+        defer { lock.unlock() }
+        return savedMessageRecords
+            .filter { $0.userId == userId }
+            .compactMap { saved -> SavedMessageInfo? in
+                guard let message = channelMessages.first(where: { $0.id == saved.messageId }),
+                      let channel = channelRecords.first(where: { $0.id == message.channelId })
+                else { return nil }
+                let parentPreview = channel.parentMessageId.flatMap { parentId in
+                    channelMessages.first(where: { $0.id == parentId })?.content
+                }
+                let replyCount = channel.type == "thread"
+                    ? channelMessages.filter { $0.channelId == channel.id }.count
+                    : 0
+                return SavedMessageInfo(
+                    messageId: saved.messageId,
+                    savedAt: saved.savedAt,
+                    content: message.content,
+                    channelId: channel.id,
+                    channelType: channel.type,
+                    parentChannelId: channel.parentChannelId,
+                    parentMessageId: channel.parentMessageId,
+                    parentMessagePreview: parentPreview,
+                    replyCount: replyCount
+                )
+            }
+    }
+
+    private struct SavedMessageRecord {
+        var userId: String
+        var messageId: String
+        var savedAt: Int
     }
 
     public func allChannelId(serverId: String) -> String? {
@@ -622,6 +716,8 @@ public final class OAuthLedger: @unchecked Sendable {
         var name: String
         var type: String
         var description: String?
+        var parentChannelId: String?
+        var parentMessageId: String?
         var archived = false
     }
 

@@ -597,6 +597,24 @@ public func configure(_ app: Application, services: FallbackServices) {
             agentId: request.parameters.get("id") ?? ""
         ))
     }
+    app.post("api", "channels", "saved") { request -> Response in
+        routeResponse(services.emailAccounts.saveChannelMessage(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.get("api", "channels", "saved") { request -> Response in
+        routeResponse(services.emailAccounts.listSavedMessages(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            query: desktopQuery(request.url.query, "q"),
+            channelId: desktopQuery(request.url.query, "channelId"),
+            sort: desktopQuery(request.url.query, "sort"),
+            limit: Int(desktopQuery(request.url.query, "limit") ?? "") ?? 50,
+            offset: Int(desktopQuery(request.url.query, "offset") ?? "") ?? 0
+        ))
+    }
     app.post("api", "channels", "system", "all", "hide") { request -> Response in
         routeResponse(services.emailAccounts.setAllChannelVisibility(
             authorization: request.headers[.authorization],

@@ -6544,6 +6544,64 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var apiKey: String?
     }
 
+    public func saveChannelMessage(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let messageId = object["messageId"] as? String,
+              oauth.saveMessage(userId: userId, messageId: messageId)
+        else {
+            return Self.json(404, "{\"error\":\"Message not found\"}")
+        }
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    public func listSavedMessages(
+        authorization: String?,
+        serverId: String,
+        query: String?,
+        channelId: String?,
+        sort: String?,
+        limit: Int,
+        offset: Int
+    ) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        var entries = oauth.savedMessages(userId: userId)
+        if let channelId, !channelId.isEmpty {
+            entries = entries.filter { $0.channelId == channelId || $0.parentChannelId == channelId }
+        }
+        if let query, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let needle = query.lowercased()
+            entries = entries.filter {
+                $0.content.lowercased().contains(needle)
+                    || ($0.parentMessagePreview?.lowercased().contains(needle) ?? false)
+            }
+        }
+        if sort == "asc" {
+            entries.sort { $0.savedAt < $1.savedAt }
+        } else {
+            entries.sort { $0.savedAt > $1.savedAt }
+        }
+        let total = entries.count
+        let page = Array(entries.dropFirst(max(0, offset)).prefix(max(0, limit)))
+        let rows = page.map { entry -> String in
+            let parentChannel = entry.parentChannelId.map { jsonString($0) } ?? "null"
+            let parentMessage = entry.parentMessageId.map { jsonString($0) } ?? "null"
+            let preview = entry.parentMessagePreview.map { jsonString($0) } ?? "null"
+            return "{\"messageId\":\(jsonString(entry.messageId)),\"channelId\":\(jsonString(entry.channelId)),\"channelType\":\(jsonString(entry.channelType)),\"content\":\(jsonString(entry.content)),\"parentChannelId\":\(parentChannel),\"parentMessageId\":\(parentMessage),\"parentMessagePreview\":\(preview),\"replyCount\":\(entry.replyCount)}"
+        }.joined(separator: ",")
+        return Self.json(200, "{\"saved\":[\("\(rows)")],\"total\":\(total),\"hasMore\":\(offset + page.count < total)}")
+    }
+
     public func setAllChannelVisibility(authorization: String?, serverId: String, visible: Bool) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
