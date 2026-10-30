@@ -107,6 +107,31 @@ public final class OAuthLedger: @unchecked Sendable {
         return id
     }
 
+    /// Test and retirement support: App class and platform registration are
+    /// live authorities, never copied onto a token row.
+    public func setClientAppType(clientRecordId: String, appType: String) {
+        lock.lock()
+        if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
+            clients[index].appType = appType
+        }
+        lock.unlock()
+    }
+
+    public func registerExternalApp(clientRecordId: String, provider: String, state: String) {
+        lock.lock()
+        if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
+            clients[index].externalProvider = provider
+            clients[index].externalState = state
+        }
+        lock.unlock()
+    }
+
+    public func installationTokenCount(clientRecordId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return installationTokens.filter { $0.clientId == clientRecordId }.count
+    }
+
     public func accessTokenCount(requestId: String) -> Int {
         lock.lock()
         defer { lock.unlock() }
@@ -125,7 +150,7 @@ public final class OAuthLedger: @unchecked Sendable {
         }
         lock.lock()
         guard let client = clients.first(where: {
-            $0.clientId == credentials.clientId && $0.appType != "slock_builtin" && $0.enabled && $0.secretHash == sha256(credentials.clientSecret)
+            $0.clientId == credentials.clientId && isUserManaged($0) && $0.secretHash == sha256(credentials.clientSecret)
         }) else {
             lock.unlock()
             return json(401, "{\"error\":\"Invalid client credentials\"}", cacheControl: "private, no-store")
@@ -471,8 +496,7 @@ public final class OAuthLedger: @unchecked Sendable {
             return nil
         }
         guard let client = clients.first(where: { $0.id == record.clientId }),
-              client.enabled,
-              client.appType != "slock_builtin"
+              isUserManaged(client)
         else {
             return nil
         }
@@ -552,6 +576,14 @@ public final class OAuthLedger: @unchecked Sendable {
         var allowedScopes: [String]? = nil
         var outboundGroups: [String] = []
         var enabled: Bool = true
+        var externalProvider: String? = nil
+        var externalState: String? = nil
+    }
+
+    /// Mirrors `oauthClientIsUserManagedPredicate`: the tombstone class and
+    /// any platform registration both remove installation authority.
+    private func isUserManaged(_ client: Client) -> Bool {
+        client.enabled && client.appType != "slock_builtin" && client.externalProvider == nil
     }
 
     private struct InstallationToken {
