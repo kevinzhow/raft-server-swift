@@ -600,6 +600,20 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
         ))
     }
+    app.post("api", "push", "registrations") { request -> Response in
+        routeResponse(services.emailAccounts.registerPushDevice(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.delete("api", "push", "registrations", ":installationId") { request -> Response in
+        routeResponse(services.emailAccounts.unbindPushInstallation(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            installationId: request.parameters.get("installationId") ?? ""
+        ))
+    }
     app.get("api", "provider-connections", ":id", "agents") { request -> Response in
         routeResponse(services.emailAccounts.listAssignedProviderAgents(
             authorization: request.headers[.authorization],

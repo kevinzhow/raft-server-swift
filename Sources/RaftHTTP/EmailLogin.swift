@@ -196,6 +196,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public var providerConnectionsEnabledServers: Set<String> = []
     private var providerConnections: [ProviderConnection] = []
     private var providerAssignments: [ProviderAssignment] = []
+    private var pushRegistrations: [PushRegistration] = []
     /// `MOBILE_APP_EMAIL_UNSUBSCRIBE_SECRET`, or `JWT_SECRET`. The test harness uses `test-jwt-secret`.
     public var mobileAppEmailUnsubscribeSecret: String = "test-jwt-secret"
     /// Cancels one scheduled mobile-app lifecycle email. Unset means there is no provider call to make.
@@ -6166,6 +6167,101 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, Self.providerConnectionJSON(updated))
     }
 
+    public func pushRegistration(installationId: String, provider: String) -> PushRegistration? {
+        lock.lock()
+        defer { lock.unlock() }
+        return pushRegistrations.first { $0.installationId == installationId && $0.provider == provider }
+    }
+
+    public func registerPushDevice(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let principal = pushPrincipal(authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let installationId = object["installationId"] as? String,
+              installationId.wholeMatch(of: /^[A-Za-z0-9._:-]{1,128}$/) != nil,
+              let provider = object["provider"] as? String, provider == "apns" || provider == "fcm",
+              let topic = object["topic"] as? String,
+              topic.wholeMatch(of: /^[A-Za-z0-9.-]{1,155}$/) != nil,
+              let deviceToken = object["deviceToken"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"Invalid push registration\"}")
+        }
+        let env = object["env"] as? String ?? ""
+        if provider == "apns" {
+            guard env == "sandbox" || env == "production",
+                  deviceToken.wholeMatch(of: /^[A-Za-z0-9._-]{1,256}$/) != nil
+            else {
+                return Self.json(400, "{\"error\":\"Invalid push registration\"}")
+            }
+        } else {
+            guard env == "production",
+                  deviceToken.wholeMatch(of: /^[A-Za-z0-9._:-]{1,4096}$/) != nil
+            else {
+                return Self.json(400, "{\"error\":\"Invalid push registration\"}")
+            }
+        }
+        let appVersion = object["appVersion"] as? String
+        lock.lock()
+        var revokeCapability = ""
+        if let index = pushRegistrations.firstIndex(where: {
+            $0.installationId == installationId && $0.provider == provider
+        }) {
+            pushRegistrations[index].env = env
+            pushRegistrations[index].topic = topic
+            pushRegistrations[index].deviceToken = deviceToken
+            pushRegistrations[index].appVersion = appVersion
+            pushRegistrations[index].userId = principal.userId
+            pushRegistrations[index].serverId = serverId
+            pushRegistrations[index].sessionFamilyId = principal.familyId
+            revokeCapability = pushRegistrations[index].revokeCapability
+        } else {
+            revokeCapability = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+            pushRegistrations.append(PushRegistration(
+                installationId: installationId,
+                provider: provider,
+                env: env,
+                topic: topic,
+                deviceToken: deviceToken,
+                appVersion: appVersion,
+                userId: principal.userId,
+                serverId: serverId,
+                sessionFamilyId: principal.familyId,
+                revokeCapability: revokeCapability
+            ))
+        }
+        lock.unlock()
+        let registration = "{\"installationId\":\(jsonString(installationId)),\"provider\":\(jsonString(provider)),\"env\":\(jsonString(env)),\"topic\":\(jsonString(topic))}"
+        return Self.json(200, "{\"revoke_capability\":\(jsonString(revokeCapability)),\"registration\":\(registration)}")
+    }
+
+    public func unbindPushInstallation(authorization: String?, serverId: String, installationId: String) -> HTTPReply {
+        guard pushPrincipal(authorization) != nil else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        var unbound = 0
+        for index in pushRegistrations.indices where pushRegistrations[index].installationId == installationId {
+            pushRegistrations[index].userId = nil
+            pushRegistrations[index].serverId = nil
+            pushRegistrations[index].sessionFamilyId = nil
+            unbound += 1
+        }
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true,\"unbound\":\(unbound)}")
+    }
+
+    private func pushPrincipal(_ authorization: String?) -> (userId: String, familyId: String?)? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let userId = accessTokens[token]
+        let familyId = accessTokenFamilies[token]
+        lock.unlock()
+        guard let userId else { return nil }
+        return (userId, familyId)
+    }
+
     public func assignAgentToProviderConnection(connectionId: String, serverId: String, agentId: String, computerName: String?) {
         lock.lock()
         providerAssignments.append(ProviderAssignment(
@@ -6255,6 +6351,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         providerAssignments.removeAll { $0.connectionId == connectionId && $0.serverId == serverId }
         lock.unlock()
         return Self.json(200, "{\"ok\":true}")
+    }
+
+    public struct PushRegistration: Sendable {
+        public var installationId: String
+        public var provider: String
+        public var env: String
+        public var topic: String
+        public var deviceToken: String
+        public var appVersion: String?
+        public var userId: String?
+        public var serverId: String?
+        public var sessionFamilyId: String?
+        public var revokeCapability: String
     }
 
     private struct ProviderAssignment {
