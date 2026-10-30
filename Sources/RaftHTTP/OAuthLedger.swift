@@ -64,7 +64,7 @@ public final class OAuthLedger: @unchecked Sendable {
 
     public func addOwnedServer(id: String, slug: String, name: String, ownerId: String) {
         lock.lock()
-        servers[id] = Server(id: id, slug: slug, name: name)
+        servers[id] = Server(id: id, slug: slug, name: name, ownerId: ownerId)
         members["\(id)\n\(ownerId)"] = "owner"
         lock.unlock()
     }
@@ -137,6 +137,54 @@ public final class OAuthLedger: @unchecked Sendable {
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
+    }
+
+    public struct ServerProfile: Sendable {
+        public var id: String
+        public var slug: String
+        public var name: String
+        public var ownerId: String
+        public var avatarUrl: String?
+        public var plan: String
+        public var translationEnabled: Bool
+        public var publiclyVisible: Bool
+        public var publicGuestJoinEnabled: Bool
+    }
+
+    public func serverProfile(id: String) -> ServerProfile? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let server = servers[id], !server.deleted else { return nil }
+        return ServerProfile(
+            id: server.id,
+            slug: server.slug,
+            name: server.name,
+            ownerId: server.ownerId,
+            avatarUrl: server.avatarUrl,
+            plan: server.plan,
+            translationEnabled: server.translationEnabled,
+            publiclyVisible: server.publiclyVisible,
+            publicGuestJoinEnabled: server.publicGuestJoinEnabled
+        )
+    }
+
+    public func setServerProfile(
+        id: String,
+        avatarUrl: String?,
+        plan: String,
+        translationEnabled: Bool,
+        publiclyVisible: Bool,
+        publicGuestJoinEnabled: Bool
+    ) {
+        lock.lock()
+        if servers[id] != nil {
+            servers[id]?.avatarUrl = avatarUrl
+            servers[id]?.plan = plan
+            servers[id]?.translationEnabled = translationEnabled
+            servers[id]?.publiclyVisible = publiclyVisible
+            servers[id]?.publicGuestJoinEnabled = publicGuestJoinEnabled
+        }
+        lock.unlock()
     }
 
     public func serverIdsForMember(userId: String) -> [String] {
@@ -1587,10 +1635,14 @@ public final class OAuthLedger: @unchecked Sendable {
         var id: String
         var slug: String
         var name: String
+        var ownerId: String = ""
         var avatarUrl: String? = nil
         var plan: String = "free"
         var deleted = false
         var productAnalyticsEnabled = true
+        var translationEnabled = false
+        var publiclyVisible = false
+        var publicGuestJoinEnabled = false
     }
 
     private struct Agent {

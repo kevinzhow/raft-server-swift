@@ -514,6 +514,12 @@ public func configure(_ app: Application, services: FallbackServices) {
         }
         return routeResponse(directory.serverList(authorization: request.headers[.authorization]))
     }
+    app.get("api", "servers", ":id") { request -> Response in
+        routeResponse(services.emailAccounts.serverDetails(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
     app.get("api", "servers", ":id", "members", ":memberId", "profile") { request -> Response in
         routeResponse(ServerScope.memberProfile(
             serverId: request.parameters.get("id") ?? "",

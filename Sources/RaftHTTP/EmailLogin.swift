@@ -5998,6 +5998,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return context
     }
 
+    public func serverDetails(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        guard let profile = oauth.serverProfile(id: serverId) else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        if role == "guest" {
+            return Self.json(200, "{\"id\":\(jsonString(profile.id)),\"name\":\(jsonString(profile.name)),\"slug\":\(jsonString(profile.slug)),\"avatarUrl\":null}")
+        }
+        let avatar = profile.avatarUrl.map { jsonString($0) } ?? "null"
+        let body = "{\"id\":\(jsonString(profile.id)),\"ownerId\":\(jsonString(profile.ownerId)),\"name\":\(jsonString(profile.name)),\"slug\":\(jsonString(profile.slug)),\"avatarUrl\":\(avatar),\"plan\":\(jsonString(profile.plan)),\"translationEnabled\":\(profile.translationEnabled),\"publiclyVisible\":\(profile.publiclyVisible),\"publicGuestJoinEnabled\":\(profile.publicGuestJoinEnabled)}"
+        return Self.json(200, body)
+    }
+
     public func setProviderConnectionsEnabled(serverId: String, enabled: Bool) {
         lock.lock()
         if enabled {
