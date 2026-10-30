@@ -556,7 +556,10 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.get("api", "oauth", "userinfo") { request -> Response in
-        routeResponse(services.emailAccounts.oauth.userinfo(authorization: request.headers[.authorization]))
+        routeResponse(services.emailAccounts.oauth.userinfo(
+            authorization: request.headers[.authorization],
+            baseURL: services.emailAccounts.serverURL
+        ))
     }
     app.get("api", "oauth", "agents") { request -> Response in
         routeResponse(services.emailAccounts.oauth.agentDirectory(authorization: request.headers[.authorization]))

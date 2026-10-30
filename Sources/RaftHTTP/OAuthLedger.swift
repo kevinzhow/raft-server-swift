@@ -6,12 +6,14 @@ public struct OAuthHuman: Sendable {
     public var email: String
     public var name: String
     public var emailVerified: Bool
+    public var avatarUrl: String?
 
-    public init(id: String, email: String, name: String, emailVerified: Bool = false) {
+    public init(id: String, email: String, name: String, emailVerified: Bool = false, avatarUrl: String? = nil) {
         self.id = id
         self.email = email
         self.name = name
         self.emailVerified = emailVerified
+        self.avatarUrl = avatarUrl
     }
 }
 
@@ -50,6 +52,18 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.lock()
         servers[id] = Server(id: id, slug: slug, name: name)
         members["\(id)\n\(ownerId)"] = "owner"
+        lock.unlock()
+    }
+
+    public func addMember(serverId: String, userId: String, role: String) {
+        lock.lock()
+        members["\(serverId)\n\(userId)"] = role
+        lock.unlock()
+    }
+
+    public func removeMember(serverId: String, userId: String) {
+        lock.lock()
+        members.removeValue(forKey: "\(serverId)\n\(userId)")
         lock.unlock()
     }
 
@@ -203,7 +217,7 @@ public final class OAuthLedger: @unchecked Sendable {
 
     /// `GET /api/oauth/userinfo`. Only principal access tokens resolve; an App
     /// installation credential is not a principal and stays 401.
-    public func userinfo(authorization: String?) -> HTTPReply {
+    public func userinfo(authorization: String?, baseURL: String) -> HTTPReply {
         guard let raw = bearerToken(authorization) else {
             return json(401, "{\"error\":\"Missing bearer token\"}")
         }
@@ -217,12 +231,24 @@ public final class OAuthLedger: @unchecked Sendable {
         else {
             return json(401, "{\"error\":\"Invalid or expired access token\"}")
         }
-        var document = "{\"scope\":\(jsonString(token.scopes.joined(separator: " "))),\"client_id\":\(jsonString(client.clientId)),\"client_name\":\(jsonString(client.name)),\"server_id\":\(jsonString(server.id)),\"server_slug\":\(jsonString(server.slug)),\"sub\":\(jsonString(token.userId)),\"type\":\"human\",\"server_role\":\(jsonString(role)),\"preferred_username\":\(jsonString(request.humanName)),\"name\":\(jsonString(request.humanName)),\"avatar_url\":null,\"picture\":null,\"description\":null"
+        let avatar = request.humanAvatarUrl
+        let avatarJSON = avatar.map { jsonString($0) } ?? "null"
+        let pictureJSON = userinfoPicture(avatar: avatar, baseURL: baseURL).map { jsonString($0) } ?? "null"
+        var document = "{\"scope\":\(jsonString(token.scopes.joined(separator: " "))),\"client_id\":\(jsonString(client.clientId)),\"client_name\":\(jsonString(client.name)),\"server_id\":\(jsonString(server.id)),\"server_slug\":\(jsonString(server.slug)),\"sub\":\(jsonString(token.userId)),\"type\":\"human\",\"server_role\":\(jsonString(role)),\"preferred_username\":\(jsonString(request.humanName)),\"name\":\(jsonString(request.humanName)),\"avatar_url\":\(avatarJSON),\"picture\":\(pictureJSON),\"description\":null"
         if token.scopes.contains("email"), !request.humanEmail.isEmpty {
             document += ",\"email\":\(jsonString(request.humanEmail)),\"email_verified\":\(request.humanEmailVerified ? "true" : "false")"
         }
         document += "}"
         return json(200, document)
+    }
+
+    /// Only a Raft-uploaded user avatar becomes a picture URL.
+    private func userinfoPicture(avatar: String?, baseURL: String) -> String? {
+        guard let avatar,
+              avatar.wholeMatch(of: /^(?i)\/(?:api\/)?avatars\/users\/[0-9a-f]+\.webp$/) != nil
+        else { return nil }
+        let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
+        return base + avatar
     }
 
     /// `GET /api/oauth/agents`. Directory authority is the `agent:read` login
@@ -467,6 +493,7 @@ public final class OAuthLedger: @unchecked Sendable {
             humanName: human.name,
             humanEmail: human.email,
             humanEmailVerified: human.emailVerified,
+            humanAvatarUrl: human.avatarUrl,
             createdAt: Date()
         ))
         let scopeJSON = scopes.map { jsonString($0) }.joined(separator: ",")
@@ -673,6 +700,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var humanName: String
         var humanEmail: String
         var humanEmailVerified: Bool
+        var humanAvatarUrl: String?
         var createdAt: Date
         var consumedAt: Date? = nil
     }

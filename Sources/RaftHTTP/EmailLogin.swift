@@ -912,7 +912,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return mobileAppEmailContactsByKey.values.sorted { $0.email < $1.email }
     }
 
-    public func addAccount(id: String, email: String, password: String) {
+    public func addAccount(id: String, email: String, password: String, avatarUrl: String? = nil) {
         let normalized = Self.normalize(email)
         lock.lock()
         accounts[normalized] = Account(
@@ -922,7 +922,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             displayLanguage: nil,
             name: String(normalized.split(separator: "@").first ?? "user"),
             profileSetupSuggestedHandle: nil,
-            profileSetupProvider: nil
+            profileSetupProvider: nil,
+            avatarUrl: avatarUrl
         )
         analyticsIds[id] = UUID().uuidString.lowercased()
         lock.unlock()
@@ -4991,7 +4992,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             id: account.id,
             email: account.email,
             name: account.name,
-            emailVerified: account.emailVerified
+            emailVerified: account.emailVerified,
+            avatarUrl: account.avatarUrl
         ))
     }
 
