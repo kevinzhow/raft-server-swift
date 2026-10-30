@@ -274,6 +274,7 @@ public final class OAuthLedger: @unchecked Sendable {
         defer { lock.unlock() }
         guard let token = principalTokenLocked(raw),
               let client = clients.first(where: { $0.id == token.clientId }),
+              isUserManaged(client),
               let server = servers[token.serverId], !server.deleted,
               let request = requests.first(where: { $0.id == token.requestId }),
               let role = members["\(token.serverId)\n\(token.userId)"]
@@ -309,6 +310,8 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let token = principalTokenLocked(raw),
+              let client = clients.first(where: { $0.id == token.clientId }),
+              isUserManaged(client),
               let server = servers[token.serverId], !server.deleted
         else {
             return json(401, "{\"error\":\"Invalid or expired access token\"}")
@@ -351,6 +354,7 @@ public final class OAuthLedger: @unchecked Sendable {
         defer { lock.unlock() }
         guard let token = principalTokenLocked(raw),
               let client = clients.first(where: { $0.id == token.clientId }),
+              isUserManaged(client),
               let server = servers[token.serverId], !server.deleted,
               members["\(token.serverId)\n\(token.userId)"] != nil
         else {
