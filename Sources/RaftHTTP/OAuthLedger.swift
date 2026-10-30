@@ -523,6 +523,14 @@ public final class OAuthLedger: @unchecked Sendable {
         return json(200, "{\"agents\":[\(entries)]}", cacheControl: "no-store")
     }
 
+    /// `GET /api/oauth/jwks`. Public ES256 verification key for the ID tokens.
+    public func jwks() -> HTTPReply {
+        guard let body = OAuthIDToken.jwks(secret: jwtSecret) else {
+            return json(503, "{\"error\":\"oidc_not_configured\"}")
+        }
+        return json(200, body, cacheControl: "public, max-age=300")
+    }
+
     /// `POST /api/oauth/authorize/human`. A member receives a one-time human code.
     public func issueHumanAuthorization(session: OAuthSession, body: String) -> HTTPReply {
         switch session {
@@ -1548,6 +1556,16 @@ private enum OAuthIDToken {
         let signingInput = "\(base64url(Data(header.utf8))).\(base64url(Data(payload.utf8)))"
         guard let signature = try? privateKey.signature(for: Data(signingInput.utf8)) else { return nil }
         return "\(signingInput).\(base64url(signature.rawRepresentation))"
+    }
+
+    static func jwks(secret: String) -> String? {
+        guard !secret.isEmpty, let key = signingKey(secret: secret) else { return nil }
+        let publicBytes = key.publicKey.x963Representation
+        guard publicBytes.count == 65, publicBytes.first == 0x04 else { return nil }
+        let x = base64url(Data(publicBytes[1..<33]))
+        let y = base64url(Data(publicBytes[33..<65]))
+        let kid = base64url(Data(SHA256.hash(data: publicBytes).prefix(16)))
+        return "{\"keys\":[{\"kty\":\"EC\",\"crv\":\"P-256\",\"use\":\"sig\",\"alg\":\"ES256\",\"kid\":\(jsonString(kid)),\"x\":\(jsonString(x)),\"y\":\(jsonString(y))}]}"
     }
 
     private static func signingKey(secret: String) -> P256.Signing.PrivateKey? {
