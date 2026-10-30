@@ -74,7 +74,9 @@ public final class OAuthLedger: @unchecked Sendable {
         name: String,
         displayName: String? = nil,
         avatarUrl: String? = nil,
-        description: String? = nil
+        description: String? = nil,
+        creatorUserId: String? = nil,
+        runtime: String = "managed"
     ) -> String {
         let id = UUID().uuidString.lowercased()
         lock.lock()
@@ -84,7 +86,9 @@ public final class OAuthLedger: @unchecked Sendable {
             name: name,
             displayName: displayName ?? name,
             avatarUrl: avatarUrl,
-            description: description
+            description: description,
+            creatorUserId: creatorUserId,
+            runtime: runtime
         )
         agentRoles["\(serverId)\n\(id)"] = "member"
         lock.unlock()
@@ -122,6 +126,37 @@ public final class OAuthLedger: @unchecked Sendable {
             status: "inactive",
             deleted: agent.deleted
         )
+    }
+
+    public struct AgentManagementInfo: Sendable {
+        public var id: String
+        public var serverId: String
+        public var name: String
+        public var description: String?
+        public var creatorUserId: String?
+        public var runtime: String
+        public var deleted: Bool
+    }
+
+    public func agentManagementInfo(id: String) -> AgentManagementInfo? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let agent = agents[id] else { return nil }
+        return AgentManagementInfo(
+            id: agent.id,
+            serverId: agent.serverId,
+            name: agent.name,
+            description: agent.description,
+            creatorUserId: agent.creatorUserId,
+            runtime: agent.runtime,
+            deleted: agent.deleted
+        )
+    }
+
+    public func updateAgentDescription(id: String, description: String) {
+        lock.lock()
+        agents[id]?.description = description
+        lock.unlock()
     }
 
     public func deleteAgent(id: String) {
@@ -1652,6 +1687,8 @@ public final class OAuthLedger: @unchecked Sendable {
         var displayName: String
         var avatarUrl: String?
         var description: String?
+        var creatorUserId: String? = nil
+        var runtime: String = "managed"
         var deleted = false
     }
 

@@ -5999,6 +5999,92 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return context
     }
 
+    private enum AgentAuthority {
+        case allowed(userId: String, role: String, info: OAuthLedger.AgentManagementInfo)
+        case denied(HTTPReply)
+    }
+
+    private func agentAuthority(_ authorization: String?, agentId: String) -> AgentAuthority {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return .denied(Self.json(401, "{\"error\":\"Unauthorized\"}"))
+        }
+        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted else {
+            return .denied(Self.json(404, "{\"error\":\"Agent not found\"}"))
+        }
+        guard let role = oauth.memberRole(serverId: info.serverId, userId: userId) else {
+            return .denied(Self.json(403, "{\"error\":\"Not a member of this server\"}"))
+        }
+        if role == "owner" || role == "admin" || info.creatorUserId == userId {
+            return .allowed(userId: userId, role: role, info: info)
+        }
+        return .denied(Self.json(403, "{\"error\":\"Forbidden\"}"))
+    }
+
+    public func patchAgent(authorization: String?, agentId: String, body: String) -> HTTPReply {
+        switch agentAuthority(authorization, agentId: agentId) {
+        case .denied(let reply):
+            return reply
+        case .allowed(_, _, let info):
+            guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+                  let description = object["description"] as? String
+            else {
+                return Self.json(400, "{\"error\":\"Invalid Agent update\"}")
+            }
+            oauth.updateAgentDescription(id: agentId, description: description)
+            return Self.json(200, "{\"id\":\(jsonString(info.id)),\"description\":\(jsonString(description))}")
+        }
+    }
+
+    public func deleteAgentRoute(authorization: String?, agentId: String) -> HTTPReply {
+        switch agentAuthority(authorization, agentId: agentId) {
+        case .denied(let reply):
+            return reply
+        case .allowed:
+            oauth.deleteAgent(id: agentId)
+            return Self.json(200, "{\"ok\":true}")
+        }
+    }
+
+    public func agentRuntimeAction(authorization: String?, agentId: String, action: String) -> HTTPReply {
+        switch agentAuthority(authorization, agentId: agentId) {
+        case .denied(let reply):
+            return reply
+        case .allowed:
+            return Self.json(action == "stop" ? 200 : 202, "{\"ok\":true}")
+        }
+    }
+
+    public func issueAgentCredential(authorization: String?, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted,
+              let role = oauth.memberRole(serverId: info.serverId, userId: userId)
+        else {
+            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard info.runtime == "external" else {
+            return Self.json(400, "{\"error\":\"Only external Agents get credentials\"}")
+        }
+        let key = mintAgentCredential(agentId: agentId, scopes: ["read"], name: "session-issued")
+        return Self.json(201, "{\"credential\":\(jsonString(key))}")
+    }
+
+    public func listAgentCredentials(authorization: String?, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted,
+              oauth.memberRole(serverId: info.serverId, userId: userId) != nil
+        else {
+            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        return Self.json(200, "{\"credentials\":[]}")
+    }
+
     public func registerMachine(serverId: String, userId: String, name: String) -> String {
         let id = UUID().uuidString.lowercased()
         lock.lock()
