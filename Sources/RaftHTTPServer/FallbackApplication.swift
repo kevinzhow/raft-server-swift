@@ -604,6 +604,21 @@ public func configure(_ app: Application, services: FallbackServices) {
             summary: desktopQuery(request.url.query, "summary") == "1"
         ))
     }
+    app.get("api", "channels", ":channelId", "message-display-settings") { request -> Response in
+        routeResponse(services.emailAccounts.channelDisplaySettings(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? ""
+        ))
+    }
+    app.patch("api", "channels", ":channelId", "message-display-settings") { request -> Response in
+        routeResponse(services.emailAccounts.patchChannelDisplaySettings(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("api", "channels", ":channelId", "notification-settings") { request -> Response in
         routeResponse(services.emailAccounts.channelNotificationSettings(
             authorization: request.headers[.authorization],

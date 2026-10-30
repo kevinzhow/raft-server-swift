@@ -60,6 +60,7 @@ public final class OAuthLedger: @unchecked Sendable {
     private var channelSystemMessages: [ChannelSystemMessageRecord] = []
     private var channelNotificationPrefs: [String: ChannelNotificationPrefs] = [:]
     private var channelReadCursors: [String: Int] = [:]
+    private var channelDisplayPrefs: [String: ChannelDisplayPrefs] = [:]
 
     private var clients: [Client] = []
     private var requests: [AccessRequest] = []
@@ -459,6 +460,47 @@ public final class OAuthLedger: @unchecked Sendable {
             latestMessageId: latest?.id,
             latestSeq: latest?.seq
         )
+    }
+
+    public struct ChannelDisplayPrefs: Sendable {
+        public var collapseLongMessages: Bool = true
+        public var prefsVersion: Int = 0
+    }
+
+    public func allChannelId(serverId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return channelRecords.first(where: { $0.serverId == serverId && $0.name == "all" })?.id
+    }
+
+    /// `all` is implicit for every Server human; other channels require membership.
+    public func canAccessChannelPrefs(channelId: String, userId: String, serverId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let channel = channelRecords.first(where: { $0.id == channelId }), channel.serverId == serverId else {
+            return false
+        }
+        if channel.name == "all" { return true }
+        return channelHumans.contains("\(channelId)\n\(userId)")
+    }
+
+    public func channelDisplayPrefs(channelId: String, userId: String) -> ChannelDisplayPrefs {
+        lock.lock()
+        defer { lock.unlock() }
+        return channelDisplayPrefs["\(channelId)\n\(userId)"] ?? ChannelDisplayPrefs()
+    }
+
+    public func setCollapseLongMessages(channelId: String, userId: String, collapse: Bool) -> ChannelDisplayPrefs {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = "\(channelId)\n\(userId)"
+        var prefs = channelDisplayPrefs[key] ?? ChannelDisplayPrefs()
+        if prefs.collapseLongMessages != collapse {
+            prefs.collapseLongMessages = collapse
+            prefs.prefsVersion += 1
+            channelDisplayPrefs[key] = prefs
+        }
+        return prefs
     }
 
     public func channelInfo(id: String) -> (serverId: String, name: String, description: String?)? {

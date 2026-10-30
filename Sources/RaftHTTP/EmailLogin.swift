@@ -6544,6 +6544,39 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var apiKey: String?
     }
 
+    public func channelDisplaySettings(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard oauth.canAccessChannelPrefs(channelId: channelId, userId: userId, serverId: serverId) else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        let prefs = oauth.channelDisplayPrefs(channelId: channelId, userId: userId)
+        return Self.json(200, "{\"collapseLongMessages\":\(prefs.collapseLongMessages),\"prefsVersion\":\(prefs.prefsVersion)}")
+    }
+
+    public func patchChannelDisplaySettings(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard oauth.canAccessChannelPrefs(channelId: channelId, userId: userId, serverId: serverId) else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let collapse = object["collapseLongMessages"] as? Bool
+        else {
+            return Self.json(400, "{\"error\":\"collapseLongMessages must be a boolean\"}")
+        }
+        let prefs = oauth.setCollapseLongMessages(channelId: channelId, userId: userId, collapse: collapse)
+        return Self.json(200, "{\"collapseLongMessages\":\(prefs.collapseLongMessages),\"prefsVersion\":\(prefs.prefsVersion)}")
+    }
+
     public func channelUnread(authorization: String?, serverId: String, summary: Bool) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
