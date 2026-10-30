@@ -775,6 +775,15 @@ public func configure(_ app: Application, services: FallbackServices) {
             rawQuery: request.url.query
         ))
     }
+    app.post("api", "servers", ":id", "machines", ":machineId", "agents", ":agentId", "feedback", ":reportId", "transcript") { request -> Response in
+        routeResponse(services.emailAccounts.submitTranscriptFeedback(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            agentId: request.parameters.get("agentId") ?? "",
+            reportId: request.parameters.get("reportId") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.post("api", "servers", ":id", "scope-attestation") { request -> Response in
         routeResponse(services.emailAccounts.serverScopeAttestation(
             authorization: request.headers[.authorization],

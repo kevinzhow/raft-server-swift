@@ -6546,6 +6546,45 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var apiKey: String?
     }
 
+    public func submitTranscriptFeedback(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        reportId: String,
+        body: String
+    ) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard reportId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
+            return Self.json(404, "{\"error\":\"Not found\"}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        guard role == "owner" || role == "admin" || agent.creatorUserId == userId else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        if !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+                return Self.json(400, "{\"error\":\"Invalid transcript request\"}")
+            }
+            if let raw = object["reportGeneratedAt"], !(raw is NSNull) {
+                let fractional = ISO8601DateFormatter()
+                fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                guard let text = raw as? String,
+                      fractional.date(from: text) != nil || ISO8601DateFormatter().date(from: text) != nil
+                else {
+                    return Self.json(400, "{\"error\":\"reportGeneratedAt must be an ISO timestamp\"}")
+                }
+            }
+        }
+        return Self.json(202, "{\"accepted\":true,\"feedbackReportId\":\(jsonString(reportId)),\"agentId\":\(jsonString(agentId))}")
+    }
+
     public func serverScopeAttestation(authorization: String?, serverId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
