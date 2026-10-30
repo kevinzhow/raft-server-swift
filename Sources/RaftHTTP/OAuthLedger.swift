@@ -39,6 +39,7 @@ public final class OAuthLedger: @unchecked Sendable {
     public var jwtSecret: String = "test-jwt-secret"
     private let lock = NSLock()
     private var servers: [String: Server] = [:]
+    private var agents: [String: Agent] = [:]
     private var members: [String: String] = [:]
     private var clients: [Client] = []
     private var requests: [AccessRequest] = []
@@ -53,6 +54,14 @@ public final class OAuthLedger: @unchecked Sendable {
         servers[id] = Server(id: id, slug: slug, name: name)
         members["\(id)\n\(ownerId)"] = "owner"
         lock.unlock()
+    }
+
+    public func createAgent(serverId: String, name: String, displayName: String? = nil) -> String {
+        let id = UUID().uuidString.lowercased()
+        lock.lock()
+        agents[id] = Agent(id: id, serverId: serverId, name: name, displayName: displayName ?? name)
+        lock.unlock()
+        return id
     }
 
     public func addMember(serverId: String, userId: String, role: String) {
@@ -288,10 +297,22 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let token = principalTokenLocked(raw),
-              let server = servers[token.serverId], !server.deleted,
-              members["\(token.serverId)\n\(token.userId)"] != nil
+              let server = servers[token.serverId], !server.deleted
         else {
             return json(401, "{\"error\":\"Invalid or expired access token\"}")
+        }
+        if token.principalType == "agent" {
+            guard let agentId = token.agentId,
+                  let agent = agents[agentId],
+                  agent.serverId == server.id,
+                  !agent.deleted
+            else {
+                return json(401, "{\"error\":\"Invalid or expired access token\"}")
+            }
+        } else {
+            guard members["\(token.serverId)\n\(token.userId)"] != nil else {
+                return json(401, "{\"error\":\"Invalid or expired access token\"}")
+            }
         }
         let avatarJSON = server.avatarUrl.map { jsonString($0) } ?? "null"
         let pictureJSON = absolutePicture(server.avatarUrl, baseURL: baseURL).map { jsonString($0) } ?? "null"
@@ -419,6 +440,74 @@ public final class OAuthLedger: @unchecked Sendable {
         return json(200, document, cacheControl: "private, no-store")
     }
 
+    /// `POST /api/oauth/requests/agent`. A server-local or installed App asks
+    /// for an Agent; the owner behind the App may auto-grant.
+    public func requestAgentAccess(authorization: String?, body: String) -> HTTPReply {
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        var fields: [String: String] = [:]
+        if let value = object?["client_id"] as? String { fields["client_id"] = value }
+        if let value = object?["clientId"] as? String { fields["clientId"] = value }
+        if let value = object?["client_secret"] as? String { fields["client_secret"] = value }
+        if let value = object?["clientSecret"] as? String { fields["clientSecret"] = value }
+        guard let credentials = clientCredentials(authorization: authorization, fields: fields) else {
+            return json(401, "{\"error\":\"Client credentials are required\"}")
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let client = clients.first(where: {
+            $0.clientId == credentials.clientId
+                && isUserManaged($0)
+                && ($0.appType != "third_party_global" || $0.enabled)
+                && $0.secretHash == sha256(credentials.clientSecret)
+        }) else {
+            return json(401, "{\"error\":\"Invalid client credentials\"}")
+        }
+        let serverSlug = (object?["serverSlug"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let server = servers.values.first(where: { $0.slug == serverSlug && !$0.deleted }) else {
+            return json(404, "{\"error\":\"Server not found\"}")
+        }
+        let agent: Agent?
+        if let rawId = object?["agentId"] as? String, !rawId.isEmpty {
+            guard rawId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
+                return json(404, "{\"error\":\"Agent not found\"}")
+            }
+            agent = agents[rawId.lowercased()].flatMap { $0.serverId == server.id && !$0.deleted ? $0 : nil }
+        } else {
+            let agentName = (object?["agentName"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            agent = agents.values.first(where: { $0.serverId == server.id && $0.name == agentName && !$0.deleted })
+        }
+        guard let agent else {
+            return json(404, "{\"error\":\"Agent not found\"}")
+        }
+        let installed = installations.contains(where: {
+            $0.clientId == client.id && $0.serverId == server.id && $0.status == "active"
+        })
+        guard (client.appType == "server_local" && client.serverId == server.id) || installed else {
+            return json(404, "{\"error\":\"OAuth client not found for server\"}")
+        }
+        guard let scopes = normalizeScopes(object?["scopes"], allowed: client.allowedScopes ?? ["openid", "profile", "identity"]) else {
+            return json(400, "{\"error\":\"invalid_scope\"}")
+        }
+        let requestId = UUID().uuidString.lowercased()
+        requests.append(AccessRequest(
+            id: requestId,
+            serverId: server.id,
+            userId: client.createdByUserId,
+            clientId: client.id,
+            scopes: scopes,
+            humanName: "",
+            humanEmail: "",
+            humanEmailVerified: false,
+            humanAvatarUrl: nil,
+            agentId: agent.id,
+            status: "approved",
+            createdAt: Date()
+        ))
+        let scopeJSON = scopes.map { jsonString($0) }.joined(separator: ",")
+        let document = "{\"requestId\":\(jsonString(requestId)),\"status\":\"approved\",\"client\":{\"clientId\":\(jsonString(client.clientId)),\"appType\":\(jsonString(client.appType)),\"name\":\(jsonString(client.name)),\"description\":null,\"homepageUrl\":null},\"agent\":{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"serverId\":\(jsonString(server.id)),\"serverSlug\":\(jsonString(server.slug))},\"scopes\":[\(scopeJSON)]}"
+        return json(200, document)
+    }
+
     /// `POST /api/oauth/token`. Form fields, camelCase JSON, and HTTP Basic all name the same client.
     public func exchangeToken(authorization: String?, body: String, issuer: String) -> HTTPReply {
         let fields = tokenFields(body)
@@ -429,6 +518,9 @@ public final class OAuthLedger: @unchecked Sendable {
             return json(401, "{\"error\":\"Client credentials are required\"}")
         }
         let grantType = fields["grantType"] ?? fields["grant_type"] ?? ""
+        if grantType == "urn:slock:grant-type:agent_request" {
+            return exchangeAgentRequest(fields: fields, credentials: credentials)
+        }
         guard grantType == "authorization_code" else {
             return json(400, "{\"error\":\"Unsupported grant type\"}")
         }
@@ -509,6 +601,61 @@ public final class OAuthLedger: @unchecked Sendable {
         var document = "{\"access_token\":\(jsonString(accessToken)),\"token_type\":\"Bearer\",\"expires_in\":\(expiresIn),\"scope\":\(jsonString(scope))"
         if !idToken.isEmpty { document += ",\"id_token\":\(jsonString(idToken))" }
         document += "}"
+        return json(200, document, cacheControl: "no-store")
+    }
+
+    private func exchangeAgentRequest(
+        fields: [String: String],
+        credentials: (clientId: String, clientSecret: String)
+    ) -> HTTPReply {
+        let requestId = (fields["requestId"] ?? fields["request_id"] ?? "").lowercased()
+        guard !requestId.isEmpty else {
+            return json(400, "{\"error\":\"requestId is required\"}")
+        }
+        guard requestId.wholeMatch(of: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/) != nil else {
+            return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization request is invalid or has expired\"}")
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let client = clients.first(where: {
+            $0.clientId == credentials.clientId
+                && isUserManaged($0)
+                && ($0.appType != "third_party_global" || $0.enabled)
+                && $0.secretHash == sha256(credentials.clientSecret)
+        }) else {
+            return json(401, "{\"error\":\"Invalid client credentials\"}")
+        }
+        guard let index = requests.firstIndex(where: { $0.id == requestId && $0.clientId == client.id && $0.agentId != nil }) else {
+            return json(404, "{\"error\":\"Access request not found\"}")
+        }
+        let request = requests[index]
+        if request.consumedAt != nil {
+            return json(409, "{\"error\":\"request_already_consumed\",\"error_description\":\"This access request is one-time and has already been exchanged.\",\"next_action\":\"obtain_fresh_request\"}")
+        }
+        guard request.status == "approved" else {
+            return json(400, "{\"error\":\"authorization_pending\"}")
+        }
+        guard let agentId = request.agentId, let agent = agents[agentId], !agent.deleted else {
+            return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization identity is no longer available\"}")
+        }
+        var raw = Data(count: 32)
+        for index in raw.indices { raw[index] = UInt8.random(in: 0...255) }
+        let accessToken = "slock_at_" + raw.map { String(format: "%02x", $0) }.joined()
+        let now = Date()
+        tokens.append(AccessToken(
+            serverId: request.serverId,
+            userId: request.userId,
+            clientId: client.id,
+            requestId: request.id,
+            tokenHash: sha256(accessToken),
+            scopes: request.scopes,
+            expiresAt: now.addingTimeInterval(60 * 60),
+            principalType: "agent",
+            agentId: agent.id
+        ))
+        requests[index].consumedAt = now
+        let scope = request.scopes.joined(separator: " ")
+        let document = "{\"access_token\":\(jsonString(accessToken)),\"token_type\":\"Bearer\",\"expires_in\":3600,\"scope\":\(jsonString(scope))}"
         return json(200, document, cacheControl: "no-store")
     }
 
@@ -708,6 +855,14 @@ public final class OAuthLedger: @unchecked Sendable {
         var deleted = false
     }
 
+    private struct Agent {
+        var id: String
+        var serverId: String
+        var name: String
+        var displayName: String
+        var deleted = false
+    }
+
     private struct Client {
         var id: String
         var serverId: String
@@ -760,6 +915,8 @@ public final class OAuthLedger: @unchecked Sendable {
         var humanEmail: String
         var humanEmailVerified: Bool
         var humanAvatarUrl: String?
+        var agentId: String? = nil
+        var status: String = "approved"
         var createdAt: Date
         var consumedAt: Date? = nil
     }
@@ -772,6 +929,8 @@ public final class OAuthLedger: @unchecked Sendable {
         var tokenHash: String
         var scopes: [String]
         var expiresAt: Date
+        var principalType: String = "human"
+        var agentId: String? = nil
     }
 
     private func json(_ status: Int, _ body: String, cacheControl: String? = nil) -> HTTPReply {
