@@ -523,6 +523,81 @@ public final class OAuthLedger: @unchecked Sendable {
         return json(200, "{\"agents\":[\(entries)]}", cacheControl: "no-store")
     }
 
+    /// `GET /api/oauth/authorize`. The browser flow validates the registered
+    /// redirect, PKCE shape, and nonce bound, then hands off to the web app.
+    public func browserAuthorize(query: String, appURL: String) -> HTTPReply {
+        let params = queryParameters(query)
+        func invalidRequest(_ message: String) -> HTTPReply {
+            json(400, "{\"error\":\"invalid_request\",\"error_description\":\(jsonString(message))}")
+        }
+        guard params["response_type"] == "code" else { return invalidRequest("response_type must be code") }
+        let clientKey = (params["client_id"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clientKey.isEmpty else { return invalidRequest("client_id is required") }
+        let redirectURI = params["redirect_uri"] ?? ""
+        guard !redirectURI.isEmpty, !redirectURI.contains("#"), let redirectURL = URLComponents(string: redirectURI),
+              let redirectScheme = redirectURL.scheme?.lowercased(), redirectScheme == "https" || redirectScheme == "http"
+        else { return invalidRequest("redirect_uri is invalid") }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let client = clients.first(where: { $0.clientId == clientKey && isUserManaged($0) }) else {
+            return invalidRequest("client_id is unknown")
+        }
+        guard let registered = client.returnUrl, registered == redirectURI else {
+            return invalidRequest("redirect_uri does not match the registered client")
+        }
+        let scopeText = (params["scope"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !scopeText.isEmpty else { return invalidRequest("scope is required") }
+        let requestedScopes = scopeText.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        let validation = validateScopes(requestedScopes, allowed: client.allowedScopes ?? ["openid", "profile", "identity"], clientId: client.clientId)
+        guard validation.allowed, !validation.scopes.isEmpty else {
+            return invalidRequest("scope is invalid for this client")
+        }
+        let challenge = params["code_challenge"] ?? ""
+        if !challenge.isEmpty {
+            guard challenge.wholeMatch(of: /^[A-Za-z0-9_-]{43}$/) != nil else {
+                return invalidRequest("code_challenge must be a SHA-256 challenge")
+            }
+            guard params["code_challenge_method"] == "S256" else {
+                return invalidRequest("code_challenge_method must be S256")
+            }
+        }
+        let nonce = params["nonce"] ?? ""
+        guard nonce.utf8.count <= 512 else { return invalidRequest("nonce is too long") }
+        var components = URLComponents(string: appURL.hasSuffix("/") ? String(appURL.dropLast()) : appURL)
+        let basePath = components?.path ?? ""
+        components?.path = basePath + "/login-with-raft/setup"
+        var items: [URLQueryItem] = [
+            URLQueryItem(name: "flow", value: "oidc"),
+            URLQueryItem(name: "client_id", value: client.clientId),
+            URLQueryItem(name: "return_to", value: redirectURI),
+            URLQueryItem(name: "scope", value: scopeText),
+        ]
+        if let state = params["state"], !state.isEmpty { items.append(URLQueryItem(name: "state", value: state)) }
+        if !nonce.isEmpty { items.append(URLQueryItem(name: "nonce", value: nonce)) }
+        if !challenge.isEmpty {
+            items.append(URLQueryItem(name: "code_challenge", value: challenge))
+            items.append(URLQueryItem(name: "code_challenge_method", value: "S256"))
+        }
+        components?.queryItems = items
+        guard let location = components?.string else {
+            return json(503, "{\"error\":\"oidc_not_configured\"}")
+        }
+        return json(302, "", extraHeaders: ["Location": location])
+    }
+
+    private func queryParameters(_ query: String) -> [String: String] {
+        var values: [String: String] = [:]
+        for pair in query.split(separator: "&", omittingEmptySubsequences: false) {
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            let rawName = parts.first ?? ""
+            let rawValue = parts.count > 1 ? parts[1] : ""
+            let name = (rawName.replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? rawName)
+            let value = (rawValue.replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? rawValue)
+            if !name.isEmpty { values[name] = value }
+        }
+        return values
+    }
+
     /// `GET /api/oauth/jwks`. Public ES256 verification key for the ID tokens.
     public func jwks() -> HTTPReply {
         guard let body = OAuthIDToken.jwks(secret: jwtSecret) else {
@@ -1516,13 +1591,19 @@ public final class OAuthLedger: @unchecked Sendable {
         var revokedAt: Date? = nil
     }
 
-    private func json(_ status: Int, _ body: String, cacheControl: String? = nil) -> HTTPReply {
+    private func json(
+        _ status: Int,
+        _ body: String,
+        cacheControl: String? = nil,
+        extraHeaders: [String: String] = [:]
+    ) -> HTTPReply {
         var headers = [
             "X-Robots-Tag": AppFallback.robotsTag,
             "Content-Type": AppFallback.jsonContentType,
             "Content-Length": String(Data(body.utf8).count),
         ]
         if let cacheControl { headers["Cache-Control"] = cacheControl }
+        for (name, value) in extraHeaders { headers[name] = value }
         return HTTPReply(status: status, headers: headers, body: body)
     }
 }

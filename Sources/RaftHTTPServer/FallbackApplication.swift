@@ -654,6 +654,12 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("api", "oauth", "jwks") { _ -> Response in
         routeResponse(services.emailAccounts.oauth.jwks())
     }
+    app.get("api", "oauth", "authorize") { request -> Response in
+        routeResponse(services.emailAccounts.oauth.browserAuthorize(
+            query: request.url.query ?? "",
+            appURL: services.emailAccounts.appURL
+        ))
+    }
     app.get("api", "oauth", ".well-known", "openid-configuration") { _ -> Response in
         routeResponse(OAuthDiscovery.openIDConfiguration(serverURL: services.emailAccounts.serverURL))
     }
