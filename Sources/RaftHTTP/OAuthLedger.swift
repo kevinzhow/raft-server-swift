@@ -40,6 +40,7 @@ public final class OAuthLedger: @unchecked Sendable {
     private let lock = NSLock()
     private var servers: [String: Server] = [:]
     private var agents: [String: Agent] = [:]
+    private var agentRoles: [String: String] = [:]
     private var members: [String: String] = [:]
     private var clients: [Client] = []
     private var requests: [AccessRequest] = []
@@ -56,12 +57,46 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
-    public func createAgent(serverId: String, name: String, displayName: String? = nil) -> String {
+    public func createAgent(
+        serverId: String,
+        name: String,
+        displayName: String? = nil,
+        avatarUrl: String? = nil,
+        description: String? = nil
+    ) -> String {
         let id = UUID().uuidString.lowercased()
         lock.lock()
-        agents[id] = Agent(id: id, serverId: serverId, name: name, displayName: displayName ?? name)
+        agents[id] = Agent(
+            id: id,
+            serverId: serverId,
+            name: name,
+            displayName: displayName ?? name,
+            avatarUrl: avatarUrl,
+            description: description
+        )
+        agentRoles["\(serverId)\n\(id)"] = "member"
         lock.unlock()
         return id
+    }
+
+    public func setAgentRole(serverId: String, agentId: String, role: String) {
+        lock.lock()
+        agentRoles["\(serverId)\n\(agentId)"] = role
+        lock.unlock()
+    }
+
+    public func removeAgentMember(serverId: String, agentId: String) {
+        lock.lock()
+        agentRoles.removeValue(forKey: "\(serverId)\n\(agentId)")
+        lock.unlock()
+    }
+
+    /// The URL-safe key the pixel avatar route uses.
+    public static func pixelAvatarKey(_ avatar: String) -> String {
+        Data(avatar.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
     }
 
     public func addMember(serverId: String, userId: String, role: String) {
@@ -284,8 +319,27 @@ public final class OAuthLedger: @unchecked Sendable {
         guard let token = principalTokenLocked(raw),
               let client = clients.first(where: { $0.id == token.clientId }),
               isUserManaged(client),
-              let server = servers[token.serverId], !server.deleted,
-              let request = requests.first(where: { $0.id == token.requestId }),
+              let server = servers[token.serverId], !server.deleted
+        else {
+            return json(401, "{\"error\":\"Invalid or expired access token\"}")
+        }
+        if token.principalType == "agent" {
+            guard let agentId = token.agentId,
+                  let agent = agents[agentId],
+                  agent.serverId == server.id,
+                  !agent.deleted,
+                  let role = agentRoles["\(server.id)\n\(agentId)"]
+            else {
+                return json(401, "{\"error\":\"Invalid or expired access token\"}")
+            }
+            let avatar = agent.avatarUrl
+            let avatarJSON = avatar.map { jsonString($0) } ?? "null"
+            let pictureJSON = agentPicture(avatar: avatar, baseURL: baseURL).map { jsonString($0) } ?? "null"
+            let descriptionJSON = agent.description.map { jsonString($0) } ?? "null"
+            let document = "{\"scope\":\(jsonString(token.scopes.joined(separator: " "))),\"client_id\":\(jsonString(client.clientId)),\"client_name\":\(jsonString(client.name)),\"server_id\":\(jsonString(server.id)),\"server_slug\":\(jsonString(server.slug)),\"sub\":\(jsonString(agent.id)),\"type\":\"agent\",\"server_role\":\(jsonString(role)),\"preferred_username\":\(jsonString(agent.name)),\"name\":\(jsonString(agent.displayName)),\"avatar_url\":\(avatarJSON),\"picture\":\(pictureJSON),\"description\":\(descriptionJSON)}"
+            return json(200, document)
+        }
+        guard let request = requests.first(where: { $0.id == token.requestId }),
               let role = members["\(token.serverId)\n\(token.userId)"]
         else {
             return json(401, "{\"error\":\"Invalid or expired access token\"}")
@@ -308,6 +362,15 @@ public final class OAuthLedger: @unchecked Sendable {
         else { return nil }
         let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
         return base + avatar
+    }
+
+    private func agentPicture(avatar: String?, baseURL: String) -> String? {
+        guard let avatar else { return nil }
+        if avatar.hasPrefix("pixel:") {
+            let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
+            return base + "/api/avatars/pixel/\(Self.pixelAvatarKey(avatar)).svg"
+        }
+        return absolutePicture(avatar, baseURL: baseURL)
     }
 
     /// `GET /api/oauth/serverinfo`. The token names the Server; a query cannot
@@ -713,7 +776,7 @@ public final class OAuthLedger: @unchecked Sendable {
         }
         let request = requests[index]
         if request.consumedAt != nil {
-            return json(409, "{\"error\":\"request_already_consumed\",\"error_description\":\"This access request is one-time and has already been exchanged.\",\"next_action\":\"obtain_fresh_request\"}")
+            return json(409, "{\"error\":\"request_already_consumed\",\"error_description\":\"This Login with Raft request is one-time and has already been exchanged. Discard it and obtain a fresh request before retrying.\",\"next_action\":\"obtain_fresh_request\"}")
         }
         guard request.status == "approved" else {
             return json(400, "{\"error\":\"authorization_pending\"}")
@@ -1026,6 +1089,8 @@ public final class OAuthLedger: @unchecked Sendable {
         var serverId: String
         var name: String
         var displayName: String
+        var avatarUrl: String?
+        var description: String?
         var deleted = false
     }
 
