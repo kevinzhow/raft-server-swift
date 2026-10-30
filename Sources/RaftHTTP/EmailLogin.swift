@@ -6601,6 +6601,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(202, "{\"accepted\":true,\"feedbackReportId\":\(jsonString(reportId)),\"agentId\":\(jsonString(agentId))}")
     }
 
+    public func serversUnreadSummary(authorization: String?) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        let entries = oauth.serverIdsForMember(userId: userId).map { serverId -> String in
+            let joined = oauth.channelsForServer(serverId: serverId, userId: userId).filter { $0.joined }
+            let total = joined.reduce(0) { sum, channel in
+                sum + oauth.channelUnreadInfo(channelId: channel.id, userId: userId).unreadCount
+            }
+            let muted = oauth.isServerPushMuted(serverId: serverId, userId: userId)
+            return "{\"serverId\":\(jsonString(serverId)),\"unreadCount\":\(total),\"serverPushMuted\":\(muted),\"activityUnreadCount\":\(total)}"
+        }.joined(separator: ",")
+        return Self.json(200, "[\(entries)]")
+    }
+
     public func authenticatedUserId(authorization: String?) -> String? {
         sessionUserId(authorization: authorization)
     }

@@ -65,6 +65,7 @@ public final class OAuthLedger: @unchecked Sendable {
     private var savedMessageCounter = 0
     private var sidebarOrders: [String: SidebarOrder] = [:]
     private var serverAgreementRecords: [String: [ServerAgreementInfo]] = [:]
+    private var serverPushMutes: Set<String> = []
 
     private var clients: [Client] = []
     private var requests: [AccessRequest] = []
@@ -552,6 +553,22 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return serverAgreementRecords[serverId]?.last(where: { $0.enabled })
+    }
+
+    public func isServerPushMuted(serverId: String, userId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return serverPushMutes.contains("\(serverId)\n\(userId)")
+    }
+
+    public func setServerPushMuted(serverId: String, userId: String, muted: Bool) {
+        lock.lock()
+        if muted {
+            serverPushMutes.insert("\(serverId)\n\(userId)")
+        } else {
+            serverPushMutes.remove("\(serverId)\n\(userId)")
+        }
+        lock.unlock()
     }
 
     public func serverAgreementVersions(serverId: String) -> [ServerAgreementInfo] {

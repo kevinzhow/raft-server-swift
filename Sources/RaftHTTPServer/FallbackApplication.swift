@@ -521,6 +521,11 @@ public func configure(_ app: Application, services: FallbackServices) {
             slug: slug?["slug"] as? String
         ))
     }
+    app.get("api", "servers", "unread-summary") { request -> Response in
+        routeResponse(services.emailAccounts.serversUnreadSummary(
+            authorization: request.headers[.authorization]
+        ))
+    }
     app.get("api", "servers") { request -> Response in
         guard let directory = services.publicVisits else {
             return routeResponse(PublicVisits.authRequired(authorization: request.headers[.authorization]))
