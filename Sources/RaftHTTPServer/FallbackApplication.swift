@@ -508,6 +508,19 @@ public func configure(_ app: Application, services: FallbackServices) {
         }
         return routeResponse(reply)
     }
+    app.post("api", "servers", "join-community") { request -> Response in
+        guard let directory = services.publicVisits else {
+            return routeResponse(PublicVisits.authRequired(authorization: request.headers[.authorization]))
+        }
+        let slug = (try? JSONSerialization.jsonObject(with: Data((request.body.string ?? "").utf8))) as? [String: Any]
+        guard let userId = services.emailAccounts.authenticatedUserId(authorization: request.headers[.authorization]) else {
+            return routeResponse(PublicVisits.authRequired(authorization: request.headers[.authorization]))
+        }
+        return routeResponse(directory.joinCommunity(
+            userId: userId,
+            slug: slug?["slug"] as? String
+        ))
+    }
     app.get("api", "servers") { request -> Response in
         guard let directory = services.publicVisits else {
             return routeResponse(PublicVisits.authRequired(authorization: request.headers[.authorization]))

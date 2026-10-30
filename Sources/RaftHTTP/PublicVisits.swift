@@ -619,12 +619,36 @@ public final class PublicVisitDirectory: @unchecked Sendable {
         guard let userId = bearerUserId(authorization), users[userId] != nil else {
             return PublicVisits.authRequired(authorization: authorization)
         }
-        let rows = servers.values.filter { $0.memberIds.contains(userId) }.sorted { $0.id < $1.id }
-        let listed = rows.map { server in
+        let rows = servers
+            .filter { $0.value.memberIds.contains(userId) }
+            .sorted { $0.value.id < $1.value.id }
+        let listed = rows.map { slug, server in
             let live = server.publiclyVisible && server.publicEnabled
-            return "{\"id\":\(jsonString(server.id)),\"publicPageLive\":\(live ? "true" : "false")}"
+            let role = server.memberRoles[userId] ?? "member"
+            return "{\"id\":\(jsonString(server.id)),\"slug\":\(jsonString(slug)),\"role\":\(jsonString(role)),\"publicPageLive\":\(live ? "true" : "false")}"
         }.joined(separator: ",")
         return PublicVisits.jsonReply(200, "[\(listed)]")
+    }
+
+    public func joinCommunity(userId: String, slug rawSlug: String?) -> HTTPReply {
+        let slug = rawSlug ?? "community"
+        guard slug == "community" || slug == "community-cn" else {
+            return PublicVisits.jsonReply(400, "{\"error\":\"Unsupported community\"}")
+        }
+        lock.lock()
+        guard var server = servers[slug] else {
+            lock.unlock()
+            return PublicVisits.jsonReply(404, "{\"error\":\"Community server is not available\"}")
+        }
+        guard !server.memberIds.contains(userId) else {
+            lock.unlock()
+            return PublicVisits.jsonReply(400, "{\"error\":\"Already a member of this community\"}")
+        }
+        server.memberIds.insert(userId)
+        server.memberRoles[userId] = "member"
+        servers[slug] = server
+        lock.unlock()
+        return PublicVisits.jsonReply(200, "{\"serverId\":\(jsonString(server.id)),\"serverName\":\(jsonString(server.name))}")
     }
 
     public func addPublicMessage(slug: String, message: PublicHistoryMessage) {

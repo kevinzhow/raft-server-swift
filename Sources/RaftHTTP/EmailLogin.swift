@@ -6601,6 +6601,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(202, "{\"accepted\":true,\"feedbackReportId\":\(jsonString(reportId)),\"agentId\":\(jsonString(agentId))}")
     }
 
+    public func authenticatedUserId(authorization: String?) -> String? {
+        sessionUserId(authorization: authorization)
+    }
+
     public func serverScopeAttestation(authorization: String?, serverId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
