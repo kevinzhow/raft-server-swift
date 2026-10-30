@@ -104,7 +104,16 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
-    public func createClient(serverId: String, createdByUserId: String, name: String, clientId: String, appType: String = "server_local") throws -> CreatedOAuthClient {
+    public func createClient(
+        serverId: String,
+        createdByUserId: String,
+        name: String,
+        clientId: String,
+        appType: String = "server_local",
+        description: String? = nil,
+        homepageUrl: String? = nil,
+        returnUrl: String? = nil
+    ) throws -> CreatedOAuthClient {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw OAuthClientRejection(message: "name is required") }
         let normalized = clientId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -123,7 +132,10 @@ public final class OAuthLedger: @unchecked Sendable {
             secretHash: sha256(secret),
             appType: appType,
             name: trimmed,
-            createdByUserId: createdByUserId
+            createdByUserId: createdByUserId,
+            descriptionText: description,
+            homepageUrl: homepageUrl,
+            returnUrl: returnUrl
         ))
         lock.unlock()
         return CreatedOAuthClient(id: id, clientId: normalized, clientSecret: secret)
@@ -535,7 +547,10 @@ public final class OAuthLedger: @unchecked Sendable {
             let requested = scope.split(whereSeparator: { $0.isWhitespace }).map(String.init)
             let validation = validateScopes(requested, allowed: allowed, clientId: client.clientId)
             let allowedJSON = allowed.map { jsonString($0) }.joined(separator: ",")
-            var document = "{\"clientId\":\(jsonString(client.clientId)),\"appType\":\(jsonString(client.appType)),\"name\":\(jsonString(client.name)),\"description\":null,\"homepageUrl\":null,\"returnUrl\":null,\"logoUrl\":null,\"setupUrl\":null,\"setupDescription\":null,\"allowedScopes\":[\(allowedJSON)],\"availability\":\"ready\""
+            let descriptionJSON = client.descriptionText.map { jsonString($0) } ?? "null"
+            let homepageJSON = client.homepageUrl.map { jsonString($0) } ?? "null"
+            let returnJSON = client.returnUrl.map { jsonString($0) } ?? "null"
+            var document = "{\"clientId\":\(jsonString(client.clientId)),\"appType\":\(jsonString(client.appType)),\"name\":\(jsonString(client.name)),\"description\":\(descriptionJSON),\"homepageUrl\":\(homepageJSON),\"returnUrl\":\(returnJSON),\"logoUrl\":null,\"setupUrl\":null,\"setupDescription\":null,\"allowedScopes\":[\(allowedJSON)],\"availability\":\"ready\""
             if !requested.isEmpty {
                 let reasonJSON = validation.reason.map { jsonString($0) } ?? "null"
                 let disallowedJSON = validation.disallowed.map { jsonString($0) }.joined(separator: ",")
@@ -986,6 +1001,9 @@ public final class OAuthLedger: @unchecked Sendable {
         var appType: String
         var name: String
         var createdByUserId: String
+        var descriptionText: String? = nil
+        var homepageUrl: String? = nil
+        var returnUrl: String? = nil
         var allowedScopes: [String]? = nil
         var outboundGroups: [String] = []
         var enabled: Bool = true
