@@ -4987,7 +4987,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let userId = accessTokens[token],
               let account = accounts.values.first(where: { $0.id == userId })
         else { return .invalid }
-        return .user(OAuthHuman(id: account.id, email: account.email, name: account.name))
+        return .user(OAuthHuman(
+            id: account.id,
+            email: account.email,
+            name: account.name,
+            emailVerified: account.emailVerified
+        ))
     }
 
     public func login(body: String) -> HTTPReply {

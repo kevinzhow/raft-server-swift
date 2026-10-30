@@ -5,11 +5,13 @@ public struct OAuthHuman: Sendable {
     public var id: String
     public var email: String
     public var name: String
+    public var emailVerified: Bool
 
-    public init(id: String, email: String, name: String) {
+    public init(id: String, email: String, name: String, emailVerified: Bool = false) {
         self.id = id
         self.email = email
         self.name = name
+        self.emailVerified = emailVerified
     }
 }
 
@@ -158,6 +160,51 @@ public final class OAuthLedger: @unchecked Sendable {
         return json(200, document, cacheControl: "private, no-store")
     }
 
+    /// `GET /api/oauth/userinfo`. Only principal access tokens resolve; an App
+    /// installation credential is not a principal and stays 401.
+    public func userinfo(authorization: String?) -> HTTPReply {
+        guard let raw = bearerToken(authorization) else {
+            return json(401, "{\"error\":\"Missing bearer token\"}")
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let token = principalTokenLocked(raw),
+              let client = clients.first(where: { $0.id == token.clientId }),
+              let server = servers[token.serverId], !server.deleted,
+              let request = requests.first(where: { $0.id == token.requestId }),
+              let role = members["\(token.serverId)\n\(token.userId)"]
+        else {
+            return json(401, "{\"error\":\"Invalid or expired access token\"}")
+        }
+        var document = "{\"scope\":\(jsonString(token.scopes.joined(separator: " "))),\"client_id\":\(jsonString(client.clientId)),\"client_name\":\(jsonString(client.name)),\"server_id\":\(jsonString(server.id)),\"server_slug\":\(jsonString(server.slug)),\"sub\":\(jsonString(token.userId)),\"type\":\"human\",\"server_role\":\(jsonString(role)),\"preferred_username\":\(jsonString(request.humanName)),\"name\":\(jsonString(request.humanName)),\"avatar_url\":null,\"picture\":null,\"description\":null"
+        if token.scopes.contains("email"), !request.humanEmail.isEmpty {
+            document += ",\"email\":\(jsonString(request.humanEmail)),\"email_verified\":\(request.humanEmailVerified ? "true" : "false")"
+        }
+        document += "}"
+        return json(200, document)
+    }
+
+    /// `GET /api/oauth/agents`. Directory authority is the `agent:read` login
+    /// scope, never an installation credential.
+    public func agentDirectory(authorization: String?) -> HTTPReply {
+        guard let raw = bearerToken(authorization) else {
+            return json(401, "{\"error\":\"Missing bearer token\"}", cacheControl: "no-store")
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let token = principalTokenLocked(raw),
+              let client = clients.first(where: { $0.id == token.clientId }),
+              let server = servers[token.serverId], !server.deleted,
+              members["\(token.serverId)\n\(token.userId)"] != nil
+        else {
+            return json(401, "{\"error\":\"Invalid or expired access token\"}", cacheControl: "no-store")
+        }
+        guard client.enabled, token.scopes.contains("agent:read") else {
+            return json(403, "{\"error\":\"agent:read permission is required from an enabled App\"}", cacheControl: "no-store")
+        }
+        return json(200, "{\"agents\":[]}", cacheControl: "no-store")
+    }
+
     /// `POST /api/oauth/authorize/human`. A member receives a one-time human code.
     public func issueHumanAuthorization(session: OAuthSession, body: String) -> HTTPReply {
         switch session {
@@ -300,6 +347,7 @@ public final class OAuthLedger: @unchecked Sendable {
             scopes: scopes,
             humanName: human.name,
             humanEmail: human.email,
+            humanEmailVerified: human.emailVerified,
             createdAt: Date()
         ))
         let scopeJSON = scopes.map { jsonString($0) }.joined(separator: ",")
@@ -333,6 +381,21 @@ public final class OAuthLedger: @unchecked Sendable {
         "openid", "profile", "email", "identity", "agent:read",
         "agent:event:write", "agent:notification:write", "agent:action_request:write",
     ]
+
+    private func bearerToken(_ authorization: String?) -> String? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        return token.isEmpty ? nil : token
+    }
+
+    /// Caller holds `lock`. Installation tokens live in a different table and never match.
+    private func principalTokenLocked(_ raw: String) -> AccessToken? {
+        let hash = sha256(raw)
+        guard let token = tokens.last(where: { $0.tokenHash == hash }), token.expiresAt > Date() else {
+            return nil
+        }
+        return token
+    }
 
     private func clientCredentials(authorization: String?, fields: [String: String]) -> (clientId: String, clientSecret: String)? {
         if let authorization, authorization.hasPrefix("Basic ") {
@@ -424,6 +487,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var scopes: [String]
         var humanName: String
         var humanEmail: String
+        var humanEmailVerified: Bool
         var createdAt: Date
         var consumedAt: Date? = nil
     }

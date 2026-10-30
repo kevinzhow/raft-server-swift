@@ -174,6 +174,56 @@ private func bodyText(_ response: ClientResponse) -> String {
     }
 }
 
+@Test func installationTokenIsRejectedByTheOAuthPrincipalSurfaces() async throws {
+    let accounts = EmailLoginDirectory()
+    let userId = "11111111-1111-4111-8111-111111111198"
+    let serverId = "33333333-3333-4333-8333-333333333390"
+    accounts.addAccount(id: userId, email: "oauth-boundary-198@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: userId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-boundary-198", name: "OAuth Principal Boundary", ownerId: userId)
+    let created = try accounts.oauth.createClient(
+        serverId: serverId,
+        createdByUserId: userId,
+        name: "OAuth Principal Boundary Client",
+        clientId: "oauth-boundary-198",
+        appType: "third_party_global"
+    )
+    let installationId = accounts.oauth.installClient(
+        serverId: serverId,
+        clientRecordId: created.id,
+        installedByUserId: userId,
+        groups: ["server"]
+    )
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var mintHeaders = HTTPFields()
+            mintHeaders[.contentType] = "application/json"
+            let minted = try await client.send(.post, headers: mintHeaders, to: "/api/oauth/installation-token") { request in
+                request.body = .init(string: "{\"client_id\":\(jsonString(created.clientId)),\"client_secret\":\(jsonString(created.clientSecret)),\"installation_id\":\(jsonString(installationId))}")
+            }
+            #expect(minted.status == .ok)
+            let accessToken = ((try JSONSerialization.jsonObject(with: Data(bodyText(minted).utf8)) as? [String: Any])?["access_token"] as? String) ?? ""
+
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(accessToken)"
+            let userinfo = try await client.send(.get, headers: headers, to: "/api/oauth/userinfo")
+            #expect(userinfo.status == .unauthorized)
+
+            let agents = try await client.send(.get, headers: headers, to: "/api/oauth/agents")
+            #expect(agents.status == .unauthorized)
+            let agentsBody = try JSONSerialization.jsonObject(with: Data(bodyText(agents).utf8)) as? [String: Any]
+            #expect(agentsBody?["agents"] == nil)
+        }
+    }
+}
+
 private func expectAccessToken(_ response: ClientResponse, scope: String) throws {
     #expect(response.status == .ok)
     let body = try JSONSerialization.jsonObject(with: Data(bodyText(response).utf8)) as? [String: Any]

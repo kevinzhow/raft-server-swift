@@ -16,28 +16,26 @@
 
 改完跑目标测试，再跑 `make test`。全量通过只说明已经移植的切片是绿的。行为还没补齐时，不要把这次日志当成完成门槛，也不要把它写成 `{SCRATCH}/make-test.log`。
 
-最近一次全量日志：`/tmp/grok-goal-9c95708d924e/implementer/make-test-oauth-installation-token.log`，`PIPE:0`。344 个测试：RaftHTTP 6、RaftHTTPServer 相关 34、HTTP 路由 216、daemon 71、机器套接字 17。这个 scratch 会随目标结束删除。
+最近一次全量日志：`/tmp/progress-analysis/make-test-oauth-principal-rejection.log`，`PIPE:0`。345 个测试：RaftHTTP 34、HTTP 路由 217、daemon 71、`/daemon/connect` 鉴权 17、机器套接字 6。
 
 ## 已完成
 
 - Daemon：`/daemon/connect` 仍在 SwiftNIO 上，不要挪到 Vapor。拒绝字节不含 api key；接受是 101、`raft-server-capabilities`、一帧 `machine:context`。重连、4003 长延迟、`legacy_machine_key_migrated` 停止重试、70s ping、断线期间每个 agent 只留最新 activity/status/invalidate、代理选择、连接池回收、CONNECT/headers/body 超时，都有 Swift 测试。
 - Server 基础面在真实 `RaftServer` 入口上：`/robots.txt`、`/livez`、`/health`、`GET /api/version`、JSON 404、CORS 预检。每条响应带 `X-Robots-Tag: noindex, nofollow`，预检除外。没有数据库时进程 `/health` 是 503 `{"status":"error","detail":"database unreachable"}`。`/api/version` 缺发布身份是 503 `build_identity_unavailable`；`RAFT_RELEASE_SHA`、`RAFT_BUILD_AT`、`RAFT_RELEASE_BRANCH` 齐全时是 200，`version` 是 `1.21.23`。
-- 路由切片已经写到 `packages/server/src/routes/oauth.api.test.ts` 的安装令牌签发。149 个 `*.api.test.ts` 里，按文件名走到第 95 个。这个文件只完成了下面几条，后面大约 54 个文件还没开始。更早的文件里，spy 和 failpoint 按上面的规则跳过了。
-- 已锁住的 OAuth：`GET /api/oauth/.well-known/openid-configuration` 的公开 scope；`POST /api/oauth/authorize/human` 签发一次性 code；`POST /api/oauth/token` 的 form、camelCase JSON 和 Basic 都是 200，含 `access_token`、`Bearer`、`expires_in`、`scope`，有 `openid` 时有 `id_token`；超过 10 分钟的 code 是 400 `authorization_code_expired`，`next_action` 是 `obtain_fresh_authorization`，不签发 token；`POST /api/oauth/installation-token` 对活跃安装回 200，`Cache-Control: private, no-store`，令牌前缀 `raft_installation_`，`expires_in` 600。
+- 路由切片已经写到 `packages/server/src/routes/oauth.api.test.ts` 的安装令牌签发。149 个 `*.api.test.ts` 里，按文件名走到第 96 个。这个文件只完成了下面几条，后面 53 个文件还没开始。更早的文件里，spy 和 failpoint 按上面的规则跳过了。
+- 已锁住的 OAuth：`GET /api/oauth/.well-known/openid-configuration` 的公开 scope；`POST /api/oauth/authorize/human` 签发一次性 code；`POST /api/oauth/token` 的 form、camelCase JSON 和 Basic 都是 200，含 `access_token`、`Bearer`、`expires_in`、`scope`，有 `openid` 时有 `id_token`；超过 10 分钟的 code 是 400 `authorization_code_expired`，`next_action` 是 `obtain_fresh_authorization`，不签发 token；`POST /api/oauth/installation-token` 对活跃安装回 200，`Cache-Control: private, no-store`，令牌前缀 `raft_installation_`，`expires_in` 600；安装令牌打 `GET /api/oauth/userinfo` 和 `GET /api/oauth/agents` 都是 401，`/agents` 的 JSON 里没有 `agents`。
 
 README 里「没有 `acceptTerms: true`」之前的长段是按切片追加的行为说明。继续时在那句前面加一句，不要改掉更早的句子。
 
 ## 下一条
 
-`oauth.api.test.ts` 里 “installation credentials and principal credentials are mutually rejected”。安装令牌已经能签发。下一条 HTTP 断言，一次做一条：
+`oauth.api.test.ts` 里 “installation credentials and principal credentials are mutually rejected”。安装令牌已经能签发，OAuth 的 principal 面也已经拒绝它。下一条 HTTP 断言，一次做一条：
 
-1. `GET /api/oauth/userinfo` 带这张安装令牌是 401。
-2. `GET /api/oauth/agents` 带它也是 401，JSON 里没有 `agents`。
-3. 用户会话调 `GET /api/app-installation/server` 是 401。
-4. 安装令牌调同一地址是 200，`Cache-Control: private, no-store`，`installation_id` 与 `server.id` 对得上。
-5. `GET /api/app-installation/channels` 是 403。
-6. 把 App 收成 `slock_builtin` 后，已发出的令牌再读投影是 401，再次签发得到空，不新增令牌行。
-7. 平台托管的 Slack 身份不能签发通用安装令牌，投影是 401。
+1. 用户会话调 `GET /api/app-installation/server` 是 401。
+2. 安装令牌调同一地址是 200，`Cache-Control: private, no-store`，`installation_id` 与 `server.id` 对得上。
+3. `GET /api/app-installation/channels` 是 403。
+4. 把 App 收成 `slock_builtin` 后，已发出的令牌再读投影是 401，再次签发得到空，不新增令牌行。
+5. 平台托管的 Slack 身份不能签发通用安装令牌，投影是 401。
 
 同一文件里先跳过、不要补的：像素头像渲染单测；只打 `authenticateOAuthClient` 的 `slock_secret_` 旧密钥；换票抛错时的日志和审计脱敏（spy）。审计表断言不要单独移植。
 
@@ -45,7 +43,7 @@ README 里「没有 `acceptTerms: true`」之前的长段是按切片追加的�
 
 ## 标识
 
-下一次新用户从 `11111111-1111-4111-8111-111111111198` 起，下一台服务器从 `33333333-3333-4333-8333-333333333390` 起。`...197` 和 `...389` 已用于安装令牌。
+下一次新用户从 `11111111-1111-4111-8111-111111111199` 起，下一台服务器从 `33333333-3333-4333-8333-333333333391` 起。`...197`、`...198` 和 `...389`、`...390` 已用于安装令牌与 principal 边界。
 
 ## 约束
 

@@ -555,6 +555,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             issuer: OAuthDiscovery.issuerOrigin(services.emailAccounts.serverURL) ?? ""
         ))
     }
+    app.get("api", "oauth", "userinfo") { request -> Response in
+        routeResponse(services.emailAccounts.oauth.userinfo(authorization: request.headers[.authorization]))
+    }
+    app.get("api", "oauth", "agents") { request -> Response in
+        routeResponse(services.emailAccounts.oauth.agentDirectory(authorization: request.headers[.authorization]))
+    }
     app.get("api", "oauth", ".well-known", "openid-configuration") { _ -> Response in
         routeResponse(OAuthDiscovery.openIDConfiguration(serverURL: services.emailAccounts.serverURL))
     }
