@@ -102,6 +102,12 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func deleteAgent(id: String) {
+        lock.lock()
+        agents[id]?.deleted = true
+        lock.unlock()
+    }
+
     /// The URL-safe key the pixel avatar route uses.
     public static func pixelAvatarKey(_ avatar: String) -> String {
         let key = avatar.hasPrefix("pixel:") ? String(avatar.dropFirst("pixel:".count)) : avatar
@@ -440,7 +446,7 @@ public final class OAuthLedger: @unchecked Sendable {
 
     /// `GET /api/oauth/agents`. Directory authority is the `agent:read` login
     /// scope, never an installation credential.
-    public func agentDirectory(authorization: String?) -> HTTPReply {
+    public func agentDirectory(authorization: String?, baseURL: String) -> HTTPReply {
         guard let raw = bearerToken(authorization) else {
             return json(401, "{\"error\":\"Missing bearer token\"}", cacheControl: "no-store")
         }
@@ -449,15 +455,34 @@ public final class OAuthLedger: @unchecked Sendable {
         guard let token = principalTokenLocked(raw),
               let client = clients.first(where: { $0.id == token.clientId }),
               isUserManaged(client),
-              let server = servers[token.serverId], !server.deleted,
-              members["\(token.serverId)\n\(token.userId)"] != nil
+              let server = servers[token.serverId], !server.deleted
         else {
             return json(401, "{\"error\":\"Invalid or expired access token\"}", cacheControl: "no-store")
         }
         guard client.enabled, token.scopes.contains("agent:read") else {
             return json(403, "{\"error\":\"agent:read permission is required from an enabled App\"}", cacheControl: "no-store")
         }
-        return json(200, "{\"agents\":[]}", cacheControl: "no-store")
+        if token.principalType == "agent" {
+            guard let agentId = token.agentId,
+                  agentRoles["\(server.id)\n\(agentId)"] != nil
+            else {
+                return json(401, "{\"error\":\"Invalid or expired access token\"}", cacheControl: "no-store")
+            }
+        } else {
+            guard members["\(server.id)\n\(token.userId)"] != nil else {
+                return json(401, "{\"error\":\"Invalid or expired access token\"}", cacheControl: "no-store")
+            }
+        }
+        let entries = agents.values
+            .filter { $0.serverId == server.id && !$0.deleted }
+            .sorted { $0.name < $1.name }
+            .map { agent -> String in
+                let avatarJSON = agent.avatarUrl.map { jsonString($0) } ?? "null"
+                let pictureJSON = agentPicture(avatar: agent.avatarUrl, baseURL: baseURL).map { jsonString($0) } ?? "null"
+                return "{\"id\":\(jsonString(agent.id)),\"handle\":\(jsonString(agent.name)),\"display_name\":\(jsonString(agent.displayName)),\"avatar_url\":\(avatarJSON),\"picture\":\(pictureJSON)}"
+            }
+            .joined(separator: ",")
+        return json(200, "{\"agents\":[\(entries)]}", cacheControl: "no-store")
     }
 
     /// `POST /api/oauth/authorize/human`. A member receives a one-time human code.
