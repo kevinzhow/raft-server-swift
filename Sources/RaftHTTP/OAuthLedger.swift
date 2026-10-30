@@ -991,9 +991,6 @@ public final class OAuthLedger: @unchecked Sendable {
         scopeServerId: String? = nil
     ) -> HTTPReply {
         let fields = tokenFields(body)
-        if fields["code_verifier"] != nil || jsonBodyHasKey(body, "code_verifier") {
-            return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization code, redirect URI, or PKCE verifier is invalid\"}")
-        }
         guard let credentials = clientCredentials(authorization: authorization, fields: fields) else {
             return json(401, "{\"error\":\"Client credentials are required\"}")
         }
@@ -1004,10 +1001,17 @@ public final class OAuthLedger: @unchecked Sendable {
         guard grantType == "authorization_code" else {
             return json(400, "{\"error\":\"Unsupported grant type\"}")
         }
-        let code = (fields["code"] ?? "").lowercased()
+        let rawCode = (fields["code"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let isOIDC = rawCode.hasPrefix("raft_oidc_")
+        if !isOIDC, fields["code_verifier"] != nil || jsonBodyHasKey(body, "code_verifier") {
+            return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization code, redirect URI, or PKCE verifier is invalid\"}")
+        }
+        let code = isOIDC ? rawCode : rawCode.lowercased()
         guard !code.isEmpty else { return json(400, "{\"error\":\"code is required\"}") }
-        guard code.wholeMatch(of: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/) != nil else {
-            return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization request is invalid or has expired\"}")
+        if !isOIDC {
+            guard code.wholeMatch(of: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/) != nil else {
+                return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization request is invalid or has expired\"}")
+            }
         }
 
         lock.lock()
@@ -1020,6 +1024,18 @@ public final class OAuthLedger: @unchecked Sendable {
             return json(404, "{\"error\":\"Access request not found\"}")
         }
         let request = requests[index]
+        if isOIDC {
+            guard request.oidc,
+                  let verifier = fields["code_verifier"], !verifier.isEmpty,
+                  let challenge = request.codeChallenge,
+                  challenge == Self.pkceChallenge(verifier),
+                  let redirect = fields["redirect_uri"],
+                  redirect == request.oidcRedirectURI
+            else {
+                lock.unlock()
+                return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization code, redirect URI, or PKCE verifier is invalid\"}")
+            }
+        }
         if let scopeServerId, scopeServerId != request.serverId {
             lock.unlock()
             return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization was granted for a different Server than this issuer\"}")
@@ -1074,7 +1090,13 @@ public final class OAuthLedger: @unchecked Sendable {
         )
         let idToken: String
         if scopes.contains("openid") {
-            guard let signed = OAuthIDToken.sign(identity: identity, issuer: issuer, expiresIn: expiresIn, secret: jwtSecret) else {
+            guard let signed = OAuthIDToken.sign(
+                identity: identity,
+                issuer: issuer,
+                expiresIn: expiresIn,
+                secret: jwtSecret,
+                nonce: isOIDC ? request.nonce : nil
+            ) else {
                 return json(500, "{\"error\":\"Failed to issue access token\"}")
             }
             idToken = signed
@@ -1190,6 +1212,30 @@ public final class OAuthLedger: @unchecked Sendable {
             return json(404, "{\"error\":\"OAuth client not found for server\"}")
         }
         let requested = object?["scopes"]
+        let oidc = (object?["oidc"] as? Bool) ?? false
+        var nonce: String?
+        var challenge: String?
+        if oidc {
+            if let hint = object?["server"] as? String, !hint.isEmpty {
+                guard let hinted = servers.values.first(where: { ($0.id == hint || $0.slug == hint) && !$0.deleted }),
+                      hinted.id == serverId
+                else {
+                    return json(400, "{\"error\":\"server does not match the selected Server\"}")
+                }
+            }
+            nonce = object?["nonce"] as? String
+            if let nonce, nonce.utf8.count > 512 {
+                return json(400, "{\"error\":\"invalid_request\"}")
+            }
+            challenge = object?["codeChallenge"] as? String
+            if let challenge {
+                guard challenge.wholeMatch(of: /^[A-Za-z0-9_-]{43}$/) != nil,
+                      (object?["codeChallengeMethod"] as? String) == "S256"
+                else {
+                    return json(400, "{\"error\":\"invalid_request\"}")
+                }
+            }
+        }
         let scopes: [String]
         if requested == nil || requested is NSNull {
             scopes = ["openid", "profile"]
@@ -1201,7 +1247,7 @@ public final class OAuthLedger: @unchecked Sendable {
                 }
                 return scopeError(validation)
             }
-            scopes = validation.scopes
+            scopes = validation.scopes.sorted()
         }
         if let requestedReturnURL = (object?["returnUrl"] as? String).flatMap({ $0.isEmpty ? nil : $0 }) {
             guard client.returnUrl == requestedReturnURL, Self.isSafeReturnURL(requestedReturnURL) else {
@@ -1211,7 +1257,14 @@ public final class OAuthLedger: @unchecked Sendable {
         guard let server = servers[serverId], !server.deleted, let role = members["\(serverId)\n\(human.id)"] else {
             return json(404, "{\"error\":\"User is not a member of this server\"}")
         }
-        let code = UUID().uuidString.lowercased()
+        let code: String
+        if oidc {
+            var raw = Data(count: 24)
+            for index in raw.indices { raw[index] = UInt8.random(in: 0...255) }
+            code = "raft_oidc_" + base64url(raw)
+        } else {
+            code = UUID().uuidString.lowercased()
+        }
         requests.append(AccessRequest(
             id: code,
             serverId: serverId,
@@ -1222,6 +1275,10 @@ public final class OAuthLedger: @unchecked Sendable {
             humanEmail: human.email,
             humanEmailVerified: human.emailVerified,
             humanAvatarUrl: human.avatarUrl,
+            oidc: oidc,
+            nonce: nonce,
+            codeChallenge: challenge,
+            oidcRedirectURI: oidc ? client.returnUrl : nil,
             createdAt: Date()
         ))
         let scopeJSON = scopes.map { jsonString($0) }.joined(separator: ",")
@@ -1235,6 +1292,10 @@ public final class OAuthLedger: @unchecked Sendable {
         var allowed: Bool
         var reason: String?
         var disallowed: [String]
+    }
+
+    private static func pkceChallenge(_ verifier: String) -> String {
+        base64url(Data(SHA256.hash(data: Data(verifier.utf8))))
     }
 
     private func validateScopes(_ value: Any?, allowed: [String], clientId: String) -> ScopeValidation {
@@ -1573,6 +1634,10 @@ public final class OAuthLedger: @unchecked Sendable {
         var humanAvatarUrl: String?
         var agentId: String? = nil
         var status: String = "approved"
+        var oidc: Bool = false
+        var nonce: String? = nil
+        var codeChallenge: String? = nil
+        var oidcRedirectURI: String? = nil
         var createdAt: Date
         var consumedAt: Date? = nil
     }
@@ -1620,10 +1685,19 @@ private struct OAuthIdentity {
 }
 
 private enum OAuthIDToken {
-    static func sign(identity: OAuthIdentity, issuer: String, expiresIn: Int, secret: String) -> String? {
+    static func sign(
+        identity: OAuthIdentity,
+        issuer: String,
+        expiresIn: Int,
+        secret: String,
+        nonce: String? = nil
+    ) -> String? {
         guard !secret.isEmpty, let privateKey = signingKey(secret: secret) else { return nil }
         let now = Int(Date().timeIntervalSince1970)
         var payload = "{\"iss\":\(jsonString(issuer)),\"sub\":\(jsonString(identity.sub)),\"aud\":\(jsonString(identity.clientId)),\"iat\":\(now),\"exp\":\(now + expiresIn)"
+        if let nonce, !nonce.isEmpty {
+            payload += ",\"nonce\":\(jsonString(nonce))"
+        }
         if identity.scopes.contains("profile"), !identity.name.isEmpty {
             payload += ",\"name\":\(jsonString(identity.name)),\"preferred_username\":\(jsonString(identity.name))"
         }

@@ -684,13 +684,15 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.post("oidc", ":server", "api", "oauth", "token") { request -> Response in
-        guard let scope = services.emailAccounts.oauth.serverScopeId(request.parameters.get("server") ?? "") else {
+        let segment = request.parameters.get("server") ?? ""
+        guard let scope = services.emailAccounts.oauth.serverScopeId(segment) else {
             return pixelAvatarError(404, "Not found")
         }
+        let origin = OAuthDiscovery.issuerOrigin(services.emailAccounts.serverURL) ?? ""
         return routeResponse(services.emailAccounts.oauth.exchangeToken(
             authorization: request.headers[.authorization],
             body: request.body.string ?? "",
-            issuer: OAuthDiscovery.issuerOrigin(services.emailAccounts.serverURL) ?? "",
+            issuer: "\(origin)/oidc/\(segment)",
             scopeServerId: scope
         ))
     }
