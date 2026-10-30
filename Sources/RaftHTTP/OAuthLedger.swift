@@ -217,6 +217,44 @@ public final class OAuthLedger: @unchecked Sendable {
         }
     }
 
+    /// `GET /api/app-installation/server`. A user session is not an App
+    /// credential; only an active installation token resolves here.
+    public func appInstallationServer(authorization: String?) -> HTTPReply {
+        switch installationCredential(authorization) {
+        case .failure(let reply):
+            return reply
+        case .success(let credential):
+            guard credential.groups.contains("server") else {
+                return json(403, "{\"error\":\"Installation credential lacks server read authority\"}", cacheControl: "private, no-store")
+            }
+            lock.lock()
+            guard let server = servers[credential.serverId], !server.deleted else {
+                lock.unlock()
+                return json(404, "{\"error\":\"Server not found\"}", cacheControl: "private, no-store")
+            }
+            let id = server.id
+            let name = server.name
+            let slug = server.slug
+            lock.unlock()
+            let document = "{\"installation_id\":\(jsonString(credential.installationId)),\"server\":{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"slug\":\(jsonString(slug)),\"avatar_url\":null}}"
+            return json(200, document, cacheControl: "private, no-store")
+        }
+    }
+
+    /// `GET /api/app-installation/channels`. The `channel` group is separate
+    /// from the `server` group an installation may have approved.
+    public func appInstallationChannels(authorization: String?) -> HTTPReply {
+        switch installationCredential(authorization) {
+        case .failure(let reply):
+            return reply
+        case .success(let credential):
+            guard credential.groups.contains("channel") else {
+                return json(403, "{\"error\":\"Installation credential lacks channel read authority\"}", cacheControl: "private, no-store")
+            }
+            return json(200, "{\"installation_id\":\(jsonString(credential.installationId)),\"channels\":[]}", cacheControl: "private, no-store")
+        }
+    }
+
     /// `POST /api/oauth/token`. Form fields, camelCase JSON, and HTTP Basic all name the same client.
     public func exchangeToken(authorization: String?, body: String, issuer: String) -> HTTPReply {
         let fields = tokenFields(body)
@@ -395,6 +433,64 @@ public final class OAuthLedger: @unchecked Sendable {
             return nil
         }
         return token
+    }
+
+    private func installationCredential(_ authorization: String?) -> InstallationCredentialResult {
+        guard let raw = bearerToken(authorization) else {
+            return .failure(json(401, "{\"error\":\"Installation bearer token is required\"}"))
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let credential = installationCredentialLocked(raw) else {
+            return .failure(json(401, "{\"error\":\"Invalid, expired, or stale installation credential\"}"))
+        }
+        return .success(credential)
+    }
+
+    private enum InstallationCredentialResult {
+        case failure(HTTPReply)
+        case success(VerifiedInstallationCredential)
+    }
+
+    /// Caller holds `lock`. Rechecks the live App class, installation status,
+    /// grant revision, and that the token's groups are still granted.
+    private func installationCredentialLocked(_ raw: String) -> VerifiedInstallationCredential? {
+        guard raw.hasPrefix("raft_installation_") else { return nil }
+        guard let record = installationTokens.last(where: { $0.tokenHash == sha256(raw) }),
+              record.expiresAt > Date(),
+              record.audience == "raft:app-installation-api"
+        else {
+            return nil
+        }
+        guard let installation = installations.first(where: { $0.id == record.installationId }),
+              installation.status == "active",
+              installation.clientId == record.clientId,
+              installation.serverId == record.serverId,
+              installation.grantRevision == record.grantRevision
+        else {
+            return nil
+        }
+        guard let client = clients.first(where: { $0.id == record.clientId }),
+              client.enabled,
+              client.appType != "slock_builtin"
+        else {
+            return nil
+        }
+        let currentGroups = client.outboundGroups.filter { installation.approvedGroups.contains($0) }
+        guard record.groups.allSatisfy({ currentGroups.contains($0) }) else { return nil }
+        return VerifiedInstallationCredential(
+            installationId: installation.id,
+            clientId: client.id,
+            serverId: installation.serverId,
+            groups: record.groups
+        )
+    }
+
+    private struct VerifiedInstallationCredential {
+        var installationId: String
+        var clientId: String
+        var serverId: String
+        var groups: [String]
     }
 
     private func clientCredentials(authorization: String?, fields: [String: String]) -> (clientId: String, clientSecret: String)? {
