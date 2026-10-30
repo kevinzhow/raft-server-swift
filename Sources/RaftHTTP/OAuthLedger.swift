@@ -64,6 +64,7 @@ public final class OAuthLedger: @unchecked Sendable {
     private var savedMessageRecords: [SavedMessageRecord] = []
     private var savedMessageCounter = 0
     private var sidebarOrders: [String: SidebarOrder] = [:]
+    private var serverAgreementRecords: [String: [ServerAgreementInfo]] = [:]
 
     private var clients: [Client] = []
     private var requests: [AccessRequest] = []
@@ -516,6 +517,47 @@ public final class OAuthLedger: @unchecked Sendable {
             self.pinnedOrder = pinnedOrder
             self.hiddenDmIds = hiddenDmIds
         }
+    }
+
+    public struct ServerAgreementInfo: Sendable {
+        public var id: String
+        public var serverId: String
+        public var version: Int
+        public var title: String
+        public var bodyMarkdown: String
+        public var enabled: Bool
+    }
+
+    public func putServerAgreement(serverId: String, title: String, bodyMarkdown: String) -> ServerAgreementInfo {
+        lock.lock()
+        defer { lock.unlock() }
+        var records = serverAgreementRecords[serverId] ?? []
+        for index in records.indices {
+            records[index].enabled = false
+        }
+        let record = ServerAgreementInfo(
+            id: UUID().uuidString.lowercased(),
+            serverId: serverId,
+            version: records.count + 1,
+            title: title,
+            bodyMarkdown: bodyMarkdown,
+            enabled: true
+        )
+        records.append(record)
+        serverAgreementRecords[serverId] = records
+        return record
+    }
+
+    public func activeServerAgreement(serverId: String) -> ServerAgreementInfo? {
+        lock.lock()
+        defer { lock.unlock() }
+        return serverAgreementRecords[serverId]?.last(where: { $0.enabled })
+    }
+
+    public func serverAgreementVersions(serverId: String) -> [ServerAgreementInfo] {
+        lock.lock()
+        defer { lock.unlock() }
+        return serverAgreementRecords[serverId] ?? []
     }
 
     public func setSidebarOrder(serverId: String, userId: String, order: SidebarOrder) {

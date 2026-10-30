@@ -775,6 +775,19 @@ public func configure(_ app: Application, services: FallbackServices) {
             rawQuery: request.url.query
         ))
     }
+    app.get("api", "servers", ":id", "agreement") { request -> Response in
+        routeResponse(services.emailAccounts.getServerAgreement(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
+    app.put("api", "servers", ":id", "agreement") { request -> Response in
+        routeResponse(services.emailAccounts.putServerAgreement(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("api", "servers", ":id", "sidebar-order") { request -> Response in
         routeResponse(services.emailAccounts.sidebarOrder(
             authorization: request.headers[.authorization],

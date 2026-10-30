@@ -6546,6 +6546,58 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var apiKey: String?
     }
 
+    public func putServerAgreement(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Only server owners and admins can manage the pre-join agreement\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let enabled = object["enabled"] as? Bool,
+              let title = object["title"] as? String,
+              let bodyMarkdown = object["bodyMarkdown"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"Invalid agreement request\"}")
+        }
+        guard bodyMarkdown.count <= 5000 else {
+            return Self.json(400, "{\"error\":\"Agreement body must be 5000 characters or fewer\"}")
+        }
+        let agreement: OAuthLedger.ServerAgreementInfo?
+        if enabled {
+            agreement = oauth.putServerAgreement(serverId: serverId, title: title, bodyMarkdown: bodyMarkdown)
+        } else {
+            agreement = nil
+        }
+        let json: String
+        if let agreement {
+            json = Self.agreementJSON(agreement)
+        } else {
+            json = "null"
+        }
+        return Self.json(200, "{\"agreement\":\(json)}")
+    }
+
+    public func getServerAgreement(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        if let agreement = oauth.activeServerAgreement(serverId: serverId) {
+            return Self.json(200, "{\"agreement\":\(Self.agreementJSON(agreement))}")
+        }
+        return Self.json(200, "{\"agreement\":null}")
+    }
+
+    private static func agreementJSON(_ agreement: OAuthLedger.ServerAgreementInfo) -> String {
+        "{\"id\":\(jsonString(agreement.id)),\"version\":\(agreement.version),\"title\":\(jsonString(agreement.title)),\"bodyMarkdown\":\(jsonString(agreement.bodyMarkdown)),\"enabled\":\(agreement.enabled)}"
+    }
+
     public func sidebarOrder(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
