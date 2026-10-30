@@ -1469,8 +1469,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.lock()
             if let live = sessions.removeValue(forKey: refreshToken) {
                 revokedFamilies.insert(live.familyId)
+                sessionFamilies[live.familyId]?.revokedAt = Date()
+                sessionFamilies[live.familyId]?.revokedReason = "logout"
+                sessionFamilies[live.familyId]?.capabilityRetainUntil = Date().addingTimeInterval(30 * 24 * 60 * 60)
+                let familyTokens = sessions.filter { $0.value.familyId == live.familyId }.map { $0.key }
+                for token in familyTokens { sessions.removeValue(forKey: token) }
             } else if let receipt = rotationReceipts[Self.sha256(refreshToken)] {
                 revokedFamilies.insert(receipt.familyId)
+                sessionFamilies[receipt.familyId]?.revokedAt = Date()
+                sessionFamilies[receipt.familyId]?.revokedReason = "logout"
+                sessionFamilies[receipt.familyId]?.capabilityRetainUntil = Date().addingTimeInterval(30 * 24 * 60 * 60)
             }
             lock.unlock()
         }
@@ -5314,6 +5322,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private struct SessionFamily {
         var userId: String
         var revokedAt: Date?
+        var revokedReason: String?
+        var revokeCapabilityNonce: String?
+        var capabilityRetainUntil: Date?
     }
 
     private struct RetirementReceipt {
@@ -6204,7 +6215,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let appVersion = object["appVersion"] as? String
         lock.lock()
-        var revokeCapability = ""
+        let familyId = principal.familyId ?? UUID().uuidString.lowercased()
+        if sessionFamilies[familyId] == nil {
+            sessionFamilies[familyId] = SessionFamily(userId: principal.userId)
+        }
+        var nonce = sessionFamilies[familyId]?.revokeCapabilityNonce
+        if nonce == nil {
+            let minted = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+            sessionFamilies[familyId]?.revokeCapabilityNonce = minted
+            nonce = minted
+        }
+        let revokeCapability = "\(familyId).\(nonce ?? "")"
         if let index = pushRegistrations.firstIndex(where: {
             $0.installationId == installationId && $0.provider == provider
         }) {
@@ -6214,10 +6235,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             pushRegistrations[index].appVersion = appVersion
             pushRegistrations[index].userId = principal.userId
             pushRegistrations[index].serverId = serverId
-            pushRegistrations[index].sessionFamilyId = principal.familyId
-            revokeCapability = pushRegistrations[index].revokeCapability
+            pushRegistrations[index].sessionFamilyId = familyId
+            pushRegistrations[index].revokeCapability = revokeCapability
         } else {
-            revokeCapability = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
             pushRegistrations.append(PushRegistration(
                 installationId: installationId,
                 provider: provider,
@@ -6227,13 +6247,79 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 appVersion: appVersion,
                 userId: principal.userId,
                 serverId: serverId,
-                sessionFamilyId: principal.familyId,
+                sessionFamilyId: familyId,
                 revokeCapability: revokeCapability
             ))
         }
         lock.unlock()
         let registration = "{\"installationId\":\(jsonString(installationId)),\"provider\":\(jsonString(provider)),\"env\":\(jsonString(env)),\"topic\":\(jsonString(topic))}"
         return Self.json(200, "{\"revoke_capability\":\(jsonString(revokeCapability)),\"registration\":\(registration)}")
+    }
+
+    public func revokePushFamily(body: String) -> HTTPReply {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let capability = object["capability"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"Invalid capability\"}")
+        }
+        let parts = capability.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 2,
+              parts[0].wholeMatch(of: /^[A-Za-z0-9-]+$/) != nil,
+              parts[1].wholeMatch(of: /^[A-Za-z0-9]+$/) != nil
+        else {
+            return Self.json(400, "{\"error\":\"Invalid capability\"}")
+        }
+        lock.lock()
+        guard let familyId = sessionFamilies.first(where: { $0.value.revokeCapabilityNonce == parts[1] })?.key,
+              var family = sessionFamilies[familyId]
+        else {
+            lock.unlock()
+            return Self.json(403, "{\"error\":\"Capability is no longer valid\"}")
+        }
+        let now = Date()
+        if let revokedAt = family.revokedAt {
+            if let retain = family.capabilityRetainUntil, retain > now {
+                lock.unlock()
+                return Self.json(204, "")
+            }
+            _ = revokedAt
+            lock.unlock()
+            return Self.json(403, "{\"error\":\"Capability is no longer valid\"}")
+        }
+        family.revokedAt = now
+        family.revokedReason = "push_family"
+        family.capabilityRetainUntil = now.addingTimeInterval(30 * 24 * 60 * 60)
+        sessionFamilies[familyId] = family
+        let refreshTokens = sessions.filter { $0.value.familyId == familyId }.map { $0.key }
+        for token in refreshTokens { sessions.removeValue(forKey: token) }
+        let accessTokensToDrop = accessTokenFamilies.filter { $0.value == familyId }.map { $0.key }
+        for token in accessTokensToDrop {
+            accessTokens.removeValue(forKey: token)
+            accessTokenFamilies.removeValue(forKey: token)
+        }
+        lock.unlock()
+        return Self.json(204, "")
+    }
+
+    public func pushFamilyStatus(capability: String) -> (revoked: Bool, reason: String?, retainUntil: Date?)? {
+        let parts = capability.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 2 else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let family = sessionFamilies.values.first(where: { $0.revokeCapabilityNonce == parts[1] }) else {
+            return nil
+        }
+        return (family.revokedAt != nil, family.revokedReason, family.capabilityRetainUntil)
+    }
+
+    public func expirePushFamilyCapability(capability: String) {
+        let parts = capability.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 2 else { return }
+        lock.lock()
+        if let familyId = sessionFamilies.first(where: { $0.value.revokeCapabilityNonce == parts[1] })?.key {
+            sessionFamilies[familyId]?.capabilityRetainUntil = Date().addingTimeInterval(-1)
+        }
+        lock.unlock()
     }
 
     public func pushDeliveryStatus(authorization: String?, installationId: String?) -> HTTPReply {

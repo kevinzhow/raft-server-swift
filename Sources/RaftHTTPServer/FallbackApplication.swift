@@ -607,6 +607,9 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("api", "push", "family-revoke") { request -> Response in
+        routeResponse(services.emailAccounts.revokePushFamily(body: request.body.string ?? ""))
+    }
     app.get("api", "push", "delivery-status") { request -> Response in
         routeResponse(services.emailAccounts.pushDeliveryStatus(
             authorization: request.headers[.authorization],
