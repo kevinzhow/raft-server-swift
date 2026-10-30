@@ -588,6 +588,18 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
         ))
     }
+    app.post("api", "provider-connections", ":id", "test") { request -> Response in
+        routeResponse(services.emailAccounts.retiredProviderProbe(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+        ))
+    }
+    app.get("api", "provider-connections", ":id", "models") { request -> Response in
+        routeResponse(services.emailAccounts.retiredProviderProbe(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+        ))
+    }
     app.get("api", "provider-connections", ":id", "agents") { request -> Response in
         routeResponse(services.emailAccounts.listAssignedProviderAgents(
             authorization: request.headers[.authorization],

@@ -6070,6 +6070,22 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(201, Self.providerConnectionJSON(connection))
     }
 
+    public func retiredProviderProbe(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        let enabled = providerConnectionsEnabledServers.contains(serverId)
+        lock.unlock()
+        guard enabled else {
+            return Self.json(404, "{\"error\":\"Provider connections are not enabled\",\"code\":\"provider_connections_disabled\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner" || oauth.memberRole(serverId: serverId, userId: userId) == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        return Self.json(410, "{\"error\":\"Provider probing is retired\"}")
+    }
+
     public func patchProviderConnection(authorization: String?, serverId: String, connectionId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

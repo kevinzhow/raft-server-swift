@@ -166,6 +166,14 @@ import VaporTesting
             accounts.oauth.deleteAgent(id: agentId)
             let freedDelete = try await client.send(.delete, headers: headers(ownerToken), to: "/api/provider-connections/\(createdId)")
             #expect(freedDelete.status == .ok)
+
+            let retiredTest = try await client.send(.post, headers: headers(ownerToken), to: "/api/provider-connections/\(createdId)/test") { request in
+                request.body = .init(string: "{\"model\":\"deepseek/deepseek-v4-pro\",\"message\":\"hi\"}")
+            }
+            #expect(retiredTest.status == .gone)
+            let retiredModels = try await client.send(.get, headers: headers(ownerToken), to: "/api/provider-connections/\(createdId)/models")
+            #expect(retiredModels.status == .gone)
+            #expect((retiredModels.body.string ?? "").contains("api-private-value") == false)
         }
     }
 }
