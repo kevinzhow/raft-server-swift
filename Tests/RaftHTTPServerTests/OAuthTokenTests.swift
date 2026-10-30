@@ -224,6 +224,46 @@ private func bodyText(_ response: ClientResponse) -> String {
     }
 }
 
+@Test func malformedAgentRequestIdsAreRejectedBeforeLookup() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111211"
+    let serverId = "33333333-3333-4333-8333-333333333405"
+    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-malformed-211", name: "OAuth Malformed Request", ownerId: ownerId)
+    let created = try accounts.oauth.createClient(
+        serverId: serverId,
+        createdByUserId: ownerId,
+        name: "OAuth Malformed Request Client",
+        clientId: "oauth-malformed-211"
+    )
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.contentType] = "application/json"
+            let malformed = try await client.send(.post, headers: headers, to: "/api/oauth/token") { request in
+                request.body = .init(string: "{\"clientId\":\"\(created.clientId)\",\"clientSecret\":\"\(created.clientSecret)\",\"grantType\":\"urn:slock:grant-type:agent_request\",\"requestId\":\"garbage-test-123\"}")
+            }
+            #expect(malformed.status == .badRequest)
+            let malformedBody = try JSONSerialization.jsonObject(with: Data(bodyText(malformed).utf8)) as? [String: Any]
+            #expect(malformedBody?["error"] as? String == "invalid_grant")
+            #expect(malformedBody?["error_description"] as? String == "The authorization request is invalid or has expired")
+
+            let missing = try await client.send(.post, headers: headers, to: "/api/oauth/token") { request in
+                request.body = .init(string: "{\"clientId\":\"\(created.clientId)\",\"clientSecret\":\"\(created.clientSecret)\",\"grantType\":\"urn:slock:grant-type:agent_request\",\"requestId\":\"\(UUID().uuidString.lowercased())\"}")
+            }
+            #expect(missing.status == .notFound)
+            let missingBody = try JSONSerialization.jsonObject(with: Data(bodyText(missing).utf8)) as? [String: Any]
+            #expect(missingBody?["error"] as? String == "Access request not found")
+        }
+    }
+}
+
 private func expectAccessToken(_ response: ClientResponse, scope: String) throws {
     #expect(response.status == .ok)
     let body = try JSONSerialization.jsonObject(with: Data(bodyText(response).utf8)) as? [String: Any]
