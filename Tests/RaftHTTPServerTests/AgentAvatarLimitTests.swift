@@ -42,6 +42,19 @@ import VaporTesting
             #expect(body?["error"] as? String == "Avatar image must be 5 MB or smaller")
             #expect(body?["errorCode"] as? String == "PROFILE_AVATAR_TOO_LARGE")
             #expect(body?["maxBytes"] as? Int == 5 * 1024 * 1024)
+
+            let pixel = try await client.send(.patch, headers: headers, to: "/api/agents/\(agentId)") { request in
+                request.body = .init(string: "{\"avatarUrl\":\"pixel:mug\"}")
+            }
+            #expect(pixel.status == .ok)
+            #expect((try JSONSerialization.jsonObject(with: Data((pixel.body.string ?? "").utf8)) as? [String: Any])?["avatarUrl"] as? String == "pixel:mug")
+
+            let small = try await client.send(.post, headers: headers, to: "/api/agents/\(agentId)/avatar") { request in
+                request.body = .init(data: Data([0x52, 0x41, 0x46, 0x54]))
+            }
+            #expect(small.status == .ok)
+            let smallBody = try JSONSerialization.jsonObject(with: Data((small.body.string ?? "").utf8)) as? [String: Any]
+            #expect((smallBody?["avatarUrl"] as? String)?.hasSuffix(".webp") == true)
         }
     }
 }

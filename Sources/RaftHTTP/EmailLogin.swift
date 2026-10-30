@@ -6228,7 +6228,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             guard byteCount <= maxBytes else {
                 return Self.json(400, "{\"error\":\"Avatar image must be 5 MB or smaller\",\"errorCode\":\"PROFILE_AVATAR_TOO_LARGE\",\"maxBytes\":\(maxBytes)}")
             }
-            return Self.json(200, "{\"ok\":true}")
+            let key = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+            let avatarUrl = "/api/avatars/users/\(key).webp"
+            oauth.updateAgentAvatar(id: agentId, avatarUrl: avatarUrl)
+            return Self.json(200, "{\"avatarUrl\":\(jsonString(avatarUrl))}")
         }
     }
 
@@ -6302,6 +6305,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 oauth.updateAgentDescription(id: agentId, description: value)
                 description = value
             }
+            var avatarUrl: String?
+            if let value = object["avatarUrl"] as? String {
+                oauth.updateAgentAvatar(id: agentId, avatarUrl: value)
+                avatarUrl = value
+            }
             var runtimeConfigJSON = info.runtimeConfigJSON
             var envVarsJSON = info.envVarsJSON
             var replacedRuntime: String?
@@ -6341,7 +6349,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let runtimeForResponse = latest?.runtime ?? info.runtime
             let configForModel = runtimeConfigJSON ?? latest?.runtimeConfigJSON ?? info.runtimeConfigJSON
             let model = Self.agentModel(from: configForModel, external: runtimeForResponse == "external")
-            return Self.json(200, "{\"id\":\(jsonString(info.id)),\"model\":\(jsonString(model)),\"runtime\":\(jsonString(runtimeForResponse)),\"description\":\(descriptionJSON),\"runtimeConfig\":\(runtimeConfigJSON ?? "null"),\"envVars\":\(envVarsJSON ?? "null")}")
+            let avatarJSON = avatarUrl.map { jsonString($0) } ?? "null"
+            return Self.json(200, "{\"id\":\(jsonString(info.id)),\"model\":\(jsonString(model)),\"runtime\":\(jsonString(runtimeForResponse)),\"description\":\(descriptionJSON),\"avatarUrl\":\(avatarJSON),\"runtimeConfig\":\(runtimeConfigJSON ?? "null"),\"envVars\":\(envVarsJSON ?? "null")}")
         }
     }
 
