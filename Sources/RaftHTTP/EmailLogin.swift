@@ -193,6 +193,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// `APP_URL`. Web OAuth errors redirect here.
     public var appURL: String = "http://localhost:3000"
     public var handsFeedbackConfigured = false
+    public var providerConnectionsEnabledServers: Set<String> = []
+    private var providerConnections: [ProviderConnection] = []
     /// `MOBILE_APP_EMAIL_UNSUBSCRIBE_SECRET`, or `JWT_SECRET`. The test harness uses `test-jwt-secret`.
     public var mobileAppEmailUnsubscribeSecret: String = "test-jwt-secret"
     /// Cancels one scheduled mobile-app lifecycle email. Unset means there is no provider call to make.
@@ -5978,6 +5980,127 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             context["$country"] = normalizedCountry
         }
         return context
+    }
+
+    public func setProviderConnectionsEnabled(serverId: String, enabled: Bool) {
+        lock.lock()
+        if enabled {
+            providerConnectionsEnabledServers.insert(serverId)
+        } else {
+            providerConnectionsEnabledServers.remove(serverId)
+        }
+        lock.unlock()
+    }
+
+    public static let providerConnectionProviderIds = [
+        "deepseek", "minimax", "minimax-cn", "zai", "zai-coding-cn", "moonshotai",
+        "moonshotai-cn", "kimi-coding", "qwen-token-plan", "qwen-token-plan-cn",
+        "openrouter", "openai", "anthropic", "google", "xai", "xiaomi",
+        "openai-compatible", "anthropic-compatible",
+    ]
+
+    public func listProviderConnections(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        let enabled = providerConnectionsEnabledServers.contains(serverId)
+        lock.unlock()
+        guard enabled else {
+            return Self.json(404, "{\"error\":\"Provider connections are not enabled\",\"code\":\"provider_connections_disabled\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId), role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        lock.lock()
+        let rows = providerConnections.filter { $0.serverId == serverId }
+        lock.unlock()
+        let connections = rows.map { Self.providerConnectionJSON($0) }.joined(separator: ",")
+        let options = Self.providerConnectionProviderIds.map { id -> String in
+            let kind = id.hasSuffix("-compatible") ? "gateway" : "preset"
+            return "{\"id\":\(jsonString(id)),\"label\":\(jsonString(Self.providerConnectionLabel(id))),\"providerKind\":\(jsonString(kind))}"
+        }.joined(separator: ",")
+        return Self.json(200, "{\"connections\":[\(connections)],\"providerOptions\":[\(options)]}")
+    }
+
+    public func createProviderConnection(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        let enabled = providerConnectionsEnabledServers.contains(serverId)
+        lock.unlock()
+        guard enabled else {
+            return Self.json(404, "{\"error\":\"Provider connections are not enabled\",\"code\":\"provider_connections_disabled\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId), role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let name = object["name"] as? String, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let providerId = object["providerId"] as? String,
+              Self.providerConnectionProviderIds.contains(providerId),
+              let apiKey = object["apiKey"] as? String, !apiKey.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"Invalid provider connection\"}")
+        }
+        let allowedKeys: Set<String> = ["name", "providerId", "apiKey", "endpointUrl", "supportsImageInput", "authMethod"]
+        guard Set(object.keys).isSubset(of: allowedKeys) else {
+            return Self.json(400, "{\"error\":\"Invalid provider connection\"}")
+        }
+        let now = Date()
+        let connection = ProviderConnection(
+            id: UUID().uuidString.lowercased(),
+            serverId: serverId,
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            providerId: providerId,
+            endpointUrl: object["endpointUrl"] as? String,
+            supportsImageInput: object["supportsImageInput"] as? Bool ?? false,
+            status: "unchecked",
+            configVersion: 1,
+            credentialVersion: 1,
+            hasCredential: true,
+            createdAt: now,
+            updatedAt: now
+        )
+        lock.lock()
+        providerConnections.append(connection)
+        lock.unlock()
+        return Self.json(201, Self.providerConnectionJSON(connection))
+    }
+
+    private static func providerConnectionLabel(_ id: String) -> String {
+        switch id {
+        case "openai-compatible": return "OpenAI compatible"
+        case "anthropic-compatible": return "Anthropic compatible"
+        case "minimax-cn": return "MiniMax CN"
+        case "zai-coding-cn": return "Z.ai Coding CN"
+        case "moonshotai-cn": return "Moonshot AI CN"
+        case "kimi-coding": return "Kimi Coding"
+        case "qwen-token-plan": return "Qwen Token Plan"
+        case "qwen-token-plan-cn": return "Qwen Token Plan CN"
+        default: return id.prefix(1).uppercased() + id.dropFirst()
+        }
+    }
+
+    private static func providerConnectionJSON(_ connection: ProviderConnection) -> String {
+        let endpoint = connection.endpointUrl.map { jsonString($0) } ?? "null"
+        return "{\"id\":\(jsonString(connection.id)),\"name\":\(jsonString(connection.name)),\"providerId\":\(jsonString(connection.providerId)),\"authMethod\":\"api_key\",\"endpointUrl\":\(endpoint),\"supportsImageInput\":\(connection.supportsImageInput),\"enabled\":true,\"status\":\(jsonString(connection.status)),\"configVersion\":\(connection.configVersion),\"credentialVersion\":\(connection.credentialVersion),\"hasCredential\":\(connection.hasCredential),\"assignedAgentCount\":0,\"latestVerified\":null,\"lastCheckedAt\":null,\"lastErrorCategory\":null,\"createdAt\":\(jsonString(ISO8601DateFormatter().string(from: connection.createdAt))),\"updatedAt\":\(jsonString(ISO8601DateFormatter().string(from: connection.updatedAt)))}"
+    }
+
+    private struct ProviderConnection {
+        var id: String
+        var serverId: String
+        var name: String
+        var providerId: String
+        var endpointUrl: String?
+        var supportsImageInput: Bool
+        var status: String
+        var configVersion: Int
+        var credentialVersion: Int
+        var hasCredential: Bool
+        var createdAt: Date
+        var updatedAt: Date
     }
 
     /// `POST /api/product-feedback`. The upstream proxy is not ported; the

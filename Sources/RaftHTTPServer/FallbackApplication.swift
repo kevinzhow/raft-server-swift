@@ -582,6 +582,19 @@ public func configure(_ app: Application, services: FallbackServices) {
             baseURL: services.emailAccounts.serverURL
         ))
     }
+    app.get("api", "provider-connections") { request -> Response in
+        routeResponse(services.emailAccounts.listProviderConnections(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+        ))
+    }
+    app.post("api", "provider-connections") { request -> Response in
+        routeResponse(services.emailAccounts.createProviderConnection(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.post("api", "product-feedback") { request -> Response in
         routeResponse(services.emailAccounts.submitProductFeedback(
             authorization: request.headers[.authorization],

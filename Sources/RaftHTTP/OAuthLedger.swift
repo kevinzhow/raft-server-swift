@@ -118,6 +118,12 @@ public final class OAuthLedger: @unchecked Sendable {
             .replacingOccurrences(of: "=", with: "")
     }
 
+    public func memberRole(serverId: String, userId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return members["\(serverId)\n\(userId)"]
+    }
+
     public func addMember(serverId: String, userId: String, role: String) {
         lock.lock()
         members["\(serverId)\n\(userId)"] = role
