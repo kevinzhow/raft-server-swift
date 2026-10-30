@@ -538,6 +538,20 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.parameters.get("id") ?? ""
         ))
     }
+    app.post("api", "servers", ":id", "machines", ":machineId", "rotate-key") { request -> Response in
+        routeResponse(services.emailAccounts.rotateServerMachineKey(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            machineId: request.parameters.get("machineId") ?? ""
+        ))
+    }
+    app.delete("api", "servers", ":id", "machines", ":machineId") { request -> Response in
+        routeResponse(services.emailAccounts.deleteServerMachine(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            machineId: request.parameters.get("machineId") ?? ""
+        ))
+    }
     app.patch("api", "servers", ":id", "machines", ":machineId") { request -> Response in
         routeResponse(services.emailAccounts.patchServerMachine(
             authorization: request.headers[.authorization],

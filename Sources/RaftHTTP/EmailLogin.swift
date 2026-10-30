@@ -6054,14 +6054,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         lock.lock()
         guard let index = machines.firstIndex(where: { $0.id == machineId && $0.serverId == serverId }) else {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Machine not found\"}")
         }
-        if role == "guest", machines[index].userId != userId {
+        if role != "owner", role != "admin", machines[index].userId != userId {
             lock.unlock()
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
@@ -6074,12 +6074,56 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"id\":\(jsonString(machine.id)),\"name\":\(jsonString(machine.name)),\"description\":\(machine.description.map { jsonString($0) } ?? "null")}")
     }
 
+    public func rotateServerMachineKey(authorization: String?, serverId: String, machineId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        lock.lock()
+        guard let index = machines.firstIndex(where: { $0.id == machineId && $0.serverId == serverId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Machine not found\"}")
+        }
+        if role != "owner", role != "admin", machines[index].userId != userId {
+            lock.unlock()
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        machines[index].apiKey = "raft_machine_" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        let key = machines[index].apiKey ?? ""
+        lock.unlock()
+        return Self.json(200, "{\"apiKey\":\(jsonString(key))}")
+    }
+
+    public func deleteServerMachine(authorization: String?, serverId: String, machineId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        lock.lock()
+        guard let index = machines.firstIndex(where: { $0.id == machineId && $0.serverId == serverId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Machine not found\"}")
+        }
+        if role != "owner", role != "admin", machines[index].userId != userId {
+            lock.unlock()
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        machines.remove(at: index)
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true}")
+    }
+
     private struct MachineRecord {
         var id: String
         var serverId: String
         var userId: String
         var name: String
         var description: String?
+        var apiKey: String?
     }
 
     public func serverDetails(authorization: String?, serverId: String) -> HTTPReply {
