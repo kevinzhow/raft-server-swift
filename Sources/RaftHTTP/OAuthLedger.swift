@@ -1,0 +1,567 @@
+import Crypto
+import Foundation
+
+public struct OAuthHuman: Sendable {
+    public var id: String
+    public var email: String
+    public var name: String
+
+    public init(id: String, email: String, name: String) {
+        self.id = id
+        self.email = email
+        self.name = name
+    }
+}
+
+public enum OAuthSession: Sendable {
+    case missing
+    case invalid
+    case user(OAuthHuman)
+}
+
+public struct CreatedOAuthClient: Sendable {
+    public var id: String
+    public var clientId: String
+    public var clientSecret: String
+}
+
+public struct OAuthClientRejection: Error, Sendable {
+    public var message: String
+}
+
+/// In-memory OAuth clients, human authorization codes, and access tokens.
+/// `POST /api/oauth/authorize/human` and `POST /api/oauth/token` both use this ledger.
+public final class OAuthLedger: @unchecked Sendable {
+    public var jwtSecret: String = "test-jwt-secret"
+    private let lock = NSLock()
+    private var servers: [String: Server] = [:]
+    private var members: [String: String] = [:]
+    private var clients: [Client] = []
+    private var requests: [AccessRequest] = []
+    private var tokens: [AccessToken] = []
+    private var installations: [Installation] = []
+    private var installationTokens: [InstallationToken] = []
+
+    public init() {}
+
+    public func addOwnedServer(id: String, slug: String, name: String, ownerId: String) {
+        lock.lock()
+        servers[id] = Server(id: id, slug: slug, name: name)
+        members["\(id)\n\(ownerId)"] = "owner"
+        lock.unlock()
+    }
+
+    public func createClient(serverId: String, createdByUserId: String, name: String, clientId: String, appType: String = "server_local") throws -> CreatedOAuthClient {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw OAuthClientRejection(message: "name is required") }
+        let normalized = clientId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard normalized.wholeMatch(of: /^[a-z][a-z0-9-]{2,63}$/) != nil else {
+            throw OAuthClientRejection(message: "clientId must start with a letter and contain only lowercase letters, numbers, and hyphens")
+        }
+        var bytes = Data(count: 24)
+        for index in bytes.indices { bytes[index] = UInt8.random(in: 0...255) }
+        let secret = "raft_secret_" + bytes.map { String(format: "%02x", $0) }.joined()
+        let id = UUID().uuidString.lowercased()
+        lock.lock()
+        clients.append(Client(
+            id: id,
+            serverId: serverId,
+            clientId: normalized,
+            secretHash: sha256(secret),
+            appType: appType,
+            name: trimmed,
+            createdByUserId: createdByUserId
+        ))
+        lock.unlock()
+        return CreatedOAuthClient(id: id, clientId: normalized, clientSecret: secret)
+    }
+
+    /// Moves a human authorization code one second past its 10-minute life. The token endpoint must not mint.
+    public func expireAuthorizationCode(id: String) {
+        lock.lock()
+        if let index = requests.firstIndex(where: { $0.id == id }) {
+            requests[index].createdAt = Date().addingTimeInterval(-(10 * 60 + 1))
+        }
+        lock.unlock()
+    }
+
+    /// Records an active installation whose approved groups are also the App's current outbound groups.
+    public func installClient(serverId: String, clientRecordId: String, installedByUserId: String, groups: [String]) -> String {
+        let id = UUID().uuidString.lowercased()
+        lock.lock()
+        if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
+            clients[index].outboundGroups = groups
+        }
+        installations.append(Installation(
+            id: id,
+            serverId: serverId,
+            clientId: clientRecordId,
+            installedByUserId: installedByUserId,
+            approvedGroups: groups,
+            grantRevision: 1,
+            status: "active"
+        ))
+        lock.unlock()
+        return id
+    }
+
+    public func accessTokenCount(requestId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return tokens.filter { $0.requestId == requestId }.count
+    }
+
+    /// `POST /api/oauth/installation-token`. Client credentials mint a token for one active installation.
+    public func mintInstallationToken(authorization: String?, body: String) -> HTTPReply {
+        let fields = tokenFields(body)
+        guard let credentials = clientCredentials(authorization: authorization, fields: fields) else {
+            return json(401, "{\"error\":\"Client credentials are required\"}", cacheControl: "private, no-store")
+        }
+        let installationId = fields["installation_id"] ?? fields["installationId"] ?? ""
+        guard !installationId.isEmpty else {
+            return json(400, "{\"error\":\"installation_id is required\"}", cacheControl: "private, no-store")
+        }
+        lock.lock()
+        guard let client = clients.first(where: {
+            $0.clientId == credentials.clientId && $0.appType != "slock_builtin" && $0.enabled && $0.secretHash == sha256(credentials.clientSecret)
+        }) else {
+            lock.unlock()
+            return json(401, "{\"error\":\"Invalid client credentials\"}", cacheControl: "private, no-store")
+        }
+        guard let installation = installations.first(where: {
+            $0.id == installationId && $0.clientId == client.id && $0.status == "active"
+        }) else {
+            lock.unlock()
+            return json(404, "{\"error\":\"Active installation not found\"}", cacheControl: "private, no-store")
+        }
+        let groups = client.outboundGroups.filter { installation.approvedGroups.contains($0) }
+        guard !groups.isEmpty else {
+            lock.unlock()
+            return json(400, "{\"error\":\"Installation has no effective read groups\"}", cacheControl: "private, no-store")
+        }
+        var raw = Data(count: 32)
+        for index in raw.indices { raw[index] = UInt8.random(in: 0...255) }
+        let accessToken = "raft_installation_" + base64url(raw)
+        installationTokens.append(InstallationToken(
+            tokenHash: sha256(accessToken),
+            installationId: installation.id,
+            clientId: client.id,
+            serverId: installation.serverId,
+            grantRevision: installation.grantRevision,
+            groups: groups,
+            audience: "raft:app-installation-api",
+            expiresAt: Date().addingTimeInterval(10 * 60)
+        ))
+        lock.unlock()
+        let groupJSON = groups.map { jsonString($0) }.joined(separator: ",")
+        let document = "{\"access_token\":\(jsonString(accessToken)),\"token_type\":\"Bearer\",\"expires_in\":600,\"installation_id\":\(jsonString(installation.id)),\"server_id\":\(jsonString(installation.serverId)),\"grant_revision\":\(installation.grantRevision),\"groups\":[\(groupJSON)],\"audience\":\"raft:app-installation-api\"}"
+        return json(200, document, cacheControl: "private, no-store")
+    }
+
+    /// `POST /api/oauth/authorize/human`. A member receives a one-time human code.
+    public func issueHumanAuthorization(session: OAuthSession, body: String) -> HTTPReply {
+        switch session {
+        case .missing:
+            return json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        case .invalid:
+            return json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        case .user(let human):
+            return issueHumanAuthorization(human: human, body: body)
+        }
+    }
+
+    /// `POST /api/oauth/token`. Form fields, camelCase JSON, and HTTP Basic all name the same client.
+    public func exchangeToken(authorization: String?, body: String, issuer: String) -> HTTPReply {
+        let fields = tokenFields(body)
+        if fields["code_verifier"] != nil {
+            return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization code, redirect URI, or PKCE verifier is invalid\"}")
+        }
+        guard let credentials = clientCredentials(authorization: authorization, fields: fields) else {
+            return json(401, "{\"error\":\"Client credentials are required\"}")
+        }
+        let grantType = fields["grantType"] ?? fields["grant_type"] ?? ""
+        guard grantType == "authorization_code" else {
+            return json(400, "{\"error\":\"Unsupported grant type\"}")
+        }
+        let code = (fields["code"] ?? "").lowercased()
+        guard !code.isEmpty else { return json(400, "{\"error\":\"code is required\"}") }
+        guard code.wholeMatch(of: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/) != nil else {
+            return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization request is invalid or has expired\"}")
+        }
+
+        lock.lock()
+        guard let client = clients.first(where: { $0.clientId == credentials.clientId && $0.appType != "slock_builtin" && $0.secretHash == sha256(credentials.clientSecret) }) else {
+            lock.unlock()
+            return json(401, "{\"error\":\"Invalid client credentials\"}")
+        }
+        guard let index = requests.firstIndex(where: { $0.id == code && $0.clientId == client.id }) else {
+            lock.unlock()
+            return json(404, "{\"error\":\"Access request not found\"}")
+        }
+        let request = requests[index]
+        if request.consumedAt != nil {
+            lock.unlock()
+            return json(409, "{\"error\":\"request_already_consumed\",\"error_description\":\"This Login with Raft request is one-time and has already been exchanged. Discard it and obtain a fresh request before retrying.\",\"next_action\":\"obtain_fresh_request\"}")
+        }
+        let now = Date()
+        if now.timeIntervalSince(request.createdAt) > 10 * 60 {
+            lock.unlock()
+            return json(400, "{\"error\":\"authorization_code_expired\",\"error_description\":\"This Login with Raft authorization code has expired. Obtain a fresh human authorization before retrying.\",\"next_action\":\"obtain_fresh_authorization\"}")
+        }
+        guard let server = servers[request.serverId], !server.deleted,
+              let role = members["\(request.serverId)\n\(request.userId)"]
+        else {
+            lock.unlock()
+            return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization identity is no longer available\"}")
+        }
+        var raw = Data(count: 32)
+        for index in raw.indices { raw[index] = UInt8.random(in: 0...255) }
+        let accessToken = "slock_at_" + raw.map { String(format: "%02x", $0) }.joined()
+        let expiresAt = now.addingTimeInterval(60 * 60)
+        tokens.append(AccessToken(
+            serverId: request.serverId,
+            userId: request.userId,
+            clientId: client.id,
+            requestId: request.id,
+            tokenHash: sha256(accessToken),
+            scopes: request.scopes,
+            expiresAt: expiresAt
+        ))
+        requests[index].consumedAt = now
+        let humanName = request.humanName
+        let humanEmail = request.humanEmail
+        let scopes = request.scopes
+        let clientKey = client.clientId
+        let serverId = server.id
+        let serverSlug = server.slug
+        lock.unlock()
+
+        let expiresIn = max(1, Int(expiresAt.timeIntervalSince(now)))
+        let identity = OAuthIdentity(
+            sub: request.userId,
+            clientId: clientKey,
+            scopes: scopes,
+            name: humanName,
+            email: humanEmail,
+            serverId: serverId,
+            serverSlug: serverSlug,
+            serverRole: role
+        )
+        let idToken: String
+        if scopes.contains("openid") {
+            guard let signed = OAuthIDToken.sign(identity: identity, issuer: issuer, expiresIn: expiresIn, secret: jwtSecret) else {
+                return json(500, "{\"error\":\"Failed to issue access token\"}")
+            }
+            idToken = signed
+        } else {
+            idToken = ""
+        }
+        let scope = scopes.joined(separator: " ")
+        var document = "{\"access_token\":\(jsonString(accessToken)),\"token_type\":\"Bearer\",\"expires_in\":\(expiresIn),\"scope\":\(jsonString(scope))"
+        if !idToken.isEmpty { document += ",\"id_token\":\(jsonString(idToken))" }
+        document += "}"
+        return json(200, document, cacheControl: "no-store")
+    }
+
+    private func issueHumanAuthorization(human: OAuthHuman, body: String) -> HTTPReply {
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        guard let clientKey = object?["clientId"] as? String, !clientKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return json(400, "{\"error\":\"clientId is required\"}")
+        }
+        guard let serverId = object?["serverId"] as? String, !serverId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return json(400, "{\"error\":\"serverId is required\"}")
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let client = clients.first(where: {
+            $0.clientId == clientKey.trimmingCharacters(in: .whitespacesAndNewlines) && $0.appType == "server_local" && $0.serverId == serverId && $0.appType != "slock_builtin"
+        }) else {
+            return json(404, "{\"error\":\"OAuth client not found for server\"}")
+        }
+        let requested = object?["scopes"]
+        let scopes: [String]
+        if requested == nil || requested is NSNull {
+            scopes = ["openid", "profile"]
+        } else {
+            guard let normalized = normalizeScopes(requested, allowed: client.allowedScopes ?? ["openid", "profile", "identity"]) else {
+                return json(400, "{\"error\":\"invalid_scope\"}")
+            }
+            scopes = normalized
+        }
+        guard let server = servers[serverId], !server.deleted, let role = members["\(serverId)\n\(human.id)"] else {
+            return json(404, "{\"error\":\"User is not a member of this server\"}")
+        }
+        let code = UUID().uuidString.lowercased()
+        requests.append(AccessRequest(
+            id: code,
+            serverId: serverId,
+            userId: human.id,
+            clientId: client.id,
+            scopes: scopes,
+            humanName: human.name,
+            humanEmail: human.email,
+            createdAt: Date()
+        ))
+        let scopeJSON = scopes.map { jsonString($0) }.joined(separator: ",")
+        let document = "{\"code\":\(jsonString(code)),\"client\":{\"clientId\":\(jsonString(client.clientId)),\"appType\":\(jsonString(client.appType)),\"name\":\(jsonString(client.name)),\"description\":null,\"homepageUrl\":null},\"server\":{\"id\":\(jsonString(server.id)),\"slug\":\(jsonString(server.slug)),\"role\":\(jsonString(role))},\"scopes\":[\(scopeJSON)],\"returnUrl\":null}"
+        return json(200, document)
+    }
+
+    private func normalizeScopes(_ value: Any?, allowed: [String]) -> [String]? {
+        let rawList: [Any]
+        if let list = value as? [String] {
+            rawList = list
+        } else if let list = value as? [Any] {
+            rawList = list
+        } else {
+            return nil
+        }
+        var seen = Set<String>()
+        var scopes: [String] = []
+        for item in rawList {
+            guard let text = item as? String else { return nil }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
+            guard Self.raftScopes.contains(trimmed), allowed.contains(trimmed) else { return nil }
+            scopes.append(trimmed)
+        }
+        guard !scopes.isEmpty else { return nil }
+        return scopes.sorted()
+    }
+
+    private static let raftScopes: Set<String> = [
+        "openid", "profile", "email", "identity", "agent:read",
+        "agent:event:write", "agent:notification:write", "agent:action_request:write",
+    ]
+
+    private func clientCredentials(authorization: String?, fields: [String: String]) -> (clientId: String, clientSecret: String)? {
+        if let authorization, authorization.hasPrefix("Basic ") {
+            let encoded = String(authorization.dropFirst("Basic ".count))
+            if let data = Data(base64Encoded: encoded), let decoded = String(data: data, encoding: .utf8),
+               let separator = decoded.firstIndex(of: ":"), separator != decoded.startIndex {
+                return (String(decoded[..<separator]), String(decoded[decoded.index(after: separator)...]))
+            }
+        }
+        let clientId = fields["client_id"] ?? fields["clientId"]
+        let clientSecret = fields["client_secret"] ?? fields["clientSecret"]
+        if let clientId, let clientSecret, !clientId.isEmpty, !clientSecret.isEmpty {
+            return (clientId, clientSecret)
+        }
+        return nil
+    }
+
+    private func tokenFields(_ body: String) -> [String: String] {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("{"), let object = try? JSONSerialization.jsonObject(with: Data(trimmed.utf8)) as? [String: Any] {
+            var fields: [String: String] = [:]
+            for (key, value) in object {
+                if let text = value as? String { fields[key] = text }
+            }
+            if object["code_verifier"] != nil { fields["code_verifier"] = fields["code_verifier"] ?? "" }
+            return fields
+        }
+        var fields: [String: String] = [:]
+        for part in trimmed.split(separator: "&", omittingEmptySubsequences: false) {
+            let pieces = part.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            let name = formDecode(pieces.first ?? "")
+            let value = formDecode(pieces.count > 1 ? pieces[1] : "")
+            if !name.isEmpty { fields[name] = value }
+        }
+        return fields
+    }
+
+    private func formDecode(_ value: String) -> String {
+        let spaced = value.replacingOccurrences(of: "+", with: " ")
+        return spaced.removingPercentEncoding ?? spaced
+    }
+
+    private struct Server {
+        var id: String
+        var slug: String
+        var name: String
+        var deleted = false
+    }
+
+    private struct Client {
+        var id: String
+        var serverId: String
+        var clientId: String
+        var secretHash: String
+        var appType: String
+        var name: String
+        var createdByUserId: String
+        var allowedScopes: [String]? = nil
+        var outboundGroups: [String] = []
+        var enabled: Bool = true
+    }
+
+    private struct InstallationToken {
+        var tokenHash: String
+        var installationId: String
+        var clientId: String
+        var serverId: String
+        var grantRevision: Int
+        var groups: [String]
+        var audience: String
+        var expiresAt: Date
+    }
+
+    private struct Installation {
+        var id: String
+        var serverId: String
+        var clientId: String
+        var installedByUserId: String
+        var approvedGroups: [String]
+        var grantRevision: Int
+        var status: String
+    }
+
+    private struct AccessRequest {
+        var id: String
+        var serverId: String
+        var userId: String
+        var clientId: String
+        var scopes: [String]
+        var humanName: String
+        var humanEmail: String
+        var createdAt: Date
+        var consumedAt: Date? = nil
+    }
+
+    private struct AccessToken {
+        var serverId: String
+        var userId: String
+        var clientId: String
+        var requestId: String
+        var tokenHash: String
+        var scopes: [String]
+        var expiresAt: Date
+    }
+
+    private func json(_ status: Int, _ body: String, cacheControl: String? = nil) -> HTTPReply {
+        var headers = [
+            "X-Robots-Tag": AppFallback.robotsTag,
+            "Content-Type": AppFallback.jsonContentType,
+            "Content-Length": String(Data(body.utf8).count),
+        ]
+        if let cacheControl { headers["Cache-Control"] = cacheControl }
+        return HTTPReply(status: status, headers: headers, body: body)
+    }
+}
+
+private struct OAuthIdentity {
+    var sub: String
+    var clientId: String
+    var scopes: [String]
+    var name: String
+    var email: String
+    var serverId: String
+    var serverSlug: String
+    var serverRole: String
+}
+
+private enum OAuthIDToken {
+    static func sign(identity: OAuthIdentity, issuer: String, expiresIn: Int, secret: String) -> String? {
+        guard !secret.isEmpty, let privateKey = signingKey(secret: secret) else { return nil }
+        let now = Int(Date().timeIntervalSince1970)
+        var payload = "{\"iss\":\(jsonString(issuer)),\"sub\":\(jsonString(identity.sub)),\"aud\":\(jsonString(identity.clientId)),\"iat\":\(now),\"exp\":\(now + expiresIn)"
+        if identity.scopes.contains("profile"), !identity.name.isEmpty {
+            payload += ",\"name\":\(jsonString(identity.name)),\"preferred_username\":\(jsonString(identity.name))"
+        }
+        if identity.scopes.contains("email"), !identity.email.isEmpty {
+            payload += ",\"email\":\(jsonString(identity.email)),\"email_verified\":true"
+        }
+        payload += ",\"type\":\"human\",\"server_id\":\(jsonString(identity.serverId)),\"server_slug\":\(jsonString(identity.serverSlug)),\"server_role\":\(jsonString(identity.serverRole))}"
+        let publicBytes = privateKey.publicKey.x963Representation
+        let kid = base64url(Data(SHA256.hash(data: publicBytes).prefix(16)))
+        let header = "{\"alg\":\"ES256\",\"typ\":\"JWT\",\"kid\":\(jsonString(kid))}"
+        let signingInput = "\(base64url(Data(header.utf8))).\(base64url(Data(payload.utf8)))"
+        guard let signature = try? privateKey.signature(for: Data(signingInput.utf8)) else { return nil }
+        return "\(signingInput).\(base64url(signature.rawRepresentation))"
+    }
+
+    private static func signingKey(secret: String) -> P256.Signing.PrivateKey? {
+        let seed = HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: Data(secret.utf8)),
+            salt: Data("raft-oidc-v1".utf8),
+            info: Data("id-token-es256-private".utf8),
+            outputByteCount: 32
+        )
+        let seedBytes: [UInt8] = seed.withUnsafeBytes { raw in
+            Array(raw.bindMemory(to: UInt8.self))
+        }
+        let scalar = p256Scalar(seedBytes)
+        return try? P256.Signing.PrivateKey(rawRepresentation: scalar)
+    }
+
+    /// `(seed mod (n-1)) + 1`, matching the Node P-256 reduction.
+    private static func p256Scalar(_ seed: [UInt8]) -> Data {
+        let modulus = hex("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632550")
+        var reduced = seed
+        if compare(reduced, modulus) >= 0 {
+            reduced = subtract(reduced, modulus)
+        }
+        return Data(addOne(reduced))
+    }
+
+    private static func hex(_ value: String) -> [UInt8] {
+        var bytes: [UInt8] = []
+        var index = value.startIndex
+        while index < value.endIndex {
+            let next = value.index(index, offsetBy: 2)
+            bytes.append(UInt8(value[index..<next], radix: 16) ?? 0)
+            index = next
+        }
+        return bytes
+    }
+
+    private static func compare(_ left: [UInt8], _ right: [UInt8]) -> Int {
+        for (lhs, rhs) in zip(left, right) where lhs != rhs {
+            return lhs < rhs ? -1 : 1
+        }
+        return 0
+    }
+
+    private static func subtract(_ value: [UInt8], _ modulus: [UInt8]) -> [UInt8] {
+        var result = value
+        var borrow = 0
+        for index in stride(from: result.count - 1, through: 0, by: -1) {
+            let diff = Int(result[index]) - Int(modulus[index]) - borrow
+            if diff < 0 {
+                result[index] = UInt8(diff + 256)
+                borrow = 1
+            } else {
+                result[index] = UInt8(diff)
+                borrow = 0
+            }
+        }
+        return result
+    }
+
+    private static func addOne(_ value: [UInt8]) -> [UInt8] {
+        var result = value
+        var carry = 1
+        for index in stride(from: result.count - 1, through: 0, by: -1) {
+            let sum = Int(result[index]) + carry
+            result[index] = UInt8(sum & 0xff)
+            carry = sum >> 8
+            if carry == 0 { break }
+        }
+        return result
+    }
+
+    private static func base64url(_ data: Data) -> String {
+        data.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+}
+
+private func sha256(_ value: String) -> String {
+    SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+}
+
+private func base64url(_ data: Data) -> String {
+    data.base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-")
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
+}

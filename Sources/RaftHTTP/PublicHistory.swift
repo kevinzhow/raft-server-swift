@@ -1,0 +1,472 @@
+import Foundation
+
+/// Anonymous message row for `GET /api/public/servers/:slug/channels/:id/messages`.
+///
+/// The HTTP body is an explicit projection. Actor ids and hidden control-plane
+/// text stay on this value and are never written out.
+
+public struct PublicHistorySender: Sendable {
+    public var displayName: String
+    public var handle: String?
+    public var avatarUrl: String?
+    public var description: String?
+    public var actorId: String
+    public var homeServerId: String?
+
+    public init(
+        displayName: String,
+        handle: String?,
+        avatarUrl: String?,
+        description: String?,
+        actorId: String,
+        homeServerId: String? = nil
+    ) {
+        self.displayName = displayName
+        self.handle = handle
+        self.avatarUrl = avatarUrl
+        self.description = description
+        self.actorId = actorId
+        self.homeServerId = homeServerId
+    }
+}
+
+public struct PublicHistoryReply: Sendable {
+    public var id: String
+    public var content: String
+    public var createdAt: String
+    public var seq: Int
+    public var senderType: String
+    public var sender: PublicHistorySender
+
+    public init(
+        id: String,
+        content: String,
+        createdAt: String,
+        seq: Int,
+        senderType: String,
+        sender: PublicHistorySender
+    ) {
+        self.id = id
+        self.content = content
+        self.createdAt = createdAt
+        self.seq = seq
+        self.senderType = senderType
+        self.sender = sender
+    }
+}
+
+public struct PublicHistoryAttachment: Sendable {
+    public var id: String
+    public var filename: String
+    public var mimeType: String
+    public var sizeBytes: Int
+    public var width: Int?
+    public var height: Int?
+    /// Storage and thumbnail locations stay off the public body.
+    public var storageKey: String?
+    public var thumbnailKey: String?
+    public var uploaderId: String?
+
+    public init(
+        id: String,
+        filename: String,
+        mimeType: String,
+        sizeBytes: Int,
+        width: Int?,
+        height: Int?,
+        storageKey: String? = nil,
+        thumbnailKey: String? = nil,
+        uploaderId: String? = nil
+    ) {
+        self.id = id
+        self.filename = filename
+        self.mimeType = mimeType
+        self.sizeBytes = sizeBytes
+        self.width = width
+        self.height = height
+        self.storageKey = storageKey
+        self.thumbnailKey = thumbnailKey
+        self.uploaderId = uploaderId
+    }
+}
+
+public struct PublicHistoryMention: Sendable {
+    public var type: String
+    public var name: String
+    public var displayName: String
+    public var createdAt: String
+    /// Target id is stored for the member fact and never serialized.
+    public var targetId: String?
+
+    public init(type: String, name: String, displayName: String, createdAt: String, targetId: String? = nil) {
+        self.type = type
+        self.name = name
+        self.displayName = displayName
+        self.createdAt = createdAt
+        self.targetId = targetId
+    }
+}
+
+public struct PublicHistoryReaction: Sendable {
+    public var emoji: String
+    public var createdAt: String
+    /// Reactor id is stored so a count can be formed, and is never serialized.
+    public var reactorId: String?
+
+    public init(emoji: String, createdAt: String, reactorId: String? = nil) {
+        self.emoji = emoji
+        self.createdAt = createdAt
+        self.reactorId = reactorId
+    }
+}
+
+public struct PublicHistoryMessage: Sendable {
+    public var id: String
+    public var channelId: String
+    public var content: String
+    public var createdAt: String
+    public var seq: Int
+    public var messageType: String
+    public var senderType: String
+    public var sender: PublicHistorySender
+    public var secret: String?
+    public var threadId: String?
+    public var replies: [PublicHistoryReply]
+    public var attachments: [PublicHistoryAttachment]
+    public var mentions: [PublicHistoryMention]
+    public var reactions: [PublicHistoryReaction]
+
+    public init(
+        id: String,
+        channelId: String,
+        content: String,
+        createdAt: String,
+        seq: Int,
+        messageType: String = "text",
+        senderType: String,
+        sender: PublicHistorySender,
+        secret: String? = nil,
+        threadId: String? = nil,
+        replies: [PublicHistoryReply] = [],
+        attachments: [PublicHistoryAttachment] = [],
+        mentions: [PublicHistoryMention] = [],
+        reactions: [PublicHistoryReaction] = []
+    ) {
+        self.id = id
+        self.channelId = channelId
+        self.content = content
+        self.createdAt = createdAt
+        self.seq = seq
+        self.messageType = messageType
+        self.senderType = senderType
+        self.sender = sender
+        self.secret = secret
+        self.threadId = threadId
+        self.replies = replies
+        self.attachments = attachments
+        self.mentions = mentions
+        self.reactions = reactions
+    }
+}
+
+/// Current members and agents used to highlight a typed `@name` that has no stored mention.
+/// Actor ids stay off this value.
+public struct PublicMentionDirectory: Sendable {
+    public struct Entry: Sendable {
+        public var type: String
+        public var displayName: String
+
+        public init(type: String, displayName: String) {
+            self.type = type
+            self.displayName = displayName
+        }
+    }
+
+    public var entries: [String: Entry]
+
+    public init(entries: [String: Entry] = [:]) {
+        self.entries = entries
+    }
+
+    public static let empty = PublicMentionDirectory()
+}
+
+enum PublicHistoryProjection {
+    static func messagesJSON(
+        _ messages: [PublicHistoryMessage],
+        serverId: String,
+        mentions directory: PublicMentionDirectory = .empty
+    ) -> String {
+        let rows = messages.map { messageJSON($0, serverId: serverId, mentions: directory) }.joined(separator: ",")
+        return "{\"messages\":[\(rows)]}"
+    }
+
+    static func messageJSON(
+        _ message: PublicHistoryMessage,
+        serverId: String,
+        mentions directory: PublicMentionDirectory = .empty
+    ) -> String {
+        let replies = message.replies.sorted { $0.seq < $1.seq }
+        let preview = replies.suffix(3)
+        let lastReplyAt = replies.last.map { jsonString($0.createdAt) } ?? "null"
+        let threadId = message.threadId.map { jsonString($0) } ?? "null"
+        let latest = preview.map { replyJSON($0, serverId: serverId) }.joined(separator: ",")
+        let attachments = message.attachments.map(attachmentJSON).joined(separator: ",")
+        let mentions = visibleMentions(message, directory: directory).map(mentionJSON).joined(separator: ",")
+        let reactions = groupedReactions(message.reactions).map(reactionJSON).joined(separator: ",")
+        return "{"
+            + "\"id\":\(jsonString(message.id)),"
+            + "\"senderType\":\(jsonString(message.senderType)),"
+            + "\"sender\":\(senderJSON(message.sender, type: message.senderType, serverId: serverId)),"
+            + "\"messageType\":\(jsonString(message.messageType)),"
+            + "\"content\":\(jsonString(message.content)),"
+            + "\"createdAt\":\(jsonString(message.createdAt)),"
+            + "\"attachments\":[\(attachments)],"
+            + "\"mentions\":[\(mentions)],"
+            + "\"reactions\":[\(reactions)],"
+            + "\"threadId\":\(threadId),"
+            + "\"replyCount\":\(replies.count),"
+            + "\"lastReplyAt\":\(lastReplyAt),"
+            + "\"latestReplies\":[\(latest)]"
+            + "}"
+    }
+
+    /// Stored facts whose token is still in the content, then typed `@name`s that name a current member or agent.
+    /// External-origin text does not consult that directory.
+    static func visibleMentions(_ message: PublicHistoryMessage, directory: PublicMentionDirectory) -> [PublicHistoryMention] {
+        let ordered = message.mentions.sorted {
+            $0.createdAt == $1.createdAt ? $0.name < $1.name : $0.createdAt < $1.createdAt
+        }
+        var kept: [PublicHistoryMention] = []
+        for fact in ordered {
+            guard mentionAppears(message.content, handle: fact.name) else { continue }
+            if kept.contains(where: { $0.name == fact.name }) { continue }
+            kept.append(fact)
+        }
+        guard message.senderType != "external_projection" else { return kept }
+        let known = Set(kept.map(\.name))
+        for handle in mentionHandles(message.content) where !known.contains(handle) {
+            guard let entry = directory.entries[handle] else { continue }
+            kept.append(PublicHistoryMention(
+                type: entry.type,
+                name: handle,
+                displayName: entry.displayName,
+                createdAt: ""
+            ))
+        }
+        return kept
+    }
+
+    /// Free-text `@handle`s outside markdown code, in first-seen order.
+    static func mentionHandles(_ content: String) -> [String] {
+        let prose = stripMarkdownCode(content)
+        var handles: [String] = []
+        var seen = Set<String>()
+        let chars = Array(prose)
+        var index = 0
+        while index < chars.count {
+            if chars[index] == "@" {
+                let leftOpen = index == 0 || !continuesHandle(chars[index - 1])
+                if leftOpen {
+                    var end = index + 1
+                    while end < chars.count, continuesHandle(chars[end]) { end += 1 }
+                    if end > index + 1 {
+                        let handle = String(chars[(index + 1)..<end])
+                        if seen.insert(handle).inserted { handles.append(handle) }
+                        index = end
+                        continue
+                    }
+                }
+            }
+            index += 1
+        }
+        return handles
+    }
+
+    /// Drops fenced and inline code so a backtick `@name` is not a mention.
+    private static func stripMarkdownCode(_ source: String) -> String {
+        var out = ""
+        var index = source.startIndex
+        while index < source.endIndex {
+            if source[index...].hasPrefix("```") {
+                let after = source.index(index, offsetBy: 3)
+                if let close = source[after...].range(of: "```") {
+                    index = close.upperBound
+                    out.append(" ")
+                    continue
+                }
+                break
+            }
+            if source[index] == "`" {
+                let after = source.index(after: index)
+                if let close = source[after...].firstIndex(of: "`") {
+                    index = source.index(after: close)
+                    out.append(" ")
+                    continue
+                }
+            }
+            out.append(source[index])
+            index = source.index(after: index)
+        }
+        return out
+    }
+
+    static func groupedReactions(_ reactions: [PublicHistoryReaction]) -> [(emoji: String, count: Int)] {
+        var first: [String: String] = [:]
+        var count: [String: Int] = [:]
+        for reaction in reactions {
+            count[reaction.emoji, default: 0] += 1
+            if let existing = first[reaction.emoji] {
+                if reaction.createdAt < existing { first[reaction.emoji] = reaction.createdAt }
+            } else {
+                first[reaction.emoji] = reaction.createdAt
+            }
+        }
+        return count.keys.sorted { lhs, rhs in
+            let left = first[lhs] ?? ""
+            let right = first[rhs] ?? ""
+            return left == right ? lhs < rhs : left < right
+        }.map { ($0, count[$0] ?? 0) }
+    }
+
+    private static func attachmentJSON(_ item: PublicHistoryAttachment) -> String {
+        let filename = normalizeFilename(item.filename)
+        let mime = resolveMime(item.mimeType)
+        let width = item.width.map(String.init) ?? "null"
+        let height = item.height.map(String.init) ?? "null"
+        return "{\"id\":\(jsonString(item.id)),\"filename\":\(jsonString(filename)),\"mimeType\":\(jsonString(mime)),\"sizeBytes\":\(item.sizeBytes),\"width\":\(width),\"height\":\(height)}"
+    }
+
+    private static func mentionJSON(_ item: PublicHistoryMention) -> String {
+        let display = item.displayName.isEmpty ? item.name : item.displayName
+        return "{\"type\":\(jsonString(item.type)),\"name\":\(jsonString(item.name)),\"displayName\":\(jsonString(display))}"
+    }
+
+    private static func reactionJSON(_ item: (emoji: String, count: Int)) -> String {
+        "{\"emoji\":\(jsonString(item.emoji)),\"count\":\(item.count)}"
+    }
+
+    /// ASCII names pass through. A non-ASCII name is left unchanged until a test needs the latin1 repair.
+    private static func normalizeFilename(_ filename: String) -> String {
+        filename
+    }
+
+    private static func resolveMime(_ mimeType: String) -> String {
+        let normalized = mimeType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !normalized.isEmpty, normalized != "application/octet-stream" { return normalized }
+        return normalized.isEmpty ? "application/octet-stream" : normalized
+    }
+
+    /// `@handle` still visible, with the same right-edge rule as `createRaftStructuredUserRefRegex`.
+    static func mentionAppears(_ content: String, handle: String) -> Bool {
+        guard handle.wholeMatch(of: /^[\p{L}\p{N}_-]+$/) != nil else { return false }
+        let needle = "@" + handle
+        var rest = content[...]
+        while let range = rest.range(of: needle) {
+            let after = rest[range.upperBound...]
+            if let next = after.first, continuesHandle(next), !isCJK(next) {
+                rest = after
+                continue
+            }
+            return true
+        }
+        return false
+    }
+
+    private static func continuesHandle(_ character: Character) -> Bool {
+        guard let scalar = character.unicodeScalars.first, character.unicodeScalars.count == 1 else { return false }
+        return CharacterSet.letters.contains(scalar)
+            || CharacterSet.decimalDigits.contains(scalar)
+            || scalar == "_"
+            || scalar == "-"
+    }
+
+    private static func isCJK(_ character: Character) -> Bool {
+        character.unicodeScalars.contains { scalar in
+            switch scalar.value {
+            case 0x4E00...0x9FFF, 0x3400...0x4DBF, 0x3040...0x30FF, 0xAC00...0xD7AF:
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
+    static func replyJSON(_ reply: PublicHistoryReply, serverId: String) -> String {
+        let avatar = avatarURL(reply.sender, type: reply.senderType, serverId: serverId)
+        let avatarJSON = avatar.map { jsonString($0) } ?? "null"
+        let name = senderName(reply.sender, type: reply.senderType, serverId: serverId)
+        return "{"
+            + "\"messageId\":\(jsonString(reply.id)),"
+            + "\"seq\":\(reply.seq),"
+            + "\"preview\":\(jsonString(reply.content)),"
+            + "\"senderType\":\(jsonString(reply.senderType)),"
+            + "\"senderName\":\(jsonString(name)),"
+            + "\"senderAvatarUrl\":\(avatarJSON),"
+            + "\"createdAt\":\(jsonString(reply.createdAt))"
+            + "}"
+    }
+
+    static func page<Item: SequenceItem>(_ items: [Item], limit: Int, beforeId: String?) -> [Item]? {
+        let sorted = items.sorted { $0.seq < $1.seq }
+        let pool: [Item]
+        if let beforeId {
+            guard let index = sorted.firstIndex(where: { $0.id == beforeId }) else { return nil }
+            pool = Array(sorted.prefix(index))
+        } else {
+            pool = sorted
+        }
+        if pool.isEmpty { return [] }
+        let start = max(0, pool.count - limit)
+        return Array(pool[start...])
+    }
+
+    private static func senderJSON(_ sender: PublicHistorySender, type: String, serverId: String) -> String {
+        if type == "agent", let home = sender.homeServerId, home != serverId {
+            return "{\"displayName\":\"Unknown agent\",\"handle\":null,\"avatarUrl\":null,\"description\":null}"
+        }
+        let handle = sender.handle.map { jsonString($0) } ?? "null"
+        let avatar = avatarURL(sender, type: type, serverId: serverId).map { jsonString($0) } ?? "null"
+        let description = sender.description.map { jsonString($0) } ?? "null"
+        let name = senderName(sender, type: type, serverId: serverId)
+        return "{\"displayName\":\(jsonString(name)),\"handle\":\(handle),\"avatarUrl\":\(avatar),\"description\":\(description)}"
+    }
+
+    private static func senderName(_ sender: PublicHistorySender, type: String, serverId: String) -> String {
+        if type == "agent", let home = sender.homeServerId, home != serverId {
+            return "Unknown agent"
+        }
+        return sender.displayName
+    }
+
+    private static func avatarURL(_ sender: PublicHistorySender, type: String, serverId: String) -> String? {
+        if type == "agent", let home = sender.homeServerId, home != serverId { return nil }
+        if type == "user" { return storedUserAvatar(sender.avatarUrl) }
+        if type == "agent" { return storedAgentAvatar(sender.avatarUrl, serverId: serverId) }
+        return nil
+    }
+
+    static func storedUserAvatar(_ avatarUrl: String?) -> String? {
+        guard let avatarUrl else { return nil }
+        guard avatarUrl.range(of: #"^/(?:api/)?avatars/users/[0-9a-fA-F]{32}\.webp$"#, options: .regularExpression) != nil else {
+            return nil
+        }
+        return avatarUrl
+    }
+
+    static func storedAgentAvatar(_ avatarUrl: String?, serverId: String) -> String? {
+        guard let avatarUrl else { return nil }
+        let scope = NSRegularExpression.escapedPattern(for: serverId)
+        let pattern = "^/(?:api/)?avatars/\(scope)/[0-9a-fA-F]{32}\\.webp$"
+        guard avatarUrl.range(of: pattern, options: .regularExpression) != nil else { return nil }
+        return avatarUrl
+    }
+}
+
+protocol SequenceItem {
+    var id: String { get }
+    var seq: Int { get }
+}
+
+extension PublicHistoryMessage: SequenceItem {}
+extension PublicHistoryReply: SequenceItem {}

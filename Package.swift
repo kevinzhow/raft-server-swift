@@ -11,9 +11,10 @@ let package = Package(
         .executable(name: "RaftServer", targets: ["RaftServer"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "5.0.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
-        .package(url: "https://github.com/vapor/vapor.git", from: "4.122.3"),
+        // No tagged Vapor 5 release builds here. This main snapshot pins swift-collections to 1.6.0.
+        .package(url: "https://github.com/vapor/vapor.git", revision: "0f2a8ee9f38b2589c066b604de3e3168ed54c82d"),
     ],
     targets: [
         .target(
@@ -39,7 +40,12 @@ let package = Package(
                 .product(name: "NIOPosix", package: "swift-nio"),
             ]
         ),
-        .target(name: "RaftHTTP"),
+        .target(
+            name: "RaftHTTP",
+            dependencies: [
+                .product(name: "Crypto", package: "swift-crypto"),
+            ]
+        ),
         .target(
             name: "RaftHTTPServer",
             dependencies: [
@@ -64,6 +70,7 @@ let package = Package(
             dependencies: [
                 "RaftHTTP",
                 "RaftHTTPServer",
+                .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Vapor", package: "vapor"),
                 .product(name: "VaporTesting", package: "vapor"),
             ]
@@ -78,7 +85,13 @@ let package = Package(
         ),
         .testTarget(
             name: "RaftDaemonClientTests",
-            dependencies: ["RaftDaemonClient", "RaftMachineSocket", "RaftConnectAuth"]
+            dependencies: [
+                "RaftDaemonClient",
+                "RaftMachineSocket",
+                "RaftConnectAuth",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+            ]
         ),
     ]
 )

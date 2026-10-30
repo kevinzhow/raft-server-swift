@@ -1,0 +1,6497 @@
+import Crypto
+import Foundation
+
+public struct RefreshRotationReceipt: Equatable, Sendable {
+    public var attemptId: String
+    public var installationId: String
+    public var successorTokenCiphertext: String
+
+    public init(attemptId: String, installationId: String, successorTokenCiphertext: String) {
+        self.attemptId = attemptId
+        self.installationId = installationId
+        self.successorTokenCiphertext = successorTokenCiphertext
+    }
+}
+
+public struct NativeAppleCodeExchange: Equatable, Sendable {
+    public var code: String
+    public var clientId: String
+    public var clientSecret: String
+    public var grantType: String
+    public var redirectUri: String?
+
+    public init(code: String, clientId: String, clientSecret: String, grantType: String, redirectUri: String?) {
+        self.code = code
+        self.clientId = clientId
+        self.clientSecret = clientSecret
+        self.grantType = grantType
+        self.redirectUri = redirectUri
+    }
+}
+
+public struct MobileProviderProfile: Equatable, Sendable {
+    public var providerUserId: String
+    public var email: String
+    public var displayName: String?
+    /// Apple rejects a link when this is false. Google and GitHub profiles are already verified.
+    public var emailVerified: Bool
+
+    public init(providerUserId: String, email: String, displayName: String?, emailVerified: Bool = true) {
+        self.providerUserId = providerUserId
+        self.email = email
+        self.displayName = displayName
+        self.emailVerified = emailVerified
+    }
+}
+
+public struct SocialAuthState: Equatable, Sendable {
+    public var provider: String
+    public var mode: String
+    public var nonce: String
+    public var kind: String
+    public var mobileRequestId: String
+    public var desktopNonce: String?
+    public var returnTo: String?
+    public var linkUserId: String?
+
+    public init(provider: String, mode: String, nonce: String, kind: String, mobileRequestId: String, desktopNonce: String?, returnTo: String? = nil, linkUserId: String? = nil) {
+        self.provider = provider
+        self.mode = mode
+        self.nonce = nonce
+        self.kind = kind
+        self.mobileRequestId = mobileRequestId
+        self.desktopNonce = desktopNonce
+        self.returnTo = returnTo
+        self.linkUserId = linkUserId
+    }
+}
+
+public struct EmailLegalAcceptance: Equatable, Sendable {
+    public var termsVersion: String
+    public var privacyVersion: String
+    public var termsUrl: String
+    public var privacyUrl: String
+    public var source: String
+    public var userAgentHash: String?
+    public var locale: String?
+
+    public init(
+        termsVersion: String,
+        privacyVersion: String,
+        termsUrl: String,
+        privacyUrl: String,
+        source: String,
+        userAgentHash: String?,
+        locale: String?
+    ) {
+        self.termsVersion = termsVersion
+        self.privacyVersion = privacyVersion
+        self.termsUrl = termsUrl
+        self.privacyUrl = privacyUrl
+        self.source = source
+        self.userAgentHash = userAgentHash
+        self.locale = locale
+    }
+}
+
+/// `POST /api/auth/login`.
+///
+/// A non-string or empty email or password is refused before any account lookup.
+/// A missing account and a wrong password share one 401, and neither issues a session.
+
+public final class EmailLoginDirectory: @unchecked Sendable {
+    private let lock = NSLock()
+    private var accounts: [String: Account] = [:]
+    private var analyticsIds: [String: String] = [:]
+    private var sessions: [String: LiveSession] = [:]
+    private var rotationReceipts: [String: RotationReceipt] = [:]
+    private var revokedFamilies: Set<String> = []
+    private var sessionFamilies: [String: SessionFamily] = [:]
+    private var retirementReceipts: [String: RetirementReceipt] = [:]
+    private var accessTokens: [String: String] = [:]
+    private var accessTokenFamilies: [String: String] = [:]
+    private var legalAcceptances: [String: EmailLegalAcceptance] = [:]
+    private var emailVerifications = 0
+    private var humanMessageRows: [StoredHumanMessage] = []
+    private var channelAttachments: [String: ChannelAttachment] = [:]
+    private var recordedChannelMessageEvents: [ChannelMessageEvent] = []
+    private var recordedMessageUpdates: [MessageUpdatedBroadcast] = []
+    private var recordedReactionViewerEvents: [ReactionViewerEvent] = []
+    private var forwardedBundles: [String: [ForwardedSource]] = [:]
+    private var forwardRecords: [String: StoredForwardRecord] = [:]
+    private var messageReactions: [StoredReaction] = []
+    private var reactionViewerVersions: [String: Int] = [:]
+    private var reactionDiscussionVersions: [String: Int] = [:]
+    private var serverAgents: [String: ServerAgent] = [:]
+    private var storedMentions: [StoredMention] = []
+    private var channelAgentMembers: [String: Set<String>] = [:]
+    private var machineKeys: [String: (serverId: String, agentId: String)] = [:]
+    private var storedInboxFacts: [StoredInboxFact] = []
+    private var storedAgentDeliveries: [(agentId: String, messageId: String, channelType: String)] = []
+    private var agentCredentials: [String: AgentCredential] = [:]
+    private var postableChannels: [String: PostableChannel] = [:]
+    private var serverMemberRoles: [String: String] = [:]
+    private var hideHumansFromMembers: [String: Bool] = [:]
+    private var jointProjections: [JointChannelLink] = []
+    private var composerResourceServers: Set<String> = []
+    private var installedServerApps: [String: Set<String>] = [:]
+    private var socialCompletions: [SocialCompletion] = []
+    private var mobileRequests: [String: MobileOAuthRequest] = [:]
+    private var providerExchanges = 0
+    private var consumedHandoffs: Set<String> = []
+    private var deviceGrants: [String: DeviceGrant] = [:]
+    private var deviceUserCodes: [String: String] = [:]
+    private var mobileAppEmailContactsByKey: [String: MobileAppEmailContact] = [:]
+    private var storedMobileAppEmailJourneys: [MobileAppEmailJourney] = []
+    private var nativeNotificationEvents: [StoredNativeNotificationEvent] = []
+    private var nextNativeNotificationSeq = 0
+    private var nativeEnrollmentGrants: [StoredEnrollmentGrant] = []
+    private var nativeNotificationDevices: [StoredNotificationDevice] = []
+    private var nativeNotificationCredentials: [StoredNotificationCredential] = []
+    public var mobileProviderProfile: MobileProviderProfile?
+    /// Exchanged web provider profile. The form-post callback stores a completion and does not link an identity.
+    public var webProviderProfile: MobileProviderProfile?
+    /// Providers with a client id and secret. Google and GitHub ignore the Apple platform gate.
+    public var configuredSocialAuthProviders: Set<String> = []
+    /// `APPLE_CLIENT_ID`, or `APPLE_WEB_CLIENT_ID` when the first is empty.
+    public var appleClientId: String = ""
+    /// `APPLE_IOS_CLIENT_ID`. Native sign-in stays closed until this and the client secret are set.
+    public var nativeAppleClientId: String = ""
+    public var nativeAppleClientSecret: String = ""
+    /// HMAC secret for the native request token. `NATIVE_APPLE_AUTH_STATE_SECRET`.
+    public var nativeAppleStateSecret: String = ""
+    /// Stand-in for `https://appleid.apple.com/auth/token`. The shipped call builds the form body.
+    public var exchangeNativeAppleCode: (@Sendable (NativeAppleCodeExchange) async -> String?)?
+    /// `SERVER_URL`, without a trailing slash. Used as the Apple redirect base.
+    public var serverURL: String = "http://localhost:3001"
+    /// Human authorization codes and the token endpoint. The same ledger the HTTP routes exchange.
+    public let oauth = OAuthLedger()
+    /// `APP_URL`. Web OAuth errors redirect here.
+    public var appURL: String = "http://localhost:3000"
+    /// `MOBILE_APP_EMAIL_UNSUBSCRIBE_SECRET`, or `JWT_SECRET`. The test harness uses `test-jwt-secret`.
+    public var mobileAppEmailUnsubscribeSecret: String = "test-jwt-secret"
+    /// Cancels one scheduled mobile-app lifecycle email. Unset means there is no provider call to make.
+    public var cancelMobileAppEmail: (@Sendable (String) -> Void)?
+    /// `SLOCK_NATIVE_NOTIFICATIONS_ENABLED=true`. Unset stays off outside the test harness.
+    public var nativeNotificationsEnabled: Bool = false
+    /// `NATIVE_NOTIFICATION_STREAM_POLL_MS`. Clamped to 250...5000 when a stream polls.
+    public var nativeNotificationStreamPollMs: Int = 1000
+    /// Test seam called before each already-read SSE frame. Production leaves it nil.
+    public var nativeNotificationLiveWriteHook: (@Sendable (_ index: Int, _ eventCount: Int) async -> Void)?
+    /// `NATIVE_NOTIFICATION_ATTESTATION_MODE`. Nil means the variable is unset.
+    public var nativeNotificationAttestationMode: String? = nil
+    /// Process `NODE_ENV`. Production enforces desktop attestation even when the mode is unset.
+    public var nativeNotificationNodeEnv: String = "development"
+    /// Test seam for signed-app attestation. A nil verifier never accepts evidence.
+    public var nativeNotificationAttestationVerifier: (@Sendable (String) -> Bool)?
+    private var appleLoginPlatforms: Set<String> = []
+
+    /// Raw `MOBILE_OAUTH_RETURN_URI`. A non-empty parsed list replaces the defaults.
+    public var mobileOAuthReturnURI: String?
+    /// Raw `MOBILE_OAUTH_ALLOWED_RETURN_URIS`. Used only when the primary list is empty.
+    public var mobileOAuthAllowedReturnURIs: String?
+    /// Raw `SLOCK_RELEASE_BRANCH`. Staging self-account opt-in is accepted only when this is exactly `staging`.
+    public var releaseBranch: String?
+    /// Raw `SLOCK_DEVICE_LOGIN_ENABLED`. Unset or empty keeps device login on. `false`, `0`, `no`, and `off` turn it off.
+    public var deviceLoginGate: String?
+    private var linkedIdentities: [LinkedIdentity] = []
+
+    public static let termsVersion = "2026-05-12"
+    public static let privacyVersion = "2026-05-12"
+    public static let termsURL = "https://raft.build/terms"
+    public static let privacyURL = "https://raft.build/privacy"
+
+    public init() {}
+
+    public struct MobileAppEmailContact: Equatable, Sendable {
+        public var userId: String
+        public var email: String
+        public var audienceId: String
+        public var status: String
+        public var optedOutAt: Date?
+    }
+
+    public struct NativeNotificationIntent: Sendable {
+        public var recipientUserId: String
+        public var eventKey: String
+        public var serverId: String
+        public var kind: String
+        public var channelId: String
+        public var threadId: String?
+        public var parentChannelId: String?
+        public var parentMessageId: String?
+        public var messageId: String
+        public var title: String
+        public var body: String
+        public var createdAt: Date
+
+        public init(recipientUserId: String, eventKey: String, serverId: String, kind: String, channelId: String, threadId: String?, parentChannelId: String?, parentMessageId: String?, messageId: String, title: String, body: String, createdAt: Date) {
+            self.recipientUserId = recipientUserId
+            self.eventKey = eventKey
+            self.serverId = serverId
+            self.kind = kind
+            self.channelId = channelId
+            self.threadId = threadId
+            self.parentChannelId = parentChannelId
+            self.parentMessageId = parentMessageId
+            self.messageId = messageId
+            self.title = title
+            self.body = body
+            self.createdAt = createdAt
+        }
+    }
+
+    /// The bytes an Ed25519 enrollment proof signs. The secret stays out of the stored row.
+    public static func enrollmentProofTranscript(grant: String, appId: String, protocolVersion: Int, appVersion: String, releaseChannel: String, appInstanceId: String, publicKey: String, nonce: String) -> Data {
+        let joined = [
+            "raft-desktop-notification-enrollment-v1",
+            sha256(grant),
+            appId,
+            String(protocolVersion),
+            appVersion,
+            releaseChannel,
+            appInstanceId,
+            publicKey,
+            nonce,
+        ].joined(separator: "\u{0}")
+        return Data(joined.utf8)
+    }
+
+    /// The bytes an Ed25519 rotation proof signs.
+    public static func rotationProofTranscript(credential: String, deviceId: String) -> Data {
+        let joined = ["raft-desktop-notification-rotation-v1", sha256(credential), deviceId].joined(separator: "\u{0}")
+        return Data(joined.utf8)
+    }
+
+    public struct NativeEnrollmentGrantRecord: Sendable {
+        public var secretHash: String
+        public var json: String
+    }
+
+    public func nativeEnrollmentGrantRecords() -> [NativeEnrollmentGrantRecord] {
+        lock.lock()
+        defer { lock.unlock() }
+        return nativeEnrollmentGrants.map { grant in
+            let json = "{\"id\":\(jsonString(grant.id)),\"secretHash\":\(jsonString(grant.secretHash)),\"publicKey\":\(jsonString(grant.publicKey)),\"nonce\":\(jsonString(grant.nonce))}"
+            return NativeEnrollmentGrantRecord(secretHash: grant.secretHash, json: json)
+        }
+    }
+
+    /// Moves a stored enrollment grant into the past. Exchange must then fail closed.
+    public func expireNativeEnrollmentGrant(id: String) {
+        lock.lock()
+        if let index = nativeEnrollmentGrants.firstIndex(where: { $0.id == id }) {
+            nativeEnrollmentGrants[index].expiresAt = Date().addingTimeInterval(-1)
+        }
+        lock.unlock()
+    }
+
+    /// Marks every session family for this user revoked. A later enrollment exchange must fail closed.
+    public func revokeSessionFamilies(userId: String) {
+        lock.lock()
+        let now = Date()
+        for key in sessionFamilies.keys where sessionFamilies[key]?.userId == userId {
+            if sessionFamilies[key]?.revokedAt == nil {
+                sessionFamilies[key]?.revokedAt = now
+            }
+            revokedFamilies.insert(key)
+        }
+        lock.unlock()
+    }
+
+    public func nativeNotificationCredentialJSON(id: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let row = nativeNotificationCredentials.first(where: { $0.id == id }) else { return nil }
+        return "{\"id\":\(jsonString(row.id)),\"secretHash\":\(jsonString(row.secretHash)),\"scope\":\(jsonString(row.scope))}"
+    }
+
+    /// `POST /api/notifications/enrollment-grants`. The opaque grant is returned once. Only its hash is stored.
+    public func issueNativeEnrollmentGrant(body: String, authorization: String?) -> HTTPReply {
+        guard nativeNotificationsEnabled else {
+            return Self.json(404, "{\"error\":\"Not found\",\"code\":\"not_found\"}")
+        }
+        lock.lock()
+        guard let session = notificationSessionLocked(authorization) else {
+            lock.unlock()
+            return Self.json(401, "{\"error\":\"A live normal session family is required\",\"code\":\"session_family_required\"}")
+        }
+        guard let request = Self.parseEnrollmentRequest(body) else {
+            lock.unlock()
+            return Self.json(400, "{\"error\":\"Invalid enrollment exchange\",\"code\":\"invalid_enrollment_request\"}")
+        }
+        let attestation = Self.evaluateAttestation(
+            body: body,
+            mode: nativeNotificationAttestationMode,
+            nodeEnv: nativeNotificationNodeEnv,
+            verifier: nativeNotificationAttestationVerifier
+        )
+        if attestation.state == "rejected" {
+            lock.unlock()
+            return Self.json(403, "{\"error\":\"Desktop application attestation is required\",\"code\":\"desktop_attestation_required\"}")
+        }
+        let id = UUID().uuidString.lowercased()
+        let minted = Self.mintOpaqueCredential(prefix: "rng1", id: id)
+        let now = Date()
+        let expiresAt = now.addingTimeInterval(60)
+        nativeEnrollmentGrants.append(StoredEnrollmentGrant(
+            id: id,
+            userId: session.userId,
+            sessionFamilyId: session.familyId,
+            secretHash: minted.secretHash,
+            appId: request.appId,
+            protocolVersion: request.protocolVersion,
+            appVersion: request.appVersion,
+            releaseChannel: request.releaseChannel,
+            appInstanceId: request.appInstanceId,
+            publicKey: request.publicKey,
+            nonce: request.nonce,
+            attestationState: attestation.state,
+            expiresAt: expiresAt,
+            createdAt: now,
+            consumedAt: nil
+        ))
+        lock.unlock()
+        return Self.json(201, "{\"grant\":\(jsonString(minted.opaque)),\"expiresAt\":\(jsonString(Self.iso8601(expiresAt)))}")
+    }
+
+    /// `POST /api/notifications/enrollment-exchanges`. One grant mints one credential. A second exchange is denied.
+    public func exchangeNativeEnrollmentGrant(body: String) -> HTTPReply {
+        guard nativeNotificationsEnabled else {
+            return Self.json(404, "{\"error\":\"Not found\",\"code\":\"not_found\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let grantText = object["grant"] as? String,
+              let parsed = Self.parseOpaqueCredential(grantText, prefix: "rng1")
+        else {
+            return Self.json(400, "{\"error\":\"Invalid enrollment exchange\",\"code\":\"invalid_enrollment_exchange\"}")
+        }
+        let proof = object["proof"] as? String ?? ""
+        let denied = Self.json(403, "{\"error\":\"Enrollment exchange denied\",\"code\":\"enrollment_exchange_denied\"}")
+        lock.lock()
+        guard let index = nativeEnrollmentGrants.firstIndex(where: { $0.id == parsed.id }) else {
+            lock.unlock()
+            return denied
+        }
+        let grant = nativeEnrollmentGrants[index]
+        let secretHash = Self.sha256(parsed.secret)
+        guard secretHash == grant.secretHash,
+              grant.consumedAt == nil,
+              grant.expiresAt > Date(),
+              grant.attestationState != "rejected",
+              sessionFamilies[grant.sessionFamilyId]?.userId == grant.userId,
+              sessionFamilies[grant.sessionFamilyId]?.revokedAt == nil
+        else {
+            lock.unlock()
+            return denied
+        }
+        let transcript = Self.enrollmentProofTranscript(
+            grant: grantText,
+            appId: grant.appId,
+            protocolVersion: grant.protocolVersion,
+            appVersion: grant.appVersion,
+            releaseChannel: grant.releaseChannel,
+            appInstanceId: grant.appInstanceId,
+            publicKey: grant.publicKey,
+            nonce: grant.nonce
+        )
+        guard Self.verifyEd25519(publicKeySPKI: grant.publicKey, transcript: transcript, proof: proof) else {
+            lock.unlock()
+            return denied
+        }
+        let now = Date()
+        let deviceId = UUID().uuidString.lowercased()
+        nativeNotificationDevices.append(StoredNotificationDevice(
+            id: deviceId,
+            userId: grant.userId,
+            appId: grant.appId,
+            appVersion: grant.appVersion,
+            releaseChannel: grant.releaseChannel,
+            appInstanceId: grant.appInstanceId,
+            publicKey: grant.publicKey
+        ))
+        let credentialId = UUID().uuidString.lowercased()
+        let minted = Self.mintOpaqueCredential(prefix: "rnc1", id: credentialId)
+        nativeNotificationCredentials.append(StoredNotificationCredential(
+            id: credentialId,
+            deviceId: deviceId,
+            userId: grant.userId,
+            sessionFamilyId: grant.sessionFamilyId,
+            secretHash: minted.secretHash,
+            scope: "notifications:stream",
+            expiresAt: now.addingTimeInterval(30 * 24 * 60 * 60)
+        ))
+        nativeEnrollmentGrants[index].consumedAt = now
+        lock.unlock()
+        return Self.json(201, "{\"credential\":\(jsonString(minted.opaque)),\"credentialId\":\(jsonString(credentialId)),\"deviceId\":\(jsonString(deviceId)),\"scope\":\"notifications:stream\",\"expiresAt\":\(jsonString(Self.iso8601(now.addingTimeInterval(30 * 24 * 60 * 60))))}")
+    }
+
+    /// `GET /api/notifications/devices`. The list omits hashes, public keys, and credential secrets.
+    public func listNativeNotificationDevices(authorization: String?) -> HTTPReply {
+        guard nativeNotificationsEnabled else {
+            return Self.json(404, "{\"error\":\"Not found\",\"code\":\"not_found\"}")
+        }
+        lock.lock()
+        guard let session = notificationSessionLocked(authorization) else {
+            lock.unlock()
+            return Self.json(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
+        }
+        let now = Date()
+        let listed = nativeNotificationDevices.filter { $0.userId == session.userId }.map { device in
+            let status = nativeDeviceStatusLocked(device, now: now)
+            return "{\"deviceId\":\(jsonString(device.id)),\"appId\":\(jsonString(device.appId)),\"appVersion\":\(jsonString(device.appVersion)),\"releaseChannel\":\(jsonString(device.releaseChannel)),\"appInstanceId\":\(jsonString(device.appInstanceId)),\"attestationState\":\"missing\",\"status\":\(jsonString(status))}"
+        }.joined(separator: ",")
+        lock.unlock()
+        return Self.json(200, "{\"devices\":[\(listed)]}")
+    }
+
+    /// `DELETE /api/notifications/devices/:deviceId`. A missing or foreign device is 404.
+    public func revokeNativeNotificationDevice(authorization: String?, deviceId: String) -> HTTPReply {
+        guard nativeNotificationsEnabled else {
+            return Self.json(404, "{\"error\":\"Not found\",\"code\":\"not_found\"}")
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let session = notificationSessionLocked(authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
+        }
+        let notFound = Self.json(404, "{\"error\":\"Notification device not found\",\"code\":\"notification_device_not_found\"}")
+        guard deviceId.wholeMatch(of: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/) != nil,
+              let index = nativeNotificationDevices.firstIndex(where: {
+                  $0.id == deviceId && $0.userId == session.userId && $0.revokedAt == nil
+              })
+        else { return notFound }
+        let now = Date()
+        nativeNotificationDevices[index].revokedAt = now
+        for credentialIndex in nativeNotificationCredentials.indices
+        where nativeNotificationCredentials[credentialIndex].deviceId == deviceId
+            && nativeNotificationCredentials[credentialIndex].revokedAt == nil {
+            nativeNotificationCredentials[credentialIndex].revokedAt = now
+        }
+        return Self.noContent()
+    }
+
+    /// `POST /api/notifications/credentials/rotate`. The proof is the device key over the current credential.
+    public func rotateNativeNotificationCredential(authorization: String?, body: String) -> HTTPReply {
+        guard nativeNotificationsEnabled else {
+            return Self.json(404, "{\"error\":\"Not found\",\"code\":\"not_found\"}")
+        }
+        let invalid = Self.json(401, "{\"error\":\"Invalid native notification credential\",\"code\":\"native_credential_invalid\"}")
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return invalid }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        guard token.hasPrefix("rnc1.") else { return invalid }
+        let proof = ((try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any])?["proof"] as? String ?? ""
+        lock.lock()
+        defer { lock.unlock() }
+        guard let principal = nativePrincipalLocked(authorization),
+              let index = nativeNotificationCredentials.firstIndex(where: { $0.id == principal.credentialId && $0.revokedAt == nil })
+        else { return invalid }
+        guard Self.verifyEd25519(
+            publicKeySPKI: principal.publicKey,
+            transcript: Self.rotationProofTranscript(credential: token, deviceId: principal.deviceId),
+            proof: proof
+        ) else {
+            return Self.json(403, "{\"error\":\"Invalid native notification credential proof\",\"code\":\"native_credential_proof_invalid\"}")
+        }
+        let current = nativeNotificationCredentials[index]
+        let now = Date()
+        nativeNotificationCredentials[index].revokedAt = now
+        let credentialId = UUID().uuidString.lowercased()
+        let minted = Self.mintOpaqueCredential(prefix: "rnc1", id: credentialId)
+        let expiresAt = now.addingTimeInterval(30 * 24 * 60 * 60)
+        nativeNotificationCredentials.append(StoredNotificationCredential(
+            id: credentialId,
+            deviceId: current.deviceId,
+            userId: current.userId,
+            sessionFamilyId: current.sessionFamilyId,
+            secretHash: minted.secretHash,
+            scope: "notifications:stream",
+            expiresAt: expiresAt
+        ))
+        return Self.json(201, "{\"credential\":\(jsonString(minted.opaque)),\"credentialId\":\(jsonString(credentialId)),\"deviceId\":\(jsonString(current.deviceId)),\"scope\":\"notifications:stream\",\"expiresAt\":\(jsonString(Self.iso8601(expiresAt)))}")
+    }
+
+    /// `DELETE /api/notifications/credentials/current`. A credential-shaped bearer is 204 even when it is already dead.
+    public func deleteCurrentNativeNotificationCredential(authorization: String?) -> HTTPReply {
+        guard nativeNotificationsEnabled else {
+            return Self.json(404, "{\"error\":\"Not found\",\"code\":\"not_found\"}")
+        }
+        let invalid = Self.json(401, "{\"error\":\"Invalid native notification credential\",\"code\":\"native_credential_invalid\"}")
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return invalid }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        guard token.hasPrefix("rnc1.") else { return invalid }
+        _ = revokeCurrentNativeCredential(token)
+        return Self.noContent()
+    }
+
+    /// Caller holds `lock`.
+    private func notificationSessionLocked(_ authorization: String?) -> (userId: String, familyId: String)? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        guard let userId = accessTokens[token],
+              let familyId = accessTokenFamilies[token],
+              sessionFamilies[familyId]?.userId == userId,
+              sessionFamilies[familyId]?.revokedAt == nil,
+              accounts.values.contains(where: { $0.id == userId && $0.emailVerified })
+        else { return nil }
+        return (userId, familyId)
+    }
+
+    private static func evaluateAttestation(body: String, mode: String?, nodeEnv: String, verifier: ((String) -> Bool)?) -> (state: String, evidenceHash: String?) {
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        let raw = object?["attestation"] as? String
+        let evidence = (raw?.isEmpty == false && (raw?.count ?? 0) <= 4096) ? raw : nil
+        let enforce = nodeEnv == "production" || mode == "enforce" || (mode != nil && mode != "observe")
+        let verified = evidence != nil && verifier?(evidence!) == true
+        let hash = evidence.map { sha256($0) }
+        if enforce && !verified { return ("rejected", hash) }
+        if verified { return ("verified", hash) }
+        return (evidence == nil ? "missing" : "observed", hash)
+    }
+
+    private static func parseEnrollmentRequest(_ body: String) -> (appId: String, protocolVersion: Int, appVersion: String, releaseChannel: String, appInstanceId: String, publicKey: String, nonce: String)? {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let appId = object["appId"] as? String,
+              appId == "ai.slock.desktop",
+              appId.wholeMatch(of: /^[a-z0-9]+(?:\.[a-z0-9-]+){2,7}$/) != nil,
+              ((object["protocolVersion"] as? NSNumber)?.intValue ?? object["protocolVersion"] as? Int) == 1,
+              let appVersion = object["appVersion"] as? String,
+              appVersion.wholeMatch(of: /^[A-Za-z0-9][A-Za-z0-9._+()-]{0,63}$/) != nil,
+              let releaseChannel = object["releaseChannel"] as? String,
+              releaseChannel == "development" || releaseChannel == "staging" || releaseChannel == "production",
+              let appInstanceId = object["appInstanceId"] as? String,
+              appInstanceId.wholeMatch(of: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/) != nil,
+              let publicKey = object["publicKey"] as? String,
+              canonicalBase64URL(publicKey, minBytes: 32, maxBytes: 128) != nil,
+              let nonce = object["nonce"] as? String,
+              canonicalBase64URL(nonce, minBytes: 32, maxBytes: 32) != nil
+        else { return nil }
+        return (appId, 1, appVersion, releaseChannel, appInstanceId, publicKey, nonce)
+    }
+
+    private static func parseOpaqueCredential(_ value: String, prefix: String) -> (id: String, secret: String)? {
+        guard value.count <= 160 else { return nil }
+        let parts = value.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 3, parts[0] == prefix,
+              parts[1].wholeMatch(of: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/) != nil,
+              canonicalBase64URL(parts[2], minBytes: 32, maxBytes: 32) != nil
+        else { return nil }
+        return (parts[1], parts[2])
+    }
+
+    private static func canonicalBase64URL(_ value: String, minBytes: Int, maxBytes: Int) -> Data? {
+        guard value.wholeMatch(of: /^[A-Za-z0-9_-]+$/) != nil,
+              let bytes = base64urlDecode(value),
+              (minBytes...maxBytes).contains(bytes.count),
+              base64url(bytes) == value
+        else { return nil }
+        return bytes
+    }
+
+    private static func mintOpaqueCredential(prefix: String, id: String) -> (opaque: String, secretHash: String) {
+        var bytes = Data(count: 32)
+        for index in bytes.indices {
+            bytes[index] = UInt8.random(in: 0...255)
+        }
+        let secret = base64url(bytes)
+        return ("\(prefix).\(id).\(secret)", sha256(secret))
+    }
+
+    private static func verifyEd25519(publicKeySPKI: String, transcript: Data, proof: String) -> Bool {
+        guard let signature = canonicalBase64URL(proof, minBytes: 64, maxBytes: 64),
+              let spki = canonicalBase64URL(publicKeySPKI, minBytes: 44, maxBytes: 44)
+        else { return false }
+        let prefix = Data([0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00])
+        guard spki.starts(with: prefix), spki.count == 44,
+              let key = try? Curve25519.Signing.PublicKey(rawRepresentation: spki.dropFirst(prefix.count))
+        else { return false }
+        return key.isValidSignature(signature, for: transcript)
+    }
+
+    private static func iso8601(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+
+    private struct StoredEnrollmentGrant {
+        var id: String
+        var userId: String
+        var sessionFamilyId: String
+        var secretHash: String
+        var appId: String
+        var protocolVersion: Int
+        var appVersion: String
+        var releaseChannel: String
+        var appInstanceId: String
+        var publicKey: String
+        var nonce: String
+        var attestationState: String
+        var expiresAt: Date
+        var createdAt: Date
+        var consumedAt: Date?
+    }
+
+    private struct StoredNotificationDevice {
+        var id: String
+        var userId: String
+        var appId: String
+        var appVersion: String
+        var releaseChannel: String
+        var appInstanceId: String
+        var publicKey: String = ""
+        var revokedAt: Date? = nil
+    }
+
+    private struct StoredNotificationCredential {
+        var id: String
+        var deviceId: String
+        var userId: String
+        var sessionFamilyId: String
+        var secretHash: String
+        var scope: String
+        var expiresAt: Date
+        var revokedAt: Date? = nil
+    }
+
+    private struct StoredNativeNotificationEvent {
+        var eventId: String
+        var streamSeq: Int
+        var recipientUserId: String
+        var eventKey: String
+        var serverId: String
+        var channelId: String
+        var messageId: String
+        var title: String
+        var body: String
+        var targetUri: String
+        var createdAt: Date
+        var expiresAt: Date
+    }
+
+    public enum NativeStreamOpen: Sendable {
+        case closed(HTTPReply)
+        case streaming(userId: String, cursorSeq: Int, replay: [(seq: Int, frame: String)])
+    }
+
+    /// Opens `GET /api/notifications/stream`. A user session or a foreign cursor fails before any event-stream bytes.
+    public func beginNativeNotificationStream(authorization: String?, lastEventId: String?) -> NativeStreamOpen {
+        guard nativeNotificationsEnabled else {
+            return .closed(Self.json(404, "{\"error\":\"Not found\",\"code\":\"not_found\"}"))
+        }
+        let denied = Self.json(401, "{\"error\":\"Invalid native notification credential\",\"code\":\"native_credential_invalid\"}")
+        let unavailable = Self.json(409, "{\"error\":\"Replay cursor is unavailable\",\"code\":\"replay_cursor_unavailable\"}")
+        lock.lock()
+        defer { lock.unlock() }
+        guard let principal = nativePrincipalLocked(authorization) else {
+            return .closed(denied)
+        }
+        let now = Date()
+        if let lastEventId {
+            guard lastEventId.wholeMatch(of: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/) != nil,
+                  let cursor = nativeNotificationEvents.first(where: {
+                      $0.eventId == lastEventId && $0.recipientUserId == principal.userId && $0.expiresAt > now
+                  })
+            else { return .closed(unavailable) }
+            let replay = nativeNotificationEvents
+                .filter { $0.recipientUserId == principal.userId && $0.streamSeq > cursor.streamSeq && $0.expiresAt > now }
+                .sorted { $0.streamSeq < $1.streamSeq }
+            if replay.count > 512 {
+                return .closed(Self.json(409, "{\"error\":\"Replay window exceeded\",\"code\":\"replay_window_exceeded\"}"))
+            }
+            return .streaming(userId: principal.userId, cursorSeq: cursor.streamSeq, replay: replay.map { ($0.streamSeq, Self.sseFrame($0)) })
+        }
+        let latest = nativeNotificationEvents
+            .filter { $0.recipientUserId == principal.userId && $0.expiresAt > now }
+            .map(\.streamSeq)
+            .max() ?? 0
+        return .streaming(userId: principal.userId, cursorSeq: latest, replay: [])
+    }
+
+    /// Moves a stored native credential into the past. A later stream must fail closed.
+    public func expireNativeNotificationEvent(id: String) {
+        lock.lock()
+        if let index = nativeNotificationEvents.firstIndex(where: { $0.eventId == id }) {
+            nativeNotificationEvents[index].expiresAt = Date().addingTimeInterval(-1)
+        }
+        lock.unlock()
+    }
+
+    public func expireNativeNotificationCredential(id: String) {
+        lock.lock()
+        if let index = nativeNotificationCredentials.firstIndex(where: { $0.id == id }) {
+            nativeNotificationCredentials[index].expiresAt = Date().addingTimeInterval(-1)
+        }
+        lock.unlock()
+    }
+
+    public func nativeNotificationDeviceRevokedAt(id: String) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return nativeNotificationDevices.first { $0.id == id }?.revokedAt
+    }
+
+    /// Revokes the native credential named by this opaque token. A later stream frame must not be written.
+    public func revokeCurrentNativeCredential(_ opaque: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let parsed = Self.parseOpaqueCredential(opaque, prefix: "rnc1") else { return false }
+        let hash = Self.sha256(parsed.secret)
+        guard let index = nativeNotificationCredentials.firstIndex(where: {
+            $0.id == parsed.id && $0.secretHash == hash && $0.revokedAt == nil
+        }) else { return false }
+        nativeNotificationCredentials[index].revokedAt = Date()
+        return true
+    }
+
+    public func nativeNotificationCredentialIsLive(authorization: String?) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return nativePrincipalLocked(authorization) != nil
+    }
+
+    public func nativeNotificationFrames(userId: String, after cursor: Int) -> [(seq: Int, frame: String)] {
+        lock.lock()
+        defer { lock.unlock() }
+        let now = Date()
+        return nativeNotificationEvents
+            .filter { $0.recipientUserId == userId && $0.streamSeq > cursor && $0.expiresAt > now }
+            .sorted { $0.streamSeq < $1.streamSeq }
+            .map { ($0.streamSeq, Self.sseFrame($0)) }
+    }
+
+    /// Caller holds `lock`. A revoked device cannot authenticate, even if its credential row is still open.
+    private func nativePrincipalLocked(_ authorization: String?) -> (userId: String, familyId: String, credentialId: String, deviceId: String, publicKey: String)? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        guard let parsed = Self.parseOpaqueCredential(token, prefix: "rnc1") else { return nil }
+        let hash = Self.sha256(parsed.secret)
+        let now = Date()
+        guard let credential = nativeNotificationCredentials.first(where: {
+            $0.id == parsed.id && $0.secretHash == hash && $0.revokedAt == nil && $0.expiresAt > now && $0.scope == "notifications:stream"
+        }), let device = nativeNotificationDevices.first(where: { $0.id == credential.deviceId }),
+              device.revokedAt == nil
+        else { return nil }
+        guard !revokedFamilies.contains(credential.sessionFamilyId),
+              sessionFamilies[credential.sessionFamilyId]?.userId == credential.userId,
+              sessionFamilies[credential.sessionFamilyId]?.revokedAt == nil
+        else { return nil }
+        return (credential.userId, credential.sessionFamilyId, credential.id, credential.deviceId, device.publicKey)
+    }
+
+    /// Caller holds `lock`. Revoked devices are `revoked`. A live unexpired credential on a live family is `active`.
+    private func nativeDeviceStatusLocked(_ device: StoredNotificationDevice, now: Date) -> String {
+        if let revokedAt = device.revokedAt, revokedAt <= now { return "revoked" }
+        let active = nativeNotificationCredentials.contains { credential in
+            credential.deviceId == device.id
+                && credential.revokedAt == nil
+                && credential.expiresAt > now
+                && credential.scope == "notifications:stream"
+                && !revokedFamilies.contains(credential.sessionFamilyId)
+                && sessionFamilies[credential.sessionFamilyId]?.userId == device.userId
+                && sessionFamilies[credential.sessionFamilyId]?.revokedAt == nil
+        }
+        return active ? "active" : "inactive"
+    }
+
+    private func liveNativeCredentialLocked(userId: String) -> Bool {
+        let now = Date()
+        return nativeNotificationCredentials.contains { credential in
+            credential.userId == userId
+                && credential.revokedAt == nil
+                && credential.expiresAt > now
+                && credential.scope == "notifications:stream"
+                && !revokedFamilies.contains(credential.sessionFamilyId)
+                && sessionFamilies[credential.sessionFamilyId]?.userId == userId
+                && sessionFamilies[credential.sessionFamilyId]?.revokedAt == nil
+                && nativeNotificationDevices.contains { $0.id == credential.deviceId && $0.revokedAt == nil }
+        }
+    }
+
+    private static func sseFrame(_ event: StoredNativeNotificationEvent) -> String {
+        let data = "{\"body\":\(jsonString(event.body)),\"createdAt\":\(jsonString(iso8601(event.createdAt))),\"eventId\":\(jsonString(event.eventId)),\"serverId\":\(jsonString(event.serverId)),\"targetUri\":\(jsonString(event.targetUri)),\"title\":\(jsonString(event.title)),\"version\":1}"
+        return "event: native-notification.v1\nid: \(event.eventId)\ndata: \(data)\n\n"
+    }
+
+    /// `GET /api/notifications/stream`. The kill switch answers before any stream is opened.
+    public func nativeNotificationStream() -> HTTPReply {
+        guard nativeNotificationsEnabled else {
+            return Self.json(404, "{\"error\":\"Not found\",\"code\":\"not_found\"}")
+        }
+        return Self.json(404, "{\"error\":\"Not found\",\"code\":\"not_found\"}")
+    }
+
+    public func nativeNotificationEventCount(eventKey: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return nativeNotificationEvents.filter { $0.eventKey == eventKey }.count
+    }
+
+    public func nativeNotificationEventIDs(recipientUserId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return nativeNotificationEvents.filter { $0.recipientUserId == recipientUserId }.map(\.eventId)
+    }
+
+    /// Disabled notifications persist nothing. An empty batch also persists nothing.
+    /// A recipient without a live native credential does not grow the ledger. The same event key is stored once.
+    public func persistNativeNotificationIntents(_ intents: [NativeNotificationIntent]) -> Int {
+        if !nativeNotificationsEnabled || intents.isEmpty { return 0 }
+        lock.lock()
+        defer { lock.unlock() }
+        var inserted = 0
+        var seen = Set(nativeNotificationEvents.map(\.eventKey))
+        for intent in intents {
+            guard liveNativeCredentialLocked(userId: intent.recipientUserId), !seen.contains(intent.eventKey) else { continue }
+            seen.insert(intent.eventKey)
+            nextNativeNotificationSeq += 1
+            let now = Date()
+            nativeNotificationEvents.append(StoredNativeNotificationEvent(
+                eventId: UUID().uuidString.lowercased(),
+                streamSeq: nextNativeNotificationSeq,
+                recipientUserId: intent.recipientUserId,
+                eventKey: intent.eventKey,
+                serverId: intent.serverId,
+                channelId: intent.channelId,
+                messageId: intent.messageId,
+                title: intent.title,
+                body: intent.body,
+                targetUri: "raft://v1/servers/\(intent.serverId)/channels/\(intent.channelId)/messages/\(intent.messageId)",
+                createdAt: intent.createdAt,
+                expiresAt: Date(timeInterval: 24 * 60 * 60, since: max(now, intent.createdAt))
+            ))
+            inserted += 1
+        }
+        return inserted
+    }
+
+    public struct MobileAppEmailJourney: Equatable, Sendable {
+        public var userId: String
+        public var email: String
+        public var journeyKey: String
+        public var day1Status: String
+        public var day1EmailId: String?
+        public var suppressedReason: String?
+        public var canceledAt: Date?
+    }
+
+    /// Signed token for `GET/POST /api/email/mobile-app/unsubscribe`. A missing locale is `en`.
+    public func createMobileAppEmailUnsubscribeToken(userId: String, locale: String? = nil) -> String {
+        let canonical = Self.mobileAppUnsubscribeLocale(locale)
+        let claims = "{\"v\":1,\"typ\":\"mobile-app-email-unsubscribe\",\"sub\":\(jsonString(userId)),\"locale\":\(jsonString(canonical))}"
+        let payload = Self.base64url(Data(claims.utf8))
+        let signature = Self.mobileAppUnsubscribeSignature(payload: payload, secret: mobileAppEmailUnsubscribeSecret)
+        return "\(payload).\(signature)"
+    }
+
+    /// A scheduled mobile-app lifecycle email. Unsubscribe cancels `day1Status` of `scheduled`.
+    public func addMobileAppEmailJourney(userId: String, email: String, journeyKey: String, day1Status: String, day1EmailId: String?) {
+        lock.lock()
+        storedMobileAppEmailJourneys.append(MobileAppEmailJourney(
+            userId: userId,
+            email: Self.normalize(email),
+            journeyKey: journeyKey,
+            day1Status: day1Status,
+            day1EmailId: day1EmailId,
+            suppressedReason: nil,
+            canceledAt: nil
+        ))
+        lock.unlock()
+    }
+
+    public func mobileAppEmailJourneys() -> [MobileAppEmailJourney] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedMobileAppEmailJourneys
+    }
+
+    /// Local opt-outs for the mobile-app lifecycle audience. The human page does not write one.
+    public func mobileAppEmailContacts() -> [MobileAppEmailContact] {
+        lock.lock()
+        defer { lock.unlock() }
+        return mobileAppEmailContactsByKey.values.sorted { $0.email < $1.email }
+    }
+
+    public func addAccount(id: String, email: String, password: String) {
+        let normalized = Self.normalize(email)
+        lock.lock()
+        accounts[normalized] = Account(
+            id: id,
+            email: normalized,
+            passwordHash: Self.sha256(password),
+            displayLanguage: nil,
+            name: String(normalized.split(separator: "@").first ?? "user"),
+            profileSetupSuggestedHandle: nil,
+            profileSetupProvider: nil
+        )
+        analyticsIds[id] = UUID().uuidString.lowercased()
+        lock.unlock()
+    }
+
+    /// The product-analytics id for this user. Opting out removes it. Opting back in mints a new one.
+    public func analyticsId(userId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return analyticsIds[userId]
+    }
+
+    public var sessionCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return sessions.count
+    }
+
+    public var userCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return accounts.count
+    }
+
+    public var legalAcceptanceCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return legalAcceptances.count
+    }
+
+    public var emailVerificationCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return emailVerifications
+    }
+
+    public func hasAccount(email: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return accounts[Self.normalize(email)] != nil
+    }
+
+    public func legalAcceptance(userId: String) -> EmailLegalAcceptance? {
+        lock.lock()
+        defer { lock.unlock() }
+        return legalAcceptances[userId]
+    }
+
+    public func userId(forEmail email: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return accounts[Self.normalize(email)]?.id
+    }
+
+    /// A provider callback already exchanged. The raw code is what `POST /:provider/complete` spends.
+    public func addSocialCompletion(
+        provider: String,
+        code: String,
+        email: String,
+        mode: String = "login",
+        intendedAction: String = "login",
+        returnTo: String = "/",
+        userId: String? = nil,
+        providerUserId: String? = nil
+    ) {
+        lock.lock()
+        socialCompletions.append(SocialCompletion(
+            provider: provider,
+            code: code,
+            mode: mode,
+            intendedAction: intendedAction,
+            email: Self.normalize(email),
+            returnTo: returnTo,
+            userId: userId,
+            providerUserId: providerUserId
+        ))
+        lock.unlock()
+    }
+
+    public func linkedProviderUserIds(userId: String, provider: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return linkedIdentities.filter { $0.userId == userId && $0.provider == provider }.map(\.providerUserId)
+    }
+
+    public func linkedProviderEmail(userId: String, provider: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return linkedIdentities.first { $0.userId == userId && $0.provider == provider }?.providerEmail
+    }
+
+    /// `POST /api/auth/:provider/complete`. A first login checks legal acceptance before the code is spent.
+    public func completeSocial(
+        provider: String,
+        body: String,
+        userAgent: String?,
+        acceptLanguage: String?,
+        authorization: String? = nil
+    ) -> HTTPReply {
+        guard Self.socialProviders.contains(provider) else {
+            return Self.json(404, "{\"error\":\"Not found\"}")
+        }
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return Self.json(400, "{\"error\":\"Sign-in completion code is required\"}")
+        }
+        guard let code = object["code"] as? String, !code.isEmpty else {
+            return Self.json(400, "{\"error\":\"Sign-in completion code is required\"}")
+        }
+        lock.lock()
+        guard let index = socialCompletions.firstIndex(where: { $0.provider == provider && $0.code == code }) else {
+            lock.unlock()
+            return Self.json(400, "{\"error\":\"Invalid or expired social auth completion\"}")
+        }
+        let completion = socialCompletions[index]
+        if completion.mode == "link" {
+            guard let authorization, authorization.hasPrefix("Bearer ") else {
+                lock.unlock()
+                return Self.linkAuthRequired
+            }
+            let token = String(authorization.dropFirst("Bearer ".count))
+            guard let caller = accessTokens[token] else {
+                lock.unlock()
+                return Self.linkAuthRequired
+            }
+            guard completion.userId == caller else {
+                lock.unlock()
+                return Self.linkMismatch
+            }
+            socialCompletions.remove(at: index)
+            let providerUserId = completion.providerUserId ?? ""
+            if !linkedIdentities.contains(where: {
+                $0.userId == caller && $0.provider == provider && $0.providerUserId == providerUserId
+            }) {
+                linkedIdentities.append(LinkedIdentity(
+                    userId: caller,
+                    provider: provider,
+                    providerUserId: providerUserId
+                ))
+            }
+            let rows = linkedIdentities.filter { $0.userId == caller }
+            lock.unlock()
+            let listed = rows.map {
+                "{\"provider\":\(jsonString($0.provider)),\"providerUserId\":\(jsonString($0.providerUserId))}"
+            }.joined(separator: ",")
+            let linked = "{\"provider\":\(jsonString(provider)),\"mode\":\"link\",\"returnTo\":\(jsonString(completion.returnTo)),\"identities\":[\(listed)]}"
+            return Self.json(200, linked)
+        }
+        if completion.mode == "login", completion.userId == nil {
+            if object["acceptTerms"] as? Bool != true {
+                lock.unlock()
+                return Self.legalRequired
+            }
+            let terms = object["termsVersion"] as? String
+            let privacy = object["privacyVersion"] as? String
+            if terms != Self.termsVersion || privacy != Self.privacyVersion {
+                lock.unlock()
+                return Self.termsChanged
+            }
+        }
+        socialCompletions.remove(at: index)
+        let id = completion.userId ?? UUID().uuidString.lowercased()
+        let taken = Set(accounts.values.map(\.name))
+        let pendingName = Self.pendingHandle(taken: taken)
+        let suggested = Self.availableUserName(
+            seed: String(completion.email.split(separator: "@").first ?? "user"),
+            taken: taken
+        )
+        if completion.userId == nil, accounts[completion.email] != nil {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"An account with this email already exists. Sign in with email and password first, then connect \(provider) in Settings.\"}")
+        }
+        if completion.userId == nil {
+            accounts[completion.email] = Account(
+                id: id,
+                email: completion.email,
+                passwordHash: Self.sha256(Self.token()),
+                displayLanguage: nil,
+                name: pendingName,
+                profileSetupSuggestedHandle: suggested
+            )
+            let source = (object["legalAcceptanceSource"] as? String) == "invite" ? "invite" : "oauth"
+            legalAcceptances[id] = EmailLegalAcceptance(
+                termsVersion: Self.termsVersion,
+                privacyVersion: Self.privacyVersion,
+                termsUrl: Self.termsURL,
+                privacyUrl: Self.privacyURL,
+                source: source,
+                userAgentHash: userAgent.flatMap { $0.isEmpty ? nil : Self.sha256($0) },
+                locale: acceptLanguage
+            )
+        }
+        let accessToken = Self.token()
+        let refreshToken = Self.token()
+        sessions[refreshToken] = LiveSession(userId: id, familyId: UUID().uuidString.lowercased())
+        accessTokens[accessToken] = id
+        lock.unlock()
+        let response = "{\"provider\":\(jsonString(provider)),\"mode\":\(jsonString(completion.mode)),\"returnTo\":\(jsonString(completion.returnTo)),\"accessToken\":\(jsonString(accessToken)),\"refreshToken\":\(jsonString(refreshToken))}"
+        return Self.json(200, response)
+    }
+
+    /// `POST /api/auth/register`. A non-string email, password, or name is 400 before any account exists. Missing acceptance is 422. A stale version is 409 and creates no account.
+    public func register(body: String, userAgent: String?, acceptLanguage: String?) -> HTTPReply {
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return Self.registerInvalid([Issue(path: "", message: "Expected object, received string")])
+        }
+        var issues: [Issue] = []
+        let email = Self.stringField(object["email"], path: "email", into: &issues)
+        let password = Self.stringField(object["password"], path: "password", into: &issues)
+        if object["name"] != nil {
+            _ = Self.stringField(object["name"], path: "name", into: &issues)
+        }
+        let capability = Self.stagingCapability(object["stagingSelfAccountCapability"], into: &issues)
+        guard let email, let password, issues.isEmpty else {
+            return Self.registerInvalid(issues)
+        }
+        if capability != nil {
+            let stagingEmail = email.wholeMatch(of: /(?i).*@mail\.build/) != nil
+            if releaseBranch != "staging" || !stagingEmail {
+                return Self.json(403, "{\"error\":\"Staging self-account registration is unavailable\"}")
+            }
+        }
+        if let name = object["name"] as? String, Self.isReservedAgentName(name) {
+            return Self.json(400, "{\"error\":\"This username is reserved. Choose another name.\"}")
+        }
+        if object["acceptTerms"] as? Bool != true {
+            return Self.legalRequired
+        }
+        let terms = object["termsVersion"] as? String
+        let privacy = object["privacyVersion"] as? String
+        if terms != Self.termsVersion || privacy != Self.privacyVersion {
+            return Self.termsChanged
+        }
+
+        let normalized = Self.normalize(email)
+        let source = (object["legalAcceptanceSource"] as? String) == "invite" ? "invite" : "signup"
+        let requestedName = (object["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        lock.lock()
+        if accounts[normalized] != nil {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"Email already registered\"}")
+        }
+        let taken = Set(accounts.values.map(\.name))
+        let pendingName = Self.pendingHandle(taken: taken)
+        let suggested = Self.availableUserName(
+            seed: (requestedName?.isEmpty == false ? requestedName! : String(normalized.split(separator: "@").first ?? "user")),
+            taken: taken
+        )
+        let id = UUID().uuidString.lowercased()
+        accounts[normalized] = Account(
+            id: id,
+            email: normalized,
+            passwordHash: Self.sha256(password),
+            displayLanguage: nil,
+            name: pendingName,
+            profileSetupSuggestedHandle: suggested,
+            stagingSelfAccountCapabilityHash: capability.map(Self.sha256)
+        )
+        legalAcceptances[id] = EmailLegalAcceptance(
+            termsVersion: Self.termsVersion,
+            privacyVersion: Self.privacyVersion,
+            termsUrl: Self.termsURL,
+            privacyUrl: Self.privacyURL,
+            source: source,
+            userAgentHash: userAgent.flatMap { $0.isEmpty ? nil : Self.sha256($0) },
+            locale: acceptLanguage
+        )
+        let issued = openSessionLocked(userId: id)
+        emailVerifications += 1
+        lock.unlock()
+        let user = "{\"id\":\(jsonString(id)),\"email\":\(jsonString(normalized)),\"name\":\(jsonString(pendingName)),\"profileSetupCompletedAt\":null,\"profileSetupSuggestedHandle\":\(jsonString(suggested))}"
+        let response = "{\"user\":\(user),\"accessToken\":\(jsonString(issued.accessToken)),\"refreshToken\":\(jsonString(issued.refreshToken))}"
+        return Self.json(200, response)
+    }
+
+    /// `POST /api/auth/staging-self-account/retire`. The caller's access token stays usable after the sessions are revoked.
+    public func retireStagingSelfAccount(body: String, authorization: String?) -> HTTPReply {
+        guard let actorId = retirementActor(authorization) else { return Self.invalidToken }
+        if releaseBranch != "staging" {
+            return Self.json(404, "{\"error\":\"Not found\"}")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        let userId = object?["userId"] as? String ?? ""
+        let capability = object?["capability"] as? String ?? ""
+        if userId != actorId {
+            return Self.json(403, "{\"error\":\"User ownership mismatch\"}")
+        }
+        if capability.isEmpty {
+            return Self.json(403, "{\"error\":\"Invalid retirement capability\"}")
+        }
+        guard userId.wholeMatch(of: /(?i)[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/) != nil else {
+            return Self.json(404, "{\"error\":\"User not found\"}")
+        }
+        lock.lock()
+        guard let key = accounts.first(where: { $0.value.id == userId })?.key, var account = accounts[key] else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"User not found\"}")
+        }
+        if !account.emailVerified || account.email.wholeMatch(of: /(?i).*@mail\.build/) == nil {
+            lock.unlock()
+            return Self.json(403, "{\"error\":\"Unsupported account\"}")
+        }
+        if account.stagingSelfAccountCapabilityHash == nil || account.stagingSelfAccountCapabilityHash != Self.sha256(capability) {
+            lock.unlock()
+            return Self.json(403, "{\"error\":\"Invalid retirement capability\"}")
+        }
+        if account.retiredAt != nil {
+            let receipt = retirementReceipts[userId]
+            lock.unlock()
+            guard let receipt else { return Self.json(500, "{\"error\":\"Retirement receipt unavailable\"}") }
+            return Self.retirementJSON(receipt)
+        }
+        let now = Date()
+        account.retiredAt = now
+        accounts[key] = account
+        let live = sessions.filter { $0.value.userId == userId }
+        for (token, session) in live {
+            sessions.removeValue(forKey: token)
+            revokedFamilies.insert(session.familyId)
+        }
+        let familyIds = sessionFamilies.compactMap { $0.value.userId == userId ? $0.key : nil }
+        for familyId in familyIds {
+            revokedFamilies.insert(familyId)
+            if sessionFamilies[familyId]?.revokedAt == nil {
+                sessionFamilies[familyId]?.revokedAt = now
+            }
+        }
+        let receipt = RetirementReceipt(
+            userId: userId,
+            actorUserId: actorId,
+            environment: "staging",
+            terminalState: "retired",
+            sessionsRevoked: live.count
+        )
+        retirementReceipts[userId] = receipt
+        lock.unlock()
+        return Self.retirementJSON(receipt)
+    }
+
+    /// `POST /api/auth/device/authorize`. The surface is on unless the gate is an explicit off value.
+    public func authorizeDevice(body: String) -> HTTPReply {
+        if let disabled = deviceSurfaceDisabled() { return disabled }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+        var clientName: String?
+        if object.keys.contains("clientName"), !(object["clientName"] is NSNull) {
+            guard let name = object["clientName"] as? String, name.count <= 200 else {
+                return Self.json(400, "{\"error\":\"clientName must be a string up to 200 chars\",\"code\":\"client_name_invalid\"}")
+            }
+            clientName = name
+        }
+        let userCode = makeUserCode()
+        let deviceCode = Self.deviceSecret()
+        let expiresAt = Date(timeIntervalSinceNow: 600)
+        lock.lock()
+        deviceGrants[deviceCode] = DeviceGrant(
+            deviceCode: deviceCode,
+            userCode: userCode,
+            status: "pending",
+            approvedByUserId: nil,
+            expiresAt: expiresAt,
+            clientName: clientName
+        )
+        deviceUserCodes[userCode] = deviceCode
+        lock.unlock()
+        guard let verification = deviceVerification(userCode: userCode) else {
+            return Self.json(503, "{\"error\":\"Device login URL is not configured\",\"code\":\"DEVICE_LOGIN_URL_UNAVAILABLE\"}")
+        }
+        let response = "{\"deviceCode\":\(jsonString(deviceCode)),\"userCode\":\(jsonString(userCode)),\"verificationUri\":\(jsonString(verification.uri)),\"verificationUriComplete\":\(jsonString(verification.complete)),\"expiresIn\":600,\"interval\":5}"
+        return Self.json(201, response)
+    }
+
+    /// `POST /api/auth/device/approve`. Only the signed-in user can approve or deny a code.
+    public func approveDevice(body: String, authorization: String?) -> HTTPReply {
+        if let disabled = deviceSurfaceDisabled() { return disabled }
+        let actor: String
+        switch authorize(authorization) {
+        case .rejected(let reply):
+            return reply
+        case .user(let id):
+            actor = id
+        }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+        guard let rawCode = object["userCode"] as? String, !rawCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return Self.json(400, "{\"error\":\"userCode is required\",\"code\":\"user_code_required\"}")
+        }
+        let approve = object["approve"] == nil ? true : (object["approve"] as? Bool == true)
+        let normalized = rawCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        lock.lock()
+        guard let deviceCode = deviceUserCodes[normalized], var grant = deviceGrants[deviceCode] else {
+            lock.unlock()
+            return Self.deviceUpdateFailed("user_code_invalid", status: 404)
+        }
+        if grant.status != "pending" {
+            lock.unlock()
+            return Self.deviceUpdateFailed("already_resolved", status: 409)
+        }
+        if grant.expiresAt <= Date() {
+            lock.unlock()
+            return Self.deviceUpdateFailed("expired", status: 410)
+        }
+        if approve {
+            grant.status = "approved"
+            grant.approvedByUserId = actor
+        } else {
+            grant.status = "denied"
+            grant.approvedByUserId = nil
+        }
+        deviceGrants[deviceCode] = grant
+        lock.unlock()
+        let action = approve ? "approved" : "denied"
+        return Self.json(200, "{\"ok\":true,\"action\":\(jsonString(action))}")
+    }
+
+    /// `POST /api/auth/device/token`. A pending grant stays pending. Approval issues one session, then the code is spent.
+    public func pollDeviceToken(body: String) -> HTTPReply {
+        if let disabled = deviceSurfaceDisabled() { return disabled }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+        guard let deviceCode = object["deviceCode"] as? String, !deviceCode.isEmpty else {
+            return Self.json(400, "{\"error\":\"deviceCode is required\",\"code\":\"device_code_required\"}")
+        }
+        lock.lock()
+        guard var grant = deviceGrants[deviceCode] else {
+            lock.unlock()
+            return Self.deviceNotReady("device_code_invalid", status: 400)
+        }
+        if grant.status == "consumed" {
+            lock.unlock()
+            return Self.deviceNotReady("device_code_consumed", status: 410)
+        }
+        if grant.expiresAt <= Date() {
+            lock.unlock()
+            return Self.deviceNotReady("expired_token", status: 410)
+        }
+        if grant.status == "denied" {
+            lock.unlock()
+            return Self.deviceNotReady("access_denied", status: 403)
+        }
+        guard grant.status == "approved", let userId = grant.approvedByUserId else {
+            lock.unlock()
+            return Self.deviceNotReady("authorization_pending", status: 400)
+        }
+        grant.status = "consumed"
+        deviceGrants[deviceCode] = grant
+        let issued = openSessionLocked(userId: userId)
+        lock.unlock()
+        let response = "{\"accessToken\":\(jsonString(issued.accessToken)),\"refreshToken\":\(jsonString(issued.refreshToken)),\"userId\":\(jsonString(userId))}"
+        return Self.json(200, response)
+    }
+
+    /// `POST /api/auth/refresh`. A matching attempt and installation replay the same successor.
+    public func refresh(body: String, attemptHeader: String?, installationHeader: String?) -> HTTPReply {
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let refreshToken = object["refreshToken"] as? String, !refreshToken.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"Refresh token is required\"}")
+        }
+        let attempt = Self.refreshAttempt(attemptHeader)
+        let installation = Self.refreshInstallation(installationHeader)
+        if installationHeader != nil, attempt == nil || installation == nil {
+            return Self.json(400, "{\"error\":\"Invalid refresh replay binding\"}")
+        }
+        lock.lock()
+        let outcome = refreshLocked(
+            refreshToken: refreshToken,
+            attemptId: attempt,
+            installationId: installation
+        )
+        lock.unlock()
+        switch outcome {
+        case .rejected:
+            return Self.json(401, "{\"error\":\"Invalid or expired refresh token\"}")
+        case .rotated(let userId, let successor):
+            return Self.json(200, "{\"accessToken\":\(jsonString(userId.accessToken)),\"refreshToken\":\(jsonString(successor))}")
+        }
+    }
+
+    public func refreshRotationReceipts() -> [RefreshRotationReceipt] {
+        lock.lock()
+        defer { lock.unlock() }
+        return rotationReceipts.values.map {
+            RefreshRotationReceipt(
+                attemptId: $0.attemptId,
+                installationId: $0.installationId,
+                successorTokenCiphertext: $0.ciphertext
+            )
+        }
+    }
+
+    public func expireRefreshReceipts() {
+        lock.lock()
+        for key in rotationReceipts.keys {
+            rotationReceipts[key]?.expiresAt = Date(timeIntervalSinceNow: -1)
+        }
+        lock.unlock()
+    }
+
+    /// Moves one mobile OAuth request's expiry into the past. Completion then reports `handoff_code_expired`.
+    public func expireMobileOAuthRequest(id: String) {
+        lock.lock()
+        mobileRequests[id]?.expiresAt = Date(timeIntervalSinceNow: -1)
+        lock.unlock()
+    }
+
+    /// `POST /api/auth/logout`. Revoking the predecessor's family blocks a later replay.
+    public func logout(body: String) -> HTTPReply {
+        if let data = body.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let refreshToken = object["refreshToken"] as? String, !refreshToken.isEmpty {
+            lock.lock()
+            if let live = sessions.removeValue(forKey: refreshToken) {
+                revokedFamilies.insert(live.familyId)
+            } else if let receipt = rotationReceipts[Self.sha256(refreshToken)] {
+                revokedFamilies.insert(receipt.familyId)
+            }
+            lock.unlock()
+        }
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    public var providerExchangeCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return providerExchanges
+    }
+
+    public func oauthRequestStatus(id: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return mobileRequests[id]?.status
+    }
+
+    public func oauthRequestReturnUri(id: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return mobileRequests[id]?.returnUri
+    }
+
+    public func oauthRequestCodeHash(id: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return mobileRequests[id]?.codeHash
+    }
+
+    public func oauthRequestExpiresAt(id: String) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return mobileRequests[id]?.expiresAt
+    }
+
+    public func oauthRequestProviderUserId(id: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return mobileRequests[id]?.profileUserId
+    }
+
+    public func oauthRequestProviderEmail(id: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return mobileRequests[id]?.profileEmail
+    }
+
+    public func isEmailVerified(userId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return accounts.values.first { $0.id == userId }?.emailVerified ?? false
+    }
+
+    /// The Node fixture marks a row verified without an HTTP call. Retirement refuses an unverified account.
+    public func markEmailVerified(userId: String) {
+        lock.lock()
+        if let key = accounts.first(where: { $0.value.id == userId })?.key {
+            accounts[key]?.emailVerified = true
+        }
+        lock.unlock()
+    }
+
+    public func stagingSelfAccountCapabilityHash(userId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return accounts.values.first { $0.id == userId }?.stagingSelfAccountCapabilityHash
+    }
+
+    public func retiredAt(userId: String) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return accounts.values.first { $0.id == userId }?.retiredAt
+    }
+
+    public var retirementReceiptCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return retirementReceipts.count
+    }
+
+    public func sessionCount(for userId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return sessions.values.filter { $0.userId == userId }.count
+    }
+
+    public func sessionFamilyRevokedAts(userId: String) -> [Date?] {
+        lock.lock()
+        defer { lock.unlock() }
+        return sessionFamilies.values.filter { $0.userId == userId }.map(\.revokedAt)
+    }
+
+    public func oauthRequestCodeChallenge(id: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return mobileRequests[id]?.codeChallenge
+    }
+
+    public var mobileOAuthRequestCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return mobileRequests.count
+    }
+
+    /// Adds platform allow rules for Apple sign-in. An empty set leaves Apple disabled on every platform.
+    public func allowAppleLogin(on platforms: [String]) {
+        lock.lock()
+        appleLoginPlatforms.formUnion(platforms)
+        lock.unlock()
+    }
+
+    /// `GET /api/auth/providers`. A missing platform is web. Anything other than web or mobile is refused first.
+    public func authProviders(platform raw: String?) -> HTTPReply {
+        let platform = raw ?? "web"
+        guard platform == "web" || platform == "mobile" else {
+            return Self.json(400, "{\"code\":\"platform_invalid\",\"error\":\"platform must be web or mobile\"}")
+        }
+        lock.lock()
+        let configured = configuredSocialAuthProviders
+        let allowed = appleLoginPlatforms
+        lock.unlock()
+        let providers: [(id: String, label: String)] = [
+            ("google", "Google"),
+            ("github", "GitHub"),
+            ("apple", "Apple"),
+        ]
+        let listed = providers.map { provider in
+            let enabled = configured.contains(provider.id) && (provider.id != "apple" || allowed.contains(platform))
+            return "{\"id\":\(jsonString(provider.id)),\"label\":\(jsonString(provider.label)),\"enabled\":\(enabled ? "true" : "false")}"
+        }.joined(separator: ",")
+        return Self.json(200, "{\"providers\":[\(listed)]}")
+    }
+
+    /// `POST /api/auth/mobile/oauth/start`. The desktop nonce is taken from the loopback return URI.
+    public func startMobileOAuth(body: String) -> HTTPReply {
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return Self.json(400, "{\"error\":\"Invalid mobile OAuth start\"}")
+        }
+        guard let returnUri = object["returnUri"] as? String,
+              Self.isDesktopLoopback(returnUri) || configuredMobileReturnURIs().contains(returnUri)
+        else {
+            return Self.returnURINotAllowed
+        }
+        guard let provider = object["provider"] as? String,
+              Self.socialProviders.contains(provider),
+              let mode = object["mode"] as? String, mode == "login" || mode == "link",
+              let challenge = object["codeChallenge"] as? String,
+              challenge.wholeMatch(of: /^[A-Za-z0-9_-]{32,256}$/) != nil
+        else {
+            return Self.json(400, "{\"error\":\"Invalid mobile OAuth start\"}")
+        }
+        if provider == "apple", !mobileAppleAvailable() {
+            return Self.appleNotConfigured
+        }
+        return openedMobileOAuth(provider: provider, mode: mode, returnUri: returnUri, challenge: challenge, userId: nil)
+    }
+
+    /// `GET /api/auth/:provider/start`. Apple stays closed until its web platform rule is allowed.
+    public func startWebOAuth(provider: String, returnTo: String?) -> HTTPReply {
+        guard Self.socialProviders.contains(provider) else {
+            return Self.json(404, "{\"error\":\"Not found\"}")
+        }
+        guard webProviderAvailable(provider) else {
+            return Self.json(404, "{\"error\":\"\(Self.providerLabel(provider)) sign-in is not configured\"}")
+        }
+        let nonce = Self.randomHex(16)
+        let safeReturn = Self.sanitizeReturnTo(returnTo)
+        let state = Self.signSocialAuthState(SocialAuthState(
+            provider: provider,
+            mode: "login",
+            nonce: nonce,
+            kind: "web",
+            mobileRequestId: "",
+            desktopNonce: nil,
+            returnTo: safeReturn
+        ))
+        let url = webAuthorizationURL(provider: provider, state: state, nonce: nonce)
+        return Self.redirect(url, cookie: stateCookie(provider: provider, nonce: nonce))
+    }
+
+    /// `POST /api/auth/:provider/link/start`. The bearer is required before the web gate is checked.
+    public func startWebOAuthLink(provider: String, body: String, authorization: String?) -> HTTPReply {
+        guard Self.socialProviders.contains(provider) else {
+            return Self.json(404, "{\"error\":\"Not found\"}")
+        }
+        let userId: String
+        switch authorize(authorization) {
+        case .rejected(let reply):
+            return reply
+        case .user(let id):
+            userId = id
+        }
+        guard webProviderAvailable(provider) else {
+            return Self.json(404, "{\"error\":\"\(Self.providerLabel(provider)) sign-in is not configured\"}")
+        }
+        let returnTo = Self.returnToField(body)
+        let nonce = Self.randomHex(16)
+        let safeReturn = Self.sanitizeReturnTo(returnTo)
+        let state = Self.signSocialAuthState(SocialAuthState(
+            provider: provider,
+            mode: "link",
+            nonce: nonce,
+            kind: "web",
+            mobileRequestId: "",
+            desktopNonce: nil,
+            returnTo: safeReturn,
+            linkUserId: userId
+        ))
+        let url = webAuthorizationURL(provider: provider, state: state, nonce: nonce)
+        let payload = "{\"url\":\(jsonString(url))}"
+        return Self.json(200, payload, cookie: stateCookie(provider: provider, nonce: nonce))
+    }
+
+    /// `POST /api/auth/:provider/callback`. A cancelled Apple form post redirects back with that error.
+    public func webOAuthCallback(provider: String, body: String, cookie: String?) -> HTTPReply {
+        guard Self.socialProviders.contains(provider) else {
+            return Self.json(404, "{\"error\":\"Not found\"}")
+        }
+        let fields = Self.formFields(body)
+        if let stateToken = fields["state"],
+           let parsed = Self.verifySocialAuthState(stateToken),
+           parsed.kind == "mobile" {
+            return mobileOAuthCallback(
+                provider: provider,
+                code: fields["code"],
+                state: stateToken,
+                providerError: fields["error"]
+            )
+        }
+        let invalid = Self.socialCallbackURL(
+            appURL: appURL,
+            provider: provider,
+            mode: "login",
+            returnTo: "/",
+            error: "This sign-in link is invalid or expired. Please try again."
+        )
+        guard let stateToken = fields["state"],
+              let state = Self.verifySocialAuthState(stateToken),
+              state.kind != "mobile",
+              state.provider == provider,
+              state.mode == "login" || state.mode == "link"
+        else {
+            return Self.redirect(invalid)
+        }
+        if state.mode == "login" {
+            let nonce = Self.cookieValue(cookie, name: "slock_\(provider)_oauth_nonce")
+            if nonce != state.nonce {
+                return Self.redirect(invalid)
+            }
+        }
+        let code = fields["code"] ?? ""
+        if code.isEmpty {
+            let provided = fields["error"] ?? ""
+            let error = provided.isEmpty ? "\(Self.providerLabel(provider)) sign-in was cancelled" : provided
+            return Self.redirect(Self.socialCallbackURL(
+                appURL: appURL,
+                provider: provider,
+                mode: state.mode,
+                returnTo: state.returnTo ?? "/",
+                error: error
+            ))
+        }
+        guard state.mode == "link",
+              let linkUserId = state.linkUserId,
+              let profile = webProviderProfile,
+              !profile.providerUserId.isEmpty,
+              !profile.email.isEmpty
+        else {
+            return Self.redirect(invalid)
+        }
+        if !profile.emailVerified {
+            return Self.redirect(Self.socialCallbackURL(
+                appURL: appURL,
+                provider: provider,
+                mode: state.mode,
+                returnTo: state.returnTo ?? "/",
+                error: "\(provider) account email is not verified"
+            ))
+        }
+        let completionCode = Self.randomHex(32)
+        lock.lock()
+        socialCompletions.append(SocialCompletion(
+            provider: provider,
+            code: completionCode,
+            mode: "link",
+            intendedAction: "link",
+            email: Self.normalize(profile.email),
+            returnTo: state.returnTo ?? "/",
+            userId: linkUserId,
+            providerUserId: profile.providerUserId
+        ))
+        lock.unlock()
+        return Self.redirect(Self.socialCallbackURL(
+            appURL: appURL,
+            provider: provider,
+            mode: "link",
+            returnTo: state.returnTo ?? "/",
+            code: completionCode
+        ))
+    }
+
+    /// `POST /api/auth/mobile/oauth/apple/native/start`. No browser URL is returned. Link mode requires the owner before a row is written.
+    public func startNativeApple(body: String, authorization: String? = nil) -> HTTPReply {
+        guard nativeAppleAvailable() else { return Self.appleNotConfigured }
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return Self.nativeAppleInvalidRequest
+        }
+        let platform = object["platform"] as? String
+        let appEnv = (object["appEnv"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard platform == "ios", !appEnv.isEmpty else { return Self.nativeAppleInvalidRequest }
+        guard object["codeChallengeMethod"] as? String == "S256" else {
+            return Self.json(400, "{\"code\":\"invalid_request\",\"error\":\"Native Apple sign-in requires an S256 challenge\"}")
+        }
+        guard let mode = object["mode"] as? String, mode == "login" || mode == "link" else {
+            return Self.nativeAppleInvalidCredential
+        }
+        let linkUserId: String?
+        if mode == "link" {
+            switch authorize(authorization) {
+            case .rejected:
+                return Self.nativeAppleAuthRequired
+            case .user(let id):
+                linkUserId = id
+            }
+        } else {
+            linkUserId = nil
+        }
+        guard let returnUri = object["returnUri"] as? String,
+              Self.isDesktopLoopback(returnUri) || configuredMobileReturnURIs().contains(returnUri),
+              let challenge = object["codeChallenge"] as? String,
+              challenge.wholeMatch(of: /^[A-Za-z0-9_-]{32,256}$/) != nil
+        else {
+            return Self.nativeAppleInvalidCredential
+        }
+        let id = UUID().uuidString.lowercased()
+        let expiresAt = Date(timeIntervalSinceNow: 600)
+        lock.lock()
+        mobileRequests[id] = MobileOAuthRequest(
+            id: id,
+            provider: "apple",
+            mode: mode,
+            status: "pending_provider",
+            codeChallenge: challenge,
+            returnUri: returnUri,
+            nonce: "",
+            expiresAt: expiresAt,
+            userId: linkUserId
+        )
+        lock.unlock()
+        let token = Self.signNativeAppleRequestToken(
+            secret: nativeAppleStateSecret,
+            requestId: id,
+            mode: mode,
+            codeChallenge: challenge,
+            expiresAt: expiresAt,
+            userId: linkUserId
+        )
+        let expires = ISO8601DateFormatter().string(from: expiresAt)
+        let response = "{\"requestId\":\(jsonString(id)),\"requestToken\":\(jsonString(token)),\"returnUri\":\(jsonString(returnUri)),\"expiresAt\":\(jsonString(expires))}"
+        return Self.json(201, response)
+    }
+
+    /// `POST /api/auth/mobile/oauth/apple/native/authorize`. Both the supplied identity token and the exchanged code must agree before a handoff exists.
+    /// Link mode checks the owner before the row is claimed. The row is claimed as `provider_processing` before the code exchange, so a second caller is already consumed.
+    public func authorizeNativeApple(body: String, authorization: String? = nil) async -> HTTPReply {
+        guard nativeAppleAvailable() else { return Self.appleNotConfigured }
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let requestId = object["requestId"] as? String, !requestId.isEmpty,
+              let requestToken = object["requestToken"] as? String, !requestToken.isEmpty,
+              let authorizationCode = object["authorizationCode"] as? String, !authorizationCode.isEmpty,
+              let identityToken = object["identityToken"] as? String, !identityToken.isEmpty
+        else {
+            return Self.nativeAppleInvalidCredential
+        }
+        let claims: NativeAppleRequestClaims
+        switch Self.verifyNativeAppleRequestToken(requestToken, secret: nativeAppleStateSecret) {
+        case .expired:
+            return Self.nativeAppleRequestExpired
+        case .invalid:
+            return Self.nativeAppleInvalidCredential
+        case .valid(let parsed):
+            claims = parsed
+        }
+        guard claims.requestId == requestId else { return Self.nativeAppleInvalidCredential }
+        let callerId: String?
+        if case .user(let id) = authorize(authorization) {
+            callerId = id
+        } else {
+            callerId = nil
+        }
+        let challenge: String
+        switch claimNativeApple(
+            requestId: requestId,
+            mode: claims.mode,
+            codeChallenge: claims.codeChallenge,
+            tokenUserId: claims.userId,
+            callerId: callerId
+        ) {
+        case .missing:
+            return Self.nativeAppleInvalidCredential
+        case .authRequired:
+            return Self.nativeAppleAuthRequired
+        case .userMismatch:
+            return Self.nativeAppleLinkMismatch
+        case .expired:
+            return Self.nativeAppleRequestExpired
+        case .consumed:
+            return Self.nativeAppleRequestConsumed
+        case .claimed(let storedChallenge):
+            challenge = storedChallenge
+        }
+
+        let exchange = NativeAppleCodeExchange(
+            code: authorizationCode,
+            clientId: nativeAppleClientId,
+            clientSecret: nativeAppleClientSecret,
+            grantType: "authorization_code",
+            redirectUri: nil
+        )
+        let exchangedToken = await exchangeNativeAppleCode?(exchange)
+        guard let exchangedToken, !exchangedToken.isEmpty,
+              let supplied = parseAppleIdentity(identityToken),
+              let exchanged = parseAppleIdentity(exchangedToken),
+              supplied.subject == exchanged.subject,
+              supplied.nonce == challenge,
+              exchanged.nonce == challenge
+        else {
+            failNativeAppleIfProcessing(requestId: requestId)
+            return Self.nativeAppleInvalidCredential
+        }
+        if let left = supplied.email, let right = exchanged.email, left != right {
+            failNativeAppleIfProcessing(requestId: requestId)
+            return Self.nativeAppleInvalidCredential
+        }
+        let stored = storedAppleIdentity(subject: supplied.subject)
+        guard let email = supplied.email ?? exchanged.email ?? stored?.email else {
+            failNativeAppleIfProcessing(requestId: requestId)
+            return Self.nativeAppleInvalidCredential
+        }
+        let loginUserId = claims.mode == "login" ? stored?.userId : nil
+        guard let completed = finishNativeApple(
+            requestId: requestId,
+            email: email,
+            subject: supplied.subject,
+            loginUserId: loginUserId
+        ) else {
+            failNativeAppleIfProcessing(requestId: requestId)
+            return Self.nativeAppleInvalidCredential
+        }
+        let response = "{\"requestId\":\(jsonString(requestId)),\"handoffCode\":\(jsonString(completed.handoff)),\"provider\":\"apple\",\"mode\":\(jsonString(completed.mode))}"
+        return Self.json(200, response)
+    }
+
+    private enum NativeAppleClaim {
+        case missing
+        case authRequired
+        case userMismatch
+        case expired
+        case consumed
+        case claimed(String)
+    }
+
+    /// Moves `pending_provider` to `provider_processing` before any Apple call. A past row expiry and a link-owner mismatch are decided before that claim.
+    private func claimNativeApple(
+        requestId: String,
+        mode: String,
+        codeChallenge: String,
+        tokenUserId: String?,
+        callerId: String?
+    ) -> NativeAppleClaim {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var request = mobileRequests[requestId],
+              request.provider == "apple",
+              request.mode == mode,
+              request.codeChallenge == codeChallenge,
+              request.userId == tokenUserId
+        else { return .missing }
+        if request.mode == "link" {
+            guard let callerId else { return .authRequired }
+            guard request.userId == callerId else { return .userMismatch }
+        }
+        if request.expiresAt < Date() {
+            request.status = "expired"
+            mobileRequests[requestId] = request
+            return .expired
+        }
+        guard request.status == "pending_provider" else { return .consumed }
+        request.status = "provider_processing"
+        mobileRequests[requestId] = request
+        return .claimed(request.codeChallenge)
+    }
+
+    /// A previously linked Apple subject can supply the verified email Apple omits on a later login.
+    private func storedAppleIdentity(subject: String) -> (userId: String, email: String)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let row = linkedIdentities.first(where: { $0.provider == "apple" && $0.providerUserId == subject }) else {
+            return nil
+        }
+        let email = row.providerEmail?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        guard !email.isEmpty else { return nil }
+        return (row.userId, email)
+    }
+
+    private func failNativeAppleIfProcessing(requestId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var request = mobileRequests[requestId], request.status == "provider_processing" else { return }
+        request.status = "failed"
+        mobileRequests[requestId] = request
+    }
+
+    private func finishNativeApple(requestId: String, email: String, subject: String, loginUserId: String?) -> (handoff: String, mode: String)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var request = mobileRequests[requestId], request.status == "provider_processing" else { return nil }
+        let handoff = Self.randomHex(32)
+        request.status = "provider_completed"
+        request.handoffCode = handoff
+        request.codeHash = Self.sha256(handoff)
+        request.profileEmail = email
+        request.profileUserId = subject
+        if request.mode == "login" {
+            request.userId = loginUserId
+        }
+        let mode = request.mode
+        mobileRequests[requestId] = request
+        return (handoff, mode)
+    }
+
+    /// `POST /api/auth/mobile/oauth/:provider/link/start`. The bearer is required before a request row is written.
+    public func startMobileOAuthLink(provider: String, body: String, authorization: String?) -> HTTPReply {
+        guard Self.socialProviders.contains(provider) else {
+            return Self.json(404, "{\"error\":\"Not found\"}")
+        }
+        let userId: String
+        switch authorize(authorization) {
+        case .rejected(let reply):
+            return reply
+        case .user(let id):
+            userId = id
+        }
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return Self.json(400, "{\"error\":\"Invalid mobile OAuth start\"}")
+        }
+        guard let returnUri = object["returnUri"] as? String,
+              Self.isDesktopLoopback(returnUri) || configuredMobileReturnURIs().contains(returnUri)
+        else {
+            return Self.returnURINotAllowed
+        }
+        guard let challenge = object["codeChallenge"] as? String,
+              challenge.wholeMatch(of: /^[A-Za-z0-9_-]{32,256}$/) != nil
+        else {
+            return Self.json(400, "{\"error\":\"Invalid mobile OAuth start\"}")
+        }
+        return openedMobileOAuth(provider: provider, mode: "link", returnUri: returnUri, challenge: challenge, userId: userId)
+    }
+
+    private func openedMobileOAuth(provider: String, mode: String, returnUri: String, challenge: String, userId: String?) -> HTTPReply {
+        let id = UUID().uuidString.lowercased()
+        let nonce = Self.randomHex(16)
+        let desktopNonce = Self.desktopNonce(from: returnUri)
+        lock.lock()
+        mobileRequests[id] = MobileOAuthRequest(
+            id: id,
+            provider: provider,
+            mode: mode,
+            status: "pending_provider",
+            codeChallenge: challenge,
+            returnUri: returnUri,
+            nonce: nonce,
+            expiresAt: Date(timeIntervalSinceNow: 600),
+            userId: userId
+        )
+        lock.unlock()
+        let state = Self.signSocialAuthState(SocialAuthState(
+            provider: provider,
+            mode: mode,
+            nonce: nonce,
+            kind: "mobile",
+            mobileRequestId: id,
+            desktopNonce: desktopNonce
+        ))
+        let authorizationUrl = Self.authorizationURL(provider: provider, state: state)
+        let expires = ISO8601DateFormatter().string(from: Date(timeIntervalSinceNow: 600))
+        let response = "{\"requestId\":\(jsonString(id)),\"authorizationUrl\":\(jsonString(authorizationUrl)),\"returnUri\":\(jsonString(returnUri)),\"expiresAt\":\(jsonString(expires))}"
+        return Self.json(201, response)
+    }
+
+    /// `GET /api/auth/:provider/callback`. A desktop nonce that does not match the stored return URI is refused before any provider exchange.
+    public func mobileOAuthCallback(provider: String, code: String?, state: String?, providerError: String? = nil) -> HTTPReply {
+        guard let state, let parsed = Self.verifySocialAuthState(state),
+              parsed.kind == "mobile", parsed.provider == provider
+        else {
+            return Self.text(400, "Invalid mobile OAuth request")
+        }
+        lock.lock()
+        guard var request = mobileRequests[parsed.mobileRequestId],
+              request.provider == provider,
+              request.mode == parsed.mode,
+              !request.codeChallenge.isEmpty
+        else {
+            lock.unlock()
+            return Self.text(400, "Invalid mobile OAuth request")
+        }
+        let expected = Self.desktopNonce(from: request.returnUri)
+        if expected != parsed.desktopNonce {
+            lock.unlock()
+            return Self.text(400, "Invalid mobile OAuth request")
+        }
+        if code == nil || code?.isEmpty == true {
+            let error = (providerError?.isEmpty == false) ? providerError! : "provider_cancelled"
+            request.status = "failed"
+            let returnUri = request.returnUri
+            let mode = request.mode
+            mobileRequests[parsed.mobileRequestId] = request
+            lock.unlock()
+            return Self.redirect(Self.failureLocation(returnUri: returnUri, provider: provider, mode: mode, error: error))
+        }
+        guard let profile = mobileProviderProfile, profile.emailVerified else {
+            request.status = "failed"
+            let returnUri = request.returnUri
+            let mode = request.mode
+            mobileRequests[parsed.mobileRequestId] = request
+            lock.unlock()
+            return Self.redirect(Self.failureLocation(
+                returnUri: returnUri,
+                provider: provider,
+                mode: mode,
+                error: "provider_exchange_failed"
+            ))
+        }
+        providerExchanges += 1
+        let handoff = Self.randomHex(32)
+        request.status = "provider_completed"
+        request.handoffCode = handoff
+        request.codeHash = Self.sha256(handoff)
+        request.profileEmail = Self.normalize(profile.email)
+        request.profileUserId = profile.providerUserId
+        request.profileName = profile.displayName
+        let returnUri = request.returnUri
+        let mode = request.mode
+        mobileRequests[parsed.mobileRequestId] = request
+        lock.unlock()
+        return Self.redirect(Self.loopbackLocation(returnUri: returnUri, provider: provider, mode: mode, code: handoff))
+    }
+
+    /// `POST /api/auth/mobile/oauth/complete`. The handoff code is spent only after the PKCE verifier matches.
+    public func completeMobileOAuth(body: String) -> HTTPReply {
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let code = object["code"] as? String, !code.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"Invalid mobile OAuth completion\"}")
+        }
+        lock.lock()
+        if consumedHandoffs.contains(code) {
+            lock.unlock()
+            return Self.json(410, "{\"code\":\"handoff_code_consumed\"}")
+        }
+        guard let requestId = mobileRequests.first(where: { $0.value.handoffCode == code })?.key,
+              var request = mobileRequests[requestId],
+              request.status == "provider_completed"
+        else {
+            lock.unlock()
+            return Self.json(400, "{\"error\":\"Invalid mobile OAuth completion\"}")
+        }
+        if request.expiresAt < Date() {
+            request.status = "expired"
+            mobileRequests[requestId] = request
+            lock.unlock()
+            return Self.json(410, "{\"code\":\"handoff_code_expired\",\"error\":\"Mobile OAuth code has expired\"}")
+        }
+        let verifier = object["codeVerifier"] as? String ?? ""
+        if verifier.isEmpty {
+            lock.unlock()
+            return Self.json(400, "{\"error\":\"Invalid mobile OAuth completion\"}")
+        }
+        if Self.pkceS256(verifier) != request.codeChallenge {
+            request.status = "failed"
+            mobileRequests[requestId] = request
+            lock.unlock()
+            return Self.json(400, "{\"code\":\"pkce_mismatch\",\"error\":\"PKCE verifier did not match the OAuth request\"}")
+        }
+        if request.mode == "login", let existingId = request.userId {
+            guard let account = accounts.values.first(where: { $0.id == existingId }) else {
+                lock.unlock()
+                return Self.json(400, "{\"error\":\"Invalid mobile OAuth completion\"}")
+            }
+            let accessToken = Self.token()
+            let refreshToken = Self.token()
+            sessions[refreshToken] = LiveSession(userId: account.id, familyId: UUID().uuidString.lowercased())
+            accessTokens[accessToken] = account.id
+            request.status = "completed"
+            request.handoffCode = nil
+            mobileRequests[requestId] = request
+            consumedHandoffs.insert(code)
+            let returnUri = request.returnUri
+            let mode = request.mode
+            let provider = request.provider
+            lock.unlock()
+            let user = "{\"id\":\(jsonString(account.id)),\"email\":\(jsonString(account.email)),\"name\":\(jsonString(account.name)),\"profileSetupCompletedAt\":null,\"profileSetupProvider\":\(jsonString(provider))}"
+            let response = "{\"user\":\(user),\"accessToken\":\(jsonString(accessToken)),\"refreshToken\":\(jsonString(refreshToken)),\"mode\":\(jsonString(mode)),\"returnUri\":\(jsonString(returnUri))}"
+            return Self.json(200, response)
+        }
+        if object["acceptTerms"] as? Bool != true {
+            lock.unlock()
+            return Self.legalRequired
+        }
+        let terms = object["termsVersion"] as? String
+        let privacy = object["privacyVersion"] as? String
+        if terms != Self.termsVersion || privacy != Self.privacyVersion {
+            lock.unlock()
+            return Self.termsChanged
+        }
+        let email = request.profileEmail ?? ""
+        guard !email.isEmpty else {
+            lock.unlock()
+            return Self.json(400, "{\"error\":\"Invalid mobile OAuth completion\"}")
+        }
+        let taken = Set(accounts.values.map(\.name))
+        let pendingName = Self.pendingHandle(taken: taken)
+        let id = UUID().uuidString.lowercased()
+        accounts[email] = Account(
+            id: id,
+            email: email,
+            passwordHash: Self.sha256(Self.token()),
+            displayLanguage: nil,
+            name: pendingName,
+            profileSetupSuggestedHandle: Self.availableUserName(seed: request.profileName ?? email, taken: taken),
+            profileSetupProvider: request.provider
+        )
+        legalAcceptances[id] = EmailLegalAcceptance(
+            termsVersion: Self.termsVersion,
+            privacyVersion: Self.privacyVersion,
+            termsUrl: Self.termsURL,
+            privacyUrl: Self.privacyURL,
+            source: "oauth",
+            userAgentHash: nil,
+            locale: nil
+        )
+        let accessToken = Self.token()
+        let refreshToken = Self.token()
+        sessions[refreshToken] = LiveSession(userId: id, familyId: UUID().uuidString.lowercased())
+        accessTokens[accessToken] = id
+        let providerUserId = request.profileUserId ?? ""
+        if !providerUserId.isEmpty, !linkedIdentities.contains(where: {
+            $0.userId == id && $0.provider == request.provider && $0.providerUserId == providerUserId
+        }) {
+            linkedIdentities.append(LinkedIdentity(
+                userId: id,
+                provider: request.provider,
+                providerUserId: providerUserId
+            ))
+        }
+        request.status = "completed"
+        request.handoffCode = nil
+        mobileRequests[requestId] = request
+        consumedHandoffs.insert(code)
+        let returnUri = request.returnUri
+        let mode = request.mode
+        let provider = request.provider
+        lock.unlock()
+        let user = "{\"id\":\(jsonString(id)),\"email\":\(jsonString(email)),\"name\":\(jsonString(pendingName)),\"profileSetupCompletedAt\":null,\"profileSetupProvider\":\(jsonString(provider))}"
+        let response = "{\"user\":\(user),\"accessToken\":\(jsonString(accessToken)),\"refreshToken\":\(jsonString(refreshToken)),\"mode\":\(jsonString(mode)),\"returnUri\":\(jsonString(returnUri))}"
+        return Self.json(200, response)
+    }
+
+    /// `POST /api/auth/mobile/oauth/:provider/link/complete`. A different account is refused before the handoff is spent.
+    public func completeMobileOAuthLink(provider: String, body: String, authorization: String?) -> HTTPReply {
+        guard Self.socialProviders.contains(provider) else {
+            return Self.json(404, "{\"error\":\"Not found\"}")
+        }
+        let caller: String
+        switch authorize(authorization) {
+        case .rejected(let reply):
+            return reply
+        case .user(let id):
+            caller = id
+        }
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let code = object["code"] as? String, !code.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"Invalid mobile OAuth completion\"}")
+        }
+        let verifier = object["codeVerifier"] as? String ?? ""
+        lock.lock()
+        if consumedHandoffs.contains(code) {
+            lock.unlock()
+            return Self.json(410, "{\"code\":\"handoff_code_consumed\"}")
+        }
+        guard let requestId = mobileRequests.first(where: { $0.value.handoffCode == code })?.key,
+              var request = mobileRequests[requestId],
+              request.status == "provider_completed"
+        else {
+            lock.unlock()
+            return Self.json(400, "{\"error\":\"Invalid mobile OAuth completion\"}")
+        }
+        if request.expiresAt < Date() {
+            request.status = "expired"
+            mobileRequests[requestId] = request
+            lock.unlock()
+            return Self.json(410, "{\"code\":\"handoff_code_expired\",\"error\":\"Mobile OAuth code has expired\"}")
+        }
+        if verifier.isEmpty {
+            lock.unlock()
+            return Self.json(400, "{\"error\":\"Invalid mobile OAuth completion\"}")
+        }
+        if Self.pkceS256(verifier) != request.codeChallenge {
+            request.status = "failed"
+            mobileRequests[requestId] = request
+            lock.unlock()
+            return Self.json(400, "{\"code\":\"pkce_mismatch\",\"error\":\"PKCE verifier did not match the OAuth request\"}")
+        }
+        if request.provider != provider {
+            lock.unlock()
+            return Self.json(400, "{\"code\":\"provider_mismatch\",\"error\":\"Mobile OAuth code does not match the requested provider\"}")
+        }
+        if request.mode != "link" {
+            lock.unlock()
+            return Self.json(400, "{\"code\":\"mode_mismatch\",\"error\":\"Mobile OAuth code does not match the requested mode\"}")
+        }
+        guard request.userId == caller else {
+            lock.unlock()
+            return Self.mobileLinkMismatch
+        }
+        let providerUserId = request.profileUserId ?? ""
+        let providerEmail = request.profileEmail ?? ""
+        if !linkedIdentities.contains(where: {
+            $0.userId == caller && $0.provider == provider && $0.providerUserId == providerUserId
+        }) {
+            linkedIdentities.append(LinkedIdentity(
+                userId: caller,
+                provider: provider,
+                providerUserId: providerUserId,
+                providerEmail: providerEmail
+            ))
+        }
+        request.status = "completed"
+        request.handoffCode = nil
+        mobileRequests[requestId] = request
+        consumedHandoffs.insert(code)
+        let returnUri = request.returnUri
+        let listed = linkedIdentities.filter { $0.userId == caller }.map {
+            "{\"provider\":\(jsonString($0.provider)),\"providerEmail\":\(jsonString($0.providerEmail ?? ""))}"
+        }.joined(separator: ",")
+        lock.unlock()
+        let response = "{\"provider\":\(jsonString(provider)),\"mode\":\"link\",\"returnUri\":\(jsonString(returnUri)),\"identities\":[\(listed)]}"
+        return Self.json(200, response)
+    }
+
+    /// `POST /api/feature-flags/evaluate`. Admin flag routes are not mounted. An empty key list is rejected before any flag read.
+    public func evaluateFeatureFlags(body: String, authorization: String?) -> HTTPReply {
+        let userId: String
+        switch authorize(authorization) {
+        case .rejected(let reply):
+            return reply
+        case .user(let id):
+            userId = id
+        }
+        guard isEmailVerified(userId: userId) else {
+            return Self.json(403, "{\"error\":\"Email verification required\"}")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+        let rawKeys: [Any]
+        if let keys = object["keys"] as? [Any] {
+            rawKeys = keys
+        } else if let key = object["key"] as? String {
+            rawKeys = [key]
+        } else {
+            rawKeys = []
+        }
+        let parsed = rawKeys.map { Self.featureFlagKey($0) }
+        if parsed.isEmpty || parsed.count > 50 || parsed.contains(where: { $0 == nil }) {
+            return Self.json(400, "{\"error\":\"keys must contain 1-50 valid feature flag keys\"}")
+        }
+        let unique = parsed.compactMap { $0 }.reduce(into: [String]()) { list, key in
+            if !list.contains(key) { list.append(key) }
+        }
+        let evaluations = unique.map {
+            "{\"key\":\(jsonString($0)),\"enabled\":false,\"reason\":\"missing_flag\"}"
+        }.joined(separator: ",")
+        return Self.json(200, "{\"evaluations\":[\(evaluations)]}")
+    }
+
+    /// Records a channel the owner can post in. Resource-reference checks run only after this membership is visible.
+    public func addPostableChannel(serverId: String, channelId: String, memberId: String, kind: String = "channel", parentChannelId: String? = nil, name: String? = nil) {
+        lock.lock()
+        var channel = postableChannels[channelId] ?? PostableChannel(serverId: serverId, memberIds: [])
+        channel.serverId = serverId
+        channel.memberIds.insert(memberId)
+        if channel.kind == "channel" || kind != "channel" {
+            channel.kind = kind
+        }
+        if let parentChannelId {
+            channel.parentChannelId = parentChannelId
+        }
+        if let name {
+            channel.name = name
+        }
+        postableChannels[channelId] = channel
+        lock.unlock()
+    }
+
+    /// Server role used by the hidden human directory. Only `member` is hidden on #all.
+    public func setServerMemberRole(serverId: String, userId: String, role: String) {
+        lock.lock()
+        serverMemberRoles["\(serverId)\n\(userId)"] = role
+        lock.unlock()
+    }
+
+    public func setHideHumansFromMembers(serverId: String, hidden: Bool) {
+        lock.lock()
+        hideHumansFromMembers[serverId] = hidden
+        lock.unlock()
+    }
+
+    /// Links a server's local joint channel to the canonical channel that stores the messages.
+    public func addJointChannelProjection(localChannelId: String, canonicalChannelId: String, serverId: String) {
+        lock.lock()
+        jointProjections.append(JointChannelLink(localChannelId: localChannelId, canonicalChannelId: canonicalChannelId, serverId: serverId))
+        lock.unlock()
+    }
+
+    /// A thread whose messages hang off one parent message. Context short links on the parent channel can land here.
+    public func addThreadChannel(serverId: String, threadChannelId: String, parentChannelId: String, parentMessageId: String, memberId: String) {
+        lock.lock()
+        var channel = postableChannels[threadChannelId] ?? PostableChannel(serverId: serverId, memberIds: [])
+        channel.serverId = serverId
+        channel.memberIds.insert(memberId)
+        channel.kind = "thread"
+        channel.parentChannelId = parentChannelId
+        channel.parentMessageId = parentMessageId
+        postableChannels[threadChannelId] = channel
+        lock.unlock()
+    }
+
+    /// A user-to-user DM. Only the two participants may be notified by a mention.
+    public func addDirectMessage(serverId: String, channelId: String, participantIds: [String], agentId: String? = nil) {
+        lock.lock()
+        postableChannels[channelId] = PostableChannel(serverId: serverId, memberIds: Set(participantIds), kind: "dm", agentId: agentId)
+        lock.unlock()
+    }
+
+    private enum SearchViewer {
+        case user(String)
+        case agent(String)
+    }
+
+    /// A public channel is searchable by anyone on the server. A thread follows its parent, and a deleted parent hides the thread. Archived channels stay searchable.
+    private func messageSearchVisibleLocked(messageChannelId: String, serverId: String?, viewer: SearchViewer) -> Bool {
+        func isMember(_ id: String, _ channel: PostableChannel) -> Bool {
+            switch viewer {
+            case .user(let userId):
+                return channel.memberIds.contains(userId)
+            case .agent(let agentId):
+                return channelAgentMembers[id]?.contains(agentId) == true
+            }
+        }
+        guard let channel = postableChannels[messageChannelId],
+              channel.serverId == serverId,
+              channel.deletedAt == nil
+        else { return false }
+        if channel.kind == "thread" {
+            guard let parentId = channel.parentChannelId,
+                  let parent = postableChannels[parentId],
+                  parent.serverId == serverId,
+                  parent.deletedAt == nil
+            else { return false }
+            return parent.kind == "channel" || isMember(parentId, parent) || isMember(messageChannelId, channel)
+        }
+        return channel.kind == "channel" || isMember(messageChannelId, channel)
+    }
+
+    /// `DELETE /api/channels/:channelId`. A member soft-deletes the channel. Search then hides it and threads under it.
+    public func deleteChannel(channelId: String, authorization: String?, serverId: String?) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        lock.lock()
+        guard var channel = postableChannels[channelId],
+              channel.serverId == serverId,
+              channel.deletedAt == nil,
+              channel.memberIds.contains(userId)
+        else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        channel.deletedAt = Date()
+        postableChannels[channelId] = channel
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    /// `GET /internal/agent/:agentId/search`. The machine key must belong to that agent. Public channels on its server are visible.
+    public func searchAgentMessages(agentId: String, query: String?, limit: String?, authorization: String?) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        let pageLimit: Int
+        if let limit, let parsed = Int(limit), parsed > 0 {
+            pageLimit = min(parsed, 100)
+        } else {
+            pageLimit = 20
+        }
+        let queryTokens = Self.searchTokens((query ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !queryTokens.isEmpty else {
+            return Self.json(200, "{\"results\":[],\"hasMore\":false}")
+        }
+        lock.lock()
+        guard let machine = machineKeys[token], machine.agentId == agentId else {
+            lock.unlock()
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        let serverId = machine.serverId
+        var strict: [(StoredHumanMessage, Int)] = []
+        var relaxed: [(StoredHumanMessage, Int)] = []
+        for message in humanMessageRows where messageSearchVisibleLocked(messageChannelId: message.channelId, serverId: serverId, viewer: .agent(agentId)) {
+            let counts = Self.tokenCounts(message.content)
+            if let score = Self.matchScore(counts, queryTokens, requireAll: true) {
+                strict.append((message, score))
+            } else if queryTokens.count > 1, let score = Self.matchScore(counts, queryTokens, requireAll: false) {
+                relaxed.append((message, score))
+            }
+        }
+        let fallbackUsed = strict.isEmpty && !relaxed.isEmpty
+        var hits = fallbackUsed ? relaxed : strict
+        hits.sort { lhs, rhs in
+            if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+            return lhs.0.createdAt > rhs.0.createdAt
+        }
+        let hasMore = !fallbackUsed && hits.count > pageLimit
+        let page = hits.prefix(pageLimit)
+        let results = page.map { pair in
+            let message = pair.0
+            let channel = postableChannels[message.channelId]
+            let parentId = (channel?.kind == "thread" ? channel?.parentChannelId : nil) ?? message.channelId
+            let snippet = Self.searchSnippet(message.content)
+            return "{\"id\":\(jsonString(message.id)),\"senderId\":\(jsonString(message.senderId)),\"senderType\":\(jsonString(message.senderType)),\"channelId\":\(jsonString(message.channelId)),\"parentChannelId\":\(jsonString(parentId)),\"content\":\(jsonString(message.content)),\"snippet\":\(jsonString(snippet))}"
+        }.joined(separator: ",")
+        lock.unlock()
+        return Self.json(200, "{\"results\":[\(results)],\"hasMore\":\(hasMore ? "true" : "false")}")
+    }
+
+    /// `GET /api/messages/search`. Relevance ranks by how often `q` appears. `sort=recent` uses `createdAt`.
+    public func searchHumanMessages(query: String?, sort: String?, limit: String?, authorization: String?, serverId: String?, channelId: String? = nil, senderId: String? = nil, senderType: String? = nil, mentionTarget: String? = nil) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        let sortMode: String
+        if let sort, !sort.isEmpty {
+            guard sort == "relevance" || sort == "recent" else {
+                return Self.json(400, "{\"error\":\"Invalid search sort\"}")
+            }
+            sortMode = sort
+        } else {
+            sortMode = "relevance"
+        }
+        let needle = (query ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let pageLimit: Int
+        if let limit, let parsed = Int(limit), parsed > 0 {
+            pageLimit = min(parsed, 100)
+        } else {
+            pageLimit = 20
+        }
+        let scopedSenderType: String?
+        if let senderType, !senderType.isEmpty {
+            guard senderType == "user" || senderType == "agent" else {
+                return Self.json(400, "{\"error\":\"Invalid sender type\"}")
+            }
+            scopedSenderType = senderType
+        } else {
+            scopedSenderType = nil
+        }
+        let mentionSelf: Bool
+        if let mentionTarget, !mentionTarget.isEmpty {
+            guard mentionTarget == "self" else {
+                return Self.json(400, "{\"error\":\"Invalid mention target\"}")
+            }
+            mentionSelf = true
+        } else {
+            mentionSelf = false
+        }
+        let queryTokens = Self.searchTokens(needle)
+        let scopedChannel = (channelId?.isEmpty == false) ? channelId : nil
+        let scopedSender = (senderId?.isEmpty == false) ? senderId : nil
+        if queryTokens.isEmpty && scopedChannel == nil && scopedSender == nil && scopedSenderType == nil && !mentionSelf {
+            return Self.json(200, "{\"results\":[],\"hasMore\":false}")
+        }
+        let effectiveSort = queryTokens.isEmpty ? "recent" : sortMode
+        lock.lock()
+        if let scopedChannel {
+            guard let channel = postableChannels[scopedChannel],
+                  channel.serverId == serverId,
+                  channel.deletedAt == nil,
+                  channel.kind == "channel" || channel.memberIds.contains(userId)
+            else {
+                lock.unlock()
+                return Self.json(404, "{\"error\":\"Channel not found\"}")
+            }
+        }
+        func accepts(_ message: StoredHumanMessage) -> Bool {
+            guard messageSearchVisibleLocked(messageChannelId: message.channelId, serverId: serverId, viewer: .user(userId)) else { return false }
+            if let scopedSender, message.senderId != scopedSender { return false }
+            if let scopedSenderType, message.senderType != scopedSenderType { return false }
+            if mentionSelf && !storedMentions.contains(where: { $0.messageId == message.id && $0.targetType == "user" && $0.targetId == userId }) {
+                return false
+            }
+            if let scopedChannel {
+                if message.channelId == scopedChannel { return true }
+                let channel = postableChannels[message.channelId]
+                return channel?.kind == "thread" && channel?.parentChannelId == scopedChannel
+            }
+            return true
+        }
+        var strict: [(StoredHumanMessage, Int)] = []
+        var relaxed: [(StoredHumanMessage, Int)] = []
+        var browse: [(StoredHumanMessage, Int)] = []
+        for message in humanMessageRows where accepts(message) {
+            if queryTokens.isEmpty {
+                browse.append((message, 0))
+                continue
+            }
+            let counts = Self.tokenCounts(message.content)
+            if let score = Self.matchScore(counts, queryTokens, requireAll: true) {
+                strict.append((message, score))
+            } else if queryTokens.count > 1, let score = Self.matchScore(counts, queryTokens, requireAll: false) {
+                relaxed.append((message, score))
+            }
+        }
+        let fallbackUsed = !queryTokens.isEmpty && strict.isEmpty && !relaxed.isEmpty
+        var hits = queryTokens.isEmpty ? browse : (fallbackUsed ? relaxed : strict)
+        if effectiveSort == "recent" {
+            hits.sort { $0.0.createdAt > $1.0.createdAt }
+        } else {
+            hits.sort { lhs, rhs in
+                if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+                return lhs.0.createdAt > rhs.0.createdAt
+            }
+        }
+        let hasMore = !fallbackUsed && hits.count > pageLimit
+        let page = hits.prefix(pageLimit)
+        let results = page.map { pair in
+            let message = pair.0
+            let channel = postableChannels[message.channelId]
+            let parentId = (channel?.kind == "thread" ? channel?.parentChannelId : nil) ?? message.channelId
+            let snippet = Self.searchSnippet(message.content)
+            return "{\"id\":\(jsonString(message.id)),\"senderId\":\(jsonString(message.senderId)),\"senderType\":\(jsonString(message.senderType)),\"channelId\":\(jsonString(message.channelId)),\"parentChannelId\":\(jsonString(parentId)),\"content\":\(jsonString(message.content)),\"snippet\":\(jsonString(snippet))}"
+        }.joined(separator: ",")
+        lock.unlock()
+        return Self.json(200, "{\"results\":[\(results)],\"hasMore\":\(hasMore ? "true" : "false")}")
+    }
+
+    private static func searchSnippet(_ content: String) -> String {
+        let compact = content.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        if compact.count <= 180 { return compact }
+        return String(compact.prefix(177)) + "..."
+    }
+
+    /// Latin words stay whole. Each CJK character is its own token, so a query that shares no full phrase can still match a character.
+    private static func searchTokens(_ text: String) -> [String] {
+        var tokens: [String] = []
+        var latin = ""
+        func flush() {
+            let word = latin.lowercased()
+            latin = ""
+            guard word.contains(where: { $0.isLetter || $0.isNumber }) else { return }
+            tokens.append(word)
+        }
+        for scalar in text.unicodeScalars {
+            if isCJK(scalar) {
+                flush()
+                tokens.append(String(scalar))
+            } else if scalar.properties.isAlphabetic || scalar.properties.numericType != nil {
+                latin.unicodeScalars.append(scalar)
+            } else {
+                flush()
+            }
+        }
+        flush()
+        return tokens
+    }
+
+    private static func isCJK(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x3400...0x9FFF, 0xF900...0xFAFF:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func tokenCounts(_ text: String) -> [String: Int] {
+        var counts: [String: Int] = [:]
+        for token in searchTokens(text) {
+            counts[token, default: 0] += 1
+        }
+        return counts
+    }
+
+    /// Strict mode requires every query token. Relaxed mode sums the tokens that do appear.
+    private static func matchScore(_ counts: [String: Int], _ queryTokens: [String], requireAll: Bool) -> Int? {
+        var total = 0
+        for token in queryTokens {
+            let count = counts[token] ?? 0
+            if count == 0 {
+                if requireAll { return nil }
+                continue
+            }
+            total += count
+        }
+        return total > 0 ? total : nil
+    }
+
+    /// Context for a human message that is not in the permalink catalog. A DM short id resolves only for a participant.
+    public func humanMessageContext(messageId: String, channelId: String?, authorization: String?, serverId: String?, before: String? = nil, after: String? = nil) -> HTTPReply? {
+        guard MessageContext.isShortId(messageId) || ServerScope.isUUID(messageId) else { return nil }
+        guard let channelId, ServerScope.isUUID(channelId) else { return nil }
+        guard let userId = sessionUserId(authorization: authorization) else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let channel = postableChannels[channelId],
+              channel.serverId == serverId,
+              channel.deletedAt == nil,
+              channel.kind == "channel" || channel.memberIds.contains(userId)
+        else { return nil }
+        let storageChannelId = jointProjections.first { $0.localChannelId == channelId }?.canonicalChannelId ?? channelId
+        let rows = humanMessageRows.filter { $0.channelId == storageChannelId || $0.channelId == channelId }
+        let matches = rows.filter { Self.messageIdMatches($0.id, messageId) }
+        if matches.count == 1, let message = matches.first, let index = rows.firstIndex(where: { $0.id == message.id }) {
+            let beforeCount = Self.contextWindowSide(before)
+            let afterCount = Self.contextWindowSide(after)
+            let start = max(0, index - beforeCount)
+            let end = min(rows.count, index + 1 + afterCount)
+            let parts = rows[start..<end].map { row -> String in
+                let seq = (rows.firstIndex { $0.id == row.id } ?? 0) + 1
+                let metadata = forwardMetadataJSONLocked(messageId: row.id, userId: userId, serverId: serverId)
+                var json = "{\"id\":\(jsonString(row.id)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(row.content)),\"seq\":\(seq)"
+                if let metadata {
+                    json += ",\"actionMetadata\":\(metadata)"
+                }
+                json += "}"
+                return json
+            }
+            let windowIds = rows[start..<end].map(\.id)
+            return Self.contextJSON(
+                channelId: channelId,
+                message: message,
+                seq: index + 1,
+                archived: channel.archived,
+                canonical: nil,
+                messagesJSON: parts.joined(separator: ","),
+                hasOlder: start > 0,
+                hasNewer: end < rows.count,
+                threadSummariesJSON: threadSummariesJSONLocked(parentChannelId: channelId, parentIds: windowIds)
+            )
+        }
+        let replies = humanMessageRows.filter { row in
+            guard Self.messageIdMatches(row.id, messageId),
+                  let thread = postableChannels[row.channelId],
+                  thread.kind == "thread",
+                  thread.serverId == serverId,
+                  thread.deletedAt == nil,
+                  let parentMessageId = thread.parentMessageId,
+                  let parent = humanMessageRows.first(where: { $0.id == parentMessageId }),
+                  parent.channelId == channelId
+            else { return false }
+            return true
+        }
+        if replies.count == 1, let reply = replies.first, let thread = postableChannels[reply.channelId] {
+            let threadRows = humanMessageRows.filter { $0.channelId == reply.channelId }
+            let seq = (threadRows.firstIndex { $0.id == reply.id } ?? 0) + 1
+            let canonical = "{\"kind\":\"thread\",\"channelId\":\(jsonString(channelId)),\"messageId\":\(jsonString(reply.id)),\"threadParentMessageId\":\(jsonString(thread.parentMessageId ?? "")),\"threadChannelId\":\(jsonString(reply.channelId))}"
+            return Self.contextJSON(channelId: reply.channelId, message: reply, seq: seq, archived: thread.archived, canonical: canonical)
+        }
+        let threadChannels = postableChannels.filter { id, thread in
+            thread.kind == "thread"
+                && thread.serverId == serverId
+                && thread.deletedAt == nil
+                && Self.messageIdMatches(id, messageId)
+                && thread.parentMessageId.flatMap { parentId in
+                    humanMessageRows.first { $0.id == parentId && $0.channelId == channelId }
+                } != nil
+        }
+        guard threadChannels.count == 1,
+              let parentMessageId = threadChannels.values.first?.parentMessageId,
+              let parent = humanMessageRows.first(where: { $0.id == parentMessageId && $0.channelId == channelId })
+        else { return nil }
+        let seq = (rows.firstIndex { $0.id == parent.id } ?? 0) + 1
+        return Self.contextJSON(channelId: parent.channelId, message: parent, seq: seq, archived: channel.archived, canonical: nil)
+    }
+
+    private static func messageIdMatches(_ stored: String, _ given: String) -> Bool {
+        if ServerScope.isUUID(given) {
+            return stored.caseInsensitiveCompare(given) == .orderedSame
+        }
+        return stored.lowercased().hasPrefix(given.lowercased())
+    }
+
+    private static func contextWindowSide(_ raw: String?) -> Int {
+        guard let raw, raw.wholeMatch(of: /^\d+$/) != nil, let value = Int(raw) else { return 15 }
+        return min(value, 15)
+    }
+
+    private static func contextJSON(channelId: String, message: StoredHumanMessage, seq: Int, archived: Bool, canonical: String?, actionMetadata: String? = nil, messagesJSON: String? = nil, hasOlder: Bool = false, hasNewer: Bool = false, threadSummariesJSON: String = "") -> HTTPReply {
+        var messageJSON = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(message.content)),\"seq\":\(seq)"
+        if let actionMetadata {
+            messageJSON += ",\"actionMetadata\":\(actionMetadata)"
+        }
+        messageJSON += "}"
+        let renderedMessages = messagesJSON ?? messageJSON
+        var body = "{\"channelId\":\(jsonString(channelId)),\"targetMessageId\":\(jsonString(message.id)),\"hasOlder\":\(hasOlder ? "true" : "false"),\"hasNewer\":\(hasNewer ? "true" : "false"),\"messages\":[\(renderedMessages)]"
+        if let canonical {
+            body += ",\"canonicalTarget\":\(canonical)"
+        }
+        body += ",\"threadSummariesByParentMessageId\":{\(threadSummariesJSON)},\"historyLimited\":false,\"channelArchived\":\(archived ? "true" : "false")}"
+        return Self.json(200, body)
+    }
+
+    /// Turns on Computer and App references for one server. Installed apps stay empty until recorded separately.
+    public func allowComposerResourceReferences(serverId: String) {
+        lock.lock()
+        composerResourceServers.insert(serverId)
+        lock.unlock()
+    }
+
+    /// `POST /api/messages/mention-actions/execute`. A resolution id belongs to the sender who wrote the mention.
+    public func executeMentionActions(body: String, authorization: String?, serverId: String?) -> HTTPReply {
+        let userId: String
+        switch authorize(authorization) {
+        case .rejected:
+            return PublicVisits.authRequired(authorization: authorization)
+        case .user(let id):
+            userId = id
+        }
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let action = object["action"] as? String,
+              action == "notify" || action == "add"
+        else {
+            return Self.json(400, "{\"error\":\"action must be notify or add\"}")
+        }
+        var seen = Set<String>()
+        var resolutionIds: [String] = []
+        for id in (object["resolutionIds"] as? [Any])?.compactMap({ $0 as? String }) ?? [] where !seen.contains(id) {
+            seen.insert(id)
+            resolutionIds.append(id)
+            if resolutionIds.count == 100 { break }
+        }
+        if resolutionIds.isEmpty {
+            return Self.json(400, "{\"error\":\"resolutionIds must include at least one id\"}")
+        }
+        lock.lock()
+        var results: [String] = []
+        for id in resolutionIds {
+            guard let index = storedMentions.firstIndex(where: { $0.id == id }),
+                  postableChannels[storedMentions[index].channelId]?.serverId == serverId,
+                  storedMentions[index].senderId == userId
+            else {
+                results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\(jsonString(action)),\"status\":\"not_found\"}")
+                continue
+            }
+            if action == "notify" {
+                if !mentionTargetCanReadLocked(
+                    channelId: storedMentions[index].channelId,
+                    targetType: storedMentions[index].targetType,
+                    targetId: storedMentions[index].targetId
+                ) {
+                    results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\"notify\",\"status\":\"no_permission\",\"reason\":\"target_lacks_read_access\"}")
+                    continue
+                }
+                if storedMentions[index].notifiedAt == nil {
+                    storedMentions[index].notifiedAt = Date()
+                    storedMentions[index].notifiedByType = "user"
+                    storedMentions[index].notifiedById = userId
+                    storedMentions[index].notifiedAction = "notify_only"
+                    if storedMentions[index].targetType == "agent" {
+                        storedAgentDeliveries.append((
+                            agentId: storedMentions[index].targetId,
+                            messageId: storedMentions[index].messageId,
+                            channelType: "channel"
+                        ))
+                    }
+                }
+                results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\"notify\",\"status\":\"queued\",\"dedupedResolutionIds\":[\(jsonString(id))]}")
+            } else if storedMentions[index].notifiedAction == "add" {
+                results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\"add\",\"status\":\"delivered\",\"reason\":\"already_delivered\",\"dedupedResolutionIds\":[\(jsonString(id))]}")
+            } else if !senderStillInChannelLocked(channelId: storedMentions[index].channelId, userId: userId) {
+                results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\"add\",\"status\":\"no_permission\",\"reason\":\"sender_lacks_channel_access\"}")
+            } else {
+                storedMentions[index].notifiedAt = Date()
+                storedMentions[index].notifiedByType = "user"
+                storedMentions[index].notifiedById = userId
+                storedMentions[index].notifiedAction = "add"
+                let targetId = storedMentions[index].targetId
+                let mentionChannelId = storedMentions[index].channelId
+                if storedMentions[index].targetType == "agent" {
+                    var agents = channelAgentMembers[mentionChannelId] ?? []
+                    agents.insert(targetId)
+                    channelAgentMembers[mentionChannelId] = agents
+                    storedAgentDeliveries.append((
+                        agentId: targetId,
+                        messageId: storedMentions[index].messageId,
+                        channelType: "channel"
+                    ))
+                } else {
+                    postableChannels[mentionChannelId]?.memberIds.insert(targetId)
+                }
+                results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\"add\",\"status\":\"delivered\",\"dedupedResolutionIds\":[\(jsonString(id))]}")
+            }
+        }
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true,\"action\":\(jsonString(action)),\"results\":[\(results.joined(separator: ","))]}")
+    }
+
+    /// A removed channel member can no longer add someone through a mention they sent earlier.
+    private func senderStillInChannelLocked(channelId: String, userId: String) -> Bool {
+        guard let stored = postableChannels[channelId] else { return false }
+        if stored.kind == "thread", let parentId = stored.parentChannelId, let parent = postableChannels[parentId] {
+            return parent.memberIds.contains(userId)
+        }
+        return stored.memberIds.contains(userId)
+    }
+
+    /// Public channels are readable by any signed-in user. Private surfaces and their threads require membership.
+    private func mentionTargetCanReadLocked(channelId: String, targetType: String, targetId: String) -> Bool {
+        guard let stored = postableChannels[channelId] else { return false }
+        let surface: PostableChannel
+        let surfaceId: String
+        if stored.kind == "thread", let parentId = stored.parentChannelId, let parent = postableChannels[parentId] {
+            surface = parent
+            surfaceId = parentId
+        } else {
+            surface = stored
+            surfaceId = channelId
+        }
+        if targetType == "agent" {
+            if surface.kind == "channel" { return true }
+            return channelAgentMembers[surfaceId]?.contains(targetId) == true
+                || channelAgentMembers[channelId]?.contains(targetId) == true
+        }
+        if surface.kind == "channel" { return true }
+        return surface.memberIds.contains(targetId) || stored.memberIds.contains(targetId)
+    }
+
+    /// `POST /api/messages`. A bad human create body is refused before any message row exists.
+    /// An App reference is refused before persistence when that app is not installed on the channel's server.
+    public func createHumanMessage(body: String, authorization: String?, serverId: String?, contract: String = "v1") -> HTTPReply {
+        let userId: String
+        switch authorize(authorization) {
+        case .rejected:
+            return PublicVisits.authRequired(authorization: authorization)
+        case .user(let id):
+            userId = id
+        }
+        guard isEmailVerified(userId: userId) else {
+            return Self.json(403, "{\"error\":\"Email verification required\"}")
+        }
+        guard Self.humanMessageBodyIsValid(body) else {
+            return Self.json(400, "{\"error\":\"Invalid message request body\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let channelId = object["channelId"] as? String,
+              let content = object["content"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"Invalid message request body\"}")
+        }
+        lock.lock()
+        let channel = postableChannels[channelId]
+        let referencesEnabled = composerResourceServers.contains(channel?.serverId ?? "")
+        let installed = installedServerApps[channel?.serverId ?? ""] ?? []
+        lock.unlock()
+        guard let channel, channel.serverId == serverId, channel.memberIds.contains(userId) else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        let appIds = Self.appReferenceIds(content)
+        if !appIds.isEmpty {
+            if !referencesEnabled {
+                return Self.json(400, "{\"error\":\"Computer and App references are not enabled in this server\"}")
+            }
+            if appIds.contains(where: { !installed.contains($0) }) {
+                return Self.json(400, "{\"error\":\"App reference is not installed in this server\"}")
+            }
+        }
+        let attachmentIds = (object["attachmentIds"] as? [Any])?.compactMap { $0 as? String } ?? []
+        let mentions = Self.mentionInputs(object["mentions"])
+        let senderTimezone = Self.parseOptionalIanaTimezone(object["timezone"])
+        let reply: HTTPReply
+        if object["randomId"] != nil {
+            guard let randomId = object["randomId"] as? String, !randomId.isEmpty, randomId.count <= 128 else {
+                return Self.json(400, "{\"error\":\"randomId must be a non-empty string with at most 128 characters\"}")
+            }
+            reply = storeHumanMessage(channelId: channelId, senderId: userId, content: content, randomId: randomId, attachmentIds: attachmentIds, senderTimezone: senderTimezone)
+        } else {
+            reply = storeHumanMessage(channelId: channelId, senderId: userId, content: content, randomId: nil, attachmentIds: attachmentIds, senderTimezone: senderTimezone)
+        }
+        if contract == "v2" {
+            return v2HumanSend(reply, channelId: channelId, mentions: mentions)
+        }
+        return withPendingMentionActions(reply, channelId: channelId, mentions: mentions)
+    }
+
+    /// `GET /api/messages/forward/enabled`. The rollout flag is retired, so this stays true.
+    public func messageForwardEnabled(authorization: String?, serverId: String?) -> HTTPReply {
+        switch authorize(authorization) {
+        case .rejected(let reply):
+            return reply
+        case .user(let userId):
+            guard isEmailVerified(userId: userId) else {
+                return Self.json(403, "{\"error\":\"Email verification required\"}")
+            }
+        }
+        guard let serverId, !serverId.isEmpty else {
+            return Self.json(400, "{\"error\":\"Missing X-Server-Id header\"}")
+        }
+        return Self.json(200, "{\"enabled\":true}")
+    }
+
+    /// `GET /api/messages/forward/targets/search`. An empty query returns no targets.
+    public func searchForwardTargets(query: String?, limit rawLimit: String?, authorization: String?, serverId: String?) -> HTTPReply {
+        let userId: String
+        switch authorize(authorization) {
+        case .rejected(let reply):
+            return reply
+        case .user(let id):
+            userId = id
+        }
+        guard isEmailVerified(userId: userId) else {
+            return Self.json(403, "{\"error\":\"Email verification required\"}")
+        }
+        guard let serverId, !serverId.isEmpty else {
+            return Self.json(400, "{\"error\":\"Missing X-Server-Id header\"}")
+        }
+        let q = (query ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if q.isEmpty {
+            return Self.json(200, "{\"targets\":[]}")
+        }
+        let pageLimit: Int
+        if let rawLimit, let parsed = Int(rawLimit), parsed > 0 {
+            pageLimit = min(parsed, 20)
+        } else {
+            pageLimit = 20
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        let role = serverMemberRoles["\(serverId)\n\(userId)"]
+        let isGuest = role == "guest"
+        let hideHumans = hideHumansFromMembers[serverId] == true || isGuest
+        var results: [(score: Int, title: String, json: String)] = []
+        for (id, channel) in postableChannels where channel.serverId == serverId && channel.deletedAt == nil && !channel.archived {
+            guard channel.kind == "channel" || channel.kind == "private" || channel.kind == "joint" else { continue }
+            let score = Self.forwardTargetScore(q, channel.name.lowercased())
+            if score <= 0 { continue }
+            let joined = channel.memberIds.contains(userId)
+            if isGuest && !joined { continue }
+            if channel.kind != "channel" && !joined { continue }
+            let canForwardNow = channel.kind != "channel" || joined
+            let required = channel.kind == "channel" && !joined ? "join_channel" : nil
+            let title = "#\(channel.name)"
+            results.append((
+                score + (joined ? 50 : 0),
+                title,
+                Self.forwardTargetJSON(
+                    type: "channel",
+                    channelType: channel.kind,
+                    id: id,
+                    title: title,
+                    subtitle: "",
+                    avatarUrl: nil,
+                    channelId: id,
+                    joined: joined,
+                    dmExists: nil,
+                    canForwardNow: canForwardNow,
+                    requiredAction: required
+                )
+            ))
+        }
+        var dmPeerIds = Set<String>()
+        for (id, channel) in postableChannels where channel.serverId == serverId && channel.kind == "dm" && channel.deletedAt == nil && channel.memberIds.contains(userId) {
+            let peerId = channel.agentId ?? channel.memberIds.first { $0 != userId }
+            guard let peerId else { continue }
+            dmPeerIds.insert(peerId)
+            let agent = serverAgents[peerId]
+            let account = accounts.values.first { $0.id == peerId }
+            let label = agent?.name ?? account?.name ?? peerId
+            let score = Self.forwardTargetScore(q, label.lowercased())
+            if score <= 0 { continue }
+            let title = "@\(label)"
+            results.append((
+                score + 50,
+                title,
+                Self.forwardTargetJSON(
+                    type: "dm",
+                    channelType: "dm",
+                    id: peerId,
+                    title: title,
+                    subtitle: agent == nil ? "" : "agent",
+                    avatarUrl: agent?.avatarUrl ?? account?.avatarUrl,
+                    channelId: id,
+                    joined: nil,
+                    dmExists: true,
+                    canForwardNow: true,
+                    requiredAction: nil
+                )
+            ))
+        }
+        if !isGuest {
+            for agent in serverAgents.values where agent.serverId == serverId && !dmPeerIds.contains(agent.id) {
+                let score = Self.forwardTargetScore(q, agent.name.lowercased())
+                if score <= 0 { continue }
+                let title = "@\(agent.name)"
+                results.append((
+                    score,
+                    title,
+                    Self.forwardTargetJSON(
+                        type: "agent",
+                        channelType: nil,
+                        id: agent.id,
+                        title: title,
+                        subtitle: "agent",
+                        avatarUrl: agent.avatarUrl,
+                        channelId: nil,
+                        joined: nil,
+                        dmExists: false,
+                        canForwardNow: false,
+                        requiredAction: "create_dm"
+                    )
+                ))
+            }
+        }
+        if !hideHumans {
+            for (key, memberRole) in serverMemberRoles {
+                let parts = key.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+                guard parts.count == 2, parts[0] == serverId, memberRole != "guest" else { continue }
+                let memberId = parts[1]
+                if memberId == userId || dmPeerIds.contains(memberId) { continue }
+                guard let account = accounts.values.first(where: { $0.id == memberId }) else { continue }
+                let score = Self.forwardTargetScore(q, account.name.lowercased())
+                if score <= 0 { continue }
+                let title = "@\(account.name)"
+                results.append((
+                    score,
+                    title,
+                    Self.forwardTargetJSON(
+                        type: "human",
+                        channelType: nil,
+                        id: memberId,
+                        title: title,
+                        subtitle: "",
+                        avatarUrl: account.avatarUrl,
+                        channelId: nil,
+                        joined: nil,
+                        dmExists: false,
+                        canForwardNow: false,
+                        requiredAction: "create_dm"
+                    )
+                ))
+            }
+        }
+        results.sort { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.title < rhs.title
+        }
+        let targets = results.prefix(pageLimit).map(\.json).joined(separator: ",")
+        return Self.json(200, "{\"targets\":[\(targets)]}")
+    }
+
+    private static func forwardTargetScore(_ query: String, _ candidate: String) -> Int {
+        if candidate.isEmpty { return 0 }
+        if candidate == query { return 400 }
+        if candidate.hasPrefix(query) { return 300 }
+        if candidate.range(of: " \(query)") != nil { return 250 }
+        if let range = candidate.range(of: query) {
+            let index = candidate.distance(from: candidate.startIndex, to: range.lowerBound)
+            return max(1, 150 - index)
+        }
+        return 0
+    }
+
+    private static func forwardTargetJSON(
+        type: String,
+        channelType: String?,
+        id: String,
+        title: String,
+        subtitle: String,
+        avatarUrl: String?,
+        channelId: String?,
+        joined: Bool?,
+        dmExists: Bool?,
+        canForwardNow: Bool,
+        requiredAction: String?
+    ) -> String {
+        let channelTypeJSON = channelType.map { jsonString($0) } ?? "null"
+        let avatarJSON = avatarUrl.map { jsonString($0) } ?? "null"
+        let channelJSON = channelId.map { jsonString($0) } ?? "null"
+        let joinedJSON = joined.map { $0 ? "true" : "false" } ?? "null"
+        let dmJSON = dmExists.map { $0 ? "true" : "false" } ?? "null"
+        let requiredJSON = requiredAction.map { jsonString($0) } ?? "null"
+        return "{\"type\":\(jsonString(type)),\"channelType\":\(channelTypeJSON),\"id\":\(jsonString(id)),\"title\":\(jsonString(title)),\"subtitle\":\(jsonString(subtitle)),\"avatarUrl\":\(avatarJSON),\"channelId\":\(channelJSON),\"joined\":\(joinedJSON),\"dmExists\":\(dmJSON),\"canForwardNow\":\(canForwardNow ? "true" : "false"),\"requiredAction\":\(requiredJSON)}"
+    }
+
+    /// `POST /api/messages/forward`. An empty note becomes `Forwarded N message(s)` in the destination.
+    public func forwardHumanMessage(body: String, authorization: String?, serverId: String?) -> HTTPReply {
+        let userId: String
+        switch authorize(authorization) {
+        case .rejected(let reply):
+            return reply
+        case .user(let id):
+            userId = id
+        }
+        guard isEmailVerified(userId: userId) else {
+            return Self.json(403, "{\"error\":\"Email verification required\"}")
+        }
+        guard let serverId, !serverId.isEmpty else {
+            return Self.json(400, "{\"error\":\"Missing X-Server-Id header\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Destination channel and full source message ids are required\"}")
+        }
+        let destinationChannelId: String
+        if let raw = object["destinationChannelId"] as? String {
+            destinationChannelId = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else if let raw = object["channelId"] as? String {
+            destinationChannelId = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            destinationChannelId = ""
+        }
+        let note: String?
+        if object["note"] == nil || object["note"] is NSNull {
+            note = ""
+        } else if let raw = object["note"] as? String {
+            note = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            note = nil
+        }
+        let sourceIds = Self.forwardSourceIds(object["sourceMessageIds"])
+        if object["destinationChannelIds"] != nil {
+            guard let sourceIds, let note else {
+                return Self.json(400, "{\"error\":\"Destination channel and full source message ids are required\"}")
+            }
+            if note.count > 32_000 {
+                return Self.json(400, "{\"error\":\"Message content exceeds maximum length of 32000 characters\"}")
+            }
+            return forwardToMany(
+                object: object,
+                sourceIds: sourceIds,
+                note: note,
+                authorization: authorization,
+                serverId: serverId
+            )
+        }
+        guard !destinationChannelId.isEmpty, let sourceIds, let note else {
+            return Self.json(400, "{\"error\":\"Destination channel and full source message ids are required\"}")
+        }
+        if note.count > 32_000 {
+            return Self.json(400, "{\"error\":\"Message content exceeds maximum length of 32000 characters\"}")
+        }
+        let randomId: String
+        if object["randomId"] == nil || object["randomId"] is NSNull {
+            randomId = "forward-\(UUID().uuidString.lowercased())"
+        } else if let raw = object["randomId"] as? String, !raw.isEmpty, raw.count <= 128 {
+            randomId = raw
+        } else {
+            return Self.json(400, "{\"error\":\"Destination channel and full source message ids are required\"}")
+        }
+        let content = note.isEmpty
+            ? "Forwarded \(sourceIds.count) message\(sourceIds.count == 1 ? "" : "s")"
+            : note
+        lock.lock()
+        if let existing = humanMessageRows.first(where: { $0.senderId == userId && $0.randomId == randomId }) {
+            if existing.channelId == destinationChannelId,
+               existing.content == content,
+               let record = forwardRecords[existing.id],
+               record.sourceIds == sourceIds {
+                let snapshot = existing
+                lock.unlock()
+                return Self.forwardMessageReply(message: snapshot, record: record, outcome: "idempotent_replay")
+            }
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"This forward request id was already used for different content\",\"code\":\"idempotency_conflict\"}")
+        }
+        guard let destination = postableChannels[destinationChannelId],
+              destination.serverId == serverId,
+              destination.deletedAt == nil
+        else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        guard destination.memberIds.contains(userId) else {
+            lock.unlock()
+            return Self.json(403, "{\"error\":\"You must join this channel to send messages\"}")
+        }
+        var pending: [PendingForwardSource] = []
+        for id in sourceIds {
+            guard let message = humanMessageRows.first(where: { $0.id == id }) else {
+                lock.unlock()
+                return Self.json(404, "{\"error\":\"Source message not found\"}")
+            }
+            let jointLocalId = jointLocalChannelIdLocked(canonicalChannelId: message.channelId, serverId: serverId, userId: userId)
+            let channel = jointLocalId.flatMap { postableChannels[$0] }
+                ?? (messageSearchVisibleLocked(messageChannelId: message.channelId, serverId: serverId, viewer: .user(userId))
+                    ? postableChannels[message.channelId] : nil)
+            guard let channel else {
+                lock.unlock()
+                return Self.json(404, "{\"error\":\"Source message not found\"}")
+            }
+            if message.actionKind == "forwarded-bundle" || forwardedBundles[message.id] != nil {
+                lock.unlock()
+                return Self.json(400, "{\"error\":\"Forwarded messages can't be forwarded. Select the original message instead.\",\"code\":\"forwarded_source_not_supported\"}")
+            }
+            if message.messageType != "chat" || message.actionKind != nil {
+                lock.unlock()
+                return Self.json(400, "{\"error\":\"Only ordinary chat messages can be forwarded\",\"code\":\"unsupported_source_message\"}")
+            }
+            let attachments = channelAttachments.values
+                .filter { $0.messageId == message.id }
+                .sorted { ($0.messagePosition ?? 0) < ($1.messagePosition ?? 0) }
+            pending.append(PendingForwardSource(
+                messageId: message.id,
+                content: message.content,
+                createdAt: message.createdAt,
+                channelId: jointLocalId ?? message.channelId,
+                channelKind: channel.kind,
+                channelName: channel.name,
+                parentChannelId: channel.parentChannelId,
+                senderId: message.senderId,
+                attachments: attachments
+            ))
+        }
+        let selectedThreads = Set(pending.filter { $0.channelKind == "thread" }.map(\.channelId))
+        let prepared = pending.map { source in
+            (source, forwardContextLocked(source: source, selectedThreads: selectedThreads))
+        }
+        if Set(prepared.map { $0.1.bundleSourceId }).count != 1 {
+            lock.unlock()
+            return Self.json(400, "{\"error\":\"Forwarded bundles must come from a single source\",\"code\":\"cross_source_bundle\"}")
+        }
+        let ordered = prepared.sorted { lhs, rhs in
+            if lhs.1.sourceIsThreadParent != rhs.1.sourceIsThreadParent {
+                return lhs.1.sourceIsThreadParent
+            }
+            if lhs.0.createdAt != rhs.0.createdAt { return lhs.0.createdAt < rhs.0.createdAt }
+            return lhs.0.messageId < rhs.0.messageId
+        }
+        var legacy: [ForwardedSource] = []
+        var itemRecords: [ForwardItemRecord] = []
+        var projections: [(attachment: ChannelAttachment, id: String, position: Int)] = []
+        var position = 0
+        for (source, context) in ordered {
+            let exposed = context.sourceTargetId != nil
+            legacy.append(ForwardedSource(
+                sourceServerId: exposed ? serverId : "",
+                sourceTargetId: context.sourceTargetId ?? "",
+                sourceMessageId: exposed ? source.messageId : "",
+                snapshotId: context.snapshotId ?? "",
+                snapshotType: context.snapshotType,
+                snapshotLabel: context.snapshotLabel,
+                snapshotLabelVisibility: context.snapshotLabelVisibility,
+                provenanceState: "available"
+            ))
+            var snapshots: [ForwardAttachmentSnapshot] = []
+            for attachment in source.attachments {
+                let projectedId = UUID().uuidString.lowercased()
+                snapshots.append(ForwardAttachmentSnapshot(
+                    id: projectedId,
+                    filename: attachment.filename,
+                    mimeType: attachment.mimeType ?? "",
+                    sizeBytes: attachment.sizeBytes ?? 0,
+                    width: attachment.width,
+                    height: attachment.height
+                ))
+                projections.append((attachment, projectedId, position))
+                position += 1
+            }
+            let exposesPointers = context.snapshotLabelVisibility == "public" && context.sourceTargetId != nil
+            let uniqueName = accounts.values.first { $0.id == source.senderId }?.name ?? "unknown"
+            itemRecords.append(ForwardItemRecord(
+                sourceMessageId: source.messageId,
+                exposesPointers: exposesPointers,
+                sourceAuthorUniqueName: uniqueName,
+                sourceIsThreadParent: context.sourceIsThreadParent,
+                contentSnapshot: source.content,
+                sourceTargetId: context.sourceTargetId,
+                sourceThreadId: context.sourceThreadId,
+                parentChannelId: context.parentChannelId,
+                snapshotId: context.snapshotId,
+                snapshotType: context.snapshotType,
+                snapshotLabel: context.snapshotLabel,
+                snapshotLabelVisibility: context.snapshotLabelVisibility,
+                provenanceState: "available",
+                attachments: snapshots,
+                attachmentPolicy: snapshots.isEmpty ? "excluded" : "projected"
+            ))
+        }
+        let storageChannelId = jointProjections.first { $0.localChannelId == destinationChannelId }?.canonicalChannelId ?? destinationChannelId
+        let record = StoredForwardRecord(sourceIds: sourceIds, items: itemRecords, destinationTargetId: destinationChannelId)
+        lock.unlock()
+        let storedReply = storeHumanMessage(
+            channelId: storageChannelId,
+            senderId: userId,
+            content: content,
+            randomId: randomId,
+            attachmentIds: []
+        )
+        guard storedReply.status == 200,
+              let data = storedReply.body.data(using: .utf8),
+              let stored = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let messageId = stored["id"] as? String
+        else { return storedReply }
+        lock.lock()
+        forwardedBundles[messageId] = legacy
+        forwardRecords[messageId] = record
+        if let index = humanMessageRows.firstIndex(where: { $0.id == messageId }) {
+            humanMessageRows[index].attachmentIds = projections.map(\.id)
+        }
+        for projection in projections {
+            var copy = projection.attachment
+            copy.id = projection.id
+            copy.channelId = destinationChannelId
+            copy.messageId = messageId
+            copy.messagePosition = projection.position
+            channelAttachments[copy.id] = copy
+        }
+        guard var message = humanMessageRows.first(where: { $0.id == messageId }) else {
+            lock.unlock()
+            return storedReply
+        }
+        lock.unlock()
+        message.channelId = destinationChannelId
+        return Self.forwardMessageReply(message: message, record: record, outcome: "success")
+    }
+
+    private func forwardContextLocked(source: PendingForwardSource, selectedThreads: Set<String>) -> ForwardSourceContext {
+        if source.channelKind == "thread" {
+            let parent = source.parentChannelId.flatMap { postableChannels[$0] }
+            let publicParent = parent?.kind == "channel"
+            return ForwardSourceContext(
+                bundleSourceId: source.channelId,
+                sourceTargetId: publicParent ? source.channelId : nil,
+                sourceThreadId: publicParent ? source.channelId : nil,
+                parentChannelId: publicParent ? source.parentChannelId : nil,
+                sourceIsThreadParent: false,
+                snapshotId: publicParent ? source.parentChannelId : nil,
+                snapshotType: "thread",
+                snapshotLabel: publicParent ? "#\(parent?.name ?? "")" : "",
+                snapshotLabelVisibility: publicParent ? "public" : "restricted"
+            )
+        }
+        if source.channelKind == "channel",
+           let threadId = postableChannels.first(where: { $0.value.kind == "thread" && $0.value.parentMessageId == source.messageId })?.key,
+           selectedThreads.contains(threadId) {
+            return ForwardSourceContext(
+                bundleSourceId: threadId,
+                sourceTargetId: threadId,
+                sourceThreadId: threadId,
+                parentChannelId: source.channelId,
+                sourceIsThreadParent: true,
+                snapshotId: source.channelId,
+                snapshotType: "thread",
+                snapshotLabel: "#\(source.channelName)",
+                snapshotLabelVisibility: "public"
+            )
+        }
+        let publicSource = source.channelKind == "channel"
+        return ForwardSourceContext(
+            bundleSourceId: source.channelId,
+            sourceTargetId: publicSource ? source.channelId : nil,
+            sourceThreadId: nil,
+            parentChannelId: nil,
+            sourceIsThreadParent: false,
+            snapshotId: publicSource ? source.channelId : nil,
+            snapshotType: publicSource ? "channel" : source.channelKind,
+            snapshotLabel: publicSource ? "#\(source.channelName)" : "",
+            snapshotLabelVisibility: publicSource ? "public" : "restricted"
+        )
+    }
+
+    private static func forwardMessageReply(message: StoredHumanMessage, record: StoredForwardRecord, outcome: String) -> HTTPReply {
+        let items = forwardItemsJSON(record.items)
+        var body = "{\"id\":\(jsonString(message.id)),\"messageType\":\"chat\",\"channelId\":\(jsonString(message.channelId)),\"content\":\(jsonString(message.content)),\"attachments\":[\(attachmentJSON(message.attachmentIds))]"
+        if let randomId = message.randomId {
+            body += ",\"randomId\":\(jsonString(randomId))"
+        }
+        body += ",\"actionMetadata\":{\"kind\":\"forwarded-bundle\",\"destinationTargetId\":\(jsonString(record.destinationTargetId)),\"forwardedItems\":[\(items)]}}"
+        var reply = json(200, body)
+        reply.headers["X-Raft-Forward-Outcome"] = outcome
+        return reply
+    }
+
+    private static func forwardItemsJSON(_ items: [ForwardItemRecord]) -> String {
+        items.map { forwardItemJSON($0) }.joined(separator: ",")
+    }
+
+    private static func forwardAttachmentSnapshotsJSON(_ snapshots: [ForwardAttachmentSnapshot]) -> String {
+        snapshots.map { snap in
+            let width = snap.width.map(String.init) ?? "null"
+            let height = snap.height.map(String.init) ?? "null"
+            return "{\"id\":\(jsonString(snap.id)),\"filename\":\(jsonString(snap.filename)),\"mimeType\":\(jsonString(snap.mimeType)),\"sizeBytes\":\(snap.sizeBytes),\"width\":\(width),\"height\":\(height)}"
+        }.joined(separator: ",")
+    }
+
+    private static func forwardItemJSON(_ item: ForwardItemRecord) -> String {
+        let attachments = forwardAttachmentSnapshotsJSON(item.attachments)
+        let snapshotId = item.snapshotId.map { jsonString($0) } ?? "null"
+        let parent = item.sourceIsThreadParent ? "true" : "false"
+        let target = item.sourceTargetId.map { jsonString($0) } ?? "null"
+        let messageIdJSON = item.exposesPointers ? jsonString(item.sourceMessageId) : "null"
+        var body = "{\"sourceMessageId\":\(messageIdJSON),\"sourceIsThreadParent\":\(parent),\"contentSnapshot\":\(jsonString(item.contentSnapshot)),\"sourceAuthorSnapshot\":{\"uniqueName\":\(jsonString(item.sourceAuthorUniqueName))},\"sourceTargetId\":\(target)"
+        if !item.exposesPointers {
+            body += ",\"sourceMessageSeq\":null,\"sourceServerId\":null"
+        }
+        if let threadId = item.sourceThreadId {
+            body += ",\"sourceThreadId\":\(jsonString(threadId))"
+        }
+        if let parentChannelId = item.parentChannelId {
+            body += ",\"parentChannelId\":\(jsonString(parentChannelId))"
+        }
+        body += ",\"sourceTargetSnapshot\":{\"id\":\(snapshotId),\"type\":\(jsonString(item.snapshotType)),\"label\":\(jsonString(item.snapshotLabel)),\"labelVisibility\":\(jsonString(item.snapshotLabelVisibility))},\"attachmentSnapshots\":[\(attachments)],\"attachmentPolicy\":\(jsonString(item.attachmentPolicy)),\"provenanceState\":\(jsonString(item.provenanceState))}"
+        return body
+    }
+
+    /// A viewer who cannot read the source still sees the forward, with the pointers removed.
+    private static func scrubbedForwardItemJSON(_ item: ForwardItemRecord) -> String {
+        let attachments = forwardAttachmentSnapshotsJSON(item.attachments)
+        let parent = item.sourceIsThreadParent ? "true" : "false"
+        let type = item.snapshotType.isEmpty ? "channel" : item.snapshotType
+        return "{\"sourceMessageId\":null,\"sourceIsThreadParent\":\(parent),\"contentSnapshot\":\(jsonString(item.contentSnapshot)),\"sourceServerId\":null,\"sourceTargetId\":null,\"sourceThreadId\":null,\"parentChannelId\":null,\"sourceTargetSnapshot\":{\"id\":null,\"type\":\(jsonString(type)),\"label\":\"\",\"labelVisibility\":\"restricted\"},\"attachmentSnapshots\":[\(attachments)],\"attachmentPolicy\":\(jsonString(item.attachmentPolicy)),\"provenanceState\":\"original_unavailable\"}"
+    }
+
+    private func forwardMetadataJSONLocked(messageId: String, userId: String, serverId: String?) -> String? {
+        guard let record = forwardRecords[messageId] else { return nil }
+        let rendered = record.items.map { item in
+            forwardItemReadableLocked(item, userId: userId, serverId: serverId)
+                ? Self.forwardItemJSON(item)
+                : Self.scrubbedForwardItemJSON(item)
+        }.joined(separator: ",")
+        return "{\"kind\":\"forwarded-bundle\",\"forwardedItems\":[\(rendered)]}"
+    }
+
+    private func forwardItemReadableLocked(_ item: ForwardItemRecord, userId: String, serverId: String?) -> Bool {
+        guard let targetId = item.sourceTargetId, let serverId else { return false }
+        guard let channel = postableChannels[targetId], channel.serverId == serverId, channel.deletedAt == nil else { return false }
+        if channel.kind == "channel" { return true }
+        if channel.kind == "thread" {
+            guard let parentId = channel.parentChannelId,
+                  let parent = postableChannels[parentId],
+                  parent.serverId == serverId,
+                  parent.deletedAt == nil
+            else { return channel.memberIds.contains(userId) }
+            if parent.kind == "channel" { return true }
+            return parent.memberIds.contains(userId) || channel.memberIds.contains(userId)
+        }
+        return channel.memberIds.contains(userId)
+    }
+
+    /// A batch keeps one result per distinct destination. A denial or conflict stays inside that result.
+    private func forwardToMany(object: [String: Any], sourceIds: [String], note: String, authorization: String?, serverId: String) -> HTTPReply {
+        guard let destinations = Self.forwardDestinationIds(object["destinationChannelIds"]) else {
+            return Self.json(400, "{\"error\":\"Destination channel and full source message ids are required\"}")
+        }
+        guard let rawRequestId = object["requestId"] as? String else {
+            return Self.json(400, "{\"error\":\"Destination channel and full source message ids are required\"}")
+        }
+        let requestId = rawRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ServerScope.isUUID(requestId) else {
+            return Self.json(400, "{\"error\":\"Destination channel and full source message ids are required\"}")
+        }
+        let sourcesJSON = sourceIds.map { jsonString($0) }.joined(separator: ",")
+        var results: [String] = []
+        var successes = 0
+        var replays = 0
+        for destination in destinations {
+            let randomId = "forward:\(requestId):\(destination)"
+            let body = "{\"destinationChannelId\":\(jsonString(destination)),\"sourceMessageIds\":[\(sourcesJSON)],\"note\":\(jsonString(note)),\"randomId\":\(jsonString(randomId))}"
+            let reply = forwardHumanMessage(body: body, authorization: authorization, serverId: serverId)
+            if reply.status == 200 {
+                successes += 1
+                if reply.value(for: "X-Raft-Forward-Outcome") == "idempotent_replay" {
+                    replays += 1
+                }
+                results.append("{\"destinationChannelId\":\(jsonString(destination)),\"status\":\"success\",\"message\":\(reply.body)}")
+            } else if reply.status == 409 {
+                results.append("{\"destinationChannelId\":\(jsonString(destination)),\"status\":\"failed\",\"code\":\"request_conflict\",\"error\":\"Forward request conflicts with an earlier request\"}")
+            } else if reply.status == 403 || reply.status == 404 {
+                results.append("{\"destinationChannelId\":\(jsonString(destination)),\"status\":\"failed\",\"code\":\"destination_unavailable\",\"error\":\"Could not forward to this target\"}")
+            } else {
+                results.append("{\"destinationChannelId\":\(jsonString(destination)),\"status\":\"failed\",\"code\":\"forward_failed\",\"error\":\"Could not forward to this target\"}")
+            }
+        }
+        let failed = destinations.count - successes
+        let outcome: String
+        if failed > 0 {
+            outcome = successes > 0 ? "partial_failure" : "all_failed"
+        } else if replays == destinations.count {
+            outcome = "idempotent_replay"
+        } else {
+            outcome = "success"
+        }
+        var reply = Self.json(200, "{\"results\":[\(results.joined(separator: ","))]}")
+        reply.headers["X-Raft-Forward-Outcome"] = outcome
+        return reply
+    }
+
+    private static func forwardDestinationIds(_ value: Any?) -> [String]? {
+        guard let rows = value as? [Any], !rows.isEmpty else { return nil }
+        var ids: [String] = []
+        var seen = Set<String>()
+        for row in rows {
+            guard let raw = row as? String else { return nil }
+            let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard ServerScope.isUUID(id) else { return nil }
+            if seen.insert(id).inserted {
+                ids.append(id)
+            }
+        }
+        if ids.isEmpty || ids.count > 10 { return nil }
+        return ids
+    }
+
+    private static func forwardSourceIds(_ value: Any?) -> [String]? {
+        guard let rows = value as? [Any], !rows.isEmpty, rows.count <= 20 else { return nil }
+        var ids: [String] = []
+        for row in rows {
+            guard let raw = row as? String else { return nil }
+            let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard ServerScope.isUUID(id), !ids.contains(id) else { return nil }
+            ids.append(id)
+        }
+        return ids
+    }
+
+    /// `POST /api/v2/messages`. The message is always nested. A stopped agent DM adds `agent_stopped`.
+    private func v2HumanSend(_ reply: HTTPReply, channelId: String, mentions: [MentionInput]) -> HTTPReply {
+        guard reply.status == 200,
+              let data = reply.body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let messageId = object["id"] as? String
+        else { return reply }
+        let pending = pendingMentionActionsJSON(channelId: channelId, messageId: messageId, mentions: mentions)
+        let warnings = stoppedAgentDeliveryWarningJSON(channelId: channelId, messageId: messageId)
+        var body = "{\"message\":\(reply.body)"
+        if !pending.isEmpty {
+            body += ",\"pendingMentionActions\":[\(pending)]"
+        }
+        if !warnings.isEmpty {
+            body += ",\"deliveryWarnings\":[\(warnings)]"
+        }
+        body += "}"
+        return Self.json(200, body)
+    }
+
+    /// A DM delivery to a stopped agent is dropped as `wake_suppressed` and reported to the v2 sender as `agent_stopped`.
+    private func stoppedAgentDeliveryWarningJSON(channelId: String, messageId: String) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let channel = postableChannels[channelId],
+              channel.kind == "dm",
+              let agentId = channel.agentId,
+              serverAgents[agentId]?.status == "stopped"
+        else { return "" }
+        storedAgentDeliveries.append((agentId: agentId, messageId: messageId, channelType: channel.kind))
+        return "{\"targetType\":\"agent\",\"targetId\":\(jsonString(agentId)),\"reason\":\"agent_stopped\"}"
+    }
+
+    /// Outsider mentions on a new human send are returned beside the message, not inside it.
+    private func withPendingMentionActions(_ reply: HTTPReply, channelId: String, mentions: [MentionInput]) -> HTTPReply {
+        guard reply.status == 200,
+              let data = reply.body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let messageId = object["id"] as? String
+        else { return reply }
+        let actions = pendingMentionActionsJSON(channelId: channelId, messageId: messageId, mentions: mentions)
+        guard !actions.isEmpty else { return reply }
+        return Self.json(200, "{\"message\":\(reply.body),\"pendingMentionActions\":[\(actions)]}")
+    }
+
+    private func pendingMentionActionsJSON(channelId: String, messageId: String, mentions: [MentionInput]) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        let channel = postableChannels[channelId]
+        let members = channel?.memberIds ?? []
+        let serverId = channel?.serverId
+        let directMessage = channel?.kind == "dm"
+        let expiresAt = Self.pendingMentionExpiry()
+        var parts: [String] = []
+        for mention in mentions {
+            guard mention.type == "user" || mention.type == "agent",
+                  ServerScope.isUUID(mention.id),
+                  !mention.name.isEmpty
+            else { continue }
+            let avatar: String?
+            if mention.type == "user" {
+                guard accounts.values.contains(where: { $0.id == mention.id }), !members.contains(mention.id) else { continue }
+                avatar = accounts.values.first { $0.id == mention.id }?.avatarUrl
+            } else {
+                guard let agent = serverAgents[mention.id], agent.serverId == serverId else { continue }
+                avatar = agent.avatarUrl
+            }
+            let avatarJSON = avatar.map { jsonString($0) } ?? "null"
+            let existing = storedMentions.first { $0.messageId == messageId && $0.targetType == mention.type && $0.targetId == mention.id }
+            let resolutionId = existing?.id ?? UUID().uuidString.lowercased()
+            if existing == nil {
+                let senderId = humanMessageRows.first { $0.id == messageId }?.senderId ?? ""
+                storedMentions.append(StoredMention(
+                    id: resolutionId,
+                    messageId: messageId,
+                    channelId: channelId,
+                    senderId: senderId,
+                    targetType: mention.type,
+                    targetId: mention.id,
+                    handle: mention.name,
+                    notifiableAtSend: false,
+                    notifiedAt: nil,
+                    notifiedByType: nil,
+                    notifiedById: nil,
+                    notifiedAction: nil
+                ))
+            }
+            if directMessage { continue }
+            parts.append("{\"resolutionId\":\(jsonString(resolutionId)),\"messageId\":\(jsonString(messageId)),\"targetType\":\(jsonString(mention.type)),\"targetHandle\":\(jsonString(mention.name)),\"targetAvatarUrl\":\(avatarJSON),\"reason\":\"not_member\",\"availableActions\":[\"notify\",\"add\"],\"expiresAt\":\(jsonString(expiresAt))}")
+        }
+        return parts.joined(separator: ",")
+    }
+
+    private static func pendingMentionExpiry() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: Date().addingTimeInterval(7 * 24 * 60 * 60))
+    }
+
+    private static func mentionInputs(_ value: Any?) -> [MentionInput] {
+        guard let rows = value as? [Any] else { return [] }
+        return rows.compactMap { row in
+            guard let object = row as? [String: Any],
+                  let type = object["type"] as? String,
+                  let id = object["id"] as? String,
+                  let name = object["name"] as? String
+            else { return nil }
+            return MentionInput(type: type, id: id, name: name)
+        }
+    }
+
+    /// An agent that belongs to a server but is not a member of a channel until someone adds it.
+    public func addServerAgent(serverId: String, id: String, name: String, avatarUrl: String?, status: String = "inactive") {
+        lock.lock()
+        serverAgents[id] = ServerAgent(id: id, serverId: serverId, name: name, avatarUrl: avatarUrl, status: status)
+        lock.unlock()
+    }
+
+    public struct ForwardedSource: Equatable, Sendable {
+        public var sourceServerId: String
+        public var sourceTargetId: String
+        public var sourceMessageId: String
+        public var snapshotId: String
+        public var snapshotType: String
+        public var snapshotLabel: String
+        public var snapshotLabelVisibility: String
+        public var provenanceState: String
+
+        public init(sourceServerId: String, sourceTargetId: String, sourceMessageId: String, snapshotId: String, snapshotType: String, snapshotLabel: String, snapshotLabelVisibility: String, provenanceState: String) {
+            self.sourceServerId = sourceServerId
+            self.sourceTargetId = sourceTargetId
+            self.sourceMessageId = sourceMessageId
+            self.snapshotId = snapshotId
+            self.snapshotType = snapshotType
+            self.snapshotLabel = snapshotLabel
+            self.snapshotLabelVisibility = snapshotLabelVisibility
+            self.provenanceState = provenanceState
+        }
+    }
+
+    private struct ForwardAttachmentSnapshot {
+        var id: String
+        var filename: String
+        var mimeType: String
+        var sizeBytes: Int
+        var width: Int?
+        var height: Int?
+    }
+
+    private struct ForwardSourceContext {
+        var bundleSourceId: String
+        var sourceTargetId: String?
+        var sourceThreadId: String?
+        var parentChannelId: String?
+        var sourceIsThreadParent: Bool
+        var snapshotId: String?
+        var snapshotType: String
+        var snapshotLabel: String
+        var snapshotLabelVisibility: String
+    }
+
+    private struct ForwardItemRecord {
+        var sourceMessageId: String
+        var exposesPointers: Bool
+        var sourceAuthorUniqueName: String
+        var sourceIsThreadParent: Bool
+        var contentSnapshot: String
+        var sourceTargetId: String?
+        var sourceThreadId: String?
+        var parentChannelId: String?
+        var snapshotId: String?
+        var snapshotType: String
+        var snapshotLabel: String
+        var snapshotLabelVisibility: String
+        var provenanceState: String
+        var attachments: [ForwardAttachmentSnapshot]
+        var attachmentPolicy: String
+    }
+
+    private struct StoredForwardRecord {
+        var sourceIds: [String]
+        var items: [ForwardItemRecord]
+        var destinationTargetId: String
+    }
+
+    private struct PendingForwardSource {
+        var messageId: String
+        var content: String
+        var createdAt: Date
+        var channelId: String
+        var channelKind: String
+        var channelName: String
+        var parentChannelId: String?
+        var senderId: String
+        var attachments: [ChannelAttachment]
+    }
+
+    public struct MessageUpdatedBroadcast: Equatable, Sendable {
+        public var room: String
+        public var name: String
+        public var payload: String
+    }
+
+    /// A `reaction_viewer:updated` frame written to `user:{userId}`.
+    public struct ReactionViewerEvent: Equatable, Sendable {
+        public var room: String
+        public var name: String
+        public var payload: String
+    }
+
+    /// Stored forwarded-bundle metadata. The reaction route projects it for the HTTP body and the channel broadcast.
+    public func setForwardedBundle(messageId: String, items: [ForwardedSource]) {
+        lock.lock()
+        forwardedBundles[messageId] = items
+        lock.unlock()
+    }
+
+    public func messageUpdatedBroadcasts() -> [MessageUpdatedBroadcast] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedMessageUpdates
+    }
+
+    public func reactionViewerEvents() -> [ReactionViewerEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedReactionViewerEvents
+    }
+
+    /// An uploaded file on a channel. The send route keeps the caller's `attachmentIds` order, not upload time.
+    public func addChannelAttachment(channelId: String, uploaderId: String, filename: String, mimeType: String? = nil, sizeBytes: Int? = nil) -> String {
+        let id = UUID().uuidString.lowercased()
+        lock.lock()
+        channelAttachments[id] = ChannelAttachment(
+            id: id,
+            channelId: channelId,
+            uploaderId: uploaderId,
+            filename: filename,
+            messageId: nil,
+            messagePosition: nil,
+            mimeType: mimeType,
+            sizeBytes: sizeBytes
+        )
+        lock.unlock()
+        return id
+    }
+
+    public func linkedAttachmentPositions(ids: [String]) -> [(id: String, messagePosition: Int)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return ids.compactMap { id in
+            guard let position = channelAttachments[id]?.messagePosition else { return nil }
+            return (id, position)
+        }.sorted { $0.messagePosition < $1.messagePosition }
+    }
+
+    /// Stored attachment rows for these ids, in `messagePosition` order. Unlinked rows keep a nil position and sort first.
+    public func linkedAttachmentRecords(ids: [String]) -> [(id: String, messageId: String?, messagePosition: Int?)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return ids.compactMap { id in
+            guard let row = channelAttachments[id] else { return nil }
+            return (row.id, row.messageId, row.messagePosition)
+        }.sorted { ($0.messagePosition ?? -1) < ($1.messagePosition ?? -1) }
+    }
+
+    /// `GET /api/attachments/:id/url`. A private source stays hidden. A copy on a visible channel does not.
+    public func attachmentDownloadURL(attachmentId: String, authorization: String?, serverId: String?) -> HTTPReply {
+        let userId: String
+        switch authorize(authorization) {
+        case .rejected(let reply):
+            return reply
+        case .user(let id):
+            userId = id
+        }
+        guard isEmailVerified(userId: userId) else {
+            return Self.json(403, "{\"error\":\"Email verification required\"}")
+        }
+        guard let serverId, !serverId.isEmpty else {
+            return Self.json(400, "{\"error\":\"Missing X-Server-Id header\"}")
+        }
+        guard ServerScope.isUUID(attachmentId) else {
+            return Self.json(404, "{\"error\":\"Attachment not found\"}")
+        }
+        lock.lock()
+        let visible: Bool = {
+            guard let attachment = channelAttachments[attachmentId],
+                  let channel = postableChannels[attachment.channelId],
+                  channel.serverId == serverId,
+                  channel.deletedAt == nil
+            else { return false }
+            if channel.kind == "channel" { return true }
+            if channel.kind == "thread",
+               let parentId = channel.parentChannelId,
+               let parent = postableChannels[parentId],
+               parent.kind == "channel",
+               parent.serverId == serverId,
+               parent.deletedAt == nil {
+                return true
+            }
+            return channel.memberIds.contains(userId)
+        }()
+        lock.unlock()
+        guard visible else {
+            return Self.json(404, "{\"error\":\"Attachment not found\"}")
+        }
+        return Self.json(200, "{\"url\":\(jsonString("/api/attachments/\(attachmentId)")),\"expiresAt\":null}")
+    }
+
+    /// `GET /api/messages/sync`. `since_seq=0` returns the channel page, including a joint canonical store.
+    public func syncChannelMessages(channelId: String?, sinceSeq: String?, authorization: String?, serverId: String?) -> HTTPReply {
+        guard let channelId, ServerScope.isUUID(channelId) else {
+            return Self.json(400, "{\"error\":\"Invalid channel id\"}")
+        }
+        guard sinceSeq == nil || sinceSeq == "0" || Int(sinceSeq ?? "") != nil else {
+            return Self.json(400, "{\"error\":\"Invalid sync cursor\"}")
+        }
+        let userId: String
+        switch authorize(authorization) {
+        case .rejected(let reply):
+            return reply
+        case .user(let id):
+            userId = id
+        }
+        guard isEmailVerified(userId: userId) else {
+            return Self.json(403, "{\"error\":\"Email verification required\"}")
+        }
+        lock.lock()
+        let visible: Bool = {
+            guard let channel = postableChannels[channelId], channel.serverId == serverId else { return false }
+            if channel.kind == "channel" { return true }
+            return channel.memberIds.contains(userId)
+        }()
+        let storageChannelId = jointProjections.first { $0.localChannelId == channelId }?.canonicalChannelId ?? channelId
+        let rows = humanMessageRows.filter { $0.channelId == storageChannelId || $0.channelId == channelId }
+        let listed = rows.map { message -> String in
+            var row = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(message.content))"
+            if let metadata = forwardMetadataJSONLocked(messageId: message.id, userId: userId, serverId: serverId) {
+                row += ",\"actionMetadata\":\(metadata)"
+            }
+            row += "}"
+            return row
+        }.joined(separator: ",")
+        lock.unlock()
+        guard visible else {
+            return Self.json(404, "{\"error\":\"Channel not found or not visible\"}")
+        }
+        let body = "[\(listed)]"
+        return Self.json(200, body)
+    }
+
+    /// `GET /api/messages/:messageId/mention-deliveries`. Only the author who can still read the channel sees coarse outcomes.
+    public func mentionDeliveries(messageId: String, authorization: String?, serverId: String?) -> HTTPReply {
+        let userId: String
+        switch authorize(authorization) {
+        case .rejected(let reply):
+            return reply
+        case .user(let id):
+            userId = id
+        }
+        guard isEmailVerified(userId: userId) else {
+            return Self.json(403, "{\"error\":\"Email verification required\"}")
+        }
+        guard ServerScope.isUUID(messageId) else {
+            return Self.json(404, "{\"status\":\"NOT_JOINABLE\"}")
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let message = humanMessageRows.first(where: { $0.id.caseInsensitiveCompare(messageId) == .orderedSame }),
+              message.senderType == "user",
+              message.senderId == userId,
+              messageSearchVisibleLocked(messageChannelId: message.channelId, serverId: serverId, viewer: .user(userId)),
+              postableChannels[message.channelId]?.serverId == serverId
+        else {
+            return Self.json(404, "{\"status\":\"NOT_JOINABLE\"}")
+        }
+        let deliveries = storedMentions.filter {
+            $0.messageId == message.id && $0.targetType == "agent" && $0.notifiableAtSend
+        }.map { mention in
+            "{\"targetId\":\(jsonString(mention.targetId)),\(Self.mentionDeliveryFields(handle: mention.handle, terminalCode: mention.terminalCode))}"
+        }.joined(separator: ",")
+        return Self.json(200, "{\"messageId\":\(jsonString(message.id)),\"deliveries\":[\(deliveries)]}")
+    }
+
+    private static func mentionDeliveryFields(handle: String, terminalCode: String?) -> String {
+        guard let terminalCode, terminalCode != "INSTRUMENT_FAILED" else {
+            return "\"targetHandle\":\(jsonString(handle)),\"outcome\":\"unknown\""
+        }
+        let category: String
+        switch terminalCode {
+        case "QUOTA_LIMITED":
+            category = "quota"
+        case "DELIVERY_REJECTED":
+            category = "runtime_error"
+        default:
+            category = "unclassified"
+        }
+        return "\"targetHandle\":\(jsonString(handle)),\"outcome\":\"lost\",\"reasonCategory\":\(jsonString(category))"
+    }
+
+    /// `GET /api/messages/channel/:channelId`. A non-UUID is `Channel not found`. A UUID the caller cannot see uses the neutral body.
+    public func listChannelMessages(channelId: String, authorization: String?, serverId: String?, limit rawLimit: String? = nil) -> HTTPReply {
+        if !ServerScope.isUUID(channelId) {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        let userId: String?
+        if case .user(let id) = authorize(authorization) {
+            userId = id
+        } else {
+            userId = nil
+        }
+        lock.lock()
+        let visible: Bool = {
+            guard let channel = postableChannels[channelId], channel.serverId == serverId, let userId else { return false }
+            if channel.kind == "channel" { return true }
+            return channel.memberIds.contains(userId)
+        }()
+        let storageChannelId = jointProjections.first { $0.localChannelId == channelId }?.canonicalChannelId ?? channelId
+        let rows = humanMessageRows.filter { $0.channelId == storageChannelId || $0.channelId == channelId }
+        let pageRows = Array(rows.suffix(Self.messagePageLimit(rawLimit)))
+        let listed = pageRows.map { message in
+            var row = "{\"id\":\(jsonString(message.id)),\"content\":\(jsonString(message.content)),\"attachments\":[\(Self.attachmentJSON(message.attachmentIds))],\"reactions\":[\(reactionJSONLocked(messageId: message.id))],\"mentions\":[\(visibleMentionJSONLocked(messageId: message.id))]"
+            if let userId, let metadata = forwardMetadataJSONLocked(messageId: message.id, userId: userId, serverId: serverId) {
+                row += ",\"actionMetadata\":\(metadata)"
+            }
+            row += "}"
+            return row
+        }.joined(separator: ",")
+        let summaries = threadSummariesJSONLocked(parentChannelId: channelId, parentIds: pageRows.map(\.id))
+        lock.unlock()
+        guard visible else {
+            return Self.json(404, "{\"error\":\"Channel not found or not visible\"}")
+        }
+        return Self.json(200, "{\"messages\":[\(listed)],\"threadSummariesByParentMessageId\":{\(summaries)}}")
+    }
+
+    /// Missing, zero, or non-numeric limits are 50. A positive limit is capped at 200. The page is the newest rows.
+    private static func messagePageLimit(_ raw: String?) -> Int {
+        guard let raw, let parsed = Int(raw), parsed > 0 else { return 50 }
+        return min(parsed, 200)
+    }
+
+    /// Summaries for threads whose parent message is on this page. Newest three non-system replies, oldest of those first.
+    private func threadSummariesJSONLocked(parentChannelId: String, parentIds: [String]) -> String {
+        let parents = Set(parentIds)
+        var parts: [String] = []
+        for (threadId, thread) in postableChannels {
+            guard thread.kind == "thread",
+                  thread.deletedAt == nil,
+                  thread.parentChannelId == parentChannelId,
+                  let parentId = thread.parentMessageId,
+                  parents.contains(parentId)
+            else { continue }
+            let replies = humanMessageRows.filter { $0.channelId == threadId }
+            let previews = replies.filter { $0.messageType != "system" }.suffix(3)
+            let latest = previews.map { "{\"preview\":\(jsonString($0.content))}" }.joined(separator: ",")
+            parts.append("\(jsonString(parentId)):{\"replyCount\":\(replies.count),\"latestReplies\":[\(latest)]}")
+        }
+        return parts.joined(separator: ",")
+    }
+
+    /// Mentions a reader can see: notifiable at send, or later notified.
+    private func visibleMentionJSONLocked(messageId: String) -> String {
+        storedMentions.filter { row in
+            row.messageId == messageId && (row.notifiableAtSend || row.notifiedAt != nil)
+        }.map { row in
+            "{\"type\":\(jsonString(row.targetType)),\"id\":\(jsonString(row.targetId)),\"name\":\(jsonString(row.handle))}"
+        }.joined(separator: ",")
+    }
+
+    /// Stores a message row with a fixed id. Reaction short-id tests need a known prefix.
+    public func insertHumanMessage(id: String, channelId: String, senderId: String, content: String, messageType: String = "chat", senderType: String = "user", actionKind: String? = nil) {
+        lock.lock()
+        humanMessageRows.append(StoredHumanMessage(
+            id: id,
+            channelId: channelId,
+            senderId: senderId,
+            content: content,
+            messageType: messageType,
+            senderType: senderType,
+            actionKind: actionKind
+        ))
+        lock.unlock()
+    }
+
+    /// Task columns on a source message. A forward must not copy them onto the destination.
+    public func setHumanMessageTask(messageId: String, status: String, number: Int, assigneeType: String, assigneeId: String, claimedAt: String, completedAt: String) {
+        lock.lock()
+        if let index = humanMessageRows.firstIndex(where: { $0.id == messageId }) {
+            humanMessageRows[index].taskStatus = status
+            humanMessageRows[index].taskNumber = number
+            humanMessageRows[index].taskAssigneeType = assigneeType
+            humanMessageRows[index].taskAssigneeId = assigneeId
+            humanMessageRows[index].taskClaimedAt = claimedAt
+            humanMessageRows[index].taskCompletedAt = completedAt
+        }
+        lock.unlock()
+    }
+
+    /// A mention row search can filter with `mentionTarget=self`. Send only stores mentions of people who are not yet members.
+    /// A notifiable agent mention whose delivery ended in a terminal code. The author route projects that code.
+    public func recordAgentMentionDelivery(messageId: String, agentId: String, handle: String, terminalCode: String) {
+        lock.lock()
+        let message = humanMessageRows.first { $0.id == messageId }
+        storedMentions.append(StoredMention(
+            id: UUID().uuidString.lowercased(),
+            messageId: messageId,
+            channelId: message?.channelId ?? "",
+            senderId: message?.senderId ?? "",
+            targetType: "agent",
+            targetId: agentId,
+            handle: handle,
+            notifiableAtSend: true,
+            notifiedAt: nil,
+            notifiedByType: nil,
+            notifiedById: nil,
+            notifiedAction: nil,
+            terminalCode: terminalCode
+        ))
+        lock.unlock()
+    }
+
+    public func addMessageMention(messageId: String, targetType: String, targetId: String) {
+        lock.lock()
+        let message = humanMessageRows.first { $0.id == messageId }
+        storedMentions.append(StoredMention(
+            id: UUID().uuidString.lowercased(),
+            messageId: messageId,
+            channelId: message?.channelId ?? "",
+            senderId: message?.senderId ?? "",
+            targetType: targetType,
+            targetId: targetId,
+            handle: "",
+            notifiableAtSend: true,
+            notifiedAt: nil,
+            notifiedByType: nil,
+            notifiedById: nil,
+            notifiedAction: nil
+        ))
+        lock.unlock()
+    }
+
+    /// Pins the timestamp used by `sort=recent` message search.
+    public func setHumanMessageCreatedAt(messageId: String, createdAt: Date) {
+        lock.lock()
+        if let index = humanMessageRows.firstIndex(where: { $0.id == messageId }) {
+            humanMessageRows[index].createdAt = createdAt
+        }
+        lock.unlock()
+    }
+
+    public func markMessageSystem(messageId: String) {
+        lock.lock()
+        if let index = humanMessageRows.firstIndex(where: { $0.id == messageId }) {
+            humanMessageRows[index].messageType = "system"
+        }
+        lock.unlock()
+    }
+
+    public func archiveChannel(channelId: String) {
+        lock.lock()
+        postableChannels[channelId]?.archived = true
+        lock.unlock()
+    }
+
+    public func markChannelDeleted(channelId: String) {
+        lock.lock()
+        postableChannels[channelId]?.deletedAt = Date()
+        lock.unlock()
+    }
+
+    /// Drops a channel membership. A later send on another channel must not replay this channel's randomId.
+    public func removeChannelMember(channelId: String, memberId: String) {
+        lock.lock()
+        postableChannels[channelId]?.memberIds.remove(memberId)
+        lock.unlock()
+    }
+
+    public func humanMessageRandomIds(channelId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return humanMessageRows.filter { $0.channelId == channelId }.compactMap(\.randomId)
+    }
+
+    public func humanMessageIds(channelId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return humanMessageRows.filter { $0.channelId == channelId }.map(\.id)
+    }
+
+    /// The IANA zone stored for a human send. Human HTTP never returns this column.
+    public func storedSenderTimezone(messageId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return humanMessageRows.first { $0.id == messageId }?.senderTimezone
+    }
+
+    public struct MentionFact: Equatable, Sendable {
+        public var targetType: String
+        public var targetId: String
+        public var notifiableAtSend: Bool
+        public var notified: Bool
+    }
+
+    public struct InboxFact: Equatable, Sendable {
+        public var receiverType: String
+        public var receiverId: String
+    }
+
+    public struct MentionActionRecord: Equatable, Sendable {
+        public var notified: Bool
+        public var notifiedByType: String?
+        public var notifiedById: String?
+        public var notifiedAction: String?
+    }
+
+    /// The stored notify/add row for one resolution id.
+    public func mentionActionRecord(id: String) -> MentionActionRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let row = storedMentions.first(where: { $0.id == id }) else { return nil }
+        return MentionActionRecord(
+            notified: row.notifiedAt != nil,
+            notifiedByType: row.notifiedByType,
+            notifiedById: row.notifiedById,
+            notifiedAction: row.notifiedAction
+        )
+    }
+
+    public func channelAgentIds(channelId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(channelAgentMembers[channelId] ?? []).sorted()
+    }
+
+    public func channelMemberIds(channelId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(postableChannels[channelId]?.memberIds ?? []).sorted()
+    }
+
+    /// Mention rows written for this message. Public-channel outsiders stay `notifiableAtSend: false` and unnotified.
+    public func messageMentionRows(messageId: String) -> [MentionFact] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedMentions.filter { $0.messageId == messageId }.map {
+            MentionFact(targetType: $0.targetType, targetId: $0.targetId, notifiableAtSend: $0.notifiableAtSend, notified: $0.notifiedAt != nil)
+        }
+    }
+
+    public func inboxFacts(messageId: String, receiverIds: [String]) -> [InboxFact] {
+        lock.lock()
+        defer { lock.unlock() }
+        let wanted = Set(receiverIds)
+        return storedInboxFacts.filter { $0.messageId == messageId && wanted.contains($0.receiverId) }.map {
+            InboxFact(receiverType: $0.receiverType, receiverId: $0.receiverId)
+        }
+    }
+
+    public func agentDeliveries(agentId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedAgentDeliveries.filter { $0.agentId == agentId }.map(\.messageId)
+    }
+
+    public func agentDeliveryChannelTypes(agentId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedAgentDeliveries.filter { $0.agentId == agentId }.map(\.channelType)
+    }
+
+    /// `GET /api/channels/inbox`. A DM outsider mention is not an inbox item.
+    public func channelInbox(authorization: String?, serverId: String?, filter: String?) -> HTTPReply {
+        let userId: String
+        switch authorize(authorization) {
+        case .rejected:
+            return PublicVisits.authRequired(authorization: authorization)
+        case .user(let id):
+            userId = id
+        }
+        lock.lock()
+        let rows = storedInboxFacts.filter { fact in
+            fact.receiverId == userId
+                && (serverId == nil || fact.serverId == serverId)
+                && (filter != "mentions" || fact.personalMention)
+        }
+        lock.unlock()
+        let items = rows.map { fact in
+            let channel = fact.channelId.map { jsonString($0) } ?? "null"
+            return "{\"channelId\":\(channel),\"lastMessageId\":\(jsonString(fact.messageId))}"
+        }.joined(separator: ",")
+        return Self.json(200, "{\"items\":[\(items)]}")
+    }
+
+    /// `GET /internal/agent-api/mentions`. Outsider rows stay hidden until they were notifiable at send or later notified.
+    public func agentMentionInbox(authorization: String?) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let credential = agentCredentials[token]
+        let allowed = credential?.scopes.contains("mentions") == true
+        let rows = storedMentions.filter { row in
+            row.targetType == "agent"
+                && row.targetId == credential?.agentId
+                && (row.notifiableAtSend || row.notifiedAt != nil)
+        }
+        lock.unlock()
+        guard allowed else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        let mentions = rows.map { "{\"messageId\":\(jsonString($0.messageId))}" }.joined(separator: ",")
+        return Self.json(200, "{\"mentions\":[\(mentions)]}")
+    }
+
+    /// A raw agent API key. The mentions inbox accepts it when `mentions` is one of the scopes.
+    public func mintAgentCredential(agentId: String, scopes: [String], name: String) -> String {
+        let key = "sk_agent_" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        lock.lock()
+        agentCredentials[key] = AgentCredential(agentId: agentId, scopes: Set(scopes), name: name)
+        lock.unlock()
+        return key
+    }
+
+    /// Binds a machine key to one agent. The legacy agent reaction route accepts that bearer.
+    public func registerMachineForAgent(serverId: String, agentId: String) -> String {
+        let key = "mk_" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        lock.lock()
+        machineKeys[key] = (serverId: serverId, agentId: agentId)
+        lock.unlock()
+        return key
+    }
+
+    public func addChannelAgent(channelId: String, agentId: String) {
+        lock.lock()
+        var members = channelAgentMembers[channelId] ?? []
+        members.insert(agentId)
+        channelAgentMembers[channelId] = members
+        lock.unlock()
+    }
+
+    public func storedMessageReactionActors(messageId: String) -> [(reactorType: String, reactorId: String)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return messageReactions.filter { $0.messageId == messageId }.map { ($0.reactorType, $0.reactorId) }
+    }
+
+    /// Reaction rows still stored for this message. An idempotent add leaves one row; a delete leaves none.
+    public func storedMessageReactions(messageId: String) -> [(emoji: String, reactorId: String)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return messageReactions.filter { $0.messageId == messageId }.map { ($0.emoji, $0.reactorId) }
+    }
+
+    /// `POST /api/messages/:messageId/reactions`. A second add of the same emoji by the same user does not raise the count.
+    public func addMessageReaction(messageId: String, body: String, authorization: String?, serverId: String?) -> HTTPReply {
+        mutateMessageReaction(messageId: messageId, body: body, authorization: authorization, serverId: serverId, remove: false)
+    }
+
+    /// `DELETE /api/messages/:messageId/reactions`.
+    public func removeMessageReaction(messageId: String, body: String, authorization: String?, serverId: String?) -> HTTPReply {
+        mutateMessageReaction(messageId: messageId, body: body, authorization: authorization, serverId: serverId, remove: true)
+    }
+
+    private func mutateMessageReaction(messageId: String, body: String, authorization: String?, serverId: String?, remove: Bool) -> HTTPReply {
+        let userId: String
+        switch authorize(authorization) {
+        case .rejected:
+            return PublicVisits.authRequired(authorization: authorization)
+        case .user(let id):
+            userId = id
+        }
+        guard let emoji = Self.reactionEmoji(body) else {
+            return Self.json(400, "{\"error\":\"A valid emoji is required\"}")
+        }
+        lock.lock()
+        let message: StoredHumanMessage
+        let channel: PostableChannel
+        switch resolveReactionTargetLocked(messageId: messageId, userId: userId, serverId: serverId) {
+        case .missing:
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Message not found\"}")
+        case .ambiguous:
+            lock.unlock()
+            return Self.json(400, "{\"error\":\"Message short id is ambiguous\"}")
+        case .message(let resolvedMessage, let resolvedChannel, _):
+            message = resolvedMessage
+            channel = resolvedChannel
+        }
+        if message.messageType == "system" {
+            lock.unlock()
+            return Self.json(400, "{\"error\":\"System messages cannot receive reactions\"}")
+        }
+        if !channel.memberIds.contains(userId) {
+            lock.unlock()
+            return Self.json(403, "{\"error\":\"You must join this channel to react to messages\"}")
+        }
+        if channel.archived {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"This channel is archived\",\"code\":\"channel_archived\"}")
+        }
+        let changed: Bool
+        if remove {
+            let before = messageReactions.count
+            messageReactions.removeAll { $0.messageId == message.id && $0.emoji == emoji && $0.reactorId == userId && $0.reactorType == "user" }
+            changed = messageReactions.count != before
+        } else if messageReactions.contains(where: { $0.messageId == message.id && $0.emoji == emoji && $0.reactorId == userId && $0.reactorType == "user" }) {
+            changed = false
+        } else {
+            messageReactions.append(StoredReaction(messageId: message.id, emoji: emoji, reactorId: userId, reactorType: "user"))
+            changed = true
+        }
+        let viewerKey = "\(message.id)\n\(userId)"
+        if changed {
+            reactionViewerVersions[viewerKey] = (reactionViewerVersions[viewerKey] ?? 0) + 1
+            noteDiscussionChangeLocked(messageId: message.id, emoji: emoji)
+        }
+        let viewerJSON = reactionViewerJSONLocked(messageId: message.id, userId: userId, serverId: serverId ?? "")
+        recordedReactionViewerEvents.append(ReactionViewerEvent(
+            room: "user:\(userId)",
+            name: "reaction_viewer:updated",
+            payload: viewerJSON
+        ))
+        let bodyJSON = finishReactionLocked(message: message, actorId: userId, serverId: serverId, viewerJSON: viewerJSON)
+        lock.unlock()
+        return Self.json(200, bodyJSON)
+    }
+
+    /// `GET /api/messages/:messageId/reactions/viewer`. A cold read uses the same snapshot as the last mutation ACK.
+    public func reactionViewer(messageId: String, authorization: String?, serverId: String?) -> HTTPReply {
+        let userId: String
+        switch authorize(authorization) {
+        case .rejected:
+            return PublicVisits.authRequired(authorization: authorization)
+        case .user(let id):
+            userId = id
+        }
+        lock.lock()
+        switch resolveReactionTargetLocked(messageId: messageId, userId: userId, serverId: serverId) {
+        case .missing:
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Message not found\"}")
+        case .ambiguous:
+            lock.unlock()
+            return Self.json(400, "{\"error\":\"Message short id is ambiguous\"}")
+        case .message(let message, let channel, _):
+            if message.messageType == "system" {
+                lock.unlock()
+                return Self.json(400, "{\"error\":\"System messages cannot receive reactions\"}")
+            }
+            if channel.archived {
+                lock.unlock()
+                return Self.json(409, "{\"error\":\"This channel is archived\",\"code\":\"channel_archived\"}")
+            }
+            let body = reactionViewerJSONLocked(messageId: message.id, userId: userId, serverId: serverId ?? "")
+            lock.unlock()
+            return Self.json(200, body)
+        }
+    }
+
+    /// `POST` and `DELETE /internal/agent/:agentId/messages/:messageId/reactions`. The machine key must belong to that agent.
+    public func mutateAgentMessageReaction(agentId: String, messageId: String, body: String, authorization: String?, remove: Bool) -> HTTPReply {
+        guard let emoji = Self.reactionEmoji(body) else {
+            return Self.json(400, "{\"error\":\"A valid emoji is required\"}")
+        }
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        guard let machine = machineKeys[token], machine.agentId == agentId else {
+            lock.unlock()
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard let message = humanMessageRows.first(where: { $0.id.caseInsensitiveCompare(messageId) == .orderedSame }),
+              postableChannels[message.channelId]?.serverId == machine.serverId,
+              channelAgentMembers[message.channelId]?.contains(agentId) == true
+        else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Message not found\"}")
+        }
+        let bodyJSON = writeAgentReactionLocked(message: message, agentId: agentId, emoji: emoji, serverId: machine.serverId, remove: remove)
+        lock.unlock()
+        return Self.json(200, bodyJSON)
+    }
+
+    /// `POST` and `DELETE /internal/agent-api/messages/:messageId/reactions`. The credential must include `reactions`.
+    public func mutateAgentApiMessageReaction(messageId: String, body: String, authorization: String?, remove: Bool) -> HTTPReply {
+        guard let emoji = Self.reactionEmoji(body) else {
+            return Self.json(400, "{\"error\":\"A valid emoji is required\"}")
+        }
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        guard let credential = agentCredentials[token], credential.scopes.contains("reactions"),
+              let agent = serverAgents[credential.agentId]
+        else {
+            lock.unlock()
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        let agentId = credential.agentId
+        guard let message = humanMessageRows.first(where: { $0.id.caseInsensitiveCompare(messageId) == .orderedSame }),
+              postableChannels[message.channelId]?.serverId == agent.serverId,
+              channelAgentMembers[message.channelId]?.contains(agentId) == true
+        else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Message not found\"}")
+        }
+        let bodyJSON = writeAgentReactionLocked(message: message, agentId: agentId, emoji: emoji, serverId: agent.serverId, remove: remove)
+        lock.unlock()
+        return Self.json(200, bodyJSON)
+    }
+
+    /// `GET /api/messages/:messageId/reactions/actors`. The cursor is bound to the caller, message, emoji, and discussion version.
+    public func listReactionActors(messageId: String, authorization: String?, serverId: String?, emoji: String?, limit: String?, cursor: String?) -> HTTPReply {
+        let userId: String
+        switch authorize(authorization) {
+        case .rejected:
+            return PublicVisits.authRequired(authorization: authorization)
+        case .user(let id):
+            userId = id
+        }
+        guard let emoji, let validEmoji = Self.validReactionEmoji(emoji) else {
+            return Self.json(400, "{\"error\":\"A valid emoji is required\",\"code\":\"invalid_reaction_emoji\"}")
+        }
+        let pageLimit: Int
+        if let limit {
+            guard let parsed = Int(limit), parsed >= 1, parsed <= 100, String(parsed) == limit else {
+                return Self.json(400, "{\"error\":\"limit must be an integer between 1 and 100\",\"code\":\"invalid_reaction_actor_limit\"}")
+            }
+            pageLimit = parsed
+        } else {
+            pageLimit = 50
+        }
+        lock.lock()
+        let message: StoredHumanMessage
+        let channel: PostableChannel
+        let localChannelId: String
+        switch resolveReactionTargetLocked(messageId: messageId, userId: userId, serverId: serverId) {
+        case .missing:
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Message not found\"}")
+        case .ambiguous:
+            lock.unlock()
+            return Self.json(400, "{\"error\":\"Message short id is ambiguous\"}")
+        case .message(let resolved, let resolvedChannel, let resolvedLocalId):
+            if resolved.messageType == "system" {
+                lock.unlock()
+                return Self.json(400, "{\"error\":\"System messages cannot receive reactions\"}")
+            }
+            if resolvedChannel.archived {
+                lock.unlock()
+                return Self.json(409, "{\"error\":\"This channel is archived\",\"code\":\"channel_archived\"}")
+            }
+            message = resolved
+            channel = resolvedChannel
+            localChannelId = resolvedLocalId
+        }
+        let currentVersion = reactionDiscussionVersions["\(message.id)\n\(validEmoji)"] ?? 0
+        var afterKind: String?
+        var afterId: String?
+        if let cursor {
+            guard let decoded = Self.decodeActorCursor(cursor) else {
+                lock.unlock()
+                return Self.json(400, "{\"error\":\"Invalid reaction actors cursor\",\"code\":\"invalid_reaction_actors_cursor\"}")
+            }
+            if decoded.principalId != userId || decoded.serverId != (serverId ?? "") || decoded.messageId != message.id || decoded.emoji != validEmoji {
+                lock.unlock()
+                return Self.json(400, "{\"error\":\"Invalid reaction actors cursor\",\"code\":\"invalid_reaction_actors_cursor\"}")
+            }
+            let visibility = reactionActorVisibilityLocked(channelId: localChannelId, requesterId: userId)
+            if decoded.visibilityHash != visibility.hash {
+                lock.unlock()
+                return Self.json(409, "{\"error\":\"Reaction actor visibility changed while reading this page\",\"code\":\"reaction_actor_visibility_changed\",\"rebaselineRequired\":true}")
+            }
+            if decoded.discussionVersion != currentVersion {
+                lock.unlock()
+                return Self.json(409, "{\"error\":\"Reaction discussion changed while reading this page\",\"code\":\"reaction_discussion_version_changed\",\"currentDiscussionVersion\":\(currentVersion),\"rebaselineRequired\":true}")
+            }
+            afterKind = decoded.actorKind
+            afterId = decoded.actorId
+        }
+        let visibility = reactionActorVisibilityLocked(channelId: localChannelId, requesterId: userId)
+        var actors = messageReactions
+            .filter { row in
+                row.messageId == message.id && row.emoji == validEmoji && (
+                    (row.reactorType == "user" && visibility.humans.contains(row.reactorId))
+                    || (row.reactorType == "agent" && visibility.agents.contains(row.reactorId))
+                )
+            }
+            .map { (kind: $0.reactorType, id: $0.reactorId) }
+            .sorted { lhs, rhs in
+                if lhs.kind != rhs.kind { return lhs.kind < rhs.kind }
+                return lhs.id < rhs.id
+            }
+        if let afterKind, let afterId {
+            actors = actors.filter { $0.kind > afterKind || ($0.kind == afterKind && $0.id > afterId) }
+        }
+        let hasMore = actors.count > pageLimit
+        let page = Array(actors.prefix(pageLimit))
+        let nextCursor: String?
+        if hasMore, let last = page.last {
+            nextCursor = Self.encodeActorCursor(ActorCursor(
+                principalId: userId,
+                serverId: serverId ?? "",
+                messageId: message.id,
+                emoji: validEmoji,
+                discussionVersion: currentVersion,
+                visibilityHash: visibility.hash,
+                actorKind: last.kind,
+                actorId: last.id
+            ))
+        } else {
+            nextCursor = nil
+        }
+        let actorJSON = page.map { "{\"actorRef\":{\"kind\":\(jsonString($0.kind)),\"id\":\(jsonString($0.id))}}" }.joined(separator: ",")
+        let cursorJSON = nextCursor.map { jsonString($0) } ?? "null"
+        let scopeKind = channel.kind == "thread" ? "thread" : "channel"
+        let localServer = jsonString(serverId ?? "")
+        let discussion = "{\"root\":{\"kind\":\"message\",\"serverId\":\(localServer),\"id\":\(jsonString(message.id))},\"relation\":{\"kind\":\"reactionActors\",\"emoji\":\(jsonString(validEmoji))},\"parentScope\":{\"serverId\":\(localServer),\"scopeKind\":\(jsonString(scopeKind)),\"scopeId\":\(jsonString(localChannelId))}}"
+        lock.unlock()
+        return Self.json(200, "{\"discussion\":\(discussion),\"discussionVersion\":\(currentVersion),\"actors\":[\(actorJSON)],\"nextCursor\":\(cursorJSON)}")
+    }
+
+    private func writeAgentReactionLocked(message: StoredHumanMessage, agentId: String, emoji: String, serverId: String, remove: Bool) -> String {
+        let changed: Bool
+        if remove {
+            let before = messageReactions.count
+            messageReactions.removeAll { $0.messageId == message.id && $0.emoji == emoji && $0.reactorId == agentId && $0.reactorType == "agent" }
+            changed = messageReactions.count != before
+        } else if messageReactions.contains(where: { $0.messageId == message.id && $0.emoji == emoji && $0.reactorId == agentId && $0.reactorType == "agent" }) {
+            changed = false
+        } else {
+            messageReactions.append(StoredReaction(messageId: message.id, emoji: emoji, reactorId: agentId, reactorType: "agent"))
+            changed = true
+        }
+        if changed {
+            noteDiscussionChangeLocked(messageId: message.id, emoji: emoji)
+        }
+        return finishReactionLocked(message: message, actorId: agentId, serverId: serverId)
+    }
+
+    private func noteDiscussionChangeLocked(messageId: String, emoji: String) {
+        let key = "\(messageId)\n\(emoji)"
+        reactionDiscussionVersions[key] = (reactionDiscussionVersions[key] ?? 0) + 1
+    }
+
+    /// On #all, a member of a hidden human directory sees only themself. Agents stay visible. Owners are not hidden.
+    private func reactionActorVisibilityLocked(channelId: String, requesterId: String) -> (humans: Set<String>, agents: Set<String>, hash: String) {
+        guard let channel = postableChannels[channelId] else { return ([], [], "") }
+        let hiddenDirectory = hideHumansFromMembers[channel.serverId] == true
+            && serverMemberRoles["\(channel.serverId)\n\(requesterId)"] == "member"
+            && channel.name == "all"
+            && (channel.kind == "channel" || channel.kind == "private")
+        let roster = jointRosterLocked(channelId: channelId) ?? channel.memberIds
+        let humans = hiddenDirectory
+            ? roster.filter { $0 == requesterId }
+            : roster
+        let agents = channelAgentMembers[channelId] ?? []
+        let hash = humans.sorted().joined(separator: ",") + "|" + agents.sorted().joined(separator: ",")
+        return (humans, agents, hash)
+    }
+
+    private func finishReactionLocked(message: StoredHumanMessage, actorId: String, serverId: String?, viewerJSON: String? = nil) -> String {
+        let reactions = reactionJSONLocked(messageId: message.id)
+        let senderName = accounts.values.first { $0.id == message.senderId }?.name ?? "Unknown user"
+        let httpMetadata = forwardedBundleJSONLocked(messageId: message.id, userId: actorId, serverId: serverId, scrub: false)
+        let socketMetadata = forwardedBundleJSONLocked(messageId: message.id, userId: actorId, serverId: serverId, scrub: true)
+        var bodyJSON = "{\"reactions\":[\(reactions)]"
+        if let httpMetadata {
+            bodyJSON += ",\"actionMetadata\":\(httpMetadata)"
+        }
+        if let viewerJSON {
+            bodyJSON += ",\"reactionViewer\":\(viewerJSON)"
+        }
+        bodyJSON += "}"
+        var payload = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(message.channelId)),\"content\":\(jsonString(message.content)),\"senderName\":\(jsonString(senderName)),\"commentRef\":null,\"reactions\":[\(reactions)]"
+        if let socketMetadata {
+            payload += ",\"actionMetadata\":\(socketMetadata)"
+        }
+        payload += "}"
+        recordedMessageUpdates.append(MessageUpdatedBroadcast(
+            room: "channel:\(message.channelId)",
+            name: "message:updated",
+            payload: payload
+        ))
+        return bodyJSON
+    }
+
+    /// The HTTP body keeps a forwarded source the viewer can read. The channel broadcast always strips it.
+    private func forwardedBundleJSONLocked(messageId: String, userId: String, serverId: String?, scrub: Bool) -> String? {
+        guard let items = forwardedBundles[messageId], !items.isEmpty else { return nil }
+        let rendered = items.map { item -> String in
+            let readable = !scrub && viewerCanReadForwardedSourceLocked(item, userId: userId, serverId: serverId)
+            if readable {
+                return "{\"sourceServerId\":\(jsonString(item.sourceServerId)),\"sourceTargetId\":\(jsonString(item.sourceTargetId)),\"sourceMessageId\":\(jsonString(item.sourceMessageId)),\"sourceTargetSnapshot\":{\"id\":\(jsonString(item.snapshotId)),\"type\":\(jsonString(item.snapshotType)),\"label\":\(jsonString(item.snapshotLabel)),\"labelVisibility\":\(jsonString(item.snapshotLabelVisibility))},\"provenanceState\":\(jsonString(item.provenanceState))}"
+            }
+            let type = item.snapshotType.isEmpty ? "channel" : item.snapshotType
+            return "{\"sourceMessageId\":null,\"sourceServerId\":null,\"sourceTargetId\":null,\"sourceTargetSnapshot\":{\"id\":null,\"type\":\(jsonString(type)),\"label\":\"\",\"labelVisibility\":\"restricted\"},\"provenanceState\":\"original_unavailable\"}"
+        }.joined(separator: ",")
+        return "{\"kind\":\"forwarded-bundle\",\"forwardedItems\":[\(rendered)]}"
+    }
+
+    private func viewerCanReadForwardedSourceLocked(_ item: ForwardedSource, userId: String, serverId: String?) -> Bool {
+        guard item.sourceServerId == serverId,
+              let channel = postableChannels[item.sourceTargetId],
+              channel.serverId == serverId
+        else { return false }
+        if channel.kind == "channel" { return true }
+        return channel.memberIds.contains(userId)
+    }
+
+    private enum ReactionTarget {
+        case message(StoredHumanMessage, PostableChannel, String)
+        case ambiguous
+        case missing
+    }
+
+    private struct ActorCursor {
+        var principalId: String
+        var serverId: String
+        var messageId: String
+        var emoji: String
+        var discussionVersion: Int
+        var visibilityHash: String
+        var actorKind: String
+        var actorId: String
+    }
+
+    private static func validReactionEmoji(_ raw: String) -> String? {
+        let emoji = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if emoji.isEmpty || emoji.utf16.count > 16 || emoji.contains(where: \.isWhitespace) {
+            return nil
+        }
+        return emoji
+    }
+
+    private static func encodeActorCursor(_ cursor: ActorCursor) -> String {
+        let json = "{\"principalId\":\(jsonString(cursor.principalId)),\"serverId\":\(jsonString(cursor.serverId)),\"messageId\":\(jsonString(cursor.messageId)),\"emoji\":\(jsonString(cursor.emoji)),\"discussionVersion\":\(cursor.discussionVersion),\"visibilityHash\":\(jsonString(cursor.visibilityHash)),\"actorKind\":\(jsonString(cursor.actorKind)),\"actorId\":\(jsonString(cursor.actorId))}"
+        var encoded = Data(json.utf8).base64EncodedString()
+        encoded = encoded.replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        return encoded
+    }
+
+    private static func decodeActorCursor(_ raw: String) -> ActorCursor? {
+        if raw.isEmpty || raw.utf8.count > 2048 { return nil }
+        var base = raw.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        let remainder = base.count % 4
+        if remainder != 0 { base += String(repeating: "=", count: 4 - remainder) }
+        guard let data = Data(base64Encoded: base),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let principalId = object["principalId"] as? String,
+              let serverId = object["serverId"] as? String,
+              let messageId = object["messageId"] as? String,
+              let emoji = object["emoji"] as? String,
+              let visibilityHash = object["visibilityHash"] as? String,
+              let actorKind = object["actorKind"] as? String,
+              let actorId = object["actorId"] as? String,
+              actorKind == "user" || actorKind == "agent"
+        else { return nil }
+        let version: Int
+        if let number = object["discussionVersion"] as? NSNumber {
+            version = number.intValue
+        } else if let int = object["discussionVersion"] as? Int {
+            version = int
+        } else {
+            return nil
+        }
+        return ActorCursor(
+            principalId: principalId,
+            serverId: serverId,
+            messageId: messageId,
+            emoji: emoji,
+            discussionVersion: version,
+            visibilityHash: visibilityHash,
+            actorKind: actorKind,
+            actorId: actorId
+        )
+    }
+
+    /// A short id counts only messages this user can see. Hidden private rows with the same prefix stay out of the match.
+    /// A joint guest resolves the canonical message through that server's local projection.
+    private func resolveReactionTargetLocked(messageId: String, userId: String, serverId: String?) -> ReactionTarget {
+        if MessageContext.isShortId(messageId) {
+            let matches = humanMessageRows.filter {
+                Self.messageIdHasShortPrefix($0.id, prefix: messageId) && reactionMessageVisibleLocked($0, userId: userId, serverId: serverId)
+            }
+            if matches.count > 1 { return .ambiguous }
+            if let message = matches.first, let channel = postableChannels[message.channelId] {
+                return .message(message, channel, message.channelId)
+            }
+            return .missing
+        }
+        guard let message = humanMessageRows.first(where: { $0.id.caseInsensitiveCompare(messageId) == .orderedSame }) else {
+            return .missing
+        }
+        if reactionMessageVisibleLocked(message, userId: userId, serverId: serverId),
+           let channel = postableChannels[message.channelId] {
+            return .message(message, channel, message.channelId)
+        }
+        if postableChannels[message.channelId]?.deletedAt == nil,
+           let localId = jointLocalChannelIdLocked(canonicalChannelId: message.channelId, serverId: serverId, userId: userId),
+           let local = postableChannels[localId],
+           local.deletedAt == nil {
+            return .message(message, local, localId)
+        }
+        return .missing
+    }
+
+    private func jointLocalChannelIdLocked(canonicalChannelId: String, serverId: String?, userId: String) -> String? {
+        guard let serverId else { return nil }
+        return jointProjections.first { link in
+            link.canonicalChannelId == canonicalChannelId
+                && link.serverId == serverId
+                && postableChannels[link.localChannelId]?.memberIds.contains(userId) == true
+        }?.localChannelId
+    }
+
+    /// Members of every local projection of one joint channel. Nil when this channel is not joint.
+    private func jointRosterLocked(channelId: String) -> Set<String>? {
+        let canonical = jointProjections.first { $0.localChannelId == channelId }?.canonicalChannelId
+            ?? (jointProjections.contains { $0.canonicalChannelId == channelId } ? channelId : nil)
+        guard let canonical else { return nil }
+        var ids = postableChannels[canonical]?.memberIds ?? []
+        for link in jointProjections where link.canonicalChannelId == canonical {
+            ids.formUnion(postableChannels[link.localChannelId]?.memberIds ?? [])
+        }
+        return ids
+    }
+
+    /// Public channels are visible to any authenticated user on the server. Private, DM, and thread rows require membership.
+    /// A deleted channel is not visible, so the reaction route answers 404 before the archive check.
+    private func reactionMessageVisibleLocked(_ message: StoredHumanMessage, userId: String, serverId: String?) -> Bool {
+        guard let channel = postableChannels[message.channelId],
+              channel.serverId == serverId,
+              channel.deletedAt == nil
+        else { return false }
+        if channel.kind == "channel" { return true }
+        return channel.memberIds.contains(userId)
+    }
+
+    /// The caller's own emojis, ordered by UTF-16 code units, plus the version that advances only when a row changes.
+    private func reactionViewerJSONLocked(messageId: String, userId: String, serverId: String) -> String {
+        let version = reactionViewerVersions["\(messageId)\n\(userId)"] ?? 0
+        let emojis = messageReactions
+            .filter { $0.messageId == messageId && $0.reactorType == "user" && $0.reactorId == userId }
+            .map(\.emoji)
+            .sorted(by: Self.utf16Ascending)
+        let list = emojis.map { jsonString($0) }.joined(separator: ",")
+        return "{\"serverId\":\(jsonString(serverId)),\"messageId\":\(jsonString(messageId)),\"viewerVersion\":\(version),\"reactedEmojis\":[\(list)]}"
+    }
+
+    private static func utf16Ascending(_ lhs: String, _ rhs: String) -> Bool {
+        let left = Array(lhs.utf16)
+        let right = Array(rhs.utf16)
+        for index in 0..<min(left.count, right.count) where left[index] != right[index] {
+            return left[index] < right[index]
+        }
+        return left.count < right.count
+    }
+
+    /// Node `uuidShortIdRange`: the half-open prefix of canonical lowercase UUID text.
+    private static func messageIdHasShortPrefix(_ id: String, prefix: String) -> Bool {
+        let normalized = prefix.lowercased()
+        guard normalized.count == 8, let start = UInt64(normalized, radix: 16) else { return false }
+        let value = id.lowercased()
+        let lower = normalized + "-0000-0000-0000-000000000000"
+        guard value >= lower else { return false }
+        let next = start + 1
+        if next > 0xffff_ffff { return true }
+        let hex = String(next, radix: 16)
+        let upper = String(repeating: "0", count: 8 - hex.count) + hex + "-0000-0000-0000-000000000000"
+        return value < upper
+    }
+
+    /// Node `parseReactionEmoji`: a trimmed string, at most 16 UTF-16 code units, with no whitespace.
+    private static func reactionEmoji(_ body: String) -> String? {
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = object["emoji"] as? String
+        else { return nil }
+        let emoji = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if emoji.isEmpty || emoji.utf16.count > 16 || emoji.contains(where: \.isWhitespace) {
+            return nil
+        }
+        return emoji
+    }
+
+    private func reactionJSONLocked(messageId: String) -> String {
+        var order: [String] = []
+        var buckets: [String: (ids: [String], names: [String])] = [:]
+        for row in messageReactions where row.messageId == messageId {
+            if buckets[row.emoji] == nil {
+                order.append(row.emoji)
+                buckets[row.emoji] = ([], [])
+            }
+            let name = row.reactorType == "agent"
+                ? (serverAgents[row.reactorId]?.name ?? "Unknown agent")
+                : (accounts.values.first { $0.id == row.reactorId }?.name ?? "Unknown user")
+            var bucket = buckets[row.emoji] ?? ([], [])
+            bucket.ids.append(row.reactorId)
+            bucket.names.append(name)
+            buckets[row.emoji] = bucket
+        }
+        return order.map { emoji in
+            let bucket = buckets[emoji] ?? ([], [])
+            let ids = bucket.ids.map { jsonString($0) }.joined(separator: ",")
+            let names = bucket.names.map { jsonString($0) }.joined(separator: ",")
+            return "{\"emoji\":\(jsonString(emoji)),\"count\":\(bucket.ids.count),\"reactorIds\":[\(ids)],\"reactorNames\":[\(names)]}"
+        }.joined(separator: ",")
+    }
+
+    public var humanMessageCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return humanMessageRows.count
+    }
+
+    private func storeHumanMessage(channelId: String, senderId: String, content: String, randomId: String?, attachmentIds: [String], senderTimezone: String? = nil) -> HTTPReply {
+        lock.lock()
+        if let randomId, let existing = humanMessageRows.first(where: { $0.senderId == senderId && $0.randomId == randomId }) {
+            if existing.channelId != channelId {
+                lock.unlock()
+                return Self.json(409, "{\"error\":\"randomId has already been used for a different message\",\"code\":\"random_id_conflict\"}")
+            }
+            let matches = attachmentOrderMatches(message: existing, attachmentIds: attachmentIds, uploaderId: senderId)
+            let snapshot = existing
+            lock.unlock()
+            if matches {
+                return Self.humanMessageJSON(snapshot)
+            }
+            return Self.json(400, "{\"error\":\"This idempotent send was already committed with a different ordered attachment set.\",\"code\":\"attachment_replay_conflict\"}")
+        }
+        var seenAttachmentIds = Set<String>()
+        for id in attachmentIds {
+            if seenAttachmentIds.contains(id) {
+                lock.unlock()
+                return Self.json(400, "{\"error\":\"Attachment \(id) was requested more than once. Send each attachment ID exactly once.\",\"code\":\"attachment_duplicate\"}")
+            }
+            seenAttachmentIds.insert(id)
+            guard let row = channelAttachments[id], row.channelId == channelId, row.uploaderId == senderId else {
+                lock.unlock()
+                return Self.json(400, "{\"error\":\"Attachment \(id) is not available for this sender. Re-upload the file and send the new attachment ID.\",\"code\":\"attachment_not_found\"}")
+            }
+            if row.messageId != nil {
+                lock.unlock()
+                return Self.json(400, "{\"error\":\"Attachment \(id) is already attached to another message. Re-upload the file and send the new attachment ID.\",\"code\":\"attachment_already_linked\"}")
+            }
+        }
+        let stored = StoredHumanMessage(
+            id: UUID().uuidString.lowercased(),
+            channelId: channelId,
+            senderId: senderId,
+            content: content,
+            randomId: randomId,
+            attachmentIds: attachmentIds,
+            senderTimezone: senderTimezone
+        )
+        for (position, id) in attachmentIds.enumerated() {
+            channelAttachments[id]?.messageId = stored.id
+            channelAttachments[id]?.messagePosition = position
+        }
+        humanMessageRows.append(stored)
+        recordedChannelMessageEvents.append(ChannelMessageEvent(
+            room: "channel:\(channelId)",
+            name: "message:new",
+            messageId: stored.id,
+            attachmentIds: attachmentIds
+        ))
+        lock.unlock()
+        return Self.humanMessageJSON(stored)
+    }
+
+    /// Replay accepts only the stored ids, positions, and uploader. It does not write.
+    private func attachmentOrderMatches(message: StoredHumanMessage, attachmentIds: [String], uploaderId: String) -> Bool {
+        guard message.attachmentIds.count == attachmentIds.count else { return false }
+        for (index, id) in attachmentIds.enumerated() {
+            guard message.attachmentIds[index] == id,
+                  let row = channelAttachments[id],
+                  row.messageId == message.id,
+                  row.messagePosition == index,
+                  row.uploaderId == uploaderId
+            else { return false }
+        }
+        return true
+    }
+
+    public func channelMessageEvents() -> [ChannelMessageEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedChannelMessageEvents
+    }
+
+    /// The user behind a normal access token. `requireAuth` does not demand a verified email.
+    public func oauthSession(authorization: String?) -> OAuthSession {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return .missing }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        defer { lock.unlock() }
+        guard let userId = accessTokens[token],
+              let account = accounts.values.first(where: { $0.id == userId })
+        else { return .invalid }
+        return .user(OAuthHuman(id: account.id, email: account.email, name: account.name))
+    }
+
+    public func login(body: String) -> HTTPReply {
+        switch Self.parse(body) {
+        case .invalid(let issues):
+            return Self.invalid(issues)
+        case .request(let request):
+            return authenticate(request)
+        }
+    }
+
+    private func authenticate(_ request: Request) -> HTTPReply {
+        let email = Self.normalize(request.email)
+        lock.lock()
+        let account = accounts[email]
+        let matches = account.map { $0.passwordHash == Self.sha256(request.password) } ?? false
+        guard let account, matches, account.retiredAt == nil else {
+            lock.unlock()
+            return Self.rejected
+        }
+        let issued = openSessionLocked(userId: account.id)
+        let body = "{\"user\":{\"id\":\(jsonString(account.id)),\"email\":\(jsonString(account.email))},\"accessToken\":\(jsonString(issued.accessToken)),\"refreshToken\":\(jsonString(issued.refreshToken))}"
+        lock.unlock()
+        return Self.json(200, body)
+    }
+
+    /// `POST /api/auth/me/avatar`. A file over 5 MB is refused before the stored path changes.
+    public func uploadAvatar(authorization: String?, contentType: String?, body: Data) -> HTTPReply {
+        let userId: String
+        switch authorize(authorization) {
+        case .rejected(let reply):
+            return reply
+        case .user(let id):
+            userId = id
+        }
+        guard let file = Self.multipartFile(named: "avatar", contentType: contentType, body: body) else {
+            return Self.json(400, "{\"error\":\"No avatar file provided\"}")
+        }
+        if file.count > Self.maxProfileAvatarBytes {
+            return Self.json(400, "{\"error\":\"Avatar image must be 5 MB or smaller\",\"errorCode\":\"PROFILE_AVATAR_TOO_LARGE\",\"maxBytes\":\(Self.maxProfileAvatarBytes)}")
+        }
+        let hash = String(Self.sha256(file).prefix(32))
+        let avatarURL = "/api/avatars/users/\(hash).webp"
+        lock.lock()
+        guard var account = accounts.values.first(where: { $0.id == userId }) else {
+            lock.unlock()
+            return Self.invalidToken
+        }
+        account.avatarUrl = avatarURL
+        accounts[account.email] = account
+        let snapshot = account
+        lock.unlock()
+        return Self.json(200, Self.userJSON(snapshot))
+    }
+
+    /// `GET /api/auth/me`. The hash is SHA-256 of the stored email, trimmed and lowercased.
+    public func me(authorization: String?) -> HTTPReply {
+        let userId: String
+        switch authorize(authorization) {
+        case .rejected(let reply):
+            return reply
+        case .user(let id):
+            userId = id
+        }
+        lock.lock()
+        let account = accounts.values.first { $0.id == userId }
+        lock.unlock()
+        guard let account, account.retiredAt == nil else { return Self.invalidToken }
+        return Self.json(200, Self.userJSON(account))
+    }
+
+    /// `PATCH /api/auth/me`. A wrong current password is refused before any profile write.
+    /// Display language accepts only the shipped UI catalogs, `en` and `zh-cn`.
+    public func patch(authorization: String?, body: String) -> HTTPReply {
+        let userId: String
+        switch authorize(authorization) {
+        case .rejected(let reply):
+            return reply
+        case .user(let id):
+            userId = id
+        }
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return Self.json(400, "{\"error\":\"Failed to update profile\"}")
+        }
+
+        if let current = object["currentPassword"] as? String, !current.isEmpty,
+           let newPassword = object["newPassword"] as? String, !newPassword.isEmpty {
+            if newPassword.count < 8 {
+                return Self.json(400, "{\"error\":\"New password must be at least 8 characters\"}")
+            }
+            lock.lock()
+            guard var account = accounts.values.first(where: { $0.id == userId }) else {
+                lock.unlock()
+                return Self.invalidToken
+            }
+            guard account.passwordHash == Self.sha256(current) else {
+                lock.unlock()
+                return Self.wrongPassword
+            }
+            account.passwordHash = Self.sha256(newPassword)
+            accounts[account.email] = account
+            lock.unlock()
+        }
+
+        var languageUpdate: String??
+        if object["displayLanguage"] != nil {
+            switch Self.parseDisplayLanguage(object["displayLanguage"]!) {
+            case .invalid(let message):
+                return Self.json(400, "{\"error\":\(jsonString(message))}")
+            case .value(let language):
+                languageUpdate = language
+            }
+        } else {
+            languageUpdate = nil
+        }
+
+        var shareUpdate: Bool?? = nil
+        if let raw = object["shareUsageData"] {
+            if raw is NSNull {
+                shareUpdate = .some(nil)
+            } else if let bool = raw as? Bool {
+                shareUpdate = .some(bool)
+            } else {
+                return Self.json(400, "{\"error\":\"shareUsageData must be a boolean or null\"}")
+            }
+        }
+
+        lock.lock()
+        guard var account = accounts.values.first(where: { $0.id == userId }) else {
+            lock.unlock()
+            return Self.invalidToken
+        }
+        var changed = false
+        if let language = languageUpdate {
+            account.displayLanguage = language
+            changed = true
+        }
+        if let share = shareUpdate {
+            account.shareUsageData = share
+            if share == true {
+                if analyticsIds[account.id] == nil {
+                    analyticsIds[account.id] = UUID().uuidString.lowercased()
+                }
+            } else if share == false {
+                analyticsIds.removeValue(forKey: account.id)
+            }
+            changed = true
+        }
+        if changed {
+            accounts[account.email] = account
+        }
+        let snapshot = account
+        lock.unlock()
+        return Self.json(200, Self.userJSON(snapshot))
+    }
+
+    private struct MobileOAuthRequest {
+        var id: String
+        var provider: String
+        var mode: String
+        var status: String
+        var codeChallenge: String
+        var returnUri: String
+        var nonce: String
+        var expiresAt: Date
+        var handoffCode: String? = nil
+        var codeHash: String? = nil
+        var profileEmail: String? = nil
+        var profileUserId: String? = nil
+        var profileName: String? = nil
+        var userId: String? = nil
+    }
+
+    private struct LiveSession {
+        var userId: String
+        var familyId: String
+    }
+
+    private struct SessionFamily {
+        var userId: String
+        var revokedAt: Date?
+    }
+
+    private struct RetirementReceipt {
+        var userId: String
+        var actorUserId: String
+        var environment: String
+        var terminalState: String
+        var sessionsRevoked: Int
+    }
+
+    private struct DeviceGrant {
+        var deviceCode: String
+        var userCode: String
+        var status: String
+        var approvedByUserId: String?
+        var expiresAt: Date
+        var clientName: String?
+    }
+
+    private static func deviceLoginEnabled(_ raw: String?) -> Bool {
+        guard let raw else { return true }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if value.isEmpty { return true }
+        return !(value == "0" || value == "false" || value == "no" || value == "off")
+    }
+
+    private func deviceSurfaceDisabled() -> HTTPReply? {
+        if Self.deviceLoginEnabled(deviceLoginGate) { return nil }
+        return Self.json(404, "{\"error\":\"Device login is not enabled\",\"code\":\"device_login_disabled\"}")
+    }
+
+    private func deviceVerification(userCode: String) -> (uri: String, complete: String)? {
+        let trimmed = appURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        let base = trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
+        let uri = "\(base)/login/device"
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.!~*'()"))
+        let encoded = userCode.addingPercentEncoding(withAllowedCharacters: allowed) ?? userCode
+        return (uri, "\(uri)?user_code=\(encoded)")
+    }
+
+    private func makeUserCode() -> String {
+        let alphabet = Array("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
+        var chars = ""
+        for _ in 0..<8 {
+            chars.append(alphabet[Int.random(in: 0..<alphabet.count)])
+        }
+        return "\(chars.prefix(4))-\(chars.dropFirst(4))"
+    }
+
+    private static func deviceSecret() -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        for index in bytes.indices {
+            bytes[index] = UInt8.random(in: 0...255)
+        }
+        let encoded = Data(bytes).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        return "dvc_\(encoded)"
+    }
+
+    private static func deviceNotReady(_ code: String, status: Int) -> HTTPReply {
+        json(status, "{\"error\":\"Device authorization not ready\",\"code\":\(jsonString(code))}")
+    }
+
+    private static func deviceUpdateFailed(_ code: String, status: Int) -> HTTPReply {
+        json(status, "{\"error\":\"Device authorization could not be updated\",\"code\":\(jsonString(code))}")
+    }
+
+    /// Opens one session family. The caller already holds `lock`.
+    private func openSessionLocked(userId: String) -> (accessToken: String, refreshToken: String) {
+        let familyId = UUID().uuidString.lowercased()
+        sessionFamilies[familyId] = SessionFamily(userId: userId, revokedAt: nil)
+        let accessToken = Self.token()
+        let refreshToken = Self.token()
+        sessions[refreshToken] = LiveSession(userId: userId, familyId: familyId)
+        accessTokens[accessToken] = userId
+        accessTokenFamilies[accessToken] = familyId
+        return (accessToken, refreshToken)
+    }
+
+    /// Retirement auth keeps the access token after the account is retired. A missing bearer is the invalid-token body.
+    private func retirementActor(_ authorization: String?) -> String? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let id = accessTokens[token]
+        lock.unlock()
+        return id
+    }
+
+    private static func stagingCapability(_ value: Any?, into issues: inout [Issue]) -> String? {
+        guard let value else { return nil }
+        guard let text = value as? String else {
+            issues.append(Issue(path: "stagingSelfAccountCapability", message: "Expected string, received \(kind(value))"))
+            return nil
+        }
+        if text.count < 32 {
+            issues.append(Issue(path: "stagingSelfAccountCapability", message: "String must contain at least 32 character(s)"))
+            return nil
+        }
+        if text.count > 256 {
+            issues.append(Issue(path: "stagingSelfAccountCapability", message: "String must contain at most 256 character(s)"))
+            return nil
+        }
+        return text
+    }
+
+    private static func retirementJSON(_ receipt: RetirementReceipt) -> HTTPReply {
+        let body = "{\"receipt\":{\"userId\":\(jsonString(receipt.userId)),\"actorUserId\":\(jsonString(receipt.actorUserId)),\"environment\":\(jsonString(receipt.environment)),\"terminalState\":\(jsonString(receipt.terminalState)),\"sessionsRevoked\":\(receipt.sessionsRevoked)}}"
+        return json(200, body)
+    }
+
+    private struct RotationReceipt {
+        var attemptId: String
+        var installationId: String
+        var userId: String
+        var familyId: String
+        var successor: String
+        var ciphertext: String
+        var expiresAt: Date
+    }
+
+    private struct IssuedRefresh {
+        var accessToken: String
+        var userId: String
+    }
+
+    private enum RefreshOutcome {
+        case rejected
+        case rotated(IssuedRefresh, String)
+    }
+
+    private func refreshLocked(refreshToken: String, attemptId: String?, installationId: String?) -> RefreshOutcome {
+        if let attemptId, let installationId {
+            return durableRefreshLocked(refreshToken: refreshToken, attemptId: attemptId, installationId: installationId)
+        }
+        guard let live = sessions[refreshToken], !revokedFamilies.contains(live.familyId) else {
+            return .rejected
+        }
+        let accessToken = Self.token()
+        accessTokens[accessToken] = live.userId
+        accessTokenFamilies[accessToken] = live.familyId
+        return .rotated(IssuedRefresh(accessToken: accessToken, userId: live.userId), refreshToken)
+    }
+
+    private func durableRefreshLocked(refreshToken: String, attemptId: String, installationId: String) -> RefreshOutcome {
+        let hash = Self.sha256(refreshToken)
+        if let live = sessions.removeValue(forKey: refreshToken) {
+            if revokedFamilies.contains(live.familyId) {
+                return .rejected
+            }
+            let successor = Self.token()
+            sessions[successor] = live
+            let ciphertext = Self.sealSuccessor(successor)
+            rotationReceipts[hash] = RotationReceipt(
+                attemptId: attemptId,
+                installationId: installationId,
+                userId: live.userId,
+                familyId: live.familyId,
+                successor: successor,
+                ciphertext: ciphertext,
+                expiresAt: Date(timeIntervalSinceNow: 15 * 60)
+            )
+            let accessToken = Self.token()
+            accessTokens[accessToken] = live.userId
+            accessTokenFamilies[accessToken] = live.familyId
+            return .rotated(IssuedRefresh(accessToken: accessToken, userId: live.userId), successor)
+        }
+        guard let receipt = rotationReceipts[hash] else { return .rejected }
+        if receipt.attemptId != attemptId || receipt.installationId != installationId { return .rejected }
+        if receipt.expiresAt <= Date() || revokedFamilies.contains(receipt.familyId) { return .rejected }
+        let accessToken = Self.token()
+        accessTokens[accessToken] = receipt.userId
+        accessTokenFamilies[accessToken] = receipt.familyId
+        return .rotated(IssuedRefresh(accessToken: accessToken, userId: receipt.userId), receipt.successor)
+    }
+
+    private struct SocialCompletion {
+        var provider: String
+        var code: String
+        var mode: String
+        var intendedAction: String
+        var email: String
+        var returnTo: String
+        var userId: String?
+        var providerUserId: String?
+    }
+
+    private struct LinkedIdentity {
+        var userId: String
+        var provider: String
+        var providerUserId: String
+        var providerEmail: String? = nil
+    }
+
+    private static let socialProviders: Set<String> = ["google", "github", "apple"]
+    private static let defaultMobileReturnURIs: Set<String> = [
+        "raft://oauth/callback",
+        "raft-alpha://oauth/callback",
+        "raft-beta://oauth/callback",
+        "raft-debug://oauth/callback",
+        "raft-dev://oauth/callback",
+    ]
+
+    /// Primary env wins when it parses to at least one URI. Otherwise the legacy list replaces the defaults. An empty parse falls through.
+    private func configuredMobileReturnURIs() -> Set<String> {
+        let primary = Self.parseConfiguredMobileReturnURIs(mobileOAuthReturnURI)
+        if !primary.isEmpty { return primary }
+        let legacy = Self.parseConfiguredMobileReturnURIs(mobileOAuthAllowedReturnURIs)
+        if !legacy.isEmpty { return legacy }
+        return Self.defaultMobileReturnURIs
+    }
+
+    private static func parseConfiguredMobileReturnURIs(_ raw: String?) -> Set<String> {
+        guard let raw else { return [] }
+        var values: Set<String> = []
+        for part in raw.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "," || $0 == "\n" }) {
+            let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { values.insert(trimmed) }
+        }
+        return values
+    }
+
+    private struct Account {
+        var id: String
+        var email: String
+        var passwordHash: String
+        var displayLanguage: String?
+        var name: String
+        var profileSetupSuggestedHandle: String?
+        var profileSetupProvider: String? = nil
+        var avatarUrl: String? = nil
+        var shareUsageData: Bool? = nil
+        var emailVerified: Bool = false
+        var stagingSelfAccountCapabilityHash: String? = nil
+        var retiredAt: Date? = nil
+    }
+
+    private struct Request {
+        var email: String
+        var password: String
+    }
+
+    private struct Issue {
+        var path: String
+        var message: String
+    }
+
+    private enum Parsed {
+        case request(Request)
+        case invalid([Issue])
+    }
+
+    private static func parse(_ body: String) -> Parsed {
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return .invalid([Issue(path: "", message: "Expected object, received string")])
+        }
+        var issues: [Issue] = []
+        let email = stringField(object["email"], path: "email", into: &issues)
+        let password = stringField(object["password"], path: "password", into: &issues)
+        if !issues.isEmpty { return .invalid(issues) }
+        return .request(Request(email: email ?? "", password: password ?? ""))
+    }
+
+    private struct JointChannelLink {
+        var localChannelId: String
+        var canonicalChannelId: String
+        var serverId: String
+    }
+
+    private struct PostableChannel {
+        var serverId: String
+        var memberIds: Set<String>
+        var kind: String = "channel"
+        var agentId: String? = nil
+        var parentChannelId: String? = nil
+        var parentMessageId: String? = nil
+        var archived: Bool = false
+        var deletedAt: Date? = nil
+        var name: String = ""
+    }
+
+    private struct StoredMention {
+        var id: String
+        var messageId: String
+        var channelId: String
+        var senderId: String
+        var targetType: String
+        var targetId: String
+        var handle: String
+        var notifiableAtSend: Bool
+        var notifiedAt: Date?
+        var notifiedByType: String?
+        var notifiedById: String?
+        var notifiedAction: String?
+        var terminalCode: String? = nil
+    }
+
+    private struct StoredInboxFact {
+        var messageId: String
+        var receiverType: String
+        var receiverId: String
+        var channelId: String?
+        var serverId: String?
+        var personalMention: Bool
+    }
+
+    private struct AgentCredential {
+        var agentId: String
+        var scopes: Set<String>
+        var name: String
+    }
+
+    private struct MentionInput {
+        var type: String
+        var id: String
+        var name: String
+    }
+
+    private struct ServerAgent {
+        var id: String
+        var serverId: String
+        var name: String
+        var avatarUrl: String?
+        var status: String = "inactive"
+    }
+
+    private struct StoredReaction {
+        var messageId: String
+        var emoji: String
+        var reactorId: String
+        var reactorType: String
+    }
+
+    private struct StoredHumanMessage {
+        var id: String
+        var channelId: String
+        var senderId: String
+        var content: String
+        var randomId: String?
+        var attachmentIds: [String] = []
+        var messageType: String = "chat"
+        var senderType: String = "user"
+        var createdAt: Date = Date()
+        var actionKind: String? = nil
+        var taskStatus: String? = nil
+        var taskNumber: Int? = nil
+        var taskAssigneeType: String? = nil
+        var taskAssigneeId: String? = nil
+        var taskClaimedAt: String? = nil
+        var taskCompletedAt: String? = nil
+        var senderTimezone: String? = nil
+    }
+
+    private struct ChannelAttachment {
+        var id: String
+        var channelId: String
+        var uploaderId: String
+        var filename: String
+        var messageId: String?
+        var messagePosition: Int?
+        var mimeType: String? = nil
+        var sizeBytes: Int? = nil
+        var width: Int? = nil
+        var height: Int? = nil
+    }
+
+    public struct ChannelMessageEvent: Equatable, Sendable {
+        public var room: String
+        public var name: String
+        public var messageId: String
+        public var attachmentIds: [String]
+    }
+
+    private static func attachmentJSON(_ ids: [String]) -> String {
+        ids.map { "{\"id\":\(jsonString($0))}" }.joined(separator: ",")
+    }
+
+    private static func humanMessageJSON(_ message: StoredHumanMessage) -> HTTPReply {
+        var body = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(message.channelId)),\"content\":\(jsonString(message.content)),\"attachments\":[\(attachmentJSON(message.attachmentIds))]"
+        if let randomId = message.randomId {
+            body += ",\"randomId\":\(jsonString(randomId))"
+        }
+        body += "}"
+        return json(200, body)
+    }
+
+    /// App ids inside `<app:…>` outside of a code fence are not required for this check; the send under test has no fence.
+    private static func appReferenceIds(_ content: String) -> [String] {
+        var ids: [String] = []
+        for match in content.matches(of: /<app:([a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)+)>/) {
+            let id = String(match.1)
+            if !ids.contains(id) { ids.append(id) }
+        }
+        return ids
+    }
+
+    /// Best-effort browser zone. A missing, non-string, empty, overlong, or non-canonical value is null.
+    private static func parseOptionalIanaTimezone(_ value: Any?) -> String? {
+        guard let raw = value as? String else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed.count > 128 { return nil }
+        if trimmed != "UTC" && !trimmed.contains("/") { return nil }
+        if trimmed == "UTC" { return "UTC" }
+        guard let zone = TimeZone(identifier: trimmed) else { return nil }
+        let canonical = zone.identifier
+        if canonical != "UTC" && !canonical.contains("/") { return nil }
+        return canonical
+    }
+
+    private static func humanMessageBodyIsValid(_ body: String) -> Bool {
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let channelId = object["channelId"] as? String,
+              ServerScope.isUUID(channelId)
+        else { return false }
+        if let attachments = object["attachmentIds"] {
+            guard let ids = attachments as? [Any] else { return false }
+            for id in ids {
+                guard let string = id as? String, ServerScope.isUUID(string) else { return false }
+            }
+        }
+        if object["asTask"] != nil {
+            guard object["asTask"] is Bool else { return false }
+        }
+        return true
+    }
+
+    private static func featureFlagKey(_ value: Any) -> String? {
+        guard let string = value as? String else { return nil }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.wholeMatch(of: /^[a-z0-9][a-z0-9_.-]{0,127}$/) != nil else { return nil }
+        return trimmed
+    }
+
+    private static func stringField(_ value: Any?, path: String, into issues: inout [Issue]) -> String? {
+        guard let value else {
+            issues.append(Issue(path: path, message: "Required"))
+            return nil
+        }
+        if let string = value as? String {
+            if string.isEmpty {
+                issues.append(Issue(path: path, message: "String must contain at least 1 character(s)"))
+                return nil
+            }
+            return string
+        }
+        issues.append(Issue(path: path, message: "Expected string, received \(kind(value))"))
+        return nil
+    }
+
+    private static func kind(_ value: Any) -> String {
+        if value is NSNull { return "null" }
+        if value is String { return "string" }
+        if value is NSDictionary { return "object" }
+        if value is NSArray { return "array" }
+        if value is Bool { return "boolean" }
+        if value is NSNumber { return "number" }
+        return "object"
+    }
+
+    private static func invalid(_ issues: [Issue]) -> HTTPReply {
+        bodyIssues(issues, error: "Invalid email login body", code: "email_login_body_invalid")
+    }
+
+    private static func registerInvalid(_ issues: [Issue]) -> HTTPReply {
+        bodyIssues(issues, error: "Invalid email registration body", code: "email_register_body_invalid")
+    }
+
+    private static func bodyIssues(_ issues: [Issue], error: String, code: String) -> HTTPReply {
+        let listed = issues.map {
+            "{\"path\":\(jsonString($0.path)),\"message\":\(jsonString($0.message))}"
+        }.joined(separator: ",")
+        return json(400, "{\"error\":\(jsonString(error)),\"code\":\(jsonString(code)),\"issues\":[\(listed)]}")
+    }
+
+    private static let rejected = json(401, "{\"code\":\"AUTH_INVALID_CREDENTIALS\",\"error\":\"Invalid email or password\"}")
+    private static let missingAuthorization = json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+    private static let invalidToken = json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+    private static let wrongPassword = json(401, "{\"code\":\"AUTH_CURRENT_PASSWORD_INCORRECT\",\"error\":\"Current password is incorrect\"}")
+    private static let linkAuthRequired = json(401, "{\"code\":\"auth_required\",\"error\":\"Authentication is required to link an account\"}")
+    private static let linkMismatch = json(403, "{\"code\":\"link_user_mismatch\",\"error\":\"Social auth link does not match the authenticated user\"}")
+    private static let mobileLinkMismatch = json(403, "{\"code\":\"link_user_mismatch\",\"error\":\"Mobile OAuth link request does not match the authenticated user\"}")
+    private static let legalObject = "{\"termsVersion\":\"\(termsVersion)\",\"privacyVersion\":\"\(privacyVersion)\",\"termsUrl\":\"\(termsURL)\",\"privacyUrl\":\"\(privacyURL)\"}"
+    private static let legalRequired = json(422, "{\"error\":\"LEGAL_ACCEPTANCE_REQUIRED\",\"legal\":\(legalObject)}")
+    private static let returnURINotAllowed = json(400, "{\"code\":\"return_uri_not_allowed\",\"error\":\"Mobile OAuth return URI is not allowed\"}")
+    private static let termsChanged = json(409, "{\"error\":\"TERMS_CHANGED\",\"legal\":\(legalObject)}")
+
+    private enum Auth {
+        case user(String)
+        case rejected(HTTPReply)
+    }
+
+    /// The user id behind a live access token. A missing or unknown bearer is nil.
+    public func sessionUserId(authorization: String?) -> String? {
+        if case .user(let id) = authorize(authorization) { return id }
+        return nil
+    }
+
+    private func authorize(_ authorization: String?) -> Auth {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return .rejected(Self.missingAuthorization)
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let id = accessTokens[token]
+        lock.unlock()
+        guard let id else { return .rejected(Self.invalidToken) }
+        return .user(id)
+    }
+
+    private enum DisplayLanguage {
+        case value(String?)
+        case invalid(String)
+    }
+
+    /// Shipped UI catalogs only. Region tags collapse inside `en` and `zh-cn`; `zh-TW` and `fr` do not.
+    static func normalizeDisplayLocale(_ raw: String) -> String? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if value.isEmpty { return nil }
+        if value == "en" || value.hasPrefix("en-") { return "en" }
+        if value == "zh-cn" || value == "zh" || value == "zh-hans" || value == "zh-hans-cn" { return "zh-cn" }
+        return nil
+    }
+
+    private static func parseDisplayLanguage(_ raw: Any) -> DisplayLanguage {
+        if raw is NSNull { return .value(nil) }
+        guard let string = raw as? String else {
+            return .invalid("displayLanguage must be a string or null")
+        }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return .value(nil) }
+        guard let normalized = normalizeDisplayLocale(trimmed) else {
+            return .invalid("displayLanguage must be a supported UI display locale")
+        }
+        return .value(normalized)
+    }
+
+    private static func userJSON(_ account: Account) -> String {
+        let hash = sha256(account.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        let language = account.displayLanguage.map { jsonString($0) } ?? "null"
+        let provider = account.profileSetupProvider.map { jsonString($0) } ?? "null"
+        let avatar = account.avatarUrl.map { jsonString($0) } ?? "null"
+        let share: String
+        if let value = account.shareUsageData {
+            share = value ? "true" : "false"
+        } else {
+            share = "null"
+        }
+        return "{\"id\":\(jsonString(account.id)),\"email\":\(jsonString(account.email)),\"name\":\(jsonString(account.name)),\"gravatarHash\":\(jsonString(hash)),\"displayLanguage\":\(language),\"profileSetupCompletedAt\":null,\"profileSetupProvider\":\(provider),\"avatarUrl\":\(avatar),\"shareUsageData\":\(share)}"
+    }
+
+    private static let reservedAgentNames: Set<String> = [
+        "all", "human", "humans", "agent", "agents", "here", "idle", "busy", "system", "reminders",
+    ]
+
+    /// Final handles stay unclaimed until profile setup. The stored name is `pending_` plus 20 hex characters.
+    static func pendingHandle(taken: Set<String>) -> String {
+        for _ in 0..<10 {
+            let handle = "pending_\(randomHex(10))"
+            if !taken.contains(handle) { return handle }
+        }
+        return "pending_\(randomHex(10))"
+    }
+
+    static func slugifyUserName(_ seed: String) -> String {
+        let lowered = seed.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var normalized = ""
+        for scalar in lowered.unicodeScalars {
+            let value = scalar.value
+            let allowed = (value >= 97 && value <= 122) || (value >= 48 && value <= 57) || value == 95 || value == 45
+            normalized.append(allowed ? Character(scalar) : "-")
+        }
+        normalized = trimHyphens(normalized)
+        let prefixed = normalized.first?.isLetter == true ? normalized : "user-\(normalized)"
+        var compact = ""
+        var previousHyphen = false
+        for character in prefixed {
+            if character == "-" {
+                if previousHyphen { continue }
+                previousHyphen = true
+            } else {
+                previousHyphen = false
+            }
+            compact.append(character)
+        }
+        compact = trimHyphens(compact)
+        let fallback = compact.isEmpty ? "user-account" : compact
+        return fallback.count >= 5 ? fallback : "\(fallback)-user"
+    }
+
+    static func availableUserName(seed: String, taken: Set<String>) -> String {
+        let base = slugifyUserName(seed)
+        if !taken.contains(base) { return base }
+        for suffix in 1..<100 {
+            let candidate = "\(base)-\(suffix + 1)"
+            if !taken.contains(candidate) { return candidate }
+        }
+        return "\(base)-\(randomHex(2))"
+    }
+
+    private static func trimHyphens(_ value: String) -> String {
+        var text = value
+        while text.hasPrefix("-") { text.removeFirst() }
+        while text.hasSuffix("-") { text.removeLast() }
+        return text
+    }
+
+    private static func randomHex(_ count: Int) -> String {
+        var bytes = [UInt8](repeating: 0, count: count)
+        for index in bytes.indices {
+            bytes[index] = UInt8.random(in: 0...255)
+        }
+        return bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// `dm:@reminders` names an agent's private reminder conversation, so the handle is reserved.
+    static func isReservedAgentName(_ name: String) -> Bool {
+        var normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.hasPrefix("@") { normalized.removeFirst() }
+        return reservedAgentNames.contains(normalized.lowercased())
+    }
+
+    private static func normalize(_ email: String) -> String {
+        email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static let maxProfileAvatarBytes = 5 * 1024 * 1024
+
+    public static func sha256Hex(_ value: String) -> String {
+        sha256(value)
+    }
+
+    private static func sha256(_ value: String) -> String {
+        sha256(Data(value.utf8))
+    }
+
+    private static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func multipartFile(named name: String, contentType: String?, body: Data) -> Data? {
+        guard let boundary = boundaryParameter(contentType) else { return nil }
+        let delimiter = Data("--\(boundary)".utf8)
+        let headerBreak = Data("\r\n\r\n".utf8)
+        let crlf = Data("\r\n".utf8)
+        let marker = "name=\"\(name)\""
+        var remainder = body[body.startIndex...]
+        var parts: [Data] = []
+        while let range = remainder.range(of: delimiter) {
+            let piece = remainder[..<range.lowerBound]
+            if !piece.isEmpty { parts.append(Data(piece)) }
+            remainder = remainder[range.upperBound...]
+        }
+        if !remainder.isEmpty { parts.append(Data(remainder)) }
+        for var part in parts {
+            if part.starts(with: crlf) { part.removeFirst(crlf.count) }
+            guard let split = part.range(of: headerBreak) else { continue }
+            let headers = part[..<split.lowerBound]
+            var file = Data(part[split.upperBound...])
+            if file.count >= crlf.count, file.suffix(crlf.count) == crlf {
+                file.removeLast(crlf.count)
+            }
+            guard let headerText = String(data: Data(headers), encoding: .utf8), headerText.contains(marker) else { continue }
+            return file
+        }
+        return nil
+    }
+
+    private static func boundaryParameter(_ contentType: String?) -> String? {
+        guard let contentType else { return nil }
+        for part in contentType.split(separator: ";") {
+            let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.lowercased().hasPrefix("boundary=") else { continue }
+            var value = String(trimmed.dropFirst("boundary=".count))
+            if value.hasPrefix("\""), value.hasSuffix("\""), value.count >= 2 {
+                value.removeFirst()
+                value.removeLast()
+            }
+            return value.isEmpty ? nil : value
+        }
+        return nil
+    }
+
+    static func refreshAttempt(_ header: String?) -> String? {
+        guard let header else { return nil }
+        let trimmed = header.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.wholeMatch(of: /^arf_[0-9a-f]{16}$/) != nil else { return nil }
+        return trimmed
+    }
+
+    static func refreshInstallation(_ header: String?) -> String? {
+        guard let header else { return nil }
+        let trimmed = header.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.wholeMatch(of: /^ari_[0-9a-f]{32}$/) != nil else { return nil }
+        return trimmed
+    }
+
+    public static func signSocialAuthState(_ state: SocialAuthState) -> String {
+        let header = base64url(Data("{\"alg\":\"HS256\",\"typ\":\"JWT\"}".utf8))
+        var payload: [String: Any] = [
+            "provider": state.provider,
+            "mode": state.mode,
+            "nonce": state.nonce,
+            "kind": state.kind,
+            "mobileRequestId": state.mobileRequestId,
+            "iss": "slock-social-auth",
+            "aud": "social-auth-state",
+            "exp": Int(Date().timeIntervalSince1970) + 600,
+        ]
+        if let desktopNonce = state.desktopNonce {
+            payload["desktopNonce"] = desktopNonce
+        }
+        if let returnTo = state.returnTo {
+            payload["returnTo"] = returnTo
+        }
+        if let linkUserId = state.linkUserId {
+            payload["linkUserId"] = linkUserId
+        }
+        let encoded = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+        let body = base64url(encoded)
+        let mac = Data(HMAC<SHA256>.authenticationCode(for: Data("\(header).\(body)".utf8), using: stateKey))
+        return "\(header).\(body).\(base64url(mac))"
+    }
+
+    public static func verifySocialAuthState(_ token: String) -> SocialAuthState? {
+        let parts = token.split(separator: ".").map(String.init)
+        guard parts.count == 3 else { return nil }
+        let signing = Data("\(parts[0]).\(parts[1])".utf8)
+        let expected = Data(HMAC<SHA256>.authenticationCode(for: signing, using: stateKey))
+        guard let given = base64urlDecode(parts[2]), given == expected else { return nil }
+        guard let payload = base64urlDecode(parts[1]),
+              let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+              let provider = object["provider"] as? String,
+              let mode = object["mode"] as? String,
+              let nonce = object["nonce"] as? String,
+              let kind = object["kind"] as? String,
+              let requestId = object["mobileRequestId"] as? String,
+              (object["iss"] as? String) == "slock-social-auth",
+              (object["aud"] as? String) == "social-auth-state"
+        else { return nil }
+        let exp = (object["exp"] as? NSNumber)?.intValue ?? (object["exp"] as? Int) ?? 0
+        if exp < Int(Date().timeIntervalSince1970) { return nil }
+        return SocialAuthState(
+            provider: provider,
+            mode: mode,
+            nonce: nonce,
+            kind: kind,
+            mobileRequestId: requestId,
+            desktopNonce: object["desktopNonce"] as? String,
+            returnTo: object["returnTo"] as? String,
+            linkUserId: object["linkUserId"] as? String
+        )
+    }
+
+    private static let stateKey = SymmetricKey(data: Data(SHA256.hash(data: Data("slock-social-auth-state".utf8))))
+
+    private static func isDesktopLoopback(_ returnUri: String) -> Bool {
+        guard let url = URL(string: returnUri),
+              url.scheme == "http",
+              url.host == "127.0.0.1",
+              url.user == nil,
+              url.password == nil,
+              url.query == nil,
+              url.path == "/auth/done",
+              let port = url.port,
+              (1024...65535).contains(port),
+              let fragment = url.fragment,
+              fragment.wholeMatch(of: /^state=[A-Za-z0-9_-]{16,256}$/) != nil
+        else { return false }
+        return url.absoluteString == returnUri || "\(url.absoluteString)" == returnUri
+    }
+
+    private static func desktopNonce(from returnUri: String) -> String? {
+        guard isDesktopLoopback(returnUri), let fragment = URL(string: returnUri)?.fragment else { return nil }
+        return String(fragment.dropFirst("state=".count))
+    }
+
+    private static func authorizationURL(provider: String, state: String) -> String {
+        switch provider {
+        case "github":
+            var components = URLComponents(string: "https://github.com/login/oauth/authorize")!
+            components.queryItems = [
+                URLQueryItem(name: "client_id", value: "configured"),
+                URLQueryItem(name: "redirect_uri", value: "http://127.0.0.1/api/auth/github/callback"),
+                URLQueryItem(name: "scope", value: "read:user user:email"),
+                URLQueryItem(name: "state", value: state),
+            ]
+            return components.string ?? ""
+        default:
+            var components = URLComponents(string: "https://accounts.google.com/o/oauth2/v2/auth")!
+            components.queryItems = [
+                URLQueryItem(name: "client_id", value: "configured"),
+                URLQueryItem(name: "redirect_uri", value: "http://127.0.0.1/api/auth/google/callback"),
+                URLQueryItem(name: "response_type", value: "code"),
+                URLQueryItem(name: "scope", value: "openid email profile"),
+                URLQueryItem(name: "state", value: state),
+            ]
+            return components.string ?? ""
+        }
+    }
+
+    private static func pkceS256(_ verifier: String) -> String {
+        base64url(Data(SHA256.hash(data: Data(verifier.utf8))))
+    }
+
+    private static func failureLocation(returnUri: String, provider: String, mode: String, error: String) -> String {
+        let pieces = returnUri.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+        let base = pieces[0]
+        let hash = pieces.count > 1 ? "#\(pieces[1])" : ""
+        let separator = base.contains("?") ? "&" : "?"
+        return "\(base)\(separator)provider=\(provider)&mode=\(mode)&error=\(error)\(hash)"
+    }
+
+    private static func loopbackLocation(returnUri: String, provider: String, mode: String, code: String) -> String {
+        let pieces = returnUri.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+        let base = pieces[0]
+        let hash = pieces.count > 1 ? "#\(pieces[1])" : ""
+        let separator = base.contains("?") ? "&" : "?"
+        return "\(base)\(separator)provider=\(provider)&mode=\(mode)&code=\(code)\(hash)"
+    }
+
+    private static func redirect(_ location: String, cookie: String? = nil) -> HTTPReply {
+        var headers = [
+            "X-Robots-Tag": AppFallback.robotsTag,
+            "Location": location,
+            "Content-Length": "0",
+        ]
+        if let cookie { headers["Set-Cookie"] = cookie }
+        return HTTPReply(status: 302, headers: headers, body: "")
+    }
+
+    private static func isMobileUnsubscribeUserId(_ value: String) -> Bool {
+        value.wholeMatch(of: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.ignoresCase()) != nil
+    }
+
+    private static func mobileAppUnsubscribeLocale(_ raw: String?) -> String {
+        let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if value == "zh-cn" || value == "zh" || value == "zh-hans" || value == "zh-hans-cn" { return "zh-cn" }
+        if value == "en" || value.hasPrefix("en-") { return "en" }
+        return "en"
+    }
+
+    private static func mobileAppUnsubscribeSignature(payload: String, secret: String) -> String {
+        let key = SymmetricKey(data: Data(secret.utf8))
+        let message = Data("mobile-app-email-unsubscribe:v1:\(payload)".utf8)
+        return base64url(Data(HMAC<SHA256>.authenticationCode(for: message, using: key)))
+    }
+
+    private func verifyMobileAppEmailUnsubscribeToken(_ token: String) -> (userId: String, locale: String)? {
+        guard !token.isEmpty, token.count <= 512 else { return nil }
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+        let expected = Self.mobileAppUnsubscribeSignature(payload: parts[0], secret: mobileAppEmailUnsubscribeSecret)
+        guard parts[1] == expected else { return nil }
+        guard let data = Self.base64urlDecode(parts[0]),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object.keys.sorted().joined(separator: ",") == "locale,sub,typ,v"
+        else { return nil }
+        let version = (object["v"] as? NSNumber)?.intValue ?? (object["v"] as? Int)
+        guard version == 1,
+              (object["typ"] as? String) == "mobile-app-email-unsubscribe",
+              let userId = object["sub"] as? String,
+              Self.isMobileUnsubscribeUserId(userId),
+              let locale = object["locale"] as? String,
+              locale == "en" || locale == "zh-cn"
+        else { return nil }
+        return (userId, locale)
+    }
+
+    /// `GET /api/email/mobile-app/unsubscribe`. A valid token shows the confirmation page and writes nothing.
+    public func mobileAppEmailUnsubscribePage(token: String?) -> HTTPReply {
+        guard let token, let identity = verifyMobileAppEmailUnsubscribeToken(token) else {
+            return Self.mobileAppUnsubscribeInvalid()
+        }
+        let copy = Self.mobileAppUnsubscribeCopy(identity.locale)
+        let action = "/api/email/mobile-app/unsubscribe?token=\(Self.urlQuery(token))&source=visible"
+        let body = "<h1 style=\"margin:0 0 12px;font-size:22px;\">\(copy.confirmationHeading)</h1><p style=\"margin:0 0 20px;line-height:1.5;\">\(copy.confirmationBody)</p><form method=\"post\" action=\"\(action)\"><input type=\"hidden\" name=\"List-Unsubscribe\" value=\"One-Click\"><button type=\"submit\" style=\"cursor:pointer;padding:10px 16px;border:2px solid #141111;border-radius:8px;background:#fe7da8;color:#141111;font:inherit;font-weight:700;box-shadow:2px 2px 0 #141111;\">\(copy.submit)</button></form>"
+        return Self.mobileAppUnsubscribeHTML(lang: copy.htmlLang, title: copy.confirmationTitle, body: body)
+    }
+
+    /// `POST /api/email/mobile-app/unsubscribe`. One-click is an empty 200. A visible submit is the success page.
+    public func mobileAppEmailUnsubscribeSubmit(token: String?, source: String?, body: String) -> HTTPReply {
+        guard let token, let identity = verifyMobileAppEmailUnsubscribeToken(token),
+              Self.formField(body, "List-Unsubscribe") == "One-Click"
+        else { return Self.mobileAppUnsubscribeInvalid() }
+        recordMobileAppEmailOptOut(userId: identity.userId)
+        let copy = Self.mobileAppUnsubscribeCopy(identity.locale)
+        if source == "visible" {
+            let page = "<h1 style=\"margin:0 0 12px;font-size:22px;\">\(copy.successHeading)</h1><p style=\"margin:0;line-height:1.5;\">\(copy.successBody)</p>"
+            return Self.mobileAppUnsubscribeHTML(lang: copy.htmlLang, title: copy.successTitle, body: page)
+        }
+        return Self.text(200, "")
+    }
+
+    private func recordMobileAppEmailOptOut(userId: String) {
+        lock.lock()
+        guard let account = accounts.values.first(where: { $0.id == userId }) else {
+            lock.unlock()
+            return
+        }
+        let email = Self.normalize(account.email)
+        guard !email.isEmpty else {
+            lock.unlock()
+            return
+        }
+        let audienceId = "mobile-app-lifecycle"
+        mobileAppEmailContactsByKey["\(audienceId)\n\(email)"] = MobileAppEmailContact(
+            userId: userId,
+            email: email,
+            audienceId: audienceId,
+            status: "unsubscribed",
+            optedOutAt: Date()
+        )
+        let emailIds = storedMobileAppEmailJourneys.compactMap { row -> String? in
+            guard row.journeyKey == "first_computer_mobile_app_48h",
+                  row.day1Status == "scheduled",
+                  let emailId = row.day1EmailId,
+                  !emailId.isEmpty,
+                  row.userId == userId || Self.normalize(row.email) == email
+            else { return nil }
+            return emailId
+        }
+        let cancel = cancelMobileAppEmail
+        lock.unlock()
+        for emailId in emailIds {
+            cancel?(emailId)
+        }
+        guard !emailIds.isEmpty else { return }
+        lock.lock()
+        let canceledAt = Date()
+        for index in storedMobileAppEmailJourneys.indices {
+            let row = storedMobileAppEmailJourneys[index]
+            guard row.journeyKey == "first_computer_mobile_app_48h",
+                  row.day1Status == "scheduled",
+                  let emailId = row.day1EmailId,
+                  emailIds.contains(emailId),
+                  row.userId == userId || Self.normalize(row.email) == email
+            else { continue }
+            storedMobileAppEmailJourneys[index].day1Status = "skipped"
+            storedMobileAppEmailJourneys[index].suppressedReason = "unsubscribed"
+            storedMobileAppEmailJourneys[index].canceledAt = canceledAt
+        }
+        lock.unlock()
+    }
+
+    private static func mobileAppUnsubscribeCopy(_ locale: String) -> (htmlLang: String, confirmationTitle: String, confirmationHeading: String, confirmationBody: String, submit: String, successTitle: String, successHeading: String, successBody: String, invalidTitle: String, invalidHeading: String, invalidBody: String) {
+        if locale == "zh-cn" {
+            return (
+                "zh-CN",
+                "退订 Raft 移动端应用邮件",
+                "要退订移动端应用邮件吗？",
+                "Raft 将不再向你发送关于移动端应用的邮件。",
+                "退订",
+                "已退订",
+                "你已退订。",
+                "Raft 不会再向你发送移动端应用邮件。",
+                "退订链接无效",
+                "这个退订链接无效。",
+                "请使用 Raft 原始邮件中的链接。"
+            )
+        }
+        return (
+            "en",
+            "Unsubscribe from Raft mobile-app emails",
+            "Unsubscribe from mobile-app emails?",
+            "Raft will stop sending you emails about the mobile app.",
+            "Unsubscribe",
+            "Unsubscribed",
+            "You are unsubscribed.",
+            "Raft will no longer send you mobile-app emails.",
+            "Invalid unsubscribe link",
+            "This unsubscribe link is invalid.",
+            "Please use the link from the original Raft email."
+        )
+    }
+
+    private static func mobileAppUnsubscribeInvalid() -> HTTPReply {
+        let copy = mobileAppUnsubscribeCopy("en")
+        let body = "<h1 style=\"margin:0 0 12px;font-size:22px;\">\(copy.invalidHeading)</h1><p style=\"margin:0;line-height:1.5;\">\(copy.invalidBody)</p>"
+        return mobileAppUnsubscribeHTML(status: 400, lang: copy.htmlLang, title: copy.invalidTitle, body: body)
+    }
+
+    private static func mobileAppUnsubscribeHTML(status: Int = 200, lang: String, title: String, body: String) -> HTTPReply {
+        let page = """
+        <!doctype html>
+        <html lang="\(lang)">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>\(title)</title>
+        </head>
+        <body style="margin:0;padding:40px 20px;background:#fffaf0;color:#141111;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+          <main style="box-sizing:border-box;max-width:520px;margin:0 auto;padding:28px;background:#fff;border:2px solid #141111;border-radius:16px;box-shadow:4px 4px 0 #141111;">
+            \(body)
+          </main>
+        </body>
+        </html>
+        """
+        return HTTPReply(
+            status: status,
+            headers: [
+                "X-Robots-Tag": AppFallback.robotsTag,
+                "Cache-Control": "no-store",
+                "Referrer-Policy": "no-referrer",
+                "Content-Type": "text/html; charset=utf-8",
+            ],
+            body: page
+        )
+    }
+
+    private static func formField(_ body: String, _ name: String) -> String? {
+        for pair in body.split(separator: "&", omittingEmptySubsequences: false) {
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            guard parts.first?.removingPercentEncoding == name || parts.first == name else { continue }
+            let raw = parts.count > 1 ? parts[1] : ""
+            return raw.replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? raw
+        }
+        return nil
+    }
+
+    private static func urlQuery(_ value: String) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=+")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
+    private static func base64url(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private static func base64urlDecode(_ value: String) -> Data? {
+        var padded = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while padded.count % 4 != 0 { padded.append("=") }
+        return Data(base64Encoded: padded)
+    }
+
+    private static func text(_ status: Int, _ body: String) -> HTTPReply {
+        HTTPReply(
+            status: status,
+            headers: [
+                "X-Robots-Tag": AppFallback.robotsTag,
+                "Content-Type": "text/plain; charset=utf-8",
+                "Content-Length": String(Data(body.utf8).count),
+            ],
+            body: body
+        )
+    }
+
+    private static func sealSuccessor(_ token: String) -> String {
+        let key = SymmetricKey(data: Data(SHA256.hash(data: Data("slock-session-refresh-rotation-receipt".utf8))))
+        if let sealed = try? AES.GCM.seal(Data(token.utf8), using: key) {
+            return sealed.ciphertext.base64EncodedString()
+        }
+        return sha256("sealed:\(token)")
+    }
+
+    private static func token() -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        for index in bytes.indices {
+            bytes[index] = UInt8.random(in: 0...255)
+        }
+        return bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static let appleNotConfigured = json(404, "{\"code\":\"provider_not_configured\",\"error\":\"Apple sign-in is not configured\"}")
+    private static let nativeAppleInvalidRequest = json(400, "{\"code\":\"invalid_request\",\"error\":\"Native Apple sign-in requires the iOS platform and app environment\"}")
+    private static let nativeAppleInvalidCredential = json(400, "{\"code\":\"native_apple_invalid_credential\",\"error\":\"Apple sign-in credential was invalid\"}")
+    private static let nativeAppleAuthRequired = json(401, "{\"code\":\"auth_required\",\"error\":\"Apple account linking requires authentication\"}")
+    private static let nativeAppleLinkMismatch = json(403, "{\"code\":\"link_user_mismatch\",\"error\":\"Apple account linking does not match the authenticated user\"}")
+    private static let nativeAppleRequestExpired = json(410, "{\"code\":\"native_apple_request_expired\",\"error\":\"Apple sign-in request expired\"}")
+    private static let nativeAppleRequestConsumed = json(410, "{\"code\":\"native_apple_request_consumed\",\"error\":\"Apple sign-in request was already used\"}")
+
+    private struct NativeAppleRequestClaims {
+        var requestId: String
+        var mode: String
+        var codeChallenge: String
+        var userId: String?
+    }
+
+    private enum NativeAppleRequestToken {
+        case valid(NativeAppleRequestClaims)
+        case expired
+        case invalid
+    }
+
+    private struct AppleIdentityClaims {
+        var subject: String
+        var nonce: String
+        var email: String?
+    }
+
+    private func nativeAppleAvailable() -> Bool {
+        lock.lock()
+        let configured = !nativeAppleClientId.isEmpty && !nativeAppleClientSecret.isEmpty
+        let gate = appleLoginPlatforms.contains("mobile")
+        lock.unlock()
+        return configured && gate
+    }
+
+    public static func signNativeAppleRequestToken(secret: String, requestId: String, mode: String, codeChallenge: String, expiresAt: Date, userId: String? = nil) -> String {
+        let header = base64url(Data("{\"alg\":\"HS256\",\"typ\":\"JWT\"}".utf8))
+        var payload: [String: Any] = [
+            "kind": "native_apple_ios",
+            "requestId": requestId,
+            "mode": mode,
+            "codeChallenge": codeChallenge,
+            "iss": "slock-native-apple-auth",
+            "aud": "native-apple-auth-request",
+            "exp": Int(expiresAt.timeIntervalSince1970),
+        ]
+        if let userId { payload["userId"] = userId }
+        let encoded = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+        let body = base64url(encoded)
+        let key = SymmetricKey(data: Data(secret.utf8))
+        let mac = Data(HMAC<SHA256>.authenticationCode(for: Data("\(header).\(body)".utf8), using: key))
+        return "\(header).\(body).\(base64url(mac))"
+    }
+
+    private static func verifyNativeAppleRequestToken(_ token: String, secret: String) -> NativeAppleRequestToken {
+        let parts = token.split(separator: ".").map(String.init)
+        guard parts.count == 3,
+              let headerData = base64urlDecode(parts[0]),
+              let header = try? JSONSerialization.jsonObject(with: headerData) as? [String: Any]
+        else { return .invalid }
+        guard header["alg"] as? String == "HS256" else { return .invalid }
+        let key = SymmetricKey(data: Data(secret.utf8))
+        let signing = Data("\(parts[0]).\(parts[1])".utf8)
+        let expected = Data(HMAC<SHA256>.authenticationCode(for: signing, using: key))
+        guard let given = base64urlDecode(parts[2]), given == expected else { return .invalid }
+        guard let payloadData = base64urlDecode(parts[1]),
+              let object = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any],
+              object["kind"] as? String == "native_apple_ios",
+              let requestId = object["requestId"] as? String, !requestId.isEmpty,
+              let mode = object["mode"] as? String, mode == "login" || mode == "link",
+              let challenge = object["codeChallenge"] as? String,
+              challenge.wholeMatch(of: /^[A-Za-z0-9_-]{32,256}$/) != nil,
+              (object["iss"] as? String) == "slock-native-apple-auth",
+              (object["aud"] as? String) == "native-apple-auth-request"
+        else { return .invalid }
+        let tokenUserId: String?
+        if object["userId"] == nil || object["userId"] is NSNull {
+            tokenUserId = nil
+        } else if let id = object["userId"] as? String, !id.isEmpty {
+            tokenUserId = id
+        } else {
+            return .invalid
+        }
+        let exp = (object["exp"] as? NSNumber)?.intValue ?? (object["exp"] as? Int) ?? 0
+        if exp < Int(Date().timeIntervalSince1970) { return .expired }
+        return .valid(NativeAppleRequestClaims(requestId: requestId, mode: mode, codeChallenge: challenge, userId: tokenUserId))
+    }
+
+    private func parseAppleIdentity(_ token: String) -> AppleIdentityClaims? {
+        let parts = token.split(separator: ".").map(String.init)
+        guard parts.count == 3,
+              let headerData = Self.base64urlDecode(parts[0]),
+              let header = try? JSONSerialization.jsonObject(with: headerData) as? [String: Any],
+              header["alg"] as? String == "RS256",
+              let payloadData = Self.base64urlDecode(parts[1]),
+              let object = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any],
+              object["iss"] as? String == "https://appleid.apple.com",
+              object["aud"] as? String == nativeAppleClientId,
+              let subject = object["sub"] as? String, !subject.isEmpty,
+              let nonce = object["nonce"] as? String, !nonce.isEmpty
+        else { return nil }
+        let exp = (object["exp"] as? NSNumber)?.intValue ?? (object["exp"] as? Int) ?? 0
+        if exp < Int(Date().timeIntervalSince1970) { return nil }
+        let rawEmail = (object["email"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if rawEmail.isEmpty {
+            return AppleIdentityClaims(subject: subject, nonce: nonce, email: nil)
+        }
+        let verified: Bool
+        if let flag = object["email_verified"] as? Bool {
+            verified = flag
+        } else if let flag = object["email_verified"] as? String {
+            verified = flag == "true"
+        } else {
+            verified = false
+        }
+        guard verified else { return nil }
+        return AppleIdentityClaims(subject: subject, nonce: nonce, email: rawEmail)
+    }
+
+    private func mobileAppleAvailable() -> Bool {
+        lock.lock()
+        let configured = configuredSocialAuthProviders.contains("apple")
+        let allowed = appleLoginPlatforms.contains("mobile")
+        lock.unlock()
+        return configured && allowed
+    }
+
+    private func webProviderAvailable(_ provider: String) -> Bool {
+        lock.lock()
+        let configured = configuredSocialAuthProviders.contains(provider)
+        let allowed = appleLoginPlatforms.contains("web")
+        lock.unlock()
+        guard configured else { return false }
+        if provider == "apple" { return allowed }
+        return true
+    }
+
+    private func webAuthorizationURL(provider: String, state: String, nonce: String) -> String {
+        guard provider == "apple" else {
+            return Self.authorizationURL(provider: provider, state: state)
+        }
+        let base = serverURL.hasSuffix("/") ? String(serverURL.dropLast()) : serverURL
+        var components = URLComponents(string: "https://appleid.apple.com/auth/authorize")!
+        components.queryItems = [
+            URLQueryItem(name: "client_id", value: appleClientId),
+            URLQueryItem(name: "redirect_uri", value: "\(base)/api/auth/apple/callback"),
+            URLQueryItem(name: "response_type", value: "code"),
+            URLQueryItem(name: "response_mode", value: "form_post"),
+            URLQueryItem(name: "scope", value: "email"),
+            URLQueryItem(name: "state", value: state),
+            URLQueryItem(name: "nonce", value: nonce),
+        ]
+        return components.string ?? ""
+    }
+
+    private func stateCookie(provider: String, nonce: String) -> String {
+        let encoded = nonce.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? nonce
+        var parts = [
+            "slock_\(provider)_oauth_nonce=\(encoded)",
+            "Path=/api/auth/\(provider)/callback",
+            "Max-Age=600",
+            "HttpOnly",
+            "SameSite=\(provider == "apple" ? "None" : "Lax")",
+        ]
+        if provider == "apple" || serverURL.hasPrefix("https://") {
+            parts.append("Secure")
+        }
+        return parts.joined(separator: "; ")
+    }
+
+    private static func providerLabel(_ id: String) -> String {
+        switch id {
+        case "google": "Google"
+        case "github": "GitHub"
+        case "apple": "Apple"
+        default: id
+        }
+    }
+
+    private static func sanitizeReturnTo(_ input: String?) -> String {
+        guard let input, input.hasPrefix("/"), !input.hasPrefix("//"), !input.contains("\\"), !input.contains("://") else {
+            return "/"
+        }
+        return input
+    }
+
+    private static func returnToField(_ body: String) -> String? {
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return object["returnTo"] as? String
+    }
+
+    private static func formFields(_ body: String) -> [String: String] {
+        var fields: [String: String] = [:]
+        for pair in body.split(separator: "&", omittingEmptySubsequences: false) {
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            let name = parts[0].removingPercentEncoding ?? parts[0]
+            let raw = parts.count > 1 ? parts[1] : ""
+            fields[name] = raw.removingPercentEncoding ?? raw
+        }
+        return fields
+    }
+
+    private static func cookieValue(_ header: String?, name: String) -> String? {
+        guard let header else { return nil }
+        for part in header.split(separator: ";") {
+            let piece = part.trimmingCharacters(in: .whitespaces)
+            let halves = piece.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            guard halves.first == name else { continue }
+            let raw = halves.count > 1 ? halves[1] : ""
+            return raw.removingPercentEncoding ?? raw
+        }
+        return nil
+    }
+
+    private static func socialCallbackURL(appURL: String, provider: String, mode: String, returnTo: String, error: String? = nil, code: String? = nil) -> String {
+        let base = appURL.hasSuffix("/") ? String(appURL.dropLast()) : appURL
+        var items = [
+            URLQueryItem(name: "auth_callback", value: "social"),
+            URLQueryItem(name: "provider", value: provider),
+            URLQueryItem(name: "mode", value: mode),
+            URLQueryItem(name: "returnTo", value: returnTo),
+        ]
+        if let code { items.append(URLQueryItem(name: "code", value: code)) }
+        if let error { items.append(URLQueryItem(name: "error", value: error)) }
+        var components = URLComponents(string: base) ?? URLComponents()
+        components.queryItems = items
+        return components.string ?? base
+    }
+
+    private static func noContent() -> HTTPReply {
+        HTTPReply(
+            status: 204,
+            headers: [
+                "X-Robots-Tag": AppFallback.robotsTag,
+                "Content-Length": "0",
+            ],
+            body: ""
+        )
+    }
+
+    private static func json(_ status: Int, _ body: String, cookie: String? = nil) -> HTTPReply {
+        var headers = [
+            "X-Robots-Tag": AppFallback.robotsTag,
+            "Content-Type": AppFallback.jsonContentType,
+            "Content-Length": String(Data(body.utf8).count),
+        ]
+        if let cookie { headers["Set-Cookie"] = cookie }
+        return HTTPReply(status: status, headers: headers, body: body)
+    }
+}

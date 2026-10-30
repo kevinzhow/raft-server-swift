@@ -138,7 +138,7 @@ public enum AppFallback {
         return reply(method: verb, target: target, nodeEnv: nodeEnv, health: health, livez: livez)
     }
 
-    private static func transmit(status: Int, contentType: String, body: String, method: String) -> HTTPReply {
+    static func transmit(status: Int, contentType: String, body: String, method: String) -> HTTPReply {
         let length = Data(body.utf8).count
         return HTTPReply(
             status: status,
@@ -152,7 +152,7 @@ public enum AppFallback {
     }
 }
 
-private func jsonString(_ value: String) -> String {
+func jsonString(_ value: String) -> String {
     var out = "\""
     for scalar in value.unicodeScalars {
         switch scalar {

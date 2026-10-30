@@ -6,7 +6,8 @@ import Foundation
 ///
 /// `DaemonLink` is that loop driven by a clock the caller advances. It does
 /// not open a socket. The one-shot handshake stays on `DaemonClient.connect`.
-/// Outbound replay, proxy, and TLS are not in this slice.
+/// Each connect records the websocket URL, bearer header, and proxy URL the
+/// Node factory would receive. Outbound replay stays out of this type.
 
 public let daemonReconnectSpreadMs = 5_000
 public let daemonInboundWatchdogMs = 70_000
@@ -134,6 +135,20 @@ public struct DaemonTraceEvent: Equatable, Sendable {
     }
 }
 
+/// What `wsFactory` receives from `DaemonConnection.doConnect`.
+/// `proxyURL` nil means the options carry no proxy agent.
+public struct DaemonSocketOpen: Equatable, Sendable {
+    public var url: String
+    public var proxyURL: String?
+    public var authorization: String
+
+    public init(url: String, proxyURL: String?, authorization: String) {
+        self.url = url
+        self.proxyURL = proxyURL
+        self.authorization = authorization
+    }
+}
+
 public struct DaemonHandshakeRejectionEvent: Equatable, Sendable {
     public var statusCode: Int
     public var reason: String?
@@ -258,6 +273,7 @@ public final class DaemonLink {
     public private(set) var handshakeRejections: [DaemonHandshakeRejectionEvent]
     public private(set) var connectCount: Int
     public private(set) var disconnectCount: Int
+    public private(set) var socketOpens: [DaemonSocketOpen]
 
     /// Runs after a socket opens and after any queued session invalidation
     /// has already been written. Callers re-send `agent:session` from here.
@@ -267,6 +283,9 @@ public final class DaemonLink {
     public let inboundWatchdogMs: Int
     public let connectTimeoutMs: Int
     public var delayFor: @Sendable (Int) -> Int
+    private let serverUrl: String?
+    private let apiKey: String?
+    private let proxyEnvironment: [String: String]
 
     private var shouldConnect = false
     private var current: Int?
@@ -293,6 +312,9 @@ public final class DaemonLink {
         minReconnectDelayMs: Int = 1_000,
         inboundWatchdogMs: Int = daemonInboundWatchdogMs,
         connectTimeoutMs: Int = daemonConnectTimeoutMs,
+        serverUrl: String? = nil,
+        apiKey: String? = nil,
+        proxyEnvironment: [String: String] = [:],
         delayFor: @escaping @Sendable (Int) -> Int = { backoff in
             jitteredReconnectDelay(backoffMs: backoff) { Double.random(in: 0..<1) }
         }
@@ -301,6 +323,9 @@ public final class DaemonLink {
         self.minReconnectDelayMs = minReconnectDelayMs
         self.inboundWatchdogMs = inboundWatchdogMs
         self.connectTimeoutMs = connectTimeoutMs
+        self.serverUrl = serverUrl
+        self.apiKey = apiKey
+        self.proxyEnvironment = proxyEnvironment
         self.delayFor = delayFor
         self.reconnectDelay = minReconnectDelayMs
         self.sockets = []
@@ -309,6 +334,7 @@ public final class DaemonLink {
         self.handshakeRejections = []
         self.connectCount = 0
         self.disconnectCount = 0
+        self.socketOpens = []
     }
 
     public func traces(named name: String) -> [DaemonTraceEvent] {
@@ -482,6 +508,14 @@ public final class DaemonLink {
     private func doConnect() {
         guard shouldConnect else { return }
         if let index = current, sockets[index].readyState != webSocketClosed { return }
+        if let serverUrl, let apiKey {
+            let url = DaemonProxy.webSocketURL(serverUrl: serverUrl)
+            socketOpens.append(DaemonSocketOpen(
+                url: url,
+                proxyURL: DaemonProxy.webSocketProxyURL(url, environment: proxyEnvironment),
+                authorization: "Bearer \(apiKey)"
+            ))
+        }
         sockets.append(DaemonSocket(readyState: webSocketConnecting, terminated: false, closed: false, sent: []))
         current = sockets.count - 1
         cfPop = nil
