@@ -890,9 +890,14 @@ public final class OAuthLedger: @unchecked Sendable {
     }
 
     /// `POST /api/oauth/token`. Form fields, camelCase JSON, and HTTP Basic all name the same client.
-    public func exchangeToken(authorization: String?, body: String, issuer: String) -> HTTPReply {
+    public func exchangeToken(
+        authorization: String?,
+        body: String,
+        issuer: String,
+        scopeServerId: String? = nil
+    ) -> HTTPReply {
         let fields = tokenFields(body)
-        if fields["code_verifier"] != nil {
+        if fields["code_verifier"] != nil || jsonBodyHasKey(body, "code_verifier") {
             return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization code, redirect URI, or PKCE verifier is invalid\"}")
         }
         guard let credentials = clientCredentials(authorization: authorization, fields: fields) else {
@@ -900,7 +905,7 @@ public final class OAuthLedger: @unchecked Sendable {
         }
         let grantType = fields["grantType"] ?? fields["grant_type"] ?? ""
         if grantType == "urn:slock:grant-type:agent_request" {
-            return exchangeAgentRequest(fields: fields, credentials: credentials)
+            return exchangeAgentRequest(fields: fields, credentials: credentials, scopeServerId: scopeServerId)
         }
         guard grantType == "authorization_code" else {
             return json(400, "{\"error\":\"Unsupported grant type\"}")
@@ -921,6 +926,10 @@ public final class OAuthLedger: @unchecked Sendable {
             return json(404, "{\"error\":\"Access request not found\"}")
         }
         let request = requests[index]
+        if let scopeServerId, scopeServerId != request.serverId {
+            lock.unlock()
+            return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization was granted for a different Server than this issuer\"}")
+        }
         if request.consumedAt != nil {
             lock.unlock()
             return json(409, "{\"error\":\"request_already_consumed\",\"error_description\":\"This Login with Raft request is one-time and has already been exchanged. Discard it and obtain a fresh request before retrying.\",\"next_action\":\"obtain_fresh_request\"}")
@@ -987,7 +996,8 @@ public final class OAuthLedger: @unchecked Sendable {
 
     private func exchangeAgentRequest(
         fields: [String: String],
-        credentials: (clientId: String, clientSecret: String)
+        credentials: (clientId: String, clientSecret: String),
+        scopeServerId: String? = nil
     ) -> HTTPReply {
         let requestId = (fields["requestId"] ?? fields["request_id"] ?? "").lowercased()
         guard !requestId.isEmpty else {
@@ -1010,6 +1020,9 @@ public final class OAuthLedger: @unchecked Sendable {
             return json(404, "{\"error\":\"Access request not found\"}")
         }
         let request = requests[index]
+        if let scopeServerId, scopeServerId != request.serverId {
+            return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization was granted for a different Server than this issuer\"}")
+        }
         if request.consumedAt != nil {
             return json(409, "{\"error\":\"request_already_consumed\",\"error_description\":\"This Login with Raft request is one-time and has already been exchanged. Discard it and obtain a fresh request before retrying.\",\"next_action\":\"obtain_fresh_request\"}")
         }
@@ -1310,6 +1323,14 @@ public final class OAuthLedger: @unchecked Sendable {
             return (clientId, clientSecret)
         }
         return nil
+    }
+
+    /// Presence matters even when the JSON value is null or not a string.
+    private func jsonBodyHasKey(_ body: String, _ key: String) -> Bool {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return false
+        }
+        return object[key] != nil
     }
 
     private func tokenFields(_ body: String) -> [String: String] {

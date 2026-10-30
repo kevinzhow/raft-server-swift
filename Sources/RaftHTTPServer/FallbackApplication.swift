@@ -671,6 +671,17 @@ public func configure(_ app: Application, services: FallbackServices) {
             scopeServerId: scope
         ))
     }
+    app.post("oidc", ":server", "api", "oauth", "token") { request -> Response in
+        guard let scope = services.emailAccounts.oauth.serverScopeId(request.parameters.get("server") ?? "") else {
+            return pixelAvatarError(404, "Not found")
+        }
+        return routeResponse(services.emailAccounts.oauth.exchangeToken(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "",
+            issuer: OAuthDiscovery.issuerOrigin(services.emailAccounts.serverURL) ?? "",
+            scopeServerId: scope
+        ))
+    }
     app.post("api", "auth", "mobile", "oauth", "apple", "native", "start") { request -> Response in
         routeResponse(services.emailAccounts.startNativeApple(
             body: request.body.string ?? "",
