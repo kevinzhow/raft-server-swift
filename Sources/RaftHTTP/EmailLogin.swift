@@ -6888,7 +6888,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         let canSeeAllEmails = role == "owner" || role == "admin"
-        let rows = oauth.memberIdsWithRoles(serverId: serverId).map { member -> String in
+        lock.lock()
+        let hiddenDirectory = hideHumansFromMembers[serverId] == true
+        lock.unlock()
+        var members = oauth.memberIdsWithRoles(serverId: serverId)
+        if hiddenDirectory, role != "owner", role != "admin" {
+            members = members.filter { $0.id == userId }
+        }
+        let rows = members.map { member -> String in
             lock.lock()
             let account = accounts.values.first { $0.id == member.id }
             lock.unlock()
