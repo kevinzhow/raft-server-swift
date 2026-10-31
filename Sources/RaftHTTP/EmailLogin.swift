@@ -7453,7 +7453,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
         }
         guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            return Self.json(403, "{\"code\":\"not_supported\",\"error\":\"Agent migration status requires creator or server admin authority\"}")
         }
         return Self.json(200, "{\"migration\":null}")
     }

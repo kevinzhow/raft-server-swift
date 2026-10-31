@@ -47,7 +47,9 @@ import VaporTesting
             #expect(ownerStatus.status == .ok)
             let ownerBody = try JSONSerialization.jsonObject(with: Data((ownerStatus.body.string ?? "").utf8)) as? [String: Any]
             #expect(ownerBody?["migration"] == nil || ownerBody?["migration"] is NSNull)
-            #expect(try await client.send(.get, headers: headers(memberToken), to: "/api/agents/\(agent)/migration").status == .forbidden)
+            let memberStatus = try await client.send(.get, headers: headers(memberToken), to: "/api/agents/\(agent)/migration")
+            #expect(memberStatus.status == .forbidden)
+            #expect((try JSONSerialization.jsonObject(with: Data((memberStatus.body.string ?? "").utf8)) as? [String: Any])?["code"] as? String == "not_supported")
         }
     }
 }

@@ -102,4 +102,4 @@ external agent mint 接受请求体 `scopes`，返回去重排序后的 scopes�
 agent credential 经 internal agent-api 使用后，inventory 的 `lastUsedAt` 非 null；同时 identity 返回 credentialId。
 
 
-`GET /api/agents/:id/migration` 仅 creator/owner/admin；普通 member 403，跨 Server 404；无迁移时返回 `{migration:null}`。
+`GET /api/agents/:id/migration` 仅 creator/owner/admin；普通 member 403，跨 Server 404；无迁移时返回 `{migration:null}`；普通 member 403 `{code:"not_supported"}`。
