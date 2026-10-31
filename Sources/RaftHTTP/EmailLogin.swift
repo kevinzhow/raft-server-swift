@@ -7657,7 +7657,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
-    public func issueAgentCredential(authorization: String?, agentId: String) -> HTTPReply {
+    public func issueAgentCredential(authorization: String?, agentId: String, body: String = "") -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
@@ -7672,7 +7672,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard info.runtime == "external" else {
             return Self.json(400, "{\"code\":\"agent_not_external\",\"error\":\"Only external Agents get credentials\"}")
         }
-        let capabilities = ["channels", "knowledge", "mentions", "reactions", "read", "send", "tasks"]
+        let requested = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        let requestedScopes = (requested?["scopes"] as? [Any])?.compactMap { $0 as? String } ?? []
+        let capabilities = requestedScopes.isEmpty
+            ? ["channels", "knowledge", "mentions", "reactions", "read", "send", "tasks"]
+            : Array(Set(requestedScopes)).sorted()
         let key = mintAgentCredential(agentId: agentId, scopes: capabilities, name: "session-issued")
         lock.lock()
         let credentialId = agentCredentials[key]?.id ?? ""

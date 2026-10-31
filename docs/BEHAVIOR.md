@@ -91,3 +91,6 @@ external agent 的 credential mint 返回 credentialId/apiKey/agentId/serverId/s
 
 
 external agent credential mint/list 响应带 `Cache-Control: no-store`。
+
+
+external agent mint 接受请求体 `scopes`，返回去重排序后的 scopes；缺省返回默认 capability 集。

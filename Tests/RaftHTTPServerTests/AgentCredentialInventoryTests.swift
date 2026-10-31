@@ -45,7 +45,7 @@ import VaporTesting
             let ownerToken = try await login("inventory-owner@slock.test")
             let memberToken = try await login("inventory-member@slock.test")
             let mint = try await client.send(.post, headers: headers(ownerToken), to: "/api/agents/\(agent)/credentials") { request in
-                request.body = .init(string: "{}")
+                request.body = .init(string: "{\"scopes\":[\"read\",\"server\",\"mcp\"]}")
             }
             #expect(mint.status.code == 201)
             #expect(mint.headers[HTTPField.Name("Cache-Control")!] == "no-store")
@@ -55,6 +55,7 @@ import VaporTesting
             #expect(apiKey.hasPrefix("sk_agent_"))
             #expect(minted["agentId"] as? String == agent)
             #expect(minted["serverId"] as? String == serverId)
+            #expect(minted["scopes"] as? [String] == ["mcp", "read", "server"])
 
             let list = try await client.send(.get, headers: headers(ownerToken), to: "/api/agents/\(agent)/credentials")
             let inventory = try JSONSerialization.jsonObject(with: Data((list.body.string ?? "").utf8)) as? [String: Any] ?? [:]

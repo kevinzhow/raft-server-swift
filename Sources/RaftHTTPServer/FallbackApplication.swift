@@ -1086,7 +1086,8 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.post("api", "agents", ":id", "credentials") { request -> Response in
         var response = routeResponse(services.emailAccounts.issueAgentCredential(
             authorization: request.headers[.authorization],
-            agentId: request.parameters.get("id") ?? ""
+            agentId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
         ))
         response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
         return response
