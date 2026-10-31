@@ -1103,6 +1103,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             channelId: request.parameters.get("channelId") ?? ""
         ))
     }
+    app.get("api", "attachments", "upload-capabilities") { request -> Response in
+        routeResponse(services.emailAccounts.attachmentUploadCapabilities(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+        ))
+    }
     app.get("api", "attachments", ":id") { request -> Response in
         routeResponse(services.emailAccounts.readAttachment(
             authorization: request.headers[.authorization],
