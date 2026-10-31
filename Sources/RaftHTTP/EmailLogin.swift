@@ -211,6 +211,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var proSeats: [String: Int] = [:]
     private var joinLinks: [String: (serverId: String, role: String)] = [:]
     private var hostedAgents: Set<String> = []
+    private var threadFollows: [String: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String)] = [:]
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -3973,6 +3974,69 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// `GET /api/messages/sync`. `since_seq=0` returns the channel page, including a joint canonical store.
+    public func followThreadForTesting(serverId: String, userId: String, threadChannelId: String, parentMessageId: String) {
+        lock.lock()
+        threadFollows["\(serverId)\n\(userId)\n\(threadChannelId)"] = (serverId, userId, threadChannelId, parentMessageId)
+        lock.unlock()
+    }
+
+    public func addTaskForTesting(
+        channelId: String,
+        title: String,
+        messageId: String,
+        assigneeType: String?,
+        assigneeId: String?
+    ) {
+        lock.lock()
+        let taskNumber = taskRecords.filter { $0.channelId == channelId }.count + 1
+        taskRecords.append(TaskRecord(
+            id: UUID().uuidString.lowercased(),
+            channelId: channelId,
+            title: title,
+            description: nil,
+            status: "in_progress",
+            taskNumber: taskNumber,
+            messageId: messageId,
+            createdAt: Date(),
+            assigneeId: assigneeId,
+            assigneeType: assigneeType
+        ))
+        lock.unlock()
+    }
+
+    public func followedThreads(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        lock.lock()
+        let follows = threadFollows.values.filter { $0.serverId == serverId && $0.userId == userId }
+        var rows: [String] = []
+        for follow in follows {
+            guard let thread = postableChannels[follow.threadChannelId], thread.deletedAt == nil else { continue }
+            let info = oauth.channelUnreadInfo(channelId: follow.threadChannelId, userId: userId)
+            let task = taskRecords.first { $0.messageId == follow.parentMessageId }
+            let taskJSON = task.map { jsonString($0.id) } ?? "null"
+            let claimedType = task?.assigneeType.map { jsonString($0) } ?? "null"
+            let claimedId = task?.assigneeId.map { jsonString($0) } ?? "null"
+            var claimedName = "null"
+            if let assigneeId = task?.assigneeId, let assigneeType = task?.assigneeType {
+                if assigneeType == "user" {
+                    if let name = accounts.values.first(where: { $0.id == assigneeId })?.name {
+                        claimedName = jsonString(name)
+                    }
+                } else if let name = oauth.agentRuntimeInfo(id: assigneeId)?.name {
+                    claimedName = jsonString(name)
+                }
+            }
+            rows.append("{\"threadChannelId\":\(jsonString(follow.threadChannelId)),\"unreadCount\":\(info.unreadCount),\"taskId\":\(taskJSON),\"taskClaimedByType\":\(claimedType),\"taskClaimedById\":\(claimedId),\"taskClaimedByName\":\(claimedName)}")
+        }
+        lock.unlock()
+        return Self.json(200, "{\"threads\":[\("\(rows.joined(separator: ","))")]}")
+    }
+
     public func channelThreadSummaries(authorization: String?, serverId: String?, channelId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)
