@@ -74,9 +74,9 @@ externalAgentDiagnostics.api	route	partial	-	auto-seed
 externalAgentPresence.api	route	partial	-	auto-seed
 externalAvatars.api	route	pending	-	auto-seed
 externalProjectionReactionRoutes	route	pending	-	auto-seed
-featureFlagOperatorPreview.api	route	partial	-	auto-seed
+featureFlagOperatorPreview.api	route	locked	be8b567	removed routes stay 404
 featureFlags.api	route	partial	-	auto-seed
-featureFlagsAdmin.removed.api	route	partial	-	auto-seed
+featureFlagsAdmin.removed.api	route	locked	be8b567	removed routes stay 404
 feedbackAgentEventTail.e2e.api	route	pending	-	auto-seed
 feedbackMachineEvidence.e2e.api	route	pending	-	auto-seed
 feedbackTranscriptOutcome.e2e.api	route	partial	-	auto-seed
@@ -89,7 +89,7 @@ inboxPressure.realPg	route	pending	-	auto-seed
 independentAudit.api	route	pending	-	auto-seed
 integrations.api	route	partial	-	auto-seed
 integrations.appPermissionReview.api	route	pending	-	auto-seed
-internal.agentScope.api	route	partial	-	auto-seed
+internal.agentScope.api	route	locked	e1fa956	covered by the existing metric/scope tests
 internal.attestedSend.api	route	partial	-	auto-seed
 internal.channelMembership.api	route	partial	-	auto-seed
 internal.profile.api	route	pending	-	auto-seed
@@ -211,11 +211,11 @@ tasks.assignee.api	route	partial	-	auto-seed
 tasks.channelMembership.api	route	partial	-	auto-seed
 tasks.jointSurface.api	route	pending	-	auto-seed
 tasks.orphanCleanup.api	route	pending	-	auto-seed
-tasks.periodMetrics.api	route	partial	-	auto-seed
+tasks.periodMetrics.api	route	locked	e1fa956	covered by the existing metric/scope tests
 tasks.realtimeProjection.api	route	partial	-	canonical claim emits task:updated only; refused message-only claim tested below the socket
 tasks.serverPagination.api	route	partial	-	auto-seed
 tasks.shapeSurfaces.api	route	pending	-	auto-seed
-tasks.snapshotMetrics.api	route	partial	-	auto-seed
+tasks.snapshotMetrics.api	route	locked	e1fa956	covered by the existing metric/scope tests
 timezoneObservation.api	route	partial	-	auto-seed
 version.api	route	partial	-	auto-seed
 accessRevocation.redis	socket	pending	-	auto-seed
