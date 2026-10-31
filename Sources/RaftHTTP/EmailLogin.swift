@@ -4180,8 +4180,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\(summaries.joined(separator: ","))}")
     }
 
-    public func syncChannelMessages(channelId: String?, sinceSeq: String?, authorization: String?, serverId: String?) -> HTTPReply {
-        guard let channelId, ServerScope.isUUID(channelId) else {
+    public func syncChannelMessages(channelId: String?, sinceSeq: String?, authorization: String?, serverId: String?, limit rawLimit: String? = nil) -> HTTPReply {
+        if let channelId, !ServerScope.isUUID(channelId) {
             return Self.json(400, "{\"error\":\"Invalid channel id\"}")
         }
         guard sinceSeq == nil || sinceSeq == "0" || Int(sinceSeq ?? "") != nil else {
@@ -4197,6 +4197,31 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard isEmailVerified(userId: userId) else {
             return Self.json(403, "{\"error\":\"Email verification required\"}")
         }
+        let pageLimit = Self.messagePageLimit(rawLimit)
+        if channelId == nil {
+            let cursor = Int(sinceSeq ?? "") ?? 0
+            lock.lock()
+            var visibleChannels: [String] = []
+            for (id, channel) in postableChannels {
+                guard channel.serverId == serverId, channel.deletedAt == nil, !channel.archived else { continue }
+                if channel.kind == "channel" || channel.memberIds.contains(userId) {
+                    visibleChannels.append(id)
+                }
+            }
+            var listed: [String] = []
+            for id in visibleChannels {
+                let rows = humanMessageRows.filter { $0.channelId == id }
+                for (index, message) in rows.enumerated() where index + 1 > cursor {
+                    listed.append("{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(id)),\"seq\":\(index + 1),\"content\":\(jsonString(message.content))}")
+                }
+            }
+            lock.unlock()
+            let page = listed.suffix(pageLimit)
+            return Self.json(200, "[\(page.joined(separator: ","))]")
+        }
+        guard let channelId else {
+            return Self.json(400, "{\"error\":\"Invalid channel id\"}")
+        }
         lock.lock()
         let visible: Bool = {
             guard let channel = postableChannels[channelId], channel.serverId == serverId else { return false }
@@ -4207,7 +4232,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let allRows = humanMessageRows.filter { $0.channelId == storageChannelId || $0.channelId == channelId }
         let cursor = Int(sinceSeq ?? "") ?? 0
         let indexed = allRows.enumerated().filter { $0.offset + 1 > cursor }
-        let listed = indexed.map { index, message -> String in
+        let limitedIndexed = Array(indexed.suffix(pageLimit))
+        let listed = limitedIndexed.map { index, message -> String in
             var row = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(channelId)),\"seq\":\(index + 1),\"content\":\(jsonString(message.content))"
             if let metadata = forwardMetadataJSONLocked(messageId: message.id, userId: userId, serverId: serverId) {
                 row += ",\"actionMetadata\":\(metadata)"
@@ -10363,6 +10389,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 return Self.json(403, "{\"error\":\"You must be a channel member\",\"code\":\"channel_membership_required\"}")
             }
             _ = oauth.setChannelType(id: channelId, type: visibility == "private" ? "private" : "channel")
+            lock.lock()
+            postableChannels[channelId]?.kind = visibility == "private" ? "private" : "channel"
+            lock.unlock()
             return Self.json(200, "{\"ok\":true,\"id\":\(jsonString(channelId)),\"visibility\":\(jsonString(visibility))}")
         }
         lock.lock()

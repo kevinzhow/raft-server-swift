@@ -619,7 +619,8 @@ public func configure(_ app: Application, services: FallbackServices) {
             channelId: desktopQuery(request.url.query, "channel_id"),
             sinceSeq: desktopQuery(request.url.query, "since_seq"),
             authorization: request.headers[.authorization],
-            serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+            limit: desktopQuery(request.url.query, "limit")
         ))
     }
     app.get("api", "messages", "search") { request -> Response in
