@@ -6466,9 +6466,22 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public func registerMachine(serverId: String, userId: String, name: String) -> String {
         let id = UUID().uuidString.lowercased()
         lock.lock()
-        machines.append(MachineRecord(id: id, serverId: serverId, userId: userId, name: name, description: nil))
+        machines.append(MachineRecord(
+            id: id,
+            serverId: serverId,
+            userId: userId,
+            name: name,
+            description: nil,
+            apiKey: "raft_machine_" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        ))
         lock.unlock()
         return id
+    }
+
+    public func machineAPIKey(machineId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return machines.first { $0.id == machineId }?.apiKey
     }
 
     private struct UserOnboarding {
@@ -7563,6 +7576,29 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let avatarUrl = "/api/avatars/server-\(serverId)/\(key).webp"
         oauth.setServerAvatar(id: serverId, avatarUrl: avatarUrl)
         return Self.json(200, "{\"avatarUrl\":\(jsonString(avatarUrl))}")
+    }
+
+    public func runtimeProfileMigrationDone(authorization: String?, agentId: String, body: String) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        }
+        let apiKey = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        guard let machine = machines.first(where: { $0.apiKey == apiKey }) else {
+            lock.unlock()
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        lock.unlock()
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == machine.serverId else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        let migrationKey = (object?["migrationKey"] as? String) ?? ""
+        let message = "Runtime Profile migration acknowledgments are deprecated; runtime changes reset the session automatically."
+        if migrationKey.isEmpty {
+            return Self.json(200, "{\"ok\":true,\"deprecated\":true,\"noop\":\"no pending migration\",\"message\":\(jsonString(message))}")
+        }
+        return Self.json(200, "{\"ok\":true,\"deprecated\":true,\"message\":\(jsonString(message))}")
     }
 
     public func markAgentHosted(agentId: String) {

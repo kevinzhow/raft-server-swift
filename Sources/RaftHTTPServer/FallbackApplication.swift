@@ -409,6 +409,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             filter: desktopQuery(request.url.query, "filter")
         ))
     }
+    app.post("internal", "agent", ":agentId", "runtime-profile", "migration-done") { request -> Response in
+        routeResponse(services.emailAccounts.runtimeProfileMigrationDone(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.post("internal", "agent-api", "profile") { request -> Response in
         routeResponse(services.emailAccounts.updateAgentProfile(
             authorization: request.headers[.authorization],
