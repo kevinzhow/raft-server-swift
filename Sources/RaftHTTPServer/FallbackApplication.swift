@@ -1084,10 +1084,12 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.post("api", "agents", ":id", "credentials") { request -> Response in
-        routeResponse(services.emailAccounts.issueAgentCredential(
+        var response = routeResponse(services.emailAccounts.issueAgentCredential(
             authorization: request.headers[.authorization],
             agentId: request.parameters.get("id") ?? ""
         ))
+        response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
+        return response
     }
     app.delete("api", "agents", ":id", "credentials", ":credentialId") { request -> Response in
         routeResponse(services.emailAccounts.revokeAgentCredential(
@@ -1097,10 +1099,12 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.get("api", "agents", ":id", "credentials") { request -> Response in
-        routeResponse(services.emailAccounts.listAgentCredentials(
+        var response = routeResponse(services.emailAccounts.listAgentCredentials(
             authorization: request.headers[.authorization],
             agentId: request.parameters.get("id") ?? ""
         ))
+        response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
+        return response
     }
     app.get("api", "reminders") { request -> Response in
         routeResponse(services.emailAccounts.listReminders(

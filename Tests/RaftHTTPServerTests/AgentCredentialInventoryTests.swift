@@ -48,6 +48,7 @@ import VaporTesting
                 request.body = .init(string: "{}")
             }
             #expect(mint.status.code == 201)
+            #expect(mint.headers[HTTPField.Name("Cache-Control")!] == "no-store")
             let minted = try JSONSerialization.jsonObject(with: Data((mint.body.string ?? "").utf8)) as? [String: Any] ?? [:]
             let credentialId = minted["credentialId"] as? String ?? ""
             let apiKey = minted["apiKey"] as? String ?? ""
@@ -62,6 +63,7 @@ import VaporTesting
             #expect(rows.first?["id"] as? String == credentialId)
             #expect((rows.first?["maskedToken"] as? String ?? "").hasSuffix("***"))
             #expect(!(list.body.string ?? "").contains(apiKey))
+            #expect(list.headers[HTTPField.Name("Cache-Control")!] == "no-store")
             #expect(try await client.send(.get, headers: headers(memberToken), to: "/api/agents/\(agent)/credentials").status == .forbidden)
 
             for _ in 0..<2 {
