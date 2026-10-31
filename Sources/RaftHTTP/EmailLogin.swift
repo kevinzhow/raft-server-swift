@@ -8678,6 +8678,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         let order = oauth.sanitizedSidebarOrder(serverId: serverId, userId: userId)
+        lock.lock()
+        let visibleChannelOrder = order.channelOrder.filter { postableChannels[$0]?.deletedAt == nil }
+        lock.unlock()
         func array(_ values: [String]) -> String {
             values.map { jsonString($0) }.joined(separator: ",")
         }
@@ -8691,7 +8694,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let placementJSON = sections.placements.map { placement in
             "{\"kind\":\(jsonString(placement.kind)),\"id\":\(jsonString(placement.id)),\"sectionId\":\(jsonString(placement.sectionId)),\"position\":\(placement.position)}"
         }.joined(separator: ",")
-        return Self.json(200, "{\"channelOrder\":[\("\(array(order.channelOrder))")],\"agentOrder\":[\("\(array(order.agentOrder))")],\"dmOrder\":[\("\(array(order.dmOrder))")],\"pinnedOrder\":[\("\(array(order.pinnedOrder))")],\"hiddenDmIds\":[\("\(array(order.hiddenDmIds))")],\"channelSortMode\":\(jsonString(modes.channel)),\"jointChannelSortMode\":\(jsonString(modes.joint)),\"dmSortMode\":\(jsonString(modes.dm)),\"pinnedSortMode\":\(jsonString(modes.pinned)),\"channelPanelTabOrder\":[\("\(array(modes.channelTabs))")],\"agentPanelTabOrder\":[\("\(array(modes.agentTabs))")],\"customSections\":[\("\(sectionJSON)")],\"sectionOrder\":[\("\(array(sections.order.isEmpty ? ["system:pinned", "system:joint", "system:channels", "system:dms"] : sections.order))")],\"sectionPlacements\":[\("\(placementJSON)")],\"sectionsVersion\":\(sections.version)}")
+        return Self.json(200, "{\"channelOrder\":[\("\(array(visibleChannelOrder))")],\"agentOrder\":[\("\(array(order.agentOrder))")],\"dmOrder\":[\("\(array(order.dmOrder))")],\"pinnedOrder\":[\("\(array(order.pinnedOrder))")],\"hiddenDmIds\":[\("\(array(order.hiddenDmIds))")],\"channelSortMode\":\(jsonString(modes.channel)),\"jointChannelSortMode\":\(jsonString(modes.joint)),\"dmSortMode\":\(jsonString(modes.dm)),\"pinnedSortMode\":\(jsonString(modes.pinned)),\"channelPanelTabOrder\":[\("\(array(modes.channelTabs))")],\"agentPanelTabOrder\":[\("\(array(modes.agentTabs))")],\"customSections\":[\("\(sectionJSON)")],\"sectionOrder\":[\("\(array(sections.order.isEmpty ? ["system:pinned", "system:joint", "system:channels", "system:dms"] : sections.order))")],\"sectionPlacements\":[\("\(placementJSON)")],\"sectionsVersion\":\(sections.version)}")
     }
 
     public func addTaskSnapshot(
