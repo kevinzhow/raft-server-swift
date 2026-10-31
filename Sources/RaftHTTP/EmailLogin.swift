@@ -6880,6 +6880,22 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         "{\"id\":\(jsonString(agreement.id)),\"version\":\(agreement.version),\"title\":\(jsonString(agreement.title)),\"bodyMarkdown\":\(jsonString(agreement.bodyMarkdown)),\"enabled\":\(agreement.enabled)}"
     }
 
+    public func uploadServerAvatar(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        let key = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        let avatarUrl = "/api/avatars/server-\(serverId)/\(key).webp"
+        oauth.setServerAvatar(id: serverId, avatarUrl: avatarUrl)
+        return Self.json(200, "{\"avatarUrl\":\(jsonString(avatarUrl))}")
+    }
+
     public func createServerInvite(authorization: String?, serverId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)

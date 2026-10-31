@@ -944,6 +944,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("api", "servers", ":id", "avatar") { request -> Response in
+        routeResponse(services.emailAccounts.uploadServerAvatar(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
     app.post("api", "servers", ":id", "invites") { request -> Response in
         routeResponse(services.emailAccounts.createServerInvite(
             authorization: request.headers[.authorization],

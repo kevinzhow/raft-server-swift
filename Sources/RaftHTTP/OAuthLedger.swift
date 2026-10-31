@@ -942,6 +942,12 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func setServerAvatar(id: String, avatarUrl: String?) {
+        lock.lock()
+        servers[id]?.avatarUrl = avatarUrl
+        lock.unlock()
+    }
+
     public func updateServer(id: String, name: String, avatarUrl: String?) {
         lock.lock()
         if var server = servers[id] {
