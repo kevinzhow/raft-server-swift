@@ -9442,6 +9442,85 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
+    public func agentHistory(authorization: String?, agentId: String? = nil, channelRef: String?, before: String?, after: String?, limit: String?) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let credential = agentCredentials[token]
+        let machine = machines.first { $0.apiKey == token }
+        lock.unlock()
+        let resolvedAgentId: String
+        if let credential {
+            guard credential.scopes.contains("read") else {
+                return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            }
+            resolvedAgentId = credential.agentId
+        } else if let machine, let requestedAgentId = agentId,
+                  let candidate = oauth.agentRuntimeInfo(id: requestedAgentId),
+                  !candidate.deleted,
+                  candidate.serverId == machine.serverId {
+            resolvedAgentId = requestedAgentId
+        } else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: resolvedAgentId), !agent.deleted else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        let reference = (channelRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reference.isEmpty else {
+            return Self.json(400, "{\"error\":\"channel is required\"}")
+        }
+        lock.lock()
+        let channelId: String?
+        if reference.hasPrefix("#") {
+            let name = String(reference.dropFirst())
+            channelId = postableChannels.first { _, channel in
+                channel.serverId == agent.serverId && channel.name == name && channel.deletedAt == nil
+            }?.key
+        } else {
+            channelId = postableChannels.keys.first { $0 == reference }
+        }
+        let visible = channelId.flatMap { id -> Bool? in
+            guard let channel = postableChannels[id] else { return nil }
+            return channel.kind == "channel" || channel.memberIds.contains(agent.id) || oauth.channelAgentIds(channelId: id).contains(agent.id)
+        } ?? false
+        lock.unlock()
+        guard let channelId, visible else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        let messages = oauth.historyMessages(channelId: channelId)
+        let pageLimit = min(max(Int(limit ?? "") ?? 20, 1), 100)
+        let beforeSeq = Int(before ?? "")
+        let afterSeq = Int(after ?? "")
+        var filtered = messages
+        if let beforeSeq { filtered = filtered.filter { $0.seq < beforeSeq } }
+        if let afterSeq { filtered = filtered.filter { $0.seq > afterSeq } }
+        let page: [OAuthLedger.HistoryMessage]
+        if afterSeq != nil {
+            page = Array(filtered.prefix(pageLimit))
+        } else {
+            page = Array(filtered.suffix(pageLimit))
+        }
+        let firstSeq = page.first?.seq ?? 0
+        let lastSeq = page.last?.seq ?? 0
+        let hasOlder = afterSeq == nil && messages.contains { $0.seq < firstSeq }
+        let hasNewer = messages.contains { $0.seq > lastSeq }
+        let hasMore = hasOlder || (afterSeq != nil && hasNewer)
+        let latestSeq = messages.last?.seq ?? 0
+        lock.lock()
+        let previous = agentChannelReadCursors["\(channelId)\n\(agent.id)"] ?? (seq: 0, version: 0)
+        agentChannelReadCursors["\(channelId)\n\(agent.id)"] = (max(previous.seq, latestSeq), previous.version + (latestSeq > previous.seq ? 1 : 0))
+        let readSeq = max(previous.seq, latestSeq)
+        lock.unlock()
+        let json = page.map { message -> String in
+            let senderType = message.senderId == agent.id ? "agent" : "user"
+            return "{\"id\":\(jsonString(message.id)),\"content\":\(jsonString(message.content)),\"seq\":\(message.seq),\"senderType\":\(jsonString(senderType)),\"senderId\":\(jsonString(message.senderId))}"
+        }.joined(separator: ",")
+        return Self.json(200, "{\"messages\":[\("\(json)")],\"has_more\":\(hasMore),\"has_older\":\(hasOlder),\"has_newer\":\(hasNewer),\"last_read_seq\":\(readSeq)}")
+    }
+
     public func agentChannelMembershipFromMachine(authorization: String?, agentId: String, channelId: String, join: Bool) -> HTTPReply {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
             return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")

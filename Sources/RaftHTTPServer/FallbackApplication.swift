@@ -499,6 +499,25 @@ public func configure(_ app: Application, services: FallbackServices) {
             channelId: request.parameters.get("channelId") ?? ""
         ))
     }
+    app.get("internal", "agent-api", "history") { request -> Response in
+        routeResponse(services.emailAccounts.agentHistory(
+            authorization: request.headers[.authorization],
+            channelRef: desktopQuery(request.url.query, "channel"),
+            before: desktopQuery(request.url.query, "before"),
+            after: desktopQuery(request.url.query, "after"),
+            limit: desktopQuery(request.url.query, "limit")
+        ))
+    }
+    app.get("internal", "agent", ":agentId", "history") { request -> Response in
+        routeResponse(services.emailAccounts.agentHistory(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId"),
+            channelRef: desktopQuery(request.url.query, "channel"),
+            before: desktopQuery(request.url.query, "before"),
+            after: desktopQuery(request.url.query, "after"),
+            limit: desktopQuery(request.url.query, "limit")
+        ))
+    }
     app.post("internal", "agent-api", "channels", ":channelId", "join") { request -> Response in
         routeResponse(services.emailAccounts.agentJoinChannel(
             authorization: request.headers[.authorization],
