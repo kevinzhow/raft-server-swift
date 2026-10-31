@@ -1091,6 +1091,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             kind: "html-preview-url"
         ))
     }
+    app.get("api", "channels", ":channelId", "agents") { request -> Response in
+        routeResponse(services.emailAccounts.channelAgentsRoute(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? ""
+        ))
+    }
     app.get("api", "channels", ":channelId", "members") { request -> Response in
         routeResponse(services.emailAccounts.channelMembers(
             authorization: request.headers[.authorization],

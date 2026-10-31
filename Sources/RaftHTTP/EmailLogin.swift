@@ -9376,6 +9376,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
+        guard channelActorCanSee(channelId: channelId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
         lock.lock()
         let channelAdmin = channelHumanRoles["\(channelId)\n\(userId)"] == "admin"
         lock.unlock()
@@ -9847,6 +9850,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         if let reply = archivedChannelReply(channelId) { return reply }
+        guard channelActorCanSee(channelId: channelId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
         guard role == "owner" || role == "admin" || oauth.isChannelParticipant(channelId: channelId, userId: userId) else {
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
@@ -9963,6 +9969,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         if let reply = archivedChannelReply(channelId) { return reply }
+        guard channelActorCanSee(channelId: channelId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
         lock.lock()
         let actorChannelAdmin = channelHumanRoles["\(channelId)\n\(userId)"] == "admin"
         lock.unlock()
@@ -9987,11 +9996,44 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         if let reply = archivedChannelReply(channelId) { return reply }
+        guard channelActorCanSee(channelId: channelId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
         guard role == "owner" || role == "admin" || oauth.isChannelParticipant(channelId: channelId, userId: userId) else {
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
         oauth.removeChannelAgent(channelId: channelId, agentId: agentId)
         return Self.json(200, "{\"ok\":true}")
+    }
+
+    private func channelActorCanSee(channelId: String, userId: String) -> Bool {
+        lock.lock()
+        let postable = postableChannels[channelId]
+        lock.unlock()
+        if let postable {
+            return postable.kind == "channel" || postable.memberIds.contains(userId)
+        }
+        return oauth.channelType(id: channelId) == "channel" || oauth.isChannelParticipant(channelId: channelId, userId: userId)
+    }
+
+    public func channelAgentsRoute(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId,
+              channelActorCanSee(channelId: channelId, userId: userId)
+        else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        let agents = oauth.channelAgentIds(channelId: channelId).map { agentId -> String in
+            let info = oauth.agentRuntimeInfo(id: agentId)
+            let activity = agentActivities[agentId] ?? (activity: "offline", detail: "")
+            return "{\"id\":\(jsonString(agentId)),\"name\":\(jsonString(info?.name ?? "")),\"activity\":\(jsonString(activity.activity)),\"activityDetail\":\(jsonString(activity.detail))}"
+        }.joined(separator: ",")
+        return Self.json(200, "{\"agents\":[\("\(agents)")]}")
     }
 
     public func updateChannelHumanRole(authorization: String?, serverId: String, channelId: String, memberId: String, body: String) -> HTTPReply {
@@ -10974,6 +11016,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         if let reply = archivedChannelReply(channelId) { return reply }
+        guard channelActorCanSee(channelId: channelId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
             return Self.json(400, "{\"error\":\"Invalid channel update\"}")
         }
