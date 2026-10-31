@@ -1083,6 +1083,14 @@ public final class OAuthLedger: @unchecked Sendable {
     }
 
     /// Moves a human authorization code one second past its 10-minute life. The token endpoint must not mint.
+    public func setClientReturnUrlForTesting(id: String, returnUrl: String?) {
+        lock.lock()
+        if let index = clients.firstIndex(where: { $0.id == id }) {
+            clients[index].returnUrl = returnUrl
+        }
+        lock.unlock()
+    }
+
     public func expireAuthorizationCode(id: String) {
         lock.lock()
         if let index = requests.firstIndex(where: { $0.id == id }) {
