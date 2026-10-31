@@ -4271,7 +4271,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// `GET /api/messages/channel/:channelId`. A non-UUID is `Channel not found`. A UUID the caller cannot see uses the neutral body.
-    public func listChannelMessages(channelId: String, authorization: String?, serverId: String?, limit rawLimit: String? = nil) -> HTTPReply {
+    public func listChannelMessages(channelId: String, authorization: String?, serverId: String?, limit rawLimit: String? = nil, before rawBefore: String? = nil, after rawAfter: String? = nil) -> HTTPReply {
+        let before = Self.parsePageCursor(rawBefore)
+        let after = Self.parsePageCursor(rawAfter)
+        if before == .invalid || after == .invalid || (before.value != nil && after.value != nil && rawBefore != nil && rawAfter != nil) {
+            return Self.json(400, "{\"error\":\"Invalid message page cursor\",\"code\":\"invalid_message_page_cursor\"}")
+        }
         if !ServerScope.isUUID(channelId) {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
@@ -4289,7 +4294,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }()
         let storageChannelId = jointProjections.first { $0.localChannelId == channelId }?.canonicalChannelId ?? channelId
         let rows = humanMessageRows.filter { $0.channelId == storageChannelId || $0.channelId == channelId }
-        let pageRows = Array(rows.suffix(Self.messagePageLimit(rawLimit)))
+        let cursorRows = rows.enumerated().filter { index, _ in
+            let seq = index + 1
+            if let before = before.value, seq >= before { return false }
+            if let after = after.value, seq <= after { return false }
+            return true
+        }.map(\.element)
+        let pageRows = Array(cursorRows.suffix(Self.messagePageLimit(rawLimit)))
         let listed = pageRows.map { message in
             var row = "{\"id\":\(jsonString(message.id)),\"content\":\(jsonString(message.content)),\"attachments\":[\(Self.attachmentJSON(message.attachmentIds))],\"reactions\":[\(reactionJSONLocked(messageId: message.id))],\"mentions\":[\(visibleMentionJSONLocked(messageId: message.id))]"
             if let userId, let metadata = forwardMetadataJSONLocked(messageId: message.id, userId: userId, serverId: serverId) {
@@ -4307,6 +4318,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// Missing, zero, or non-numeric limits are 50. A positive limit is capped at 200. The page is the newest rows.
+    private enum PageCursor: Equatable {
+        case absent
+        case value(Int)
+        case invalid
+
+        var value: Int? {
+            if case .value(let value) = self { return value }
+            return nil
+        }
+    }
+
+    private static func parsePageCursor(_ raw: String?) -> PageCursor {
+        guard let raw else { return .absent }
+        if raw == "0" { return .value(0) }
+        guard let parsed = Int(raw), parsed > 0 else { return .invalid }
+        return .value(parsed)
+    }
+
     private static func messagePageLimit(_ raw: String?) -> Int {
         guard let raw, let parsed = Int(raw), parsed > 0 else { return 50 }
         return min(parsed, 200)

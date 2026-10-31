@@ -399,7 +399,9 @@ public func configure(_ app: Application, services: FallbackServices) {
             channelId: request.parameters.get("channelId") ?? "",
             authorization: request.headers[.authorization],
             serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-            limit: desktopQuery(request.url.query, "limit")
+            limit: desktopQuery(request.url.query, "limit"),
+            before: desktopQuery(request.url.query, "before"),
+            after: desktopQuery(request.url.query, "after")
         ))
     }
     app.get("api", "announcements", "active") { request -> Response in
