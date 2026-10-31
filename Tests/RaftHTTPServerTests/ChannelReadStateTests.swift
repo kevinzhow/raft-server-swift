@@ -53,6 +53,11 @@ import VaporTesting
             #expect(firstRead["maxReadSeq"] as? Int == first.seq)
             #expect(firstRead["readStateVersion"] as? Int == 1)
 
+            let detailBefore = try await client.send(.get, headers: headers, to: "/api/channels/\(channel)")
+            let detailBeforeBody = try JSONSerialization.jsonObject(with: Data((detailBefore.body.string ?? "").utf8)) as? [String: Any]
+            #expect(detailBeforeBody?["maxReadSeq"] as? Int == first.seq)
+            #expect(detailBeforeBody?["readStateVersion"] as? Int == 1)
+
             let unreadBeforeAll = try await client.send(.get, headers: headers, to: "/api/channels/unread")
             #expect((try JSONSerialization.jsonObject(with: Data((unreadBeforeAll.body.string ?? "").utf8)) as? [String: Any])?[channel] as? Int == 1)
 

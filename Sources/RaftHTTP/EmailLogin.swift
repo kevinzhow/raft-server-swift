@@ -9705,7 +9705,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let type = oauth.channelType(id: channelId) ?? "channel"
         let supported = type == "channel"
-        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"activityMuteSupported\":\(supported)}")
+        let info = oauth.channelUnreadInfo(channelId: channelId, userId: userId)
+        lock.lock()
+        let version = channelReadVersions["\(channelId)\n\(userId)"] ?? 0
+        lock.unlock()
+        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"maxReadSeq\":\(info.maxReadSeq),\"readStateVersion\":\(version),\"activityMuteSupported\":\(supported)}")
     }
 
     public func channelDisplaySettings(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
