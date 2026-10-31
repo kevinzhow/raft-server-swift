@@ -6668,7 +6668,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         if let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
            let description = object["description"] as? String {
-            machines[index].description = description
+            let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
+            machines[index].description = trimmed.isEmpty ? nil : trimmed
         }
         let machine = machines[index]
         lock.unlock()
