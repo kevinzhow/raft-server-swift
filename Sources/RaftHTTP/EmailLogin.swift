@@ -6880,6 +6880,39 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         "{\"id\":\(jsonString(agreement.id)),\"version\":\(agreement.version),\"title\":\(jsonString(agreement.title)),\"bodyMarkdown\":\(jsonString(agreement.bodyMarkdown)),\"enabled\":\(agreement.enabled)}"
     }
 
+    public func enableComposerResourceReferences(serverId: String, enabled: Bool = true) {
+        lock.lock()
+        if enabled {
+            composerResourceServers.insert(serverId)
+        } else {
+            composerResourceServers.remove(serverId)
+        }
+        lock.unlock()
+    }
+
+    public func serverApps(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        lock.lock()
+        let enabled = composerResourceServers.contains(serverId)
+        lock.unlock()
+        guard enabled else {
+            return Self.json(404, "{\"error\":\"Not found\"}")
+        }
+        let apps: [(String, String)] = [
+            ("system.cleaner", "Memory Cleaner"),
+            ("system.reminder", "Reminder"),
+        ]
+        let rows = apps.map { app in
+            "{\"appId\":\(jsonString(app.0)),\"displayName\":\(jsonString(app.1))}"
+        }.joined(separator: ",")
+        return Self.json(200, "{\"apps\":[\("\(rows)")]}")
+    }
+
     public func memberProfile(authorization: String?, serverId: String, memberId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)

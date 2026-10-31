@@ -1056,6 +1056,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             memberId: memberId
         ))
     }
+    app.get("api", "servers", ":id", "apps") { request -> Response in
+        routeResponse(services.emailAccounts.serverApps(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
     app.get("api", "servers", ":id", "member-graph") { request -> Response in
         routeResponse(services.emailAccounts.serverMemberGraph(
             authorization: request.headers[.authorization],
