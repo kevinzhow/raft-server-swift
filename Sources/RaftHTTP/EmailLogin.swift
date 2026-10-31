@@ -10048,6 +10048,25 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
             return Self.json(400, "{\"error\":\"Invalid channel update\"}")
         }
+        if let rawVisibility = object["visibility"] {
+            guard let visibility = rawVisibility as? String, ["private", "public"].contains(visibility) else {
+                return Self.json(400, "{\"error\":\"Invalid channel visibility\"}")
+            }
+            if oauth.allChannelId(serverId: serverId) == channelId {
+                return Self.json(403, "{\"error\":\"Only a human can do it, from channel settings or server settings\",\"code\":\"all_channel_visibility_managed_separately\"}")
+            }
+            guard let role = oauth.memberRole(serverId: serverId, userId: userId), role == "owner" || role == "admin" else {
+                return Self.json(403, "{\"error\":\"Forbidden\"}")
+            }
+            lock.lock()
+            let isMember = postableChannels[channelId]?.memberIds.contains(userId) == true
+            lock.unlock()
+            guard isMember || oauth.isChannelParticipant(channelId: channelId, userId: userId) else {
+                return Self.json(403, "{\"error\":\"You must be a channel member\",\"code\":\"channel_membership_required\"}")
+            }
+            _ = oauth.setChannelType(id: channelId, type: visibility == "private" ? "private" : "channel")
+            return Self.json(200, "{\"ok\":true,\"id\":\(jsonString(channelId)),\"visibility\":\(jsonString(visibility))}")
+        }
         lock.lock()
         let actorName = accounts.values.first(where: { $0.id == userId })?.name ?? "Someone"
         lock.unlock()
