@@ -199,6 +199,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var shareArtifacts: Set<String> = []
     private var timezoneObservations: [String: TimezoneObservation] = [:]
     private var serverLabsState: [String: ServerLabsState] = [:]
+    private var serverInvites: [(id: String, serverId: String, email: String)] = []
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -6877,6 +6878,32 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     private static func agreementJSON(_ agreement: OAuthLedger.ServerAgreementInfo) -> String {
         "{\"id\":\(jsonString(agreement.id)),\"version\":\(agreement.version),\"title\":\(jsonString(agreement.title)),\"bodyMarkdown\":\(jsonString(agreement.bodyMarkdown)),\"enabled\":\(agreement.enabled)}"
+    }
+
+    public func createServerInvite(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let rawEmail = object["email"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"Enter a valid email address\"}")
+        }
+        let email = rawEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard email.wholeMatch(of: /^[^\s@]+@[^\s@]+\.[^\s@]+$/) != nil else {
+            return Self.json(400, "{\"error\":\"Enter a valid email address\"}")
+        }
+        let id = UUID().uuidString.lowercased()
+        lock.lock()
+        serverInvites.append((id: id, serverId: serverId, email: email))
+        lock.unlock()
+        return Self.json(200, "{\"invite\":{\"id\":\(jsonString(id)),\"email\":\(jsonString(email)),\"status\":\"pending\"}}")
     }
 
     public func leaveServer(authorization: String?, serverId: String) -> HTTPReply {

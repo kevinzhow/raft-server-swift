@@ -944,6 +944,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("api", "servers", ":id", "invites") { request -> Response in
+        routeResponse(services.emailAccounts.createServerInvite(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.post("api", "servers", ":id", "leave") { request -> Response in
         routeResponse(services.emailAccounts.leaveServer(
             authorization: request.headers[.authorization],
