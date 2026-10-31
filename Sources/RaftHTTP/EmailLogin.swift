@@ -7520,19 +7520,31 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     public static let sharePNGData = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=") ?? Data()
 
+    private func humanUnreadCount(channelId: String, userId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let rows = humanMessageRows.filter { $0.channelId == channelId }
+        let cursor = oauth.channelUnreadInfo(channelId: channelId, userId: userId).maxReadSeq
+        return rows.enumerated().filter { index, row in
+            index + 1 > cursor && row.senderId != userId
+        }.count
+    }
+
     public func serversUnreadSummary(authorization: String?) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
         let entries = oauth.serverIdsForMember(userId: userId).map { serverId -> String in
-            let joined = oauth.channelsForServer(serverId: serverId, userId: userId).filter { $0.joined }
+            let joined = oauth.channelsForServer(serverId: serverId, userId: userId).filter {
+                $0.joined && ($0.type == "channel" || $0.type == "")
+            }
             let total = joined.reduce(0) { sum, channel in
-                sum + oauth.channelUnreadInfo(channelId: channel.id, userId: userId).unreadCount
+                sum + oauth.channelUnreadInfo(channelId: channel.id, userId: userId).unreadCount + humanUnreadCount(channelId: channel.id, userId: userId)
             }
             let muted = oauth.isServerPushMuted(serverId: serverId, userId: userId)
             return "{\"serverId\":\(jsonString(serverId)),\"unreadCount\":\(total),\"serverPushMuted\":\(muted),\"activityUnreadCount\":\(total)}"
         }.joined(separator: ",")
-        return Self.json(200, "[\(entries)]")
+        return Self.privateJSON("[\(entries)]")
     }
 
     public struct TimezoneObservation: Sendable {
