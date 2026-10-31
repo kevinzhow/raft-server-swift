@@ -3973,6 +3973,38 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// `GET /api/messages/sync`. `since_seq=0` returns the channel page, including a joint canonical store.
+    public func channelThreadSummaries(authorization: String?, serverId: String?, channelId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        lock.lock()
+        guard let channel = postableChannels[channelId], channel.serverId == serverId else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        let visible = channel.kind == "channel" || channel.memberIds.contains(userId)
+        guard visible else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        let threads = postableChannels.filter { _, candidate in
+            candidate.serverId == serverId
+                && candidate.kind == "thread"
+                && candidate.parentChannelId == channelId
+                && candidate.deletedAt == nil
+        }
+        var summaries: [String] = []
+        for (threadId, thread) in threads {
+            guard let parentMessageId = thread.parentMessageId else { continue }
+            let replies = humanMessageRows.filter { $0.channelId == threadId }
+            let participants = Array(Set(replies.map(\.senderId))).sorted()
+            let participantJSON = participants.map { jsonString($0) }.joined(separator: ",")
+            summaries.append("\(jsonString(parentMessageId)):{\"threadChannelId\":\(jsonString(threadId)),\"replyCount\":\(replies.count),\"participantIds\":[\(participantJSON)]}")
+        }
+        lock.unlock()
+        return Self.json(200, "{\(summaries.joined(separator: ","))}")
+    }
+
     public func syncChannelMessages(channelId: String?, sinceSeq: String?, authorization: String?, serverId: String?) -> HTTPReply {
         guard let channelId, ServerScope.isUUID(channelId) else {
             return Self.json(400, "{\"error\":\"Invalid channel id\"}")

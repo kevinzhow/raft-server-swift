@@ -508,6 +508,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             authorization: request.headers[.authorization]
         ))
     }
+    app.get("api", "channels", ":channelId", "threads") { request -> Response in
+        routeResponse(services.emailAccounts.channelThreadSummaries(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+            channelId: request.parameters.get("channelId") ?? ""
+        ))
+    }
     app.get("api", "messages", "sync") { request -> Response in
         routeResponse(services.emailAccounts.syncChannelMessages(
             channelId: desktopQuery(request.url.query, "channel_id"),
