@@ -13,7 +13,7 @@ import VaporTesting
     accounts.addAccount(id: ownerId, email: "archive-owner@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
     accounts.oauth.addOwnedServer(id: serverId, slug: "archive", name: "Archive", ownerId: ownerId)
-    let agent = accounts.oauth.createAgent(serverId: serverId, name: "ArchiveBot")
+    let machine = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "archive-machine")
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -34,6 +34,11 @@ import VaporTesting
             headers[.contentType] = "application/json"
             headers[HTTPField.Name("X-Server-Id")!] = serverId
 
+            let created = try await client.send(.post, headers: headers, to: "/api/agents") { request in
+                request.body = .init(string: "{\"name\":\"ArchiveBot\",\"machineId\":\"\(machine)\"}")
+            }
+            #expect(created.status == .ok)
+            let agent = (try JSONSerialization.jsonObject(with: Data((created.body.string ?? "").utf8)) as? [String: Any])?["id"] as? String ?? ""
             for workspace in ["backup", "shred"] {
                 let response = try await client.send(.delete, headers: headers, to: "/api/agents/\(agent)") { request in
                     request.body = .init(string: "{\"workspace\":\"\(workspace)\"}")
@@ -49,6 +54,12 @@ import VaporTesting
             }
             #expect(archived.status == .ok)
             #expect(try await client.send(.get, headers: headers, to: "/api/agents/\(agent)").status == .notFound)
+            let archive = try await client.send(.get, headers: headers, to: "/api/agents/\(agent)/archive")
+            #expect(archive.status == .ok)
+            let archiveBody = try JSONSerialization.jsonObject(with: Data((archive.body.string ?? "").utf8)) as? [String: Any]
+            let snapshot = archiveBody?["archive"] as? [String: Any]
+            #expect(snapshot?["workspaceState"] as? String == "on_computer")
+            #expect(snapshot?["machineName"] as? String == "archive-machine")
         }
     }
 }

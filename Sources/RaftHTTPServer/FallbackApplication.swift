@@ -911,6 +911,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.get("api", "agents", ":id", "archive") { request -> Response in
+        routeResponse(services.emailAccounts.agentArchiveView(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("id") ?? ""
+        ))
+    }
     app.delete("api", "agents", ":id") { request -> Response in
         routeResponse(services.emailAccounts.deleteAgentRoute(
             authorization: request.headers[.authorization],

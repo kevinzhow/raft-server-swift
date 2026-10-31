@@ -37,3 +37,6 @@ agent 向 thread 发送（`#parent:short`）要求 agent 是该 parent channel �
 
 
 `DELETE /api/agents/:id` 只接受 workspace `keep`/`delete`（缺省 keep）；其他值是 400 `archive_workspace_choice_invalid` 且不归档。
+
+
+归档后的 `GET /api/agents/:id/archive` 返回 `{archive:{workspaceState,machineName}}`；workspace 选择 delete 时状态仍先记为 on_computer，machineName 快照来自创建时的 machineId。未归档 agent 的 archive 视图 404。

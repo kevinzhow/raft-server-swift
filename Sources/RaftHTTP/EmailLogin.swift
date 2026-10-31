@@ -153,6 +153,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var storedInboxFacts: [StoredInboxFact] = []
     private var storedAgentDeliveries: [(agentId: String, messageId: String, channelType: String)] = []
     private var agentCredentials: [String: AgentCredential] = [:]
+    private var agentMachineIds: [String: String] = [:]
+    private var agentArchiveRecords: [String: (workspaceState: String, machineName: String, serverId: String)] = [:]
     private var postableChannels: [String: PostableChannel] = [:]
     private var threadOrder: [String] = []
     private var serverMemberRoles: [String: String] = [:]
@@ -7036,6 +7038,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             runtimeConfigJSON: configJSON,
             envVarsJSON: envJSON
         )
+        if let machineId = object["machineId"] as? String, !machineId.isEmpty {
+            lock.lock()
+            agentMachineIds[agentId] = machineId
+            lock.unlock()
+        }
         return Self.json(200, Self.agentRuntimeJSON(
             id: agentId,
             name: name,
@@ -7322,6 +7329,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
+    public func agentArchiveView(authorization: String?, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        let record = agentArchiveRecords[agentId]
+        lock.unlock()
+        guard let record, oauth.memberRole(serverId: record.serverId, userId: userId) != nil else {
+            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        return Self.json(200, "{\"archive\":{\"workspaceState\":\(jsonString(record.workspaceState)),\"machineName\":\(jsonString(record.machineName))}}")
+    }
+
     public func deleteAgentRoute(authorization: String?, agentId: String, body: String = "") -> HTTPReply {
         switch agentAuthority(authorization, agentId: agentId) {
         case .denied(let reply):
@@ -7333,6 +7353,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                workspace != "keep", workspace != "delete" {
                 return Self.json(400, "{\"code\":\"archive_workspace_choice_invalid\",\"error\":\"workspace must be keep or delete\"}")
             }
+            lock.lock()
+            let machineName = agentMachineIds[agentId].flatMap { id in machines.first { $0.id == id }?.name } ?? ""
+            agentArchiveRecords[agentId] = (workspaceState: "on_computer", machineName: machineName, serverId: oauth.agentManagementInfo(id: agentId)?.serverId ?? "")
+            lock.unlock()
             oauth.deleteAgent(id: agentId)
             return Self.json(200, "{\"ok\":true}")
         }
