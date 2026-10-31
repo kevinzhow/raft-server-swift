@@ -985,6 +985,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             surface: "skills"
         ))
     }
+    app.post("api", "agents", ":id", "migration", "cancel") { request -> Response in
+        routeResponse(services.emailAccounts.agentMigrationCancel(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? ""
+        ))
+    }
     app.get("api", "agents", ":id", "migration") { request -> Response in
         routeResponse(services.emailAccounts.agentMigrationStatus(
             authorization: request.headers[.authorization],

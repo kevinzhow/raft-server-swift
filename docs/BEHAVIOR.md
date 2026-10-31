@@ -103,3 +103,6 @@ agent credential 经 internal agent-api 使用后，inventory 的 `lastUsedAt` �
 
 
 `GET /api/agents/:id/migration` 仅 creator/owner/admin；普通 member 403，跨 Server 404；无迁移时返回 `{migration:null}`；普通 member 403 `{code:"not_supported"}`。
+
+
+`POST /api/agents/:id/migration/cancel` 普通 member 403 `{code:"not_supported"}`；creator/admin 在没有活跃迁移时 404 `{code:"migration_not_found"}`。

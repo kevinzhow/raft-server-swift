@@ -7458,6 +7458,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"migration\":null}")
     }
 
+    public func agentMigrationCancel(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted, info.serverId == serverId,
+              let role = oauth.memberRole(serverId: serverId, userId: userId)
+        else {
+            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
+            return Self.json(403, "{\"code\":\"not_supported\",\"error\":\"Agent migration cancel requires creator or server admin authority\"}")
+        }
+        return Self.json(404, "{\"code\":\"migration_not_found\",\"error\":\"No active migration\"}")
+    }
+
     public func agentDirectMessages(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
