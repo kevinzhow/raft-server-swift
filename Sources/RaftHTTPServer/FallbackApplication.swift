@@ -540,6 +540,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             remove: true
         ))
     }
+    app.get("internal", "agent", ":agentId", "channel-members") { request -> Response in
+        routeResponse(services.emailAccounts.agentChannelMembers(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId") ?? "",
+            channelRef: desktopQuery(request.url.query, "channel")
+        ))
+    }
     app.get("internal", "agent-api", "server") { request -> Response in
         routeResponse(services.emailAccounts.agentServerInfo(
             authorization: request.headers[.authorization]

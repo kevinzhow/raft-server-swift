@@ -9773,6 +9773,64 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true,\"id\":\(jsonString(agent.serverId)),\"name\":\(jsonString(name))}")
     }
 
+    public func agentChannelMembers(authorization: String?, agentId: String, channelRef: String?) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        }
+        let apiKey = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let machine = machines.first { $0.apiKey == apiKey }
+        let legacy = machineKeys[apiKey]
+        lock.unlock()
+        guard let machineServerId = machine?.serverId ?? legacy?.serverId,
+              let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted,
+              agent.serverId == machineServerId
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        let reference = (channelRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard reference.hasPrefix("#") else {
+            return Self.json(400, "{\"error\":\"channel is required\"}")
+        }
+        let raw = String(reference.dropFirst())
+        let parts = raw.split(separator: ":", maxSplits: 1).map(String.init)
+        let name = parts.first ?? raw
+        let shortId = parts.count > 1 ? parts[1] : nil
+        lock.lock()
+        let parent = postableChannels.first { _, channel in
+            channel.serverId == agent.serverId && channel.name == name && channel.kind == "channel" && channel.deletedAt == nil
+        }?.key
+        var targetId = parent
+        var type = "channel"
+        if let shortId, let parent {
+            targetId = postableChannels.first { _, channel in
+                channel.serverId == agent.serverId && channel.kind == "thread"
+                    && channel.parentChannelId == parent
+                    && (channel.parentMessageId?.hasPrefix(shortId) ?? false)
+            }?.key
+            type = targetId == nil ? "channel" : "thread"
+        }
+        guard let targetId, let parentId = type == "thread" ? postableChannels[targetId]?.parentChannelId : targetId else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        let humanIds = oauth.channelHumanIds(channelId: parentId)
+        let agentIds = oauth.channelAgentIds(channelId: parentId)
+        let humanNames = Dictionary(uniqueKeysWithValues: humanIds.map { id in
+            (id, accounts.values.first { $0.id == id }?.name ?? id)
+        })
+        lock.unlock()
+        let humans = humanIds.map { id -> String in
+            let name = humanNames[id] ?? id
+            let role = oauth.memberRole(serverId: agent.serverId, userId: id) ?? "member"
+            return "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"role\":\(jsonString(role))}"
+        }.joined(separator: ",")
+        let agents = agentIds.map { id -> String in
+            "{\"id\":\(jsonString(id)),\"name\":\(jsonString(oauth.agentRuntimeInfo(id: id)?.name ?? ""))}"
+        }.joined(separator: ",")
+        return Self.json(200, "{\"channel\":{\"ref\":\(jsonString(reference)),\"type\":\(jsonString(type))},\"humans\":[\(humans)],\"agents\":[\(agents)]}")
+    }
+
     public func agentServerInfo(authorization: String?) -> HTTPReply {
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
@@ -10346,7 +10404,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
-        let agents = oauth.channelAgentIds(channelId: channelId).map { agentId -> String in
+        lock.lock()
+        let scopeChannelId: String = {
+            if let channel = postableChannels[channelId], channel.kind == "thread", let parentId = channel.parentChannelId {
+                return parentId
+            }
+            return channelId
+        }()
+        lock.unlock()
+        let agents = oauth.channelAgentIds(channelId: scopeChannelId).map { agentId -> String in
             let info = oauth.agentRuntimeInfo(id: agentId)
             let name = info?.name ?? ""
             let activity = agentActivities[agentId] ?? (activity: "offline", detail: "")
@@ -10357,7 +10423,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let viewerLocalRole = channelHumanRoles["\(channelId)\n\(userId)"]
         lock.unlock()
         let viewerIsChannelAdmin = viewerLocalRole == "admin" || viewerServerRole == "owner" || viewerServerRole == "admin"
-        let humans = oauth.channelHumanIds(channelId: channelId).map { humanId -> String in
+        let humans = oauth.channelHumanIds(channelId: scopeChannelId).map { humanId -> String in
             let targetServerRole = oauth.memberRole(serverId: serverId, userId: humanId) ?? "member"
             lock.lock()
             let targetLocalRole = channelHumanRoles["\(channelId)\n\(humanId)"]
