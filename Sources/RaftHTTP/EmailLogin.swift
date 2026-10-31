@@ -10624,9 +10624,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         let version = channelReadVersions["\(channelId)\n\(userId)"] ?? 0
         let receiptsEnabled = readReceiptsServers.contains(serverId)
-        let agentPeers = oauth.channelAgentIds(channelId: channelId).compactMap { agentId -> String? in
-            guard let cursor = agentChannelReadCursors["\(channelId)\n\(agentId)"], cursor.seq > 0 else { return nil }
-            return "{\"peerKind\":\"agent\",\"peerId\":\(jsonString(agentId)),\"maxReadSeq\":\(cursor.seq)}"
+        let agentIds = oauth.channelAgentIds(channelId: channelId)
+        let peerSeqs = agentIds.map { agentId in
+            (agentId, agentChannelReadCursors["\(channelId)\n\(agentId)"]?.seq ?? 0)
         }
         lock.unlock()
         let serverRole = oauth.memberRole(serverId: serverId, userId: userId) ?? "member"
@@ -10640,7 +10640,22 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let serverAdmin = serverRole == "owner" || serverRole == "admin"
         let capability = basis != nil
         let capsJSON = "{\"editChannelMetadata\":\(capability),\"archiveChannels\":\(capability),\"addChannelMembers\":\(capability),\"changeChannelMemberRoles\":\(capability),\"deleteChannels\":\(serverAdmin),\"changeChannelVisibility\":\(serverAdmin),\"federateChannels\":\(serverAdmin)}"
-        let peersJSON = receiptsEnabled ? ",\"peerReadStates\":[\("\(agentPeers.joined(separator: ","))")]" : ""
+        var peersJSON = ""
+        if receiptsEnabled {
+            if peerSeqs.count > 50 {
+                var counts: [Int: Int] = [:]
+                for (_, seq) in peerSeqs { counts[seq, default: 0] += 1 }
+                let buckets = counts.keys.sorted().map { seq in
+                    "{\"seq\":\(seq),\"count\":\(counts[seq] ?? 0)}"
+                }.joined(separator: ",")
+                peersJSON = ",\"peerReadSummary\":{\"peerCount\":\(peerSeqs.count),\"readCountAtSeq\":[\("\(buckets)")]}"
+            } else {
+                let peers = peerSeqs.map { agentId, seq in
+                    "{\"peerKind\":\"agent\",\"peerId\":\(jsonString(agentId)),\"maxReadSeq\":\(seq)}"
+                }.joined(separator: ",")
+                peersJSON = ",\"peerReadStates\":[\("\(peers)")]"
+            }
+        }
         return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"maxReadSeq\":\(info.maxReadSeq),\"readStateVersion\":\(version),\"activityMuteSupported\":\(supported),\"channelRole\":\(jsonString(channelRole)),\"channelAdminBasis\":\(basis.map { jsonString($0) } ?? "null"),\"channelAuthorityRevision\":\(authorityRevision),\"channelCapabilities\":\(capsJSON)\(peersJSON)}")
     }
 
