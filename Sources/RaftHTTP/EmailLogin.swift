@@ -201,6 +201,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var serverLabsState: [String: ServerLabsState] = [:]
     private var serverInvites: [(id: String, serverId: String, email: String)] = []
     private var serverSwitcherOrders: [String: (ids: [String], version: Int)] = [:]
+    private var serverOnboardingSettings: [String: (agentId: String?, greeting: Bool)] = [:]
+    private var userOnboardingSettings: [String: UserOnboarding] = [:]
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -6445,6 +6447,33 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return id
     }
 
+    private struct UserOnboarding {
+        var reminderOptOut = false
+        var dismissed: [String: Date] = [:]
+        var currentStep: String?
+    }
+
+    private static let onboardingSteps: Set<String> = [
+        "add-computer", "create-agent", "invite-teammates", "join-community", "notifications",
+    ]
+
+    private func onboardingJSON(serverId: String, userId: String) -> String {
+        lock.lock()
+        let server = serverOnboardingSettings[serverId] ?? (agentId: nil, greeting: true)
+        let user = userOnboardingSettings["\(serverId)\n\(userId)"] ?? UserOnboarding()
+        let slug = oauth.serverDetailsValue(id: serverId)?.slug ?? ""
+        lock.unlock()
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        func dismissed(_ key: String) -> String {
+            user.dismissed[key].map { jsonString(formatter.string(from: $0)) } ?? "null"
+        }
+        let agent = server.agentId.map { jsonString($0) } ?? "null"
+        let step = user.currentStep.map { jsonString($0) } ?? "null"
+        let wizardEnabled = !(slug == "community" || slug == "community-cn")
+        return "{\"onboardingAgentId\":\(agent),\"agentAllChannelGreetingEnabled\":\(server.greeting),\"onboardingWizardEnabled\":\(wizardEnabled),\"setupModalReminderOptOut\":\(user.reminderOptOut),\"dismissedAddComputerStepAt\":\(dismissed("add-computer")),\"dismissedCreateAgentStepAt\":\(dismissed("create-agent")),\"dismissedInviteStepAt\":\(dismissed("invite-teammates")),\"dismissedCommunityStepAt\":\(dismissed("join-community")),\"dismissedNotificationStepAt\":\(dismissed("notifications")),\"onboardingWizardCurrentStep\":\(step)}"
+    }
+
     public func serverSettings(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -6455,7 +6484,84 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard role == "owner" || role == "admin" else {
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
-        return Self.json(200, "{\"serverId\":\(jsonString(serverId))}")
+        let onboarding = onboardingJSON(serverId: serverId, userId: userId)
+        return Self.json(200, "{\"settings\":{\"onboardSettings\":\(onboarding),\"feedbackSettings\":{\"enabled\":true}}}")
+    }
+
+    public func serverOnboardingSettings(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        return Self.json(200, onboardingJSON(serverId: serverId, userId: userId))
+    }
+
+    public func patchServerOnboardingSettings(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid onboarding settings\"}")
+        }
+        let isAdmin = role == "owner" || role == "admin"
+        if object["onboardingAgentId"] != nil || object["agentAllChannelGreetingEnabled"] != nil {
+            guard isAdmin else {
+                return Self.json(403, "{\"error\":\"Only server owners and admins can update onboarding settings\"}")
+            }
+        }
+        if let greeting = object["agentAllChannelGreetingEnabled"] {
+            guard greeting is Bool else {
+                return Self.json(400, "{\"error\":\"agentAllChannelGreetingEnabled must be a boolean\"}")
+            }
+        }
+        if let rawStep = object["onboardingWizardCurrentStep"], !(rawStep is NSNull) {
+            guard let step = rawStep as? String, Self.onboardingSteps.contains(step) else {
+                return Self.json(400, "{\"error\":\"Invalid onboarding step\"}")
+            }
+        }
+        lock.lock()
+        var server = serverOnboardingSettings[serverId] ?? (agentId: nil, greeting: true)
+        if isAdmin {
+            if let rawAgent = object["onboardingAgentId"] {
+                if rawAgent is NSNull {
+                    server.agentId = nil
+                } else if let agentId = rawAgent as? String {
+                    server.agentId = agentId
+                }
+            }
+            if let greeting = object["agentAllChannelGreetingEnabled"] as? Bool {
+                server.greeting = greeting
+            }
+            serverOnboardingSettings[serverId] = server
+        }
+        let key = "\(serverId)\n\(userId)"
+        var user = userOnboardingSettings[key] ?? UserOnboarding()
+        if let value = object["setupModalReminderOptOut"] as? Bool {
+            user.reminderOptOut = value
+        }
+        if let rawStep = object["onboardingWizardCurrentStep"] {
+            user.currentStep = rawStep is NSNull ? nil : rawStep as? String
+        }
+        let dismissKeys: [(String, String)] = [
+            ("dismissedAddComputerStep", "add-computer"),
+            ("dismissedCreateAgentStep", "create-agent"),
+            ("dismissedInviteStep", "invite-teammates"),
+            ("dismissedCommunityStep", "join-community"),
+            ("dismissedNotificationStep", "notifications"),
+        ]
+        for (field, step) in dismissKeys {
+            if object[field] as? Bool == true, user.dismissed[step] == nil {
+                user.dismissed[step] = Date()
+            }
+        }
+        userOnboardingSettings[key] = user
+        lock.unlock()
+        return Self.json(200, onboardingJSON(serverId: serverId, userId: userId))
     }
 
     public func memberNotificationSettings(authorization: String?, serverId: String) -> HTTPReply {

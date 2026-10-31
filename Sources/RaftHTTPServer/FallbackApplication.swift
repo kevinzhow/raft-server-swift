@@ -1020,9 +1020,16 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.get("api", "servers", ":id", "onboarding-settings") { request -> Response in
-        routeResponse(services.emailAccounts.memberNotificationSettings(
+        routeResponse(services.emailAccounts.serverOnboardingSettings(
             authorization: request.headers[.authorization],
             serverId: request.parameters.get("id") ?? ""
+        ))
+    }
+    app.patch("api", "servers", ":id", "onboarding-settings") { request -> Response in
+        routeResponse(services.emailAccounts.patchServerOnboardingSettings(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
         ))
     }
     app.get("api", "servers", ":id", "machines") { request -> Response in
