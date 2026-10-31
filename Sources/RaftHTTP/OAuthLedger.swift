@@ -771,6 +771,12 @@ public final class OAuthLedger: @unchecked Sendable {
         return channelRecords.first(where: { $0.id == channelId })?.serverId
     }
 
+    public func removeChannelHuman(channelId: String, userId: String) {
+        lock.lock()
+        channelHumans.remove("\(channelId)\n\(userId)")
+        lock.unlock()
+    }
+
     public func isChannelParticipant(channelId: String, userId: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }

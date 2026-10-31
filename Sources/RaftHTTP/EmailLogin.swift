@@ -205,6 +205,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var userOnboardingSettings: [String: UserOnboarding] = [:]
     private var serverNotificationPrefs: [String: (muted: Bool, mentionsOnly: Bool, mode: String, version: Int)] = [:]
     private var setupPhases: [String: String] = [:]
+    private var guestRoleServers: Set<String> = []
     private var computers: [(id: String, serverId: String, name: String, apiKey: String, machineId: String?, revokedAt: Date?)] = []
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
@@ -7545,6 +7546,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, setupProjectionJSON(serverId: serverId, userId: userId, role: role))
     }
 
+    public func enableGuestRoleTransitions(serverId: String) {
+        lock.lock()
+        guestRoleServers.insert(serverId)
+        lock.unlock()
+    }
+
     public func patchServerMemberRole(authorization: String?, serverId: String, memberId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)
@@ -7552,23 +7559,37 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
-        guard role == "owner" else {
+        guard role == "owner" || role == "admin" else {
             return Self.json(403, "{\"error\":\"Only the owner can change member roles\"}")
         }
-        guard oauth.memberRole(serverId: serverId, userId: memberId) != nil else {
+        guard let targetRole = oauth.memberRole(serverId: serverId, userId: memberId) else {
             return Self.json(404, "{\"error\":\"Member not found\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let newRole = object["role"] as? String,
+              ["owner", "admin", "member", "guest"].contains(newRole)
+        else {
+            return Self.json(400, "{\"error\":\"Invalid member role\"}")
+        }
+        if role == "admin", targetRole == "owner" || targetRole == "admin" || newRole == "owner" {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
         guard memberId != userId else {
             return Self.json(400, "{\"error\":\"You cannot change your own role\"}")
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let newRole = object["role"] as? String,
-              ["owner", "admin", "member"].contains(newRole)
-        else {
-            return Self.json(400, "{\"error\":\"Invalid member role\"}")
+        if newRole == "guest" {
+            lock.lock()
+            let enabled = guestRoleServers.contains(serverId)
+            lock.unlock()
+            guard enabled else {
+                return Self.json(403, "{\"error\":\"Guest role transitions are not enabled\"}")
+            }
         }
         oauth.addMember(serverId: serverId, userId: memberId, role: newRole)
-        return Self.json(200, "{\"userId\":\(jsonString(memberId)),\"role\":\(jsonString(newRole))}")
+        if newRole == "guest", let allChannel = oauth.allChannelId(serverId: serverId) {
+            oauth.removeChannelHuman(channelId: allChannel, userId: memberId)
+        }
+        return Self.json(200, "{\"ok\":true,\"changed\":true}")
     }
 
     public func removeServerMember(authorization: String?, serverId: String, memberId: String) -> HTTPReply {
