@@ -58,3 +58,6 @@ agent 向 thread 发送（`#parent:short`）要求 agent 是该 parent channel �
 
 
 `GET /api/agents/:id/workspace-files[/read]` owner/admin/creator 才可读；普通 member 403，跨 Server 404；没有在线 Computer 时 503 `daemon_offline`。
+
+
+agent private surfaces（activity-log/activity-summaries/workspace-files/skills/agent-dms/channels）只对 creator 或 owner/admin 开放；普通 member 403，跨 Server 404。

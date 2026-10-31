@@ -7336,6 +7336,28 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
+    public func agentPrivateSurface(authorization: String?, serverId: String, agentId: String, surface: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted, info.serverId == serverId,
+              let role = oauth.memberRole(serverId: serverId, userId: userId)
+        else {
+            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        switch surface {
+        case "activity-log", "agent-dms":
+            return Self.json(200, "[]")
+        case "skills":
+            return Self.json(200, "{\"global\":[],\"workspace\":[]}")
+        default:
+            return Self.json(200, "{\"summaries\":[],\"nextCursor\":null}")
+        }
+    }
+
     public func agentScopesRoute(authorization: String?, serverId: String, agentId: String, method: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -7403,14 +7425,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true,\"archive\":{\"workspaceState\":\(jsonString(state)),\"machineName\":\(jsonString(record.machineName))}}")
     }
 
-    public func agentChannels(authorization: String?, agentId: String) -> HTTPReply {
+    public func agentChannels(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
-        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted,
-              oauth.memberRole(serverId: info.serverId, userId: userId) != nil
+        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted, info.serverId == serverId,
+              let role = oauth.memberRole(serverId: serverId, userId: userId)
         else {
             return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
         let createdAt = ISO8601DateFormatter().string(from: Date())
         let rows = oauth.channelsForServer(serverId: info.serverId, userId: userId).compactMap { channel -> String? in

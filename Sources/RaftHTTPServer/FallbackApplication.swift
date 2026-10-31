@@ -925,6 +925,38 @@ public func configure(_ app: Application, services: FallbackServices) {
             agentId: request.parameters.get("id") ?? ""
         ))
     }
+    app.get("api", "agents", ":id", "activity-log") { request -> Response in
+        routeResponse(services.emailAccounts.agentPrivateSurface(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? "",
+            surface: "activity-log"
+        ))
+    }
+    app.get("api", "agents", ":id", "activity-summaries") { request -> Response in
+        routeResponse(services.emailAccounts.agentPrivateSurface(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? "",
+            surface: "activity-summaries"
+        ))
+    }
+    app.get("api", "agents", ":id", "skills") { request -> Response in
+        routeResponse(services.emailAccounts.agentPrivateSurface(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? "",
+            surface: "skills"
+        ))
+    }
+    app.get("api", "agents", ":id", "agent-dms") { request -> Response in
+        routeResponse(services.emailAccounts.agentPrivateSurface(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? "",
+            surface: "agent-dms"
+        ))
+    }
     app.get("api", "agents", ":id", "scopes") { request -> Response in
         routeResponse(services.emailAccounts.agentScopesRoute(
             authorization: request.headers[.authorization],
@@ -946,6 +978,7 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("api", "agents", ":id", "channels") { request -> Response in
         routeResponse(services.emailAccounts.agentChannels(
             authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
             agentId: request.parameters.get("id") ?? ""
         ))
     }
