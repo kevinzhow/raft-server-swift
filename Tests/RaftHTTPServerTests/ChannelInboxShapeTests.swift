@@ -42,6 +42,7 @@ import VaporTesting
             #expect(response.status == .ok)
             let body = try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any]
             let items = body?["items"] as? [[String: Any]] ?? []
+            #expect(body?["totalUnreadCount"] is Int)
             #expect(items.count == 2)
             #expect(items.contains { $0["kind"] as? String == "channel" && $0["channelId"] as? String == parent })
             #expect(items.contains { $0["kind"] as? String == "thread" && $0["threadChannelId"] as? String == thread })

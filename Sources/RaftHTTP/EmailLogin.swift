@@ -4683,8 +4683,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
             return "{\"kind\":\"channel\",\"channelId\":\(channelJSON),\"lastMessageId\":\(jsonString(fact.messageId)),\"unreadCount\":\(unread),\"hasMention\":\(hasMention)}"
         }.joined(separator: ",")
+        let totalUnreadCount = rows.reduce(0) { partial, fact in
+            partial + (fact.channelId.map { oauth.channelUnreadInfo(channelId: $0, userId: userId).unreadCount } ?? 0)
+        }
         lock.unlock()
-        return Self.json(200, "{\"items\":[\(items)]}")
+        return Self.json(200, "{\"items\":[\("\(items)")],\"totalUnreadCount\":\(totalUnreadCount)}")
     }
 
     /// `GET /internal/agent-api/mentions`. Outsider rows stay hidden until they were notifiable at send or later notified.
