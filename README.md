@@ -14,6 +14,16 @@ This is an active behavioral port, not a production deployment.
 - The executable starts **only the Vapor HTTP application**. The `/daemon/connect` SwiftNIO listener and the daemon client are complete libraries with tests, but they are not wired into `RaftServer` yet.
 - The locked behavioral reference lives in [docs/BEHAVIOR.md](docs/BEHAVIOR.md). It is the historical behavior log, not the project introduction.
 
+## Known gaps
+
+The port is behaviorally incomplete. The largest remaining gaps are:
+
+- WebSocket frame families (`scope_read:updated`, `channel:updated`, and related realtime events) are not emitted yet.
+- `channels.inbox` serving rows, assistant flag-on flows, agent migration state machines, external-diagnostics detail, and parts of RBAC/guest projections still need Node-asserted slices.
+- The executable starts only the Vapor HTTP app. The SwiftNIO `/daemon/connect` listener and `RaftDaemonClient` are tested libraries but are not wired into `RaftServer`.
+- No database is connected: state is in-memory, resets on restart, and `/health` stays at `503 database unreachable`.
+- The two-real-`RaftServer` startup gate and completion logging are intentionally deferred until no Node-asserted daemon/server behavior remains.
+
 ## Modules
 
 | Target | Responsibility |
