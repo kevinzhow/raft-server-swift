@@ -7111,6 +7111,23 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, taskJSON(task))
     }
 
+    public func joinChannel(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        if oauth.isChannelParticipant(channelId: channelId, userId: userId) {
+            return Self.json(200, "{\"ok\":true}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Server role cannot join public channels\"}")
+        }
+        oauth.addChannelHuman(channelId: channelId, userId: userId)
+        return Self.json(200, "{\"ok\":true}")
+    }
+
     public func channelMembers(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

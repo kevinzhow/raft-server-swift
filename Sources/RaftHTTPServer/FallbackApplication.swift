@@ -372,7 +372,11 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.post("api", "channels", ":channelId", "join") { request -> Response in
-        routeResponse(PublicVisits.authRequired(authorization: request.headers[.authorization]))
+        routeResponse(services.emailAccounts.joinChannel(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? ""
+        ))
     }
     app.get("api", "messages", "channel", ":channelId") { request -> Response in
         routeResponse(services.emailAccounts.listChannelMessages(
