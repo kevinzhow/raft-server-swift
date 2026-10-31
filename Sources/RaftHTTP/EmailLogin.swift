@@ -154,6 +154,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var storedAgentDeliveries: [(agentId: String, messageId: String, channelType: String)] = []
     private var agentCredentials: [String: AgentCredential] = [:]
     private var postableChannels: [String: PostableChannel] = [:]
+    private var threadOrder: [String] = []
     private var serverMemberRoles: [String: String] = [:]
     private var hideHumansFromMembers: [String: Bool] = [:]
     private var jointProjections: [JointChannelLink] = []
@@ -4265,12 +4266,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
-        let threads = postableChannels.filter { _, candidate in
+        var threads = postableChannels.filter { _, candidate in
             candidate.serverId == serverId
                 && candidate.kind == "thread"
                 && candidate.parentChannelId == channelId
                 && candidate.deletedAt == nil
         }
+        let orderIndex = Dictionary(uniqueKeysWithValues: threadOrder.enumerated().map { ($1, $0) })
+        var orderedThreads = threads.map { (id: $0.key, channel: $0.value) }
+        orderedThreads.sort { (orderIndex[$0.id] ?? Int.max) < (orderIndex[$1.id] ?? Int.max) }
+        if orderedThreads.count > 100 {
+            orderedThreads = Array(orderedThreads.suffix(100))
+        }
+        threads = Dictionary(uniqueKeysWithValues: orderedThreads.map { ($0.id, $0.channel) })
         var summaries: [String] = []
         for (threadId, thread) in threads {
             guard let parentMessageId = thread.parentMessageId else { continue }
@@ -10087,6 +10095,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             parentMessageId: parentMessageId,
             name: "thread"
         )
+        threadOrder.append(threadId)
         var messageId: String?
         if let content = object["content"] as? String, !content.isEmpty {
             let id = UUID().uuidString.lowercased()
