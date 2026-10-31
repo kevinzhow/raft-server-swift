@@ -199,7 +199,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var shareArtifacts: Set<String> = []
     private var timezoneObservations: [String: TimezoneObservation] = [:]
     private var serverLabsState: [String: ServerLabsState] = [:]
-    private var serverInvites: [(id: String, serverId: String, email: String)] = []
+    private var serverInvites: [(id: String, serverId: String, email: String, role: String)] = []
     private var serverSwitcherOrders: [String: (ids: [String], version: Int)] = [:]
     private var serverOnboardingSettings: [String: (agentId: String?, greeting: Bool)] = [:]
     private var userOnboardingSettings: [String: UserOnboarding] = [:]
@@ -7562,6 +7562,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"avatarUrl\":\(jsonString(avatarUrl))}")
     }
 
+    public func listServerInvites(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        lock.lock()
+        let rows = serverInvites.filter { $0.serverId == serverId }.map { invite in
+            "{\"id\":\(jsonString(invite.id)),\"invitedEmail\":\(jsonString(invite.email)),\"email\":\(jsonString(invite.email)),\"role\":\(jsonString(invite.role)),\"status\":\"pending\"}"
+        }.joined(separator: ",")
+        lock.unlock()
+        return Self.json(200, "[\(rows)]")
+    }
+
     public func createServerInvite(authorization: String?, serverId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)
@@ -7581,11 +7599,23 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard email.wholeMatch(of: /^[^\s@]+@[^\s@]+\.[^\s@]+$/) != nil else {
             return Self.json(400, "{\"error\":\"Enter a valid email address\"}")
         }
+        let inviteRole = (object["role"] as? String) ?? "member"
+        guard ["member", "guest"].contains(inviteRole) else {
+            return Self.json(400, "{\"error\":\"role must be one of: member, guest\"}")
+        }
+        if inviteRole == "guest" {
+            lock.lock()
+            let enabled = guestRoleServers.contains(serverId)
+            lock.unlock()
+            guard enabled else {
+                return Self.json(400, "{\"error\":\"Guest access is not enabled for this server\"}")
+            }
+        }
         let id = UUID().uuidString.lowercased()
         lock.lock()
-        serverInvites.append((id: id, serverId: serverId, email: email))
+        serverInvites.append((id: id, serverId: serverId, email: email, role: inviteRole))
         lock.unlock()
-        return Self.json(200, "{\"invite\":{\"id\":\(jsonString(id)),\"email\":\(jsonString(email)),\"status\":\"pending\"}}")
+        return Self.json(200, "{\"id\":\(jsonString(id)),\"invitedEmail\":\(jsonString(email)),\"email\":\(jsonString(email)),\"role\":\(jsonString(inviteRole)),\"invite\":{\"id\":\(jsonString(id)),\"email\":\(jsonString(email)),\"role\":\(jsonString(inviteRole)),\"status\":\"pending\"}}")
     }
 
     public func leaveServer(authorization: String?, serverId: String) -> HTTPReply {

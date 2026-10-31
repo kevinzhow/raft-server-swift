@@ -1005,6 +1005,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.parameters.get("id") ?? ""
         ))
     }
+    app.get("api", "servers", ":id", "invites") { request -> Response in
+        routeResponse(services.emailAccounts.listServerInvites(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
     app.post("api", "servers", ":id", "invites") { request -> Response in
         routeResponse(services.emailAccounts.createServerInvite(
             authorization: request.headers[.authorization],
