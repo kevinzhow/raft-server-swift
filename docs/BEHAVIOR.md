@@ -31,3 +31,6 @@ thread 发消息要求 parent channel 成员身份（follow 不授予写权限�
 
 
 POST /api/channels/:id/threads 不写 content 时不创建 reply，也不自动 follow 创建者；只有带回复的 thread 才因发送产生 follow。
+
+
+agent 向 thread 发送（`#parent:short`）要求 agent 是该 parent channel 成员；只在 thread 内 follow 的 agent 403。legacy machine key 也可认证 agent send。

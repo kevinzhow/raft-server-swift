@@ -8532,11 +8532,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let apiKey = String(authorization.dropFirst("Bearer ".count))
         lock.lock()
         let machine = machines.first { $0.apiKey == apiKey }
+        let legacy = machineKeys[apiKey]
         lock.unlock()
-        guard let machine else {
+        guard let machineServerId = machine?.serverId ?? legacy?.serverId else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
-        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == machine.serverId else {
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == machineServerId else {
             return Self.json(404, "{\"error\":\"Agent not found\"}")
         }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
