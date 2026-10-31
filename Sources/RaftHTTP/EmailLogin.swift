@@ -7126,7 +7126,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
             return Self.json(403, "{\"code\":\"insufficient_role\",\"error\":\"issueAgentCredentials requires human creator authority\"}")
         }
-        return Self.json(200, "{\"token\":\"bootstrap-disabled\",\"createdAt\":\"1970-01-01T00:00:00.000Z\"}")
+        guard info.runtime == "external" else {
+            return Self.json(400, "{\"code\":\"agent_not_external\",\"error\":\"Only external Agents get bootstrap tokens\"}")
+        }
+        return Self.json(201, "{\"token\":\"bootstrap-disabled\",\"createdAt\":\"1970-01-01T00:00:00.000Z\",\"scopes\":[\"channels\",\"knowledge\",\"mentions\",\"reactions\",\"read\",\"send\",\"tasks\"]}")
     }
 
     public func patchAgentCreator(authorization: String?, serverId: String, agentId: String, body: String) -> HTTPReply {
@@ -7643,10 +7646,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
         guard info.runtime == "external" else {
-            return Self.json(400, "{\"error\":\"Only external Agents get credentials\"}")
+            return Self.json(400, "{\"code\":\"agent_not_external\",\"error\":\"Only external Agents get credentials\"}")
         }
-        let key = mintAgentCredential(agentId: agentId, scopes: ["read"], name: "session-issued")
-        return Self.json(201, "{\"credential\":\(jsonString(key))}")
+        let key = mintAgentCredential(agentId: agentId, scopes: ["channels", "knowledge", "mentions", "reactions", "read", "send", "tasks"], name: "session-issued")
+        return Self.json(201, "{\"credential\":\(jsonString(key)),\"scopes\":[\"channels\",\"knowledge\",\"mentions\",\"reactions\",\"read\",\"send\",\"tasks\"]}")
     }
 
     public func listAgentCredentials(authorization: String?, agentId: String) -> HTTPReply {

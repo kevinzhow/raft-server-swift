@@ -82,3 +82,6 @@ guest 读 `GET /api/agents/:id` 得到 bounded `profileProjection:"channel_summa
 
 
 managed agent 的 stop 对任意 Server 成员 200；reset restart/session 对成员 202 `{ok:true,status:"accepted"}`，full 仅 creator/owner/admin，普通成员 403 且 error 提到 resetAgentWorkspace。
+
+
+managed agent 的 credentials/bootstrap-tokens mint 都是 400 `agent_not_external`；external agent bootstrap 201 且 scopes 为 `[channels,knowledge,mentions,reactions,read,send,tasks]`。
