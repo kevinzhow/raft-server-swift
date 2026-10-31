@@ -4275,7 +4275,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         for (threadId, thread) in threads {
             guard let parentMessageId = thread.parentMessageId else { continue }
             let replies = humanMessageRows.filter { $0.channelId == threadId }
-            let participants = Array(Set(replies.map(\.senderId))).sorted()
+            var participantSet = Set(replies.map(\.senderId))
+            if let parent = humanMessageRows.first(where: { $0.id == parentMessageId }) {
+                participantSet.insert(parent.senderId)
+            }
+            let participants = Array(participantSet).sorted()
             let participantJSON = participants.map { jsonString($0) }.joined(separator: ",")
             summaries.append("\(jsonString(parentMessageId)):{\"threadChannelId\":\(jsonString(threadId)),\"replyCount\":\(replies.count),\"participantIds\":[\(participantJSON)]}")
         }
@@ -10062,8 +10066,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(400, "{\"error\":\"Invalid thread request\"}")
         }
-        let threadId = oauth.createThreadChannel(parentChannelId: channelId, parentMessageId: parentMessageId)
         lock.lock()
+        if let existing = postableChannels.first(where: { _, candidate in
+            candidate.serverId == serverId && candidate.kind == "thread"
+                && candidate.parentChannelId == channelId && candidate.parentMessageId == parentMessageId
+                && candidate.deletedAt == nil
+        }) {
+            let replies = humanMessageRows.filter { $0.channelId == existing.key }
+            let participants = Array(Set(replies.map(\.senderId))).sorted()
+            lock.unlock()
+            let participantJSON = participants.map { jsonString($0) }.joined(separator: ",")
+            return Self.json(200, "{\"threadChannelId\":\(jsonString(existing.key)),\"replyCount\":\(replies.count),\"lastReplyAt\":\(replies.last.map { jsonString(ISO8601DateFormatter().string(from: $0.createdAt)) } ?? "null"),\"participantIds\":[\(participantJSON)]}")
+        }
+        let threadId = oauth.createThreadChannel(parentChannelId: channelId, parentMessageId: parentMessageId)
         postableChannels[threadId] = PostableChannel(
             serverId: serverId,
             memberIds: [userId],
@@ -10072,17 +10087,22 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             parentMessageId: parentMessageId,
             name: "thread"
         )
-        let messageId = UUID().uuidString.lowercased()
-        humanMessageRows.append(StoredHumanMessage(
-            id: messageId,
-            channelId: threadId,
-            senderId: userId,
-            content: (object["content"] as? String) ?? "",
-            randomId: nil
-        ))
+        var messageId: String?
+        if let content = object["content"] as? String, !content.isEmpty {
+            let id = UUID().uuidString.lowercased()
+            humanMessageRows.append(StoredHumanMessage(
+                id: id,
+                channelId: threadId,
+                senderId: userId,
+                content: content,
+                randomId: nil
+            ))
+            messageId = id
+        }
         lock.unlock()
         threadFollows["\(serverId)\n\(userId)\n\(threadId)"] = (serverId, userId, threadId, parentMessageId)
-        return Self.json(200, "{\"threadChannelId\":\(jsonString(threadId)),\"messageId\":\(jsonString(messageId))}")
+        let messageJSON = messageId.map { jsonString($0) } ?? "null"
+        return Self.json(200, "{\"threadChannelId\":\(jsonString(threadId)),\"messageId\":\(messageJSON),\"replyCount\":0,\"lastReplyAt\":null,\"participantIds\":[]}")
     }
 
     public func addChannelMember(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
