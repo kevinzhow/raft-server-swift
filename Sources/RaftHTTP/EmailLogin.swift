@@ -4252,6 +4252,42 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"threads\":[\("\(rows.joined(separator: ","))")]}")
     }
 
+    public func threadInfo(authorization: String?, serverId: String, channelId: String, messageId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard channelActorCanSee(channelId: channelId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Thread not found\"}")
+        }
+        lock.lock()
+        let inChannel = humanMessageRows.contains { $0.id == messageId && $0.channelId == channelId }
+            || oauth.messageChannelId(messageId) == channelId
+        guard inChannel else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Thread not found\"}")
+        }
+        guard let thread = postableChannels.first(where: { _, candidate in
+            candidate.serverId == serverId && candidate.kind == "thread"
+                && candidate.parentChannelId == channelId && candidate.parentMessageId == messageId
+                && candidate.deletedAt == nil
+        }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Thread not found\"}")
+        }
+        let replies = humanMessageRows.filter { $0.channelId == thread.key }
+        var participants = Set(replies.map(\.senderId))
+        if let parent = humanMessageRows.first(where: { $0.id == messageId }) {
+            participants.insert(parent.senderId)
+        }
+        let participantJSON = participants.sorted().map { jsonString($0) }.joined(separator: ",")
+        let lastReply = replies.last.map { jsonString(ISO8601DateFormatter().string(from: $0.createdAt)) } ?? "null"
+        lock.unlock()
+        return Self.json(200, "{\"threadChannelId\":\(jsonString(thread.key)),\"replyCount\":\(replies.count),\"lastReplyAt\":\(lastReply),\"participantIds\":[\("\(participantJSON)")]}")
+    }
+
     public func channelThreadSummaries(authorization: String?, serverId: String?, channelId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)
