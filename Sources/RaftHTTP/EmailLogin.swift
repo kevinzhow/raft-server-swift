@@ -3035,8 +3035,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let referencesEnabled = composerResourceServers.contains(channel?.serverId ?? "")
         let installed = installedServerApps[channel?.serverId ?? ""] ?? []
         lock.unlock()
-        guard let channel, channel.serverId == serverId, channel.memberIds.contains(userId) else {
+        guard let channel, channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        let parentMember = channel.kind == "thread"
+            && (channel.parentChannelId.flatMap { postableChannels[$0] }?.memberIds.contains(userId) ?? false)
+        guard channel.memberIds.contains(userId) || parentMember else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
         if channel.archived {
             return Self.json(409, "{\"error\":\"This channel is archived\",\"code\":\"channel_archived\"}")

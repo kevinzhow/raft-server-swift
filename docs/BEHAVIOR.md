@@ -16,3 +16,6 @@ This file is the historical locked-behavior log moved out of README.md.
 
 
 thread 内发送带 mentions 的消息会自动 follow 被提及的 human 与 agent，并出现在其 followed 列表。
+
+
+thread 发消息要求 parent channel 成员身份（follow 不授予写权限）；非成员 403，parent 成员无 follow 也可发。
