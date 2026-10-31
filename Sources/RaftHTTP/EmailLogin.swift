@@ -4999,6 +4999,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let offset = max(Int(params["offset"] ?? "") ?? 0, 0)
         let ascending = params["sort"] == "asc"
         let channelFilter = params["channelId"].flatMap { $0.isEmpty ? nil : $0 }
+        let scope = params["scope"]
         let search = params["q"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 
         lock.lock()
@@ -5035,6 +5036,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
             let isThread = type == "thread"
             let parentChannelId = isThread ? channel?.parentChannelId : nil
+            if isThread, let parentChannelId,
+               postable[parentChannelId]?.kind == "dm",
+               doneScopes.contains("\(userId)\n\(parentChannelId)") { continue }
             let detailMap = inboxMessageDetails(
                 scopeId: scopeId,
                 history: oauth.historyMessages(channelId: scopeId),
@@ -5068,12 +5072,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 firstUnreadMessageId: firstUnread,
                 firstMentionMessageId: firstMention,
                 hasMention: !scopeMentions.isEmpty,
-                isFollowing: isFollowing
+                isFollowing: isFollowing,
+                isDM: type == "dm" || (isThread && postable[parentChannelId ?? ""]?.kind == "dm")
             ))
         }
 
-        let activeUnreadCount = rows.reduce(0) { $0 + $1.unreadCount }
-        let filtered = rows.filter { row in
+        let scopedRows = scope == "dms" ? rows.filter(\.isDM) : rows
+        let activeUnreadCount = scopedRows.reduce(0) { $0 + $1.unreadCount }
+        let filtered = scopedRows.filter { row in
             switch effectiveFilter {
             case "unread": row.unreadCount > 0
             case "mentions": row.hasMention
@@ -5156,6 +5162,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var firstMentionMessageId: String?
         var hasMention: Bool
         var isFollowing: Bool
+        var isDM: Bool
     }
 
     private struct InboxGroup {
