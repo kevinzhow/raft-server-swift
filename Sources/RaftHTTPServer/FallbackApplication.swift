@@ -477,6 +477,28 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("internal", "agent", ":agentId", "channels", ":channelId", "join") { request -> Response in
+        routeResponse(services.emailAccounts.agentChannelMembershipFromMachine(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId") ?? "",
+            channelId: request.parameters.get("channelId") ?? "",
+            join: true
+        ))
+    }
+    app.post("internal", "agent", ":agentId", "channels", ":channelId", "leave") { request -> Response in
+        routeResponse(services.emailAccounts.agentChannelMembershipFromMachine(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId") ?? "",
+            channelId: request.parameters.get("channelId") ?? "",
+            join: false
+        ))
+    }
+    app.post("internal", "agent-api", "channels", ":channelId", "leave") { request -> Response in
+        routeResponse(services.emailAccounts.agentLeaveChannel(
+            authorization: request.headers[.authorization],
+            channelId: request.parameters.get("channelId") ?? ""
+        ))
+    }
     app.post("internal", "agent-api", "channels", ":channelId", "join") { request -> Response in
         routeResponse(services.emailAccounts.agentJoinChannel(
             authorization: request.headers[.authorization],
@@ -910,6 +932,29 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
             channelId: request.parameters.get("channelId") ?? "",
             body: request.body.string ?? ""
+        ))
+    }
+    app.post("api", "channels", ":channelId", "leave") { request -> Response in
+        routeResponse(services.emailAccounts.leaveChannel(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? ""
+        ))
+    }
+    app.post("api", "channels", ":channelId", "members", "batch") { request -> Response in
+        routeResponse(services.emailAccounts.addChannelMembersBatch(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.post("api", "channels", ":channelId", "threads") { request -> Response in
+        routeResponse(services.emailAccounts.createThreadFromChannel(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? "",
+            body: request.body.string ?? "{}"
         ))
     }
     app.post("api", "channels", ":channelId", "members") { request -> Response in

@@ -9320,6 +9320,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == agent.serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
+        if let reply = archivedChannelReply(channelId) { return reply }
         if oauth.channelAgentIds(channelId: channelId).contains(agent.id) {
             return Self.json(200, "{\"ok\":true}")
         }
@@ -9337,6 +9338,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
+        if let reply = archivedChannelReply(channelId) { return reply }
         if oauth.isChannelParticipant(channelId: channelId, userId: userId) {
             return Self.json(200, "{\"ok\":true}")
         }
@@ -9345,6 +9347,145 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         oauth.addChannelHuman(channelId: channelId, userId: userId)
         return Self.json(200, "{\"ok\":true}")
+    }
+
+    public func agentChannelMembershipFromMachine(authorization: String?, agentId: String, channelId: String, join: Bool) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        }
+        let apiKey = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let machine = machines.first { $0.apiKey == apiKey }
+        lock.unlock()
+        guard let machine else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == machine.serverId else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == agent.serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        if let reply = archivedChannelReply(channelId) { return reply }
+        if join {
+            oauth.addChannelAgent(channelId: channelId, agentId: agent.id)
+        } else {
+            oauth.removeChannelAgent(channelId: channelId, agentId: agent.id)
+        }
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    public func leaveChannel(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        if let reply = archivedChannelReply(channelId) { return reply }
+        lock.lock()
+        postableChannels[channelId]?.memberIds.remove(userId)
+        lock.unlock()
+        _ = oauth.removeChannelHuman(channelId: channelId, userId: userId)
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    public func agentLeaveChannel(authorization: String?, channelId: String) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let credential = agentCredentials[token]
+        lock.unlock()
+        guard let credential, let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == agent.serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        if let reply = archivedChannelReply(channelId) { return reply }
+        oauth.removeChannelAgent(channelId: channelId, agentId: agent.id)
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    public func addChannelMembersBatch(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        if let reply = archivedChannelReply(channelId) { return reply }
+        guard role == "owner" || role == "admin" || oauth.isChannelParticipant(channelId: channelId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid channel members\"}")
+        }
+        let userIds = (object["userIds"] as? [Any])?.compactMap { $0 as? String } ?? []
+        let agentIds = (object["agentIds"] as? [Any])?.compactMap { $0 as? String } ?? []
+        for target in userIds where oauth.memberRole(serverId: serverId, userId: target) != nil {
+            accountsForInvite(userId: target, serverId: serverId, channelId: channelId)
+        }
+        for agentId in agentIds {
+            if let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted {
+                oauth.addChannelAgent(channelId: channelId, agentId: agentId)
+            }
+        }
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    private func accountsForInvite(userId: String, serverId: String, channelId: String) {
+        lock.lock()
+        postableChannels[channelId, default: PostableChannel(serverId: serverId, memberIds: [])].memberIds.insert(userId)
+        lock.unlock()
+        oauth.addChannelHuman(channelId: channelId, userId: userId)
+    }
+
+    public func createThreadFromChannel(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        if let reply = archivedChannelReply(channelId) { return reply }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let parentMessageId = object["parentMessageId"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"Invalid thread request\"}")
+        }
+        let threadId = oauth.createThreadChannel(parentChannelId: channelId, parentMessageId: parentMessageId)
+        lock.lock()
+        postableChannels[threadId] = PostableChannel(
+            serverId: serverId,
+            memberIds: [userId],
+            kind: "thread",
+            parentChannelId: channelId,
+            parentMessageId: parentMessageId,
+            name: "thread"
+        )
+        let messageId = UUID().uuidString.lowercased()
+        humanMessageRows.append(StoredHumanMessage(
+            id: messageId,
+            channelId: threadId,
+            senderId: userId,
+            content: (object["content"] as? String) ?? "",
+            randomId: nil
+        ))
+        lock.unlock()
+        threadFollows["\(serverId)\n\(userId)\n\(threadId)"] = (serverId, userId, threadId, parentMessageId)
+        return Self.json(200, "{\"threadChannelId\":\(jsonString(threadId)),\"messageId\":\(jsonString(messageId))}")
     }
 
     public func addChannelMember(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
@@ -9357,6 +9498,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
+        if let reply = archivedChannelReply(channelId) { return reply }
         guard role == "owner" || role == "admin" || oauth.isChannelParticipant(channelId: channelId, userId: userId) else {
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
