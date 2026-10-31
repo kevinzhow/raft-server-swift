@@ -7081,6 +7081,27 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "[\(rows)]")
     }
 
+    public func listArchivedAgents(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role != "guest" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        lock.lock()
+        let rows = agentArchiveRecords
+            .filter { $0.value.serverId == serverId }
+            .map { id, record in
+                "{\"agentId\":\(jsonString(id)),\"machineName\":\(record.machineName.isEmpty ? "null" : jsonString(record.machineName)),\"workspaceState\":\(jsonString(record.workspaceState))}"
+            }
+            .sorted()
+        lock.unlock()
+        return Self.json(200, "{\"agents\":[\("\(rows.joined(separator: ","))")]}")
+    }
+
     public func agentRuntimeOptions(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

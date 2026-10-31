@@ -67,3 +67,6 @@ agent create/GET 返回 `creator:{type:"human",id}`；`PATCH /api/agents/:id/cre
 
 
 `GET /api/agents/:id/runtime-options` 普通成员可读；`POST /api/agents/:id/bootstrap-tokens` 普通成员 403 `insufficient_role`，错误提到 issueAgentCredentials 与 human creator authority。
+
+
+`GET /api/agents/archived` 对 member 及以上返回 `{agents:[{agentId,machineName,workspaceState}]}`；guest 403。
