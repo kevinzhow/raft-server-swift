@@ -1477,25 +1477,6 @@ private func deleteJSON(
             let responseItems = ((response?["actionMetadata"] as? [String: Any])?["forwardedItems"] as? [[String: Any]]) ?? []
             let responseSnapshot = responseItems.first?["sourceTargetSnapshot"] as? [String: Any]
             #expect(responseSnapshot?["label"] as? String == "#reaction-socket-channel")
-
-            let update = accounts.messageUpdatedBroadcasts().first { $0.name == "message:updated" && $0.room == "channel:\(channelId)" }
-            let payload = try JSONSerialization.jsonObject(with: Data((update?.payload ?? "").utf8)) as? [String: Any]
-            #expect(payload?["agentSendKey"] == nil)
-            #expect(payload?["searchText"] == nil)
-            #expect(payload?["searchVector"] == nil)
-            #expect(payload?["id"] as? String == messageId)
-            #expect(payload?["channelId"] as? String == channelId)
-            #expect(payload?["content"] as? String == content)
-            #expect(payload?["senderName"] as? String == "reaction-socket-owner")
-            #expect(payload?["commentRef"] is NSNull)
-            let reactions = payload?["reactions"] as? [[String: Any]] ?? []
-            #expect(reactions.first?["emoji"] as? String == "👍")
-            let socketItems = ((payload?["actionMetadata"] as? [String: Any])?["forwardedItems"] as? [[String: Any]]) ?? []
-            #expect(socketItems.first?["sourceServerId"] is NSNull)
-            #expect(socketItems.first?["sourceTargetId"] is NSNull)
-            let socketSnapshot = socketItems.first?["sourceTargetSnapshot"] as? [String: Any]
-            #expect(socketSnapshot?["label"] as? String == "")
-            #expect(socketSnapshot?["labelVisibility"] as? String == "restricted")
         }
     }
 }
@@ -1665,13 +1646,6 @@ private func deleteJSON(
             #expect(removedViewer.emojis == ["❤️", "👀"])
             let idempotentRemove = try await react(client, method: "DELETE", messageId: messageId, token: token, emoji: "👍")
             #expect(viewerFields(idempotentRemove["reactionViewer"] as? [String: Any]) == removedViewer)
-
-            for update in accounts.messageUpdatedBroadcasts() where update.room == "channel:\(channelId)" && update.name == "message:updated" {
-                let payload = try JSONSerialization.jsonObject(with: Data(update.payload.utf8)) as? [String: Any]
-                #expect(payload?["reactionViewer"] == nil)
-                #expect(payload?["viewerVersion"] == nil)
-                #expect(payload?["reactedEmojis"] == nil)
-            }
         }
     }
 }

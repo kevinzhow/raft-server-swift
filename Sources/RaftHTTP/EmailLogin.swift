@@ -139,7 +139,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var humanMessageRows: [StoredHumanMessage] = []
     private var channelAttachments: [String: ChannelAttachment] = [:]
     private var recordedChannelMessageEvents: [ChannelMessageEvent] = []
-    private var recordedMessageUpdates: [MessageUpdatedBroadcast] = []
     private var recordedReactionViewerEvents: [ReactionViewerEvent] = []
     private var forwardedBundles: [String: [ForwardedSource]] = [:]
     private var forwardRecords: [String: StoredForwardRecord] = [:]
@@ -3933,13 +3932,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var attachments: [ChannelAttachment]
     }
 
-    public struct MessageUpdatedBroadcast: Equatable, Sendable {
-        public var room: String
-        public var name: String
-        public var payload: String
-    }
-
-    /// A `reaction_viewer:updated` frame written to `user:{userId}`.
     public struct ReactionViewerEvent: Equatable, Sendable {
         public var room: String
         public var name: String
@@ -3951,12 +3943,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         forwardedBundles[messageId] = items
         lock.unlock()
-    }
-
-    public func messageUpdatedBroadcasts() -> [MessageUpdatedBroadcast] {
-        lock.lock()
-        defer { lock.unlock() }
-        return recordedMessageUpdates
     }
 
     public func reactionViewerEvents() -> [ReactionViewerEvent] {
@@ -5731,11 +5717,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             payload += ",\"actionMetadata\":\(socketMetadata)"
         }
         payload += "}"
-        recordedMessageUpdates.append(MessageUpdatedBroadcast(
-            room: "channel:\(message.channelId)",
-            name: "message:updated",
-            payload: payload
-        ))
+        realtimeEmitter?("channel:\(message.channelId)", "message:updated", payload)
         return bodyJSON
     }
 

@@ -275,6 +275,62 @@ import Testing
     #expect(event.contains("\"channelId\":\"\(channel)\""))
 }
 
+@Test func reactionMutationEmitsMessageUpdatedOnTheChannelRoom() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111627"
+    let serverId = "33333333-3333-4333-8333-333333333671"
+    accounts.addAccount(id: ownerId, email: "realtime-reaction@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "realtime-reaction", name: "Realtime Reaction", ownerId: ownerId)
+    let channel = accounts.oauth.createChannel(serverId: serverId, name: "realtime-reaction", creatorUserId: ownerId)
+    accounts.addPostableChannel(serverId: serverId, channelId: channel, memberId: ownerId, name: "realtime-reaction")
+    let messageId = accounts.addHumanMessageForTesting(channelId: channel, senderId: ownerId, content: "react to me")
+    let login = accounts.login(body: "{\"email\":\"realtime-reaction@slock.test\",\"password\":\"password123\"}")
+    let token = (try JSONSerialization.jsonObject(with: Data(login.body.utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
+
+    let auth = StubAuth(
+        tokens: ["socket": ownerId],
+        roles: ["\(serverId)\n\(ownerId)": "member"],
+        channels: ["\(serverId)\n\(ownerId)": [channel]]
+    )
+    let server = try await RealtimeServer.start(auth: auth)
+    defer { Task { try? await server.close() } }
+    let client = try await RawSocketIOClient(port: server.port)
+    defer { client.close() }
+    _ = await client.waitForText { $0.hasPrefix("0") }
+    client.send("40{\"token\":\"socket\",\"serverId\":\"\(serverId)\"}")
+    _ = await client.waitForText { $0.hasPrefix("40") }
+    _ = await client.waitForText { $0 == "42[\"rooms:joined\"]" }
+
+    accounts.realtimeEmitter = { room, event, payload in
+        server.hub.emit(room: room, event: event, payloadJSON: payload)
+    }
+    let reply = accounts.addMessageReaction(
+        messageId: messageId,
+        body: "{\"emoji\":\"👍\"}",
+        authorization: "Bearer \(token)",
+        serverId: serverId
+    )
+    #expect(reply.status == 200)
+    let event = try #require(await client.waitForText { $0.contains("\"message:updated\"") })
+    #expect(event.contains("\"id\":\"\(messageId)\""))
+    #expect(event.contains("\"👍\""))
+    let json = event.dropFirst("42[\"message:updated\",".count).dropLast()
+    let payload = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+    #expect(payload?["id"] as? String == messageId)
+    #expect(payload?["channelId"] as? String == channel)
+    #expect(payload?["content"] as? String == "react to me")
+    #expect(payload?["commentRef"] is NSNull)
+    #expect(payload?["agentSendKey"] == nil)
+    #expect(payload?["searchText"] == nil)
+    #expect(payload?["searchVector"] == nil)
+    #expect(payload?["reactionViewer"] == nil)
+    #expect(payload?["viewerVersion"] == nil)
+    #expect(payload?["reactedEmojis"] == nil)
+    let reactions = payload?["reactions"] as? [[String: Any]] ?? []
+    #expect(reactions.first?["emoji"] as? String == "👍")
+}
+
 private struct StubAuth: RealtimeAuthorizing {
     var tokens: [String: String]
     var roles: [String: String]

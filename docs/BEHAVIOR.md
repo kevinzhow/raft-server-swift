@@ -153,4 +153,7 @@ agent 读游标前进且 server 开启 read receipts 时，`channel:<id>` 房间
 `POST /api/messages` 成功后向 `channel:<id>` 房间发 `message:new`，payload 是消息 HTTP body（id/channelId/content/attachments）。`POST /api/tasks/channel/:channelId` 成功后向同一房间发 `task:created`，payload 是 `{channelId,tasks:[{id,channelId,title,status}]}`；`POST /api/channels/threads/follow|unfollow` 成功后发 `thread:followers-updated`，payload `{threadChannelId}`。频道创建时该用户的在线 socket 自动加入 `channel:<id>`。
 
 
+消息 reaction 变更后向 `channel:<id>` 发 `message:updated`，payload 含 `id/channelId/content/senderName/commentRef/reactions`，不含 `agentSendKey/searchText/searchVector/reactionViewer/viewerVersion/reactedEmojis`。旧的 `messageUpdatedBroadcasts()` 侧通道已删除，断言走真实 socket。
+
+
 
