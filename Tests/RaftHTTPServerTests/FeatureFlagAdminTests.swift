@@ -84,3 +84,44 @@ private func sendJSON(
         }
     }
 }
+
+@Test func removedOperatorFeatureFlagRoutesStay404() async throws {
+    let accounts = EmailLoginDirectory()
+    let userId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2"
+    accounts.addAccount(id: userId, email: "ff-operator-removed@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: userId)
+
+    let paths = [
+        "/api/oauth/operator/feature-flags/removed_operator/evaluate-preview",
+        "/api/oauth/operator/feature-flags/removed_operator/server-allowlist/rules",
+        "/api/oauth/operator/feature-flags/apple_web_login_v0/platform-allowlist/web/rules",
+    ]
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            let login = try await sendJSON(
+                client,
+                method: .post,
+                path: "/api/auth/login",
+                body: "{\"email\":\"ff-operator-removed@slock.test\",\"password\":\"password123\"}",
+                authorization: "Bearer ignored"
+            )
+            let token = (try JSONSerialization.jsonObject(with: Data(bodyText(login).utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
+            for path in paths {
+                let response = try await sendJSON(
+                    client,
+                    method: .post,
+                    path: path,
+                    body: "{}",
+                    authorization: "Bearer \(token)"
+                )
+                #expect(response.status == .notFound)
+            }
+        }
+    }
+}
