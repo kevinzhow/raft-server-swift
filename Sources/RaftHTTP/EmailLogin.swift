@@ -9408,7 +9408,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let rows = oauth.channelsForServer(serverId: serverId, userId: userId).map { channel -> String in
+        let rows = oauth.channelsForServer(serverId: serverId, userId: userId)
+            .filter { oauth.channelArchivedAt(id: $0.id) == nil }
+            .map { channel -> String in
             let last = channel.lastMessageAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
             let muteSeq = channel.muteFromSeq.map(String.init) ?? "null"
             return "{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(channel.type)),\"joined\":\(channel.joined),\"lastMessageAt\":\(last),\"activityMuted\":\(channel.activityMuted),\"muteFromSeq\":\(muteSeq),\"prefsVersion\":\(channel.prefsVersion),\"activityMuteSupported\":true}"
