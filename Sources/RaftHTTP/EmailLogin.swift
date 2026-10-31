@@ -220,6 +220,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var announcementDismissals: Set<String> = []
     private var inboxDoneScopes: Set<String> = []
     private var readReceiptsServers: Set<String> = []
+    private var channelHumanRoles: [String: String] = [:]
     private var sidebarModes: [String: (channel: String, joint: String, dm: String, pinned: String, channelTabs: [String], agentTabs: [String])] = [:]
     private var sidebarSections: [String: (sections: [(id: String, name: String, emoji: String?, sortMode: String)], order: [String], placements: [(kind: String, id: String, sectionId: String, position: Int)], version: Int)] = [:]
     private var reminderRecords: [ReminderRecord] = []
@@ -9991,8 +9992,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let activity = agentActivities[agentId] ?? (activity: "offline", detail: "")
             return "{\"id\":\(jsonString(agentId)),\"name\":\(jsonString(name)),\"activity\":\(jsonString(activity.activity)),\"activityDetail\":\(jsonString(activity.detail))}"
         }.joined(separator: ",")
+        let viewerServerRole = oauth.memberRole(serverId: serverId, userId: userId) ?? "member"
+        lock.lock()
+        let viewerLocalRole = channelHumanRoles["\(channelId)\n\(userId)"]
+        lock.unlock()
+        let viewerIsChannelAdmin = viewerLocalRole == "admin" || viewerServerRole == "owner" || viewerServerRole == "admin"
         let humans = oauth.channelHumanIds(channelId: channelId).map { humanId -> String in
-            "{\"id\":\(jsonString(humanId))}"
+            let targetServerRole = oauth.memberRole(serverId: serverId, userId: humanId) ?? "member"
+            lock.lock()
+            let targetLocalRole = channelHumanRoles["\(channelId)\n\(humanId)"]
+            lock.unlock()
+            let basis: String? = targetLocalRole == "admin" ? "channel_role"
+                : ((targetServerRole == "owner" || targetServerRole == "admin") ? "server_role" : nil)
+            let effectiveRole = basis == nil ? "member" : "admin"
+            let canChange = viewerIsChannelAdmin && targetServerRole != "owner" && targetServerRole != "admin" && humanId != userId
+            return "{\"id\":\(jsonString(humanId)),\"serverRole\":\(jsonString(targetServerRole)),\"effectiveChannelRole\":\(jsonString(effectiveRole)),\"channelAdminBasis\":\(basis.map { jsonString($0) } ?? "null"),\"canChangeChannelRole\":\(canChange)}"
         }.joined(separator: ",")
         return Self.json(200, "{\"agents\":[\("\(agents)")],\"humans\":[\("\(humans)")]}")
     }
@@ -10526,6 +10540,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func setChannelHumanRoleForTesting(channelId: String, userId: String, role: String) {
+        lock.lock()
+        channelHumanRoles["\(channelId)\n\(userId)"] = role
+        lock.unlock()
+    }
+
     public func getChannelRoute(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -10547,8 +10567,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return "{\"peerKind\":\"agent\",\"peerId\":\(jsonString(agentId)),\"maxReadSeq\":\(cursor.seq)}"
         }
         lock.unlock()
+        let serverRole = oauth.memberRole(serverId: serverId, userId: userId) ?? "member"
+        lock.lock()
+        let localRole = channelHumanRoles["\(channelId)\n\(userId)"]
+        lock.unlock()
+        let basis: String? = localRole == "admin" ? "channel_role"
+            : ((serverRole == "owner" || serverRole == "admin") ? "server_role" : nil)
+        let channelRole = basis == nil ? "member" : "admin"
+        let serverAdmin = serverRole == "owner" || serverRole == "admin"
+        let capability = basis != nil
+        let capsJSON = "{\"editChannelMetadata\":\(capability),\"archiveChannels\":\(capability),\"addChannelMembers\":\(capability),\"changeChannelMemberRoles\":\(capability),\"deleteChannels\":\(serverAdmin),\"changeChannelVisibility\":\(serverAdmin),\"federateChannels\":\(serverAdmin)}"
         let peersJSON = receiptsEnabled ? ",\"peerReadStates\":[\("\(agentPeers.joined(separator: ","))")]" : ""
-        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"maxReadSeq\":\(info.maxReadSeq),\"readStateVersion\":\(version),\"activityMuteSupported\":\(supported)\(peersJSON)}")
+        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"maxReadSeq\":\(info.maxReadSeq),\"readStateVersion\":\(version),\"activityMuteSupported\":\(supported),\"channelRole\":\(jsonString(channelRole)),\"channelAdminBasis\":\(basis.map { jsonString($0) } ?? "null"),\"channelAuthorityRevision\":1,\"channelCapabilities\":\(capsJSON)\(peersJSON)}")
     }
 
     public func channelDisplaySettings(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
