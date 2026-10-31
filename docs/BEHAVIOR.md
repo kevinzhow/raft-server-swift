@@ -64,3 +64,6 @@ agent private surfaces（activity-log/activity-summaries/workspace-files/skills/
 
 
 agent create/GET 返回 `creator:{type:"human",id}`；`PATCH /api/agents/:id/creator` 仅 owner/admin，普通 member 404，可改 creator 为同 Server 成员。
+
+
+`GET /api/agents/:id/runtime-options` 普通成员可读；`POST /api/agents/:id/bootstrap-tokens` 普通成员 403 `insufficient_role`，错误提到 issueAgentCredentials 与 human creator authority。

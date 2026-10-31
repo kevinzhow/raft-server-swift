@@ -7081,6 +7081,33 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "[\(rows)]")
     }
 
+    public func agentRuntimeOptions(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted, info.serverId == serverId,
+              oauth.memberRole(serverId: serverId, userId: userId) != nil
+        else {
+            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        return Self.json(200, "{\"agentId\":\(jsonString(agentId)),\"runtimes\":[],\"models\":[]}")
+    }
+
+    public func createAgentBootstrapToken(authorization: String?, serverId: String, agentId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted, info.serverId == serverId,
+              let role = oauth.memberRole(serverId: serverId, userId: userId)
+        else {
+            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
+            return Self.json(403, "{\"code\":\"insufficient_role\",\"error\":\"issueAgentCredentials requires human creator authority\"}")
+        }
+        return Self.json(200, "{\"token\":\"bootstrap-disabled\",\"createdAt\":\"1970-01-01T00:00:00.000Z\"}")
+    }
+
     public func patchAgentCreator(authorization: String?, serverId: String, agentId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
