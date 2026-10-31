@@ -7357,6 +7357,34 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"agentId\":\(jsonString(agentId)),\"mode\":\"default\",\"scopes\":[\("\(grants.map { jsonString($0) }.joined(separator: ","))")],\"revision\":0}")
     }
 
+    public func agentArchiveWorkspaceAction(authorization: String?, serverId: String, agentId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        let record = agentArchiveRecords[agentId]
+        lock.unlock()
+        guard let record, record.serverId == serverId,
+              let role = oauth.memberRole(serverId: serverId, userId: userId)
+        else {
+            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let action = object["action"] as? String,
+              action == "keep" || action == "delete"
+        else {
+            return Self.json(400, "{\"code\":\"archive_workspace_choice_invalid\",\"error\":\"action must be keep or delete\"}")
+        }
+        let state = action == "delete" ? "deleted" : "on_computer"
+        lock.lock()
+        agentArchiveRecords[agentId] = (workspaceState: state, machineName: record.machineName, serverId: record.serverId)
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true,\"archive\":{\"workspaceState\":\(jsonString(state)),\"machineName\":\(jsonString(record.machineName))}}")
+    }
+
     public func agentChannels(authorization: String?, agentId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

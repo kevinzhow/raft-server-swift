@@ -72,6 +72,16 @@ import VaporTesting
             let snapshot = archiveBody?["archive"] as? [String: Any]
             #expect(snapshot?["workspaceState"] as? String == "on_computer")
             #expect(snapshot?["machineName"] as? String == "archive-machine")
+            #expect(try await client.send(.post, headers: memberHeaders, to: "/api/agents/\(agent)/archive/workspace") { request in
+                request.body = .init(string: "{\"action\":\"delete\"}")
+            }.status == .forbidden)
+            let workspaceAction = try await client.send(.post, headers: headers, to: "/api/agents/\(agent)/archive/workspace") { request in
+                request.body = .init(string: "{\"action\":\"delete\"}")
+            }
+            #expect(workspaceAction.status == .ok)
+            let afterAction = try await client.send(.get, headers: headers, to: "/api/agents/\(agent)/archive")
+            let afterSnapshot = (try JSONSerialization.jsonObject(with: Data((afterAction.body.string ?? "").utf8)) as? [String: Any])?["archive"] as? [String: Any]
+            #expect(afterSnapshot?["workspaceState"] as? String == "deleted")
 
             let second = try await client.send(.post, headers: headers, to: "/api/agents") { request in
                 request.body = .init(string: "{\"name\":\"DeleteBot\",\"machineId\":\"\(machine)\"}")

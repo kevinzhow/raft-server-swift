@@ -52,3 +52,6 @@ agent 向 thread 发送（`#parent:short`）要求 agent 是该 parent channel �
 
 
 `GET /api/agents/:id/archive` 仅 owner/admin 可见；普通 member/guest 403，跨 Server 404。
+
+
+`POST /api/agents/:id/archive/workspace` owner/admin 可把归档 workspace 改成 keep（on_computer）或 delete（deleted）；member/guest 403，跨 Server 404，非法 action 400。
