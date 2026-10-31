@@ -671,6 +671,22 @@ public func configure(_ app: Application, services: FallbackServices) {
             threadChannelIds: desktopQuery(request.url.query, "threadChannelIds")
         ))
     }
+    app.post("api", "channels", "threads", "follow") { request -> Response in
+        routeResponse(services.emailAccounts.setThreadFollow(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            body: request.body.string ?? "{}",
+            follow: true
+        ))
+    }
+    app.post("api", "channels", "threads", "unfollow") { request -> Response in
+        routeResponse(services.emailAccounts.setThreadFollow(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            body: request.body.string ?? "{}",
+            follow: false
+        ))
+    }
     app.get("api", "channels", "threads", "followed") { request -> Response in
         routeResponse(services.emailAccounts.followedThreads(
             authorization: request.headers[.authorization],

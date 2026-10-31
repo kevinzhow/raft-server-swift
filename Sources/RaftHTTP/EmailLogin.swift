@@ -4119,6 +4119,30 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"threads\":[\("\(threads.joined(separator: ","))")]}")
     }
 
+    public func setThreadFollow(authorization: String?, serverId: String, body: String, follow: Bool) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let threadId = object["threadChannelId"] as? String,
+              let thread = oauth.channelInfo(id: threadId), thread.serverId == serverId
+        else {
+            return Self.json(404, "{\"error\":\"Thread not found\"}")
+        }
+        lock.lock()
+        let key = "\(serverId)\n\(userId)\n\(threadId)"
+        if follow {
+            threadFollows[key] = (serverId, userId, threadId, postableChannels[threadId]?.parentMessageId ?? "")
+        } else {
+            threadFollows.removeValue(forKey: key)
+        }
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true,\"following\":\(follow)}")
+    }
+
     public func followedThreads(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
