@@ -7578,6 +7578,23 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"avatarUrl\":\(jsonString(avatarUrl))}")
     }
 
+    public func agentSend(authorization: String?, agentId: String, body: String) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        }
+        let apiKey = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let machine = machines.first { $0.apiKey == apiKey }
+        lock.unlock()
+        guard let machine else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == machine.serverId else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        return Self.json(400, "{\"error\":\"Invalid target\"}")
+    }
+
     public func runtimeProfileMigrationDone(authorization: String?, agentId: String, body: String) -> HTTPReply {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
             return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
