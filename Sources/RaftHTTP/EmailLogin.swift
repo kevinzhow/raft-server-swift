@@ -8554,7 +8554,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         guard let profile = oauth.serverProfile(id: serverId) else {
             return Self.json(404, "{\"error\":\"Server not found\"}")
