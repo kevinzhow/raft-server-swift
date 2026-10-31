@@ -61,6 +61,12 @@ import VaporTesting
             #expect(tailWindow?["hasGap"] as? Bool == false)
             #expect(tailWindow?["hasNewer"] as? Bool == false)
             #expect(tailWindow?["completeThroughLatest"] as? Bool == true)
+            #expect(tailWindow?["schemaVersion"] as? Int == 1)
+            #expect(tailWindow?["domain"] as? String == "receiver_visible_messages_v1")
+            #expect(tailWindow?["serverId"] as? String == serverId)
+            #expect(tailWindow?["receiverKind"] as? String == "user")
+            #expect(tailWindow?["receiverId"] as? String == ownerId)
+            #expect(tailWindow?["scopeId"] as? String == channelId)
 
             let before = try await page("?limit=2&before=3")
             #expect(before.1 == 200)
@@ -79,6 +85,22 @@ import VaporTesting
             let zero = try await page("?before=0")
             #expect(zero.1 == 200)
             #expect(zero.0.isEmpty)
+
+            let empty = try await client.send(.post, headers: headers, to: "/api/channels") { request in
+                request.body = .init(string: "{\"name\":\"cursor-empty\"}")
+            }
+            let emptyId = (try JSONSerialization.jsonObject(with: Data((empty.body.string ?? "").utf8)) as? [String: Any])?["id"] as? String ?? ""
+            let emptyResponse = try await client.send(.get, headers: headers, to: "/api/messages/channel/\(emptyId)")
+            let emptyBody = try JSONSerialization.jsonObject(with: Data((emptyResponse.body.string ?? "").utf8)) as? [String: Any]
+            #expect((emptyBody?["messages"] as? [[String: Any]] ?? []).isEmpty)
+            #expect(emptyBody?["historyLimited"] as? Bool == false)
+            let emptyWindow = emptyBody?["messageWindow"] as? [String: Any]
+            #expect(emptyWindow?["coveredAfterSeq"] as? Int == 0)
+            #expect(emptyWindow?["coveredFromSeq"] as? Int == 1)
+            #expect(emptyWindow?["coveredThroughSeq"] as? Int == 0)
+            #expect(emptyWindow?["remoteHighWaterSeq"] as? Int == 0)
+            #expect(emptyWindow?["hasGap"] as? Bool == false)
+            #expect(emptyWindow?["completeThroughLatest"] as? Bool == true)
 
             for query in ["?after=abc", "?after=1.5", "?after=-1", "?before=1&after=1"] {
                 let invalid = try await page(query)
