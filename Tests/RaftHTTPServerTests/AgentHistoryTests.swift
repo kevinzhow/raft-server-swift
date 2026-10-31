@@ -50,6 +50,8 @@ import VaporTesting
             #expect(page["last_read_seq"] as? Int == third.seq)
             let firstMessage = (page["messages"] as? [[String: Any]] ?? []).first
             #expect(firstMessage?["senderType"] as? String == "user")
+            #expect((firstMessage?["senderName"] as? String)?.isEmpty == false)
+            #expect(firstMessage?["createdAt"] is String)
 
             let machine = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "history-machine")
             let machineKey = accounts.machineAPIKey(machineId: machine) ?? ""
@@ -59,6 +61,18 @@ import VaporTesting
             #expect(legacy.status == .ok)
             let legacyBody = try JSONSerialization.jsonObject(with: Data((legacy.body.string ?? "").utf8)) as? [String: Any]
             #expect((legacyBody?["messages"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String } == [second.id, third.id])
+
+            let threadId = accounts.oauth.createThreadChannel(parentChannelId: channel, parentMessageId: "abcdef1234567890")
+            accounts.addPostableChannel(serverId: serverId, channelId: threadId, memberId: ownerId, kind: "thread", parentChannelId: channel, parentMessageId: "abcdef1234567890", name: "thread")
+            accounts.oauth.addChannelHuman(channelId: threadId, userId: ownerId)
+            accounts.oauth.addChannelAgent(channelId: threadId, agentId: agent)
+            _ = accounts.oauth.createMessageRecord(channelId: threadId, content: "thread history", senderId: ownerId)
+            var threadHeaders = HTTPFields()
+            threadHeaders[.authorization] = "Bearer \(key)"
+            let threadResponse = try await client.send(.get, headers: threadHeaders, to: URI(string: "/internal/agent-api/history?channel=%23receipt-channel%3Aabcdef12"))
+            #expect(threadResponse.status == .ok)
+            let threadHistory = try JSONSerialization.jsonObject(with: Data((threadResponse.body.string ?? "").utf8)) as? [String: Any] ?? [:]
+            #expect(messageIds(threadHistory) == [accounts.oauth.historyMessages(channelId: threadId).first?.id ?? "missing"])
 
             let around = try await history("around=\(String(second.id.prefix(8)))&limit=3")
             #expect(messageIds(around) == [first.id, second.id, third.id])

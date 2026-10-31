@@ -9475,10 +9475,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         let channelId: String?
         if reference.hasPrefix("#") {
-            let name = String(reference.dropFirst())
-            channelId = postableChannels.first { _, channel in
+            let raw = String(reference.dropFirst())
+            let segments = raw.split(separator: ":", maxSplits: 1).map(String.init)
+            let name = segments.first ?? raw
+            let shortId = segments.count > 1 ? segments[1] : nil
+            let parent = postableChannels.first { _, channel in
                 channel.serverId == agent.serverId && channel.name == name && channel.deletedAt == nil
             }?.key
+            if let shortId, let parent {
+                channelId = postableChannels.first { _, channel in
+                    channel.serverId == agent.serverId
+                        && channel.kind == "thread"
+                        && channel.parentChannelId == parent
+                        && (channel.parentMessageId?.hasPrefix(shortId) ?? false)
+                        && channel.deletedAt == nil
+                }?.key
+            } else {
+                channelId = parent
+            }
         } else {
             channelId = postableChannels.keys.first { $0 == reference }
         }
@@ -9520,9 +9534,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         agentChannelReadCursors["\(channelId)\n\(agent.id)"] = (max(previous.seq, latestSeq), previous.version + (latestSeq > previous.seq ? 1 : 0))
         let readSeq = max(previous.seq, latestSeq)
         lock.unlock()
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let json = page.map { message -> String in
             let senderType = message.senderId == agent.id ? "agent" : "user"
-            return "{\"id\":\(jsonString(message.id)),\"content\":\(jsonString(message.content)),\"seq\":\(message.seq),\"senderType\":\(jsonString(senderType)),\"senderId\":\(jsonString(message.senderId))}"
+            let senderName: String
+            if senderType == "agent" {
+                senderName = oauth.agentRuntimeInfo(id: message.senderId)?.name ?? message.senderId
+            } else {
+                lock.lock()
+                senderName = accounts.values.first { $0.id == message.senderId }?.name ?? message.senderId
+                lock.unlock()
+            }
+            return "{\"id\":\(jsonString(message.id)),\"content\":\(jsonString(message.content)),\"seq\":\(message.seq),\"senderType\":\(jsonString(senderType)),\"senderId\":\(jsonString(message.senderId)),\"senderName\":\(jsonString(senderName)),\"createdAt\":\(jsonString(formatter.string(from: Date()))),\"attachments\":[]}"
         }.joined(separator: ",")
         return Self.json(200, "{\"messages\":[\("\(json)")],\"has_more\":\(hasMore),\"has_older\":\(hasOlder),\"has_newer\":\(hasNewer),\"last_read_seq\":\(readSeq)}")
     }
