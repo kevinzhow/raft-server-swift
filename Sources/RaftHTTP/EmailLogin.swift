@@ -4518,6 +4518,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// `GET /api/channels/inbox`. A DM outsider mention is not an inbox item.
+    public func addInboxFactForTesting(receiverId: String, serverId: String, channelId: String, messageId: String) {
+        lock.lock()
+        storedInboxFacts.append(StoredInboxFact(
+            messageId: messageId,
+            receiverType: "user",
+            receiverId: receiverId,
+            channelId: channelId,
+            serverId: serverId,
+            personalMention: false
+        ))
+        lock.unlock()
+    }
+
     public func channelInbox(authorization: String?, serverId: String?, filter: String?) -> HTTPReply {
         let userId: String
         switch authorize(authorization) {
@@ -4533,9 +4546,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 && (filter != "mentions" || fact.personalMention)
         }
         lock.unlock()
-        let items = rows.map { fact in
-            let channel = fact.channelId.map { jsonString($0) } ?? "null"
-            return "{\"channelId\":\(channel),\"lastMessageId\":\(jsonString(fact.messageId))}"
+        let items = rows.map { fact -> String in
+            let kind = fact.channelId.flatMap { postableChannels[$0]?.kind } == "thread" ? "thread" : "channel"
+            let channelJSON = fact.channelId.map { jsonString($0) } ?? "null"
+            if kind == "thread" {
+                return "{\"kind\":\"thread\",\"threadChannelId\":\(channelJSON),\"lastMessageId\":\(jsonString(fact.messageId))}"
+            }
+            return "{\"kind\":\"channel\",\"channelId\":\(channelJSON),\"lastMessageId\":\(jsonString(fact.messageId))}"
         }.joined(separator: ",")
         return Self.json(200, "{\"items\":[\(items)]}")
     }
