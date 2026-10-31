@@ -371,6 +371,22 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.headers[HTTPField.Name("X-Server-Id")!]
         ))
     }
+    app.post("api", "channels", ":channelId", "archive") { request -> Response in
+        routeResponse(services.emailAccounts.setChannelArchivedRoute(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? "",
+            archived: true
+        ))
+    }
+    app.post("api", "channels", ":channelId", "unarchive") { request -> Response in
+        routeResponse(services.emailAccounts.setChannelArchivedRoute(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? "",
+            archived: false
+        ))
+    }
     app.post("api", "channels", ":channelId", "join") { request -> Response in
         routeResponse(services.emailAccounts.joinChannel(
             authorization: request.headers[.authorization],

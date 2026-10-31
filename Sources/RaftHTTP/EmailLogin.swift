@@ -2972,6 +2972,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let channel, channel.serverId == serverId, channel.memberIds.contains(userId) else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
+        if channel.archived {
+            return Self.json(409, "{\"error\":\"This channel is archived\",\"code\":\"channel_archived\"}")
+        }
         let appIds = Self.appReferenceIds(content)
         if !appIds.isEmpty {
             if !referencesEnabled {
@@ -7109,6 +7112,46 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let task = taskRecords[index]
         lock.unlock()
         return Self.json(200, taskJSON(task))
+    }
+
+    public func setChannelArchivedRoute(authorization: String?, serverId: String, channelId: String, archived: Bool) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        let existing = oauth.channelArchivedAt(id: channelId)
+        if archived {
+            if existing == nil {
+                let now = Date()
+                oauth.setChannelArchived(id: channelId, archivedAt: now)
+            }
+            lock.lock()
+            postableChannels[channelId]?.archived = true
+            for (id, var postable) in postableChannels where postable.parentChannelId == channelId {
+                postable.archived = true
+                postableChannels[id] = postable
+            }
+            lock.unlock()
+        } else {
+            oauth.setChannelArchived(id: channelId, archivedAt: nil)
+            lock.lock()
+            postableChannels[channelId]?.archived = false
+            lock.unlock()
+        }
+        if let date = oauth.channelArchivedAt(id: channelId) {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return Self.json(200, "{\"archivedAt\":\(jsonString(formatter.string(from: date)))}")
+        }
+        return Self.json(200, "{\"archivedAt\":null}")
     }
 
     public func joinChannel(authorization: String?, serverId: String, channelId: String) -> HTTPReply {

@@ -764,6 +764,26 @@ public final class OAuthLedger: @unchecked Sendable {
         return channelHumans.contains("\(channelId)\n\(userId)")
     }
 
+    public func setChannelArchived(id: String, archivedAt: Date?) {
+        lock.lock()
+        if let index = channelRecords.firstIndex(where: { $0.id == id }) {
+            channelRecords[index].archived = archivedAt != nil
+            channelRecords[index].archivedAt = archivedAt
+            if let parent = channelRecords[index].parentChannelId,
+               let parentIndex = channelRecords.firstIndex(where: { $0.id == parent }),
+               archivedAt != nil {
+                channelRecords[parentIndex].archived = true
+            }
+        }
+        lock.unlock()
+    }
+
+    public func channelArchivedAt(id: String) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return channelRecords.first(where: { $0.id == id })?.archivedAt
+    }
+
     public func channelInfo(id: String) -> (serverId: String, name: String, description: String?)? {
         lock.lock()
         defer { lock.unlock() }
@@ -877,6 +897,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var parentChannelId: String?
         var parentMessageId: String?
         var archived = false
+        var archivedAt: Date?
     }
 
     private struct ChannelMessageRecord {
