@@ -219,6 +219,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var announcements: [(id: String, title: String, pages: [String], startsAt: Date, expiresAt: Date?)] = []
     private var announcementDismissals: Set<String> = []
     private var inboxDoneScopes: Set<String> = []
+    private var sidebarModes: [String: (channel: String, joint: String, dm: String, pinned: String, channelTabs: [String], agentTabs: [String])] = [:]
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -8559,6 +8560,48 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
+    public func patchSidebarOrder(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid sidebar order\"}")
+        }
+        let key = "\(serverId)\n\(userId)"
+        lock.lock()
+        var modes = sidebarModes[key] ?? ("manual", "manual", "manual", "manual", ["chat"], ["activity", "profile"])
+        lock.unlock()
+        func mode(_ field: String, _ current: String) -> String? {
+            guard let raw = object[field] else { return current }
+            guard let value = raw as? String, ["manual", "recent", "az"].contains(value) else { return nil }
+            return value
+        }
+        guard let channel = mode("channelSortMode", modes.channel),
+              let joint = mode("jointChannelSortMode", modes.joint),
+              let dm = mode("dmSortMode", modes.dm),
+              let pinned = mode("pinnedSortMode", modes.pinned)
+        else {
+            return Self.json(400, "{\"error\":\"Invalid sidebar sort mode\"}")
+        }
+        func tabs(_ field: String, _ current: [String], allowed: Set<String>) -> [String]? {
+            guard let raw = object[field] else { return current }
+            guard let values = raw as? [String] else { return nil }
+            return values.filter { allowed.contains($0) }
+        }
+        guard let channelTabs = tabs("channelPanelTabOrder", modes.channelTabs, allowed: ["files", "tasks", "chat"]),
+              let agentTabs = tabs("agentPanelTabOrder", modes.agentTabs, allowed: ["activity", "integrations", "profile"])
+        else {
+            return Self.json(400, "{\"error\":\"Invalid sidebar panel order\"}")
+        }
+        lock.lock()
+        sidebarModes[key] = (channel, joint, dm, pinned, channelTabs, agentTabs)
+        lock.unlock()
+        return sidebarOrder(authorization: authorization, serverId: serverId)
+    }
+
     public func sidebarOrder(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -8570,7 +8613,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         func array(_ values: [String]) -> String {
             values.map { jsonString($0) }.joined(separator: ",")
         }
-        return Self.json(200, "{\"channelOrder\":[\("\(array(order.channelOrder))")],\"agentOrder\":[\("\(array(order.agentOrder))")],\"dmOrder\":[\("\(array(order.dmOrder))")],\"pinnedOrder\":[\("\(array(order.pinnedOrder))")],\"hiddenDmIds\":[\("\(array(order.hiddenDmIds))")]}")
+        lock.lock()
+        let modes = sidebarModes["\(serverId)\n\(userId)"] ?? ("manual", "manual", "manual", "manual", ["chat"], ["activity", "profile"])
+        lock.unlock()
+        return Self.json(200, "{\"channelOrder\":[\("\(array(order.channelOrder))")],\"agentOrder\":[\("\(array(order.agentOrder))")],\"dmOrder\":[\("\(array(order.dmOrder))")],\"pinnedOrder\":[\("\(array(order.pinnedOrder))")],\"hiddenDmIds\":[\("\(array(order.hiddenDmIds))")],\"channelSortMode\":\(jsonString(modes.channel)),\"jointChannelSortMode\":\(jsonString(modes.joint)),\"dmSortMode\":\(jsonString(modes.dm)),\"pinnedSortMode\":\(jsonString(modes.pinned)),\"channelPanelTabOrder\":[\("\(array(modes.channelTabs))")],\"agentPanelTabOrder\":[\("\(array(modes.agentTabs))")]}")
     }
 
     public func addTaskSnapshot(
