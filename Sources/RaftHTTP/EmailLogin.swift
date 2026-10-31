@@ -214,6 +214,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var threadFollows: [String: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String)] = [:]
     private var threadFollowerRemovals: [String: (serverId: String, threadChannelId: String, agentId: String)] = [:]
     private var channelReadVersions: [String: Int] = [:]
+    private var agentChannelReadCursors: [String: (seq: Int, version: Int)] = [:]
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -9451,15 +9452,35 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true,\"maxReadSeq\":\(seq),\"readStateVersion\":\(version)}")
     }
 
-    public func markChannelReadAll(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
+    public func markChannelReadAll(authorization: String?, serverId: String, channelId: String, body: String = "{}") -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        if let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+           let receiver = object["receiver"] as? [String: Any],
+           let kind = receiver["kind"] as? String,
+           let receiverId = receiver["id"] as? String {
+            guard kind == "agent", let agent = oauth.agentRuntimeInfo(id: receiverId), agent.serverId == serverId else {
+                return Self.json(403, "{\"error\":\"Forbidden\"}")
+            }
+            let canDelegate = role == "owner" || role == "admin" || agent.creatorUserId == userId
+            guard canDelegate, oauth.channelAgentIds(channelId: channelId).contains(agent.id) else {
+                return Self.json(403, "{\"error\":\"Forbidden\"}")
+            }
+            let latestSeq = oauth.channelUnreadInfo(channelId: channelId, userId: userId).latestSeq ?? 0
+            lock.lock()
+            let key = "\(channelId)\n\(receiverId)"
+            let previous = agentChannelReadCursors[key] ?? (seq: 0, version: 0)
+            let version = latestSeq > previous.seq ? previous.version + 1 : previous.version
+            agentChannelReadCursors[key] = (seq: max(previous.seq, latestSeq), version: version)
+            lock.unlock()
+            return Self.json(200, "{\"ok\":true,\"seq\":\(max(previous.seq, latestSeq)),\"readStateVersion\":\(max(version, 1))}")
         }
         let latest = oauth.channelUnreadInfo(channelId: channelId, userId: userId).latestSeq ?? 0
         let key = "\(channelId)\n\(userId)"
@@ -9469,6 +9490,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
         oauth.setChannelReadCursor(channelId: channelId, userId: userId, seq: latest)
         return Self.json(200, "{\"ok\":true,\"seq\":\(latest),\"readStateVersion\":\(version)}")
+    }
+
+    public func agentReadCursor(agentId: String, channelId: String) -> (seq: Int, version: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        return agentChannelReadCursors["\(channelId)\n\(agentId)"] ?? (0, 0)
     }
 
     public func markChannelUnread(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
