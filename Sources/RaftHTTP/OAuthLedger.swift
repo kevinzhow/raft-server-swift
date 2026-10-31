@@ -920,11 +920,11 @@ public final class OAuthLedger: @unchecked Sendable {
             + channelSystemMessages.filter { $0.channelId == channelId }.count
     }
 
-    public func channelsForServer(serverId: String, userId: String) -> [ChannelListInfo] {
+    public func channelsForServer(serverId: String, userId: String, includeArchived: Bool = false) -> [ChannelListInfo] {
         lock.lock()
         defer { lock.unlock() }
         return channelRecords
-            .filter { $0.serverId == serverId && !$0.archived }
+            .filter { $0.serverId == serverId && (includeArchived || !$0.archived) }
             .map { channel in
                 let last = channelMessages
                     .filter { $0.channelId == channel.id }

@@ -1021,7 +1021,8 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("api", "channels") { request -> Response in
         routeResponse(services.emailAccounts.listChannels(
             authorization: request.headers[.authorization],
-            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            archived: desktopQuery(request.url.query, "archived")
         ))
     }
     app.get("api", "tasks", "server", "snapshot-metrics") { request -> Response in

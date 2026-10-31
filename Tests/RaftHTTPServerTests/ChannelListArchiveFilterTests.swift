@@ -40,6 +40,14 @@ import VaporTesting
             let ids = rows.compactMap { $0["id"] as? String }
             #expect(ids.contains(live))
             #expect(!ids.contains(archived))
+            #expect(rows.first { $0["id"] as? String == live }?["archivedAt"] == nil || rows.first { $0["id"] as? String == live }?["archivedAt"] is NSNull)
+
+            let include = try await client.send(.get, headers: headers, to: URI(string: "/api/channels?archived=include"))
+            #expect(include.status == .ok)
+            let includeRows = try JSONSerialization.jsonObject(with: Data((include.body.string ?? "").utf8)) as? [[String: Any]] ?? []
+            let archivedRow = includeRows.first { $0["id"] as? String == archived }
+            #expect(archivedRow != nil)
+            #expect(archivedRow?["archivedAt"] is String)
         }
     }
 }

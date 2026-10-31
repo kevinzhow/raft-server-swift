@@ -10421,7 +10421,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name)),\"joined\":true,\"activityMuteSupported\":true,\"activityMuted\":false,\"muteFromSeq\":null,\"prefsVersion\":0,\"maxReadSeq\":0,\"readStateVersion\":0}")
     }
 
-    public func listChannels(authorization: String?, serverId: String) -> HTTPReply {
+    public func listChannels(authorization: String?, serverId: String, archived: String? = nil) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
@@ -10430,12 +10430,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let rows = oauth.channelsForServer(serverId: serverId, userId: userId)
-            .filter { oauth.channelArchivedAt(id: $0.id) == nil }
+        let rows = oauth.channelsForServer(serverId: serverId, userId: userId, includeArchived: archived == "include")
+            .filter { archived == "include" || oauth.channelArchivedAt(id: $0.id) == nil }
             .map { channel -> String in
             let last = channel.lastMessageAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
             let muteSeq = channel.muteFromSeq.map(String.init) ?? "null"
-            return "{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(channel.type)),\"joined\":\(channel.joined),\"lastMessageAt\":\(last),\"activityMuted\":\(channel.activityMuted),\"muteFromSeq\":\(muteSeq),\"prefsVersion\":\(channel.prefsVersion),\"activityMuteSupported\":\(channel.type == "channel")}"
+            let archivedAt = oauth.channelArchivedAt(id: channel.id).map { jsonString(formatter.string(from: $0)) } ?? "null"
+            return "{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(channel.type)),\"joined\":\(channel.joined),\"archivedAt\":\(archivedAt),\"lastMessageAt\":\(last),\"activityMuted\":\(channel.activityMuted),\"muteFromSeq\":\(muteSeq),\"prefsVersion\":\(channel.prefsVersion),\"activityMuteSupported\":\(channel.type == "channel")}"
         }.joined(separator: ",")
         return Self.json(200, "[\(rows)]")
     }
