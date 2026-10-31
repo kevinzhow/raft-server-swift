@@ -218,6 +218,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var agentActivities: [String: (activity: String, detail: String)] = [:]
     private var announcements: [(id: String, title: String, pages: [String], startsAt: Date, expiresAt: Date?)] = []
     private var announcementDismissals: Set<String> = []
+    private var inboxDoneScopes: Set<String> = []
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -4097,7 +4098,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         lock.lock()
-        let follows = threadFollows.values.filter { $0.serverId == serverId && $0.userId == userId }
+        let follows = threadFollows.values.filter {
+            $0.serverId == serverId
+                && $0.userId == userId
+                && !inboxDoneScopes.contains("\(userId)\n\($0.threadChannelId)")
+        }
         var rows: [String] = []
         for follow in follows {
             guard let thread = postableChannels[follow.threadChannelId], thread.deletedAt == nil else { continue }
@@ -4518,6 +4523,70 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// `GET /api/channels/inbox`. A DM outsider mention is not an inbox item.
+    public func channelInboxDone(authorization: String?, serverId: String?, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let channelId = object["channelId"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"Invalid inbox done request\"}")
+        }
+        lock.lock()
+        let isThread = postableChannels[channelId]?.kind == "thread"
+        if isThread {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Inbox scope not found\"}")
+        }
+        inboxDoneScopes.insert("\(userId)\n\(channelId)")
+        lock.unlock()
+        _ = serverId
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    public func threadInboxDone(authorization: String?, serverId: String?, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let threadId = object["threadChannelId"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"Invalid inbox done request\"}")
+        }
+        lock.lock()
+        guard postableChannels[threadId]?.kind == "thread" else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Inbox scope not found\"}")
+        }
+        inboxDoneScopes.insert("\(userId)\n\(threadId)")
+        lock.unlock()
+        _ = serverId
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    public func inboxReadAll(authorization: String?, serverId: String?) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let serverId, oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        lock.lock()
+        var scopeIds = Set(storedInboxFacts.filter { $0.receiverId == userId && $0.serverId == serverId }.compactMap(\.channelId))
+        scopeIds.formUnion(threadFollows.values.filter { $0.serverId == serverId && $0.userId == userId }.map(\.threadChannelId))
+        var scopeRows: [String] = []
+        for scopeId in scopeIds.sorted() {
+            inboxDoneScopes.insert("\(userId)\n\(scopeId)")
+            let latest = oauth.channelUnreadInfo(channelId: scopeId, userId: userId).latestSeq ?? 0
+            oauth.setChannelReadCursor(channelId: scopeId, userId: userId, seq: latest)
+            let key = "\(scopeId)\n\(userId)"
+            channelReadVersions[key] = (channelReadVersions[key] ?? 0) + 1
+            scopeRows.append("{\"scopeId\":\(jsonString(scopeId)),\"maxReadSeq\":\(latest),\"readStateVersion\":\(channelReadVersions[key] ?? 1)}")
+        }
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true,\"markedCount\":\(scopeIds.count),\"scopes\":[\(scopeRows.joined(separator: ","))]}")
+    }
+
     public func addInboxFactForTesting(receiverId: String, serverId: String, channelId: String, messageId: String) {
         lock.lock()
         storedInboxFacts.append(StoredInboxFact(
@@ -4544,6 +4613,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             fact.receiverId == userId
                 && (serverId == nil || fact.serverId == serverId)
                 && (filter != "mentions" || fact.personalMention)
+                && !(fact.channelId.map { inboxDoneScopes.contains("\(userId)\n\($0)") } ?? false)
         }
         lock.unlock()
         let items = rows.map { fact -> String in

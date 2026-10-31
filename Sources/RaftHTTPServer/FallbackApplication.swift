@@ -414,6 +414,26 @@ public func configure(_ app: Application, services: FallbackServices) {
             announcementId: request.parameters.get("announcementId") ?? ""
         ))
     }
+    app.post("api", "channels", "inbox", "done") { request -> Response in
+        routeResponse(services.emailAccounts.channelInboxDone(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.post("api", "channels", "inbox", "read-all") { request -> Response in
+        routeResponse(services.emailAccounts.inboxReadAll(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+        ))
+    }
+    app.post("api", "channels", "threads", "done") { request -> Response in
+        routeResponse(services.emailAccounts.threadInboxDone(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+            body: request.body.string ?? "{}"
+        ))
+    }
     app.get("api", "channels", "inbox") { request -> Response in
         routeResponse(services.emailAccounts.channelInbox(
             authorization: request.headers[.authorization],
