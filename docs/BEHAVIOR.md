@@ -46,3 +46,6 @@ agent 向 thread 发送（`#parent:short`）要求 agent 是该 parent channel �
 
 
 `GET /api/agents/:id/channels` 返回 viewer 可见的 agent channel memberships（public/private/joint），含 description/type/createdAt/archivedAt/activityMuted/muteFromSeq；隐藏 private/joint、thread、DM、虚拟 #all 不出现。
+
+
+`GET/PUT /api/agents/:id/scopes` 只对同 Server 成员开放；跨 Server 404。managed agent 的 PUT 是 422，external agent 接受 mode/default 并回 scope 集。

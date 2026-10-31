@@ -7336,6 +7336,27 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
+    public func agentScopesRoute(authorization: String?, serverId: String, agentId: String, method: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted,
+              info.serverId == serverId,
+              oauth.memberRole(serverId: serverId, userId: userId) != nil
+        else {
+            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        let grants = ["attachment:upload", "message:send", "message:read", "channel:join", "channel:leave", "thread:unfollow", "channel:read", "channel:create", "channel:update", "channel:add_member", "channel:remove_member", "server:read", "server:update", "knowledge:read", "task:read", "task:write", "action:prepare"]
+        if method == "PUT" {
+            guard info.runtime == "external" else {
+                return Self.json(422, "{\"code\":\"agent_scopes_unsupported\",\"error\":\"Agent scopes are managed for external agents only\"}")
+            }
+            let mode = ((try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any])?["mode"] as? String ?? "default"
+            return Self.json(200, "{\"agentId\":\(jsonString(agentId)),\"mode\":\(jsonString(mode)),\"scopes\":[\("\(grants.map { jsonString($0) }.joined(separator: ","))")],\"revision\":1}")
+        }
+        return Self.json(200, "{\"agentId\":\(jsonString(agentId)),\"mode\":\"default\",\"scopes\":[\("\(grants.map { jsonString($0) }.joined(separator: ","))")],\"revision\":0}")
+    }
+
     public func agentChannels(authorization: String?, agentId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
