@@ -3981,6 +3981,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// `GET /api/messages/sync`. `since_seq=0` returns the channel page, including a joint canonical store.
+    public func softDeletePostableChannelForTesting(channelId: String) {
+        lock.lock()
+        postableChannels[channelId]?.deletedAt = Date()
+        lock.unlock()
+    }
+
     public func followThreadForTesting(serverId: String, userId: String, threadChannelId: String, parentMessageId: String) {
         lock.lock()
         threadFollows["\(serverId)\n\(userId)\n\(threadChannelId)"] = (serverId, userId, threadChannelId, parentMessageId)
@@ -9715,7 +9721,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
-        let channels = oauth.channelsForServer(serverId: serverId, userId: userId).filter { $0.joined }
+        let channels = oauth.channelsForServer(serverId: serverId, userId: userId).filter { channel in
+            guard channel.joined else { return false }
+            if let thread = postableChannels[channel.id], thread.kind == "thread" {
+                guard let parentId = thread.parentChannelId,
+                      let parent = postableChannels[parentId],
+                      parent.deletedAt == nil
+                else { return false }
+            }
+            return true
+        }
         if !summary {
             let pairs = channels.compactMap { channel -> String? in
                 let info = oauth.channelUnreadInfo(channelId: channel.id, userId: userId)
