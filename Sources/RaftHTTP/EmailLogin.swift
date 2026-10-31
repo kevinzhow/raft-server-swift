@@ -9265,8 +9265,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let channels = oauth.channelsForServer(serverId: serverId, userId: userId).filter { $0.joined }
         if !summary {
-            let pairs = channels.map { channel -> String in
+            let pairs = channels.compactMap { channel -> String? in
                 let info = oauth.channelUnreadInfo(channelId: channel.id, userId: userId)
+                guard info.unreadCount > 0 else { return nil }
                 return "\(jsonString(channel.id)):\(info.unreadCount)"
             }.joined(separator: ",")
             return Self.privateJSON("{\(pairs)}")
