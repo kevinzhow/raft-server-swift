@@ -326,6 +326,12 @@ public final class OAuthLedger: @unchecked Sendable {
         public var publicGuestJoinEnabled: Bool
     }
 
+    public func serverIdForSlug(_ slug: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return servers.values.first { $0.slug == slug && !$0.deleted }?.id
+    }
+
     public func serverProfile(id: String) -> ServerProfile? {
         lock.lock()
         defer { lock.unlock() }

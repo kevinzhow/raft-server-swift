@@ -579,6 +579,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             authorization: request.headers[.authorization]
         ))
     }
+    app.post("api", "servers") { request -> Response in
+        routeResponse(services.emailAccounts.createServer(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("api", "servers") { request -> Response in
         if let ordered = services.emailAccounts.orderedServerList(authorization: request.headers[.authorization]) {
             return routeResponse(ordered)
@@ -1050,6 +1056,19 @@ public func configure(_ app: Application, services: FallbackServices) {
         routeResponse(services.emailAccounts.sidebarOrder(
             authorization: request.headers[.authorization],
             serverId: request.parameters.get("id") ?? ""
+        ))
+    }
+    app.get("api", "servers", ":id", "product-analytics-settings") { request -> Response in
+        routeResponse(services.emailAccounts.serverProductAnalyticsSettings(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
+    app.patch("api", "servers", ":id", "product-analytics-settings") { request -> Response in
+        routeResponse(services.emailAccounts.patchServerProductAnalyticsSettings(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
         ))
     }
     app.get("api", "servers", ":id", "settings") { request -> Response in

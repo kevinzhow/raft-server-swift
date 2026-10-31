@@ -9023,6 +9023,66 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "[\(rows)]")
     }
 
+    public func createServer(authorization: String?, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let rawName = object["name"] as? String,
+              let rawSlug = object["slug"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"Invalid server request\"}")
+        }
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let slug = rawSlug.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !slug.isEmpty else {
+            return Self.json(400, "{\"error\":\"Invalid server request\"}")
+        }
+        if let existing = oauth.serverIdForSlug(slug) {
+            if let profile = oauth.serverProfile(id: existing), let role = oauth.memberRole(serverId: existing, userId: userId) {
+                return Self.json(200, "{\"id\":\(jsonString(profile.id)),\"name\":\(jsonString(profile.name)),\"slug\":\(jsonString(profile.slug)),\"role\":\(jsonString(role))}")
+            }
+            return Self.json(409, "{\"error\":\"Slug is already taken\"}")
+        }
+        guard slug.count >= 5 else {
+            return Self.json(400, "{\"error\":\"Slug must be at least 5 characters\"}")
+        }
+        let serverId = UUID().uuidString.lowercased()
+        oauth.addOwnedServer(id: serverId, slug: slug, name: name, ownerId: userId)
+        return Self.json(200, "{\"id\":\(jsonString(serverId)),\"name\":\(jsonString(name)),\"slug\":\(jsonString(slug)),\"role\":\"owner\"}")
+    }
+
+    public func serverProductAnalyticsSettings(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let enabled = oauth.serverAnalyticsAllowed(id: serverId) ?? true
+        let canManage = role == "owner" || role == "admin"
+        return Self.json(200, "{\"productAnalyticsEnabled\":\(enabled),\"canManageProductAnalytics\":\(canManage)}")
+    }
+
+    public func patchServerProductAnalyticsSettings(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let enabled = object["productAnalyticsEnabled"] as? Bool
+        else {
+            return Self.json(400, "{\"error\":\"productAnalyticsEnabled must be a boolean\"}")
+        }
+        oauth.setServerProductAnalytics(id: serverId, enabled: enabled)
+        return Self.json(200, "{\"productAnalyticsEnabled\":\(enabled),\"canManageProductAnalytics\":true}")
+    }
+
     public func serverDetails(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
