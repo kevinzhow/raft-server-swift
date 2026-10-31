@@ -1040,6 +1040,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.patch("api", "servers", ":id") { request -> Response in
+        routeResponse(services.emailAccounts.patchServerProfile(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("api", "servers", ":id") { request -> Response in
         routeResponse(services.emailAccounts.serverDetails(
             authorization: request.headers[.authorization],

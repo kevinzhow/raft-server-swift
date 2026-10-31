@@ -6987,6 +6987,50 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"apps\":[\("\(rows)")]}")
     }
 
+    public func patchServerProfile(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let profile = oauth.serverProfile(id: serverId)
+        else {
+            return Self.json(400, "{\"error\":\"Invalid server update\"}")
+        }
+        var name = profile.name
+        if let rawName = object["name"] {
+            guard let text = rawName as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return Self.json(400, "{\"error\":\"Server name is required\"}")
+            }
+            name = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        var hidden: Bool?
+        if let rawHidden = object["hideHumansFromMembers"] {
+            guard let value = rawHidden as? Bool else {
+                return Self.json(400, "{\"error\":\"hideHumansFromMembers must be a boolean\"}")
+            }
+            hidden = value
+        }
+        oauth.updateServer(id: serverId, name: name, avatarUrl: profile.avatarUrl)
+        if let hidden {
+            lock.lock()
+            hideHumansFromMembers[serverId] = hidden
+            lock.unlock()
+        }
+        let hiddenValue: Bool = {
+            lock.lock()
+            defer { lock.unlock() }
+            return hideHumansFromMembers[serverId] == true
+        }()
+        let avatar = profile.avatarUrl.map { jsonString($0) } ?? "null"
+        return Self.json(200, "{\"id\":\(jsonString(serverId)),\"name\":\(jsonString(name)),\"slug\":\(jsonString(profile.slug)),\"avatarUrl\":\(avatar),\"hideHumansFromMembers\":\(hiddenValue)}")
+    }
+
     public func memberProfile(authorization: String?, serverId: String, memberId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)
