@@ -4236,7 +4236,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     @discardableResult
-    public func addHumanMessageForTesting(channelId: String, senderId: String, content: String, messageType: String = "chat") -> String {
+    public func addHumanMessageForTesting(channelId: String, senderId: String, content: String, messageType: String = "chat", senderType: String = "user") -> String {
         let id = UUID().uuidString.lowercased()
         lock.lock()
         humanMessageRows.append(StoredHumanMessage(
@@ -4245,7 +4245,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             senderId: senderId,
             content: content,
             randomId: nil,
-            messageType: messageType
+            messageType: messageType,
+            senderType: senderType
         ))
         lock.unlock()
         return id
@@ -10304,7 +10305,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             messageId = id
         }
         lock.unlock()
-        threadFollows["\(serverId)\n\(userId)\n\(threadId)"] = (serverId, userId, threadId, parentMessageId)
+        if messageId != nil {
+            threadFollows["\(serverId)\n\(userId)\n\(threadId)"] = (serverId, userId, threadId, parentMessageId)
+        }
         let messageJSON = messageId.map { jsonString($0) } ?? "null"
         return Self.json(200, "{\"threadChannelId\":\(jsonString(threadId)),\"messageId\":\(messageJSON),\"replyCount\":0,\"lastReplyAt\":null,\"participantIds\":[]}")
     }

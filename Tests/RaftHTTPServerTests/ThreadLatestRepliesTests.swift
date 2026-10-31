@@ -62,6 +62,18 @@ import VaporTesting
             #expect(latest.map { $0["preview"] as? String } == ["human reply one", "human reply two", "human reply three"])
             #expect(!latest.contains { $0["senderType"] as? String == "system" })
             #expect(latest.first?["senderName"] as? String == "latest-replies-owner")
+
+            let agent = accounts.oauth.createAgent(serverId: serverId, name: "MingQi")
+            accounts.oauth.updateAgentDisplayName(id: agent, displayName: "明启")
+            _ = accounts.addHumanMessageForTesting(channelId: threadId, senderId: agent, content: "agent reply", senderType: "agent")
+            let refreshed = try await client.send(.get, headers: headers, to: "/api/channels/\(channel)/threads")
+            let refreshedBody = try JSONSerialization.jsonObject(with: Data((refreshed.body.string ?? "").utf8)) as? [String: Any] ?? [:]
+            let refreshedSummary = refreshedBody[parentId] as? [String: Any]
+            let refreshedLatest = refreshedSummary?["latestReplies"] as? [[String: Any]] ?? []
+            let agentReply = refreshedLatest.last
+            #expect(agentReply?["senderName"] as? String == "MingQi")
+            #expect(agentReply?["senderDisplayName"] as? String == "明启")
+            #expect(agentReply?["senderType"] as? String == "agent")
         }
     }
 }

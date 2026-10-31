@@ -63,6 +63,7 @@ import VaporTesting
             #expect(created["replyCount"] as? Int == 0)
             #expect(created["lastReplyAt"] == nil || created["lastReplyAt"] is NSNull)
             #expect((created["participantIds"] as? [String] ?? []).isEmpty)
+            #expect(accounts.threadFollowerIdsForTesting(threadChannelId: threadId).isEmpty)
 
             let repeatCreate = try await client.send(.post, headers: headers(ownerToken), to: "/api/channels/\(channel)/threads") { request in
                 request.body = .init(string: "{\"parentMessageId\":\"\(parentId)\"}")

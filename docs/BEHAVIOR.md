@@ -28,3 +28,6 @@ thread 发消息要求 parent channel 成员身份（follow 不授予写权限�
 
 
 `GET /api/channels/:id/threads?parentMessageIds=a,b` 只返回指定 parent 的 thread summary；缺省时仍按最新 100 截断。
+
+
+POST /api/channels/:id/threads 不写 content 时不创建 reply，也不自动 follow 创建者；只有带回复的 thread 才因发送产生 follow。
