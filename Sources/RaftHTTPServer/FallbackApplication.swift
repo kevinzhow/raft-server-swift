@@ -574,10 +574,22 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.get("api", "servers") { request -> Response in
+        if let ordered = services.emailAccounts.orderedServerList(authorization: request.headers[.authorization]) {
+            return routeResponse(ordered)
+        }
         guard let directory = services.publicVisits else {
             return routeResponse(PublicVisits.authRequired(authorization: request.headers[.authorization]))
         }
         return routeResponse(directory.serverList(authorization: request.headers[.authorization]))
+    }
+    app.get("api", "servers", "order") { request -> Response in
+        routeResponse(services.emailAccounts.serverOrder(authorization: request.headers[.authorization]))
+    }
+    app.patch("api", "servers", "order") { request -> Response in
+        routeResponse(services.emailAccounts.patchServerOrder(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? ""
+        ))
     }
     app.get("api", "agents") { request -> Response in
         routeResponse(services.emailAccounts.listServerAgents(

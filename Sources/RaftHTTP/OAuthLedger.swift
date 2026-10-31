@@ -989,6 +989,13 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func serverDetailsValue(id: String) -> (slug: String, name: String)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let server = servers[id], !server.deleted else { return nil }
+        return (server.slug, server.name)
+    }
+
     public func setServerProductAnalytics(id: String, enabled: Bool) {
         lock.lock()
         servers[id]?.productAnalyticsEnabled = enabled

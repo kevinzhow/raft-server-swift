@@ -200,6 +200,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var timezoneObservations: [String: TimezoneObservation] = [:]
     private var serverLabsState: [String: ServerLabsState] = [:]
     private var serverInvites: [(id: String, serverId: String, email: String)] = []
+    private var serverSwitcherOrders: [String: (ids: [String], version: Int)] = [:]
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -6878,6 +6879,73 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     private static func agreementJSON(_ agreement: OAuthLedger.ServerAgreementInfo) -> String {
         "{\"id\":\(jsonString(agreement.id)),\"version\":\(agreement.version),\"title\":\(jsonString(agreement.title)),\"bodyMarkdown\":\(jsonString(agreement.bodyMarkdown)),\"enabled\":\(agreement.enabled)}"
+    }
+
+    private func sanitizedServerOrder(userId: String, requested: [String]?) -> [String] {
+        let memberIds = Set(oauth.serverIdsForMember(userId: userId))
+        let stored = serverSwitcherOrders[userId]?.ids ?? []
+        let base = requested ?? stored
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for id in base where memberIds.contains(id) && !seen.contains(id) {
+            seen.insert(id)
+            ordered.append(id)
+        }
+        for id in memberIds.sorted() where !seen.contains(id) {
+            seen.insert(id)
+            ordered.append(id)
+        }
+        return ordered
+    }
+
+    public func serverOrder(authorization: String?) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        lock.lock()
+        let ordered = sanitizedServerOrder(userId: userId, requested: nil)
+        let version = serverSwitcherOrders[userId]?.version ?? 0
+        lock.unlock()
+        let ids = ordered.map { jsonString($0) }.joined(separator: ",")
+        return Self.json(200, "{\"serverOrder\":[\("\(ids)")],\"serverOrderVersion\":\(version)}")
+    }
+
+    public func patchServerOrder(authorization: String?, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let requested = object["serverOrder"] as? [String]
+        else {
+            return Self.json(400, "{\"error\":\"Invalid server order\"}")
+        }
+        lock.lock()
+        let current = serverSwitcherOrders[userId]?.ids ?? sanitizedServerOrder(userId: userId, requested: nil)
+        let ordered = sanitizedServerOrder(userId: userId, requested: requested)
+        var version = serverSwitcherOrders[userId]?.version ?? 0
+        if ordered != current {
+            version += 1
+        }
+        serverSwitcherOrders[userId] = (ordered, version)
+        lock.unlock()
+        let ids = ordered.map { jsonString($0) }.joined(separator: ",")
+        return Self.json(200, "{\"serverOrder\":[\("\(ids)")],\"serverOrderVersion\":\(version)}")
+    }
+
+    public func orderedServerList(authorization: String?) -> HTTPReply? {
+        guard let userId = sessionUserId(authorization: authorization) else { return nil }
+        let memberIds = oauth.serverIdsForMember(userId: userId)
+        guard !memberIds.isEmpty else { return nil }
+        let ordered = sanitizedServerOrder(userId: userId, requested: nil)
+        lock.lock()
+        let version = serverSwitcherOrders[userId]?.version ?? 0
+        lock.unlock()
+        let rows = ordered.compactMap { serverId -> String? in
+            guard let details = oauth.serverDetailsValue(id: serverId) else { return nil }
+            let role = oauth.memberRole(serverId: serverId, userId: userId) ?? "member"
+            return "{\"id\":\(jsonString(serverId)),\"slug\":\(jsonString(details.slug)),\"role\":\(jsonString(role)),\"serverOrderVersion\":\(version),\"publicPageLive\":false}"
+        }.joined(separator: ",")
+        return Self.json(200, "[\(rows)]")
     }
 
     public func enableComposerResourceReferences(serverId: String, enabled: Bool = true) {
