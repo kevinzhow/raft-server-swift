@@ -7171,6 +7171,46 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
+    public func addChannelMember(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        guard role == "owner" || role == "admin" || oauth.isChannelParticipant(channelId: channelId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let agentId = object["agentId"] as? String,
+              let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted
+        else {
+            return Self.json(400, "{\"error\":\"Invalid agent\"}")
+        }
+        oauth.addChannelAgent(channelId: channelId, agentId: agentId)
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    public func removeChannelMember(authorization: String?, serverId: String, channelId: String, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        guard role == "owner" || role == "admin" || oauth.isChannelParticipant(channelId: channelId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        oauth.removeChannelAgent(channelId: channelId, agentId: agentId)
+        return Self.json(200, "{\"ok\":true}")
+    }
+
     public func channelMembers(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

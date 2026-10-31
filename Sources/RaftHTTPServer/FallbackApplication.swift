@@ -743,6 +743,22 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("api", "channels", ":channelId", "members") { request -> Response in
+        routeResponse(services.emailAccounts.addChannelMember(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.delete("api", "channels", ":channelId", "members", "agent", ":agentId") { request -> Response in
+        routeResponse(services.emailAccounts.removeChannelMember(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? "",
+            agentId: request.parameters.get("agentId") ?? ""
+        ))
+    }
     app.get("api", "channels", ":channelId", "members") { request -> Response in
         routeResponse(services.emailAccounts.channelMembers(
             authorization: request.headers[.authorization],

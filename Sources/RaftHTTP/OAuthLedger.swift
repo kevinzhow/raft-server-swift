@@ -400,6 +400,12 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func removeChannelAgent(channelId: String, agentId: String) {
+        lock.lock()
+        channelAgents.remove("\(channelId)\n\(agentId)")
+        lock.unlock()
+    }
+
     public func channelAgentIds(channelId: String) -> [String] {
         lock.lock()
         defer { lock.unlock() }
