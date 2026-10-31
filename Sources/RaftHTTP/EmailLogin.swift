@@ -6699,6 +6699,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"apiKey\":\(jsonString(key))}")
     }
 
+    public func machineCount(serverId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return machines.filter { $0.serverId == serverId }.count
+    }
+
     public func deleteServerMachine(authorization: String?, serverId: String, machineId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
