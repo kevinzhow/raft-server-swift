@@ -7357,6 +7357,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"agentId\":\(jsonString(agentId)),\"mode\":\"default\",\"scopes\":[\("\(grants.map { jsonString($0) }.joined(separator: ","))")],\"revision\":0}")
     }
 
+    public func agentWorkspaceFiles(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        let info = oauth.agentManagementInfo(id: agentId)
+        let ownerServerId = info?.serverId ?? agentArchiveRecords[agentId]?.serverId
+        guard ownerServerId == serverId else {
+            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        guard role == "owner" || role == "admin" || info?.creatorUserId == userId else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        return Self.json(503, "{\"code\":\"daemon_offline\",\"error\":\"Agent has no connected machine\"}")
+    }
+
     public func agentArchiveWorkspaceAction(authorization: String?, serverId: String, agentId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
