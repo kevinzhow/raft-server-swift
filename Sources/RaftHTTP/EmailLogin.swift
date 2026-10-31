@@ -208,6 +208,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var guestRoleServers: Set<String> = []
     private var computers: [(id: String, serverId: String, name: String, apiKey: String, machineId: String?, revokedAt: Date?, online: Bool, version: String?)] = []
     private var machineRuntimeModels: [String: [String: (models: [(id: String, label: String)], updatedAt: Date)]] = [:]
+    private var proSeats: [String: Int] = [:]
+    private var joinLinks: [String: (serverId: String, role: String)] = [:]
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -7562,6 +7564,70 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"avatarUrl\":\(jsonString(avatarUrl))}")
     }
 
+    public func setServerSeats(serverId: String, seats: Int) {
+        lock.lock()
+        proSeats[serverId] = seats
+        lock.unlock()
+    }
+
+    private func seatLimitMessageLocked(serverId: String) -> String? {
+        guard let seats = proSeats[serverId] else { return nil }
+        let used = oauth.memberIds(serverId: serverId).count
+        guard used >= seats else { return nil }
+        return "Seat limit reached (\(used)/\(seats) on Pro plan)"
+    }
+
+    public func createJoinLink(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        let token = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        lock.lock()
+        joinLinks[token] = (serverId, "member")
+        lock.unlock()
+        return Self.json(200, "{\"token\":\(jsonString(token)),\"maxUses\":null,\"expiresAt\":null}")
+    }
+
+    public func inviteInfo(token: String?) -> HTTPReply {
+        guard let token, let link = joinLinks[token.lowercased()] else {
+            return Self.json(404, "{\"error\":\"Invite not found\"}")
+        }
+        guard let profile = oauth.serverProfile(id: link.serverId) else {
+            return Self.json(404, "{\"error\":\"Invite not found\"}")
+        }
+        lock.lock()
+        let message = seatLimitMessageLocked(serverId: link.serverId)
+        lock.unlock()
+        let messageJSON = message.map { jsonString($0) } ?? "null"
+        return Self.json(200, "{\"serverId\":\(jsonString(profile.id)),\"serverName\":\(jsonString(profile.name)),\"serverSlug\":\(jsonString(profile.slug)),\"humanSeatLimitReached\":\(message != nil),\"humanSeatLimitMessage\":\(messageJSON)}")
+    }
+
+    public func acceptInvite(authorization: String?, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let rawToken = object["token"] as? String,
+              let link = joinLinks[rawToken.lowercased()]
+        else {
+            return Self.json(400, "{\"error\":\"Invalid invite\"}")
+        }
+        lock.lock()
+        let message = seatLimitMessageLocked(serverId: link.serverId)
+        lock.unlock()
+        if let message {
+            return Self.json(400, "{\"error\":\(jsonString(message))}")
+        }
+        oauth.addMember(serverId: link.serverId, userId: userId, role: link.role)
+        return Self.json(200, "{\"ok\":true,\"serverId\":\(jsonString(link.serverId))}")
+    }
+
     public func listServerInvites(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)
@@ -7609,6 +7675,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             guard enabled else {
                 return Self.json(400, "{\"error\":\"Guest access is not enabled for this server\"}")
+            }
+        }
+        if inviteRole == "member" {
+            lock.lock()
+            let message = seatLimitMessageLocked(serverId: serverId)
+            lock.unlock()
+            if let message {
+                return Self.json(400, "{\"error\":\(jsonString(message))}")
             }
         }
         let id = UUID().uuidString.lowercased()

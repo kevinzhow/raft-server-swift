@@ -1005,6 +1005,16 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.parameters.get("id") ?? ""
         ))
     }
+    app.post("api", "servers", ":id", "join-links") { request -> Response in
+        routeResponse(services.emailAccounts.createJoinLink(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.get("api", "auth", "invite-info") { request -> Response in
+        routeResponse(services.emailAccounts.inviteInfo(token: desktopQuery(request.url.query, "token")))
+    }
     app.get("api", "servers", ":id", "invites") { request -> Response in
         routeResponse(services.emailAccounts.listServerInvites(
             authorization: request.headers[.authorization],
@@ -1703,10 +1713,16 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.post("api", "auth", "accept-invite") { request -> Response in
-        guard let directory = services.publicServerDirectory else {
-            return routeResponse(HTTPReply(status: 404, headers: [:], body: "{\"error\":\"Not found\"}"))
+        if let directory = services.publicServerDirectory {
+            let reply = directory.acceptInvite(
+                authorization: request.headers[.authorization],
+                body: request.body.string ?? ""
+            )
+            if reply.status != 404 {
+                return routeResponse(reply)
+            }
         }
-        return routeResponse(directory.acceptInvite(
+        return routeResponse(services.emailAccounts.acceptInvite(
             authorization: request.headers[.authorization],
             body: request.body.string ?? ""
         ))
