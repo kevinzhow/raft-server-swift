@@ -3997,9 +3997,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return channel.memberIds.contains(userId)
         }()
         let storageChannelId = jointProjections.first { $0.localChannelId == channelId }?.canonicalChannelId ?? channelId
-        let rows = humanMessageRows.filter { $0.channelId == storageChannelId || $0.channelId == channelId }
-        let listed = rows.map { message -> String in
-            var row = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(message.content))"
+        let allRows = humanMessageRows.filter { $0.channelId == storageChannelId || $0.channelId == channelId }
+        let cursor = Int(sinceSeq ?? "") ?? 0
+        let indexed = allRows.enumerated().filter { $0.offset + 1 > cursor }
+        let listed = indexed.map { index, message -> String in
+            var row = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(channelId)),\"seq\":\(index + 1),\"content\":\(jsonString(message.content))"
             if let metadata = forwardMetadataJSONLocked(messageId: message.id, userId: userId, serverId: serverId) {
                 row += ",\"actionMetadata\":\(metadata)"
             }
