@@ -197,6 +197,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var providerConnections: [ProviderConnection] = []
     private var providerAssignments: [ProviderAssignment] = []
     private var shareArtifacts: Set<String> = []
+    private var timezoneObservations: [String: TimezoneObservation] = [:]
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -5213,7 +5214,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let account = accounts.values.first { $0.id == userId }
         lock.unlock()
         guard let account, account.retiredAt == nil else { return Self.invalidToken }
-        return Self.json(200, Self.userJSON(account))
+        var json = Self.userJSON(account)
+        lock.lock()
+        let observation = timezoneObservations[userId]
+        lock.unlock()
+        if let observation {
+            let extra = String(Self.timezoneJSON(observation).dropFirst())
+            if let closing = json.lastIndex(of: "}") {
+                json = String(json[..<closing]) + "," + extra
+            }
+        }
+        return Self.json(200, json)
     }
 
     /// `PATCH /api/auth/me`. A wrong current password is refused before any profile write.
@@ -6690,6 +6701,63 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return "{\"serverId\":\(jsonString(serverId)),\"unreadCount\":\(total),\"serverPushMuted\":\(muted),\"activityUnreadCount\":\(total)}"
         }.joined(separator: ",")
         return Self.json(200, "[\(entries)]")
+    }
+
+    public struct TimezoneObservation: Sendable {
+        public var firstTimezone: String
+        public var firstAt: Date
+        public var lastTimezone: String
+        public var lastAt: Date
+    }
+
+    public func observeTimezone(authorization: String?, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              Set(object.keys) == ["timezone"],
+              let raw = object["timezone"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"Invalid timezone observation\"}")
+        }
+        let timezone = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !timezone.isEmpty, timezone.count <= 128,
+              timezone == "UTC" || timezone.contains("/"),
+              TimeZone(identifier: timezone) != nil
+        else {
+            return Self.json(400, "{\"error\":\"Invalid timezone observation\"}")
+        }
+        lock.lock()
+        var observation = timezoneObservations[userId]
+        let now = Date()
+        if observation == nil {
+            observation = TimezoneObservation(firstTimezone: timezone, firstAt: now, lastTimezone: timezone, lastAt: now)
+        } else if let existing = observation {
+            observation = TimezoneObservation(
+                firstTimezone: existing.firstTimezone,
+                firstAt: existing.firstAt,
+                lastTimezone: timezone,
+                lastAt: now
+            )
+        }
+        timezoneObservations[userId] = observation
+        lock.unlock()
+        guard let stored = observation else {
+            return Self.json(500, "{\"error\":\"Timezone observation not stored\"}")
+        }
+        return Self.json(200, Self.timezoneJSON(stored))
+    }
+
+    public func timezoneObservation(userId: String) -> TimezoneObservation? {
+        lock.lock()
+        defer { lock.unlock() }
+        return timezoneObservations[userId]
+    }
+
+    private static func timezoneJSON(_ observation: TimezoneObservation) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return "{\"firstObservedTimezone\":\(jsonString(observation.firstTimezone)),\"firstObservedTimezoneAt\":\(jsonString(formatter.string(from: observation.firstAt))),\"lastObservedTimezone\":\(jsonString(observation.lastTimezone)),\"lastObservedTimezoneAt\":\(jsonString(formatter.string(from: observation.lastAt)))}"
     }
 
     public func authenticatedUserId(authorization: String?) -> String? {

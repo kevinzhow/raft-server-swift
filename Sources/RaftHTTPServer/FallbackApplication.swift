@@ -1408,6 +1408,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: data
         ))
     }
+    app.post("api", "auth", "me", "timezone-observation") { request -> Response in
+        return routeResponse(services.emailAccounts.observeTimezone(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? ""
+        ))
+    }
     app.patch("api", "auth", "me") { request -> Response in
         return routeResponse(services.emailAccounts.patch(
             authorization: request.headers[.authorization],
