@@ -519,6 +519,15 @@ public final class OAuthLedger: @unchecked Sendable {
         public var latestSeq: Int?
     }
 
+    public func latestPeerMessageSeq(channelId: String, excluding userId: String) -> Int? {
+        lock.lock()
+        defer { lock.unlock() }
+        return channelMessages
+            .filter { $0.channelId == channelId && $0.senderId != userId }
+            .map(\.seq)
+            .max()
+    }
+
     public func channelUnreadInfo(channelId: String, userId: String) -> ChannelUnreadInfo {
         lock.lock()
         defer { lock.unlock() }

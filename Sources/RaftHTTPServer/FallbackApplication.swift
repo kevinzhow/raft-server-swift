@@ -790,6 +790,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             channelId: request.parameters.get("channelId") ?? ""
         ))
     }
+    app.post("api", "channels", ":channelId", "unread") { request -> Response in
+        routeResponse(services.emailAccounts.markChannelUnread(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? ""
+        ))
+    }
     app.get("api", "channels", "unread") { request -> Response in
         routeResponse(services.emailAccounts.channelUnread(
             authorization: request.headers[.authorization],
