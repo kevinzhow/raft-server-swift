@@ -928,6 +928,26 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func memberIds(serverId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return members.keys.compactMap { key -> String? in
+            let parts = key.split(separator: "\n", maxSplits: 1).map(String.init)
+            guard parts.count == 2, parts[0] == serverId else { return nil }
+            guard let server = servers[serverId], !server.deleted else { return nil }
+            return parts[1]
+        }.sorted()
+    }
+
+    public func activeAgentIds(serverId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return agents.values
+            .filter { $0.serverId == serverId && !$0.deleted }
+            .map { $0.id }
+            .sorted()
+    }
+
     public func ownerCount(serverId: String) -> Int {
         lock.lock()
         defer { lock.unlock() }

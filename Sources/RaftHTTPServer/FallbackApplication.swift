@@ -1041,6 +1041,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             memberId: request.parameters.get("memberId") ?? ""
         ))
     }
+    app.get("api", "servers", ":id", "member-graph") { request -> Response in
+        routeResponse(services.emailAccounts.serverMemberGraph(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
     app.get("api", "servers", ":id", "members") { request -> Response in
         let id = request.parameters.get("id") ?? ""
         if let reply = ServerScope.membersGuard(

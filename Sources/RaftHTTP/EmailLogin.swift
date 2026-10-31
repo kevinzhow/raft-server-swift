@@ -6880,6 +6880,55 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         "{\"id\":\(jsonString(agreement.id)),\"version\":\(agreement.version),\"title\":\(jsonString(agreement.title)),\"bodyMarkdown\":\(jsonString(agreement.bodyMarkdown)),\"enabled\":\(agreement.enabled)}"
     }
 
+    public func serverMemberGraph(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let memberIds = oauth.memberIds(serverId: serverId)
+        let agentIds = oauth.activeAgentIds(serverId: serverId)
+        let allChannelId = oauth.allChannelId(serverId: serverId)
+        var channels: [(id: String, name: String, humans: [String], agents: [String])] = []
+        if let allChannelId {
+            channels.append((allChannelId, "all", memberIds, agentIds))
+        }
+        for channel in oauth.channelsForServer(serverId: serverId, userId: userId) {
+            guard channel.type == "channel", channel.name != "all",
+                  oauth.channelArchivedAt(id: channel.id) == nil
+            else { continue }
+            let humans = oauth.channelHumanIds(channelId: channel.id).filter { memberIds.contains($0) }
+            let agents = oauth.channelAgentIds(channelId: channel.id).filter { agentIds.contains($0) }
+            channels.append((channel.id, channel.name, humans, agents))
+        }
+        var edges: [String] = []
+        var humanChannelIds: [String: [String]] = [:]
+        var agentChannelIds: [String: [String]] = [:]
+        var channelsJSON: [String] = []
+        for channel in channels {
+            for human in channel.humans {
+                humanChannelIds[human, default: []].append(channel.id)
+                edges.append("{\"channelId\":\(jsonString(channel.id)),\"memberType\":\"human\",\"memberId\":\(jsonString(human))}")
+            }
+            for agent in channel.agents {
+                agentChannelIds[agent, default: []].append(channel.id)
+                edges.append("{\"channelId\":\(jsonString(channel.id)),\"memberType\":\"agent\",\"memberId\":\(jsonString(agent))}")
+            }
+            channelsJSON.append("{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"memberCount\":\(channel.humans.count + channel.agents.count)}")
+        }
+        let humans = memberIds.map { memberId -> String in
+            let ids = (humanChannelIds[memberId] ?? []).map { jsonString($0) }.joined(separator: ",")
+            return "{\"id\":\(jsonString(memberId)),\"channelIds\":[\("\(ids)")]}"
+        }
+        let agents = agentIds.map { agentId -> String in
+            let info = oauth.agentRuntimeInfo(id: agentId)
+            let ids = (agentChannelIds[agentId] ?? []).map { jsonString($0) }.joined(separator: ",")
+            return "{\"id\":\(jsonString(agentId)),\"name\":\(jsonString(info?.name ?? "")),\"channelIds\":[\("\(ids)")]}"
+        }
+        return Self.json(200, "{\"humans\":[\("\(humans.joined(separator: ","))")],\"agents\":[\("\(agents.joined(separator: ","))")],\"channels\":[\("\(channelsJSON.joined(separator: ","))")],\"edges\":[\("\(edges.joined(separator: ","))")]}")
+    }
+
     public func uploadServerAvatar(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)
