@@ -10001,17 +10001,36 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
             return Self.json(400, "{\"error\":\"Invalid channel members\"}")
         }
-        let userIds = (object["userIds"] as? [Any])?.compactMap { $0 as? String } ?? []
-        let agentIds = (object["agentIds"] as? [Any])?.compactMap { $0 as? String } ?? []
-        for target in userIds where oauth.memberRole(serverId: serverId, userId: target) != nil {
-            accountsForInvite(userId: target, serverId: serverId, channelId: channelId)
-        }
-        for agentId in agentIds {
-            if let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted {
-                oauth.addChannelAgent(channelId: channelId, agentId: agentId)
+        let rawUserIds = (object["userIds"] as? [Any])?.compactMap { $0 as? String } ?? []
+        let rawAgentIds = (object["agentIds"] as? [Any])?.compactMap { $0 as? String } ?? []
+        var seenUsers = Set<String>()
+        var seenAgents = Set<String>()
+        var addedUsers: [String] = []
+        var addedAgents: [String] = []
+        var alreadyUsers: [String] = []
+        var alreadyAgents: [String] = []
+        for target in rawUserIds where seenUsers.insert(target).inserted {
+            guard oauth.memberRole(serverId: serverId, userId: target) != nil else { continue }
+            if oauth.channelHumanIds(channelId: channelId).contains(target) {
+                alreadyUsers.append(target)
+            } else {
+                accountsForInvite(userId: target, serverId: serverId, channelId: channelId)
+                addedUsers.append(target)
             }
         }
-        return Self.json(200, "{\"ok\":true}")
+        for agentId in rawAgentIds where seenAgents.insert(agentId).inserted {
+            guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else { continue }
+            if oauth.channelAgentIds(channelId: channelId).contains(agentId) {
+                alreadyAgents.append(agentId)
+            } else {
+                oauth.addChannelAgent(channelId: channelId, agentId: agentId)
+                addedAgents.append(agentId)
+            }
+        }
+        func array(_ values: [String]) -> String {
+            values.map { jsonString($0) }.joined(separator: ",")
+        }
+        return Self.json(200, "{\"ok\":true,\"added\":{\"userIds\":[\("\(array(addedUsers))")],\"agentIds\":[\("\(array(addedAgents))")]},\"alreadyMembers\":{\"userIds\":[\("\(array(alreadyUsers))")],\"agentIds\":[\("\(array(alreadyAgents))")]}}")
     }
 
     private func accountsForInvite(userId: String, serverId: String, channelId: String) {

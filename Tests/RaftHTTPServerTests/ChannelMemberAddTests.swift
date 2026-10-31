@@ -52,7 +52,19 @@ import VaporTesting
                 request.body = .init(string: "{\"userIds\":[\"\(memberId)\"],\"agentIds\":[\"\(agent)\"]}")
             }
             #expect(batch.status == .ok)
+            let batchBody = try JSONSerialization.jsonObject(with: Data((batch.body.string ?? "").utf8)) as? [String: Any]
+            let added = batchBody?["added"] as? [String: Any]
+            #expect(batchBody?["ok"] as? Bool == true)
+            #expect((added?["agentIds"] as? [String]) == [agent])
             #expect(accounts.oauth.channelAgentIds(channelId: channelId).contains(agent))
+
+            let repeatBatch = try await client.send(.post, headers: headers, to: "/api/channels/\(channelId)/members/batch") { request in
+                request.body = .init(string: "{\"userIds\":[\"\(memberId)\"],\"agentIds\":[\"\(agent)\"]}")
+            }
+            let repeatBody = try JSONSerialization.jsonObject(with: Data((repeatBatch.body.string ?? "").utf8)) as? [String: Any]
+            let already = repeatBody?["alreadyMembers"] as? [String: Any]
+            #expect((already?["userIds"] as? [String]) == [memberId])
+            #expect((already?["agentIds"] as? [String]) == [agent])
 
             let members = try await client.send(.get, headers: headers, to: "/api/channels/\(channelId)/members")
             let body = try JSONSerialization.jsonObject(with: Data((members.body.string ?? "").utf8)) as? [String: Any]
