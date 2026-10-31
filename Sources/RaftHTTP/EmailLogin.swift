@@ -9370,6 +9370,27 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
+    public func removeChannelHuman(authorization: String?, serverId: String, channelId: String, memberId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        if let reply = archivedChannelReply(channelId) { return reply }
+        guard role == "owner" || role == "admin" || userId == memberId else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        lock.lock()
+        postableChannels[channelId]?.memberIds.remove(memberId)
+        lock.unlock()
+        _ = oauth.removeChannelHuman(channelId: channelId, userId: memberId)
+        return Self.json(200, "{\"ok\":true}")
+    }
+
     public func removeChannelMember(authorization: String?, serverId: String, channelId: String, agentId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)
@@ -9380,6 +9401,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
+        if let reply = archivedChannelReply(channelId) { return reply }
         guard role == "owner" || role == "admin" || oauth.isChannelParticipant(channelId: channelId, userId: userId) else {
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
