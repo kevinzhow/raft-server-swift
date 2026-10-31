@@ -6898,6 +6898,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return ordered
     }
 
+    public func seedServerSwitcherOrder(userId: String, ids: [String], version: Int) {
+        lock.lock()
+        serverSwitcherOrders[userId] = (ids, version)
+        lock.unlock()
+    }
+
     public func serverOrder(authorization: String?) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)

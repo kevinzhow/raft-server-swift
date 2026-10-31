@@ -82,3 +82,61 @@ import VaporTesting
         }
     }
 }
+
+@Test func serverOrderVersionStaysMonotonicAfterLosingAMembership() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111364"
+    let serverA = "33333333-3333-4333-8333-333333333512"
+    let serverB = "33333333-3333-4333-8333-333333333513"
+    let serverC = "33333333-3333-4333-8333-333333333514"
+    accounts.addAccount(id: ownerId, email: "order-mono-owner@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    for (id, slug) in [(serverA, "mono-a"), (serverB, "mono-b"), (serverC, "mono-c")] {
+        accounts.oauth.addOwnedServer(id: id, slug: slug, name: slug, ownerId: ownerId)
+    }
+    accounts.seedServerSwitcherOrder(userId: ownerId, ids: [serverA, serverB, serverC], version: 7)
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var loginHeaders = HTTPFields()
+            loginHeaders[.contentType] = "application/json"
+            let login = try await client.send(.post, headers: loginHeaders, to: "/api/auth/login") { request in
+                request.body = .init(string: "{\"email\":\"order-mono-owner@slock.test\",\"password\":\"password123\"}")
+            }
+            let token = (try JSONSerialization.jsonObject(with: Data((login.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(token)"
+            headers[.contentType] = "application/json"
+
+            func order() async throws -> [String: Any] {
+                let response = try await client.send(.get, headers: headers, to: "/api/servers/order")
+                #expect(response.status == .ok)
+                return try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any] ?? [:]
+            }
+
+            let seeded = try await order()
+            #expect(seeded["serverOrder"] as? [String] == [serverA, serverB, serverC])
+            #expect(seeded["serverOrderVersion"] as? Int == 7)
+
+            accounts.oauth.removeMember(serverId: serverA, userId: ownerId)
+            let patched = try await client.send(.patch, headers: headers, to: "/api/servers/order") { request in
+                request.body = .init(string: "{\"serverOrder\":[\"\(serverC)\",\"\(serverB)\"]}")
+            }
+            #expect(patched.status == .ok)
+            let patchedBody = try JSONSerialization.jsonObject(with: Data((patched.body.string ?? "").utf8)) as? [String: Any]
+            #expect(patchedBody?["serverOrder"] as? [String] == [serverC, serverB])
+            #expect(patchedBody?["serverOrderVersion"] as? Int == 8)
+
+            let listed = try await client.send(.get, headers: headers, to: "/api/servers")
+            let rows = try JSONSerialization.jsonObject(with: Data((listed.body.string ?? "").utf8)) as? [[String: Any]] ?? []
+            #expect(rows.compactMap { $0["id"] as? String } == [serverC, serverB])
+            #expect(rows.allSatisfy { $0["serverOrderVersion"] as? Int == 8 })
+        }
+    }
+}
