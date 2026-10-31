@@ -42,6 +42,15 @@ let package = Package(
             ]
         ),
         .target(
+            name: "RaftRealtime",
+            dependencies: [
+                "RaftConnectAuth",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "NIOHTTP1", package: "swift-nio"),
+            ]
+        ),
+        .target(
             name: "RaftHTTP",
             dependencies: [
                 .product(name: "Crypto", package: "swift-crypto"),
@@ -51,6 +60,7 @@ let package = Package(
             name: "RaftHTTPServer",
             dependencies: [
                 "RaftHTTP",
+                "RaftRealtime",
                 .product(name: "Vapor", package: "vapor"),
             ]
         ),
@@ -61,6 +71,7 @@ let package = Package(
                 "RaftHTTPServer",
                 "RaftMachineSocket",
                 "RaftConnectAuth",
+                "RaftRealtime",
                 .product(name: "Vapor", package: "vapor"),
             ]
         ),
@@ -105,6 +116,14 @@ let package = Package(
         .testTarget(
             name: "RaftServerStartupTests",
             dependencies: [
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+            ]
+        ),
+        .testTarget(
+            name: "RaftRealtimeTests",
+            dependencies: [
+                "RaftRealtime",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
             ]

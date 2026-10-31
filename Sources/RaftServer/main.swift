@@ -5,6 +5,7 @@ import RaftConnectAuth
 import RaftHTTP
 import RaftHTTPServer
 import RaftMachineSocket
+import RaftRealtime
 import Vapor
 
 #if canImport(Glibc)
@@ -15,6 +16,14 @@ private struct DatabaseNotConnected: Error {}
 
 private struct MachineConnectShutdown: LifecycleHandler {
     let server: MachineConnectServer
+
+    func shutdown(_ application: Application) async {
+        try? await server.close()
+    }
+}
+
+private struct RealtimeShutdown: LifecycleHandler {
+    let server: RealtimeServer
 
     func shutdown(_ application: Application) async {
         try? await server.close()
@@ -95,16 +104,6 @@ enum Entrypoint {
         if httpPort > 0 {
             app.serverConfiguration.port = httpPort
         }
-        configure(
-            app,
-            services: FallbackServices(
-                nodeEnv: nodeEnv,
-                tracker: tracker,
-                pingDatabase: ping,
-                releaseEnvironment: processEnvironment,
-                emailAccounts: emailAccounts
-            )
-        )
         let configuredDaemonPort = Int(processEnvironment["DAEMON_CONNECT_PORT"] ?? "") ?? 8081
         let machineServer: MachineConnectServer?
         if configuredDaemonPort == 0 {
@@ -115,13 +114,38 @@ enum Entrypoint {
                 port: configuredDaemonPort
             )
         }
+        let configuredSocketPort = Int(processEnvironment["SOCKET_PORT"] ?? "") ?? 8082
+        let realtimeServer: RealtimeServer?
+        if configuredSocketPort == 0 {
+            realtimeServer = nil
+        } else {
+            realtimeServer = try await RealtimeServer.start(
+                auth: LedgerRealtimeAuth(accounts: emailAccounts),
+                port: configuredSocketPort
+            )
+        }
+        configure(
+            app,
+            services: FallbackServices(
+                nodeEnv: nodeEnv,
+                tracker: tracker,
+                pingDatabase: ping,
+                releaseEnvironment: processEnvironment,
+                emailAccounts: emailAccounts,
+                realtime: realtimeServer?.hub
+            )
+        )
         if let machineServer {
             app.addLifecycleHandler(MachineConnectShutdown(server: machineServer))
         }
+        if let realtimeServer {
+            app.addLifecycleHandler(RealtimeShutdown(server: realtimeServer))
+        }
         let boundHTTPPort = app.serverConfiguration.port ?? httpPort
         let daemonDescription = machineServer.map { "127.0.0.1:\($0.port)" } ?? "disabled"
+        let realtimeDescription = realtimeServer.map { "127.0.0.1:\($0.port)" } ?? "disabled"
         FileHandle.standardOutput.write(
-            Data("raft-server ready http=127.0.0.1:\(boundHTTPPort) daemon-connect=\(daemonDescription)\n".utf8)
+            Data("raft-server ready http=127.0.0.1:\(boundHTTPPort) daemon-connect=\(daemonDescription) realtime=\(realtimeDescription)\n".utf8)
         )
         await tracker.start()
         do {
@@ -129,6 +153,9 @@ enum Entrypoint {
         } catch {
             if let machineServer {
                 try? await machineServer.close()
+            }
+            if let realtimeServer {
+                try? await realtimeServer.close()
             }
             try? await app.shutdown()
             throw error

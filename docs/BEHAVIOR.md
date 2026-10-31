@@ -125,3 +125,16 @@ machine key 形如 `sk_machine_` + 64 位 hex，computer key 形如 `sk_computer
 
 `RaftDaemon` 读取 `SERVER_URL` 与 `MACHINE_KEY`，完成 `/daemon/connect` 握手后打印 `daemon connected machine=... server=...` 并退出；真实重连循环仍留在 `DaemonLink` 库内。
 
+
+`GET /socket.io/?EIO=4&transport=websocket` 返回 101，随后一帧 Engine.IO open：`0{"sid","upgrades":[],"pingInterval":25000,"pingTimeout":20000,"maxPayload":1000000}`。客户端 `40{"token","serverId","clientKind"}` 成功后回 `40{"sid"}`，再回 `42["rooms:joined"]`；非成员回 `44{"message":"Not a member of this server"}`；Engine.IO `2` 回 `3`，`41` 断开。clientKind 缺省为 `web`，非法值拒绝。
+
+
+socket 房间为 `user:<id>`、`user:<id>:clientKind:<kind>`、`server:<id>` 或 guest 的 `server:<id>:guests`、`user:<id>:server:<id>`、`channel:<id>`；guest 不进 `server:<id>`，但可进自己的 guest 房间。`join:channel` 只接受该用户可见的频道，失败静默无回包。
+
+
+`POST /api/channels` 成功后向 creator 的 `user:<id>` 房间发 `channel:updated`，payload 是 `{channel:{id,name,description,joined:true}}`。
+
+
+`notification:push` 只发到 `user:<id>:clientKind:mobile`；其他用户事件仍发 `user:<id>`。
+
+

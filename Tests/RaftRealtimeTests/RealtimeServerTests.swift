@@ -1,0 +1,341 @@
+import Foundation
+import NIOCore
+import NIOPosix
+import Testing
+@testable import RaftRealtime
+
+@Test func handshakeParserMatchesTheUpstreamShapes() throws {
+    let web = parseSocketHandshakeAuth(Data("{\"token\":\"tok\",\"serverId\":\"srv\"}".utf8))
+    #expect(try web.get() == SocketHandshakeAuth(token: "tok", serverId: "srv", clientKind: .web))
+
+    let mobile = parseSocketHandshakeAuth(Data("{\"token\":\"tok\",\"serverId\":\"srv\",\"clientKind\":\"mobile\"}".utf8))
+    #expect(try mobile.get() == SocketHandshakeAuth(token: "tok", serverId: "srv", clientKind: .mobile))
+
+    let userOnly = parseSocketHandshakeAuth(Data("{\"token\":\"tok\",\"clientKind\":\"cli\"}".utf8))
+    #expect(try userOnly.get() == SocketHandshakeAuth(token: "tok", serverId: nil, clientKind: .cli))
+
+    #expect(parseSocketHandshakeAuth(Data("[]".utf8)) == .failure(.authNotObject))
+    #expect(parseSocketHandshakeAuth(Data("{}".utf8)) == .failure(.tokenMissing))
+    #expect(parseSocketHandshakeAuth(Data("{\"token\":\"tok\",\"serverId\":\"\"}".utf8)) == .failure(.serverIdInvalid))
+    #expect(parseSocketHandshakeAuth(Data("{\"token\":\"tok\",\"clientKind\":\"tv\"}".utf8)) == .failure(.clientKindInvalid))
+}
+
+@Test func protocolFramesUseTheSocketIOShapes() {
+    #expect(engineIOOpenFrame(sid: "abc") == "0{\"sid\":\"abc\",\"upgrades\":[],\"pingInterval\":25000,\"pingTimeout\":20000,\"maxPayload\":1000000}")
+    #expect(socketIOConnectFrame(sid: "abc") == "40{\"sid\":\"abc\"}")
+    #expect(socketIOEventFrame("rooms:joined") == "42[\"rooms:joined\"]")
+    #expect(socketIOEventFrame("message:new", payloadJSON: "{\"id\":\"m1\"}") == "42[\"message:new\",{\"id\":\"m1\"}]")
+    #expect(socketIOErrorFrame(socketNotServerMemberMessage) == "44{\"message\":\"Not a member of this server\"}")
+}
+
+@Test func authAndRoomsAndEventsRoundTrip() async throws {
+    let auth = StubAuth(
+        tokens: ["good": "user-1"],
+        roles: ["s1\nuser-1": "member"],
+        channels: ["s1\nuser-1": ["c1"]]
+    )
+    let server = try await RealtimeServer.start(auth: auth)
+    defer { Task { try? await server.close() } }
+    let client = try await RawSocketIOClient(port: server.port)
+    defer { client.close() }
+
+    let open = try #require(await client.waitForText { $0.hasPrefix("0") })
+    #expect(open.contains("\"upgrades\":[]"))
+    #expect(open.contains("\"pingInterval\":25000"))
+    #expect(open.contains("\"pingTimeout\":20000"))
+    #expect(open.contains("\"maxPayload\":1000000"))
+
+    client.send("40{\"token\":\"good\",\"serverId\":\"s1\",\"clientKind\":\"web\"}")
+    let connected = try #require(await client.waitForText { $0.hasPrefix("40") })
+    #expect(connected.hasPrefix("40{\"sid\":"))
+    #expect(await client.waitForText { $0 == "42[\"rooms:joined\"]" } != nil)
+
+    client.send("2")
+    #expect(await client.waitForText { $0 == "3" } != nil)
+
+    server.hub.emit(room: "channel:c1", event: "message:new", payloadJSON: "{\"id\":\"m1\"}")
+    #expect(await client.waitForText { $0 == "42[\"message:new\",{\"id\":\"m1\"}]" } != nil)
+
+    client.send("41")
+    #expect(await client.waitForClose())
+}
+
+@Test func nonMemberGetsTheSharedConnectError() async throws {
+    let auth = StubAuth(tokens: ["good": "user-1"], roles: [:], channels: [:])
+    let server = try await RealtimeServer.start(auth: auth)
+    defer { Task { try? await server.close() } }
+    let client = try await RawSocketIOClient(port: server.port)
+    defer { client.close() }
+
+    _ = await client.waitForText { $0.hasPrefix("0") }
+    client.send("40{\"token\":\"good\",\"serverId\":\"s1\"}")
+    let error = try #require(await client.waitForText { $0.hasPrefix("44") })
+    #expect(error == "44{\"message\":\"Not a member of this server\"}")
+}
+
+@Test func guestsStayOutOfTheServerRoomAndJoinTheirOwn() async throws {
+    let auth = StubAuth(
+        tokens: ["guest": "user-2"],
+        roles: ["s1\nuser-2": "guest"],
+        channels: ["s1\nuser-2": ["c1"]]
+    )
+    let server = try await RealtimeServer.start(auth: auth)
+    defer { Task { try? await server.close() } }
+    let client = try await RawSocketIOClient(port: server.port)
+    defer { client.close() }
+
+    _ = await client.waitForText { $0.hasPrefix("0") }
+    client.send("40{\"token\":\"guest\",\"serverId\":\"s1\"}")
+    _ = await client.waitForText { $0.hasPrefix("40") }
+    _ = await client.waitForText { $0 == "42[\"rooms:joined\"]" }
+
+    server.hub.emit(room: "server:s1", event: "channel:updated", payloadJSON: "{\"hidden\":true}")
+    server.hub.emit(room: "server:s1:guests", event: "channel:updated", payloadJSON: "{\"hidden\":false}")
+    #expect(await client.waitForText { $0.contains("\"hidden\":false") } != nil)
+    #expect(client.textFrames.contains { $0.contains("\"hidden\":true") } == false)
+}
+
+@Test func joinChannelOnlyAddsVisibleChannelsAndStaysSilentOnFailure() async throws {
+    let auth = StubAuth(
+        tokens: ["good": "user-1"],
+        roles: ["s1\nuser-1": "member"],
+        channels: ["s1\nuser-1": ["c1"]]
+    )
+    let server = try await RealtimeServer.start(auth: auth)
+    defer { Task { try? await server.close() } }
+    let client = try await RawSocketIOClient(port: server.port)
+    defer { client.close() }
+
+    _ = await client.waitForText { $0.hasPrefix("0") }
+    client.send("40{\"token\":\"good\",\"serverId\":\"s1\"}")
+    _ = await client.waitForText { $0.hasPrefix("40") }
+    _ = await client.waitForText { $0 == "42[\"rooms:joined\"]" }
+
+    client.send("42[\"join:channel\",\"c2\"]")
+    server.hub.emit(room: "channel:c2", event: "message:new", payloadJSON: "{\"hidden\":true}")
+    server.hub.emit(room: "channel:c1", event: "message:new", payloadJSON: "{\"visible\":true}")
+    #expect(await client.waitForText { $0.contains("\"visible\":true") } != nil)
+    #expect(client.textFrames.contains { $0.contains("\"hidden\":true") } == false)
+    #expect(client.textFrames.contains { $0 == "42[\"join:channel\"]" } == false)
+}
+
+@Test func roomNamesAndChannelAccessMatchTheSocketContract() {
+    #expect(requiresSocketChannelAccessCheck("channel"))
+    #expect(requiresSocketChannelAccessCheck("thread"))
+    #expect(requiresSocketChannelAccessCheck("dm"))
+    #expect(socketClientKindRoom(userId: "u1", clientKind: .mobile) == "user:u1:clientKind:mobile")
+    #expect(socketUserServerRoom(userId: "u1", serverId: "s1") == "user:u1:server:s1")
+    #expect(socketServerGuestsRoom(serverId: "s1") == "server:s1:guests")
+    #expect(socketServerAllRooms(serverId: "s1") == ["server:s1", "server:s1:guests"])
+}
+
+@Test func notificationPushIsScopedToMobileWhileOtherEventsReachEveryClientKind() async throws {
+    let auth = StubAuth(
+        tokens: ["web": "user-1", "mobile": "user-1"],
+        roles: ["s1\nuser-1": "member"],
+        channels: ["s1\nuser-1": ["c1"]]
+    )
+    let server = try await RealtimeServer.start(auth: auth)
+    defer { Task { try? await server.close() } }
+    let web = try await RawSocketIOClient(port: server.port)
+    defer { web.close() }
+    let mobile = try await RawSocketIOClient(port: server.port)
+    defer { mobile.close() }
+
+    for (client, kind) in [(web, "web"), (mobile, "mobile")] {
+        _ = await client.waitForText { $0.hasPrefix("0") }
+        client.send("40{\"token\":\"\(kind)\",\"serverId\":\"s1\",\"clientKind\":\"\(kind)\"}")
+        _ = await client.waitForText { $0.hasPrefix("40") }
+        _ = await client.waitForText { $0 == "42[\"rooms:joined\"]" }
+    }
+
+    emitPlatformScopedUserEvent(hub: server.hub, userId: "user-1", event: "notification:push", payloadJSON: "{\"id\":\"n1\"}")
+    emitPlatformScopedUserEvent(hub: server.hub, userId: "user-1", event: "message:new", payloadJSON: "{\"id\":\"m1\"}")
+    #expect(await mobile.waitForText { $0.contains("\"notification:push\"") } != nil)
+    #expect(await mobile.waitForText { $0.contains("\"message:new\"") } != nil)
+    #expect(await web.waitForText { $0.contains("\"message:new\"") } != nil)
+    #expect(web.textFrames.contains { $0.contains("\"notification:push\"") } == false)
+}
+
+private struct StubAuth: RealtimeAuthorizing {
+    var tokens: [String: String]
+    var roles: [String: String]
+    var channels: [String: [String]]
+
+    func userId(forAccessToken token: String) -> String? { tokens[token] }
+    func serverRole(serverId: String, userId: String) -> String? { roles["\(serverId)\n\(userId)"] }
+    func visibleChannelIds(serverId: String, userId: String) -> [String] { channels["\(serverId)\n\(userId)"] ?? [] }
+}
+
+private final class RawSocketIOClient: @unchecked Sendable {
+    private let group: MultiThreadedEventLoopGroup
+    private let channel: any Channel
+    private let collector: SocketIOCollector
+
+    init(port: Int) async throws {
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        let collector = SocketIOCollector()
+        let channel = try await ClientBootstrap(group: group)
+            .channelInitializer { channel in
+                channel.pipeline.addHandler(collector)
+            }
+            .connect(host: "127.0.0.1", port: port)
+            .get()
+        self.group = group
+        self.channel = channel
+        self.collector = collector
+        let request = [
+            "GET /socket.io/?EIO=4&transport=websocket HTTP/1.1",
+            "Host: 127.0.0.1:\(port)",
+            "Upgrade: websocket",
+            "Connection: Upgrade",
+            "Sec-WebSocket-Version: 13",
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+        ].joined(separator: "\r\n") + "\r\n\r\n"
+        var buffer = channel.allocator.buffer(capacity: request.utf8.count)
+        buffer.writeString(request)
+        try await channel.writeAndFlush(buffer).get()
+    }
+
+    var textFrames: [String] { collector.textFrames }
+
+    func send(_ text: String) {
+        var buffer = channel.allocator.buffer(capacity: text.utf8.count + 8)
+        buffer.writeBytes(maskedClientTextFrame(text))
+        channel.writeAndFlush(buffer, promise: nil)
+    }
+
+    func waitForText(_ predicate: (String) -> Bool, timeout: TimeInterval = 3) async -> String? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let frame = collector.textFrames.first(where: predicate) { return frame }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return collector.textFrames.first(where: predicate)
+    }
+
+    func waitForClose(timeout: TimeInterval = 3) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if collector.closed { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return collector.closed
+    }
+
+    func close() {
+        channel.close(promise: nil)
+        try? group.syncShutdownGracefully()
+    }
+}
+
+private final class SocketIOCollector: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn = ByteBuffer
+    private let lock = NSLock()
+    private var http: [UInt8] = []
+    private var frames: [UInt8] = []
+    private var upgraded = false
+    private var collected: [String] = []
+    private var isClosed = false
+
+    var textFrames: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return collected
+    }
+
+    var closed: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return isClosed
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        var buffer = unwrapInboundIn(data)
+        guard let bytes = buffer.readBytes(length: buffer.readableBytes), !bytes.isEmpty else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        if upgraded {
+            frames.append(contentsOf: bytes)
+        } else {
+            http.append(contentsOf: bytes)
+            let separator: [UInt8] = [13, 10, 13, 10]
+            if let end = find(separator, in: http) {
+                frames.append(contentsOf: http[(end + 4)...])
+                http = []
+                upgraded = true
+            }
+        }
+        while let frame = readServerFrame(&frames) {
+            if frame.opcode == 0x1 {
+                collected.append(String(decoding: frame.payload, as: UTF8.self))
+            }
+        }
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        lock.lock()
+        isClosed = true
+        lock.unlock()
+    }
+
+    private func find(_ needle: [UInt8], in haystack: [UInt8]) -> Int? {
+        guard haystack.count >= needle.count else { return nil }
+        for index in 0...(haystack.count - needle.count) {
+            if Array(haystack[index..<(index + needle.count)]) == needle { return index }
+        }
+        return nil
+    }
+}
+
+private struct ServerFrame {
+    var opcode: UInt8
+    var payload: [UInt8]
+}
+
+private func readServerFrame(_ buffer: inout [UInt8]) -> ServerFrame? {
+    guard buffer.count >= 2 else { return nil }
+    let opcode = buffer[0] & 0x0f
+    var length = Int(buffer[1] & 0x7f)
+    var offset = 2
+    if length == 126 {
+        guard buffer.count >= 4 else { return nil }
+        length = (Int(buffer[2]) << 8) | Int(buffer[3])
+        offset = 4
+    } else if length == 127 {
+        guard buffer.count >= 10 else { return nil }
+        var value: UInt64 = 0
+        for index in 2..<10 { value = (value << 8) | UInt64(buffer[index]) }
+        guard value <= UInt64(Int.max) else { return nil }
+        length = Int(value)
+        offset = 10
+    }
+    guard buffer.count >= offset + length else { return nil }
+    let payload = Array(buffer[offset..<(offset + length)])
+    buffer.removeFirst(offset + length)
+    return ServerFrame(opcode: opcode, payload: payload)
+}
+
+private func maskedClientTextFrame(_ text: String) -> [UInt8] {
+    let payload = Array(text.utf8)
+    var frame: [UInt8] = [0x81]
+    if payload.count < 126 {
+        frame.append(0x80 | UInt8(payload.count))
+    } else if payload.count <= Int(UInt16.max) {
+        frame.append(0x80 | 126)
+        frame.append(UInt8((payload.count >> 8) & 0xff))
+        frame.append(UInt8(payload.count & 0xff))
+    } else {
+        frame.append(0x80 | 127)
+        let length = UInt64(payload.count)
+        for shift in stride(from: 56, through: 0, by: -8) {
+            frame.append(UInt8((length >> shift) & 0xff))
+        }
+    }
+    let mask: [UInt8] = [0x12, 0x34, 0x56, 0x78]
+    frame.append(contentsOf: mask)
+    for (index, byte) in payload.enumerated() {
+        frame.append(byte ^ mask[index % 4])
+    }
+    return frame
+}

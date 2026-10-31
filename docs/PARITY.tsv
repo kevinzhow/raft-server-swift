@@ -221,8 +221,8 @@ version.api	route	partial	-	auto-seed
 accessRevocation.redis	socket	pending	-	auto-seed
 desktopAttention.api	socket	pending	-	auto-seed
 desktopAttentionEvents	socket	pending	-	auto-seed
-index	socket	pending	-	auto-seed
-platformScope	socket	pending	-	auto-seed
+index	socket	partial	-	handshake parser and room contract covered; transport e2e pending
+platformScope	socket	partial	-	room helpers and mobile-scoped push covered
 roomTargeting.contract	socket	pending	-	auto-seed
 traceMetadata	socket	pending	-	auto-seed
 activity/activitySink	daemon	pending	-	auto-seed

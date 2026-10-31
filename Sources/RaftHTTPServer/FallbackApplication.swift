@@ -1,6 +1,7 @@
 import Foundation
 import HTTPTypes
 import RaftHTTP
+import RaftRealtime
 import Vapor
 
 /// Vapor mount for `AppFallback` and `GET /api/version`.
@@ -30,6 +31,7 @@ public struct FallbackServices: Sendable {
     public var publicAttachmentBudget: PublicAttachmentBudget
     public var publicTranslationBudget: PublicAttachmentBudget
     public var emailAccounts: EmailLoginDirectory
+    public var realtime: RealtimeHub?
 
     public init(
         nodeEnv: String,
@@ -49,7 +51,8 @@ public struct FallbackServices: Sendable {
         publicVisits: PublicVisitDirectory? = nil,
         publicAttachmentBudget: PublicAttachmentBudget = PublicAttachmentBudget(),
         publicTranslationBudget: PublicAttachmentBudget = PublicAttachmentBudget(),
-        emailAccounts: EmailLoginDirectory = EmailLoginDirectory()
+        emailAccounts: EmailLoginDirectory = EmailLoginDirectory(),
+        realtime: RealtimeHub? = nil
     ) {
         self.nodeEnv = nodeEnv
         self.tracker = tracker
@@ -69,6 +72,7 @@ public struct FallbackServices: Sendable {
         self.publicAttachmentBudget = publicAttachmentBudget
         self.publicTranslationBudget = publicTranslationBudget
         self.emailAccounts = emailAccounts
+        self.realtime = realtime
     }
 }
 
@@ -1401,11 +1405,13 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.post("api", "channels") { request -> Response in
-        routeResponse(services.emailAccounts.createChannelRoute(
+        let reply = services.emailAccounts.createChannelRoute(
             authorization: request.headers[.authorization],
             serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
             body: request.body.string ?? ""
-        ))
+        )
+        publishCreatedChannel(reply, services: services, authorization: request.headers[.authorization])
+        return routeResponse(reply)
     }
     app.get("api", "channels") { request -> Response in
         routeResponse(services.emailAccounts.listChannels(
@@ -2427,6 +2433,26 @@ private struct PublicSearchMiddleware: Middleware {
         response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
         return response
     }
+}
+
+private func publishCreatedChannel(_ reply: HTTPReply, services: FallbackServices, authorization: String?) {
+    guard reply.status == 200,
+          let hub = services.realtime,
+          let userId = services.emailAccounts.sessionUserId(authorization: authorization),
+          let object = (try? JSONSerialization.jsonObject(with: Data(reply.body.utf8))) as? [String: Any],
+          let id = object["id"] as? String,
+          let name = object["name"] as? String
+    else { return }
+    let channel: [String: Any] = [
+        "id": id,
+        "name": name,
+        "description": object["description"] ?? NSNull(),
+        "joined": true,
+    ]
+    guard let data = try? JSONSerialization.data(withJSONObject: ["channel": channel]),
+          let payload = String(data: data, encoding: .utf8)
+    else { return }
+    hub.emit(room: "user:\(userId)", event: "channel:updated", payloadJSON: payload)
 }
 
 private struct FallbackMiddleware: Middleware {

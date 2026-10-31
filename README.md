@@ -8,10 +8,10 @@ The specification is observable behavior: HTTP status codes, JSON bodies, respon
 
 This is an active behavioral port, not a production deployment.
 
-- **578 Swift tests pass** across six test targets.
+- **586 Swift tests pass** across seven test targets.
 - The HTTP router currently registers **286 routes** covering auth, servers, channels/threads/DMs, messages, tasks, notifications, attachments, public pages, release notes, OAuth/OIDC, agents, push, and provider connections. Route-by-route completion is still in progress.
 - **There is no database connection yet.** The process injects an always-throwing database ping, so `/health` stays at `503 {"status":"error","detail":"database unreachable"}`.
-- The executable starts the Vapor HTTP app and the SwiftNIO `/daemon/connect` listener on `DAEMON_CONNECT_PORT` (default `8081`; `0` disables it). `RaftDaemon` performs the daemon-side handshake against that listener.
+- The executable starts the Vapor HTTP app, the SwiftNIO `/daemon/connect` listener on `DAEMON_CONNECT_PORT` (default `8081`; `0` disables it), and the socket.io listener on `SOCKET_PORT` (default `8082`; `0` disables it). `RaftDaemon` performs the daemon-side handshake against that listener.
 - The locked behavioral reference lives in [docs/BEHAVIOR.md](docs/BEHAVIOR.md). It is the historical behavior log, not the project introduction.
 - Work is organized in vertical feature slices rather than per-assertion commits. The phase order and the upstream route/frame coverage metric live in [docs/PLAN.md](docs/PLAN.md); the working contract is [AGENTS.md](AGENTS.md).
 
@@ -19,7 +19,7 @@ This is an active behavioral port, not a production deployment.
 
 The port is behaviorally incomplete. The largest remaining gaps are:
 
-- WebSocket frame families (`scope_read:updated`, `channel:updated`, and related realtime events) are not emitted yet.
+- The socket.io transport covers Engine.IO open, session auth, room joins, ping/pong, channel joins, and `channel:updated` on channel creation. Read-state events, membership revocation, and the remaining event families are still pending.
 - `channels.inbox` serving rows, assistant flag-on flows, agent migration state machines, external-diagnostics detail, and parts of RBAC/guest projections still need Node-asserted slices.
 - The daemon client is a one-shot handshake executable. The reconnect, watchdog, duplicate-key, and outbound-replay loop in `DaemonLink` is a tested state machine but is not driven by a live socket yet.
 - No database is connected: state is in-memory, resets on restart, and `/health` stays at `503 database unreachable`.
@@ -35,6 +35,7 @@ The port is behaviorally incomplete. The largest remaining gaps are:
 | `RaftDaemon` | Executable entrypoint: reads `SERVER_URL` and `MACHINE_KEY`, completes the daemon handshake, prints `daemon connected`, and exits. |
 | `RaftConnectAuth` | `/daemon/connect` authentication: API-key placement, upgrade decisions, RFC 6455 accept, `machine:context` JSON. |
 | `RaftMachineSocket` | SwiftNIO listener for the raw `GET /daemon/connect` upgrade (`101` plus the first `machine:context` frame). |
+| `RaftRealtime` | SwiftNIO socket.io listener: Engine.IO handshake, session auth, room joins, ping/pong, and the `RealtimeHub` room registry. |
 | `RaftDaemonClient` | Daemon-side client: connect loop, WebSocket handshake, HTTP fetch pool, proxy tunneling, timeout/failure projection. |
 
 ## Requirements
@@ -62,7 +63,7 @@ make parity                                                  # upstream coverage
 
 `make parity` reads `docs/PARITY.tsv` and prints how many upstream route/frame modules are `locked` and the weighted case coverage. Only a `locked` row with an existing commit counts, so the number cannot move without a landed slice.
 
-The full suite occasionally aborts with signal 6 or 11 under parallel execution; rerun it once before treating it as a failure. All 578 tests pass in a clean run.
+The full suite occasionally aborts with signal 6 or 11 under parallel execution; rerun it once before treating it as a failure. All 586 tests pass in a clean run.
 
 ### Test suites
 
@@ -73,7 +74,8 @@ The full suite occasionally aborts with signal 6 or 11 under parallel execution;
 | `RaftHTTPTests` | 34 | Fallback/router, liveness, version identity, CORS. |
 | `RaftConnectAuthTests` | 17 | Upgrade auth, rejection reasons, RFC 6455 handshake. |
 | `RaftMachineSocketTests` | 6 | Exact handshake bytes and `machine:context` frame. |
-| `RaftServerStartupTests` | 1 | Real process startup, HTTP health, `/daemon/connect`, `RaftDaemon` handshake. |
+| `RaftServerStartupTests` | 1 | Real process startup, HTTP health, `/daemon/connect`, socket.io, `RaftDaemon` handshake. |
+| `RaftRealtimeTests` | 8 | Engine.IO/Socket.IO frames, room joins, guest isolation, platform-scoped events. |
 
 ## Run
 
@@ -81,10 +83,10 @@ The full suite occasionally aborts with signal 6 or 11 under parallel execution;
 /mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift run RaftServer
 ```
 
-The executable starts the Vapor HTTP app (default `127.0.0.1:8080`) and the SwiftNIO `/daemon/connect` listener (default `127.0.0.1:8081`). Vapor's standard address configuration (`--hostname`, `--port`, `--bind`, `--unix-socket`, or `HOSTNAME`/`PORT`/`BIND`/`UNIX_SOCKET`) overrides the HTTP address. `DAEMON_CONNECT_PORT` overrides the socket port; `0` disables the listener. The process prints one line before serving:
+The executable starts the Vapor HTTP app (default `127.0.0.1:8080`), the SwiftNIO `/daemon/connect` listener (default `127.0.0.1:8081`), and the socket.io listener (default `127.0.0.1:8082`). Vapor's standard address configuration (`--hostname`, `--port`, `--bind`, `--unix-socket`, or `HOSTNAME`/`PORT`/`BIND`/`UNIX_SOCKET`) overrides the HTTP address. `DAEMON_CONNECT_PORT` and `SOCKET_PORT` override the other listeners; `0` disables each. The process prints one line before serving:
 
 ```text
-raft-server ready http=127.0.0.1:8080 daemon-connect=127.0.0.1:8081
+raft-server ready http=127.0.0.1:8080 daemon-connect=127.0.0.1:8081 realtime=127.0.0.1:8082
 ```
 
 To run the daemon handshake against that listener:
@@ -110,12 +112,13 @@ Operational endpoints:
 - `GET /robots.txt` — crawler policy.
 - `/api/...` — main HTTP surface.
 - `GET /daemon/connect` — raw WebSocket upgrade on the SwiftNIO listener (`DAEMON_CONNECT_PORT`, default `8081`). `101` carries the capability header and one `machine:context` frame; failures carry `Slock-Reason`.
+- `GET /socket.io/?EIO=4&transport=websocket` — socket.io transport on the SwiftNIO listener (`SOCKET_PORT`, default `8082`). Engine.IO open, session auth, room joins, and ping/pong.
 
 ## Configuration
 
 Environment variables read by the executable:
 
-- Core: `NODE_ENV`, `JWT_SECRET`, `SERVER_URL`, `APP_URL`, `PORT`, `DAEMON_CONNECT_PORT`.
+- Core: `NODE_ENV`, `JWT_SECRET`, `SERVER_URL`, `APP_URL`, `PORT`, `DAEMON_CONNECT_PORT`, `SOCKET_PORT`.
 - Social login: `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`, `APPLE_CLIENT_ID`, `APPLE_WEB_CLIENT_ID`, `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY`, `APPLE_CLIENT_SECRET`, `APPLE_IOS_CLIENT_ID`, `APPLE_IOS_CLIENT_SECRET`, `SOCIAL_AUTH_STATE_SECRET`, `NATIVE_APPLE_AUTH_STATE_SECRET`, `SLOCK_DEVICE_LOGIN_ENABLED`.
 - Mobile OAuth: `MOBILE_OAUTH_RETURN_URI`, `MOBILE_OAUTH_ALLOWED_RETURN_URIS`, `MOBILE_APP_EMAIL_UNSUBSCRIBE_SECRET`.
 - Native notifications: `SLOCK_NATIVE_NOTIFICATIONS_ENABLED`, `NATIVE_NOTIFICATION_ATTESTATION_MODE`.
@@ -150,6 +153,7 @@ Sources/
   RaftDaemon/            one-shot daemon handshake executable
   RaftConnectAuth/       daemon connect authentication
   RaftMachineSocket/     raw SwiftNIO /daemon/connect listener
+  RaftRealtime/          socket.io listener and room hub
   RaftDaemonClient/      daemon client and proxy
 Tests/
   RaftHTTPServerTests/   HTTP route behavior
@@ -157,6 +161,7 @@ Tests/
   RaftHTTPTests/         HTTP primitives
   RaftConnectAuthTests/  connect auth
   RaftMachineSocketTests/ socket upgrade
+  RaftRealtimeTests/     socket.io frames and room targeting
   RaftServerStartupTests/ real process startup and daemon handshake
 docs/
   BEHAVIOR.md            locked behavior reference (historical log)
