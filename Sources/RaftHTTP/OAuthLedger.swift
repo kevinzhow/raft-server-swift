@@ -116,6 +116,15 @@ public final class OAuthLedger: @unchecked Sendable {
         return id
     }
 
+    @discardableResult
+    public func setAgentCreator(id: String, creatorUserId: String?) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let key = agents.keys.first(where: { $0 == id }) else { return false }
+        agents[key]?.creatorUserId = creatorUserId
+        return true
+    }
+
     public func setAgentRole(serverId: String, agentId: String, role: String) {
         lock.lock()
         agentRoles["\(serverId)\n\(agentId)"] = role

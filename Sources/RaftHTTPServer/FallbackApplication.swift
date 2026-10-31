@@ -880,6 +880,14 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.patch("api", "agents", ":id", "creator") { request -> Response in
+        routeResponse(services.emailAccounts.patchAgentCreator(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("api", "agents", ":id") { request -> Response in
         routeResponse(services.emailAccounts.getAgentRoute(
             authorization: request.headers[.authorization],

@@ -61,3 +61,6 @@ agent 向 thread 发送（`#parent:short`）要求 agent 是该 parent channel �
 
 
 agent private surfaces（activity-log/activity-summaries/workspace-files/skills/agent-dms/channels）只对 creator 或 owner/admin 开放；普通 member 403，跨 Server 404。
+
+
+agent create/GET 返回 `creator:{type:"human",id}`；`PATCH /api/agents/:id/creator` 仅 owner/admin，普通 member 404，可改 creator 为同 Server 成员。

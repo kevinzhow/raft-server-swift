@@ -7050,14 +7050,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             agentMachineIds[agentId] = machineId
             lock.unlock()
         }
-        return Self.json(200, Self.agentRuntimeJSON(
+        let creator = "{\"type\":\"human\",\"id\":\(jsonString(userId))}"
+        let runtimeJSON = Self.agentRuntimeJSON(
             id: agentId,
             name: name,
             runtime: runtime,
             runtimeConfigJSON: configJSON,
             envVarsJSON: envJSON,
             external: external
-        ))
+        )
+        return Self.json(200, String(runtimeJSON.dropLast()) + ",\"creator\":\(creator)}")
     }
 
     public func listServerAgents(authorization: String?, serverId: String) -> HTTPReply {
@@ -7069,13 +7071,37 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let rows = oauth.serverAgents(serverId: serverId).map { agent -> String in
             let canSeeConfig = role == "owner" || role == "admin" || agent.creatorUserId == userId
-            let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"model\":\(jsonString(Self.agentModel(from: agent.runtimeConfigJSON, external: agent.runtime == "external"))),\"external\":\(agent.runtime == "external"),\"serverRole\":\"member\",\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
+            let creatorJSON = agent.creatorUserId.map { "{\"type\":\"human\",\"id\":\(jsonString($0))}" } ?? "null"
+        let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"model\":\(jsonString(Self.agentModel(from: agent.runtimeConfigJSON, external: agent.runtime == "external"))),\"external\":\(agent.runtime == "external"),\"serverRole\":\"member\",\"creator\":\(creatorJSON),\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
             if canSeeConfig {
                 return base + ",\"runtimeConfig\":\(agent.runtimeConfigJSON ?? "null"),\"envVars\":\(agent.envVarsJSON ?? "null")}"
             }
             return base + "}"
         }.joined(separator: ",")
         return Self.json(200, "[\(rows)]")
+    }
+
+    public func patchAgentCreator(authorization: String?, serverId: String, agentId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted, info.serverId == serverId,
+              let role = oauth.memberRole(serverId: serverId, userId: userId)
+        else {
+            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let creatorType = object["creatorType"] as? String, creatorType == "user",
+              let creatorId = object["creatorId"] as? String,
+              oauth.memberRole(serverId: serverId, userId: creatorId) != nil
+        else {
+            return Self.json(400, "{\"error\":\"Invalid creator\"}")
+        }
+        _ = oauth.setAgentCreator(id: agentId, creatorUserId: creatorId)
+        return Self.json(200, "{\"creator\":{\"type\":\"human\",\"id\":\(jsonString(creatorId))}}")
     }
 
     public func getAgentRoute(authorization: String?, agentId: String) -> HTTPReply {
@@ -7092,7 +7118,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         let canSeeConfig = role == "owner" || role == "admin" || agent.creatorUserId == userId
-        let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"model\":\(jsonString(Self.agentModel(from: agent.runtimeConfigJSON, external: agent.runtime == "external"))),\"external\":\(agent.runtime == "external"),\"serverRole\":\"member\",\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
+        let creatorJSON = agent.creatorUserId.map { "{\"type\":\"human\",\"id\":\(jsonString($0))}" } ?? "null"
+        let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"model\":\(jsonString(Self.agentModel(from: agent.runtimeConfigJSON, external: agent.runtime == "external"))),\"external\":\(agent.runtime == "external"),\"serverRole\":\"member\",\"creator\":\(creatorJSON),\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
         let body = canSeeConfig
             ? base + ",\"runtimeConfig\":\(agent.runtimeConfigJSON ?? "null"),\"envVars\":\(agent.envVarsJSON ?? "null")}"
             : base + "}"
