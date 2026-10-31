@@ -6880,6 +6880,32 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         "{\"id\":\(jsonString(agreement.id)),\"version\":\(agreement.version),\"title\":\(jsonString(agreement.title)),\"bodyMarkdown\":\(jsonString(agreement.bodyMarkdown)),\"enabled\":\(agreement.enabled)}"
     }
 
+    public func serverMembersList(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let canSeeAllEmails = role == "owner" || role == "admin"
+        let rows = oauth.memberIdsWithRoles(serverId: serverId).map { member -> String in
+            lock.lock()
+            let account = accounts.values.first { $0.id == member.id }
+            lock.unlock()
+            let email: String
+            if canSeeAllEmails || member.id == userId {
+                email = account.map { jsonString($0.email) } ?? "null"
+            } else {
+                email = "null"
+            }
+            let name = jsonString(account?.name ?? "")
+            let displayName = jsonString(account?.name ?? "")
+            let avatar = account?.avatarUrl.map { jsonString($0) } ?? "null"
+            return "{\"userId\":\(jsonString(member.id)),\"role\":\(jsonString(member.role)),\"name\":\(name),\"displayName\":\(displayName),\"email\":\(email),\"avatarUrl\":\(avatar)}"
+        }.joined(separator: ",")
+        return Self.json(200, "[\(rows)]")
+    }
+
     public func serverMemberGraph(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)
@@ -7250,7 +7276,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             replyState.version = state.version
         }
         let json = labsJSON(serverId: serverId, userId: userId, role: role, state: replyState)
-        let bodyJSON = String(json.dropFirst())
         return Self.json(200, "{\"applied\":\(applied),\"accessEnabled\":\(state.accessEnabled),\"version\":\(state.version),\"labs\":\(labsOnlyJSON(json))}")
     }
 

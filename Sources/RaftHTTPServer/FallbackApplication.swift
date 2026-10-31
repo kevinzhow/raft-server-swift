@@ -1055,15 +1055,9 @@ public func configure(_ app: Application, services: FallbackServices) {
         ) {
             return routeResponse(reply)
         }
-        let body = "{\"error\":\"Not a member of this server\"}"
-        return routeResponse(HTTPReply(
-            status: 403,
-            headers: [
-                "X-Robots-Tag": AppFallback.robotsTag,
-                "Content-Type": AppFallback.jsonContentType,
-                "Content-Length": String(Data(body.utf8).count),
-            ],
-            body: body
+        return routeResponse(services.emailAccounts.serverMembersList(
+            authorization: request.headers[.authorization],
+            serverId: id
         ))
     }
     app.get("api", "servers", ":id", "public-visibility") { request -> Response in
