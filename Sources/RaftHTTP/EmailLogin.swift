@@ -9365,11 +9365,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
-        guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
-        }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        lock.lock()
+        let channelAdmin = channelHumanRoles["\(channelId)\n\(userId)"] == "admin"
+        lock.unlock()
+        guard role == "owner" || role == "admin" || channelAdmin else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
         let existing = oauth.channelArchivedAt(id: channelId)
         if archived {

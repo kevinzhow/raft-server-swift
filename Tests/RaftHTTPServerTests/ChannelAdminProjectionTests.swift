@@ -104,12 +104,26 @@ import VaporTesting
             #expect(protectedTarget.status == .forbidden)
             #expect((try JSONSerialization.jsonObject(with: Data((protectedTarget.body.string ?? "").utf8)) as? [String: Any])?["code"] as? String == "protected_server_role")
 
-            #expect(try await client.send(.post, headers: ownerHeaders, to: "/api/channels/\(channel)/archive").status == .ok)
+            #expect(try await client.send(.post, headers: headers, to: "/api/channels/\(channel)/archive").status == .ok)
             let archivedRole = try await client.send(.patch, headers: headers, to: "/api/channels/\(channel)/members/user/\(peerId)/role") { request in
                 request.body = .init(string: "{\"role\":\"member\"}")
             }
             #expect(archivedRole.status == .conflict)
             #expect((try JSONSerialization.jsonObject(with: Data((archivedRole.body.string ?? "").utf8)) as? [String: Any])?["code"] as? String == "channel_archived")
+
+            let frozen: [(String, HTTPRequest.Method, String, String?)] = [
+                ("rename", .patch, "/api/channels/\(channel)", "{\"description\":\"must stay frozen\"}"),
+                ("add", .post, "/api/channels/\(channel)/members", "{\"userId\":\"\(peerId)\"}"),
+                ("remove", .delete, "/api/channels/\(channel)/members/user/\(peerId)", nil),
+                ("leave", .post, "/api/channels/\(channel)/leave", nil),
+            ]
+            for (_, method, path, body) in frozen {
+                let response = try await client.send(method, headers: headers, to: URI(string: path)) { request in
+                    if let body { request.body = .init(string: body) }
+                }
+                #expect(response.status == .conflict)
+                #expect((try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any])?["code"] as? String == "channel_archived")
+            }
         }
     }
 }
