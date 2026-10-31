@@ -9442,6 +9442,62 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
+    private func agentCredentialAgent(_ authorization: String?) -> (agentId: String, scopes: [String])? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        defer { lock.unlock() }
+        guard let credential = agentCredentials[token] else { return nil }
+        return (credential.agentId, Array(credential.scopes))
+    }
+
+    public func agentResolveChannel(authorization: String?, body: String) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let target = object["target"] as? String, target.hasPrefix("#")
+        else {
+            return Self.json(400, "{\"error\":\"Invalid target\"}")
+        }
+        let name = String(target.dropFirst())
+        lock.lock()
+        let channelId = postableChannels.first { _, channel in
+            channel.serverId == agent.serverId && channel.name == name && channel.deletedAt == nil
+        }?.key
+        lock.unlock()
+        guard let channelId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        return Self.json(200, "{\"channelId\":\(jsonString(channelId))}")
+    }
+
+    public func agentCreateChannel(authorization: String?, body: String) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization), credential.scopes.contains("channels"),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let rawName = object["name"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"Invalid channel\"}")
+        }
+        let name = rawName.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        guard name.wholeMatch(of: /^[a-z0-9][a-z0-9-]{0,79}$/) != nil else {
+            return Self.json(400, "{\"error\":\"Invalid channel\"}")
+        }
+        let channelId = oauth.createChannel(serverId: agent.serverId, name: name, creatorUserId: agent.id)
+        oauth.removeChannelHuman(channelId: channelId, userId: agent.id)
+        oauth.addChannelAgent(channelId: channelId, agentId: agent.id)
+        lock.lock()
+        postableChannels[channelId] = PostableChannel(serverId: agent.serverId, memberIds: [], kind: "channel", name: name)
+        lock.unlock()
+        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name))}")
+    }
+
     public func agentHistory(authorization: String?, agentId: String? = nil, channelRef: String?, before: String?, after: String?, around: String? = nil, limit: String?) -> HTTPReply {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
             return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")

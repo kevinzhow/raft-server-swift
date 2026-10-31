@@ -499,6 +499,18 @@ public func configure(_ app: Application, services: FallbackServices) {
             channelId: request.parameters.get("channelId") ?? ""
         ))
     }
+    app.post("internal", "agent-api", "resolve-channel") { request -> Response in
+        routeResponse(services.emailAccounts.agentResolveChannel(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.post("internal", "agent-api", "channels") { request -> Response in
+        routeResponse(services.emailAccounts.agentCreateChannel(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}"
+        ))
+    }
     app.get("internal", "agent-api", "history") { request -> Response in
         routeResponse(services.emailAccounts.agentHistory(
             authorization: request.headers[.authorization],
