@@ -68,3 +68,66 @@ import VaporTesting
         }
     }
 }
+
+@Test func computerControlRequiresAReportedVersionAndReturnsRequestIdentity() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111415"
+    let serverId = "33333333-3333-4333-8333-333333333541"
+    accounts.addAccount(id: ownerId, email: "computer-version-owner@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "computer-version", name: "Computer Version", ownerId: ownerId)
+    let unversioned = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "unversioned-computer")
+    accounts.linkComputerForTesting(serverId: serverId, machineId: unversioned, online: true, version: nil)
+    let live = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "live-computer")
+    accounts.linkComputerForTesting(serverId: serverId, machineId: live, online: true, version: "1.0.0")
+    let future = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "future-computer")
+    accounts.linkComputerForTesting(serverId: serverId, machineId: future, online: true, version: "99.0.0")
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var loginHeaders = HTTPFields()
+            loginHeaders[.contentType] = "application/json"
+            let login = try await client.send(.post, headers: loginHeaders, to: "/api/auth/login") { request in
+                request.body = .init(string: "{\"email\":\"computer-version-owner@slock.test\",\"password\":\"password123\"}")
+            }
+            let token = (try JSONSerialization.jsonObject(with: Data((login.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(token)"
+            headers[.contentType] = "application/json"
+            headers[HTTPField.Name("X-Server-Id")!] = serverId
+            func action(_ machineId: String, _ action: String, _ body: String = "{}") async throws -> ClientResponse {
+                try await client.send(.post, headers: headers, to: "/api/servers/\(serverId)/machines/\(machineId)/computer/\(action)") { request in
+                    request.body = .init(string: body)
+                }
+            }
+            func json(_ response: ClientResponse) throws -> [String: Any] {
+                try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any] ?? [:]
+            }
+
+            let missingTarget = try await action(unversioned, "upgrade")
+            #expect(missingTarget.status == .badRequest)
+            #expect(try json(missingTarget)["code"] as? String == "invalid_target_version")
+
+            let unsupported = try await action(unversioned, "restart")
+            #expect(unsupported.status == .conflict)
+            #expect(try json(unsupported)["code"] as? String == "computer_control_unsupported")
+            #expect(try json(unsupported)["error"] as? String == "Raft couldn't verify the Computer version. Reconnect the Computer, then try again.")
+
+            let restarted = try await action(live, "restart")
+            #expect(restarted.status == .ok)
+            let restartedBody = try json(restarted)
+            #expect(restartedBody["ok"] as? Bool == true)
+            #expect(restartedBody["action"] as? String == "restart")
+            #expect(restartedBody["requestId"] is String)
+            #expect(restartedBody["operationId"] is String)
+
+            #expect(try await action(future, "restart").status == .ok)
+        }
+    }
+}

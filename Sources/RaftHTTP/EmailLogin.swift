@@ -206,7 +206,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var serverNotificationPrefs: [String: (muted: Bool, mentionsOnly: Bool, mode: String, version: Int)] = [:]
     private var setupPhases: [String: String] = [:]
     private var guestRoleServers: Set<String> = []
-    private var computers: [(id: String, serverId: String, name: String, apiKey: String, machineId: String?, revokedAt: Date?, online: Bool)] = []
+    private var computers: [(id: String, serverId: String, name: String, apiKey: String, machineId: String?, revokedAt: Date?, online: Bool, version: String?)] = []
     private var machineRuntimeModels: [String: [String: (models: [(id: String, label: String)], updatedAt: Date)]] = [:]
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
@@ -6736,7 +6736,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let machineId = registerMachine(serverId: serverId, userId: userId, name: name)
         let apiKey = "raft_computer_\(UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: ""))"
         lock.lock()
-        computers.append((id: UUID().uuidString.lowercased(), serverId: serverId, name: name, apiKey: apiKey, machineId: machineId, revokedAt: nil, online: false))
+        computers.append((id: UUID().uuidString.lowercased(), serverId: serverId, name: name, apiKey: apiKey, machineId: machineId, revokedAt: nil, online: false, version: nil))
         lock.unlock()
         return Self.json(201, "{\"apiKey\":\(jsonString(apiKey)),\"machineId\":\(jsonString(machineId))}")
     }
@@ -6765,7 +6765,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    public func linkComputerForTesting(serverId: String, machineId: String, online: Bool = false) {
+    public func linkComputerForTesting(serverId: String, machineId: String, online: Bool = false, version: String? = "1.0.0") {
         lock.lock()
         computers.append((
             id: UUID().uuidString.lowercased(),
@@ -6774,12 +6774,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             apiKey: "raft_computer_" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: ""),
             machineId: machineId,
             revokedAt: nil,
-            online: online
+            online: online,
+            version: version
         ))
         lock.unlock()
     }
 
-    public func computerAction(authorization: String?, serverId: String, machineId: String, action: String) -> HTTPReply {
+    public func computerAction(authorization: String?, serverId: String, machineId: String, action: String, body: String = "") -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
@@ -6789,8 +6790,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard role == "owner" || role == "admin" else {
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
-        guard ["restart", "start", "stop"].contains(action) else {
+        guard ["restart", "start", "stop", "upgrade"].contains(action) else {
             return Self.json(400, "{\"error\":\"Unknown computer action\",\"code\":\"unknown_action\"}")
+        }
+        if action == "upgrade" {
+            let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+            let target = (object?["targetVersion"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !target.isEmpty else {
+                return Self.json(400, "{\"error\":\"targetVersion is required\",\"code\":\"invalid_target_version\"}")
+            }
         }
         lock.lock()
         let machineExists = machines.contains { $0.id == machineId && $0.serverId == serverId }
@@ -6810,7 +6818,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard computer.online else {
             return Self.json(409, "{\"error\":\"Computer is offline\",\"code\":\"computer_offline\"}")
         }
-        return Self.json(200, "{\"ok\":true}")
+        guard let version = computer.version, !version.isEmpty else {
+            return Self.json(409, "{\"error\":\"Raft couldn't verify the Computer version. Reconnect the Computer, then try again.\",\"code\":\"computer_control_unsupported\"}")
+        }
+        return Self.json(200, "{\"ok\":true,\"action\":\(jsonString(action)),\"requestId\":\(jsonString(UUID().uuidString.lowercased())),\"operationId\":\(jsonString(UUID().uuidString.lowercased())),\"computerVersion\":\(jsonString(version))}")
     }
 
     public func modelLabelCatalog(authorization: String?, serverId: String) -> HTTPReply {

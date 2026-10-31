@@ -1114,7 +1114,8 @@ public func configure(_ app: Application, services: FallbackServices) {
             authorization: request.headers[.authorization],
             serverId: request.parameters.get("id") ?? "",
             machineId: request.parameters.get("machineId") ?? "",
-            action: request.parameters.get("action") ?? ""
+            action: request.parameters.get("action") ?? "",
+            body: request.body.string ?? ""
         ))
     }
     app.post("api", "computer", "attach") { request -> Response in
