@@ -2544,7 +2544,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let channel = postableChannels[message.channelId]
             let parentId = (channel?.kind == "thread" ? channel?.parentChannelId : nil) ?? message.channelId
             let snippet = Self.searchSnippet(message.content)
-            return "{\"id\":\(jsonString(message.id)),\"senderId\":\(jsonString(message.senderId)),\"senderType\":\(jsonString(message.senderType)),\"channelId\":\(jsonString(message.channelId)),\"parentChannelId\":\(jsonString(parentId)),\"content\":\(jsonString(message.content)),\"snippet\":\(jsonString(snippet))}"
+            let archivedJSON: String
+            if let archivedAt = oauth.channelArchivedAt(id: parentId) {
+                let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                archivedJSON = jsonString(formatter.string(from: archivedAt))
+            } else {
+                archivedJSON = "null"
+            }
+            return "{\"id\":\(jsonString(message.id)),\"senderId\":\(jsonString(message.senderId)),\"senderType\":\(jsonString(message.senderType)),\"channelId\":\(jsonString(message.channelId)),\"parentChannelId\":\(jsonString(parentId)),\"content\":\(jsonString(message.content)),\"snippet\":\(jsonString(snippet)),\"channelArchivedAt\":\(archivedJSON)}"
         }.joined(separator: ",")
         lock.unlock()
         return Self.json(200, "{\"results\":[\(results)],\"hasMore\":\(hasMore ? "true" : "false")}")
@@ -2653,7 +2661,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let channel = postableChannels[message.channelId]
             let parentId = (channel?.kind == "thread" ? channel?.parentChannelId : nil) ?? message.channelId
             let snippet = Self.searchSnippet(message.content)
-            return "{\"id\":\(jsonString(message.id)),\"senderId\":\(jsonString(message.senderId)),\"senderType\":\(jsonString(message.senderType)),\"channelId\":\(jsonString(message.channelId)),\"parentChannelId\":\(jsonString(parentId)),\"content\":\(jsonString(message.content)),\"snippet\":\(jsonString(snippet))}"
+            let archivedJSON: String
+            if let archivedAt = oauth.channelArchivedAt(id: parentId) {
+                let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                archivedJSON = jsonString(formatter.string(from: archivedAt))
+            } else {
+                archivedJSON = "null"
+            }
+            return "{\"id\":\(jsonString(message.id)),\"senderId\":\(jsonString(message.senderId)),\"senderType\":\(jsonString(message.senderType)),\"channelId\":\(jsonString(message.channelId)),\"parentChannelId\":\(jsonString(parentId)),\"content\":\(jsonString(message.content)),\"snippet\":\(jsonString(snippet)),\"channelArchivedAt\":\(archivedJSON)}"
         }.joined(separator: ",")
         lock.unlock()
         return Self.json(200, "{\"results\":[\(results)],\"hasMore\":\(hasMore ? "true" : "false")}")
