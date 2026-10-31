@@ -15,6 +15,8 @@ import VaporTesting
     accounts.markEmailVerified(userId: ownerId)
     accounts.addAccount(id: memberId, email: "graph-member@slock.test", password: "password123")
     accounts.markEmailVerified(userId: memberId)
+    accounts.addAccount(id: "11111111-1111-4111-8111-111111111400", email: "graph-outsider@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: "11111111-1111-4111-8111-111111111400")
     accounts.oauth.addOwnedServer(id: serverId, slug: "graph", name: "Graph", ownerId: ownerId)
     accounts.oauth.addMember(serverId: serverId, userId: memberId, role: "member")
     let agent = accounts.oauth.createAgent(serverId: serverId, name: "GraphBot")
@@ -86,6 +88,17 @@ import VaporTesting
             let serialized = response.body.string ?? ""
             #expect(!serialized.contains("graph-owner@slock.test"))
             #expect(!serialized.contains("graph-member@slock.test"))
+
+            var missingHeader = HTTPFields()
+            missingHeader[.authorization] = "Bearer \(memberToken)"
+            let missing = try await client.send(.get, headers: missingHeader, to: "/api/servers/\(serverId)/member-graph")
+            #expect(missing.status == .badRequest)
+
+            let outsiderToken = try await login("graph-outsider@slock.test")
+            var outsiderHeaders = headers
+            outsiderHeaders[.authorization] = "Bearer \(outsiderToken)"
+            let outsider = try await client.send(.get, headers: outsiderHeaders, to: "/api/servers/\(serverId)/member-graph")
+            #expect(outsider.status == .forbidden)
         }
     }
 }
