@@ -10671,6 +10671,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
+        guard channelActorCanSee(channelId: channelId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
         let type = oauth.channelType(id: channelId) ?? "channel"
         let supported = type == "channel"
         let info = oauth.channelUnreadInfo(channelId: channelId, userId: userId)
@@ -11053,7 +11056,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.lock()
             postableChannels[channelId]?.kind = visibility == "private" ? "private" : "channel"
             lock.unlock()
-            return Self.json(200, "{\"ok\":true,\"id\":\(jsonString(channelId)),\"visibility\":\(jsonString(visibility))}")
+            return Self.json(200, "{\"ok\":true,\"id\":\(jsonString(channelId)),\"visibility\":\(jsonString(visibility)),\"type\":\(jsonString(visibility == "private" ? "private" : "channel"))}")
         }
         lock.lock()
         let actorName = accounts.values.first(where: { $0.id == userId })?.name ?? "Someone"

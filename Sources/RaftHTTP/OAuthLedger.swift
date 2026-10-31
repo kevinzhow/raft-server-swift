@@ -958,6 +958,12 @@ public final class OAuthLedger: @unchecked Sendable {
         defer { lock.unlock() }
         return channelRecords
             .filter { $0.serverId == serverId && (includeArchived || !$0.archived) }
+            .filter { channel in
+                if channel.type == "private" || channel.type == "dm" {
+                    return channelHumans.contains("\(channel.id)\n\(userId)")
+                }
+                return true
+            }
             .map { channel in
                 let last = channelMessages
                     .filter { $0.channelId == channel.id }
