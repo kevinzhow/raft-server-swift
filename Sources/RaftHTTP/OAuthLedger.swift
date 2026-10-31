@@ -996,6 +996,12 @@ public final class OAuthLedger: @unchecked Sendable {
         return (server.slug, server.name)
     }
 
+    public func setServerTranslationEnabled(id: String, enabled: Bool) {
+        lock.lock()
+        servers[id]?.translationEnabled = enabled
+        lock.unlock()
+    }
+
     public func setServerProductAnalytics(id: String, enabled: Bool) {
         lock.lock()
         servers[id]?.productAnalyticsEnabled = enabled

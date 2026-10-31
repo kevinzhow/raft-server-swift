@@ -6987,6 +6987,55 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"apps\":[\("\(rows)")]}")
     }
 
+    private static func translationProviderAvailable() -> Bool {
+        let environment = ProcessInfo.processInfo.environment
+        switch environment["TRANSLATION_PROVIDER"] ?? "" {
+        case "fake":
+            return true
+        case "volcengine":
+            let id = environment["TRANSLATION_VOLCENGINE_ACCESS_KEY_ID"] ?? ""
+            let secret = environment["TRANSLATION_VOLCENGINE_SECRET_ACCESS_KEY"] ?? ""
+            return !id.isEmpty && !secret.isEmpty
+        case "google":
+            let project = environment["TRANSLATION_GOOGLE_PROJECT_ID"] ?? ""
+            let token = environment["TRANSLATION_GOOGLE_ACCESS_TOKEN"] ?? ""
+            return !project.isEmpty && !token.isEmpty
+        default:
+            return false
+        }
+    }
+
+    public func serverTranslationSettings(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let enabled = oauth.serverProfile(id: serverId)?.translationEnabled ?? false
+        let canManage = role == "owner" || role == "admin"
+        return Self.json(200, "{\"translationEnabled\":\(enabled),\"translationAvailable\":\(Self.translationProviderAvailable()),\"canManageTranslation\":\(canManage)}")
+    }
+
+    public func patchServerTranslationSettings(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Only server owners and admins can update translation settings\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let enabled = object["translationEnabled"] as? Bool
+        else {
+            return Self.json(400, "{\"error\":\"translationEnabled must be a boolean\"}")
+        }
+        oauth.setServerTranslationEnabled(id: serverId, enabled: enabled)
+        return Self.json(200, "{\"translationEnabled\":\(enabled),\"translationAvailable\":\(Self.translationProviderAvailable()),\"canManageTranslation\":true}")
+    }
+
     public func patchServerProfile(authorization: String?, serverId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

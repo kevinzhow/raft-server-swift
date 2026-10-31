@@ -919,6 +919,19 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.get("api", "servers", ":id", "translation-settings") { request -> Response in
+        routeResponse(services.emailAccounts.serverTranslationSettings(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
+    app.patch("api", "servers", ":id", "translation-settings") { request -> Response in
+        routeResponse(services.emailAccounts.patchServerTranslationSettings(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("api", "servers", ":id", "labs") { request -> Response in
         routeResponse(services.emailAccounts.getServerLabs(
             authorization: request.headers[.authorization],
