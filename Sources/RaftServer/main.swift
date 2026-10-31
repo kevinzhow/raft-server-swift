@@ -125,6 +125,9 @@ enum Entrypoint {
             )
         }
         if let realtimeServer {
+            emailAccounts.realtimeEmitter = { room, event, payload in
+                realtimeServer.hub.emit(room: room, event: event, payloadJSON: payload)
+            }
             emailAccounts.onAgentReadUpdated = { serverId, channelId, agentId, maxReadSeq in
                 guard emailAccounts.readReceiptsEnabled(serverId: serverId),
                       let channel = emailAccounts.oauth.channelInfo(id: channelId),

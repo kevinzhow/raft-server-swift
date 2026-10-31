@@ -8,7 +8,7 @@ The specification is observable behavior: HTTP status codes, JSON bodies, respon
 
 This is an active behavioral port, not a production deployment.
 
-- **589 Swift tests pass** across seven test targets.
+- **590 Swift tests pass** across seven test targets.
 - The HTTP router currently registers **286 routes** covering auth, servers, channels/threads/DMs, messages, tasks, notifications, attachments, public pages, release notes, OAuth/OIDC, agents, push, and provider connections. Route-by-route completion is still in progress.
 - **There is no database connection yet.** The process injects an always-throwing database ping, so `/health` stays at `503 {"status":"error","detail":"database unreachable"}`.
 - The executable starts the Vapor HTTP app, the SwiftNIO `/daemon/connect` listener on `DAEMON_CONNECT_PORT` (default `8081`; `0` disables it), and the socket.io listener on `SOCKET_PORT` (default `8082`; `0` disables it). `RaftDaemon` performs the daemon-side handshake against that listener.
@@ -19,7 +19,7 @@ This is an active behavioral port, not a production deployment.
 
 The port is behaviorally incomplete. The largest remaining gaps are:
 
-- The socket.io transport covers Engine.IO open, session auth, room joins, ping/pong, channel joins, `channel:updated` on channel creation, agent `scope_read:updated`, server-member removal notices, and session-family revocation. `message:new`/`message:updated`/task fanout and channel-membership transitions are still pending.
+- The socket.io transport covers Engine.IO open, session auth, room joins, ping/pong, channel joins, `channel:updated` on channel creation, `message:new`, `task:created`, `thread:followers-updated`, agent `scope_read:updated`, server-member removal notices, and session-family revocation. `message:updated` and task update/delete fanout are still pending.
 - `channels.inbox` now returns the aggregated serving page (items, totals, active unread, groups, filters, search, and pagination). Assistant flag-on flows, agent migration state machines, external-diagnostics detail, and parts of RBAC/guest projections still need Node-asserted slices.
 - The daemon client is a one-shot handshake executable. The reconnect, watchdog, duplicate-key, and outbound-replay loop in `DaemonLink` is a tested state machine but is not driven by a live socket yet.
 - No database is connected: state is in-memory, resets on restart, and `/health` stays at `503 database unreachable`.
@@ -63,7 +63,7 @@ make parity                                                  # upstream coverage
 
 `make parity` reads `docs/PARITY.tsv` and prints how many upstream route/frame modules are `locked` and the weighted case coverage. Only a `locked` row with an existing commit counts, so the number cannot move without a landed slice.
 
-The full suite occasionally aborts with signal 6 or 11 under parallel execution; rerun it once before treating it as a failure. All 589 tests pass in a clean run.
+The full suite occasionally aborts with signal 6 or 11 under parallel execution; rerun it once before treating it as a failure. All 590 tests pass in a clean run.
 
 ### Test suites
 
@@ -75,7 +75,7 @@ The full suite occasionally aborts with signal 6 or 11 under parallel execution;
 | `RaftConnectAuthTests` | 17 | Upgrade auth, rejection reasons, RFC 6455 handshake. |
 | `RaftMachineSocketTests` | 6 | Exact handshake bytes and `machine:context` frame. |
 | `RaftServerStartupTests` | 1 | Real process startup, HTTP health, `/daemon/connect`, socket.io, `RaftDaemon` handshake. |
-| `RaftRealtimeTests` | 10 | Engine.IO/Socket.IO frames, room joins, guest isolation, platform-scoped events, membership and family revocation. |
+| `RaftRealtimeTests` | 11 | Engine.IO/Socket.IO frames, room joins, guest isolation, platform-scoped events, membership and family revocation. |
 
 ## Run
 

@@ -1,6 +1,7 @@
 import Foundation
 import NIOCore
 import NIOPosix
+import RaftHTTP
 import Testing
 @testable import RaftRealtime
 
@@ -232,6 +233,46 @@ import Testing
     #expect(await mobile.waitForText { $0.contains("\"message:new\"") } != nil)
     #expect(await web.waitForText { $0.contains("\"message:new\"") } != nil)
     #expect(web.textFrames.contains { $0.contains("\"notification:push\"") } == false)
+}
+
+@Test func humanMessageSendEmitsMessageNewOnTheChannelRoom() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111626"
+    let serverId = "33333333-3333-4333-8333-333333333670"
+    accounts.addAccount(id: ownerId, email: "realtime-send@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "realtime-send", name: "Realtime Send", ownerId: ownerId)
+    let channel = accounts.oauth.createChannel(serverId: serverId, name: "realtime-send", creatorUserId: ownerId)
+    accounts.addPostableChannel(serverId: serverId, channelId: channel, memberId: ownerId, name: "realtime-send")
+    let login = accounts.login(body: "{\"email\":\"realtime-send@slock.test\",\"password\":\"password123\"}")
+    let token = (try JSONSerialization.jsonObject(with: Data(login.body.utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
+
+    let auth = StubAuth(
+        tokens: ["socket": ownerId],
+        roles: ["\(serverId)\n\(ownerId)": "member"],
+        channels: ["\(serverId)\n\(ownerId)": [channel]]
+    )
+    let server = try await RealtimeServer.start(auth: auth)
+    defer { Task { try? await server.close() } }
+    let client = try await RawSocketIOClient(port: server.port)
+    defer { client.close() }
+    _ = await client.waitForText { $0.hasPrefix("0") }
+    client.send("40{\"token\":\"socket\",\"serverId\":\"\(serverId)\"}")
+    _ = await client.waitForText { $0.hasPrefix("40") }
+    _ = await client.waitForText { $0 == "42[\"rooms:joined\"]" }
+
+    accounts.realtimeEmitter = { room, event, payload in
+        server.hub.emit(room: room, event: event, payloadJSON: payload)
+    }
+    let reply = accounts.createHumanMessage(
+        body: "{\"channelId\":\"\(channel)\",\"content\":\"hello over the wire\"}",
+        authorization: "Bearer \(token)",
+        serverId: serverId
+    )
+    #expect(reply.status == 200)
+    let event = try #require(await client.waitForText { $0.contains("\"message:new\"") })
+    #expect(event.contains("\"content\":\"hello over the wire\""))
+    #expect(event.contains("\"channelId\":\"\(channel)\""))
 }
 
 private struct StubAuth: RealtimeAuthorizing {

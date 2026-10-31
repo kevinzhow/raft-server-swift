@@ -56,10 +56,20 @@ public final class RealtimeHub: @unchecked Sendable {
         }
     }
 
+    /// Channel creation and membership grants add the room to every live
+    /// session of that user so later channel-room events are delivered.
+    public func joinUserSessions(userId: String, room: String) {
+        lock.lock()
+        let targets = sessions.values.filter { $0.userId == userId }
+        lock.unlock()
+        for session in targets {
+            session.join([room])
+        }
+    }
+
     /// `server:membership-removed` is the last packet before the close, and
     /// only connections attached to that server are affected.
-    public func removeServerMembership(serverId: String, userId: String) {
-        lock.lock()
+    public func removeServerMembership(serverId: String, userId: String) {        lock.lock()
         let targets = sessions.values.filter { $0.serverId == serverId && $0.userId == userId }
         lock.unlock()
         let payload = "{\"serverId\":\(quotedJSON(serverId))}"

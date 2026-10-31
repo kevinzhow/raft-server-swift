@@ -706,20 +706,26 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.post("api", "channels", "threads", "follow") { request -> Response in
-        routeResponse(services.emailAccounts.setThreadFollow(
+        let body = request.body.string ?? "{}"
+        let reply = services.emailAccounts.setThreadFollow(
             authorization: request.headers[.authorization],
             serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-            body: request.body.string ?? "{}",
+            body: body,
             follow: true
-        ))
+        )
+        publishThreadFollowers(reply, body: body, services: services)
+        return routeResponse(reply)
     }
     app.post("api", "channels", "threads", "unfollow") { request -> Response in
-        routeResponse(services.emailAccounts.setThreadFollow(
+        let body = request.body.string ?? "{}"
+        let reply = services.emailAccounts.setThreadFollow(
             authorization: request.headers[.authorization],
             serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-            body: request.body.string ?? "{}",
+            body: body,
             follow: false
-        ))
+        )
+        publishThreadFollowers(reply, body: body, services: services)
+        return routeResponse(reply)
     }
     app.get("api", "channels", "threads", "followed") { request -> Response in
         routeResponse(services.emailAccounts.followedThreads(
@@ -1452,12 +1458,16 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.post("api", "tasks", "channel", ":channelId") { request -> Response in
-        routeResponse(services.emailAccounts.createChannelTasks(
+        let channelId = request.parameters.get("channelId") ?? ""
+        let body = request.body.string ?? ""
+        let reply = services.emailAccounts.createChannelTasks(
             authorization: request.headers[.authorization],
             serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-            channelId: request.parameters.get("channelId") ?? "",
-            body: request.body.string ?? ""
-        ))
+            channelId: channelId,
+            body: body
+        )
+        publishTaskCreated(reply, channelId: channelId, body: body, services: services)
+        return routeResponse(reply)
     }
     app.delete("api", "tasks", ":taskId") { request -> Response in
         routeResponse(services.emailAccounts.deleteTask(
@@ -2447,6 +2457,42 @@ private struct PublicSearchMiddleware: Middleware {
     }
 }
 
+private func publishTaskCreated(
+    _ reply: HTTPReply,
+    channelId: String,
+    body: String,
+    services: FallbackServices
+) {
+    guard reply.status == 200,
+          let emit = services.emailAccounts.realtimeEmitter,
+          let response = (try? JSONSerialization.jsonObject(with: Data(reply.body.utf8))) as? [String: Any],
+          let ids = response["taskIds"] as? [String],
+          let request = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+          let requested = request["tasks"] as? [[String: Any]]
+    else { return }
+    let titles = requested.compactMap { $0["title"] as? String }
+    let tasks = zip(ids, titles).map { id, title in
+        "{\"id\":\(jsonChannelString(id)),\"channelId\":\(jsonChannelString(channelId)),\"title\":\(jsonChannelString(title)),\"status\":\"todo\"}"
+    }.joined(separator: ",")
+    emit("channel:\(channelId)", "task:created", "{\"channelId\":\(jsonChannelString(channelId)),\"tasks\":[\(tasks)]}")
+}
+
+private func publishThreadFollowers(_ reply: HTTPReply, body: String, services: FallbackServices) {
+    guard reply.status == 200,
+          let emit = services.emailAccounts.realtimeEmitter,
+          let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+          let threadId = object["threadChannelId"] as? String,
+          !threadId.isEmpty
+    else { return }
+    emit("channel:\(threadId)", "thread:followers-updated", "{\"threadChannelId\":\(jsonChannelString(threadId))}")
+}
+
+private func jsonChannelString(_ value: String) -> String {
+    let data = try! JSONSerialization.data(withJSONObject: [value])
+    let array = String(decoding: data, as: UTF8.self)
+    return String(array.dropFirst().dropLast())
+}
+
 private func publishFamilyRevoke(body: String, services: FallbackServices) {
     guard let hub = services.realtime,
           let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
@@ -2473,6 +2519,7 @@ private func publishCreatedChannel(_ reply: HTTPReply, services: FallbackService
     guard let data = try? JSONSerialization.data(withJSONObject: ["channel": channel]),
           let payload = String(data: data, encoding: .utf8)
     else { return }
+    services.realtime?.joinUserSessions(userId: userId, room: "channel:\(id)")
     hub.emit(room: "user:\(userId)", event: "channel:updated", payloadJSON: payload)
 }
 

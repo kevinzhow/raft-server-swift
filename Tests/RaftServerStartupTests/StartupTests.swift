@@ -126,6 +126,21 @@ func theServerProcessServesHealthAndAcceptsADaemon() async throws {
     #expect(created.contains("\"name\":\"live-updates\""))
     #expect(created.contains("\"joined\":true"))
 
+    let (taskStatus, taskBody) = try await http(
+        port: httpPort,
+        method: "POST",
+        path: "/api/tasks/channel/\(channelId)",
+        token: token,
+        serverId: serverId,
+        body: "{\"tasks\":[{\"title\":\"socket task\"}]}"
+    )
+    #expect(taskStatus == 200)
+    let taskIds = (try jsonObject(taskBody)["taskIds"] as? [String]) ?? []
+    #expect(taskIds.count == 1)
+    let taskEvent = try #require(await socket.waitForText { $0.contains("\"task:created\"") })
+    #expect(taskEvent.contains("\"title\":\"socket task\""))
+    #expect(taskEvent.contains(taskIds[0]))
+
     let accepted = try await probeDaemonConnect(port: daemonPort, authorization: "Bearer \(apiKey)")
     let acceptedText = String(decoding: accepted, as: UTF8.self)
     #expect(acceptedText.hasPrefix("HTTP/1.1 101 Switching Protocols\r\n"))

@@ -256,6 +256,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public var nativeNotificationStreamPollMs: Int = 1000
     /// Emitted when an agent read cursor advances. Arguments: serverId, channelId, agentId, maxReadSeq.
     public var onAgentReadUpdated: (@Sendable (String, String, String, Int) -> Void)?
+    /// Production socket sink: room, event name, JSON payload.
+    public var realtimeEmitter: (@Sendable (String, String, String?) -> Void)?
     /// Test seam called before each already-read SSE frame. Production leaves it nil.
     public var nativeNotificationLiveWriteHook: (@Sendable (_ index: Int, _ eventCount: Int) async -> Void)?
     /// `NATIVE_NOTIFICATION_ATTESTATION_MODE`. Nil means the variable is unset.
@@ -6018,7 +6020,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             attachmentIds: attachmentIds
         ))
         lock.unlock()
-        return Self.humanMessageJSON(stored)
+        let reply = Self.humanMessageJSON(stored)
+        realtimeEmitter?("channel:\(channelId)", "message:new", reply.body)
+        return reply
     }
 
     /// Replay accepts only the stored ids, positions, and uploader. It does not write.
