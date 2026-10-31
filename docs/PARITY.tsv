@@ -1,7 +1,7 @@
 module	area	status	commit	notes
 actionCards.resultReply.api	route	pending	-	auto-seed
 actions.privateAccess.api	route	pending	-	auto-seed
-activityContractHeader.api	route	partial	-	auto-seed
+activityContractHeader.api	route	locked	09c0eb0	contract header on rejected activity responses
 agentApiErrorTrace	route	pending	-	auto-seed
 agentApiIdempotentWrites.realPg	route	pending	-	auto-seed
 agentAppAccess.api	route	pending	-	auto-seed
@@ -63,7 +63,7 @@ computerAdopt.api	route	pending	-	auto-seed
 computerAttach.api	route	pending	-	auto-seed
 computerLegacyMachines.api	route	pending	-	auto-seed
 computerRevocation.api	route	partial	-	auto-seed
-corsPreflight.api	route	partial	-	auto-seed
+corsPreflight.api	route	locked	43565c1	two-hour preflight cache
 daemon.wsAuth	route	locked	e8b381d	wire paths locked by process e2e; trace/argon2-only halves excluded
 desktopDownload	route	partial	-	auto-seed
 deviceAuth.api	route	partial	-	auto-seed
@@ -147,7 +147,7 @@ managedMcpAgentErrors	route	pending	-	auto-seed
 messageTranslations.api	route	partial	-	auto-seed
 messages.api	route	partial	-	auto-seed
 messages.mentionDeliveries.api	route	pending	-	auto-seed
-messagesContextWindow.api	route	partial	-	auto-seed
+messagesContextWindow.api	route	locked	5247150	context window sizing and clean 400s
 messagesStorageColumns.api	route	pending	-	auto-seed
 messagesThreadSummaries.api	route	partial	-	auto-seed
 mobileAppEmailUnsubscribe.api	route	partial	-	auto-seed
@@ -190,7 +190,7 @@ reminders.api	route	partial	-	auto-seed
 rwStaleRead	route	pending	-	auto-seed
 securityLifecycle.api	route	pending	-	auto-seed
 serverAgreements.api	route	partial	-	auto-seed
-serverLabs.api	route	partial	-	auto-seed
+serverLabs.api	route	locked	8700cda	labs role parity, version CAS, audit, readback
 serverMemberEvents.api	route	partial	-	auto-seed
 serverSetupGate.daemonReady	route	partial	-	auto-seed
 servers.activityUnreadSummary.api	route	partial	-	auto-seed
