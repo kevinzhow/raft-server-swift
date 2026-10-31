@@ -7572,7 +7572,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     private func seatLimitMessageLocked(serverId: String) -> String? {
         guard let seats = proSeats[serverId] else { return nil }
-        let used = oauth.memberIds(serverId: serverId).count
+        let used = oauth.memberIdsWithRoles(serverId: serverId).filter { $0.role != "guest" }.count
         guard used >= seats else { return nil }
         return "Seat limit reached (\(used)/\(seats) on Pro plan)"
     }
@@ -7795,6 +7795,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             guard enabled else {
                 return Self.json(403, "{\"error\":\"Guest role transitions are not enabled\"}")
+            }
+        }
+        if targetRole == "guest", newRole == "member" {
+            lock.lock()
+            let message = seatLimitMessageLocked(serverId: serverId)
+            lock.unlock()
+            if let message {
+                return Self.json(409, "{\"error\":\(jsonString(message)),\"code\":\"human_seat_limit_reached\"}")
             }
         }
         oauth.addMember(serverId: serverId, userId: memberId, role: newRole)
