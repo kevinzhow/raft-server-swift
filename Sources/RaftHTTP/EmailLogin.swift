@@ -6879,6 +6879,54 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         "{\"id\":\(jsonString(agreement.id)),\"version\":\(agreement.version),\"title\":\(jsonString(agreement.title)),\"bodyMarkdown\":\(jsonString(agreement.bodyMarkdown)),\"enabled\":\(agreement.enabled)}"
     }
 
+    public func leaveServer(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role != "owner" else {
+            return Self.json(400, "{\"error\":\"The owner cannot leave the server\"}")
+        }
+        oauth.removeMember(serverId: serverId, userId: userId)
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    public func removeServerMember(authorization: String?, serverId: String, memberId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard let targetRole = oauth.memberRole(serverId: serverId, userId: memberId) else {
+            return Self.json(404, "{\"error\":\"Member not found\"}")
+        }
+        guard targetRole != "owner" else {
+            return Self.json(400, "{\"error\":\"The owner cannot be removed\"}")
+        }
+        oauth.removeMember(serverId: serverId, userId: memberId)
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    public func deleteServerRoute(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        oauth.deleteServer(id: serverId)
+        return Self.json(200, "{\"ok\":true}")
+    }
+
     public func sidebarOrder(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

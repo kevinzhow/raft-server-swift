@@ -362,6 +362,7 @@ public final class OAuthLedger: @unchecked Sendable {
         return members.keys.compactMap { key -> String? in
             let parts = key.split(separator: "\n", maxSplits: 1).map(String.init)
             guard parts.count == 2, parts[1] == userId else { return nil }
+            guard let server = servers[parts[0]], !server.deleted else { return nil }
             return parts[0]
         }
     }

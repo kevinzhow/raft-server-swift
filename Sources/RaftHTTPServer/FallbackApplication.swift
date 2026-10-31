@@ -944,6 +944,25 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("api", "servers", ":id", "leave") { request -> Response in
+        routeResponse(services.emailAccounts.leaveServer(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
+    app.delete("api", "servers", ":id", "members", ":memberId") { request -> Response in
+        routeResponse(services.emailAccounts.removeServerMember(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            memberId: request.parameters.get("memberId") ?? ""
+        ))
+    }
+    app.delete("api", "servers", ":id") { request -> Response in
+        routeResponse(services.emailAccounts.deleteServerRoute(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
     app.get("api", "servers", ":id", "sidebar-order") { request -> Response in
         routeResponse(services.emailAccounts.sidebarOrder(
             authorization: request.headers[.authorization],
