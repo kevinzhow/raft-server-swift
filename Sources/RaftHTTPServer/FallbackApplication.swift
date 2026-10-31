@@ -783,6 +783,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.delete("api", "tasks", ":taskId") { request -> Response in
+        routeResponse(services.emailAccounts.deleteTask(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            taskId: request.parameters.get("taskId") ?? ""
+        ))
+    }
     app.patch("api", "tasks", ":taskId", "assignee") { request -> Response in
         routeResponse(services.emailAccounts.assignTask(
             authorization: request.headers[.authorization],

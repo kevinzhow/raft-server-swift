@@ -7043,6 +7043,35 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, taskJSON(task))
     }
 
+    public func deleteTask(authorization: String?, serverId: String, taskId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        lock.lock()
+        guard let index = taskRecords.firstIndex(where: { $0.id == taskId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Task not found\"}")
+        }
+        let channelId = taskRecords[index].channelId
+        let creatorId = taskRecords[index].creatorId
+        lock.unlock()
+        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
+        case .missing: return Self.json(404, "{\"error\":\"Task not found\"}")
+        case .readOnly: return Self.json(403, "{\"error\":\"Join the channel to change tasks\"}")
+        case .write: break
+        }
+        if role != "owner" && role != "admin" && creatorId != userId {
+            return Self.json(403, "{\"error\":\"Only the task creator can delete it\"}")
+        }
+        lock.lock()
+        taskRecords.remove(at: index)
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true}")
+    }
+
     public func claimTask(authorization: String?, serverId: String, taskId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -7277,6 +7306,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var taskNumber: Int
         var messageId: String
         var createdAt: Date
+        var creatorId: String? = nil
         var assigneeId: String? = nil
         var assigneeType: String? = nil
         var claimedAt: Date? = nil
