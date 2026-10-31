@@ -52,10 +52,13 @@ The port is behaviorally incomplete. The largest remaining gaps are:
 
 ```bash
 make test                                                    # full suite with the pinned toolchain
+make parity                                                  # upstream coverage ledger (docs/PARITY.tsv)
 /mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift test --filter <TestName>
 /mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift build
 /mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift build -c release
 ```
+
+`make parity` reads `docs/PARITY.tsv` and prints how many upstream route/frame modules are `locked` and the weighted case coverage. Only a `locked` row with an existing commit counts, so the number cannot move without a landed slice.
 
 The full suite occasionally aborts with signal 6 or 11 under parallel execution; rerun it once before treating it as a failure. All 575 tests pass in a clean run.
 

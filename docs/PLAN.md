@@ -26,9 +26,9 @@
 | --- | --- |
 | 当前测试 | `make test` 绿，575 个 `@Test` |
 | 粒度问题 | 289 commits / 两天（10-30: 10，10-31: 279）；近 10 个提交多为 5–97 行 |
-| 上游 server 路由 | 219 个 `*.test.ts`，2035 条 `test(...)` |
-| 上游 daemon | 2643 条 `test(...)` |
-| 当前覆盖 | 约 12%（575 / 4678），与「~15%」判断一致 |
+| 上游 server 路由 | 219 个 `*.test.ts`，2000 条 `test(...)` |
+| 上游 daemon | 180 个测试模块，2616 条 `test(...)` |
+| 当前覆盖 | 约 12%（575 / 4616），与「~15%」判断一致 |
 | 进程现状 | `RaftServer` 未链接 `RaftMachineSocket`/`RaftDaemonClient`；`main.swift` 注入的 ping 直接 throw，`/health` 恒 503 |
 | WebSocket 现状 | pinned Vapor 快照把 WS API 整体注释（`#if WebSockets` + 全注释、`Response.upgrader` 注释），socket.io 必须像 `/daemon/connect` 一样走独立 NIO 监听端口 |
 | 现有 spy | `EmailLoginDirectory.messageUpdatedBroadcasts()` 被 2 个测试使用，属 AGENTS 禁止的侧通道 |
@@ -37,6 +37,7 @@
 
 - `docs/PARITY.tsv`：`module / area / status(pending|partial|locked) / commit / notes`。
 - `scripts/parity.py` 扫描上游 checkout（`RAFT_SOURCE_DIR`，默认 `/mnt/data/tmp/grok/raft-source-v1.21.23`），读 manifest，输出锁定模块数与用例加权覆盖；`partial` 不计入加权。
+- 基线（`--seed` 自动生成）：406 个模块；route 148 partial / 71 pending / 0 locked，加权覆盖 0.0%。`partial` 只是「存在相关 Swift 测试」的启发式标记，不代表完成；`locked` 必须带一个真实 commit。
 - 里程碑：锁定模块 ≥ 60%，用例加权覆盖 ≥ 40%。
 
 ## 3. 工作契约
