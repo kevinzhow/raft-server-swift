@@ -254,6 +254,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public var nativeNotificationsEnabled: Bool = false
     /// `NATIVE_NOTIFICATION_STREAM_POLL_MS`. Clamped to 250...5000 when a stream polls.
     public var nativeNotificationStreamPollMs: Int = 1000
+    /// Emitted when an agent read cursor advances. Arguments: serverId, channelId, agentId, maxReadSeq.
+    public var onAgentReadUpdated: (@Sendable (String, String, String, Int) -> Void)?
     /// Test seam called before each already-read SSE frame. Production leaves it nil.
     public var nativeNotificationLiveWriteHook: (@Sendable (_ index: Int, _ eventCount: Int) async -> Void)?
     /// `NATIVE_NOTIFICATION_ATTESTATION_MODE`. Nil means the variable is unset.
@@ -6821,6 +6823,27 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return nil
     }
 
+    /// Access-token identity used by the socket layer. The family id scopes
+    /// revocation to the connection family that owns the token.
+    public func sessionIdentity(accessToken: String) -> (userId: String, familyId: String?)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let userId = accessTokens[accessToken] else { return nil }
+        return (userId, accessTokenFamilies[accessToken])
+    }
+
+    /// Resolve a `push/family-revoke` capability without consuming it.
+    public func familyRevokeTarget(capability: String) -> (userId: String, familyId: String)? {
+        let parts = capability.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 2 else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let familyId = sessionFamilies.first(where: { $0.value.revokeCapabilityNonce == parts[1] })?.key,
+              let family = sessionFamilies[familyId]
+        else { return nil }
+        return (family.userId, familyId)
+    }
+
     public func setShareUsageData(userId: String, value: Bool?) {
         lock.lock()
         if let key = accounts.first(where: { $0.value.id == userId })?.key {
@@ -7859,8 +7882,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// Keyed lookup shared by `/daemon/connect` and the legacy machine surface.
-    public func machineCredential(apiKey: String) -> MachineCredentialIdentity? {
-        lock.lock()
+    public func machineCredential(apiKey: String) -> MachineCredentialIdentity? {        lock.lock()
         defer { lock.unlock() }
         guard let machine = machines.first(where: { $0.apiKey == apiKey }) else { return nil }
         return MachineCredentialIdentity(machineId: machine.id, serverId: machine.serverId)
@@ -10632,6 +10654,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         agentChannelReadCursors["\(channelId)\n\(agent.id)"] = (max(previous.seq, latestSeq), previous.version + (latestSeq > previous.seq ? 1 : 0))
         let readSeq = max(previous.seq, latestSeq)
         lock.unlock()
+        if latestSeq > previous.seq {
+            onAgentReadUpdated?(agent.serverId, channelId, agent.id, latestSeq)
+        }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let json = page.map { message -> String in
@@ -11578,6 +11603,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func readReceiptsEnabled(serverId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return readReceiptsServers.contains(serverId)
+    }
+
     public func setAgentReadCursorForTesting(agentId: String, channelId: String, seq: Int, version: Int = 1) {
         lock.lock()
         agentChannelReadCursors["\(channelId)\n\(agentId)"] = (seq, version)
@@ -11775,6 +11806,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let version = latestSeq > previous.seq ? previous.version + 1 : previous.version
             agentChannelReadCursors[key] = (seq: max(previous.seq, latestSeq), version: version)
             lock.unlock()
+            if latestSeq > previous.seq {
+                onAgentReadUpdated?(serverId, channelId, receiverId, latestSeq)
+            }
             return Self.json(200, "{\"ok\":true,\"seq\":\(max(previous.seq, latestSeq)),\"readStateVersion\":\(max(version, 1))}")
         }
         let latest = oauth.channelUnreadInfo(channelId: channelId, userId: userId).latestSeq ?? 0

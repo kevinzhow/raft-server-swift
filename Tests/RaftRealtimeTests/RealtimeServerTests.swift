@@ -56,6 +56,11 @@ import Testing
     server.hub.emit(room: "channel:c1", event: "message:new", payloadJSON: "{\"id\":\"m1\"}")
     #expect(await client.waitForText { $0 == "42[\"message:new\",{\"id\":\"m1\"}]" } != nil)
 
+    server.hub.emitScopeReadUpdated(serverId: "s1", scopeId: "c1", agentId: "a1", maxReadSeq: 7)
+    #expect(await client.waitForText {
+        $0 == "42[\"scope_read:updated\",{\"scopeId\":\"c1\",\"peerKind\":\"agent\",\"peerId\":\"a1\",\"maxReadSeq\":7}]"
+    } != nil)
+
     client.send("41")
     #expect(await client.waitForClose())
 }
@@ -119,6 +124,78 @@ import Testing
     #expect(client.textFrames.contains { $0 == "42[\"join:channel\"]" } == false)
 }
 
+@Test func familyRevocationClosesOnlyThatSessionFamily() async throws {
+    let auth = StubAuth(
+        tokens: ["family-a": "user-1", "family-b": "user-1"],
+        roles: ["s1\nuser-1": "member"],
+        channels: ["s1\nuser-1": ["c1"]],
+        families: ["family-a": "fam-a", "family-b": "fam-b"]
+    )
+    let server = try await RealtimeServer.start(auth: auth)
+    defer { Task { try? await server.close() } }
+    let first = try await RawSocketIOClient(port: server.port)
+    defer { first.close() }
+    let second = try await RawSocketIOClient(port: server.port)
+    defer { second.close() }
+
+    for (client, token) in [(first, "family-a"), (second, "family-b")] {
+        _ = await client.waitForText { $0.hasPrefix("0") }
+        client.send("40{\"token\":\"\(token)\",\"serverId\":\"s1\"}")
+        _ = await client.waitForText { $0.hasPrefix("40") }
+        _ = await client.waitForText { $0 == "42[\"rooms:joined\"]" }
+    }
+
+    server.hub.revokeFamily(userId: "user-1", familyId: "fam-a")
+    #expect(await first.waitForClose())
+    #expect(await second.waitForClose(timeout: 0.2) == false)
+    server.hub.emit(room: "user:user-1", event: "message:new", payloadJSON: "{\"id\":\"m-survivor\"}")
+    #expect(await second.waitForText { $0.contains("m-survivor") } != nil)
+}
+
+@Test func membershipRemovalSendsTheNoticeLastAndOnlyToThatServer() async throws {
+    let auth = StubAuth(
+        tokens: ["removed": "user-1", "other": "user-2"],
+        roles: [
+            "s1\nuser-1": "member",
+            "s2\nuser-1": "member",
+            "s1\nuser-2": "member",
+        ],
+        channels: [
+            "s1\nuser-1": ["c1"],
+            "s2\nuser-1": ["c2"],
+            "s1\nuser-2": ["c1"],
+        ]
+    )
+    let server = try await RealtimeServer.start(auth: auth)
+    defer { Task { try? await server.close() } }
+    let removedS1 = try await RawSocketIOClient(port: server.port)
+    defer { removedS1.close() }
+    let removedS2 = try await RawSocketIOClient(port: server.port)
+    defer { removedS2.close() }
+    let otherS1 = try await RawSocketIOClient(port: server.port)
+    defer { otherS1.close() }
+
+    for (client, token, serverId) in [
+        (removedS1, "removed", "s1"),
+        (removedS2, "removed", "s2"),
+        (otherS1, "other", "s1"),
+    ] {
+        _ = await client.waitForText { $0.hasPrefix("0") }
+        client.send("40{\"token\":\"\(token)\",\"serverId\":\"\(serverId)\"}")
+        _ = await client.waitForText { $0.hasPrefix("40") }
+        _ = await client.waitForText { $0 == "42[\"rooms:joined\"]" }
+    }
+
+    server.hub.removeServerMembership(serverId: "s1", userId: "user-1")
+    #expect(await removedS1.waitForClose())
+    #expect(removedS1.textFrames.last == "42[\"server:membership-removed\",{\"serverId\":\"s1\"}]")
+    #expect(await removedS2.waitForClose(timeout: 0.2) == false)
+    #expect(await otherS1.waitForClose(timeout: 0.2) == false)
+
+    server.hub.emit(room: "server:s1", event: "message:new", payloadJSON: "{\"id\":\"m-other\"}")
+    #expect(await otherS1.waitForText { $0.contains("m-other") } != nil)
+}
+
 @Test func roomNamesAndChannelAccessMatchTheSocketContract() {
     #expect(requiresSocketChannelAccessCheck("channel"))
     #expect(requiresSocketChannelAccessCheck("thread"))
@@ -161,8 +238,10 @@ private struct StubAuth: RealtimeAuthorizing {
     var tokens: [String: String]
     var roles: [String: String]
     var channels: [String: [String]]
+    var families: [String: String] = [:]
 
     func userId(forAccessToken token: String) -> String? { tokens[token] }
+    func sessionFamilyId(forAccessToken token: String) -> String? { families[token] }
     func serverRole(serverId: String, userId: String) -> String? { roles["\(serverId)\n\(userId)"] }
     func visibleChannelIds(serverId: String, userId: String) -> [String] { channels["\(serverId)\n\(userId)"] ?? [] }
 }

@@ -124,6 +124,24 @@ enum Entrypoint {
                 port: configuredSocketPort
             )
         }
+        if let realtimeServer {
+            emailAccounts.onAgentReadUpdated = { serverId, channelId, agentId, maxReadSeq in
+                guard emailAccounts.readReceiptsEnabled(serverId: serverId),
+                      let channel = emailAccounts.oauth.channelInfo(id: channelId),
+                      channel.serverId == serverId,
+                      channel.name != "all",
+                      let type = emailAccounts.oauth.channelType(id: channelId),
+                      ["channel", "private", "dm"].contains(type),
+                      emailAccounts.oauth.channelAgentIds(channelId: channelId).contains(agentId)
+                else { return }
+                realtimeServer.hub.emitScopeReadUpdated(
+                    serverId: serverId,
+                    scopeId: channelId,
+                    agentId: agentId,
+                    maxReadSeq: maxReadSeq
+                )
+            }
+        }
         configure(
             app,
             services: FallbackServices(

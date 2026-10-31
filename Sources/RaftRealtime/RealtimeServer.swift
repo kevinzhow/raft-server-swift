@@ -5,6 +5,7 @@ import RaftConnectAuth
 
 public protocol RealtimeAuthorizing: Sendable {
     func userId(forAccessToken token: String) -> String?
+    func sessionFamilyId(forAccessToken token: String) -> String?
     func serverRole(serverId: String, userId: String) -> String?
     func visibleChannelIds(serverId: String, userId: String) -> [String]
 }
@@ -41,6 +42,37 @@ public final class RealtimeHub: @unchecked Sendable {
         lock.lock()
         sessions.removeValue(forKey: ObjectIdentifier(session))
         lock.unlock()
+    }
+
+    /// Close every socket that belongs to one user session family.
+    public func revokeFamily(userId: String, familyId: String) {
+        lock.lock()
+        let targets = sessions.values.filter { session in
+            session.userId == userId && (session.familyId == nil || session.familyId == familyId)
+        }
+        lock.unlock()
+        for session in targets {
+            session.close()
+        }
+    }
+
+    /// `server:membership-removed` is the last packet before the close, and
+    /// only connections attached to that server are affected.
+    public func removeServerMembership(serverId: String, userId: String) {
+        lock.lock()
+        let targets = sessions.values.filter { $0.serverId == serverId && $0.userId == userId }
+        lock.unlock()
+        let payload = "{\"serverId\":\(quotedJSON(serverId))}"
+        let frame = socketIOEventFrame("server:membership-removed", payloadJSON: payload)
+        for session in targets {
+            session.sendAndClose(frame)
+        }
+    }
+
+    /// One shared `channel:<id>` frame with the agent's new watermark.
+    public func emitScopeReadUpdated(serverId: String, scopeId: String, agentId: String, maxReadSeq: Int) {
+        let payload = "{\"scopeId\":\(quotedJSON(scopeId)),\"peerKind\":\"agent\",\"peerId\":\(quotedJSON(agentId)),\"maxReadSeq\":\(maxReadSeq)}"
+        emit(room: "channel:\(scopeId)", event: "scope_read:updated", payloadJSON: payload)
     }
 }
 
@@ -234,6 +266,7 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler, @unchecked
             userId: userId,
             serverId: handshake.serverId,
             clientKind: handshake.clientKind,
+            familyId: auth.sessionFamilyId(forAccessToken: handshake.token),
             channel: context.channel
         )
         self.session = session
@@ -312,16 +345,25 @@ final class SocketIOSession: @unchecked Sendable {
     let userId: String
     let serverId: String?
     let clientKind: SocketClientKind
+    let familyId: String?
     let channel: any Channel
     private let lock = NSLock()
     private var rooms: Set<String> = []
     private var closed = false
 
-    init(id: String, userId: String, serverId: String?, clientKind: SocketClientKind, channel: any Channel) {
+    init(
+        id: String,
+        userId: String,
+        serverId: String?,
+        clientKind: SocketClientKind,
+        familyId: String?,
+        channel: any Channel
+    ) {
         self.id = id
         self.userId = userId
         self.serverId = serverId
         self.clientKind = clientKind
+        self.familyId = familyId
         self.channel = channel
     }
 
@@ -359,6 +401,36 @@ final class SocketIOSession: @unchecked Sendable {
             var buffer = channel.allocator.buffer(capacity: text.utf8.count + 4)
             buffer.writeBytes(websocketTextFrame(text))
             channel.writeAndFlush(NIOAny(buffer), promise: nil)
+        }
+    }
+
+    func close() {
+        lock.lock()
+        closed = true
+        lock.unlock()
+        channel.eventLoop.execute { [channel] in
+            channel.close(promise: nil)
+        }
+    }
+
+    func sendAndClose(_ text: String) {        lock.lock()
+        if closed {
+            lock.unlock()
+            channel.close(promise: nil)
+            return
+        }
+        closed = true
+        lock.unlock()
+        channel.eventLoop.execute { [channel] in
+            guard channel.isActive else {
+                channel.close(promise: nil)
+                return
+            }
+            var buffer = channel.allocator.buffer(capacity: text.utf8.count + 4)
+            buffer.writeBytes(websocketTextFrame(text))
+            channel.writeAndFlush(NIOAny(buffer)).whenComplete { _ in
+                channel.close(promise: nil)
+            }
         }
     }
 }

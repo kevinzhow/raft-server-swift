@@ -1646,11 +1646,17 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.delete("api", "servers", ":id", "members", ":memberId") { request -> Response in
-        routeResponse(services.emailAccounts.removeServerMember(
+        let serverId = request.parameters.get("id") ?? ""
+        let memberId = request.parameters.get("memberId") ?? ""
+        let reply = services.emailAccounts.removeServerMember(
             authorization: request.headers[.authorization],
-            serverId: request.parameters.get("id") ?? "",
-            memberId: request.parameters.get("memberId") ?? ""
-        ))
+            serverId: serverId,
+            memberId: memberId
+        )
+        if reply.status == 200 {
+            services.realtime?.removeServerMembership(serverId: serverId, userId: memberId)
+        }
+        return routeResponse(reply)
     }
     app.delete("api", "servers", ":id") { request -> Response in
         routeResponse(services.emailAccounts.deleteServerRoute(
@@ -1910,7 +1916,12 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.post("api", "push", "family-revoke") { request -> Response in
-        routeResponse(services.emailAccounts.revokePushFamily(body: request.body.string ?? ""))
+        let body = request.body.string ?? ""
+        let reply = services.emailAccounts.revokePushFamily(body: body)
+        if reply.status == 204 {
+            publishFamilyRevoke(body: body, services: services)
+        }
+        return routeResponse(reply)
     }
     app.get("api", "push", "delivery-status") { request -> Response in
         routeResponse(services.emailAccounts.pushDeliveryStatus(
@@ -2433,6 +2444,15 @@ private struct PublicSearchMiddleware: Middleware {
         response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
         return response
     }
+}
+
+private func publishFamilyRevoke(body: String, services: FallbackServices) {
+    guard let hub = services.realtime,
+          let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+          let capability = object["capability"] as? String,
+          let target = services.emailAccounts.familyRevokeTarget(capability: capability)
+    else { return }
+    hub.revokeFamily(userId: target.userId, familyId: target.familyId)
 }
 
 private func publishCreatedChannel(_ reply: HTTPReply, services: FallbackServices, authorization: String?) {

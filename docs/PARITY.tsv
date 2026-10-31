@@ -203,7 +203,7 @@ shareArtifacts.api	route	partial	-	auto-seed
 sidebarOrder.roundTrips.api	route	partial	-	auto-seed
 slackBridge.api	route	partial	-	auto-seed
 slackBridgedAgentMention	route	partial	-	auto-seed
-socketMembershipRevocation.api	route	pending	-	auto-seed
+socketMembershipRevocation.api	route	partial	-	server-member removal and family revocation covered; channel leave/member transitions pending
 socketSendTimeAudience.api	route	pending	-	auto-seed
 storageResponseStream.callSites	route	pending	-	auto-seed
 systemNotifications.api	route	pending	-	auto-seed

@@ -115,7 +115,7 @@ public func socketIOGeneratedID() -> String {
     String(UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "").prefix(20))
 }
 
-private func quotedJSON(_ value: String) -> String {
+func quotedJSON(_ value: String) -> String {
     let data = try! JSONSerialization.data(withJSONObject: [value])
     let array = String(decoding: data, as: UTF8.self)
     return String(array.dropFirst().dropLast())

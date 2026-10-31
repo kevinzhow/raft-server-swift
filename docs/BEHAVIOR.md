@@ -138,3 +138,13 @@ socket 房间为 `user:<id>`、`user:<id>:clientKind:<kind>`、`server:<id>` 或
 `notification:push` 只发到 `user:<id>:clientKind:mobile`；其他用户事件仍发 `user:<id>`。
 
 
+`DELETE /api/servers/:id/members/:memberId` 成功后，该用户在该 server 的 socket 最后收到 `42["server:membership-removed",{"serverId":"<id>"}]` 然后断开；同一用户在其他 server 的 socket 不受影响。
+
+
+`POST /api/push/family-revoke` 204 后，属于该 session family 的 socket 断开，同用户其他 family 的 socket 保留。
+
+
+agent 读游标前进且 server 开启 read receipts 时，`channel:<id>` 房间收到 `42["scope_read:updated",{"scopeId","peerKind":"agent","peerId","maxReadSeq"}]`；human 读操作不发。
+
+
+

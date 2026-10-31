@@ -6,7 +6,11 @@ struct LedgerRealtimeAuth: RealtimeAuthorizing {
     let accounts: EmailLoginDirectory
 
     func userId(forAccessToken token: String) -> String? {
-        accounts.sessionUserId(authorization: "Bearer \(token)")
+        accounts.sessionIdentity(accessToken: token)?.userId
+    }
+
+    func sessionFamilyId(forAccessToken token: String) -> String? {
+        accounts.sessionIdentity(accessToken: token)?.familyId
     }
 
     func serverRole(serverId: String, userId: String) -> String? {
