@@ -55,6 +55,7 @@ import VaporTesting
             let adminToken = try await login("private-surface-admin@slock.test")
             let viewerToken = try await login("private-surface-viewer@slock.test")
             let routes = [
+                "/api/agents/\(agent)/activity",
                 "/api/agents/\(agent)/activity-log",
                 "/api/agents/\(agent)/activity-summaries",
                 "/api/agents/\(agent)/workspace-files",

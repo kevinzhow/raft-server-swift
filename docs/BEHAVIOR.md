@@ -70,3 +70,6 @@ agent create/GET 返回 `creator:{type:"human",id}`；`PATCH /api/agents/:id/cre
 
 
 `GET /api/agents/archived` 对 member 及以上返回 `{agents:[{agentId,machineName,workspaceState}]}`；guest 403。
+
+
+`GET /api/agents/:id/activity` 走 agent private surface 权限：creator/owner/admin 200（idle 占位），普通 member/guest 403，跨 Server 404。

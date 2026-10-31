@@ -7428,6 +7428,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(200, "[]")
         case "skills":
             return Self.json(200, "{\"global\":[],\"workspace\":[]}")
+        case "activity":
+            return Self.json(200, "{\"activity\":\"idle\",\"detail\":\"\"}")
         default:
             return Self.json(200, "{\"summaries\":[],\"nextCursor\":null}")
         }

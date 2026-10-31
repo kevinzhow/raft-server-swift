@@ -948,6 +948,14 @@ public func configure(_ app: Application, services: FallbackServices) {
             agentId: request.parameters.get("id") ?? ""
         ))
     }
+    app.get("api", "agents", ":id", "activity") { request -> Response in
+        routeResponse(services.emailAccounts.agentPrivateSurface(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? "",
+            surface: "activity"
+        ))
+    }
     app.get("api", "agents", ":id", "activity-log") { request -> Response in
         routeResponse(services.emailAccounts.agentPrivateSurface(
             authorization: request.headers[.authorization],
