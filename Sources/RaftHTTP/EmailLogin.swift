@@ -7452,6 +7452,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return "{\"surface\":\"none\",\"phase\":null,\"currentStep\":null,\"blocksChat\":false,\"allowedExits\":[\"return_to_server\"],\"sideEffectState\":{\"transitions\":\"disabled\",\"completion\":\"disabled\"},\"gateReason\":\"insufficient_permission\",\"computerStatus\":\"unknown\",\"runtimeStatus\":\"unknown\",\"runtimeOptions\":[],\"hasConnectedComputer\":false,\"offlineComputers\":[],\"postSetup\":{\"surveyPending\":false,\"handoffPending\":false}}"
     }
 
+    public func slackBridgeUnavailable() -> HTTPReply {
+        Self.json(503, "{\"ok\":false,\"code\":\"slack_bridge_provider_unavailable\"}")
+    }
+
     public func serverSetupProjection(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

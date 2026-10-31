@@ -588,6 +588,18 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("api", "channels", "activity", "difference") { _ -> Response in
         routeResponse(services.emailAccounts.activityContractRejection())
     }
+    app.post("api", "slack-bridge", "oauth", "start") { _ -> Response in
+        routeResponse(services.emailAccounts.slackBridgeUnavailable())
+    }
+    app.get("api", "slack-bridge", "oauth", "callback") { _ -> Response in
+        routeResponse(services.emailAccounts.slackBridgeUnavailable())
+    }
+    app.get("api", "slack-bridge", "provisioning") { _ -> Response in
+        routeResponse(services.emailAccounts.slackBridgeUnavailable())
+    }
+    app.post("api", "slack-bridge", "events") { _ -> Response in
+        routeResponse(services.emailAccounts.slackBridgeUnavailable())
+    }
     app.get("api", "servers", "order") { request -> Response in
         routeResponse(services.emailAccounts.serverOrder(authorization: request.headers[.authorization]))
     }
