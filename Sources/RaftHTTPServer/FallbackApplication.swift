@@ -1040,6 +1040,20 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("api", "agents", ":id", "assign-machine") { request -> Response in
+        routeResponse(services.emailAccounts.assignAgentMachine(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.post("api", "agents", ":id", "start") { request -> Response in
+        routeResponse(services.emailAccounts.agentRuntimeAction(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("id") ?? "",
+            action: "start"
+        ))
+    }
     app.post("api", "agents", ":id", "stop") { request -> Response in
         routeResponse(services.emailAccounts.agentRuntimeAction(
             authorization: request.headers[.authorization],

@@ -7576,7 +7576,33 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         case .denied(let reply):
             return reply
         case .allowed:
+            if oauth.agentRuntimeInfo(id: agentId)?.runtime == "external" {
+                return Self.json(400, "{\"error\":\"External agents do not use Raft-managed runtime lifecycle\"}")
+            }
             return Self.json(action == "stop" ? 200 : 202, "{\"ok\":true}")
+        }
+    }
+
+    public func assignAgentMachine(authorization: String?, agentId: String, body: String) -> HTTPReply {
+        switch agentAuthority(authorization, agentId: agentId) {
+        case .denied(let reply):
+            return reply
+        case .allowed:
+            guard let info = oauth.agentRuntimeInfo(id: agentId) else {
+                return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+            }
+            if info.runtime == "external" {
+                return Self.json(400, "{\"error\":\"External agents cannot be assigned to a Computer\"}")
+            }
+            guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+                  let machineId = object["machineId"] as? String, !machineId.isEmpty
+            else {
+                return Self.json(400, "{\"error\":\"machineId is required\"}")
+            }
+            lock.lock()
+            agentMachineIds[agentId] = machineId
+            lock.unlock()
+            return Self.json(200, "{\"ok\":true}")
         }
     }
 

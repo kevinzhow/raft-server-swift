@@ -73,3 +73,6 @@ agent create/GET 返回 `creator:{type:"human",id}`；`PATCH /api/agents/:id/cre
 
 
 `GET /api/agents/:id/activity` 走 agent private surface 权限：creator/owner/admin 200（idle 占位），普通 member/guest 403，跨 Server 404。
+
+
+external agent 的 start/stop/reset 都是 400 `External agents do not use Raft-managed runtime lifecycle`；assign-machine 是 400 `External agents cannot be assigned to a Computer`。
