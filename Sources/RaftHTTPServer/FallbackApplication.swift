@@ -1109,6 +1109,14 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("api", "servers", ":id", "machines", ":machineId", "computer", ":action") { request -> Response in
+        routeResponse(services.emailAccounts.computerAction(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            machineId: request.parameters.get("machineId") ?? "",
+            action: request.parameters.get("action") ?? ""
+        ))
+    }
     app.post("api", "computer", "attach") { request -> Response in
         routeResponse(services.emailAccounts.attachComputer(
             authorization: request.headers[.authorization],

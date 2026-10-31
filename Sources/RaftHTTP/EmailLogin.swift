@@ -206,7 +206,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var serverNotificationPrefs: [String: (muted: Bool, mentionsOnly: Bool, mode: String, version: Int)] = [:]
     private var setupPhases: [String: String] = [:]
     private var guestRoleServers: Set<String> = []
-    private var computers: [(id: String, serverId: String, name: String, apiKey: String, machineId: String?, revokedAt: Date?)] = []
+    private var computers: [(id: String, serverId: String, name: String, apiKey: String, machineId: String?, revokedAt: Date?, online: Bool)] = []
     private var machineRuntimeModels: [String: [String: (models: [(id: String, label: String)], updatedAt: Date)]] = [:]
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
@@ -6736,7 +6736,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let machineId = registerMachine(serverId: serverId, userId: userId, name: name)
         let apiKey = "raft_computer_\(UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: ""))"
         lock.lock()
-        computers.append((id: UUID().uuidString.lowercased(), serverId: serverId, name: name, apiKey: apiKey, machineId: machineId, revokedAt: nil))
+        computers.append((id: UUID().uuidString.lowercased(), serverId: serverId, name: name, apiKey: apiKey, machineId: machineId, revokedAt: nil, online: false))
         lock.unlock()
         return Self.json(201, "{\"apiKey\":\(jsonString(apiKey)),\"machineId\":\(jsonString(machineId))}")
     }
@@ -6763,6 +6763,54 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         machineRuntimeModels[machineId, default: [:]][runtime] = (models, Date())
         lock.unlock()
+    }
+
+    public func linkComputerForTesting(serverId: String, machineId: String, online: Bool = false) {
+        lock.lock()
+        computers.append((
+            id: UUID().uuidString.lowercased(),
+            serverId: serverId,
+            name: "linked-computer",
+            apiKey: "raft_computer_" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: ""),
+            machineId: machineId,
+            revokedAt: nil,
+            online: online
+        ))
+        lock.unlock()
+    }
+
+    public func computerAction(authorization: String?, serverId: String, machineId: String, action: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard ["restart", "start", "stop"].contains(action) else {
+            return Self.json(400, "{\"error\":\"Unknown computer action\",\"code\":\"unknown_action\"}")
+        }
+        lock.lock()
+        let machineExists = machines.contains { $0.id == machineId && $0.serverId == serverId }
+        let linked = computers.filter { candidate in
+            candidate.serverId == serverId
+                && candidate.machineId == machineId
+                && candidate.revokedAt == nil
+        }
+        let computer = linked.first { $0.online } ?? linked.first
+        lock.unlock()
+        guard machineExists else {
+            return Self.json(404, "{\"error\":\"Machine not found\"}")
+        }
+        guard let computer else {
+            return Self.json(409, "{\"error\":\"Machine is not a Computer\",\"code\":\"not_a_computer\"}")
+        }
+        guard computer.online else {
+            return Self.json(409, "{\"error\":\"Computer is offline\",\"code\":\"computer_offline\"}")
+        }
+        return Self.json(200, "{\"ok\":true}")
     }
 
     public func modelLabelCatalog(authorization: String?, serverId: String) -> HTTPReply {
