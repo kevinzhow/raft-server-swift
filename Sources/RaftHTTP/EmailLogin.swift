@@ -210,6 +210,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var machineRuntimeModels: [String: [String: (models: [(id: String, label: String)], updatedAt: Date)]] = [:]
     private var proSeats: [String: Int] = [:]
     private var joinLinks: [String: (serverId: String, role: String)] = [:]
+    private var hostedAgents: Set<String> = []
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -7562,6 +7563,42 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let avatarUrl = "/api/avatars/server-\(serverId)/\(key).webp"
         oauth.setServerAvatar(id: serverId, avatarUrl: avatarUrl)
         return Self.json(200, "{\"avatarUrl\":\(jsonString(avatarUrl))}")
+    }
+
+    public func markAgentHosted(agentId: String) {
+        lock.lock()
+        hostedAgents.insert(agentId)
+        lock.unlock()
+    }
+
+    public func updateAgentProfile(authorization: String?, body: String) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let credential = agentCredentials[token]
+        lock.unlock()
+        guard let credential, let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid profile update\"}")
+        }
+        lock.lock()
+        let hosted = hostedAgents.contains(agent.id)
+        lock.unlock()
+        if hosted, object["description"] != nil {
+            return Self.json(403, "{\"error\":\"Hosted agents cannot change their own description\",\"code\":\"hosted_agent_description_human_only\",\"suggestedNextAction\":\"Ask a human owner or admin to edit it in your Profile tab in Raft. Nothing was changed.\"}")
+        }
+        if let description = object["description"] as? String {
+            oauth.updateAgentDescription(id: agent.id, description: description)
+        }
+        if let displayName = object["displayName"] as? String,
+           !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            oauth.updateAgentDisplayName(id: agent.id, displayName: displayName.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return Self.json(200, "{\"ok\":true}")
     }
 
     public func setServerSeats(serverId: String, seats: Int) {

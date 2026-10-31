@@ -293,6 +293,12 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func updateAgentDisplayName(id: String, displayName: String) {
+        lock.lock()
+        agents[id]?.displayName = displayName
+        lock.unlock()
+    }
+
     public func updateAgentDescription(id: String, description: String) {
         lock.lock()
         agents[id]?.description = description
