@@ -85,3 +85,6 @@ managed agent 的 stop 对任意 Server 成员 200；reset restart/session 对�
 
 
 managed agent 的 credentials/bootstrap-tokens mint 都是 400 `agent_not_external`；external agent bootstrap 201 且 scopes 为 `[channels,knowledge,mentions,reactions,read,send,tasks]`。
+
+
+external agent 的 credential mint 返回 credentialId/apiKey/agentId/serverId/scopes；GET credentials 返回 masked inventory（不泄露 key）；DELETE credentials/:id 幂等 204，revoked key 打 internal agent-api 401；GET /internal/agent-api/ 回 agentId/credentialId/serverId/scopes。

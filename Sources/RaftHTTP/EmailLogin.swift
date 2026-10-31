@@ -6499,11 +6499,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     private struct AgentCredential {
+        var id: String = UUID().uuidString.lowercased()
         var agentId: String
         var scopes: Set<String>
         var name: String
         var createdAt: Date = Date()
         var lastUsedAt: Date?
+        var revokedAt: Date?
     }
 
     private struct MentionInput {
@@ -6551,6 +6553,28 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         postableChannels[channelId]?.kind = "private"
         lock.unlock()
+    }
+
+    public func agentApiIdentity(authorization: String?) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        guard let credential = agentCredentials[token], credential.revokedAt == nil else {
+            lock.unlock()
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        agentCredentials[token]?.lastUsedAt = Date()
+        let agentId = credential.agentId
+        let credentialId = credential.id
+        let scopes = credential.scopes.sorted()
+        lock.unlock()
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        let scopesJSON = scopes.map { jsonString($0) }.joined(separator: ",")
+        return Self.json(200, "{\"agentId\":\(jsonString(agentId)),\"credentialId\":\(jsonString(credentialId)),\"serverId\":\(jsonString(agent.serverId)),\"scopes\":[\(scopesJSON)]}")
     }
 
     public func agentAttachmentUploadCapabilities(authorization: String?) -> HTTPReply {
@@ -7648,8 +7672,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard info.runtime == "external" else {
             return Self.json(400, "{\"code\":\"agent_not_external\",\"error\":\"Only external Agents get credentials\"}")
         }
-        let key = mintAgentCredential(agentId: agentId, scopes: ["channels", "knowledge", "mentions", "reactions", "read", "send", "tasks"], name: "session-issued")
-        return Self.json(201, "{\"credential\":\(jsonString(key)),\"scopes\":[\"channels\",\"knowledge\",\"mentions\",\"reactions\",\"read\",\"send\",\"tasks\"]}")
+        let capabilities = ["channels", "knowledge", "mentions", "reactions", "read", "send", "tasks"]
+        let key = mintAgentCredential(agentId: agentId, scopes: capabilities, name: "session-issued")
+        lock.lock()
+        let credentialId = agentCredentials[key]?.id ?? ""
+        lock.unlock()
+        return Self.json(201, "{\"credentialId\":\(jsonString(credentialId)),\"apiKey\":\(jsonString(key)),\"agentId\":\(jsonString(agentId)),\"serverId\":\(jsonString(info.serverId)),\"scopes\":[\(capabilities.map { jsonString($0) }.joined(separator: ","))]}")
     }
 
     public func listAgentCredentials(authorization: String?, agentId: String) -> HTTPReply {
@@ -7657,11 +7685,52 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
         guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted,
-              oauth.memberRole(serverId: info.serverId, userId: userId) != nil
+              let role = oauth.memberRole(serverId: info.serverId, userId: userId)
         else {
             return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
         }
-        return Self.json(200, "{\"credentials\":[]}")
+        guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        lock.lock()
+        let rows = agentCredentials
+            .filter { $0.value.agentId == agentId }
+            .map { key, credential -> String in
+                let masked = String(key.prefix(14)) + "***"
+                let created = jsonString(formatter.string(from: credential.createdAt))
+                let used = credential.lastUsedAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+                let revoked = credential.revokedAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+                let scopes = credential.scopes.sorted().map { jsonString($0) }.joined(separator: ",")
+                return "{\"id\":\(jsonString(credential.id)),\"maskedToken\":\(jsonString(masked)),\"name\":\(jsonString(credential.name)),\"scopes\":[\(scopes)],\"createdAt\":\(created),\"lastUsedAt\":\(used),\"revokedAt\":\(revoked)}"
+            }
+        lock.unlock()
+        return Self.json(200, "{\"credentials\":[\(rows.joined(separator: ","))]}")
+    }
+
+    public func revokeAgentCredential(authorization: String?, agentId: String, credentialId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted,
+              let role = oauth.memberRole(serverId: info.serverId, userId: userId)
+        else {
+            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        lock.lock()
+        guard let token = agentCredentials.first(where: { $0.value.id == credentialId })?.key,
+              agentCredentials[token]?.agentId == agentId else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Credential not found\"}")
+        }
+        let existingRevocation = agentCredentials[token]?.revokedAt
+        agentCredentials[token]?.revokedAt = existingRevocation ?? Date()
+        lock.unlock()
+        return HTTPReply(status: 204, headers: [:], body: "")
     }
 
     public func registerMachine(serverId: String, userId: String, name: String) -> String {
@@ -10041,7 +10110,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let token = String(authorization.dropFirst("Bearer ".count))
         lock.lock()
         defer { lock.unlock() }
-        guard let credential = agentCredentials[token] else { return nil }
+        guard let credential = agentCredentials[token], credential.revokedAt == nil else { return nil }
+        agentCredentials[token]?.lastUsedAt = Date()
         return (credential.agentId, Array(credential.scopes))
     }
 

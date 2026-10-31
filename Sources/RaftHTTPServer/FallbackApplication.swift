@@ -483,6 +483,11 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.get("internal", "agent-api") { request -> Response in
+        routeResponse(services.emailAccounts.agentApiIdentity(
+            authorization: request.headers[.authorization]
+        ))
+    }
     app.post("internal", "agent-api", "profile") { request -> Response in
         routeResponse(services.emailAccounts.updateAgentProfile(
             authorization: request.headers[.authorization],
@@ -1082,6 +1087,13 @@ public func configure(_ app: Application, services: FallbackServices) {
         routeResponse(services.emailAccounts.issueAgentCredential(
             authorization: request.headers[.authorization],
             agentId: request.parameters.get("id") ?? ""
+        ))
+    }
+    app.delete("api", "agents", ":id", "credentials", ":credentialId") { request -> Response in
+        routeResponse(services.emailAccounts.revokeAgentCredential(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("id") ?? "",
+            credentialId: request.parameters.get("credentialId") ?? ""
         ))
     }
     app.get("api", "agents", ":id", "credentials") { request -> Response in
