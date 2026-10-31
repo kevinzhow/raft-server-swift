@@ -988,6 +988,14 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.parameters.get("id") ?? ""
         ))
     }
+    app.patch("api", "servers", ":id", "members", ":memberId") { request -> Response in
+        routeResponse(services.emailAccounts.patchServerMemberRole(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            memberId: request.parameters.get("memberId") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.delete("api", "servers", ":id", "members", ":memberId") { request -> Response in
         routeResponse(services.emailAccounts.removeServerMember(
             authorization: request.headers[.authorization],

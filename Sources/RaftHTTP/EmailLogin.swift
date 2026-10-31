@@ -7421,6 +7421,32 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
+    public func patchServerMemberRole(authorization: String?, serverId: String, memberId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" else {
+            return Self.json(403, "{\"error\":\"Only the owner can change member roles\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: memberId) != nil else {
+            return Self.json(404, "{\"error\":\"Member not found\"}")
+        }
+        guard memberId != userId else {
+            return Self.json(400, "{\"error\":\"You cannot change your own role\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let newRole = object["role"] as? String,
+              ["owner", "admin", "member"].contains(newRole)
+        else {
+            return Self.json(400, "{\"error\":\"Invalid member role\"}")
+        }
+        oauth.addMember(serverId: serverId, userId: memberId, role: newRole)
+        return Self.json(200, "{\"userId\":\(jsonString(memberId)),\"role\":\(jsonString(newRole))}")
+    }
+
     public func removeServerMember(authorization: String?, serverId: String, memberId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)

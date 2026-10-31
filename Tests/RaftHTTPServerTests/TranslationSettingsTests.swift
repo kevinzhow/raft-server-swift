@@ -6,6 +6,8 @@ import Testing
 import Vapor
 import VaporTesting
 
+@Suite(.serialized)
+struct TranslationSettingsSuite {
 @Test func translationSettingsAreServerScopedWithOwnerAdminManagement() async throws {
     setenv("TRANSLATION_PROVIDER", "fake", 1)
     defer { unsetenv("TRANSLATION_PROVIDER") }
@@ -152,4 +154,5 @@ import VaporTesting
             }
         }
     }
+}
 }
