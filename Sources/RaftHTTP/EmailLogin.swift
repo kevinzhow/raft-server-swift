@@ -7614,7 +7614,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if let shortId, let (parentId, parent) = candidate {
             guard oauth.channelAgentIds(channelId: parentId).contains(agent.id) else {
                 lock.unlock()
-                return Self.json(403, "{\"error\":\"Agent is not a member of this channel\"}")
+                return Self.json(403, "{\"error\":\"Agent is not a member of the parent channel\"}")
             }
             resolved = postableChannels.first { _, channel in
                 channel.serverId == agent.serverId

@@ -135,7 +135,9 @@ import VaporTesting
             #expect(sent.status == .ok)
             #expect(try json(sent)["channelId"] as? String == threadId)
 
-            #expect(try await send(followerAgent, "#parent-room:abcdef12").status == .forbidden)
+            let follower = try await send(followerAgent, "#parent-room:abcdef12")
+            #expect(follower.status == .forbidden)
+            #expect(((try json(follower)["error"] as? String) ?? "").contains("parent channel"))
             #expect(try await send(parentAgent, "#parent-room:ffffffff").status == .notFound)
         }
     }
