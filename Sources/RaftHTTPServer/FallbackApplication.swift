@@ -1760,6 +1760,13 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("internal", "computer", "runners") { request -> Response in
         routeResponse(services.emailAccounts.computerRunners(authorization: request.headers[.authorization]))
     }
+    app.post("api", "servers", ":id", "machines") { request -> Response in
+        routeResponse(services.emailAccounts.registerServerMachine(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("api", "servers", ":id", "machines") { request -> Response in
         routeResponse(services.emailAccounts.listServerMachines(
             authorization: request.headers[.authorization],

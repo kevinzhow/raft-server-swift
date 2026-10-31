@@ -8313,6 +8313,28 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, serverNotificationJSON(prefs))
     }
 
+    public func registerServerMachine(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"The `registerMachines` capability is required to register machines\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let name = object["name"] as? String,
+              !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"Name is required\"}")
+        }
+        let machineId = registerMachine(serverId: serverId, userId: userId, name: name)
+        let apiKey = machineAPIKey(machineId: machineId) ?? ""
+        let machine = "{\"id\":\(jsonString(machineId)),\"serverId\":\(jsonString(serverId)),\"name\":\(jsonString(name)),\"userId\":\(jsonString(userId)),\"description\":null}"
+        return Self.json(200, "{\"machine\":\(machine),\"apiKey\":\(jsonString(apiKey))}")
+    }
+
     public func listServerMachines(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
