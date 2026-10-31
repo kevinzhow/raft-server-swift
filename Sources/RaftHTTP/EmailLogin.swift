@@ -4377,6 +4377,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let visible: Bool = {
             guard let channel = postableChannels[channelId], channel.serverId == serverId else { return false }
             if channel.kind == "channel" { return true }
+            if channel.kind == "thread", let parentId = channel.parentChannelId,
+               let parent = postableChannels[parentId], parent.kind == "channel" {
+                return true
+            }
             return channel.memberIds.contains(userId)
         }()
         let storageChannelId = jointProjections.first { $0.localChannelId == channelId }?.canonicalChannelId ?? channelId
@@ -4469,6 +4473,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let visible: Bool = {
             guard let channel = postableChannels[channelId], channel.serverId == serverId, let userId else { return false }
             if channel.kind == "channel" { return true }
+            if channel.kind == "thread", let parentId = channel.parentChannelId,
+               let parent = postableChannels[parentId], parent.kind == "channel" {
+                return true
+            }
             return channel.memberIds.contains(userId)
         }()
         let storageChannelId = jointProjections.first { $0.localChannelId == channelId }?.canonicalChannelId ?? channelId
