@@ -9451,6 +9451,39 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return (credential.agentId, Array(credential.scopes))
     }
 
+    public func agentServerInfo(authorization: String?) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard let profile = oauth.serverProfile(id: agent.serverId) else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        let role = oauth.agentRole(serverId: agent.serverId, agentId: agent.id)
+        lock.lock()
+        let channels = postableChannels
+            .filter { $0.value.serverId == agent.serverId && $0.value.deletedAt == nil }
+            .map { id, channel -> (String, String, Bool) in
+                let joined = channel.memberIds.contains(agent.id) || oauth.channelAgentIds(channelId: id).contains(agent.id)
+                return (id, channel.name, joined)
+            }
+            .sorted { $0.0 < $1.0 }
+        let agentRows = oauth.activeAgentIds(serverId: agent.serverId).map { otherId -> String in
+            let info = oauth.agentRuntimeInfo(id: otherId)
+            let activity = agentActivities[otherId] ?? (activity: "offline", detail: "")
+            let otherRole = oauth.agentRole(serverId: agent.serverId, agentId: otherId) ?? "null"
+            return "{\"id\":\(jsonString(otherId)),\"name\":\(jsonString(info?.name ?? "")),\"role\":\(otherRole == "null" ? "null" : jsonString(otherRole)),\"status\":\"active\",\"activity\":\(jsonString(activity.activity)),\"activityDetail\":\(jsonString(activity.detail))}"
+        }
+        lock.unlock()
+        let channelJSON = channels.map { id, name, joined in
+            "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"joined\":\(joined)}"
+        }.joined(separator: ",")
+        let roleJSON = role.map { jsonString($0) } ?? "null"
+        let body = "{\"id\":\(jsonString(profile.id)),\"name\":\(jsonString(profile.name)),\"slug\":\(jsonString(profile.slug)),\"runtimeContext\":{\"agentId\":\(jsonString(agent.id)),\"runtime\":\(jsonString(agent.runtime)),\"model\":\"external\",\"reasoningEffort\":null},\"serverRole\":\(roleJSON),\"serverCapabilities\":{\"addChannelMembers\":true,\"createChannels\":true},\"channels\":[\(channelJSON)],\"agents\":[\(agentRows.joined(separator: ","))]}"
+        return Self.json(200, body)
+    }
+
     public func agentResolveChannel(authorization: String?, body: String) -> HTTPReply {
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
