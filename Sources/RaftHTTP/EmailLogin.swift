@@ -4662,11 +4662,26 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             userId = id
         }
         lock.lock()
-        let rows = storedInboxFacts.filter { fact in
+        let baseRows = storedInboxFacts.filter { fact in
             fact.receiverId == userId
                 && (serverId == nil || fact.serverId == serverId)
-                && (filter != "mentions" || fact.personalMention)
                 && !(fact.channelId.map { inboxDoneScopes.contains("\(userId)\n\($0)") } ?? false)
+        }
+        let rows: [StoredInboxFact]
+        if filter == "mentions" {
+            rows = baseRows.filter { fact in
+                guard let scopeId = fact.channelId else { return false }
+                return storedMentions.contains {
+                    $0.channelId == scopeId && $0.targetType == "user" && $0.targetId == userId
+                }
+            }
+        } else if filter == "unread" {
+            rows = baseRows.filter { fact in
+                guard let scopeId = fact.channelId else { return false }
+                return oauth.channelUnreadInfo(channelId: scopeId, userId: userId).unreadCount > 0
+            }
+        } else {
+            rows = baseRows
         }
         lock.unlock()
         let items = rows.map { fact -> String in
