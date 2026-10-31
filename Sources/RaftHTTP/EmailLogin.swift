@@ -9256,6 +9256,25 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"collapseLongMessages\":\(prefs.collapseLongMessages),\"prefsVersion\":\(prefs.prefsVersion)}")
     }
 
+    public func addStoredMentionForTesting(channelId: String, messageId: String, targetId: String) {
+        lock.lock()
+        storedMentions.append(StoredMention(
+            id: UUID().uuidString.lowercased(),
+            messageId: messageId,
+            channelId: channelId,
+            senderId: "peer",
+            targetType: "user",
+            targetId: targetId,
+            handle: "peer",
+            notifiableAtSend: true,
+            notifiedAt: nil,
+            notifiedByType: nil,
+            notifiedById: nil,
+            notifiedAction: nil
+        ))
+        lock.unlock()
+    }
+
     public func markChannelUnread(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -9296,7 +9315,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             } else {
                 latest = "null"
             }
-            return "\(jsonString(channel.id)):{\"unreadCount\":\(info.unreadCount),\"hasMention\":false,\"hasAnyMention\":false,\"readState\":{\"kind\":\"present\",\"readStateVersion\":0,\"maxReadSeq\":\"\(info.maxReadSeq)\",\"latestActivity\":\(latest)}}"
+            let mentions = storedMentions.filter { $0.channelId == channel.id && $0.targetType == "user" && $0.targetId == userId }
+            let hasAny = !mentions.isEmpty
+            return "\(jsonString(channel.id)):{\"unreadCount\":\(info.unreadCount),\"hasMention\":\(hasAny),\"hasAnyMention\":\(hasAny),\"readState\":{\"kind\":\"present\",\"readStateVersion\":0,\"maxReadSeq\":\"\(info.maxReadSeq)\",\"latestActivity\":\(latest)}}"
         }.joined(separator: ",")
         return Self.privateJSON("{\"channels\":{\(entries)}}")
     }
