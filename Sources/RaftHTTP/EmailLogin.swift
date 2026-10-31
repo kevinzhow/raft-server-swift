@@ -7443,6 +7443,43 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
+    public func agentDirectMessages(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted, info.serverId == serverId,
+              let role = oauth.memberRole(serverId: serverId, userId: userId)
+        else {
+            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        lock.lock()
+        let dms = postableChannels.filter { _, channel in
+            channel.kind == "dm" && channel.serverId == serverId && channel.memberIds.contains(agentId)
+                && channel.memberIds.contains { $0 != agentId && oauth.agentRuntimeInfo(id: $0) != nil }
+        }
+        let rows = dms.map { channelId, channel -> String in
+            let peerAgentId = channel.memberIds.first { $0 != agentId && oauth.agentRuntimeInfo(id: $0) != nil } ?? ""
+            let peerName = oauth.agentRuntimeInfo(id: peerAgentId)?.name ?? ""
+            let preview = humanMessageRows.last { $0.channelId == channelId && $0.messageType != "system" }?.content
+            let previewJSON = preview.map { jsonString($0) } ?? "null"
+            return "{\"id\":\(jsonString(channelId)),\"peerId\":\(jsonString(peerAgentId)),\"peerName\":\(jsonString(peerName)),\"lastMessagePreview\":\(previewJSON)}"
+        }.sorted()
+        lock.unlock()
+        return Self.json(200, "[\(rows.joined(separator: ","))]")
+    }
+
+    @discardableResult
+    public func createAgentDirectChannelForTesting(serverId: String, firstAgentId: String, secondAgentId: String) -> String {
+        let id = UUID().uuidString.lowercased()
+        lock.lock()
+        postableChannels[id] = PostableChannel(serverId: serverId, memberIds: [firstAgentId, secondAgentId], kind: "dm", name: "dm")
+        lock.unlock()
+        return id
+    }
+
     public func agentPrivateSurface(authorization: String?, serverId: String, agentId: String, surface: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -7456,7 +7493,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
         switch surface {
-        case "activity-log", "agent-dms":
+        case "activity-log":
             return Self.json(200, "[]")
         case "skills":
             return Self.json(200, "{\"global\":[],\"workspace\":[]}")
