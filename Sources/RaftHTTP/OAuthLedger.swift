@@ -705,6 +705,13 @@ public final class OAuthLedger: @unchecked Sendable {
         return id
     }
 
+    public func messageContent(id: String) -> (channelId: String, content: String)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let message = channelMessages.first(where: { $0.id == id }) else { return nil }
+        return (message.channelId, message.content)
+    }
+
     public func messageChannelId(_ messageId: String) -> String? {
         lock.lock()
         defer { lock.unlock() }

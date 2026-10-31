@@ -52,6 +52,22 @@ import VaporTesting
                 request.body = .init(string: "{\"messageIds\":[]}")
             }
             #expect(unauthenticated.status == .unauthorized)
+
+            accounts.oauth.setServerTranslationEnabled(id: serverId, enabled: true)
+            let channel = accounts.oauth.createChannel(serverId: serverId, name: "translation-room", creatorUserId: ownerId)
+            let visible = accounts.oauth.createMessageRecord(channelId: channel, content: "你好 visible", senderId: ownerId)
+            let otherServer = "33333333-3333-4333-8333-333333333576"
+            accounts.oauth.addOwnedServer(id: otherServer, slug: "translation-other", name: "Translation Other", ownerId: ownerId)
+            let otherChannel = accounts.oauth.createChannel(serverId: otherServer, name: "other-room", creatorUserId: ownerId)
+            let hidden = accounts.oauth.createMessageRecord(channelId: otherChannel, content: "你好 hidden", senderId: ownerId)
+            let enabled = try await client.send(.post, headers: headers, to: "/api/message-translations:batch") { request in
+                request.body = .init(string: "{\"targetLanguage\":\"en\",\"mode\":\"auto\",\"messageIds\":[\"\(visible.id)\",\"\(hidden.id)\"]}")
+            }
+            #expect(enabled.status == .ok)
+            let enabledBody = try JSONSerialization.jsonObject(with: Data((enabled.body.string ?? "").utf8)) as? [String: Any]
+            let results = enabledBody?["results"] as? [[String: Any]] ?? []
+            #expect(results.first { $0["messageId"] as? String == visible.id }?["status"] as? String == "translated")
+            #expect(results.first { $0["messageId"] as? String == hidden.id }?["status"] as? String == "not_found")
         }
     }
 }

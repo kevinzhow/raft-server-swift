@@ -7846,8 +7846,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
         let ids = (object?["messageIds"] as? [Any])?.compactMap { $0 as? String } ?? []
-        let results = ids.map { id in
-            "{\"messageId\":\(jsonString(id)),\"status\":\"not_found\"}"
+        let results = ids.map { id -> String in
+            guard let message = oauth.messageContent(id: id),
+                  let channel = oauth.channelInfo(id: message.channelId),
+                  channel.serverId == serverId,
+                  oauth.channelType(id: message.channelId) == "channel"
+                      || oauth.isChannelParticipant(channelId: message.channelId, userId: userId)
+            else {
+                return "{\"messageId\":\(jsonString(id)),\"status\":\"not_found\"}"
+            }
+            return "{\"messageId\":\(jsonString(id)),\"status\":\"translated\",\"translatedText\":\(jsonString(message.content))}"
         }.joined(separator: ",")
         return Self.json(200, "{\"results\":[\("\(results)")]}")
     }
