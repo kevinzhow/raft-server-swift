@@ -3070,6 +3070,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 threadChannelId: channelId,
                 parentMessageId: parentMessageId
             )
+            for mention in mentions where mention.type == "user" || mention.type == "agent" {
+                guard ServerScope.isUUID(mention.id), mention.id != userId else { continue }
+                let valid: Bool
+                if mention.type == "user" {
+                    valid = accounts.values.contains { $0.id == mention.id }
+                        && oauth.memberRole(serverId: serverId ?? "", userId: mention.id) != nil
+                } else {
+                    valid = oauth.agentRuntimeInfo(id: mention.id)?.serverId == serverId
+                }
+                if valid {
+                    threadFollows["\(serverId ?? "")\n\(mention.id)\n\(channelId)"] = (
+                        serverId: serverId ?? "",
+                        userId: mention.id,
+                        threadChannelId: channelId,
+                        parentMessageId: parentMessageId
+                    )
+                }
+            }
             lock.unlock()
         }
         if contract == "v2" {
@@ -4210,6 +4228,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }.joined(separator: ",")
         lock.unlock()
         return Self.json(200, "{\"items\":[\("\(items)")],\"hasMore\":\(records.count > page.count),\"totalCount\":null}")
+    }
+
+    public func threadFollowerIdsForTesting(threadChannelId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return threadFollows.values
+            .filter { $0.threadChannelId == threadChannelId }
+            .map(\.userId)
+            .sorted()
     }
 
     public func followedThreads(authorization: String?, serverId: String) -> HTTPReply {
