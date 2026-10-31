@@ -10005,11 +10005,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let rawAgentIds = (object["agentIds"] as? [Any])?.compactMap { $0 as? String } ?? []
         var seenUsers = Set<String>()
         var seenAgents = Set<String>()
+        let uniqueUserIds = rawUserIds.filter { seenUsers.insert($0).inserted }
+        let invalidUserIds = uniqueUserIds.filter { oauth.memberRole(serverId: serverId, userId: $0) == nil }
+        if !invalidUserIds.isEmpty {
+            let invalid = invalidUserIds.map { jsonString($0) }.joined(separator: ",")
+            return Self.json(400, "{\"error\":\"One or more users are not members of this server\",\"code\":\"users_not_in_server\",\"invalidUserIds\":[\(invalid)]}")
+        }
         var addedUsers: [String] = []
         var addedAgents: [String] = []
         var alreadyUsers: [String] = []
         var alreadyAgents: [String] = []
-        for target in rawUserIds where seenUsers.insert(target).inserted {
+        for target in uniqueUserIds {
             guard oauth.memberRole(serverId: serverId, userId: target) != nil else { continue }
             if oauth.channelHumanIds(channelId: channelId).contains(target) {
                 alreadyUsers.append(target)
