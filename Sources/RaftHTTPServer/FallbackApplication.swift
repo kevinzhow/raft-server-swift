@@ -994,6 +994,19 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.parameters.get("id") ?? ""
         ))
     }
+    app.get("api", "servers", ":id", "setup-projection") { request -> Response in
+        routeResponse(services.emailAccounts.serverSetupProjection(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
+    app.post("api", "servers", ":id", "setup-transition") { request -> Response in
+        routeResponse(services.emailAccounts.serverSetupTransition(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.patch("api", "servers", ":id", "members", ":memberId") { request -> Response in
         routeResponse(services.emailAccounts.patchServerMemberRole(
             authorization: request.headers[.authorization],

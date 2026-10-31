@@ -204,6 +204,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var serverOnboardingSettings: [String: (agentId: String?, greeting: Bool)] = [:]
     private var userOnboardingSettings: [String: UserOnboarding] = [:]
     private var serverNotificationPrefs: [String: (muted: Bool, mentionsOnly: Bool, mode: String, version: Int)] = [:]
+    private var setupPhases: [String: String] = [:]
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -7432,6 +7433,54 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         oauth.removeMember(serverId: serverId, userId: userId)
         return Self.json(200, "{\"ok\":true}")
+    }
+
+    private func setupProjectionJSON(serverId: String, userId: String, role: String) -> String {
+        lock.lock()
+        let phase = setupPhases["\(serverId)\n\(userId)"] ?? "not_started"
+        lock.unlock()
+        if role == "owner" || role == "admin" {
+            let currentStep = phase == "in_progress" ? "computer_runtime" : "computer_runtime"
+            return "{\"surface\":\"computer_runtime\",\"phase\":\(jsonString(phase)),\"currentStep\":\(jsonString(currentStep)),\"blocksChat\":true,\"allowedExits\":[\"reset\",\"return_to_server\"],\"sideEffectState\":{\"transitions\":\"enabled\",\"completion\":\"disabled\"},\"gateReason\":\"computer_offline\",\"computerStatus\":\"offline\",\"runtimeStatus\":\"unknown\",\"runtimeOptions\":[],\"hasConnectedComputer\":false,\"offlineComputers\":[],\"postSetup\":{\"surveyPending\":false,\"handoffPending\":false}}"
+        }
+        return "{\"surface\":\"none\",\"phase\":null,\"currentStep\":null,\"blocksChat\":false,\"allowedExits\":[\"return_to_server\"],\"sideEffectState\":{\"transitions\":\"disabled\",\"completion\":\"disabled\"},\"gateReason\":\"insufficient_permission\",\"computerStatus\":\"unknown\",\"runtimeStatus\":\"unknown\",\"runtimeOptions\":[],\"hasConnectedComputer\":false,\"offlineComputers\":[],\"postSetup\":{\"surveyPending\":false,\"handoffPending\":false}}"
+    }
+
+    public func serverSetupProjection(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        return Self.json(200, setupProjectionJSON(serverId: serverId, userId: userId, role: role))
+    }
+
+    public func serverSetupTransition(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"INSUFFICIENT_PERMISSION\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let action = object["action"] as? String,
+              action == "start" || action == "reset" || action == "return_to_server"
+        else {
+            return Self.json(400, "{\"error\":\"INVALID_SETUP_ACTION\"}")
+        }
+        lock.lock()
+        let key = "\(serverId)\n\(userId)"
+        if action == "start" {
+            setupPhases[key] = "in_progress"
+        } else if action == "reset" {
+            setupPhases[key] = "not_started"
+        }
+        lock.unlock()
+        return Self.json(200, setupProjectionJSON(serverId: serverId, userId: userId, role: role))
     }
 
     public func patchServerMemberRole(authorization: String?, serverId: String, memberId: String, body: String) -> HTTPReply {
