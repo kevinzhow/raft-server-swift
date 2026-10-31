@@ -1074,6 +1074,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("api", "message-translations:batch") { request -> Response in
+        routeResponse(services.emailAccounts.batchTranslateMessages(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
     app.get("api", "servers", ":id", "translation-settings") { request -> Response in
         routeResponse(services.emailAccounts.serverTranslationSettings(
             authorization: request.headers[.authorization],

@@ -7693,6 +7693,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
+    public func batchTranslateMessages(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard oauth.serverProfile(id: serverId)?.translationEnabled == true else {
+            return Self.json(403, "{\"error\":\"Translation is disabled for this server\"}")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        let ids = (object?["messageIds"] as? [Any])?.compactMap { $0 as? String } ?? []
+        let results = ids.map { id in
+            "{\"messageId\":\(jsonString(id)),\"status\":\"not_found\"}"
+        }.joined(separator: ",")
+        return Self.json(200, "{\"results\":[\("\(results)")]}")
+    }
+
     public func serverTranslationSettings(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
