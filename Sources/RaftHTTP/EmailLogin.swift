@@ -9413,7 +9413,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             .map { channel -> String in
             let last = channel.lastMessageAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
             let muteSeq = channel.muteFromSeq.map(String.init) ?? "null"
-            return "{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(channel.type)),\"joined\":\(channel.joined),\"lastMessageAt\":\(last),\"activityMuted\":\(channel.activityMuted),\"muteFromSeq\":\(muteSeq),\"prefsVersion\":\(channel.prefsVersion),\"activityMuteSupported\":true}"
+            return "{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(channel.type)),\"joined\":\(channel.joined),\"lastMessageAt\":\(last),\"activityMuted\":\(channel.activityMuted),\"muteFromSeq\":\(muteSeq),\"prefsVersion\":\(channel.prefsVersion),\"activityMuteSupported\":\(channel.type == "channel")}"
         }.joined(separator: ",")
         return Self.json(200, "[\(rows)]")
     }
