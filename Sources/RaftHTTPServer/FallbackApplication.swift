@@ -409,6 +409,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             filter: desktopQuery(request.url.query, "filter")
         ))
     }
+    app.post("internal", "agent-api", "channels", ":channelId", "join") { request -> Response in
+        routeResponse(services.emailAccounts.agentJoinChannel(
+            authorization: request.headers[.authorization],
+            channelId: request.parameters.get("channelId") ?? ""
+        ))
+    }
     app.post("internal", "agent-api", "messages", ":messageId", "reactions") { request -> Response in
         routeResponse(services.emailAccounts.mutateAgentApiMessageReaction(
             messageId: request.parameters.get("messageId") ?? "",

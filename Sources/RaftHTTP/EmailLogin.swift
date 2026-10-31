@@ -8216,6 +8216,32 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"archivedAt\":null}")
     }
 
+    public func agentJoinChannel(authorization: String?, channelId: String) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let credential = agentCredentials[token]
+        lock.unlock()
+        guard let credential, credential.scopes.contains("channels"),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == agent.serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        if oauth.channelAgentIds(channelId: channelId).contains(agent.id) {
+            return Self.json(200, "{\"ok\":true}")
+        }
+        guard oauth.agentRole(serverId: agent.serverId, agentId: agent.id) != nil else {
+            return Self.json(403, "{\"error\":\"Server role cannot join public channels\"}")
+        }
+        oauth.addChannelAgent(channelId: channelId, agentId: agent.id)
+        return Self.json(200, "{\"ok\":true}")
+    }
+
     public func joinChannel(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)

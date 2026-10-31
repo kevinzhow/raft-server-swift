@@ -122,6 +122,12 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func agentRole(serverId: String, agentId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return agentRoles["\(serverId)\n\(agentId)"]
+    }
+
     public func removeAgentMember(serverId: String, agentId: String) {
         lock.lock()
         agentRoles.removeValue(forKey: "\(serverId)\n\(agentId)")
