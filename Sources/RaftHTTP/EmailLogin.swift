@@ -4283,6 +4283,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 continue
             }
             let info = oauth.channelUnreadInfo(channelId: follow.threadChannelId, userId: userId)
+            let threadReplies = humanMessageRows.filter { $0.channelId == follow.threadChannelId }
+            var unreadCount = info.unreadCount
+            if !threadReplies.isEmpty {
+                unreadCount = threadReplies.enumerated().filter { index, reply in
+                    index + 1 > info.maxReadSeq && reply.senderId != userId
+                }.count
+            }
             let task = taskRecords.first { $0.messageId == follow.parentMessageId }
             let taskJSON = task.map { jsonString($0.id) } ?? "null"
             let claimedType = task?.assigneeType.map { jsonString($0) } ?? "null"
@@ -4297,7 +4304,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                     claimedName = jsonString(name)
                 }
             }
-            rows.append("{\"threadChannelId\":\(jsonString(follow.threadChannelId)),\"unreadCount\":\(info.unreadCount),\"taskId\":\(taskJSON),\"taskClaimedByType\":\(claimedType),\"taskClaimedById\":\(claimedId),\"taskClaimedByName\":\(claimedName)}")
+            rows.append("{\"threadChannelId\":\(jsonString(follow.threadChannelId)),\"unreadCount\":\(unreadCount),\"taskId\":\(taskJSON),\"taskClaimedByType\":\(claimedType),\"taskClaimedById\":\(claimedId),\"taskClaimedByName\":\(claimedName)}")
         }
         lock.unlock()
         return Self.json(200, "{\"threads\":[\("\(rows.joined(separator: ","))")]}")

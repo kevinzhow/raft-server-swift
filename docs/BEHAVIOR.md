@@ -40,3 +40,6 @@ agent 向 thread 发送（`#parent:short`）要求 agent 是该 parent channel �
 
 
 归档后的 `GET /api/agents/:id/archive` 返回 `{archive:{workspaceState,machineName}}`；workspace 选择 keep 时状态是 on_computer，选择 delete 时是 deleted；machineName 快照来自创建时的 machineId。未归档 agent 的 archive 视图 404。
+
+
+`GET /api/channels/threads/followed` 的 `unreadCount` 也按 human reply + read cursor 计算，与 thread summary 一致。

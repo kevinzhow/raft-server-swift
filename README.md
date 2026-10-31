@@ -8,7 +8,7 @@ The specification is observable behavior: HTTP status codes, JSON bodies, respon
 
 This is an active behavioral port, not a production deployment.
 
-- **558 Swift tests pass** across five test targets.
+- **559 Swift tests pass** across five test targets.
 - The HTTP router currently registers **286 routes** covering auth, servers, channels/threads/DMs, messages, tasks, notifications, attachments, public pages, release notes, OAuth/OIDC, agents, push, and provider connections. Route-by-route completion is still in progress.
 - **There is no database connection yet.** The process injects an always-throwing database ping, so `/health` stays at `503 {"status":"error","detail":"database unreachable"}`.
 - The executable starts **only the Vapor HTTP application**. The `/daemon/connect` SwiftNIO listener and the daemon client are complete libraries with tests, but they are not wired into `RaftServer` yet.
@@ -46,13 +46,13 @@ make test                                                    # full suite with t
 /mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift build -c release
 ```
 
-The full suite occasionally aborts with signal 6 or 11 under parallel execution; rerun it once before treating it as a failure. All 558 tests pass in a clean run.
+The full suite occasionally aborts with signal 6 or 11 under parallel execution; rerun it once before treating it as a failure. All 559 tests pass in a clean run.
 
 ### Test suites
 
 | Target | Tests | Covers |
 | --- | --- | --- |
-| `RaftHTTPServerTests` | 430 | Route contracts through Vapor in-memory testing. |
+| `RaftHTTPServerTests` | 431 | Route contracts through Vapor in-memory testing. |
 | `RaftDaemonClientTests` | 71 | Connect loop, daemon client, proxy selection, fetch timeouts, failure projection. |
 | `RaftHTTPTests` | 34 | Fallback/router, liveness, version identity, CORS. |
 | `RaftConnectAuthTests` | 17 | Upgrade auth, rejection reasons, RFC 6455 handshake. |
