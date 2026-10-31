@@ -22,14 +22,19 @@ public final class MachineConnectServer: Sendable {
         lookup: any MachineCredentialLooking,
         capabilities: [String] = [serverCapabilityRuntimeDetectionAsyncV1],
         host: String = "127.0.0.1",
-        port: Int = 0
+        port: Int = 0,
+        onStatusChange: (@Sendable (MatchedMachine, Bool) -> Void)? = nil
     ) async throws -> MachineConnectServer {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
                 channel.pipeline.addHandler(ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .dropBytes))).flatMap {
-                    channel.pipeline.addHandler(ConnectHandler(lookup: lookup, capabilities: capabilities))
+                    channel.pipeline.addHandler(ConnectHandler(
+                        lookup: lookup,
+                        capabilities: capabilities,
+                        onStatusChange: onStatusChange
+                    ))
                 }
             }
         do {
@@ -62,11 +67,18 @@ private final class ConnectHandler: ChannelInboundHandler, @unchecked Sendable {
 
     private let lookup: any MachineCredentialLooking
     private let capabilities: [String]
+    private let onStatusChange: (@Sendable (MatchedMachine, Bool) -> Void)?
     private var responded = false
+    private var acceptedMachine: MatchedMachine?
 
-    init(lookup: any MachineCredentialLooking, capabilities: [String]) {
+    init(
+        lookup: any MachineCredentialLooking,
+        capabilities: [String],
+        onStatusChange: (@Sendable (MatchedMachine, Bool) -> Void)?
+    ) {
         self.lookup = lookup
         self.capabilities = capabilities
+        self.onStatusChange = onStatusChange
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -78,10 +90,11 @@ private final class ConnectHandler: ChannelInboundHandler, @unchecked Sendable {
         let websocketKey = head.headers.first(name: "sec-websocket-key")
         let lookup = self.lookup
         let capabilities = self.capabilities
+        let onStatusChange = self.onStatusChange
         let loop = context.eventLoop
         let channel = context.channel
         Task {
-            let bytes = await Self.responseBytes(
+            let outcome = await Self.responseBytes(
                 uri: uri,
                 authorization: authorization,
                 host: host,
@@ -89,15 +102,26 @@ private final class ConnectHandler: ChannelInboundHandler, @unchecked Sendable {
                 capabilities: capabilities,
                 lookup: lookup
             )
-            let closeAfter = bytes.starts(with: Array("HTTP/1.1 101".utf8)) == false
+            let closeAfter = outcome.bytes.starts(with: Array("HTTP/1.1 101".utf8)) == false
             loop.execute {
-                var buffer = channel.allocator.buffer(capacity: bytes.count)
-                buffer.writeBytes(bytes)
+                if let machine = outcome.machine {
+                    self.acceptedMachine = machine
+                    onStatusChange?(machine, true)
+                }
+                var buffer = channel.allocator.buffer(capacity: outcome.bytes.count)
+                buffer.writeBytes(outcome.bytes)
                 let write = channel.writeAndFlush(buffer)
                 if closeAfter {
                     write.whenComplete { _ in channel.close(promise: nil) }
                 }
             }
+        }
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        if let acceptedMachine {
+            onStatusChange?(acceptedMachine, false)
+            self.acceptedMachine = nil
         }
     }
 
@@ -108,11 +132,11 @@ private final class ConnectHandler: ChannelInboundHandler, @unchecked Sendable {
         websocketKey: String?,
         capabilities: [String],
         lookup: any MachineCredentialLooking
-    ) async -> [UInt8] {
+    ) async -> MachineConnectOutcome {
         let parts = URLComponents(string: uri.hasPrefix("/") ? "http://localhost\(uri)" : uri)
         let path = parts?.path ?? uri
         guard path == "/daemon/connect" else {
-            return Array("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".utf8)
+            return MachineConnectOutcome(bytes: Array("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".utf8), machine: nil)
         }
         let queryKey = parts?.queryItems?.first { $0.name == "key" }?.value
         let apiKey = presentedApiKey(authorization: authorization, queryKey: queryKey)
@@ -120,10 +144,10 @@ private final class ConnectHandler: ChannelInboundHandler, @unchecked Sendable {
             let decision = try await UpgradeAuth.resolve(apiKey: apiKey, hostHeader: host, lookup: lookup)
             switch decision.result {
             case .rejected:
-                return Array((machineUpgradeFailurePrelude(.success(decision.result)) ?? "").utf8)
+                return MachineConnectOutcome(bytes: Array((machineUpgradeFailurePrelude(.success(decision.result)) ?? "").utf8), machine: nil)
             case .accepted(_, let machine, _):
                 guard let websocketKey else {
-                    return Array("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n".utf8)
+                    return MachineConnectOutcome(bytes: Array("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n".utf8), machine: nil)
                 }
                 let prelude = machineUpgradeSwitchingProtocols(clientKey: websocketKey, capabilities: capabilities)
                 let context = machineContextJSON(
@@ -131,10 +155,15 @@ private final class ConnectHandler: ChannelInboundHandler, @unchecked Sendable {
                     serverId: machine.serverId,
                     capabilities: capabilities
                 )
-                return Array(prelude.utf8) + websocketTextFrame(context)
+                return MachineConnectOutcome(bytes: Array(prelude.utf8) + websocketTextFrame(context), machine: machine)
             }
         } catch {
-            return Array((machineUpgradeFailurePrelude(.failure(error)) ?? "").utf8)
+            return MachineConnectOutcome(bytes: Array((machineUpgradeFailurePrelude(.failure(error)) ?? "").utf8), machine: nil)
         }
     }
+}
+
+private struct MachineConnectOutcome {
+    var bytes: [UInt8]
+    var machine: MatchedMachine?
 }

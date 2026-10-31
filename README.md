@@ -19,7 +19,7 @@ This is an active behavioral port, not a production deployment.
 
 The port is behaviorally incomplete. The largest remaining gaps are:
 
-- The socket.io transport covers Engine.IO open, session auth, room joins, ping/pong, channel joins, `channel:updated` on channel creation, `message:new`, `message:updated` on reactions, `task:created`, `thread:followers-updated`, agent `scope_read:updated`, server-member removal notices, and session-family revocation. Task update/delete fanout is still pending.
+- The socket.io transport covers Engine.IO open, session auth, room joins, ping/pong, channel joins, `channel:updated` on channel creation, `message:new`, `message:updated` on reactions, `task:created`/`task:updated`, `thread:followers-updated`, `machine:status`, agent `scope_read:updated`, server-member removal notices, and session-family revocation. Task delete fanout is still pending.
 - `channels.inbox` now returns the aggregated serving page (items, totals, active unread, groups, filters, search, and pagination). Assistant flag-on flows, agent migration state machines, external-diagnostics detail, and parts of RBAC/guest projections still need Node-asserted slices.
 - The daemon client is a one-shot handshake executable. The reconnect, watchdog, duplicate-key, and outbound-replay loop in `DaemonLink` is a tested state machine but is not driven by a live socket yet.
 - No database is connected: state is in-memory, resets on restart, and `/health` stays at `503 database unreachable`.

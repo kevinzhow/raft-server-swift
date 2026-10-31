@@ -14,6 +14,12 @@ import Glibc
 
 private struct DatabaseNotConnected: Error {}
 
+private func machineJSONString(_ value: String) -> String {
+    let data = try! JSONSerialization.data(withJSONObject: [value])
+    let array = String(decoding: data, as: UTF8.self)
+    return String(array.dropFirst().dropLast())
+}
+
 private struct MachineConnectShutdown: LifecycleHandler {
     let server: MachineConnectServer
 
@@ -104,16 +110,6 @@ enum Entrypoint {
         if httpPort > 0 {
             app.serverConfiguration.port = httpPort
         }
-        let configuredDaemonPort = Int(processEnvironment["DAEMON_CONNECT_PORT"] ?? "") ?? 8081
-        let machineServer: MachineConnectServer?
-        if configuredDaemonPort == 0 {
-            machineServer = nil
-        } else {
-            machineServer = try await MachineConnectServer.start(
-                lookup: LedgerMachineLookup(accounts: emailAccounts),
-                port: configuredDaemonPort
-            )
-        }
         let configuredSocketPort = Int(processEnvironment["SOCKET_PORT"] ?? "") ?? 8082
         let realtimeServer: RealtimeServer?
         if configuredSocketPort == 0 {
@@ -122,6 +118,27 @@ enum Entrypoint {
             realtimeServer = try await RealtimeServer.start(
                 auth: LedgerRealtimeAuth(accounts: emailAccounts),
                 port: configuredSocketPort
+            )
+        }
+        let configuredDaemonPort = Int(processEnvironment["DAEMON_CONNECT_PORT"] ?? "") ?? 8081
+        let machineServer: MachineConnectServer?
+        if configuredDaemonPort == 0 {
+            machineServer = nil
+        } else {
+            machineServer = try await MachineConnectServer.start(
+                lookup: LedgerMachineLookup(accounts: emailAccounts),
+                port: configuredDaemonPort,
+                onStatusChange: { machine, online in
+                    let version = emailAccounts.bumpMachineStatusVersion(machineId: machine.id)
+                    let status = online ? "online" : "offline"
+                    let cause = online ? "" : ",\"cause\":\"socket_close\""
+                    let payload = "{\"machineId\":\(machineJSONString(machine.id)),\"status\":\"\(status)\",\"statusVersion\":\(version)\(cause)}"
+                    realtimeServer?.hub.emit(
+                        room: "server:\(machine.serverId)",
+                        event: "machine:status",
+                        payloadJSON: payload
+                    )
+                }
             )
         }
         if let realtimeServer {

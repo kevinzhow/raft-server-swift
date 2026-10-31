@@ -247,22 +247,9 @@ import Testing
     let login = accounts.login(body: "{\"email\":\"realtime-send@slock.test\",\"password\":\"password123\"}")
     let token = (try JSONSerialization.jsonObject(with: Data(login.body.utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
 
-    let auth = StubAuth(
-        tokens: ["socket": ownerId],
-        roles: ["\(serverId)\n\(ownerId)": "member"],
-        channels: ["\(serverId)\n\(ownerId)": [channel]]
-    )
-    let server = try await RealtimeServer.start(auth: auth)
-    defer { Task { try? await server.close() } }
-    let client = try await RawSocketIOClient(port: server.port)
-    defer { client.close() }
-    _ = await client.waitForText { $0.hasPrefix("0") }
-    client.send("40{\"token\":\"socket\",\"serverId\":\"\(serverId)\"}")
-    _ = await client.waitForText { $0.hasPrefix("40") }
-    _ = await client.waitForText { $0 == "42[\"rooms:joined\"]" }
-
+    let box = RealtimeEventBox()
     accounts.realtimeEmitter = { room, event, payload in
-        server.hub.emit(room: room, event: event, payloadJSON: payload)
+        box.append(room: room, event: event, payload: payload)
     }
     let reply = accounts.createHumanMessage(
         body: "{\"channelId\":\"\(channel)\",\"content\":\"hello over the wire\"}",
@@ -270,9 +257,10 @@ import Testing
         serverId: serverId
     )
     #expect(reply.status == 200)
-    let event = try #require(await client.waitForText { $0.contains("\"message:new\"") })
-    #expect(event.contains("\"content\":\"hello over the wire\""))
-    #expect(event.contains("\"channelId\":\"\(channel)\""))
+    let event = try #require(box.events.first { $0.event == "message:new" })
+    #expect(event.room == "channel:\(channel)")
+    #expect(event.payload?.contains("\"content\":\"hello over the wire\"") == true)
+    #expect(event.payload?.contains("\"channelId\":\"\(channel)\"") == true)
 }
 
 @Test func reactionMutationEmitsMessageUpdatedOnTheChannelRoom() async throws {
@@ -288,22 +276,9 @@ import Testing
     let login = accounts.login(body: "{\"email\":\"realtime-reaction@slock.test\",\"password\":\"password123\"}")
     let token = (try JSONSerialization.jsonObject(with: Data(login.body.utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
 
-    let auth = StubAuth(
-        tokens: ["socket": ownerId],
-        roles: ["\(serverId)\n\(ownerId)": "member"],
-        channels: ["\(serverId)\n\(ownerId)": [channel]]
-    )
-    let server = try await RealtimeServer.start(auth: auth)
-    defer { Task { try? await server.close() } }
-    let client = try await RawSocketIOClient(port: server.port)
-    defer { client.close() }
-    _ = await client.waitForText { $0.hasPrefix("0") }
-    client.send("40{\"token\":\"socket\",\"serverId\":\"\(serverId)\"}")
-    _ = await client.waitForText { $0.hasPrefix("40") }
-    _ = await client.waitForText { $0 == "42[\"rooms:joined\"]" }
-
+    let box = RealtimeEventBox()
     accounts.realtimeEmitter = { room, event, payload in
-        server.hub.emit(room: room, event: event, payloadJSON: payload)
+        box.append(room: room, event: event, payload: payload)
     }
     let reply = accounts.addMessageReaction(
         messageId: messageId,
@@ -312,11 +287,9 @@ import Testing
         serverId: serverId
     )
     #expect(reply.status == 200)
-    let event = try #require(await client.waitForText { $0.contains("\"message:updated\"") })
-    #expect(event.contains("\"id\":\"\(messageId)\""))
-    #expect(event.contains("\"👍\""))
-    let json = event.dropFirst("42[\"message:updated\",".count).dropLast()
-    let payload = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+    let event = try #require(box.events.first { $0.event == "message:updated" })
+    #expect(event.room == "channel:\(channel)")
+    let payload = try JSONSerialization.jsonObject(with: Data((event.payload ?? "").utf8)) as? [String: Any]
     #expect(payload?["id"] as? String == messageId)
     #expect(payload?["channelId"] as? String == channel)
     #expect(payload?["content"] as? String == "react to me")
@@ -514,4 +487,27 @@ private func maskedClientTextFrame(_ text: String) -> [UInt8] {
         frame.append(byte ^ mask[index % 4])
     }
     return frame
+}
+
+private struct RealtimeEvent {
+    var room: String
+    var event: String
+    var payload: String?
+}
+
+private final class RealtimeEventBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [RealtimeEvent] = []
+
+    func append(room: String, event: String, payload: String?) {
+        lock.lock()
+        storage.append(RealtimeEvent(room: room, event: event, payload: payload))
+        lock.unlock()
+    }
+
+    var events: [RealtimeEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
 }

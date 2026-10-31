@@ -156,4 +156,7 @@ agent 读游标前进且 server 开启 read receipts 时，`channel:<id>` 房间
 消息 reaction 变更后向 `channel:<id>` 发 `message:updated`，payload 含 `id/channelId/content/senderName/commentRef/reactions`，不含 `agentSendKey/searchText/searchVector/reactionViewer/viewerVersion/reactedEmojis`。旧的 `messageUpdatedBroadcasts()` 侧通道已删除，断言走真实 socket。
 
 
+`/daemon/connect` 接受握手后向 `server:<serverId>` 发 `machine:status`：online 为 `{machineId,status:"online",statusVersion}`，断开为 `{status:"offline",...,cause:"socket_close"}`；`statusVersion` 每次自增。
+
+
 

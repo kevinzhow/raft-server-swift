@@ -173,6 +173,10 @@ func theServerProcessServesHealthAndAcceptsADaemon() async throws {
         Issue.record("daemon did not connect: \(daemon.output.text)")
         return
     }
+    let online = try #require(await socket.waitForText {
+        $0.contains("\"machine:status\"") && $0.contains(machineId) && $0.contains("\"status\":\"online\"")
+    })
+    #expect(online.contains("\"statusVersion\":"))
 }
 
 private func repositoryRoot() -> URL {

@@ -245,6 +245,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public var webPushEnabled = true
     private var webPushSubscriptions: [WebPushSubscription] = []
     private var machines: [MachineRecord] = []
+    private var machineStatusVersions: [String: Int] = [:]
     /// `MOBILE_APP_EMAIL_UNSUBSCRIBE_SECRET`, or `JWT_SECRET`. The test harness uses `test-jwt-secret`.
     public var mobileAppEmailUnsubscribeSecret: String = "test-jwt-secret"
     /// Cancels one scheduled mobile-app lifecycle email. Unset means there is no provider call to make.
@@ -5717,8 +5718,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             payload += ",\"actionMetadata\":\(socketMetadata)"
         }
         payload += "}"
-        realtimeEmitter?("channel:\(message.channelId)", "message:updated", payload)
+        emitRealtime("channel:\(message.channelId)", "message:updated", payload)
         return bodyJSON
+    }
+
+    private func emitRealtime(_ room: String, _ event: String, _ payload: String?) {
+        realtimeEmitter?(room, event, payload)
     }
 
     /// The HTTP body keeps a forwarded source the viewer can read. The channel broadcast always strips it.
@@ -6003,7 +6008,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         ))
         lock.unlock()
         let reply = Self.humanMessageJSON(stored)
-        realtimeEmitter?("channel:\(channelId)", "message:new", reply.body)
+        emitRealtime("channel:\(channelId)", "message:new", reply.body)
         return reply
     }
 
@@ -8051,6 +8056,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return machines.first { $0.id == machineId }?.apiKey
+    }
+
+    public func bumpMachineStatusVersion(machineId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let next = (machineStatusVersions[machineId] ?? 0) + 1
+        machineStatusVersions[machineId] = next
+        return next
     }
 
     /// Keyed lookup shared by `/daemon/connect` and the legacy machine surface.
