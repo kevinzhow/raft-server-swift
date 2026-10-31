@@ -582,6 +582,12 @@ public func configure(_ app: Application, services: FallbackServices) {
         }
         return routeResponse(directory.serverList(authorization: request.headers[.authorization]))
     }
+    app.get("api", "channels", "activity", "snapshot") { _ -> Response in
+        routeResponse(services.emailAccounts.activityContractRejection())
+    }
+    app.get("api", "channels", "activity", "difference") { _ -> Response in
+        routeResponse(services.emailAccounts.activityContractRejection())
+    }
     app.get("api", "servers", "order") { request -> Response in
         routeResponse(services.emailAccounts.serverOrder(authorization: request.headers[.authorization]))
     }

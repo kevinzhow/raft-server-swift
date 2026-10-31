@@ -7068,6 +7068,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func activityContractRejection() -> HTTPReply {
+        HTTPReply(
+            status: 400,
+            headers: [
+                "Content-Type": AppFallback.jsonContentType,
+                "X-Raft-Contract": "raft.activity-sync;revision=2",
+                "Access-Control-Expose-Headers": "X-Raft-Contract",
+                "Content-Length": "26",
+            ],
+            body: "{\"error\":\"invalid contract\"}"
+        )
+    }
+
     public func serverOrder(authorization: String?) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)
