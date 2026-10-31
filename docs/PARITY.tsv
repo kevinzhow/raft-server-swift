@@ -25,7 +25,7 @@ agents.credentials.gate	route	partial	-	auto-seed
 agents.mobileV1120SaveRequests.api	route	partial	-	auto-seed
 announcementImages.api	route	pending	-	auto-seed
 announcements.api	route	partial	-	auto-seed
-appAdmin.removed.api	route	pending	-	auto-seed
+appAdmin.removed.api	route	locked	b2246d6	/api/app-admin/me stays 404
 appAgentReminderMessages.api	route	partial	-	auto-seed
 appAgentReminderMessages.realPg	route	partial	-	auto-seed
 appLogin.api	route	pending	-	auto-seed
@@ -212,7 +212,7 @@ tasks.channelMembership.api	route	partial	-	auto-seed
 tasks.jointSurface.api	route	pending	-	auto-seed
 tasks.orphanCleanup.api	route	pending	-	auto-seed
 tasks.periodMetrics.api	route	partial	-	auto-seed
-tasks.realtimeProjection.api	route	pending	-	auto-seed
+tasks.realtimeProjection.api	route	partial	-	canonical claim emits task:updated only; refused message-only claim tested below the socket
 tasks.serverPagination.api	route	partial	-	auto-seed
 tasks.shapeSurfaces.api	route	pending	-	auto-seed
 tasks.snapshotMetrics.api	route	partial	-	auto-seed
