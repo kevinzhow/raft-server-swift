@@ -43,3 +43,6 @@ agent 向 thread 发送（`#parent:short`）要求 agent 是该 parent channel �
 
 
 `GET /api/channels/threads/followed` 的 `unreadCount` 也按 human reply + read cursor 计算，与 thread summary 一致。
+
+
+`GET /api/agents/:id/channels` 返回 viewer 可见的 agent channel memberships（public/private/joint），含 description/type/createdAt/archivedAt/activityMuted/muteFromSeq；隐藏 private/joint、thread、DM、虚拟 #all 不出现。

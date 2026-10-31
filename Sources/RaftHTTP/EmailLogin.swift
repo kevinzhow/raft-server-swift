@@ -7336,6 +7336,32 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
+    public func agentChannels(authorization: String?, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted,
+              oauth.memberRole(serverId: info.serverId, userId: userId) != nil
+        else {
+            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        let createdAt = ISO8601DateFormatter().string(from: Date())
+        let rows = oauth.channelsForServer(serverId: info.serverId, userId: userId).compactMap { channel -> String? in
+            guard oauth.channelAgentIds(channelId: channel.id).contains(agentId) else { return nil }
+            lock.lock()
+            let postable = postableChannels[channel.id]
+            lock.unlock()
+            if let postable, postable.kind == "thread" || postable.kind == "dm" { return nil }
+            let type = oauth.channelType(id: channel.id) ?? "channel"
+            guard type == "channel" || type == "private" || type == "joint" else { return nil }
+            if type != "channel", !oauth.channelHumanIds(channelId: channel.id).contains(userId) { return nil }
+            let prefs = oauth.notificationPrefs(channelId: channel.id, userId: agentId)
+            let muteJSON = prefs.muteFromSeq.map(String.init) ?? "null"
+            return "{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"description\":\(oauth.channelInfo(id: channel.id)?.description.map { jsonString($0) } ?? "null"),\"type\":\(jsonString(type)),\"createdAt\":\(jsonString(createdAt)),\"archivedAt\":null,\"activityMuted\":\(prefs.activityMuted),\"muteFromSeq\":\(muteJSON)}"
+        }
+        return Self.json(200, "[\(rows.joined(separator: ","))]")
+    }
+
     public func agentArchiveView(authorization: String?, agentId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
