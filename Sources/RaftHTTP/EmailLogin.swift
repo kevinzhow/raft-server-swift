@@ -6397,6 +6397,23 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func attachmentUploadSessionCreate(authorization: String?, serverId: String) -> HTTPReply {
+        guard sessionUserId(authorization: authorization) != nil else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: sessionUserId(authorization: authorization) ?? "") != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        return Self.json(403, "{\"code\":\"UPLOAD_FORBIDDEN\",\"message\":\"The member cannot upload to this channel.\",\"retryable\":false}")
+    }
+
+    public func attachmentUploadSessionMissing(authorization: String?, uploadId: String) -> HTTPReply {
+        guard sessionUserId(authorization: authorization) != nil else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        return Self.json(404, "{\"code\":\"UPLOAD_SESSION_NOT_FOUND\",\"message\":\"Upload session not found.\",\"retryable\":false}")
+    }
+
     public func attachmentUploadCapabilities(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

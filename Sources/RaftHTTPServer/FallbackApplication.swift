@@ -1103,6 +1103,30 @@ public func configure(_ app: Application, services: FallbackServices) {
             channelId: request.parameters.get("channelId") ?? ""
         ))
     }
+    app.post("api", "attachments", "upload-sessions") { request -> Response in
+        routeResponse(services.emailAccounts.attachmentUploadSessionCreate(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+        ))
+    }
+    app.get("api", "attachments", "upload-sessions", ":uploadId") { request -> Response in
+        routeResponse(services.emailAccounts.attachmentUploadSessionMissing(
+            authorization: request.headers[.authorization],
+            uploadId: request.parameters.get("uploadId") ?? ""
+        ))
+    }
+    app.delete("api", "attachments", "upload-sessions", ":uploadId") { request -> Response in
+        routeResponse(services.emailAccounts.attachmentUploadSessionMissing(
+            authorization: request.headers[.authorization],
+            uploadId: request.parameters.get("uploadId") ?? ""
+        ))
+    }
+    app.post("api", "attachments", "upload-sessions", ":uploadId", "complete") { request -> Response in
+        routeResponse(services.emailAccounts.attachmentUploadSessionMissing(
+            authorization: request.headers[.authorization],
+            uploadId: request.parameters.get("uploadId") ?? ""
+        ))
+    }
     app.get("api", "attachments", "upload-capabilities") { request -> Response in
         routeResponse(services.emailAccounts.attachmentUploadCapabilities(
             authorization: request.headers[.authorization],
