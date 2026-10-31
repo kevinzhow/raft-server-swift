@@ -55,6 +55,33 @@ import VaporTesting
             #expect(frozen.status == .conflict)
             #expect((try JSONSerialization.jsonObject(with: Data((frozen.body.string ?? "").utf8)) as? [String: Any])?["code"] as? String == "channel_archived")
 
+            func frozenCode(_ response: ClientResponse) throws -> String? {
+                try (JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any])?["code"] as? String
+            }
+            let renamed = try await client.send(.patch, headers: headers, to: "/api/channels/\(channelId)") { request in
+                request.body = .init(string: "{\"name\":\"renamed-room\"}")
+            }
+            #expect(renamed.status == .conflict)
+            #expect(try frozenCode(renamed) == "channel_archived")
+
+            let notification = try await client.send(.patch, headers: headers, to: "/api/channels/\(channelId)/notification-settings") { request in
+                request.body = .init(string: "{\"activityMuted\":true}")
+            }
+            #expect(notification.status == .conflict)
+            #expect(try frozenCode(notification) == "channel_archived")
+
+            let display = try await client.send(.patch, headers: headers, to: "/api/channels/\(channelId)/message-display-settings") { request in
+                request.body = .init(string: "{\"collapseLongMessages\":false}")
+            }
+            #expect(display.status == .conflict)
+            #expect(try frozenCode(display) == "channel_archived")
+
+            let tasks = try await client.send(.post, headers: headers, to: "/api/tasks/channel/\(channelId)") { request in
+                request.body = .init(string: "{\"tasks\":[{\"title\":\"frozen\"}]}")
+            }
+            #expect(tasks.status == .conflict)
+            #expect(try frozenCode(tasks) == "channel_archived")
+
             let archivedAgain = try await client.send(.post, headers: headers, to: "/api/channels/\(channelId)/archive")
             #expect(archivedAgain.status == .ok)
 

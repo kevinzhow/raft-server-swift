@@ -7032,6 +7032,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         case .readOnly: return Self.json(403, "{\"error\":\"Join the channel to change tasks\"}")
         case .write: break
         }
+        if let reply = archivedChannelReply(channelId) { return reply }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
               let tasks = object["tasks"] as? [[String: Any]],
               !tasks.isEmpty
@@ -7112,6 +7113,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let task = taskRecords[index]
         lock.unlock()
         return Self.json(200, taskJSON(task))
+    }
+
+    private func archivedChannelReply(_ channelId: String) -> HTTPReply? {
+        guard oauth.channelArchivedAt(id: channelId) != nil else { return nil }
+        return Self.json(409, "{\"error\":\"This channel is archived\",\"code\":\"channel_archived\"}")
     }
 
     public func setChannelArchivedRoute(authorization: String?, serverId: String, channelId: String, archived: Bool) -> HTTPReply {
@@ -7713,6 +7719,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard oauth.canAccessChannelPrefs(channelId: channelId, userId: userId, serverId: serverId) else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
+        if let reply = archivedChannelReply(channelId) { return reply }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
               let collapse = object["collapseLongMessages"] as? Bool
         else {
@@ -7780,6 +7787,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
+        if let reply = archivedChannelReply(channelId) { return reply }
         let channelType = oauth.channelType(id: channelId) ?? "channel"
         guard channelType != "thread" else {
             return Self.json(400, "{\"error\":\"Threads use follow/unfollow instead of activity mute\"}")
@@ -7804,6 +7812,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
+        if let reply = archivedChannelReply(channelId) { return reply }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
             return Self.json(400, "{\"error\":\"Invalid channel update\"}")
         }
