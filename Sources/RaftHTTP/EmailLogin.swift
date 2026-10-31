@@ -4004,6 +4004,32 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func threadFollowerRoster(authorization: String?, serverId: String, threadChannelIds: String?) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let ids = (threadChannelIds ?? "").split(separator: ",").map(String.init).filter { !$0.isEmpty }
+        var threads: [String] = []
+        lock.lock()
+        for threadId in ids {
+            guard let thread = postableChannels[threadId], thread.serverId == serverId, thread.kind == "thread" else { continue }
+            let authorId = thread.parentMessageId.flatMap { parentId in
+                humanMessageRows.first { $0.id == parentId }?.senderId
+            }
+            let canManage = role == "owner" || role == "admin" || authorId == userId
+            let agents = oauth.channelAgentIds(channelId: threadId).compactMap { agentId -> String? in
+                guard let agent = oauth.agentRuntimeInfo(id: agentId) else { return nil }
+                return "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name))}"
+            }.joined(separator: ",")
+            threads.append("{\"threadChannelId\":\(jsonString(threadId)),\"canManage\":\(canManage),\"agents\":[\(agents)]}")
+        }
+        lock.unlock()
+        return Self.json(200, "{\"threads\":[\("\(threads.joined(separator: ","))")]}")
+    }
+
     public func followedThreads(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

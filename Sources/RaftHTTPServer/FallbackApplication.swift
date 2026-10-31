@@ -508,6 +508,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             authorization: request.headers[.authorization]
         ))
     }
+    app.get("api", "channels", "threads", "followers") { request -> Response in
+        routeResponse(services.emailAccounts.threadFollowerRoster(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            threadChannelIds: desktopQuery(request.url.query, "threadChannelIds")
+        ))
+    }
     app.get("api", "channels", "threads", "followed") { request -> Response in
         routeResponse(services.emailAccounts.followedThreads(
             authorization: request.headers[.authorization],
