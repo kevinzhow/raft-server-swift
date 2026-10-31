@@ -19,6 +19,7 @@ import VaporTesting
     accounts.addPostableChannel(serverId: serverId, channelId: thread, memberId: ownerId, kind: "thread", parentChannelId: parent, parentMessageId: UUID().uuidString.lowercased(), name: "thread")
     accounts.addInboxFactForTesting(receiverId: ownerId, serverId: serverId, channelId: parent, messageId: UUID().uuidString.lowercased())
     accounts.addInboxFactForTesting(receiverId: ownerId, serverId: serverId, channelId: thread, messageId: UUID().uuidString.lowercased())
+    accounts.followThreadForTesting(serverId: serverId, userId: ownerId, threadChannelId: thread, parentMessageId: UUID().uuidString.lowercased())
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -44,6 +45,10 @@ import VaporTesting
             #expect(items.count == 2)
             #expect(items.contains { $0["kind"] as? String == "channel" && $0["channelId"] as? String == parent })
             #expect(items.contains { $0["kind"] as? String == "thread" && $0["threadChannelId"] as? String == thread })
+            let threadItem = items.first { $0["kind"] as? String == "thread" }
+            #expect(threadItem?["isFollowing"] as? Bool == true)
+            #expect(threadItem?["unreadCount"] is Int)
+            #expect(threadItem?["hasMention"] is Bool)
         }
     }
 }

@@ -4617,13 +4617,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         lock.unlock()
         let items = rows.map { fact -> String in
-            let kind = fact.channelId.flatMap { postableChannels[$0]?.kind } == "thread" ? "thread" : "channel"
+            let scopeId = fact.channelId ?? ""
+            let kind = postableChannels[scopeId]?.kind == "thread" ? "thread" : "channel"
             let channelJSON = fact.channelId.map { jsonString($0) } ?? "null"
-            if kind == "thread" {
-                return "{\"kind\":\"thread\",\"threadChannelId\":\(channelJSON),\"lastMessageId\":\(jsonString(fact.messageId))}"
+            let unread = oauth.channelUnreadInfo(channelId: scopeId, userId: userId).unreadCount
+            let hasMention = storedMentions.contains {
+                $0.channelId == scopeId && $0.targetType == "user" && $0.targetId == userId
             }
-            return "{\"kind\":\"channel\",\"channelId\":\(channelJSON),\"lastMessageId\":\(jsonString(fact.messageId))}"
+            let following = threadFollows["\(serverId ?? "")\n\(userId)\n\(scopeId)"] != nil
+            if kind == "thread" {
+                return "{\"kind\":\"thread\",\"threadChannelId\":\(channelJSON),\"lastMessageId\":\(jsonString(fact.messageId)),\"unreadCount\":\(unread),\"hasMention\":\(hasMention),\"isFollowing\":\(following)}"
+            }
+            return "{\"kind\":\"channel\",\"channelId\":\(channelJSON),\"lastMessageId\":\(jsonString(fact.messageId)),\"unreadCount\":\(unread),\"hasMention\":\(hasMention)}"
         }.joined(separator: ",")
+        lock.unlock()
         return Self.json(200, "{\"items\":[\(items)]}")
     }
 
