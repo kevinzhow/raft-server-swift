@@ -76,3 +76,6 @@ agent create/GET 返回 `creator:{type:"human",id}`；`PATCH /api/agents/:id/cre
 
 
 external agent 的 start/stop/reset 都是 400 `External agents do not use Raft-managed runtime lifecycle`；assign-machine 是 400 `External agents cannot be assigned to a Computer`。
+
+
+guest 读 `GET /api/agents/:id` 得到 bounded `profileProjection:"channel_summary"`，只含 id/name/displayName/avatarUrl/description，不含 runtime/model/envVars/creator。

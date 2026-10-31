@@ -7165,6 +7165,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let role = oauth.memberRole(serverId: agent.serverId, userId: userId) else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
+        if role == "guest" {
+            let avatar = "null"
+            let description = agent.description.map { jsonString($0) } ?? "null"
+            return Self.json(200, "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"avatarUrl\":\(avatar),\"description\":\(description),\"profileProjection\":\"channel_summary\"}")
+        }
         let canSeeConfig = role == "owner" || role == "admin" || agent.creatorUserId == userId
         let creatorJSON = agent.creatorUserId.map { "{\"type\":\"human\",\"id\":\(jsonString($0))}" } ?? "null"
         let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"model\":\(jsonString(Self.agentModel(from: agent.runtimeConfigJSON, external: agent.runtime == "external"))),\"external\":\(agent.runtime == "external"),\"serverRole\":\"member\",\"creator\":\(creatorJSON),\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
