@@ -10101,12 +10101,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         case .write: break
         }
         lock.lock()
+        let current = taskRecords[index]
+        if status == "todo", current.status == "in_progress", current.assigneeId != userId {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"Only the current assignee can return this task to todo\"}")
+        }
         taskRecords[index].status = status
         if status == "done", taskRecords[index].completedAt == nil {
             taskRecords[index].completedAt = Date()
         }
         if status == "in_progress", taskRecords[index].claimedAt == nil {
             taskRecords[index].claimedAt = Date()
+        }
+        if status == "todo" {
+            taskRecords[index].claimedAt = nil
         }
         taskRecords[index].revision += 1
         let task = taskRecords[index]
