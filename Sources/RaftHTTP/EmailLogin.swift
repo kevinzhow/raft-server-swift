@@ -10831,6 +10831,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         let type = oauth.channelType(id: channelId) ?? "channel"
+        lock.lock()
+        let joined = channel.name == "all"
+            || postableChannels[channelId]?.memberIds.contains(userId) == true
+            || oauth.channelHumanIds(channelId: channelId).contains(userId)
+        lock.unlock()
         let supported = type == "channel"
         let info = oauth.channelUnreadInfo(channelId: channelId, userId: userId)
         lock.lock()
@@ -10868,7 +10873,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 peersJSON = ",\"peerReadStates\":[\("\(peers)")]"
             }
         }
-        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"maxReadSeq\":\(info.maxReadSeq),\"readStateVersion\":\(version),\"activityMuteSupported\":\(supported),\"channelRole\":\(jsonString(channelRole)),\"channelAdminBasis\":\(basis.map { jsonString($0) } ?? "null"),\"channelAuthorityRevision\":\(authorityRevision),\"channelCapabilities\":\(capsJSON)\(peersJSON)}")
+        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"joined\":\(joined),\"maxReadSeq\":\(info.maxReadSeq),\"readStateVersion\":\(version),\"activityMuteSupported\":\(supported),\"channelRole\":\(jsonString(channelRole)),\"channelAdminBasis\":\(basis.map { jsonString($0) } ?? "null"),\"channelAuthorityRevision\":\(authorityRevision),\"channelCapabilities\":\(capsJSON)\(peersJSON)}")
     }
 
     public func channelDisplaySettings(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
