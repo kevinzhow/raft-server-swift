@@ -7322,11 +7322,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
-    public func deleteAgentRoute(authorization: String?, agentId: String) -> HTTPReply {
+    public func deleteAgentRoute(authorization: String?, agentId: String, body: String = "") -> HTTPReply {
         switch agentAuthority(authorization, agentId: agentId) {
         case .denied(let reply):
             return reply
         case .allowed:
+            if !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+               let workspace = object["workspace"] as? String,
+               workspace != "keep", workspace != "delete" {
+                return Self.json(400, "{\"code\":\"archive_workspace_choice_invalid\",\"error\":\"workspace must be keep or delete\"}")
+            }
             oauth.deleteAgent(id: agentId)
             return Self.json(200, "{\"ok\":true}")
         }

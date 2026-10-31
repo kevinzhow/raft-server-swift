@@ -34,3 +34,6 @@ POST /api/channels/:id/threads 不写 content 时不创建 reply，也不自动 
 
 
 agent 向 thread 发送（`#parent:short`）要求 agent 是该 parent channel 成员；只在 thread 内 follow 的 agent 403。legacy machine key 也可认证 agent send。
+
+
+`DELETE /api/agents/:id` 只接受 workspace `keep`/`delete`（缺省 keep）；其他值是 400 `archive_workspace_choice_invalid` 且不归档。

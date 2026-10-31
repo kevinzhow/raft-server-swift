@@ -914,7 +914,8 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.delete("api", "agents", ":id") { request -> Response in
         routeResponse(services.emailAccounts.deleteAgentRoute(
             authorization: request.headers[.authorization],
-            agentId: request.parameters.get("id") ?? ""
+            agentId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
         ))
     }
     app.post("api", "agents", ":id", "stop") { request -> Response in
