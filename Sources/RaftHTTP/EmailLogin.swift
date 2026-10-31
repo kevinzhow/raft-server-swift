@@ -4357,7 +4357,25 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
             let participants = Array(participantSet).sorted()
             let participantJSON = participants.map { jsonString($0) }.joined(separator: ",")
-            summaries.append("\(jsonString(parentMessageId)):{\"threadChannelId\":\(jsonString(threadId)),\"replyCount\":\(replies.count),\"participantIds\":[\(participantJSON)]}")
+            let following = threadFollows["\(serverId ?? "")\n\(userId)\n\(threadId)"] != nil
+            let unreadInfo = oauth.channelUnreadInfo(channelId: threadId, userId: userId)
+            var unreadCount = 0
+            var firstUnread: String?
+            if following {
+                if replies.isEmpty {
+                    unreadCount = unreadInfo.unreadCount
+                    firstUnread = oauth.firstUnreadMessageId(channelId: threadId, userId: userId)
+                } else {
+                    var first: String?
+                    for (index, reply) in replies.enumerated() where index + 1 > unreadInfo.maxReadSeq && reply.senderId != userId {
+                        unreadCount += 1
+                        if first == nil { first = reply.id }
+                    }
+                    firstUnread = first
+                }
+            }
+            let firstUnreadJSON = firstUnread.map { jsonString($0) } ?? "null"
+            summaries.append("\(jsonString(parentMessageId)):{\"threadChannelId\":\(jsonString(threadId)),\"replyCount\":\(replies.count),\"unreadCount\":\(unreadCount),\"firstUnreadMessageId\":\(firstUnreadJSON),\"participantIds\":[\(participantJSON)]}")
         }
         lock.unlock()
         return Self.json(200, "{\(summaries.joined(separator: ","))}")
