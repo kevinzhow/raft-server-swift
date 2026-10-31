@@ -4336,7 +4336,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"threadChannelId\":\(jsonString(thread.key)),\"replyCount\":\(replies.count),\"lastReplyAt\":\(lastReply),\"participantIds\":[\("\(participantJSON)")]}")
     }
 
-    public func channelThreadSummaries(authorization: String?, serverId: String?, channelId: String) -> HTTPReply {
+    public func channelThreadSummaries(authorization: String?, serverId: String?, channelId: String, parentMessageIds rawParentIds: String? = nil) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)
         }
@@ -4356,10 +4356,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 && candidate.parentChannelId == channelId
                 && candidate.deletedAt == nil
         }
+        let requestedParents: Set<String>? = {
+            guard let rawParentIds, !rawParentIds.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return Set(rawParentIds.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        }()
+        if let requestedParents {
+            threads = threads.filter { _, thread in
+                guard let parentMessageId = thread.parentMessageId else { return false }
+                return requestedParents.contains(parentMessageId)
+            }
+        }
         let orderIndex = Dictionary(uniqueKeysWithValues: threadOrder.enumerated().map { ($1, $0) })
         var orderedThreads = threads.map { (id: $0.key, channel: $0.value) }
         orderedThreads.sort { (orderIndex[$0.id] ?? Int.max) < (orderIndex[$1.id] ?? Int.max) }
-        if orderedThreads.count > 100 {
+        if requestedParents == nil, orderedThreads.count > 100 {
             orderedThreads = Array(orderedThreads.suffix(100))
         }
         threads = Dictionary(uniqueKeysWithValues: orderedThreads.map { ($0.id, $0.channel) })

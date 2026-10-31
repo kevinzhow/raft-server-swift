@@ -25,3 +25,6 @@ thread 发消息要求 parent channel 成员身份（follow 不授予写权限�
 
 
 `GET /api/channels/:id/threads` 的 summary 带 `latestReplies`（最多 3 条 conversation reply，system 只计入 replyCount 不进 preview），字段含 preview/senderType/senderId/senderName/senderDisplayName。
+
+
+`GET /api/channels/:id/threads?parentMessageIds=a,b` 只返回指定 parent 的 thread summary；缺省时仍按最新 100 截断。
