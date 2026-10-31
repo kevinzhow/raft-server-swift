@@ -57,12 +57,19 @@ import VaporTesting
             #expect(minted["serverId"] as? String == serverId)
             #expect(minted["scopes"] as? [String] == ["mcp", "read", "server"])
 
+            var activeHeaders = HTTPFields()
+            activeHeaders[.authorization] = "Bearer \(apiKey)"
+            let identity = try await client.send(.get, headers: activeHeaders, to: "/internal/agent-api/")
+            #expect(identity.status == .ok)
+            #expect((try JSONSerialization.jsonObject(with: Data((identity.body.string ?? "").utf8)) as? [String: Any])?["credentialId"] as? String == credentialId)
+
             let list = try await client.send(.get, headers: headers(ownerToken), to: "/api/agents/\(agent)/credentials")
             let inventory = try JSONSerialization.jsonObject(with: Data((list.body.string ?? "").utf8)) as? [String: Any] ?? [:]
             let rows = inventory["credentials"] as? [[String: Any]] ?? []
             #expect(rows.count == 1)
             #expect(rows.first?["id"] as? String == credentialId)
             #expect((rows.first?["maskedToken"] as? String ?? "").hasSuffix("***"))
+            #expect(rows.first?["lastUsedAt"] is String)
             #expect(!(list.body.string ?? "").contains(apiKey))
             #expect(list.headers[HTTPField.Name("Cache-Control")!] == "no-store")
             #expect(try await client.send(.get, headers: headers(memberToken), to: "/api/agents/\(agent)/credentials").status == .forbidden)

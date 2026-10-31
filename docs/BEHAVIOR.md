@@ -97,3 +97,6 @@ external agent mint 接受请求体 `scopes`，返回去重排序后的 scopes�
 
 
 `GET /api/agents/:id/agent-dms` 返回 agent-to-agent DM `{id,peerId,peerName,lastMessagePreview}`；human DM 不出现，preview 跳过 system 消息。
+
+
+agent credential 经 internal agent-api 使用后，inventory 的 `lastUsedAt` 非 null；同时 identity 返回 credentialId。
