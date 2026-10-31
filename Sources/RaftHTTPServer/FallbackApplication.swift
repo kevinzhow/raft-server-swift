@@ -451,11 +451,13 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.get("api", "channels", "inbox") { request -> Response in
-        routeResponse(services.emailAccounts.channelInbox(
+        var response = routeResponse(services.emailAccounts.channelInbox(
             authorization: request.headers[.authorization],
             serverId: request.headers[HTTPField.Name("X-Server-Id")!],
             filter: desktopQuery(request.url.query, "filter")
         ))
+        response.headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
+        return response
     }
     app.post("internal", "agent", ":agentId", "send") { request -> Response in
         routeResponse(services.emailAccounts.agentSend(
