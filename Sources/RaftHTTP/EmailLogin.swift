@@ -2507,11 +2507,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         guard var channel = postableChannels[channelId],
               channel.serverId == serverId,
-              channel.deletedAt == nil,
-              channel.memberIds.contains(userId)
+              channel.deletedAt == nil
         else {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        if let role = oauth.memberRole(serverId: serverId ?? "", userId: userId) {
+            guard role == "owner" || role == "admin" else {
+                lock.unlock()
+                return Self.json(403, "{\"error\":\"Forbidden\"}")
+            }
+        } else if !channel.memberIds.contains(userId) {
+            lock.unlock()
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
         channel.deletedAt = Date()
         postableChannels[channelId] = channel
@@ -9915,7 +9923,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         if let reply = archivedChannelReply(channelId) { return reply }
-        guard role == "owner" || role == "admin" || oauth.isChannelParticipant(channelId: channelId, userId: userId) else {
+        lock.lock()
+        let actorChannelAdmin = channelHumanRoles["\(channelId)\n\(userId)"] == "admin"
+        lock.unlock()
+        if role != "owner" && role != "admin" && !actorChannelAdmin {
+            if !oauth.isChannelParticipant(channelId: channelId, userId: userId) {
+                return Self.json(404, "{\"error\":\"Channel not found\"}")
+            }
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
@@ -9949,7 +9963,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         if let reply = archivedChannelReply(channelId) { return reply }
-        guard role == "owner" || role == "admin" || userId == memberId else {
+        lock.lock()
+        let actorChannelAdmin = channelHumanRoles["\(channelId)\n\(userId)"] == "admin"
+        lock.unlock()
+        guard role == "owner" || role == "admin" || actorChannelAdmin || userId == memberId else {
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
         lock.lock()

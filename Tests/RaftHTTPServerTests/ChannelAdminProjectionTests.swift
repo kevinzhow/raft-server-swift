@@ -12,12 +12,16 @@ import VaporTesting
     let adminId = "11111111-1111-4111-8111-111111111509"
     let peerId = "11111111-1111-4111-8111-111111111510"
     let serverAdminId = "11111111-1111-4111-8111-111111111511"
-    let serverId = "33333333-3333-4333-8333-333333333600"
+    let outsiderId = "11111111-1111-4111-8111-111111111512"
+    let inviteeId = "11111111-1111-4111-8111-111111111513"
+    let serverId = "33333333-3333-4333-8333-333333333602"
     for (id, email) in [
         (ownerId, "role-owner@slock.test"),
         (adminId, "role-admin@slock.test"),
         (peerId, "role-peer@slock.test"),
         (serverAdminId, "role-server-admin@slock.test"),
+        (outsiderId, "role-outsider@slock.test"),
+        (inviteeId, "role-invitee@slock.test"),
     ] {
         accounts.addAccount(id: id, email: email, password: "password123")
         accounts.markEmailVerified(userId: id)
@@ -26,6 +30,8 @@ import VaporTesting
     accounts.oauth.addMember(serverId: serverId, userId: adminId, role: "member")
     accounts.oauth.addMember(serverId: serverId, userId: peerId, role: "member")
     accounts.oauth.addMember(serverId: serverId, userId: serverAdminId, role: "admin")
+    accounts.oauth.addMember(serverId: serverId, userId: outsiderId, role: "member")
+    accounts.oauth.addMember(serverId: serverId, userId: inviteeId, role: "member")
     let channel = accounts.oauth.createChannel(serverId: serverId, name: "role-room", creatorUserId: ownerId, type: "private")
     for id in [ownerId, adminId, peerId, serverAdminId] {
         accounts.addPostableChannel(serverId: serverId, channelId: channel, memberId: id, name: "role-room")
@@ -103,6 +109,33 @@ import VaporTesting
             }
             #expect(protectedTarget.status == .forbidden)
             #expect((try JSONSerialization.jsonObject(with: Data((protectedTarget.body.string ?? "").utf8)) as? [String: Any])?["code"] as? String == "protected_server_role")
+
+            let rename = try await client.send(.patch, headers: headers, to: "/api/channels/\(channel)") { request in
+                request.body = .init(string: "{\"description\":\"managed locally\"}")
+            }
+            #expect(rename.status == .ok)
+            let visibility = try await client.send(.patch, headers: headers, to: "/api/channels/\(channel)") { request in
+                request.body = .init(string: "{\"visibility\":\"public\"}")
+            }
+            #expect(visibility.status == .forbidden)
+            #expect(try await client.send(.delete, headers: headers, to: "/api/channels/\(channel)").status == .forbidden)
+
+            let outsiderHeaders = headers
+            var outsiderFields = outsiderHeaders
+            let outsiderLogin = try await client.send(.post, headers: loginHeaders, to: "/api/auth/login") { request in
+                request.body = .init(string: "{\"email\":\"role-outsider@slock.test\",\"password\":\"password123\"}")
+            }
+            let outsiderToken = (try JSONSerialization.jsonObject(with: Data((outsiderLogin.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
+            outsiderFields[.authorization] = "Bearer \(outsiderToken)"
+            let outsiderAdd = try await client.send(.post, headers: outsiderFields, to: "/api/channels/\(channel)/members") { request in
+                request.body = .init(string: "{\"userId\":\"\(inviteeId)\"}")
+            }
+            #expect(outsiderAdd.status == .notFound)
+            let adminAdd = try await client.send(.post, headers: headers, to: "/api/channels/\(channel)/members") { request in
+                request.body = .init(string: "{\"userId\":\"\(inviteeId)\"}")
+            }
+            #expect(adminAdd.status == .ok)
+            #expect(accounts.oauth.channelHumanIds(channelId: channel).contains(inviteeId))
 
             #expect(try await client.send(.post, headers: headers, to: "/api/channels/\(channel)/archive").status == .ok)
             let archivedRole = try await client.send(.patch, headers: headers, to: "/api/channels/\(channel)/members/user/\(peerId)/role") { request in
