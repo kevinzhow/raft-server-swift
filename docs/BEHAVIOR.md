@@ -106,3 +106,6 @@ agent credential 经 internal agent-api 使用后，inventory 的 `lastUsedAt` �
 
 
 `POST /api/agents/:id/migration/cancel` 普通 member 403 `{code:"not_supported"}`；creator/admin 在没有活跃迁移时 404 `{code:"migration_not_found"}`。
+
+
+`GET /api/agents/:id/external-diagnostics`：member 403、managed agent 400 `agent_not_external`、缺失 404；external agent 返回最小 diagnostics 视图。

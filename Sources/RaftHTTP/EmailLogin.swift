@@ -7443,6 +7443,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
+    public func externalAgentDiagnostics(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted, info.serverId == serverId,
+              let role = oauth.memberRole(serverId: serverId, userId: userId)
+        else {
+            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard info.runtime == "external" else {
+            return Self.json(400, "{\"code\":\"agent_not_external\",\"error\":\"External diagnostics require an external Agent\"}")
+        }
+        return Self.json(200, "{\"agentId\":\(jsonString(agentId)),\"runtime\":\"external\",\"provider\":null,\"presence\":{\"lastSeenAt\":null,\"online\":false,\"onlineWindowMs\":120000},\"status\":{\"activity\":\"idle\",\"statusProtocolAdoptedAt\":null},\"push\":{\"registered\":false,\"enabled\":false,\"endpointHost\":null,\"consecutiveFailures\":0,\"lastDeliveryAt\":null},\"events\":{\"lastCursorPullAt\":null,\"pendingCursorAckCount\":0},\"connections\":[]}")
+    }
+
     public func agentMigrationStatus(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
