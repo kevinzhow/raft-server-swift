@@ -4112,6 +4112,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var rows: [String] = []
         for follow in follows {
             guard let thread = postableChannels[follow.threadChannelId], thread.deletedAt == nil else { continue }
+            if let parentId = thread.parentChannelId, let parent = postableChannels[parentId], parent.deletedAt != nil {
+                continue
+            }
             let info = oauth.channelUnreadInfo(channelId: follow.threadChannelId, userId: userId)
             let task = taskRecords.first { $0.messageId == follow.parentMessageId }
             let taskJSON = task.map { jsonString($0.id) } ?? "null"

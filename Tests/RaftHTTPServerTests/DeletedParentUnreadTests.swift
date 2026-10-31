@@ -26,6 +26,7 @@ import VaporTesting
     accounts.oauth.addChannelHuman(channelId: thread, userId: peerId)
     _ = accounts.oauth.createMessageRecord(channelId: thread, content: "reply after parent delete", senderId: peerId)
     accounts.oauth.setChannelReadCursor(channelId: thread, userId: ownerId, seq: 0)
+    accounts.followThreadForTesting(serverId: serverId, userId: ownerId, threadChannelId: thread, parentMessageId: "abcdef1234567890")
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -47,9 +48,14 @@ import VaporTesting
             let before = try await client.send(.get, headers: headers, to: "/api/channels/unread")
             #expect((try JSONSerialization.jsonObject(with: Data((before.body.string ?? "").utf8)) as? [String: Any])?[thread] as? Int == 1)
 
+            let followedBefore = try await client.send(.get, headers: headers, to: "/api/channels/threads/followed")
+            #expect(((try JSONSerialization.jsonObject(with: Data((followedBefore.body.string ?? "").utf8)) as? [String: Any])?["threads"] as? [[String: Any]] ?? []).count == 1)
+
             accounts.softDeletePostableChannelForTesting(channelId: parent)
             let after = try await client.send(.get, headers: headers, to: "/api/channels/unread")
             #expect((try JSONSerialization.jsonObject(with: Data((after.body.string ?? "").utf8)) as? [String: Any])?[thread] == nil)
+            let followedAfter = try await client.send(.get, headers: headers, to: "/api/channels/threads/followed")
+            #expect(((try JSONSerialization.jsonObject(with: Data((followedAfter.body.string ?? "").utf8)) as? [String: Any])?["threads"] as? [[String: Any]] ?? []).isEmpty)
         }
     }
 }
