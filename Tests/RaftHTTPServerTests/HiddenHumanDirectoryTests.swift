@@ -66,3 +66,62 @@ import VaporTesting
         }
     }
 }
+
+@Test func hiddenDirectoryClosesTheMemberGraphToPlainMembers() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111397"
+    let memberId = "11111111-1111-4111-8111-111111111398"
+    let otherId = "11111111-1111-4111-8111-111111111399"
+    let serverId = "33333333-3333-4333-8333-333333333533"
+    for (id, email) in [
+        (ownerId, "graph-hidden-owner@slock.test"),
+        (memberId, "graph-hidden-member@slock.test"),
+        (otherId, "graph-hidden-other@slock.test"),
+    ] {
+        accounts.addAccount(id: id, email: email, password: "password123")
+        accounts.markEmailVerified(userId: id)
+    }
+    accounts.oauth.addOwnedServer(id: serverId, slug: "graph-hidden", name: "Graph Hidden", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: memberId, role: "member")
+    accounts.oauth.addMember(serverId: serverId, userId: otherId, role: "member")
+    accounts.setHideHumansFromMembers(serverId: serverId, hidden: true)
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            func login(_ email: String) async throws -> String {
+                var headers = HTTPFields()
+                headers[.contentType] = "application/json"
+                let response = try await client.send(.post, headers: headers, to: "/api/auth/login") { request in
+                    request.body = .init(string: "{\"email\":\"\(email)\",\"password\":\"password123\"}")
+                }
+                return (try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
+            }
+            func headers(_ token: String, server: String = serverId) -> HTTPFields {
+                var fields = HTTPFields()
+                fields[.authorization] = "Bearer \(token)"
+                fields[HTTPField.Name("X-Server-Id")!] = server
+                return fields
+            }
+            let ownerToken = try await login("graph-hidden-owner@slock.test")
+            let memberToken = try await login("graph-hidden-member@slock.test")
+
+            let memberGraph = try await client.send(.get, headers: headers(memberToken), to: "/api/servers/\(serverId)/member-graph")
+            #expect(memberGraph.status == .forbidden)
+            #expect((try JSONSerialization.jsonObject(with: Data((memberGraph.body.string ?? "").utf8)) as? [String: Any])?["error"] as? String == "Member graph is not available")
+
+            let ownerGraph = try await client.send(.get, headers: headers(ownerToken), to: "/api/servers/\(serverId)/member-graph")
+            #expect(ownerGraph.status == .ok)
+            let humans = (try JSONSerialization.jsonObject(with: Data((ownerGraph.body.string ?? "").utf8)) as? [String: Any])?["humans"] as? [[String: Any]] ?? []
+            #expect(Set(humans.compactMap { $0["id"] as? String }) == [ownerId, memberId, otherId])
+
+            let mismatched = try await client.send(.get, headers: headers(ownerToken, server: UUID().uuidString.lowercased()), to: "/api/servers/\(serverId)/member-graph")
+            #expect(mismatched.status == .badRequest)
+        }
+    }
+}

@@ -7386,8 +7386,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)
         }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        lock.lock()
+        let hiddenDirectory = hideHumansFromMembers[serverId] == true
+        lock.unlock()
+        if hiddenDirectory, role != "owner", role != "admin" {
+            return Self.json(403, "{\"error\":\"Member graph is not available\"}")
         }
         let memberIds = oauth.memberIds(serverId: serverId)
         let agentIds = oauth.activeAgentIds(serverId: serverId)
