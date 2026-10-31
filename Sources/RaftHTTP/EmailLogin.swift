@@ -9635,10 +9635,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             channel.serverId == agent.serverId && channel.name == name && channel.deletedAt == nil
         }?.key
         lock.unlock()
-        guard let channelId else {
+        guard let channelId, let channel = oauth.channelInfo(id: channelId) else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
-        return Self.json(200, "{\"channelId\":\(jsonString(channelId))}")
+        let type = oauth.channelType(id: channelId) ?? "channel"
+        lock.lock()
+        let joined = postableChannels[channelId]?.memberIds.contains(agent.id) == true
+            || oauth.channelAgentIds(channelId: channelId).contains(agent.id)
+        lock.unlock()
+        guard type == "channel" || joined else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        return Self.json(200, "{\"channelId\":\(jsonString(channelId)),\"type\":\(jsonString(type))}")
     }
 
     public func agentCreateChannel(authorization: String?, body: String) -> HTTPReply {
