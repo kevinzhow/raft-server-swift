@@ -9502,14 +9502,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard role == "owner" || role == "admin" || oauth.isChannelParticipant(channelId: channelId, userId: userId) else {
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let agentId = object["agentId"] as? String,
-              let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted
-        else {
-            return Self.json(400, "{\"error\":\"Invalid agent\"}")
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid channel member\"}")
         }
-        oauth.addChannelAgent(channelId: channelId, agentId: agentId)
-        return Self.json(200, "{\"ok\":true}")
+        if let agentId = object["agentId"] as? String {
+            guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
+                return Self.json(400, "{\"error\":\"Invalid agent\"}")
+            }
+            oauth.addChannelAgent(channelId: channelId, agentId: agentId)
+            return Self.json(200, "{\"ok\":true}")
+        }
+        if let targetUserId = object["userId"] as? String {
+            guard oauth.memberRole(serverId: serverId, userId: targetUserId) != nil else {
+                return Self.json(400, "{\"error\":\"Invalid member\"}")
+            }
+            accountsForInvite(userId: targetUserId, serverId: serverId, channelId: channelId)
+            return Self.json(200, "{\"ok\":true}")
+        }
+        return Self.json(400, "{\"error\":\"Invalid channel member\"}")
     }
 
     public func removeChannelHuman(authorization: String?, serverId: String, channelId: String, memberId: String) -> HTTPReply {
