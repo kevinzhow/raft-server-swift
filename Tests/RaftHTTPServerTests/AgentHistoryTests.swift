@@ -60,6 +60,10 @@ import VaporTesting
             let legacyBody = try JSONSerialization.jsonObject(with: Data((legacy.body.string ?? "").utf8)) as? [String: Any]
             #expect((legacyBody?["messages"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String } == [second.id, third.id])
 
+            let around = try await history("around=\(String(second.id.prefix(8)))&limit=3")
+            #expect(messageIds(around) == [first.id, second.id, third.id])
+            #expect(around["has_newer"] as? Bool == false)
+
             let after = try await history("after=\(first.seq)&limit=1")
             #expect(messageIds(after) == [second.id])
             #expect(after["has_more"] as? Bool == true)

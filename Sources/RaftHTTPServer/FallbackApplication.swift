@@ -505,6 +505,7 @@ public func configure(_ app: Application, services: FallbackServices) {
             channelRef: desktopQuery(request.url.query, "channel"),
             before: desktopQuery(request.url.query, "before"),
             after: desktopQuery(request.url.query, "after"),
+            around: desktopQuery(request.url.query, "around"),
             limit: desktopQuery(request.url.query, "limit")
         ))
     }
@@ -515,6 +516,7 @@ public func configure(_ app: Application, services: FallbackServices) {
             channelRef: desktopQuery(request.url.query, "channel"),
             before: desktopQuery(request.url.query, "before"),
             after: desktopQuery(request.url.query, "after"),
+            around: desktopQuery(request.url.query, "around"),
             limit: desktopQuery(request.url.query, "limit")
         ))
     }

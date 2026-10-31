@@ -9442,7 +9442,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
-    public func agentHistory(authorization: String?, agentId: String? = nil, channelRef: String?, before: String?, after: String?, limit: String?) -> HTTPReply {
+    public func agentHistory(authorization: String?, agentId: String? = nil, channelRef: String?, before: String?, after: String?, around: String? = nil, limit: String?) -> HTTPReply {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
             return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
         }
@@ -9498,7 +9498,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if let beforeSeq { filtered = filtered.filter { $0.seq < beforeSeq } }
         if let afterSeq { filtered = filtered.filter { $0.seq > afterSeq } }
         let page: [OAuthLedger.HistoryMessage]
-        if afterSeq != nil {
+        if let around, !around.isEmpty,
+           let index = filtered.firstIndex(where: { $0.id.hasPrefix(around) || $0.id == around }) {
+            let half = max(1, pageLimit / 2)
+            let start = max(0, index - half)
+            let end = min(filtered.count, start + pageLimit)
+            page = Array(filtered[start..<end])
+        } else if afterSeq != nil {
             page = Array(filtered.prefix(pageLimit))
         } else {
             page = Array(filtered.suffix(pageLimit))
