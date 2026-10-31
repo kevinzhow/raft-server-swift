@@ -207,6 +207,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var setupPhases: [String: String] = [:]
     private var guestRoleServers: Set<String> = []
     private var computers: [(id: String, serverId: String, name: String, apiKey: String, machineId: String?, revokedAt: Date?)] = []
+    private var machineRuntimeModels: [String: [String: (models: [(id: String, label: String)], updatedAt: Date)]] = [:]
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -6756,6 +6757,38 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(401, "{\"error\":\"Invalid computer credential\"}")
         }
         return Self.json(200, "{\"runners\":[]}")
+    }
+
+    public func setMachineRuntimeModels(machineId: String, runtime: String, models: [(id: String, label: String)]) {
+        lock.lock()
+        machineRuntimeModels[machineId, default: [:]][runtime] = (models, Date())
+        lock.unlock()
+    }
+
+    public func modelLabelCatalog(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        lock.lock()
+        let serverMachines = machines.filter { $0.serverId == serverId }
+        let snapshot = machineRuntimeModels
+        lock.unlock()
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let machinesJSON = serverMachines.map { machine -> String in
+            let runtimes = snapshot[machine.id] ?? [:]
+            let runtimesJSON = runtimes.map { runtime, entry -> String in
+                let models = entry.models.map { model in
+                    "{\"id\":\(jsonString(model.id)),\"label\":\(jsonString(model.label))}"
+                }.joined(separator: ",")
+                return "\(jsonString(runtime)):{\"models\":[\(models)],\"updatedAt\":\(jsonString(formatter.string(from: entry.updatedAt)))}"
+            }.joined(separator: ",")
+            return "\(jsonString(machine.id)):{\"runtimes\":{\(runtimesJSON)}}"
+        }.joined(separator: ",")
+        return Self.json(200, "{\"machines\":{\(machinesJSON)}}")
     }
 
     public func machineCount(serverId: String) -> Int {

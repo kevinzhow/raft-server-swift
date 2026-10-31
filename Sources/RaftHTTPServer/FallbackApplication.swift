@@ -1058,6 +1058,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.parameters.get("id") ?? ""
         ))
     }
+    app.get("api", "servers", ":id", "model-label-catalog") { request -> Response in
+        routeResponse(services.emailAccounts.modelLabelCatalog(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
     app.get("api", "servers", ":id", "product-analytics-settings") { request -> Response in
         routeResponse(services.emailAccounts.serverProductAnalyticsSettings(
             authorization: request.headers[.authorization],
