@@ -5650,12 +5650,82 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
         }
 
+        var languagePreference: String?? = nil
+        if let raw = object["preferredLanguage"] {
+            if raw is NSNull {
+                languagePreference = .some(nil)
+            } else if let value = raw as? String,
+                      value.wholeMatch(of: /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/) != nil {
+                languagePreference = .some(value.lowercased())
+            } else {
+                return Self.json(400, "{\"error\":\"Unsupported preferredLanguage\"}")
+            }
+        }
+        var timezonePreference: String?? = nil
+        if let raw = object["preferredTimezone"] {
+            if raw is NSNull {
+                timezonePreference = .some(nil)
+            } else if let value = raw as? String, TimeZone(identifier: value) != nil {
+                timezonePreference = .some(value)
+            } else {
+                return Self.json(400, "{\"error\":\"Invalid preferredTimezone\"}")
+            }
+        }
+        var modePreference: String? = nil
+        if let raw = object["preferredTranslationMode"] {
+            guard let value = raw as? String, ["off", "manual", "auto"].contains(value) else {
+                return Self.json(400, "{\"error\":\"Invalid preferredTranslationMode\"}")
+            }
+            modePreference = value
+        }
+        var autoPreference: Bool? = nil
+        if let raw = object["autoTranslationEnabled"] {
+            guard let value = raw as? Bool else {
+                return Self.json(400, "{\"error\":\"Invalid autoTranslationEnabled\"}")
+            }
+            autoPreference = value
+        }
+        var displayPreference: String? = nil
+        if let raw = object["preferredTranslationDisplay"] {
+            guard let value = raw as? String, ["translated", "bilingual", "original"].contains(value) else {
+                return Self.json(400, "{\"error\":\"Invalid preferredTranslationDisplay\"}")
+            }
+            displayPreference = value
+        }
+        var timeFormatPreference: String?? = nil
+        if let raw = object["preferredTimeFormat"] {
+            if raw is NSNull {
+                timeFormatPreference = .some(nil)
+            } else if let value = raw as? String, ["12h", "24h"].contains(value.lowercased()) {
+                timeFormatPreference = .some(value.lowercased())
+            } else {
+                return Self.json(400, "{\"error\":\"Invalid preferredTimeFormat\"}")
+            }
+        }
+        var fontSizePreference: String?? = nil
+        if let raw = object["preferredMessageBodyFontSize"] {
+            if raw is NSNull {
+                fontSizePreference = .some(nil)
+            } else if let value = raw as? String, ["sm", "md", "lg", "xl"].contains(value.lowercased()) {
+                fontSizePreference = .some(value.lowercased())
+            } else {
+                return Self.json(400, "{\"error\":\"Invalid preferredMessageBodyFontSize\"}")
+            }
+        }
+
         lock.lock()
         guard var account = accounts.values.first(where: { $0.id == userId }) else {
             lock.unlock()
             return Self.invalidToken
         }
         var changed = false
+        if let value = languagePreference { account.preferredLanguage = value; changed = true }
+        if let value = timezonePreference { account.preferredTimezone = value; changed = true }
+        if let value = modePreference { account.preferredTranslationMode = value; changed = true }
+        if let value = autoPreference { account.autoTranslationEnabled = value; changed = true }
+        if let value = displayPreference { account.preferredTranslationDisplay = value; changed = true }
+        if let value = timeFormatPreference { account.preferredTimeFormat = value; changed = true }
+        if let value = fontSizePreference { account.preferredMessageBodyFontSize = value; changed = true }
         if let language = languageUpdate {
             account.displayLanguage = language
             changed = true
@@ -5945,6 +6015,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var emailVerified: Bool = false
         var stagingSelfAccountCapabilityHash: String? = nil
         var retiredAt: Date? = nil
+        var preferredLanguage: String? = nil
+        var preferredTimezone: String? = nil
+        var preferredTranslationMode: String = "off"
+        var autoTranslationEnabled: Bool = false
+        var preferredTranslationDisplay: String = "translated"
+        var preferredTimeFormat: String? = nil
+        var preferredMessageBodyFontSize: String? = nil
     }
 
     private struct Request {
@@ -10720,7 +10797,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         } else {
             share = "null"
         }
-        return "{\"id\":\(jsonString(account.id)),\"email\":\(jsonString(account.email)),\"name\":\(jsonString(account.name)),\"gravatarHash\":\(jsonString(hash)),\"displayLanguage\":\(language),\"profileSetupCompletedAt\":null,\"profileSetupProvider\":\(provider),\"avatarUrl\":\(avatar),\"shareUsageData\":\(share)}"
+        let preferredLanguage = account.preferredLanguage.map { jsonString($0) } ?? "null"
+        let preferredTimezone = account.preferredTimezone.map { jsonString($0) } ?? "null"
+        let preferredTimeFormat = account.preferredTimeFormat.map { jsonString($0) } ?? "null"
+        let preferredFontSize = account.preferredMessageBodyFontSize.map { jsonString($0) } ?? "null"
+        return "{\"id\":\(jsonString(account.id)),\"email\":\(jsonString(account.email)),\"name\":\(jsonString(account.name)),\"gravatarHash\":\(jsonString(hash)),\"displayLanguage\":\(language),\"profileSetupCompletedAt\":null,\"profileSetupProvider\":\(provider),\"avatarUrl\":\(avatar),\"shareUsageData\":\(share),\"preferredLanguage\":\(preferredLanguage),\"preferredTimezone\":\(preferredTimezone),\"preferredTranslationMode\":\(jsonString(account.preferredTranslationMode)),\"autoTranslationEnabled\":\(account.autoTranslationEnabled),\"preferredTranslationDisplay\":\(jsonString(account.preferredTranslationDisplay)),\"preferredTimeFormat\":\(preferredTimeFormat),\"preferredMessageBodyFontSize\":\(preferredFontSize)}"
     }
 
     private static let reservedAgentNames: Set<String> = [
