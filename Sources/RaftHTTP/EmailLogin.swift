@@ -4301,6 +4301,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return true
         }.map(\.element)
         let pageRows = Array(cursorRows.suffix(Self.messagePageLimit(rawLimit)))
+        let highWater = rows.count
+        let pageSeqs = pageRows.compactMap { row in rows.firstIndex(where: { $0.id == row.id }).map { $0 + 1 } }
+        let coveredFrom = pageSeqs.first ?? 0
+        let coveredThrough = pageSeqs.last ?? 0
+        let coveredAfter = max(0, coveredFrom - 1)
+        let isTail = rawBefore == nil && rawAfter == nil
+        let pageHasGap = !isTail
+        let pageHasNewer = rawBefore != nil
+        let completeThroughLatest = isTail
+        let windowJSON = "{\"coveredFromSeq\":\(coveredFrom),\"coveredAfterSeq\":\(coveredAfter),\"coveredThroughSeq\":\(coveredThrough),\"remoteHighWaterSeq\":\(highWater),\"hasGap\":\(pageHasGap),\"hasNewer\":\(pageHasNewer),\"completeThroughLatest\":\(completeThroughLatest)}"
         let listed = pageRows.map { message in
             var row = "{\"id\":\(jsonString(message.id)),\"content\":\(jsonString(message.content)),\"attachments\":[\(Self.attachmentJSON(message.attachmentIds))],\"reactions\":[\(reactionJSONLocked(messageId: message.id))],\"mentions\":[\(visibleMentionJSONLocked(messageId: message.id))]"
             if let userId, let metadata = forwardMetadataJSONLocked(messageId: message.id, userId: userId, serverId: serverId) {
@@ -4314,7 +4324,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard visible else {
             return Self.json(404, "{\"error\":\"Channel not found or not visible\"}")
         }
-        return Self.json(200, "{\"messages\":[\(listed)],\"threadSummariesByParentMessageId\":{\(summaries)}}")
+        return Self.json(200, "{\"messages\":[\(listed)],\"messageWindow\":\(windowJSON),\"threadSummariesByParentMessageId\":{\(summaries)}}")
     }
 
     /// Missing, zero, or non-numeric limits are 50. A positive limit is capped at 200. The page is the newest rows.

@@ -48,9 +48,29 @@ import VaporTesting
                 return (body?["messages"] as? [[String: Any]] ?? [], response.status.code, body?["code"] as? String)
             }
 
+            let tail = try await page("?limit=2")
+            #expect(tail.1 == 200)
+            #expect(tail.0.compactMap { $0["content"] as? String } == ["two", "three"])
+            let tailResponse = try await client.send(.get, headers: headers, to: URI(string: "/api/messages/channel/\(channelId)?limit=2"))
+            let tailBody = try JSONSerialization.jsonObject(with: Data((tailResponse.body.string ?? "").utf8)) as? [String: Any]
+            let tailWindow = tailBody?["messageWindow"] as? [String: Any]
+            #expect(tailWindow?["coveredFromSeq"] as? Int == 2)
+            #expect(tailWindow?["coveredAfterSeq"] as? Int == 1)
+            #expect(tailWindow?["coveredThroughSeq"] as? Int == 3)
+            #expect(tailWindow?["remoteHighWaterSeq"] as? Int == 3)
+            #expect(tailWindow?["hasGap"] as? Bool == false)
+            #expect(tailWindow?["hasNewer"] as? Bool == false)
+            #expect(tailWindow?["completeThroughLatest"] as? Bool == true)
+
             let before = try await page("?limit=2&before=3")
             #expect(before.1 == 200)
             #expect(before.0.compactMap { $0["content"] as? String } == ["one", "two"])
+            let beforeResponse = try await client.send(.get, headers: headers, to: URI(string: "/api/messages/channel/\(channelId)?limit=2&before=3"))
+            let beforeBody = try JSONSerialization.jsonObject(with: Data((beforeResponse.body.string ?? "").utf8)) as? [String: Any]
+            let beforeWindow = beforeBody?["messageWindow"] as? [String: Any]
+            #expect(beforeWindow?["hasGap"] as? Bool == true)
+            #expect(beforeWindow?["hasNewer"] as? Bool == true)
+            #expect(beforeWindow?["completeThroughLatest"] as? Bool == false)
 
             let after = try await page("?after=1")
             #expect(after.1 == 200)
