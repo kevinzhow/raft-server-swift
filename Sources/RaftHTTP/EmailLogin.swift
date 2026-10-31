@@ -4523,6 +4523,50 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// `GET /api/channels/inbox`. A DM outsider mention is not an inbox item.
+    public func doneInbox(authorization: String?, serverId: String?, limit: Int) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        let scopes = inboxDoneScopes
+            .filter { $0.hasPrefix("\(userId)\n") }
+            .map { String($0.dropFirst("\(userId)\n".count)) }
+            .sorted()
+            .prefix(max(0, limit))
+        let items = scopes.map { scopeId -> String in
+            let kind = postableChannels[scopeId]?.kind == "thread" ? "thread" : "channel"
+            let following = threadFollows["\(serverId ?? "")\n\(userId)\n\(scopeId)"] != nil
+            let unread = oauth.channelUnreadInfo(channelId: scopeId, userId: userId).unreadCount
+            let scopeJSON = jsonString(scopeId)
+            if kind == "thread" {
+                return "{\"kind\":\"thread\",\"threadChannelId\":\(scopeJSON),\"isFollowing\":\(following),\"unreadCount\":\(unread)}"
+            }
+            return "{\"kind\":\"channel\",\"channelId\":\(scopeJSON),\"unreadCount\":\(unread)}"
+        }.joined(separator: ",")
+        lock.unlock()
+        return Self.json(200, "{\"items\":[\("\(items)")]}")
+    }
+
+    public func threadInboxUndone(authorization: String?, serverId: String?, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let threadId = object["threadChannelId"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"Invalid inbox undone request\"}")
+        }
+        lock.lock()
+        guard postableChannels[threadId]?.kind == "thread" else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Inbox scope not found\"}")
+        }
+        inboxDoneScopes.remove("\(userId)\n\(threadId)")
+        lock.unlock()
+        _ = serverId
+        return Self.json(200, "{\"ok\":true}")
+    }
+
     public func channelInboxDone(authorization: String?, serverId: String?, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

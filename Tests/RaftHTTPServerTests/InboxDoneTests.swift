@@ -61,6 +61,16 @@ import VaporTesting
             let followedBody = try JSONSerialization.jsonObject(with: Data((followed.body.string ?? "").utf8)) as? [String: Any]
             #expect((followedBody?["threads"] as? [[String: Any]] ?? []).isEmpty)
 
+            let done = try await client.send(.get, headers: headers, to: "/api/channels/inbox/done?limit=30")
+            #expect(done.status == .ok)
+            let doneBody = try JSONSerialization.jsonObject(with: Data((done.body.string ?? "").utf8)) as? [String: Any]
+            let doneThread = (doneBody?["items"] as? [[String: Any]] ?? []).first { $0["threadChannelId"] as? String == thread }
+            #expect(doneThread?["kind"] as? String == "thread")
+            #expect(doneThread?["isFollowing"] as? Bool == true)
+
+            #expect(try await post("/api/channels/threads/undone", "{\"threadChannelId\":\"\(thread)\"}").status == .ok)
+            #expect(try await inbox().count == 1)
+
             #expect(try await post("/api/channels/inbox/done", "{\"channelId\":\"\(thread)\"}").status == .notFound)
 
             let newParent = UUID().uuidString.lowercased()
