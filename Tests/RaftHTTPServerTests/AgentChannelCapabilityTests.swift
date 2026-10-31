@@ -19,7 +19,6 @@ import VaporTesting
     accounts.oauth.addMember(serverId: serverId, userId: targetId, role: "member")
     let channel = accounts.oauth.createChannel(serverId: serverId, name: "cap-room", creatorUserId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channel, memberId: ownerId, name: "cap-room")
-    accounts.oauth.addChannelHuman(channelId: channel, userId: targetId)
     let agent = accounts.oauth.createAgent(serverId: serverId, name: "cap-agent")
     accounts.oauth.addChannelAgent(channelId: channel, agentId: agent)
     let peer = accounts.oauth.createAgent(serverId: serverId, name: "cap-peer")
@@ -73,7 +72,12 @@ import VaporTesting
                 request.body = .init(string: "{\"user\":\"cap-target\"}")
             }
             #expect(addHuman.status == .ok)
+            #expect(try json(addHuman)["alreadyMember"] as? Bool == false)
             #expect(accounts.oauth.channelHumanIds(channelId: channel).contains(targetId))
+            let repeatHuman = try await client.send(.post, headers: headers, to: "/internal/agent-api/channels/\(channel)/members") { request in
+                request.body = .init(string: "{\"user\":\"cap-target\"}")
+            }
+            #expect(try json(repeatHuman)["alreadyMember"] as? Bool == true)
             #expect(try await client.send(.delete, headers: headers, to: "/internal/agent-api/channels/\(channel)/members") { request in
                 request.body = .init(string: "{\"user\":\"cap-target\"}")
             }.status == .ok)
@@ -83,7 +87,13 @@ import VaporTesting
                 request.body = .init(string: "{\"agent\":\"cap-peer\"}")
             }
             #expect(addAgent.status == .ok)
+            #expect(try json(addAgent)["alreadyMember"] as? Bool == false)
+            #expect((try json(addAgent)["member"] as? [String: Any])?["type"] as? String == "agent")
             #expect(accounts.oauth.channelAgentIds(channelId: channel).contains(peer))
+            let repeatAgent = try await client.send(.post, headers: headers, to: "/internal/agent-api/channels/\(channel)/members") { request in
+                request.body = .init(string: "{\"agent\":\"cap-peer\"}")
+            }
+            #expect(try json(repeatAgent)["alreadyMember"] as? Bool == true)
 
             let allowedServer = try await client.send(.patch, headers: headers, to: "/internal/agent-api/server") { request in
                 request.body = .init(string: "{\"name\":\"Capability Server Renamed\"}")

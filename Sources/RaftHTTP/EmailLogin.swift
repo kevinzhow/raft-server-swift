@@ -9517,8 +9517,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 _ = oauth.removeChannelHuman(channelId: channelId, userId: target)
                 return Self.json(200, "{\"ok\":true}")
             }
-            accountsForInvite(userId: target, serverId: agent.serverId, channelId: channelId)
             let already = oauth.channelHumanIds(channelId: channelId).contains(target)
+            if !already {
+                accountsForInvite(userId: target, serverId: agent.serverId, channelId: channelId)
+            }
             return Self.json(200, "{\"ok\":true,\"alreadyMember\":\(already),\"member\":{\"type\":\"human\",\"name\":\(jsonString(userName))}}")
         }
         if let agentName = object["agent"] as? String {
@@ -9530,8 +9532,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 oauth.removeChannelAgent(channelId: channelId, agentId: target)
                 return Self.json(200, "{\"ok\":true}")
             }
-            oauth.addChannelAgent(channelId: channelId, agentId: target)
-            return Self.json(200, "{\"ok\":true,\"alreadyMember\":false,\"member\":{\"type\":\"agent\",\"name\":\(jsonString(agentName))}}")
+            let already = oauth.channelAgentIds(channelId: channelId).contains(target)
+            if !already {
+                oauth.addChannelAgent(channelId: channelId, agentId: target)
+            }
+            return Self.json(200, "{\"ok\":true,\"alreadyMember\":\(already),\"member\":{\"type\":\"agent\",\"name\":\(jsonString(agentName))}}")
         }
         return Self.json(400, "{\"error\":\"Invalid channel member\"}")
     }
