@@ -212,6 +212,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var joinLinks: [String: (serverId: String, role: String)] = [:]
     private var hostedAgents: Set<String> = []
     private var threadFollows: [String: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String)] = [:]
+    private var threadFollowerRemovals: [String: (serverId: String, threadChannelId: String, agentId: String)] = [:]
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -4002,6 +4003,59 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             assigneeType: assigneeType
         ))
         lock.unlock()
+    }
+
+    private func canManageThreadLocked(serverId: String, thread: PostableChannel, userId: String) -> Bool {
+        if oauth.memberRole(serverId: serverId, userId: userId) == "owner" || oauth.memberRole(serverId: serverId, userId: userId) == "admin" {
+            return true
+        }
+        guard let parentMessageId = thread.parentMessageId else { return false }
+        return humanMessageRows.first { $0.id == parentMessageId }?.senderId == userId
+    }
+
+    public func removeThreadFollower(authorization: String?, serverId: String, threadId: String, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        lock.lock()
+        guard let thread = postableChannels[threadId], thread.serverId == serverId, thread.kind == "thread" else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Thread not found\"}")
+        }
+        guard canManageThreadLocked(serverId: serverId, thread: thread, userId: userId) else {
+            lock.unlock()
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        let undoToken = UUID().uuidString.lowercased()
+        threadFollowerRemovals[undoToken] = (serverId, threadId, agentId)
+        lock.unlock()
+        oauth.removeChannelAgent(channelId: threadId, agentId: agentId)
+        return Self.json(200, "{\"removed\":true,\"undoToken\":\(jsonString(undoToken))}")
+    }
+
+    public func restoreThreadFollower(authorization: String?, serverId: String, threadId: String, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        lock.lock()
+        guard let thread = postableChannels[threadId], thread.serverId == serverId, thread.kind == "thread" else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Thread not found\"}")
+        }
+        guard canManageThreadLocked(serverId: serverId, thread: thread, userId: userId) else {
+            lock.unlock()
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        threadFollowerRemovals = threadFollowerRemovals.filter { $0.value.threadChannelId != threadId || $0.value.agentId != agentId }
+        lock.unlock()
+        oauth.addChannelAgent(channelId: threadId, agentId: agentId)
+        return Self.json(200, "{\"restored\":true}")
     }
 
     public func threadFollowerRoster(authorization: String?, serverId: String, threadChannelIds: String?) -> HTTPReply {

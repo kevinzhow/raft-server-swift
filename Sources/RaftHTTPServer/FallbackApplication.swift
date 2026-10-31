@@ -508,6 +508,22 @@ public func configure(_ app: Application, services: FallbackServices) {
             authorization: request.headers[.authorization]
         ))
     }
+    app.delete("api", "channels", "threads", ":threadId", "followers", "agents", ":agentId") { request -> Response in
+        routeResponse(services.emailAccounts.removeThreadFollower(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            threadId: request.parameters.get("threadId") ?? "",
+            agentId: request.parameters.get("agentId") ?? ""
+        ))
+    }
+    app.post("api", "channels", "threads", ":threadId", "followers", "agents", ":agentId", "restore") { request -> Response in
+        routeResponse(services.emailAccounts.restoreThreadFollower(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            threadId: request.parameters.get("threadId") ?? "",
+            agentId: request.parameters.get("agentId") ?? ""
+        ))
+    }
     app.get("api", "channels", "threads", "followers") { request -> Response in
         routeResponse(services.emailAccounts.threadFollowerRoster(
             authorization: request.headers[.authorization],
