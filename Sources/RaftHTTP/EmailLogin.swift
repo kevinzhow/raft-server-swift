@@ -212,6 +212,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var joinLinks: [String: (serverId: String, role: String)] = [:]
     private var hostedAgents: Set<String> = []
     private var threadFollows: [String: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String)] = [:]
+    private struct ThreadUnfollowRecord {
+        var serverId: String
+        var userId: String
+        var threadChannelId: String
+        var parentMessageId: String
+        var unfollowedAt: Date
+        var latestMessageId: String
+        var replyCount: Int
+        var frozenMessages: [(id: String, content: String)]
+    }
+    private var threadUnfollows: [String: ThreadUnfollowRecord] = [:]
+    private var threadFollowStarts: [String: Date] = [:]
     private var threadFollowerRemovals: [String: (serverId: String, threadChannelId: String, agentId: String)] = [:]
     private var channelReadVersions: [String: Int] = [:]
     private var agentChannelReadCursors: [String: (seq: Int, version: Int)] = [:]
@@ -4126,21 +4138,77 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let threadId = object["threadChannelId"] as? String,
-              let thread = oauth.channelInfo(id: threadId), thread.serverId == serverId
-        else {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(404, "{\"error\":\"Thread not found\"}")
+        }
+        lock.lock()
+        var threadId = object["threadChannelId"] as? String
+        if threadId == nil, let parentMessageId = object["parentMessageId"] as? String {
+            threadId = threadFollows.values.first {
+                $0.serverId == serverId && $0.parentMessageId == parentMessageId
+            }?.threadChannelId
+            if threadId == nil {
+                threadId = postableChannels.first { _, channel in
+                    channel.serverId == serverId && channel.parentMessageId == parentMessageId
+                }?.key
+            }
+        }
+        lock.unlock()
+        guard let threadId, let thread = oauth.channelInfo(id: threadId), thread.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Thread not found\"}")
         }
         lock.lock()
         let key = "\(serverId)\n\(userId)\n\(threadId)"
+        let parentMessageId = postableChannels[threadId]?.parentMessageId ?? (object["parentMessageId"] as? String) ?? ""
         if follow {
-            threadFollows[key] = (serverId, userId, threadId, postableChannels[threadId]?.parentMessageId ?? "")
+            threadFollows[key] = (serverId, userId, threadId, parentMessageId)
+            threadFollowStarts[key] = threadFollowStarts[key] ?? Date()
+            threadUnfollows.removeValue(forKey: key)
         } else {
             threadFollows.removeValue(forKey: key)
+            let startedAt = threadFollowStarts.removeValue(forKey: key) ?? .distantPast
+            let frozen = humanMessageRows
+                .filter { $0.channelId == threadId && $0.createdAt >= startedAt }
+                .map { (id: $0.id, content: $0.content) }
+            threadUnfollows[key] = ThreadUnfollowRecord(
+                serverId: serverId,
+                userId: userId,
+                threadChannelId: threadId,
+                parentMessageId: parentMessageId,
+                unfollowedAt: Date(),
+                latestMessageId: frozen.last?.id ?? parentMessageId,
+                replyCount: frozen.count,
+                frozenMessages: frozen
+            )
         }
         lock.unlock()
         return Self.json(200, "{\"ok\":true,\"following\":\(follow)}")
+    }
+
+    public func unfollowedInbox(authorization: String?, serverId: String, limit rawLimit: String?, query: String?) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let limit = Self.messagePageLimit(rawLimit)
+        let needle = (query ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        lock.lock()
+        var records = threadUnfollows.values.filter { $0.serverId == serverId && $0.userId == userId }
+        if !needle.isEmpty {
+            records = records.filter { record in
+                record.frozenMessages.contains { $0.content.localizedCaseInsensitiveContains(needle) }
+            }
+        }
+        records.sort { $0.unfollowedAt > $1.unfollowedAt }
+        let page = Array(records.prefix(limit))
+        let formatter = ISO8601DateFormatter()
+        let items = page.map { record -> String in
+            "{\"kind\":\"thread\",\"threadChannelId\":\(jsonString(record.threadChannelId)),\"latestActivityMessageId\":\(jsonString(record.latestMessageId)),\"replyCount\":\(record.replyCount),\"unreadCount\":0,\"hasMention\":false,\"isFollowing\":false,\"unfollowedAt\":\(jsonString(formatter.string(from: record.unfollowedAt)))}"
+        }.joined(separator: ",")
+        lock.unlock()
+        return Self.json(200, "{\"items\":[\("\(items)")],\"hasMore\":\(records.count > page.count),\"totalCount\":null}")
     }
 
     public func followedThreads(authorization: String?, serverId: String) -> HTTPReply {

@@ -450,6 +450,16 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? "{}"
         ))
     }
+    app.get("api", "channels", "inbox", "unfollowed") { request -> Response in
+        var response = routeResponse(services.emailAccounts.unfollowedInbox(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            limit: desktopQuery(request.url.query, "limit"),
+            query: desktopQuery(request.url.query, "q")
+        ))
+        response.headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
+        return response
+    }
     app.get("api", "channels", "inbox") { request -> Response in
         var response = routeResponse(services.emailAccounts.channelInbox(
             authorization: request.headers[.authorization],
