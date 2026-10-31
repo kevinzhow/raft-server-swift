@@ -68,6 +68,11 @@ import VaporTesting
             let ownerLeave = try await client.send(.post, headers: headers(ownerToken), to: "/api/servers/\(serverId)/leave")
             #expect(ownerLeave.status == .badRequest)
 
+            accounts.oauth.addMember(serverId: serverId, userId: memberId, role: "owner")
+            let secondOwnerLeave = try await client.send(.post, headers: headers(memberToken), to: "/api/servers/\(serverId)/leave")
+            #expect(secondOwnerLeave.status == .ok)
+            #expect(accounts.oauth.memberRole(serverId: serverId, userId: memberId) == nil)
+
             let nonOwnerDelete = try await client.send(.delete, headers: headers(adminToken), to: "/api/servers/\(serverId)")
             #expect(nonOwnerDelete.status == .forbidden)
             let ownerDelete = try await client.send(.delete, headers: headers(ownerToken), to: "/api/servers/\(serverId)")

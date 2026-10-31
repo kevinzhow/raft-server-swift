@@ -6886,7 +6886,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
-        guard role != "owner" else {
+        if role == "owner", oauth.ownerCount(serverId: serverId) <= 1 {
             return Self.json(400, "{\"error\":\"The owner cannot leave the server\"}")
         }
         oauth.removeMember(serverId: serverId, userId: userId)

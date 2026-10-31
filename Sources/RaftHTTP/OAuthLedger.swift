@@ -928,6 +928,14 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func ownerCount(serverId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return members.filter { key, role in
+            key.hasPrefix("\(serverId)\n") && role == "owner"
+        }.count
+    }
+
     public func removeMember(serverId: String, userId: String) {
         lock.lock()
         members.removeValue(forKey: "\(serverId)\n\(userId)")
