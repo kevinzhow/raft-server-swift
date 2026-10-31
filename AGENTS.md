@@ -25,7 +25,7 @@
 
 ## 文档
 
-README 记已经锁住的行为；进度看 commit 历史。不要在 AGENTS.md 里追加逐条开发过程。
+README 是真正的项目介绍（是什么、模块、构建、测试、运行、配置、限制）；已锁定的行为记在 `docs/BEHAVIOR.md`，只追加不重写。不要把行为日志写回 README。进度看 commit 历史。不要在 AGENTS.md 里追加逐条开发过程。
 
 ## 标识
 
