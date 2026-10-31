@@ -9623,13 +9623,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard name.wholeMatch(of: /^[a-z0-9][a-z0-9-]{0,79}$/) != nil else {
             return Self.json(400, "{\"error\":\"Invalid channel\"}")
         }
-        let channelId = oauth.createChannel(serverId: agent.serverId, name: name, creatorUserId: agent.id)
+        let visibility = (object["visibility"] as? String) ?? "public"
+        guard ["public", "private"].contains(visibility) else {
+            return Self.json(400, "{\"error\":\"Invalid channel visibility\"}")
+        }
+        let type = visibility == "private" ? "private" : "channel"
+        let channelId = oauth.createChannel(serverId: agent.serverId, name: name, creatorUserId: agent.id, type: type)
         oauth.removeChannelHuman(channelId: channelId, userId: agent.id)
         oauth.addChannelAgent(channelId: channelId, agentId: agent.id)
         lock.lock()
-        postableChannels[channelId] = PostableChannel(serverId: agent.serverId, memberIds: [], kind: "channel", name: name)
+        postableChannels[channelId] = PostableChannel(serverId: agent.serverId, memberIds: [], kind: type, name: name)
         lock.unlock()
-        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name)),\"type\":\"channel\",\"createdByAgentId\":\(jsonString(agent.id))}")
+        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name)),\"type\":\(jsonString(type)),\"createdByAgentId\":\(jsonString(agent.id))}")
     }
 
     public func agentHistory(authorization: String?, agentId: String? = nil, channelRef: String?, before: String?, after: String?, around: String? = nil, limit: String?) -> HTTPReply {

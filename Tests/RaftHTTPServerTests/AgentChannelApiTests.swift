@@ -45,6 +45,17 @@ import VaporTesting
             #expect(!createdId.isEmpty)
             #expect(accounts.oauth.channelAgentIds(channelId: createdId).contains(agent))
             #expect(!accounts.oauth.channelHumanIds(channelId: createdId).contains(agent))
+            #expect(createBody?["type"] as? String == "channel")
+            #expect(createBody?["createdByAgentId"] as? String == agent)
+
+            let privateCreate = try await client.send(.post, headers: headers, to: "/internal/agent-api/channels") { request in
+                request.body = .init(string: "{\"name\":\"agent-api-private-create\",\"visibility\":\"private\"}")
+            }
+            #expect(privateCreate.status == .ok)
+            let privateBody = try JSONSerialization.jsonObject(with: Data((privateCreate.body.string ?? "").utf8)) as? [String: Any]
+            #expect(privateBody?["type"] as? String == "private")
+            let privateId = privateBody?["id"] as? String ?? ""
+            #expect(accounts.oauth.channelType(id: privateId) == "private")
 
             let invalid = try await client.send(.post, headers: headers, to: "/internal/agent-api/channels") { request in
                 request.body = .init(string: "{\"name\":\"Bad Name\"}")
