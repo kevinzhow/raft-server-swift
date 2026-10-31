@@ -9451,6 +9451,107 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return (credential.agentId, Array(credential.scopes))
     }
 
+    private func agentCapabilityDenied(_ error: String) -> HTTPReply {
+        Self.json(403, "{\"error\":\(jsonString(error)),\"code\":\"server_role_required\",\"currentRole\":\"member\",\"suggestedNextAction\":\"Ask a server owner or admin to grant the capability; your role is member.\"}")
+    }
+
+    private func agentAndRole(_ authorization: String?, scopes: [String]) -> (agent: OAuthLedger.AgentRuntimeInfo, role: String?)? {
+        lock.lock()
+        let token = authorization?.hasPrefix("Bearer ") == true ? String(authorization!.dropFirst("Bearer ".count)) : ""
+        let credential = agentCredentials[token]
+        lock.unlock()
+        guard let credential, scopes.allSatisfy({ credential.scopes.contains($0) }),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else { return nil }
+        return (agent, oauth.agentRole(serverId: agent.serverId, agentId: agent.id))
+    }
+
+    public func agentUpdateChannel(authorization: String?, channelId: String, body: String) -> HTTPReply {
+        guard let (agent, role) = agentAndRole(authorization, scopes: ["channels"]) else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return agentCapabilityDenied("Agent requires editChannelMetadata or changeChannelVisibility capability to update channels")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == agent.serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid channel update\"}")
+        }
+        var name = channel.name
+        if let raw = object["name"] as? String {
+            name = raw.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        }
+        _ = oauth.renameChannel(id: channelId, name: name)
+        lock.lock()
+        postableChannels[channelId]?.name = name
+        lock.unlock()
+        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name))}")
+    }
+
+    public func agentChannelMemberWrite(authorization: String?, channelId: String, body: String, remove: Bool) -> HTTPReply {
+        guard let (agent, role) = agentAndRole(authorization, scopes: ["channels"]) else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == agent.serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        if remove && role != "owner" && role != "admin" {
+            return agentCapabilityDenied("Agent requires removeChannelMembers capability to remove channel members")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid channel member\"}")
+        }
+        if let userName = object["user"] as? String {
+            lock.lock()
+            let target = accounts.values.first { $0.name == userName || $0.id == userName }?.id
+            lock.unlock()
+            guard let target, oauth.memberRole(serverId: agent.serverId, userId: target) != nil else {
+                return Self.json(404, "{\"error\":\"User not found\"}")
+            }
+            if remove {
+                lock.lock()
+                postableChannels[channelId]?.memberIds.remove(target)
+                lock.unlock()
+                _ = oauth.removeChannelHuman(channelId: channelId, userId: target)
+                return Self.json(200, "{\"ok\":true}")
+            }
+            accountsForInvite(userId: target, serverId: agent.serverId, channelId: channelId)
+            let already = oauth.channelHumanIds(channelId: channelId).contains(target)
+            return Self.json(200, "{\"ok\":true,\"alreadyMember\":\(already),\"member\":{\"type\":\"human\",\"name\":\(jsonString(userName))}}")
+        }
+        if let agentName = object["agent"] as? String {
+            let target = oauth.activeAgentIds(serverId: agent.serverId).first { oauth.agentRuntimeInfo(id: $0)?.name == agentName || $0 == agentName }
+            guard let target else {
+                return Self.json(404, "{\"error\":\"Agent not found\"}")
+            }
+            if remove {
+                oauth.removeChannelAgent(channelId: channelId, agentId: target)
+                return Self.json(200, "{\"ok\":true}")
+            }
+            oauth.addChannelAgent(channelId: channelId, agentId: target)
+            return Self.json(200, "{\"ok\":true,\"alreadyMember\":false,\"member\":{\"type\":\"agent\",\"name\":\(jsonString(agentName))}}")
+        }
+        return Self.json(400, "{\"error\":\"Invalid channel member\"}")
+    }
+
+    public func agentUpdateServer(authorization: String?, body: String) -> HTTPReply {
+        guard let (agent, role) = agentAndRole(authorization, scopes: ["server"]) else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return agentCapabilityDenied("Agent requires editServerSettings capability to edit the server profile")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let name = object["name"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"Invalid server update\"}")
+        }
+        oauth.updateServerName(id: agent.serverId, name: name)
+        return Self.json(200, "{\"ok\":true,\"name\":\(jsonString(name))}")
+    }
+
     public func agentServerInfo(authorization: String?) -> HTTPReply {
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
@@ -9528,7 +9629,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         postableChannels[channelId] = PostableChannel(serverId: agent.serverId, memberIds: [], kind: "channel", name: name)
         lock.unlock()
-        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name))}")
+        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name)),\"type\":\"channel\",\"createdByAgentId\":\(jsonString(agent.id))}")
     }
 
     public func agentHistory(authorization: String?, agentId: String? = nil, channelRef: String?, before: String?, after: String?, around: String? = nil, limit: String?) -> HTTPReply {

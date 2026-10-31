@@ -499,6 +499,35 @@ public func configure(_ app: Application, services: FallbackServices) {
             channelId: request.parameters.get("channelId") ?? ""
         ))
     }
+    app.patch("internal", "agent-api", "server") { request -> Response in
+        routeResponse(services.emailAccounts.agentUpdateServer(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.patch("internal", "agent-api", "channels", ":channelId") { request -> Response in
+        routeResponse(services.emailAccounts.agentUpdateChannel(
+            authorization: request.headers[.authorization],
+            channelId: request.parameters.get("channelId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.post("internal", "agent-api", "channels", ":channelId", "members") { request -> Response in
+        routeResponse(services.emailAccounts.agentChannelMemberWrite(
+            authorization: request.headers[.authorization],
+            channelId: request.parameters.get("channelId") ?? "",
+            body: request.body.string ?? "{}",
+            remove: false
+        ))
+    }
+    app.delete("internal", "agent-api", "channels", ":channelId", "members") { request -> Response in
+        routeResponse(services.emailAccounts.agentChannelMemberWrite(
+            authorization: request.headers[.authorization],
+            channelId: request.parameters.get("channelId") ?? "",
+            body: request.body.string ?? "{}",
+            remove: true
+        ))
+    }
     app.get("internal", "agent-api", "server") { request -> Response in
         routeResponse(services.emailAccounts.agentServerInfo(
             authorization: request.headers[.authorization]

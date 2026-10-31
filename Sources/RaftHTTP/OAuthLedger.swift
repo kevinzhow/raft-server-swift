@@ -558,6 +558,23 @@ public final class OAuthLedger: @unchecked Sendable {
     }
 
     @discardableResult
+    public func renameChannel(id: String, name: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = channelRecords.firstIndex(where: { $0.id == id }) else { return false }
+        channelRecords[index].name = name
+        return true
+    }
+
+    public func updateServerName(id: String, name: String) {
+        lock.lock()
+        if var server = servers[id] {
+            server.name = name
+            servers[id] = server
+        }
+        lock.unlock()
+    }
+
     public func setChannelType(id: String, type: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
