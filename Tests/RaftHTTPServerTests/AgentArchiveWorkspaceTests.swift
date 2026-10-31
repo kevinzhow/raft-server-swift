@@ -54,6 +54,18 @@ import VaporTesting
             }
             #expect(archived.status == .ok)
             #expect(try await client.send(.get, headers: headers, to: "/api/agents/\(agent)").status == .notFound)
+            let memberId = "11111111-1111-4111-8111-111111111571"
+            accounts.addAccount(id: memberId, email: "archive-member@slock.test", password: "password123")
+            accounts.markEmailVerified(userId: memberId)
+            accounts.oauth.addMember(serverId: serverId, userId: memberId, role: "member")
+            let memberLogin = try await client.send(.post, headers: loginHeaders, to: "/api/auth/login") { request in
+                request.body = .init(string: "{\"email\":\"archive-member@slock.test\",\"password\":\"password123\"}")
+            }
+            let memberToken = (try JSONSerialization.jsonObject(with: Data((memberLogin.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
+            var memberHeaders = headers
+            memberHeaders[.authorization] = "Bearer \(memberToken)"
+            #expect(try await client.send(.get, headers: memberHeaders, to: "/api/agents/\(agent)/archive").status == .forbidden)
+
             let archive = try await client.send(.get, headers: headers, to: "/api/agents/\(agent)/archive")
             #expect(archive.status == .ok)
             let archiveBody = try JSONSerialization.jsonObject(with: Data((archive.body.string ?? "").utf8)) as? [String: Any]

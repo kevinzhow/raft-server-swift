@@ -7390,8 +7390,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         let record = agentArchiveRecords[agentId]
         lock.unlock()
-        guard let record, oauth.memberRole(serverId: record.serverId, userId: userId) != nil else {
+        guard let record, let role = oauth.memberRole(serverId: record.serverId, userId: userId) else {
             return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
         return Self.json(200, "{\"archive\":{\"workspaceState\":\(jsonString(record.workspaceState)),\"machineName\":\(jsonString(record.machineName))}}")
     }

@@ -49,3 +49,6 @@ agent 向 thread 发送（`#parent:short`）要求 agent 是该 parent channel �
 
 
 `GET/PUT /api/agents/:id/scopes` 只对同 Server 成员开放；跨 Server 404。managed agent 的 PUT 是 422，external agent 接受 mode/default 并回 scope 集。
+
+
+`GET /api/agents/:id/archive` 仅 owner/admin 可见；普通 member/guest 403，跨 Server 404。
