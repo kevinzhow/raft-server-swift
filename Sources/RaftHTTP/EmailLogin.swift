@@ -6285,6 +6285,72 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var senderTimezone: String? = nil
     }
 
+    public func setChannelPostablePrivateForTesting(channelId: String) {
+        lock.lock()
+        postableChannels[channelId]?.kind = "private"
+        lock.unlock()
+    }
+
+    public func addChannelAttachmentForTesting(channelId: String, id: String, uploaderId: String, filename: String) {
+        lock.lock()
+        channelAttachments[id] = ChannelAttachment(id: id, channelId: channelId, uploaderId: uploaderId, filename: filename, messageId: nil, messagePosition: nil)
+        lock.unlock()
+    }
+
+    private func visibleAttachment(userId: String, serverId: String?, attachment: ChannelAttachment) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let channel = postableChannels[attachment.channelId], channel.serverId == serverId, channel.deletedAt == nil else {
+            return false
+        }
+        return channel.kind == "channel" || channel.memberIds.contains(userId)
+    }
+
+    public func channelFiles(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        lock.lock()
+        let visible = postableChannels[channelId]?.kind == "channel"
+            || postableChannels[channelId]?.memberIds.contains(userId) == true
+        let rows = visible
+            ? channelAttachments.values.filter { $0.channelId == channelId }.map { attachment in
+                "{\"id\":\"\(attachment.id)\",\"filename\":\(jsonString(attachment.filename)),\"mimeType\":\(attachment.mimeType.map { jsonString($0) } ?? "null"),\"sizeBytes\":\(attachment.sizeBytes.map(String.init) ?? "null")}"
+            }.sorted()
+            : []
+        lock.unlock()
+        guard visible else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        return Self.json(200, "{\"files\":[\("\(rows.joined(separator: ","))")]}")
+    }
+
+    public func readAttachment(authorization: String?, serverId: String?, attachmentId: String, kind: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        let attachment = channelAttachments[attachmentId]
+        lock.unlock()
+        guard let attachment, visibleAttachment(userId: userId, serverId: serverId, attachment: attachment) else {
+            return Self.json(404, "{\"error\":\"Attachment not found\"}")
+        }
+        switch kind {
+        case "url":
+            return Self.json(200, "{\"url\":\"\(jsonString("/api/attachments/\(attachmentId)"))\"}")
+        case "html-preview-url":
+            return Self.json(200, "{\"url\":\"\(jsonString("/api/attachments/\(attachmentId)/html-preview"))\"}")
+        default:
+            return Self.json(200, "{\"id\":\(jsonString(attachment.id)),\"filename\":\(jsonString(attachment.filename)),\"mimeType\":\(attachment.mimeType.map { jsonString($0) } ?? "null")}")
+        }
+    }
+
     private struct ChannelAttachment {
         var id: String
         var channelId: String

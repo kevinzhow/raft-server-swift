@@ -982,6 +982,29 @@ public func configure(_ app: Application, services: FallbackServices) {
             agentId: request.parameters.get("agentId") ?? ""
         ))
     }
+    app.get("api", "channels", ":channelId", "files") { request -> Response in
+        routeResponse(services.emailAccounts.channelFiles(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? ""
+        ))
+    }
+    app.get("api", "attachments", ":id") { request -> Response in
+        routeResponse(services.emailAccounts.readAttachment(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+            attachmentId: request.parameters.get("id") ?? "",
+            kind: "metadata"
+        ))
+    }
+    app.get("api", "attachments", ":id", "html-preview-url") { request -> Response in
+        routeResponse(services.emailAccounts.readAttachment(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+            attachmentId: request.parameters.get("id") ?? "",
+            kind: "html-preview-url"
+        ))
+    }
     app.get("api", "channels", ":channelId", "members") { request -> Response in
         routeResponse(services.emailAccounts.channelMembers(
             authorization: request.headers[.authorization],
