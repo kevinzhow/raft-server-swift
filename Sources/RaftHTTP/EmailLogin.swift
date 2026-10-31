@@ -4785,7 +4785,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// `GET /internal/agent-api/mentions`. Outsider rows stay hidden until they were notifiable at send or later notified.
-    public func agentMentionInbox(authorization: String?) -> HTTPReply {
+    public func agentMentionInbox(authorization: String?, limit rawLimit: String? = nil) -> HTTPReply {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
             return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
         }
@@ -4802,8 +4802,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard allowed else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
-        let mentions = rows.map { "{\"messageId\":\(jsonString($0.messageId))}" }.joined(separator: ",")
-        return Self.json(200, "{\"mentions\":[\(mentions)]}")
+        let pageLimit = Self.messagePageLimit(rawLimit)
+        let ordered = rows.reversed()
+        let page = Array(ordered.prefix(pageLimit))
+        let mentions = page.map { "{\"messageId\":\(jsonString($0.messageId))}" }.joined(separator: ",")
+        return Self.json(200, "{\"mentions\":[\(mentions)],\"has_more\":\(rows.count > page.count)}")
     }
 
     /// `GET /internal/agent-api/wake-hints`. A read credential sees the
@@ -10548,14 +10551,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"collapseLongMessages\":\(prefs.collapseLongMessages),\"prefsVersion\":\(prefs.prefsVersion)}")
     }
 
-    public func addStoredMentionForTesting(channelId: String, messageId: String, targetId: String) {
+    public func addStoredMentionForTesting(channelId: String, messageId: String, targetId: String, targetType: String = "user") {
         lock.lock()
         storedMentions.append(StoredMention(
             id: UUID().uuidString.lowercased(),
             messageId: messageId,
             channelId: channelId,
             senderId: "peer",
-            targetType: "user",
+            targetType: targetType,
             targetId: targetId,
             handle: "peer",
             notifiableAtSend: true,

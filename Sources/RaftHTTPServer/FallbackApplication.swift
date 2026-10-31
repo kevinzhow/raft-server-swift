@@ -607,7 +607,10 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.get("internal", "agent-api", "mentions") { request -> Response in
-        routeResponse(services.emailAccounts.agentMentionInbox(authorization: request.headers[.authorization]))
+        routeResponse(services.emailAccounts.agentMentionInbox(
+            authorization: request.headers[.authorization],
+            limit: desktopQuery(request.url.query, "limit")
+        ))
     }
     app.get("internal", "agent-api", "wake-hints") { request -> Response in
         routeResponse(services.emailAccounts.agentWakeHints(
