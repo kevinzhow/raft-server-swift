@@ -63,7 +63,7 @@ import VaporTesting
             #expect(accounts.oauth.memberRole(serverId: serverId, userId: memberId) == nil)
 
             let adminRemoveOwner = try await client.send(.delete, headers: headers(adminToken), to: "/api/servers/\(serverId)/members/\(ownerId)")
-            #expect(adminRemoveOwner.status == .badRequest)
+            #expect(adminRemoveOwner.status == .forbidden)
 
             let ownerLeave = try await client.send(.post, headers: headers(ownerToken), to: "/api/servers/\(serverId)/leave")
             #expect(ownerLeave.status == .badRequest)

@@ -7825,8 +7825,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let targetRole = oauth.memberRole(serverId: serverId, userId: memberId) else {
             return Self.json(404, "{\"error\":\"Member not found\"}")
         }
-        guard targetRole != "owner" else {
-            return Self.json(400, "{\"error\":\"The owner cannot be removed\"}")
+        if targetRole == "owner" {
+            guard role == "owner" else {
+                return Self.json(403, "{\"error\":\"Forbidden\"}")
+            }
+            guard oauth.ownerCount(serverId: serverId) > 1 else {
+                return Self.json(400, "{\"error\":\"The last owner cannot be removed\"}")
+            }
         }
         oauth.removeMember(serverId: serverId, userId: memberId)
         return Self.json(200, "{\"ok\":true}")
