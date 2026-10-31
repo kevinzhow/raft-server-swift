@@ -213,6 +213,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var hostedAgents: Set<String> = []
     private var threadFollows: [String: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String)] = [:]
     private var threadFollowerRemovals: [String: (serverId: String, threadChannelId: String, agentId: String)] = [:]
+    private var channelReadVersions: [String: Int] = [:]
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -9417,6 +9418,57 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             notifiedAction: nil
         ))
         lock.unlock()
+    }
+
+    public func updateChannelReadState(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let seq = object["seq"] as? Int, seq >= 0
+        else {
+            return Self.json(400, "{\"error\":\"seq must be a non-negative integer\"}")
+        }
+        let key = "\(channelId)\n\(userId)"
+        lock.lock()
+        let info = oauth.channelUnreadInfo(channelId: channelId, userId: userId)
+        let current = max(info.maxReadSeq, channelReadVersions[key] == nil ? 0 : info.maxReadSeq)
+        if seq <= info.maxReadSeq {
+            let version = channelReadVersions[key] ?? 0
+            lock.unlock()
+            return Self.json(200, "{\"ok\":true,\"maxReadSeq\":\(current),\"readStateVersion\":\(version)}")
+        }
+        channelReadVersions[key] = (channelReadVersions[key] ?? 0) + 1
+        let version = channelReadVersions[key] ?? 1
+        lock.unlock()
+        oauth.setChannelReadCursor(channelId: channelId, userId: userId, seq: seq)
+        return Self.json(200, "{\"ok\":true,\"maxReadSeq\":\(seq),\"readStateVersion\":\(version)}")
+    }
+
+    public func markChannelReadAll(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        let latest = oauth.channelUnreadInfo(channelId: channelId, userId: userId).latestSeq ?? 0
+        let key = "\(channelId)\n\(userId)"
+        lock.lock()
+        channelReadVersions[key] = (channelReadVersions[key] ?? 0) + 1
+        let version = channelReadVersions[key] ?? 1
+        lock.unlock()
+        oauth.setChannelReadCursor(channelId: channelId, userId: userId, seq: latest)
+        return Self.json(200, "{\"ok\":true,\"seq\":\(latest),\"readStateVersion\":\(version)}")
     }
 
     public func markChannelUnread(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
