@@ -124,6 +124,7 @@ let package = Package(
             name: "RaftRealtimeTests",
             dependencies: [
                 "RaftRealtime",
+                "RaftHTTP",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
             ]
