@@ -79,3 +79,6 @@ external agent 的 start/stop/reset 都是 400 `External agents do not use Raft-
 
 
 guest 读 `GET /api/agents/:id` 得到 bounded `profileProjection:"channel_summary"`，只含 id/name/displayName/avatarUrl/description，不含 runtime/model/envVars/creator。
+
+
+managed agent 的 stop 对任意 Server 成员 200；reset restart/session 对成员 202 `{ok:true,status:"accepted"}`，full 仅 creator/owner/admin，普通成员 403 且 error 提到 resetAgentWorkspace。

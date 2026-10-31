@@ -7576,16 +7576,35 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
-    public func agentRuntimeAction(authorization: String?, agentId: String, action: String) -> HTTPReply {
-        switch agentAuthority(authorization, agentId: agentId) {
-        case .denied(let reply):
-            return reply
-        case .allowed:
-            if oauth.agentRuntimeInfo(id: agentId)?.runtime == "external" {
-                return Self.json(400, "{\"error\":\"External agents do not use Raft-managed runtime lifecycle\"}")
-            }
-            return Self.json(action == "stop" ? 200 : 202, "{\"ok\":true}")
+    public func agentRuntimeAction(authorization: String?, agentId: String, action: String, body: String = "") -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
+        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        guard let role = oauth.memberRole(serverId: info.serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        if info.runtime == "external" {
+            return Self.json(400, "{\"error\":\"External agents do not use Raft-managed runtime lifecycle\"}")
+        }
+        let privileged = role == "owner" || role == "admin" || info.creatorUserId == userId
+        if action == "start" {
+            guard privileged else { return Self.json(403, "{\"error\":\"Forbidden\"}") }
+            return Self.json(202, "{\"ok\":true,\"status\":\"accepted\"}")
+        }
+        if action == "stop" {
+            return Self.json(200, "{\"ok\":true}")
+        }
+        let mode = ((try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any])?["mode"] as? String ?? "session"
+        guard mode == "restart" || mode == "session" || mode == "full" else {
+            return Self.json(400, "{\"error\":\"mode must be restart, session, or full\"}")
+        }
+        if mode == "full", !privileged {
+            return Self.json(403, "{\"error\":\"resetAgentWorkspace requires creator or server admin authority\"}")
+        }
+        return Self.json(202, "{\"ok\":true,\"status\":\"accepted\"}")
     }
 
     public func assignAgentMachine(authorization: String?, agentId: String, body: String) -> HTTPReply {

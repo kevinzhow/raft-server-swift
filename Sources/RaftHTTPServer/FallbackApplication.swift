@@ -1051,21 +1051,24 @@ public func configure(_ app: Application, services: FallbackServices) {
         routeResponse(services.emailAccounts.agentRuntimeAction(
             authorization: request.headers[.authorization],
             agentId: request.parameters.get("id") ?? "",
-            action: "start"
+            action: "start",
+            body: request.body.string ?? ""
         ))
     }
     app.post("api", "agents", ":id", "stop") { request -> Response in
         routeResponse(services.emailAccounts.agentRuntimeAction(
             authorization: request.headers[.authorization],
             agentId: request.parameters.get("id") ?? "",
-            action: "stop"
+            action: "stop",
+            body: request.body.string ?? ""
         ))
     }
     app.post("api", "agents", ":id", "reset") { request -> Response in
         routeResponse(services.emailAccounts.agentRuntimeAction(
             authorization: request.headers[.authorization],
             agentId: request.parameters.get("id") ?? "",
-            action: "reset"
+            action: "reset",
+            body: request.body.string ?? ""
         ))
     }
     app.post("api", "agents", ":id", "migrate") { request -> Response in
