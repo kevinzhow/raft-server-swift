@@ -6821,6 +6821,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"channelOrder\":[\("\(array(order.channelOrder))")],\"agentOrder\":[\("\(array(order.agentOrder))")],\"dmOrder\":[\("\(array(order.dmOrder))")],\"pinnedOrder\":[\("\(array(order.pinnedOrder))")],\"hiddenDmIds\":[\("\(array(order.hiddenDmIds))")]}")
     }
 
+    public func addTask(channelId: String, title: String, description: String?) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        let taskNumber = taskRecords.filter { $0.channelId == channelId }.count + 1
+        let id = UUID().uuidString.lowercased()
+        taskRecords.append(TaskRecord(
+            id: id,
+            channelId: channelId,
+            title: title,
+            description: description,
+            status: "todo",
+            taskNumber: taskNumber,
+            messageId: UUID().uuidString.lowercased(),
+            createdAt: Date()
+        ))
+        return id
+    }
+
     public func addTasks(channelId: String, titles: [String]) -> [String] {
         lock.lock()
         defer { lock.unlock() }
@@ -6832,8 +6850,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 id: id,
                 channelId: channelId,
                 title: title,
+                description: nil,
                 status: "todo",
-                taskNumber: taskNumber
+                taskNumber: taskNumber,
+                messageId: UUID().uuidString.lowercased(),
+                createdAt: Date()
             ))
             ids.append(id)
         }
@@ -7107,27 +7128,155 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
+        func repeated(_ name: String) -> Bool {
+            guard let rawQuery else { return false }
+            return rawQuery.split(separator: "&").filter { $0.hasPrefix(name + "=") }.count > 1
+        }
+        if ["limit", "cursor", "detail", "status"].contains(where: repeated) {
+            return Self.json(400, "{\"error\":\"Repeated query parameter\"}")
+        }
         let status: String?
         switch Self.taskStatusFilter(rawQuery) {
         case .invalid(let reply): return reply
         case .valid(let value): status = value
         }
-        let visibleChannels = Set(oauth.channelsForServer(serverId: serverId, userId: userId).map { $0.id })
+        guard let rawQuery else {
+            return legacyTasksJSON(serverId: serverId, userId: userId, status: status, detail: "full")
+        }
+        var params: [String: String] = [:]
+        for pair in rawQuery.split(separator: "&") {
+            let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
+            if parts.count == 2 { params[parts[0]] = parts[1].removingPercentEncoding ?? parts[1] }
+        }
+        let detail = params["detail"] ?? "full"
+        guard detail == "full" || detail == "summary" else {
+            return Self.json(400, "{\"error\":\"detail must be full or summary\"}")
+        }
+        var limit: Int?
+        if let rawLimit = params["limit"] {
+            guard let value = Int(rawLimit), (1...500).contains(value) else {
+                return Self.json(400, "{\"error\":\"limit must be between 1 and 500\"}")
+            }
+            limit = value
+        }
+        var cursor: (channelId: String, taskNumber: Int)?
+        if let rawCursor = params["cursor"] {
+            guard limit != nil else {
+                return Self.json(400, "{\"error\":\"cursor requires limit\"}")
+            }
+            guard let decoded = Self.decodeCursor(rawCursor) else {
+                return Self.json(400, "{\"error\":\"Invalid cursor\"}")
+            }
+            cursor = decoded
+        }
+        let ordered = orderedTasks(serverId: serverId, userId: userId, status: status)
+        var startIndex = 0
+        if let cursor {
+            guard let index = ordered.firstIndex(where: {
+                $0.task.channelId == cursor.channelId && $0.task.taskNumber == cursor.taskNumber
+            }) else {
+                return Self.json(400, "{\"error\":\"Invalid cursor\"}")
+            }
+            startIndex = index + 1
+        }
+        var page = ordered
+        var nextCursor: String?
+        if let limit {
+            let slice = Array(ordered.dropFirst(startIndex).prefix(limit))
+            page = slice
+            if let last = slice.last, startIndex + slice.count < ordered.count {
+                nextCursor = Self.encodeCursor(channelId: last.task.channelId, taskNumber: last.task.taskNumber)
+            }
+        } else {
+            page = Array(ordered.dropFirst(0))
+        }
+        let items = page.map { entry in
+            detail == "summary"
+                ? summaryTaskJSON(entry.task, channelName: entry.channelName, channelType: entry.channelType)
+                : fullTaskJSON(entry.task, channelName: entry.channelName, channelType: entry.channelType)
+        }.joined(separator: ",")
+        if limit == nil {
+            return Self.json(200, "{\"tasks\":[\("\(items)")]}")
+        }
+        let cursorJSON = nextCursor.map { jsonString($0) } ?? "null"
+        return Self.json(200, "{\"tasks\":[\("\(items)")],\"next_cursor\":\(cursorJSON)}")
+    }
+
+    private func orderedTasks(
+        serverId: String,
+        userId: String,
+        status: String?
+    ) -> [(task: TaskRecord, channelName: String, channelType: String)] {
+        let visible = oauth.channelsForServer(serverId: serverId, userId: userId).filter { $0.joined }
+        let names = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, $0.name) })
+        let types = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, $0.type) })
         lock.lock()
         let rows = taskRecords.filter {
-            visibleChannels.contains($0.channelId) && (status == nil || $0.status == status)
+            names[$0.channelId] != nil && (status == nil || $0.status == status)
         }
         lock.unlock()
-        let items = rows.map { taskJSON($0) }.joined(separator: ",")
+        return rows
+            .map { (task: $0, channelName: names[$0.channelId] ?? "", channelType: types[$0.channelId] ?? "channel") }
+            .sorted {
+                if $0.channelName != $1.channelName { return $0.channelName < $1.channelName }
+                if $0.task.taskNumber != $1.task.taskNumber { return $0.task.taskNumber < $1.task.taskNumber }
+                return $0.task.id < $1.task.id
+            }
+    }
+
+    private func legacyTasksJSON(serverId: String, userId: String, status: String?, detail: String) -> HTTPReply {
+        let ordered = orderedTasks(serverId: serverId, userId: userId, status: status)
+        let items = ordered.map { entry in
+            fullTaskJSON(entry.task, channelName: entry.channelName, channelType: entry.channelType)
+        }.joined(separator: ",")
         return Self.json(200, "{\"tasks\":[\("\(items)")]}")
+    }
+
+    private static func encodeCursor(channelId: String, taskNumber: Int) -> String {
+        let payload = "{\"c\":\(jsonString(channelId)),\"n\":\(taskNumber)}"
+        return Data(payload.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private static func decodeCursor(_ raw: String) -> (channelId: String, taskNumber: Int)? {
+        var base64 = raw
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        while base64.count % 4 != 0 { base64 += "=" }
+        guard let data = Data(base64Encoded: base64),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let channelId = object["c"] as? String,
+              channelId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil,
+              let taskNumber = object["n"] as? Int
+        else { return nil }
+        return (channelId, taskNumber)
+    }
+
+    private func fullTaskJSON(_ task: TaskRecord, channelName: String, channelType: String) -> String {
+        let description = task.description.map { jsonString($0) } ?? "null"
+        return "{\"id\":\(jsonString(task.id)),\"channelId\":\(jsonString(task.channelId)),\"channelName\":\(jsonString(channelName)),\"channelType\":\(jsonString(channelType)),\"title\":\(jsonString(task.title)),\"description\":\(description),\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber),\"messageId\":\(jsonString(task.messageId)),\"revision\":\(task.revision)}"
+    }
+
+    private func summaryTaskJSON(_ task: TaskRecord, channelName: String, channelType: String) -> String {
+        let descriptionBytes = task.description.map { Data($0.utf8).count } ?? 0
+        let hasDescription = task.description != nil && !(task.description ?? "").isEmpty
+        let claimed = task.claimedAt.map { jsonString(ISO8601DateFormatter().string(from: $0)) } ?? "null"
+        let assignee = task.assigneeId.map { jsonString($0) } ?? "null"
+        let assigneeType = task.assigneeType.map { jsonString($0) } ?? "null"
+        return "{\"channelId\":\(jsonString(task.channelId)),\"channelName\":\(jsonString(channelName)),\"channelType\":\(jsonString(channelType)),\"claimedAt\":\(claimed),\"claimedById\":\(assignee),\"claimedByName\":null,\"claimedByType\":\(assigneeType),\"completedAt\":null,\"createdAt\":null,\"createdById\":null,\"createdByName\":null,\"createdByType\":\"user\",\"descriptionBytes\":\(descriptionBytes),\"hasDescription\":\(hasDescription),\"id\":\(jsonString(task.id)),\"isLegacy\":false,\"messageId\":\(jsonString(task.messageId)),\"readOnlyReason\":null,\"revision\":\(task.revision),\"source\":\"tasks\",\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber),\"title\":\(jsonString(task.title)),\"updatedAt\":null}"
     }
 
     private struct TaskRecord {
         var id: String
         var channelId: String
         var title: String
+        var description: String?
         var status: String
         var taskNumber: Int
+        var messageId: String
+        var createdAt: Date
         var assigneeId: String? = nil
         var assigneeType: String? = nil
         var claimedAt: Date? = nil
