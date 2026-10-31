@@ -838,6 +838,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             ownerAgentId: desktopQuery(request.url.query, "ownerAgentId")
         ))
     }
+    app.post("api", "channels", "saved", "check") { request -> Response in
+        routeResponse(services.emailAccounts.checkSavedMessages(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
     app.post("api", "channels", "saved") { request -> Response in
         routeResponse(services.emailAccounts.saveChannelMessage(
             authorization: request.headers[.authorization],

@@ -10030,6 +10030,31 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
+    public func checkSavedMessages(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let messageIds = object["messageIds"] as? [String]
+        else {
+            return Self.json(400, "{\"error\":\"Invalid saved check request\"}")
+        }
+        let saved = Set(oauth.savedMessages(userId: userId).map(\.messageId))
+        lock.lock()
+        let visible = messageIds.filter { id in
+            guard saved.contains(id) else { return false }
+            guard let entry = oauth.savedMessages(userId: userId).first(where: { $0.messageId == id }) else { return false }
+            if let scope = postableChannels[entry.channelId] {
+                guard scope.serverId == serverId, scope.deletedAt == nil, !scope.archived else { return false }
+                return scope.kind == "channel" || scope.memberIds.contains(userId)
+            }
+            return true
+        }
+        lock.unlock()
+        let ids = visible.map { jsonString($0) }.joined(separator: ",")
+        return Self.json(200, "{\"savedIds\":[\("\(ids)")]}")
+    }
+
     public func listSavedMessages(
         authorization: String?,
         serverId: String,
@@ -10046,6 +10071,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         var entries = oauth.savedMessages(userId: userId)
+        lock.lock()
+        entries = entries.filter { entry in
+            if let scope = postableChannels[entry.channelId] {
+                guard scope.serverId == serverId, scope.deletedAt == nil, !scope.archived else { return false }
+                if scope.kind == "channel" { return true }
+                return scope.memberIds.contains(userId)
+            }
+            if let parentChannelId = entry.parentChannelId, let parent = postableChannels[parentChannelId] {
+                guard parent.serverId == serverId, parent.deletedAt == nil, !parent.archived else { return false }
+                return parent.kind == "channel" || parent.memberIds.contains(userId)
+            }
+            return true
+        }
+        lock.unlock()
         if let channelId, !channelId.isEmpty {
             entries = entries.filter { $0.channelId == channelId || $0.parentChannelId == channelId }
         }
