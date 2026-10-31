@@ -6880,6 +6880,45 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         "{\"id\":\(jsonString(agreement.id)),\"version\":\(agreement.version),\"title\":\(jsonString(agreement.title)),\"bodyMarkdown\":\(jsonString(agreement.bodyMarkdown)),\"enabled\":\(agreement.enabled)}"
     }
 
+    public func memberProfile(authorization: String?, serverId: String, memberId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: memberId) != nil else {
+            return Self.json(404, "{\"error\":\"User not found\"}")
+        }
+        lock.lock()
+        let hiddenDirectory = hideHumansFromMembers[serverId] == true
+        let targetAccount = accounts.values.first { $0.id == memberId }
+        lock.unlock()
+        let isAdmin = role == "owner" || role == "admin"
+        var contextual = false
+        if hiddenDirectory, !isAdmin, memberId != userId {
+            contextual = oauth.channelsForServer(serverId: serverId, userId: userId)
+                .contains { channel in
+                    channel.type == "channel"
+                        && oauth.channelArchivedAt(id: channel.id) == nil
+                        && oauth.isChannelParticipant(channelId: channel.id, userId: userId)
+                        && oauth.isChannelParticipant(channelId: channel.id, userId: memberId)
+                }
+            guard contextual else {
+                return Self.json(404, "{\"error\":\"User not found\"}")
+            }
+        }
+        let email: String
+        if isAdmin || memberId == userId {
+            email = targetAccount.map { jsonString($0.email) } ?? "null"
+        } else {
+            email = "null"
+        }
+        let name = jsonString(targetAccount?.name ?? "")
+        let avatar = targetAccount?.avatarUrl.map { jsonString($0) } ?? "null"
+        return Self.json(200, "{\"userId\":\(jsonString(memberId)),\"name\":\(name),\"displayName\":\(name),\"email\":\(email),\"avatarUrl\":\(avatar)}")
+    }
+
     public func serverMembersList(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)

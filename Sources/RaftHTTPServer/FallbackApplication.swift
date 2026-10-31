@@ -1035,10 +1035,25 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.get("api", "servers", ":id", "members", ":memberId", "profile") { request -> Response in
-        routeResponse(ServerScope.memberProfile(
-            serverId: request.parameters.get("id") ?? "",
-            headerServerId: request.headers[HTTPField.Name("X-Server-Id")!],
-            memberId: request.parameters.get("memberId") ?? ""
+        let id = request.parameters.get("id") ?? ""
+        let memberId = request.parameters.get("memberId") ?? ""
+        if let reply = ServerScope.membersGuard(
+            serverId: id,
+            headerServerId: request.headers[HTTPField.Name("X-Server-Id")!]
+        ) {
+            return routeResponse(reply)
+        }
+        if !ServerScope.isUUID(memberId) {
+            return routeResponse(ServerScope.memberProfile(
+                serverId: id,
+                headerServerId: request.headers[HTTPField.Name("X-Server-Id")!],
+                memberId: memberId
+            ))
+        }
+        return routeResponse(services.emailAccounts.memberProfile(
+            authorization: request.headers[.authorization],
+            serverId: id,
+            memberId: memberId
         ))
     }
     app.get("api", "servers", ":id", "member-graph") { request -> Response in
