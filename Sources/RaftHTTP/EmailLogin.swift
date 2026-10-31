@@ -9454,6 +9454,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if oauth.isChannelParticipant(channelId: channelId, userId: userId) {
             return Self.json(200, "{\"ok\":true}")
         }
+        guard oauth.channelType(id: channelId) == "channel" else {
+            return Self.json(403, "{\"error\":\"Private channels are invite-only\"}")
+        }
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Server role cannot join public channels\"}")
         }

@@ -61,6 +61,16 @@ import VaporTesting
                 request.body = .init(string: "{\"description\":\"must stay hidden\"}")
             }.status == .notFound)
 
+            var candidateLoginHeaders = HTTPFields()
+            candidateLoginHeaders[.contentType] = "application/json"
+            let candidateLogin = try await client.send(.post, headers: candidateLoginHeaders, to: "/api/auth/login") { request in
+                request.body = .init(string: "{\"email\":\"boundary-candidate@slock.test\",\"password\":\"password123\"}")
+            }
+            let candidateToken = (try JSONSerialization.jsonObject(with: Data((candidateLogin.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
+            var candidateHeaders = headers
+            candidateHeaders[.authorization] = "Bearer \(candidateToken)"
+            #expect(try await client.send(.post, headers: candidateHeaders, to: "/api/channels/\(channel)/join").status == .forbidden)
+
             let addHuman = try await client.send(.post, headers: headers, to: "/api/channels/\(channel)/members") { request in
                 request.body = .init(string: "{\"userId\":\"\(candidateId)\"}")
             }
