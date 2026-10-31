@@ -557,6 +557,11 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? "{}"
         ))
     }
+    app.get("internal", "agent-api", "attachment-upload-capabilities") { request -> Response in
+        routeResponse(services.emailAccounts.agentAttachmentUploadCapabilities(
+            authorization: request.headers[.authorization]
+        ))
+    }
     app.get("internal", "agent-api", "history") { request -> Response in
         routeResponse(services.emailAccounts.agentHistory(
             authorization: request.headers[.authorization],

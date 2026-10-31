@@ -6397,6 +6397,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func agentAttachmentUploadCapabilities(authorization: String?) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted,
+              let profile = oauth.serverProfile(id: agent.serverId)
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        let limit = profile.plan == "free" ? 50 * 1024 * 1024 : 90 * 1024 * 1024
+        return Self.json(200, "{\"directUploadEnabled\":false,\"directUploadThresholdBytes\":null,\"maxBytes\":\(limit),\"sessionExpiresInSeconds\":null}")
+    }
+
     public func attachmentUploadSessionCreate(authorization: String?, serverId: String) -> HTTPReply {
         guard sessionUserId(authorization: authorization) != nil else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
