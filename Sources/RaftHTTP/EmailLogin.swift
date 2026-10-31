@@ -7347,15 +7347,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         case .denied(let reply):
             return reply
         case .allowed:
+            var workspaceChoice = "keep"
             if !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-               let workspace = object["workspace"] as? String,
-               workspace != "keep", workspace != "delete" {
-                return Self.json(400, "{\"code\":\"archive_workspace_choice_invalid\",\"error\":\"workspace must be keep or delete\"}")
+               let workspace = object["workspace"] as? String {
+                guard workspace == "keep" || workspace == "delete" else {
+                    return Self.json(400, "{\"code\":\"archive_workspace_choice_invalid\",\"error\":\"workspace must be keep or delete\"}")
+                }
+                workspaceChoice = workspace
             }
             lock.lock()
             let machineName = agentMachineIds[agentId].flatMap { id in machines.first { $0.id == id }?.name } ?? ""
-            agentArchiveRecords[agentId] = (workspaceState: "on_computer", machineName: machineName, serverId: oauth.agentManagementInfo(id: agentId)?.serverId ?? "")
+            let state = workspaceChoice == "delete" ? "deleted" : "on_computer"
+            agentArchiveRecords[agentId] = (workspaceState: state, machineName: machineName, serverId: oauth.agentManagementInfo(id: agentId)?.serverId ?? "")
             lock.unlock()
             oauth.deleteAgent(id: agentId)
             return Self.json(200, "{\"ok\":true}")
