@@ -7846,7 +7846,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             userId: userId,
             name: name,
             description: nil,
-            apiKey: "raft_machine_" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+            apiKey: Self.machineAPIKeyMaterial()
         ))
         lock.unlock()
         return id
@@ -7856,6 +7856,64 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return machines.first { $0.id == machineId }?.apiKey
+    }
+
+    /// Keyed lookup shared by `/daemon/connect` and the legacy machine surface.
+    public func machineCredential(apiKey: String) -> MachineCredentialIdentity? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let machine = machines.first(where: { $0.apiKey == apiKey }) else { return nil }
+        return MachineCredentialIdentity(machineId: machine.id, serverId: machine.serverId)
+    }
+
+    public func machineCredential(id: String) -> MachineCredentialIdentity? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let machine = machines.first(where: { $0.id == id }) else { return nil }
+        return MachineCredentialIdentity(machineId: machine.id, serverId: machine.serverId)
+    }
+
+    public func serverExists(id: String) -> Bool {
+        oauth.serverDetailsValue(id: id) != nil
+    }
+
+    /// Exact key match wins, then a revoked row with the same 16-character
+    /// prefix, then a live row whose key does not verify, then absence.
+    public func computerCredential(apiKey: String) -> ComputerCredentialLookup {
+        lock.lock()
+        defer { lock.unlock() }
+        let prefix = String(apiKey.prefix(Self.computerAPIKeyPrefixLength))
+        let candidates = computers.filter {
+            String($0.apiKey.prefix(Self.computerAPIKeyPrefixLength)) == prefix
+        }
+        if let computer = candidates.first(where: { $0.apiKey == apiKey }) {
+            if computer.revokedAt != nil { return .revoked }
+            guard let machineId = computer.machineId,
+                  machines.contains(where: { $0.id == machineId })
+            else { return .machineUnlinked }
+            return .linked(computerId: computer.id, machineId: machineId)
+        }
+        if candidates.contains(where: { $0.revokedAt != nil }) { return .revoked }
+        if !candidates.isEmpty { return .keyMismatch }
+        return .notFound
+    }
+
+    private static let machineAPIKeyPrefix = "sk_machine_"
+    private static let computerAPIKeyPrefix = "sk_computer_"
+    private static let computerAPIKeyPrefixLength = 16
+
+    private static func machineAPIKeyMaterial() -> String {
+        machineAPIKeyPrefix + credentialHex64()
+    }
+
+    private static func computerAPIKeyMaterial() -> String {
+        computerAPIKeyPrefix + credentialHex64()
+    }
+
+    private static func credentialHex64() -> String {
+        (UUID().uuidString + UUID().uuidString)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "")
     }
 
     private struct UserOnboarding {
@@ -8102,7 +8160,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
-        machines[index].apiKey = "raft_machine_" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        machines[index].apiKey = Self.machineAPIKeyMaterial()
         let key = machines[index].apiKey ?? ""
         lock.unlock()
         return Self.json(200, "{\"apiKey\":\(jsonString(key))}")
@@ -8124,7 +8182,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"Invalid computer attach request\"}")
         }
         let machineId = registerMachine(serverId: serverId, userId: userId, name: name)
-        let apiKey = "raft_computer_\(UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: ""))"
+        let apiKey = Self.computerAPIKeyMaterial()
         lock.lock()
         computers.append((id: UUID().uuidString.lowercased(), serverId: serverId, name: name, apiKey: apiKey, machineId: machineId, revokedAt: nil, online: false, version: nil))
         lock.unlock()
@@ -8161,7 +8219,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             id: UUID().uuidString.lowercased(),
             serverId: serverId,
             name: "linked-computer",
-            apiKey: "raft_computer_" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: ""),
+            apiKey: Self.computerAPIKeyMaterial(),
             machineId: machineId,
             revokedAt: nil,
             online: online,

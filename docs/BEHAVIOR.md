@@ -112,3 +112,16 @@ agent credential 经 internal agent-api 使用后，inventory 的 `lastUsedAt` �
 
 
 `PUT/DELETE /api/agents/:id/assistant-owner` 在 feature flag 关闭时 403 `{code:"assistant_not_enabled"}`；非 creator 的成员是 403 `{code:"assistant_requires_creator"}`。
+
+
+真实进程启动时，HTTP 端口来自 `PORT`（默认 8080），`/daemon/connect` 由独立 SwiftNIO 监听器服务，`DAEMON_CONNECT_PORT` 默认 8081，`0` 关闭。启动打印 `raft-server ready http=127.0.0.1:<port> daemon-connect=127.0.0.1:<port>|disabled`。
+
+
+真实进程对所有非 GET/HEAD 请求先缓冲请求体再进入路由，因此同步 handler 的 `request.body.string` 与 `app.testing` 一致；`/daemon/connect` 无 key 返回精确的 `HTTP/1.1 401 Unauthorized\r\nSlock-Reason: missing_key\r\n\r\n`，有效 Computer key 返回 101 加 `machine:context`。
+
+
+machine key 形如 `sk_machine_` + 64 位 hex，computer key 形如 `sk_computer_` + 64 位 hex；`POST /api/computer/attach` 返回 `sk_computer_`，`POST /api/servers/:id/machines/:machineId/rotate-key` 返回 `sk_machine_`。
+
+
+`RaftDaemon` 读取 `SERVER_URL` 与 `MACHINE_KEY`，完成 `/daemon/connect` 握手后打印 `daemon connected machine=... server=...` 并退出；真实重连循环仍留在 `DaemonLink` 库内。
+

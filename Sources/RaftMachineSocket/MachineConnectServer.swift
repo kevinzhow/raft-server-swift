@@ -21,7 +21,8 @@ public final class MachineConnectServer: Sendable {
     public static func start(
         lookup: any MachineCredentialLooking,
         capabilities: [String] = [serverCapabilityRuntimeDetectionAsyncV1],
-        host: String = "127.0.0.1"
+        host: String = "127.0.0.1",
+        port: Int = 0
     ) async throws -> MachineConnectServer {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let bootstrap = ServerBootstrap(group: group)
@@ -32,7 +33,7 @@ public final class MachineConnectServer: Sendable {
                 }
             }
         do {
-            let channel = try await bootstrap.bind(host: host, port: 0).get()
+            let channel = try await bootstrap.bind(host: host, port: port).get()
             guard let port = channel.localAddress?.port else {
                 try await channel.close()
                 try await group.shutdownGracefully()

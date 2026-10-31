@@ -9,6 +9,7 @@ let package = Package(
         .library(name: "RaftHTTP", targets: ["RaftHTTP"]),
         .library(name: "RaftHTTPServer", targets: ["RaftHTTPServer"]),
         .executable(name: "RaftServer", targets: ["RaftServer"]),
+        .executable(name: "RaftDaemon", targets: ["RaftDaemon"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "5.0.0"),
@@ -58,7 +59,15 @@ let package = Package(
             dependencies: [
                 "RaftHTTP",
                 "RaftHTTPServer",
+                "RaftMachineSocket",
+                "RaftConnectAuth",
                 .product(name: "Vapor", package: "vapor"),
+            ]
+        ),
+        .executableTarget(
+            name: "RaftDaemon",
+            dependencies: [
+                "RaftDaemonClient",
             ]
         ),
         .testTarget(
@@ -89,6 +98,13 @@ let package = Package(
                 "RaftDaemonClient",
                 "RaftMachineSocket",
                 "RaftConnectAuth",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+            ]
+        ),
+        .testTarget(
+            name: "RaftServerStartupTests",
+            dependencies: [
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
             ]

@@ -40,7 +40,8 @@ import VaporTesting
             let attachBody = try JSONSerialization.jsonObject(with: Data((attach.body.string ?? "").utf8)) as? [String: Any]
             let apiKey = attachBody?["apiKey"] as? String ?? ""
             let machineId = attachBody?["machineId"] as? String ?? ""
-            #expect(apiKey.hasPrefix("raft_computer_"))
+            #expect(apiKey.hasPrefix("sk_computer_"))
+            #expect(apiKey.count == "sk_computer_".count + 64)
             #expect(!machineId.isEmpty)
 
             func runners(_ key: String) async throws -> ClientResponse {
@@ -53,7 +54,7 @@ import VaporTesting
             let removed = try await client.send(.delete, headers: headers, to: "/api/servers/\(serverId)/machines/\(machineId)")
             #expect(removed.status == .ok)
             #expect(try await runners(apiKey).status == .unauthorized)
-            #expect(try await runners("raft_computer_unknown").status == .unauthorized)
+            #expect(try await runners("sk_computer_unknown").status == .unauthorized)
         }
     }
 }

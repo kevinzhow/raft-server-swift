@@ -1,11 +1,25 @@
 import Configuration
 import Foundation
 import Logging
+import RaftConnectAuth
 import RaftHTTP
 import RaftHTTPServer
+import RaftMachineSocket
 import Vapor
 
+#if canImport(Glibc)
+import Glibc
+#endif
+
 private struct DatabaseNotConnected: Error {}
+
+private struct MachineConnectShutdown: LifecycleHandler {
+    let server: MachineConnectServer
+
+    func shutdown(_ application: Application) async {
+        try? await server.close()
+    }
+}
 
 private func nonEmpty(_ value: String?) -> String? {
     guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
@@ -77,6 +91,10 @@ enum Entrypoint {
         }
         let ping: @Sendable () async throws -> Void = { throw DatabaseNotConnected() }
         let tracker = DbLivenessTracker(ping: ping)
+        let httpPort = Int(processEnvironment["PORT"] ?? "") ?? 8080
+        if httpPort > 0 {
+            app.serverConfiguration.port = httpPort
+        }
         configure(
             app,
             services: FallbackServices(
@@ -87,10 +105,31 @@ enum Entrypoint {
                 emailAccounts: emailAccounts
             )
         )
+        let configuredDaemonPort = Int(processEnvironment["DAEMON_CONNECT_PORT"] ?? "") ?? 8081
+        let machineServer: MachineConnectServer?
+        if configuredDaemonPort == 0 {
+            machineServer = nil
+        } else {
+            machineServer = try await MachineConnectServer.start(
+                lookup: LedgerMachineLookup(accounts: emailAccounts),
+                port: configuredDaemonPort
+            )
+        }
+        if let machineServer {
+            app.addLifecycleHandler(MachineConnectShutdown(server: machineServer))
+        }
+        let boundHTTPPort = app.serverConfiguration.port ?? httpPort
+        let daemonDescription = machineServer.map { "127.0.0.1:\($0.port)" } ?? "disabled"
+        FileHandle.standardOutput.write(
+            Data("raft-server ready http=127.0.0.1:\(boundHTTPPort) daemon-connect=\(daemonDescription)\n".utf8)
+        )
         await tracker.start()
         do {
             try await app.start()
         } catch {
+            if let machineServer {
+                try? await machineServer.close()
+            }
             try? await app.shutdown()
             throw error
         }

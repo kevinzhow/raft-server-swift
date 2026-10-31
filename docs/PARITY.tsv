@@ -64,7 +64,7 @@ computerAttach.api	route	pending	-	auto-seed
 computerLegacyMachines.api	route	pending	-	auto-seed
 computerRevocation.api	route	partial	-	auto-seed
 corsPreflight.api	route	partial	-	auto-seed
-daemon.wsAuth	route	pending	-	auto-seed
+daemon.wsAuth	route	partial	-	process e2e added; trace/argon2-only halves excluded
 desktopDownload	route	partial	-	auto-seed
 deviceAuth.api	route	partial	-	auto-seed
 errorHygieneBlackbox.api	route	pending	-	auto-seed

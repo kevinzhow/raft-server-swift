@@ -2371,6 +2371,7 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     var middleware = Middlewares()
+    middleware.use(BufferedRequestBodyMiddleware())
     middleware.use(CorsMiddleware(origins: services.corsOrigins))
     middleware.use(PublicSearchMiddleware(
         indexEnabled: services.publicSearchIndexEnabled,
