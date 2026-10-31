@@ -9487,7 +9487,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         postableChannels[channelId]?.name = name
         lock.unlock()
-        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name))}")
+        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name)),\"type\":\(jsonString(oauth.channelType(id: channelId) == "private" ? "private" : "channel"))}")
+    }
+
+    private var memberAttentionJSON: String {
+        ",\"attention\":{\"stillArrives\":[\"Followed threads still notify this member unless they unfollow them.\"],\"threadBoundary\":\"Removing this member does not unfollow existing thread follows. Private channel/thread content still requires current parent access.\",\"manageCommand\":\"Use raft thread unfollow to manage thread follows.\"}"
     }
 
     public func agentChannelMemberWrite(authorization: String?, channelId: String, body: String, remove: Bool) -> HTTPReply {
@@ -9511,11 +9515,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 return Self.json(404, "{\"error\":\"User not found\"}")
             }
             if remove {
+                let wasMember = oauth.channelHumanIds(channelId: channelId).contains(target)
                 lock.lock()
                 postableChannels[channelId]?.memberIds.remove(target)
                 lock.unlock()
                 _ = oauth.removeChannelHuman(channelId: channelId, userId: target)
-                return Self.json(200, "{\"ok\":true}")
+                return Self.json(200, "{\"ok\":true,\"wasMember\":\(wasMember),\"member\":{\"type\":\"human\",\"name\":\(jsonString(userName))}\(memberAttentionJSON)}")
             }
             let already = oauth.channelHumanIds(channelId: channelId).contains(target)
             if !already {
@@ -9529,8 +9534,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 return Self.json(404, "{\"error\":\"Agent not found\"}")
             }
             if remove {
+                let wasMember = oauth.channelAgentIds(channelId: channelId).contains(target)
                 oauth.removeChannelAgent(channelId: channelId, agentId: target)
-                return Self.json(200, "{\"ok\":true}")
+                return Self.json(200, "{\"ok\":true,\"wasMember\":\(wasMember),\"member\":{\"type\":\"agent\",\"name\":\(jsonString(agentName))}\(memberAttentionJSON)}")
             }
             let already = oauth.channelAgentIds(channelId: channelId).contains(target)
             if !already {
@@ -9554,7 +9560,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"Invalid server update\"}")
         }
         oauth.updateServerName(id: agent.serverId, name: name)
-        return Self.json(200, "{\"ok\":true,\"name\":\(jsonString(name))}")
+        return Self.json(200, "{\"ok\":true,\"id\":\(jsonString(agent.serverId)),\"name\":\(jsonString(name))}")
     }
 
     public func agentServerInfo(authorization: String?) -> HTTPReply {

@@ -67,6 +67,7 @@ import VaporTesting
             }
             #expect(allowedRename.status == .ok)
             #expect(try json(allowedRename)["name"] as? String == "cap-renamed")
+            #expect(try json(allowedRename)["type"] as? String == "channel")
 
             let addHuman = try await client.send(.post, headers: headers, to: "/internal/agent-api/channels/\(channel)/members") { request in
                 request.body = .init(string: "{\"user\":\"cap-target\"}")
@@ -94,11 +95,25 @@ import VaporTesting
                 request.body = .init(string: "{\"agent\":\"cap-peer\"}")
             }
             #expect(try json(repeatAgent)["alreadyMember"] as? Bool == true)
+            let removeAgent = try await client.send(.delete, headers: headers, to: "/internal/agent-api/channels/\(channel)/members") { request in
+                request.body = .init(string: "{\"agent\":\"cap-peer\"}")
+            }
+            let removeBody = try json(removeAgent)
+            #expect(removeBody["wasMember"] as? Bool == true)
+            #expect((removeBody["member"] as? [String: Any])?["name"] as? String == "cap-peer")
+            let attention = removeBody["attention"] as? [String: Any]
+            #expect(((attention?["stillArrives"] as? [String]) ?? []).contains { $0.contains("Followed threads still notify") })
+            #expect(((attention?["threadBoundary"] as? String) ?? "").contains("does not unfollow existing thread follows"))
+            #expect(((attention?["threadBoundary"] as? String) ?? "").contains("Private channel/thread content still requires current parent access"))
+            #expect(((attention?["manageCommand"] as? String) ?? "").contains("raft thread unfollow"))
 
             let allowedServer = try await client.send(.patch, headers: headers, to: "/internal/agent-api/server") { request in
                 request.body = .init(string: "{\"name\":\"Capability Server Renamed\"}")
             }
             #expect(allowedServer.status == .ok)
+            let serverBody = try json(allowedServer)
+            #expect(serverBody["id"] as? String == serverId)
+            #expect(serverBody["name"] as? String == "Capability Server Renamed")
         }
     }
 }
