@@ -83,3 +83,46 @@ import VaporTesting
         }
     }
 }
+
+@Test func ownerSelfDemotesToGuestOnlyWhileAnotherOwnerRemains() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111432"
+    let secondOwnerId = "11111111-1111-4111-8111-111111111433"
+    let serverId = "33333333-3333-4333-8333-333333333554"
+    accounts.addAccount(id: ownerId, email: "self-demote-owner@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.addAccount(id: secondOwnerId, email: "self-demote-second@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: secondOwnerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "self-demote", name: "Self Demote", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: secondOwnerId, role: "owner")
+    accounts.enableGuestRoleTransitions(serverId: serverId)
+    let allChannel = accounts.oauth.allChannelId(serverId: serverId) ?? ""
+    accounts.addPostableChannel(serverId: serverId, channelId: allChannel, memberId: ownerId)
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var loginHeaders = HTTPFields()
+            loginHeaders[.contentType] = "application/json"
+            let login = try await client.send(.post, headers: loginHeaders, to: "/api/auth/login") { request in
+                request.body = .init(string: "{\"email\":\"self-demote-owner@slock.test\",\"password\":\"password123\"}")
+            }
+            let token = (try JSONSerialization.jsonObject(with: Data((login.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(token)"
+            headers[.contentType] = "application/json"
+            headers[HTTPField.Name("X-Server-Id")!] = serverId
+            let response = try await client.send(.patch, headers: headers, to: "/api/servers/\(serverId)/members/\(ownerId)") { request in
+                request.body = .init(string: "{\"role\":\"guest\"}")
+            }
+            #expect(response.status == .ok)
+            #expect(accounts.oauth.memberRole(serverId: serverId, userId: ownerId) == "guest")
+            #expect(!accounts.oauth.channelHumanIds(channelId: allChannel).contains(ownerId))
+        }
+    }
+}

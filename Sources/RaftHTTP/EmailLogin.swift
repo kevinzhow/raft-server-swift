@@ -7967,8 +7967,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if role == "admin", targetRole == "owner" || targetRole == "admin" || newRole == "owner" {
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
-        guard memberId != userId else {
-            return Self.json(400, "{\"error\":\"You cannot change your own role\"}")
+        if memberId == userId {
+            let canSelfDemoteToGuest = targetRole == "owner" && newRole == "guest" && oauth.ownerCount(serverId: serverId) > 1
+            guard canSelfDemoteToGuest else {
+                return Self.json(400, "{\"error\":\"You cannot change your own role\"}")
+            }
         }
         if newRole == "guest" {
             lock.lock()
