@@ -3036,6 +3036,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         } else {
             reply = storeHumanMessage(channelId: channelId, senderId: userId, content: content, randomId: nil, attachmentIds: attachmentIds, senderTimezone: senderTimezone)
         }
+        if reply.status == 200, channel.kind == "thread", let parentMessageId = channel.parentMessageId {
+            lock.lock()
+            threadFollows["\(serverId ?? "")\n\(userId)\n\(channelId)"] = (
+                serverId: serverId ?? "",
+                userId: userId,
+                threadChannelId: channelId,
+                parentMessageId: parentMessageId
+            )
+            lock.unlock()
+        }
         if contract == "v2" {
             return v2HumanSend(reply, channelId: channelId, mentions: mentions)
         }
