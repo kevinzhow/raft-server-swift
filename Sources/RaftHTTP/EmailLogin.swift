@@ -215,6 +215,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var threadFollowerRemovals: [String: (serverId: String, threadChannelId: String, agentId: String)] = [:]
     private var channelReadVersions: [String: Int] = [:]
     private var agentChannelReadCursors: [String: (seq: Int, version: Int)] = [:]
+    private var agentActivities: [String: (activity: String, detail: String)] = [:]
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -8901,7 +8902,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let agents = oauth.channelAgentIds(channelId: channelId).map { agentId -> String in
             let info = oauth.agentRuntimeInfo(id: agentId)
             let name = info?.name ?? ""
-            return "{\"id\":\(jsonString(agentId)),\"name\":\(jsonString(name)),\"activity\":\"offline\",\"activityDetail\":\"\"}"
+            let activity = agentActivities[agentId] ?? (activity: "offline", detail: "")
+            return "{\"id\":\(jsonString(agentId)),\"name\":\(jsonString(name)),\"activity\":\(jsonString(activity.activity)),\"activityDetail\":\(jsonString(activity.detail))}"
         }.joined(separator: ",")
         let humans = oauth.channelHumanIds(channelId: channelId).map { humanId -> String in
             "{\"id\":\(jsonString(humanId))}"
@@ -9490,6 +9492,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
         oauth.setChannelReadCursor(channelId: channelId, userId: userId, seq: latest)
         return Self.json(200, "{\"ok\":true,\"seq\":\(latest),\"readStateVersion\":\(version)}")
+    }
+
+    public func setAgentActivity(agentId: String, activity: String, detail: String) {
+        lock.lock()
+        agentActivities[agentId] = (activity, detail)
+        lock.unlock()
     }
 
     public func agentReadCursor(agentId: String, channelId: String) -> (seq: Int, version: Int) {
