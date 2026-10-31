@@ -8249,6 +8249,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             oauth.setChannelArchived(id: channelId, archivedAt: nil)
             lock.lock()
             postableChannels[channelId]?.archived = false
+            for (id, var postable) in postableChannels where postable.parentChannelId == channelId {
+                postable.archived = false
+                postableChannels[id] = postable
+            }
             lock.unlock()
         }
         if let date = oauth.channelArchivedAt(id: channelId) {
