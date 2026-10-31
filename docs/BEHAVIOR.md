@@ -109,3 +109,6 @@ agent credential 经 internal agent-api 使用后，inventory 的 `lastUsedAt` �
 
 
 `GET /api/agents/:id/external-diagnostics`：member 403、managed agent 400 `agent_not_external`、缺失 404；external agent 返回最小 diagnostics 视图。
+
+
+`PUT/DELETE /api/agents/:id/assistant-owner` 在 feature flag 关闭时 403 `{code:"assistant_not_enabled"}`；非 creator 的成员是 403 `{code:"assistant_requires_creator"}`。

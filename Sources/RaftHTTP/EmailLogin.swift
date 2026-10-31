@@ -7443,6 +7443,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
+    public func agentAssistantOwner(authorization: String?, serverId: String, agentId: String, method: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted, info.serverId == serverId,
+              let role = oauth.memberRole(serverId: serverId, userId: userId)
+        else {
+            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
+            return Self.json(403, "{\"code\":\"assistant_requires_creator\",\"error\":\"Only the agent creator can lend assistant ownership\"}")
+        }
+        return Self.json(403, "{\"code\":\"assistant_not_enabled\",\"error\":\"Assistant ownership is not enabled\"}")
+    }
+
     public func externalAgentDiagnostics(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

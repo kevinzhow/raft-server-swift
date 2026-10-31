@@ -999,6 +999,22 @@ public func configure(_ app: Application, services: FallbackServices) {
             agentId: request.parameters.get("id") ?? ""
         ))
     }
+    app.put("api", "agents", ":id", "assistant-owner") { request -> Response in
+        routeResponse(services.emailAccounts.agentAssistantOwner(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? "",
+            method: "PUT"
+        ))
+    }
+    app.delete("api", "agents", ":id", "assistant-owner") { request -> Response in
+        routeResponse(services.emailAccounts.agentAssistantOwner(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? "",
+            method: "DELETE"
+        ))
+    }
     app.get("api", "agents", ":id", "migration") { request -> Response in
         routeResponse(services.emailAccounts.agentMigrationStatus(
             authorization: request.headers[.authorization],
