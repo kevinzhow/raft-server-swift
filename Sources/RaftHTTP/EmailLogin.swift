@@ -198,6 +198,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var providerAssignments: [ProviderAssignment] = []
     private var shareArtifacts: Set<String> = []
     private var timezoneObservations: [String: TimezoneObservation] = [:]
+    private var serverLabsState: [String: ServerLabsState] = [:]
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -7022,6 +7023,158 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let assigneeType = task.assigneeType.map { jsonString($0) } ?? "null"
         let claimed = task.claimedAt.map { jsonString(ISO8601DateFormatter().string(from: $0)) } ?? "null"
         return "{\"id\":\(jsonString(task.id)),\"channelId\":\(jsonString(task.channelId)),\"title\":\(jsonString(task.title)),\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber),\"claimedById\":\(assignee),\"claimedByType\":\(assigneeType),\"claimedAt\":\(claimed),\"revision\":\(task.revision)}"
+    }
+
+    private struct ServerLabsState {
+        var accessEnabled = false
+        var version = 0
+        var enrolled: Set<String> = []
+        var updatedAt: [String: Date] = [:]
+    }
+
+    private static let labDefinitions: [(key: String, name: String, description: String, state: String)] = [
+        ("open_lab", "Open Lab", "Available", "open"),
+        ("paused_lab", "Paused Lab", "Paused", "paused"),
+        ("draft_lab", "Draft Lab", "Hidden", "draft"),
+        ("retired_lab", "Retired Lab", "Historical", "retired"),
+    ]
+
+    private func labsJSON(serverId: String, userId: String, role: String, state: ServerLabsState) -> String {
+        let labs = Self.labDefinitions
+            .filter { $0.state == "open" || $0.state == "paused" }
+            .map { lab -> String in
+                let enrolled = state.enrolled.contains(lab.key)
+                let effective = state.accessEnabled && lab.state == "open" && enrolled
+                let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                let updated = state.updatedAt[lab.key].map { jsonString(formatter.string(from: $0)) } ?? "null"
+                return "{\"labKey\":\(jsonString(lab.key)),\"name\":\(jsonString(lab.name)),\"description\":\(jsonString(lab.description)),\"state\":\(jsonString(lab.state)),\"enrolled\":\(enrolled),\"effective\":\(effective),\"updatedAt\":\(updated)}"
+            }
+            .joined(separator: ",")
+        let canManageAccess = role == "owner"
+        let canManageEnrollments = role == "owner" || role == "admin"
+        return "{\"accessEnabled\":\(state.accessEnabled),\"version\":\(state.version),\"canManageAccess\":\(canManageAccess),\"canManageEnrollments\":\(canManageEnrollments),\"labs\":[\(labs)]}"
+    }
+
+    public func getServerLabs(authorization: String?, serverId: String, headerServerId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard headerServerId == serverId else {
+            return Self.json(403, "{\"error\":\"Server scope forbidden\",\"code\":\"server_scope_forbidden\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        lock.lock()
+        let state = serverLabsState[serverId] ?? ServerLabsState()
+        lock.unlock()
+        return Self.json(200, labsJSON(serverId: serverId, userId: userId, role: role, state: state))
+    }
+
+    public func patchServerLabsAccess(authorization: String?, serverId: String, headerServerId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard headerServerId == serverId else {
+            return Self.json(403, "{\"error\":\"Server scope forbidden\",\"code\":\"server_scope_forbidden\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard role == "owner" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let enabled = object["enabled"] as? Bool,
+              let expectedVersion = object["expectedVersion"] as? Int
+        else {
+            return Self.json(400, "{\"error\":\"Invalid labs access request\"}")
+        }
+        lock.lock()
+        var state = serverLabsState[serverId] ?? ServerLabsState()
+        if expectedVersion != state.version {
+            let current = state.version
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"Server Labs version changed\",\"code\":\"server_labs_version_conflict\",\"currentVersion\":\(current)}")
+        }
+        let applied = state.accessEnabled != enabled
+        if applied {
+            state.accessEnabled = enabled
+            state.version += 1
+        }
+        serverLabsState[serverId] = state
+        lock.unlock()
+        var replyState = state
+        if !applied {
+            replyState.version = state.version
+        }
+        let json = labsJSON(serverId: serverId, userId: userId, role: role, state: replyState)
+        let bodyJSON = String(json.dropFirst())
+        return Self.json(200, "{\"applied\":\(applied),\"accessEnabled\":\(state.accessEnabled),\"version\":\(state.version),\"labs\":\(labsOnlyJSON(json))}")
+    }
+
+    private func labsOnlyJSON(_ labs: String) -> String {
+        guard let range = labs.range(of: "\"labs\":[") else { return "[]" }
+        let suffix = labs[range.upperBound...]
+        guard let end = suffix.lastIndex(of: "]") else { return "[]" }
+        return "[" + String(suffix[..<end]) + "]"
+    }
+
+    public func putServerLabEnrollment(authorization: String?, serverId: String, headerServerId: String, labKey: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard headerServerId == serverId else {
+            return Self.json(403, "{\"error\":\"Server scope forbidden\",\"code\":\"server_scope_forbidden\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard let definition = Self.labDefinitions.first(where: { $0.key == labKey }),
+              definition.state == "open" || definition.state == "paused"
+        else {
+            return Self.json(404, "{\"error\":\"Lab not found\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let enabled = object["enabled"] as? Bool,
+              let expectedVersion = object["expectedVersion"] as? Int
+        else {
+            return Self.json(400, "{\"error\":\"Invalid lab enrollment request\"}")
+        }
+        lock.lock()
+        var state = serverLabsState[serverId] ?? ServerLabsState()
+        if expectedVersion != state.version {
+            let current = state.version
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"Server Labs version changed\",\"code\":\"server_labs_version_conflict\",\"currentVersion\":\(current)}")
+        }
+        guard state.accessEnabled else {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"Server Labs access is disabled\",\"code\":\"server_labs_access_disabled\"}")
+        }
+        guard definition.state == "open" else {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"Lab is not open\",\"code\":\"lab_not_open\"}")
+        }
+        let isEnrolled = state.enrolled.contains(labKey)
+        let applied = isEnrolled != enabled
+        if applied {
+            if enabled {
+                state.enrolled.insert(labKey)
+                state.updatedAt[labKey] = Date()
+            } else {
+                state.enrolled.remove(labKey)
+            }
+            state.version += 1
+        }
+        serverLabsState[serverId] = state
+        lock.unlock()
+        let json = labsJSON(serverId: serverId, userId: userId, role: role, state: state)
+        return Self.json(200, "{\"applied\":\(applied),\"version\":\(state.version),\"labs\":\(labsOnlyJSON(json))}")
     }
 
     public func taskSnapshotMetrics(authorization: String?, serverId: String, rawQuery: String?) -> HTTPReply {

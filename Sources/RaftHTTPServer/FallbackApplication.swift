@@ -907,6 +907,30 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.get("api", "servers", ":id", "labs") { request -> Response in
+        routeResponse(services.emailAccounts.getServerLabs(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            headerServerId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+        ))
+    }
+    app.patch("api", "servers", ":id", "labs", "access") { request -> Response in
+        routeResponse(services.emailAccounts.patchServerLabsAccess(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            headerServerId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.put("api", "servers", ":id", "labs", ":labKey") { request -> Response in
+        routeResponse(services.emailAccounts.putServerLabEnrollment(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            headerServerId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            labKey: request.parameters.get("labKey") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("api", "servers", ":id", "agreement") { request -> Response in
         routeResponse(services.emailAccounts.getServerAgreement(
             authorization: request.headers[.authorization],
