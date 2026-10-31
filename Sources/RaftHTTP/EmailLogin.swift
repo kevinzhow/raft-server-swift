@@ -221,6 +221,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var inboxDoneScopes: Set<String> = []
     private var readReceiptsServers: Set<String> = []
     private var channelHumanRoles: [String: String] = [:]
+    private var channelAuthorityRevisions: [String: Int] = [:]
     private var sidebarModes: [String: (channel: String, joint: String, dm: String, pinned: String, channelTabs: [String], agentTabs: [String])] = [:]
     private var sidebarSections: [String: (sections: [(id: String, name: String, emoji: String?, sortMode: String)], order: [String], placements: [(kind: String, id: String, sectionId: String, position: Int)], version: Int)] = [:]
     private var reminderRecords: [ReminderRecord] = []
@@ -9973,6 +9974,47 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
+    public func updateChannelHumanRole(authorization: String?, serverId: String, channelId: String, memberId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId,
+              oauth.isChannelParticipant(channelId: channelId, userId: userId)
+                  || oauth.channelType(id: channelId) == "channel"
+        else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        if let reply = archivedChannelReply(channelId) { return reply }
+        lock.lock()
+        let actorRole = channelHumanRoles["\(channelId)\n\(userId)"]
+        lock.unlock()
+        let actorServerRole = oauth.memberRole(serverId: serverId, userId: userId) ?? "member"
+        guard actorRole == "admin" || actorServerRole == "owner" || actorServerRole == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let role = object["role"] as? String, role == "admin" || role == "member"
+        else {
+            return Self.json(400, "{\"error\":\"Invalid channel role\"}")
+        }
+        let targetServerRole = oauth.memberRole(serverId: serverId, userId: memberId) ?? "member"
+        if targetServerRole == "owner" || targetServerRole == "admin" {
+            return Self.json(403, "{\"error\":\"Server role is managed separately\",\"code\":\"protected_server_role\"}")
+        }
+        if userId == memberId, role == "member" {
+            return Self.json(409, "{\"error\":\"A channel admin cannot demote themselves\",\"code\":\"channel_admin_self_demote_forbidden\"}")
+        }
+        lock.lock()
+        channelHumanRoles["\(channelId)\n\(memberId)"] = role
+        let revision = (channelAuthorityRevisions[channelId] ?? 1) + 1
+        channelAuthorityRevisions[channelId] = revision
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true,\"authorityRevision\":\(revision)}")
+    }
+
     public func channelMembers(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -10570,6 +10612,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let serverRole = oauth.memberRole(serverId: serverId, userId: userId) ?? "member"
         lock.lock()
         let localRole = channelHumanRoles["\(channelId)\n\(userId)"]
+        let authorityRevision = channelAuthorityRevisions[channelId] ?? 1
         lock.unlock()
         let basis: String? = localRole == "admin" ? "channel_role"
             : ((serverRole == "owner" || serverRole == "admin") ? "server_role" : nil)
@@ -10578,7 +10621,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let capability = basis != nil
         let capsJSON = "{\"editChannelMetadata\":\(capability),\"archiveChannels\":\(capability),\"addChannelMembers\":\(capability),\"changeChannelMemberRoles\":\(capability),\"deleteChannels\":\(serverAdmin),\"changeChannelVisibility\":\(serverAdmin),\"federateChannels\":\(serverAdmin)}"
         let peersJSON = receiptsEnabled ? ",\"peerReadStates\":[\("\(agentPeers.joined(separator: ","))")]" : ""
-        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"maxReadSeq\":\(info.maxReadSeq),\"readStateVersion\":\(version),\"activityMuteSupported\":\(supported),\"channelRole\":\(jsonString(channelRole)),\"channelAdminBasis\":\(basis.map { jsonString($0) } ?? "null"),\"channelAuthorityRevision\":1,\"channelCapabilities\":\(capsJSON)\(peersJSON)}")
+        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"maxReadSeq\":\(info.maxReadSeq),\"readStateVersion\":\(version),\"activityMuteSupported\":\(supported),\"channelRole\":\(jsonString(channelRole)),\"channelAdminBasis\":\(basis.map { jsonString($0) } ?? "null"),\"channelAuthorityRevision\":\(authorityRevision),\"channelCapabilities\":\(capsJSON)\(peersJSON)}")
     }
 
     public func channelDisplaySettings(authorization: String?, serverId: String, channelId: String) -> HTTPReply {

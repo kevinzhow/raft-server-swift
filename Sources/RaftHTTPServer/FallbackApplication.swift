@@ -1043,6 +1043,15 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.patch("api", "channels", ":channelId", "members", "user", ":memberId", "role") { request -> Response in
+        routeResponse(services.emailAccounts.updateChannelHumanRole(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: request.parameters.get("channelId") ?? "",
+            memberId: request.parameters.get("memberId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
     app.delete("api", "channels", ":channelId", "members", "user", ":memberId") { request -> Response in
         routeResponse(services.emailAccounts.removeChannelHuman(
             authorization: request.headers[.authorization],

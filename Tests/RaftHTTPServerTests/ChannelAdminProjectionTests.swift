@@ -48,9 +48,15 @@ import VaporTesting
                 request.body = .init(string: "{\"email\":\"role-admin@slock.test\",\"password\":\"password123\"}")
             }
             let token = (try JSONSerialization.jsonObject(with: Data((login.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
+            let ownerLogin = try await client.send(.post, headers: loginHeaders, to: "/api/auth/login") { request in
+                request.body = .init(string: "{\"email\":\"role-owner@slock.test\",\"password\":\"password123\"}")
+            }
+            let ownerToken = (try JSONSerialization.jsonObject(with: Data((ownerLogin.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
             var headers = HTTPFields()
             headers[.authorization] = "Bearer \(token)"
             headers[HTTPField.Name("X-Server-Id")!] = serverId
+            var ownerHeaders = headers
+            ownerHeaders[.authorization] = "Bearer \(ownerToken)"
             let detail = try await client.send(.get, headers: headers, to: "/api/channels/\(channel)")
             #expect(detail.status == .ok)
             let body = try JSONSerialization.jsonObject(with: Data((detail.body.string ?? "").utf8)) as? [String: Any] ?? [:]
@@ -79,6 +85,31 @@ import VaporTesting
             #expect(peer?["effectiveChannelRole"] as? String == "member")
             #expect(peer?["channelAdminBasis"] == nil || peer?["channelAdminBasis"] is NSNull)
             #expect(peer?["canChangeChannelRole"] as? Bool == true)
+
+            let promote = try await client.send(.patch, headers: headers, to: "/api/channels/\(channel)/members/user/\(peerId)/role") { request in
+                request.body = .init(string: "{\"role\":\"admin\"}")
+            }
+            #expect(promote.status == .ok)
+            #expect((try JSONSerialization.jsonObject(with: Data((promote.body.string ?? "").utf8)) as? [String: Any])?["authorityRevision"] as? Int == 2)
+
+            let selfDemote = try await client.send(.patch, headers: headers, to: "/api/channels/\(channel)/members/user/\(adminId)/role") { request in
+                request.body = .init(string: "{\"role\":\"member\"}")
+            }
+            #expect(selfDemote.status == .conflict)
+            #expect((try JSONSerialization.jsonObject(with: Data((selfDemote.body.string ?? "").utf8)) as? [String: Any])?["code"] as? String == "channel_admin_self_demote_forbidden")
+
+            let protectedTarget = try await client.send(.patch, headers: headers, to: "/api/channels/\(channel)/members/user/\(serverAdminId)/role") { request in
+                request.body = .init(string: "{\"role\":\"admin\"}")
+            }
+            #expect(protectedTarget.status == .forbidden)
+            #expect((try JSONSerialization.jsonObject(with: Data((protectedTarget.body.string ?? "").utf8)) as? [String: Any])?["code"] as? String == "protected_server_role")
+
+            #expect(try await client.send(.post, headers: ownerHeaders, to: "/api/channels/\(channel)/archive").status == .ok)
+            let archivedRole = try await client.send(.patch, headers: headers, to: "/api/channels/\(channel)/members/user/\(peerId)/role") { request in
+                request.body = .init(string: "{\"role\":\"member\"}")
+            }
+            #expect(archivedRole.status == .conflict)
+            #expect((try JSONSerialization.jsonObject(with: Data((archivedRole.body.string ?? "").utf8)) as? [String: Any])?["code"] as? String == "channel_archived")
         }
     }
 }
