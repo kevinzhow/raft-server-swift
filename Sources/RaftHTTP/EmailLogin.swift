@@ -7111,6 +7111,30 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, taskJSON(task))
     }
 
+    public func channelMembers(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId,
+              oauth.isChannelParticipant(channelId: channelId, userId: userId)
+                  || oauth.channelType(id: channelId) == "channel"
+        else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        let agents = oauth.channelAgentIds(channelId: channelId).map { agentId -> String in
+            let info = oauth.agentRuntimeInfo(id: agentId)
+            let name = info?.name ?? ""
+            return "{\"id\":\(jsonString(agentId)),\"name\":\(jsonString(name)),\"activity\":\"offline\",\"activityDetail\":\"\"}"
+        }.joined(separator: ",")
+        let humans = oauth.channelHumanIds(channelId: channelId).map { humanId -> String in
+            "{\"id\":\(jsonString(humanId))}"
+        }.joined(separator: ",")
+        return Self.json(200, "{\"agents\":[\("\(agents)")],\"humans\":[\("\(humans)")]}")
+    }
+
     public func deleteTask(authorization: String?, serverId: String, taskId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

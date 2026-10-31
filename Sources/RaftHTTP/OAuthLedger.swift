@@ -56,6 +56,7 @@ public final class OAuthLedger: @unchecked Sendable {
     private var members: [String: String] = [:]
     private var channelRecords: [ChannelRecord] = []
     private var channelHumans: Set<String> = []
+    private var channelAgents: Set<String> = []
     private var channelMessages: [ChannelMessageRecord] = []
     private var channelSystemMessages: [ChannelSystemMessageRecord] = []
     private var channelNotificationPrefs: [String: ChannelNotificationPrefs] = [:]
@@ -391,6 +392,30 @@ public final class OAuthLedger: @unchecked Sendable {
         }
         lock.unlock()
         return id
+    }
+
+    public func addChannelAgent(channelId: String, agentId: String) {
+        lock.lock()
+        channelAgents.insert("\(channelId)\n\(agentId)")
+        lock.unlock()
+    }
+
+    public func channelAgentIds(channelId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return channelAgents
+            .filter { $0.hasPrefix("\(channelId)\n") }
+            .compactMap { $0.split(separator: "\n", maxSplits: 1).last.map(String.init) }
+            .sorted()
+    }
+
+    public func channelHumanIds(channelId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return channelHumans
+            .filter { $0.hasPrefix("\(channelId)\n") }
+            .compactMap { $0.split(separator: "\n", maxSplits: 1).last.map(String.init) }
+            .sorted()
     }
 
     public func addChannelHuman(channelId: String, userId: String) {
