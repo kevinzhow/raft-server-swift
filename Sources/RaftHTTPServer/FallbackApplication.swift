@@ -402,6 +402,18 @@ public func configure(_ app: Application, services: FallbackServices) {
             limit: desktopQuery(request.url.query, "limit")
         ))
     }
+    app.get("api", "announcements", "active") { request -> Response in
+        routeResponse(services.emailAccounts.activeAnnouncements(
+            authorization: request.headers[.authorization],
+            after: desktopQuery(request.url.query, "after")
+        ))
+    }
+    app.post("api", "announcements", ":announcementId", "dismiss") { request -> Response in
+        routeResponse(services.emailAccounts.dismissAnnouncement(
+            authorization: request.headers[.authorization],
+            announcementId: request.parameters.get("announcementId") ?? ""
+        ))
+    }
     app.get("api", "channels", "inbox") { request -> Response in
         routeResponse(services.emailAccounts.channelInbox(
             authorization: request.headers[.authorization],

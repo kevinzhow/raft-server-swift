@@ -216,6 +216,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var channelReadVersions: [String: Int] = [:]
     private var agentChannelReadCursors: [String: (seq: Int, version: Int)] = [:]
     private var agentActivities: [String: (activity: String, detail: String)] = [:]
+    private var announcements: [(id: String, title: String, pages: [String], startsAt: Date, expiresAt: Date?)] = []
+    private var announcementDismissals: Set<String> = []
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -9492,6 +9494,52 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
         oauth.setChannelReadCursor(channelId: channelId, userId: userId, seq: latest)
         return Self.json(200, "{\"ok\":true,\"seq\":\(latest),\"readStateVersion\":\(version)}")
+    }
+
+    @discardableResult
+    public func addAnnouncementForTesting(title: String, pages: [String], startsAt: Date = Date(), expiresAt: Date? = nil) -> String {
+        let id = UUID().uuidString.lowercased()
+        lock.lock()
+        announcements.append((id: id, title: title, pages: pages, startsAt: startsAt, expiresAt: expiresAt))
+        lock.unlock()
+        return id
+    }
+
+    public func activeAnnouncements(authorization: String?, after: String?) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        if let after, !after.isEmpty, !ServerScope.isUUID(after) {
+            return Self.json(400, "{\"error\":\"Invalid announcement cursor\"}")
+        }
+        let now = Date()
+        lock.lock()
+        let rows = announcements
+            .filter { $0.startsAt <= now && ($0.expiresAt == nil || $0.expiresAt! > now) }
+            .filter { !announcementDismissals.contains("\(userId)\n\($0.id)") }
+            .filter { after == nil || $0.id != after }
+            .sorted { $0.startsAt < $1.startsAt }
+            .prefix(1)
+        let documents = rows.map { announcement -> String in
+            let pages = announcement.pages.map { jsonString($0) }.joined(separator: ",")
+            return "{\"id\":\(jsonString(announcement.id)),\"title\":\(jsonString(announcement.title)),\"pages\":[\(pages)]}"
+        }.joined(separator: ",")
+        lock.unlock()
+        return Self.json(200, "{\"announcements\":[\(documents)]}")
+    }
+
+    public func dismissAnnouncement(authorization: String?, announcementId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        guard announcements.contains(where: { $0.id == announcementId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Announcement not found\"}")
+        }
+        announcementDismissals.insert("\(userId)\n\(announcementId)")
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true}")
     }
 
     public func setAgentActivity(agentId: String, activity: String, detail: String) {
