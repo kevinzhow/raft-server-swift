@@ -6892,6 +6892,28 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"channelOrder\":[\("\(array(order.channelOrder))")],\"agentOrder\":[\("\(array(order.agentOrder))")],\"dmOrder\":[\("\(array(order.dmOrder))")],\"pinnedOrder\":[\("\(array(order.pinnedOrder))")],\"hiddenDmIds\":[\("\(array(order.hiddenDmIds))")]}")
     }
 
+    public func addCompletedTask(
+        channelId: String,
+        title: String,
+        createdAt: Date,
+        completedAt: Date
+    ) {
+        lock.lock()
+        let taskNumber = taskRecords.filter { $0.channelId == channelId }.count + 1
+        taskRecords.append(TaskRecord(
+            id: UUID().uuidString.lowercased(),
+            channelId: channelId,
+            title: title,
+            description: nil,
+            status: "done",
+            taskNumber: taskNumber,
+            messageId: UUID().uuidString.lowercased(),
+            createdAt: createdAt,
+            completedAt: completedAt
+        ))
+        lock.unlock()
+    }
+
     public func addTask(channelId: String, title: String, description: String?) -> String {
         lock.lock()
         defer { lock.unlock() }
@@ -6975,6 +6997,85 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let assigneeType = task.assigneeType.map { jsonString($0) } ?? "null"
         let claimed = task.claimedAt.map { jsonString(ISO8601DateFormatter().string(from: $0)) } ?? "null"
         return "{\"id\":\(jsonString(task.id)),\"channelId\":\(jsonString(task.channelId)),\"title\":\(jsonString(task.title)),\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber),\"claimedById\":\(assignee),\"claimedByType\":\(assigneeType),\"claimedAt\":\(claimed),\"revision\":\(task.revision)}"
+    }
+
+    public func taskPeriodMetrics(authorization: String?, serverId: String, rawQuery: String?) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        var params: [String: String] = [:]
+        for pair in (rawQuery ?? "").split(separator: "&") {
+            let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
+            if parts.count == 2 { params[parts[0]] = parts[1].removingPercentEncoding ?? parts[1] }
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let fallback = ISO8601DateFormatter()
+        func parse(_ value: String?) -> Date? {
+            guard let value else { return nil }
+            return formatter.date(from: value) ?? fallback.date(from: value)
+        }
+        guard let from = parse(params["from"]), let midpoint = parse(params["midpoint"]), let to = parse(params["to"]) else {
+            return Self.json(400, "{\"error\":\"Invalid metrics window\"}")
+        }
+        let week: TimeInterval = 7 * 24 * 60 * 60
+        guard abs(midpoint.timeIntervalSince(from) - week) < 1,
+              abs(to.timeIntervalSince(midpoint) - week) < 1
+        else {
+            return Self.json(400, "{\"error\":\"Invalid metrics window\"}")
+        }
+        var channelFilter: String?
+        if let rawChannel = params["channelId"] {
+            guard rawChannel.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
+                return Self.json(400, "{\"error\":\"Invalid channelId\"}")
+            }
+            guard let channel = oauth.channelInfo(id: rawChannel), channel.serverId == serverId else {
+                return Self.json(404, "{\"error\":\"Channel not found\"}")
+            }
+            if (oauth.channelType(id: rawChannel) ?? "channel") != "channel",
+               !oauth.isChannelParticipant(channelId: rawChannel, userId: userId) {
+                return Self.json(404, "{\"error\":\"Channel not found\"}")
+            }
+            channelFilter = rawChannel
+        }
+        let visible = Set(oauth.channelsForServer(serverId: serverId, userId: userId).filter { $0.joined }.map { $0.id })
+        lock.lock()
+        let rows = taskRecords.filter { task in
+            guard let completedAt = task.completedAt else { return false }
+            guard channelFilter.map({ $0 == task.channelId }) ?? visible.contains(task.channelId) else { return false }
+            return completedAt >= from && completedAt < to
+        }
+        lock.unlock()
+        func metrics(_ start: Date, _ end: Date) -> String {
+            let window = rows.filter { task in
+                guard let completedAt = task.completedAt else { return false }
+                return completedAt >= start && completedAt < end
+            }
+            let durations = window.compactMap { task -> Double? in
+                guard let completedAt = task.completedAt else { return nil }
+                return completedAt.timeIntervalSince(task.createdAt) / 3600
+            }.sorted()
+            let mean = durations.isEmpty ? 0 : durations.reduce(0, +) / Double(durations.count)
+            let median: Double
+            if durations.isEmpty {
+                median = 0
+            } else if durations.count % 2 == 1 {
+                median = durations[durations.count / 2]
+            } else {
+                median = (durations[durations.count / 2 - 1] + durations[durations.count / 2]) / 2
+            }
+            func number(_ value: Double) -> String {
+                value == value.rounded() ? String(Int(value)) : String(format: "%.2f", value)
+            }
+            return "{\"completed\":\(window.count),\"durationSamples\":\(durations.count),\"meanHours\":\(number(mean)),\"medianHours\":\(number(median))}"
+        }
+        return Self.json(200, "{\"current\":\(metrics(midpoint, to)),\"previous\":\(metrics(from, midpoint))}")
     }
 
     public func listChannelTasks(authorization: String?, serverId: String, channelId: String, rawQuery: String?) -> HTTPReply {
@@ -7320,6 +7421,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         lock.lock()
         taskRecords[index].status = status
+        if status == "done", taskRecords[index].completedAt == nil {
+            taskRecords[index].completedAt = Date()
+        }
         if status == "in_progress", taskRecords[index].claimedAt == nil {
             taskRecords[index].claimedAt = Date()
         }
@@ -7504,6 +7608,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var taskNumber: Int
         var messageId: String
         var createdAt: Date
+        var completedAt: Date? = nil
         var creatorId: String? = nil
         var assigneeId: String? = nil
         var assigneeType: String? = nil
