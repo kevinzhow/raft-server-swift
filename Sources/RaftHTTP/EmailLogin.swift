@@ -205,6 +205,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var userOnboardingSettings: [String: UserOnboarding] = [:]
     private var serverNotificationPrefs: [String: (muted: Bool, mentionsOnly: Bool, mode: String, version: Int)] = [:]
     private var setupPhases: [String: String] = [:]
+    private var computers: [(id: String, serverId: String, name: String, apiKey: String, machineId: String?, revokedAt: Date?)] = []
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -6699,6 +6700,47 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"apiKey\":\(jsonString(key))}")
     }
 
+    public func attachComputer(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let name = object["name"] as? String,
+              !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let slug = object["serverSlug"] as? String,
+              oauth.serverDetailsValue(id: serverId)?.slug == slug
+        else {
+            return Self.json(400, "{\"error\":\"Invalid computer attach request\"}")
+        }
+        let machineId = registerMachine(serverId: serverId, userId: userId, name: name)
+        let apiKey = "raft_computer_\(UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: ""))"
+        lock.lock()
+        computers.append((id: UUID().uuidString.lowercased(), serverId: serverId, name: name, apiKey: apiKey, machineId: machineId, revokedAt: nil))
+        lock.unlock()
+        return Self.json(201, "{\"apiKey\":\(jsonString(apiKey)),\"machineId\":\(jsonString(machineId))}")
+    }
+
+    public func computerRunners(authorization: String?) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Invalid computer credential\"}")
+        }
+        let apiKey = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let valid = computers.contains { computer in
+            computer.apiKey == apiKey
+                && computer.revokedAt == nil
+                && computer.machineId.map { machineId in machines.contains { $0.id == machineId } } == true
+        }
+        lock.unlock()
+        guard valid else {
+            return Self.json(401, "{\"error\":\"Invalid computer credential\"}")
+        }
+        return Self.json(200, "{\"runners\":[]}")
+    }
+
     public func machineCount(serverId: String) -> Int {
         lock.lock()
         defer { lock.unlock() }
@@ -6722,6 +6764,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
         machines.remove(at: index)
+        for computerIndex in computers.indices where computers[computerIndex].machineId?.caseInsensitiveCompare(machineId) == .orderedSame {
+            computers[computerIndex].machineId = nil
+            computers[computerIndex].revokedAt = Date()
+        }
         lock.unlock()
         return Self.json(200, "{\"ok\":true}")
     }

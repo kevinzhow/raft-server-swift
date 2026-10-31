@@ -1078,6 +1078,16 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("api", "computer", "attach") { request -> Response in
+        routeResponse(services.emailAccounts.attachComputer(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.get("internal", "computer", "runners") { request -> Response in
+        routeResponse(services.emailAccounts.computerRunners(authorization: request.headers[.authorization]))
+    }
     app.get("api", "servers", ":id", "machines") { request -> Response in
         routeResponse(services.emailAccounts.listServerMachines(
             authorization: request.headers[.authorization],
