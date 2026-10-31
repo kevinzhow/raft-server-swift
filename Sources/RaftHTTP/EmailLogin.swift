@@ -7592,7 +7592,41 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == machine.serverId else {
             return Self.json(404, "{\"error\":\"Agent not found\"}")
         }
-        return Self.json(400, "{\"error\":\"Invalid target\"}")
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let target = object["target"] as? String,
+              let content = object["content"] as? String,
+              target.hasPrefix("#")
+        else {
+            return Self.json(400, "{\"error\":\"Invalid target\"}")
+        }
+        let rawName = String(target.dropFirst())
+        let name = rawName.split(separator: ":", maxSplits: 1).first.map(String.init) ?? rawName
+        lock.lock()
+        let candidate = postableChannels.first { channelId, channel in
+            channel.serverId == agent.serverId && channel.name == name && channel.deletedAt == nil
+        }
+        lock.unlock()
+        guard let (channelId, channel) = candidate else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        guard oauth.channelAgentIds(channelId: channelId).contains(agent.id) else {
+            return Self.json(403, "{\"error\":\"Agent is not a member of this channel\"}")
+        }
+        if channel.archived {
+            return Self.json(409, "{\"error\":\"This channel is archived\",\"code\":\"channel_archived\"}")
+        }
+        let messageId = UUID().uuidString.lowercased()
+        lock.lock()
+        humanMessageRows.append(StoredHumanMessage(
+            id: messageId,
+            channelId: channelId,
+            senderId: agent.id,
+            content: content,
+            randomId: nil,
+            senderType: "agent"
+        ))
+        lock.unlock()
+        return Self.json(200, "{\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId))}")
     }
 
     public func runtimeProfileMigrationDone(authorization: String?, agentId: String, body: String) -> HTTPReply {

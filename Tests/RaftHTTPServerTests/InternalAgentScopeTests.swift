@@ -50,8 +50,8 @@ import VaporTesting
             #expect(try json(missing)["error"] as? String == "Agent not found")
 
             let sameServer = try await send(agentA, apiKeyA)
-            #expect(sameServer.status == .badRequest)
-            #expect(try json(sameServer)["error"] as? String == "Invalid target")
+            #expect(sameServer.status == .notFound)
+            #expect(try json(sameServer)["error"] as? String == "Channel not found")
             _ = agentA
         }
     }
