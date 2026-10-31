@@ -11297,6 +11297,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             _ = oauth.setChannelType(id: channelId, type: visibility == "private" ? "private" : "channel")
             lock.lock()
             postableChannels[channelId]?.kind = visibility == "private" ? "private" : "channel"
+            if visibility == "private" {
+                let snapshot = postableChannels[channelId]?.memberIds ?? []
+                let threadIds = Set(postableChannels.filter { $0.value.kind == "thread" && $0.value.parentChannelId == channelId }.keys)
+                for (key, follow) in threadFollows where threadIds.contains(follow.threadChannelId) && !snapshot.contains(follow.userId) {
+                    threadFollows.removeValue(forKey: key)
+                }
+            }
             lock.unlock()
             return Self.json(200, "{\"ok\":true,\"id\":\(jsonString(channelId)),\"visibility\":\(jsonString(visibility)),\"type\":\(jsonString(visibility == "private" ? "private" : "channel"))}")
         }
