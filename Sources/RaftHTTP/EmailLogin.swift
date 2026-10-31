@@ -4693,10 +4693,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 $0.channelId == scopeId && $0.targetType == "user" && $0.targetId == userId
             }
             let following = threadFollows["\(serverId ?? "")\n\(userId)\n\(scopeId)"] != nil
+            let firstUnread = oauth.firstUnreadMessageId(channelId: scopeId, userId: userId).map { jsonString($0) } ?? "null"
             if kind == "thread" {
-                return "{\"kind\":\"thread\",\"threadChannelId\":\(channelJSON),\"lastMessageId\":\(jsonString(fact.messageId)),\"unreadCount\":\(unread),\"hasMention\":\(hasMention),\"isFollowing\":\(following)}"
+                return "{\"kind\":\"thread\",\"threadChannelId\":\(channelJSON),\"lastMessageId\":\(jsonString(fact.messageId)),\"firstUnreadMessageId\":\(firstUnread),\"unreadCount\":\(unread),\"hasMention\":\(hasMention),\"isFollowing\":\(following)}"
             }
-            return "{\"kind\":\"channel\",\"channelId\":\(channelJSON),\"lastMessageId\":\(jsonString(fact.messageId)),\"unreadCount\":\(unread),\"hasMention\":\(hasMention)}"
+            return "{\"kind\":\"channel\",\"channelId\":\(channelJSON),\"lastMessageId\":\(jsonString(fact.messageId)),\"firstUnreadMessageId\":\(firstUnread),\"unreadCount\":\(unread),\"hasMention\":\(hasMention)}"
         }.joined(separator: ",")
         let totalUnreadCount = rows.reduce(0) { partial, fact in
             partial + (fact.channelId.map { oauth.channelUnreadInfo(channelId: $0, userId: userId).unreadCount } ?? 0)

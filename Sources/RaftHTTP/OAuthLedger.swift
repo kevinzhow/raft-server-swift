@@ -519,6 +519,15 @@ public final class OAuthLedger: @unchecked Sendable {
         public var latestSeq: Int?
     }
 
+    public func firstUnreadMessageId(channelId: String, userId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        let cursor = channelReadCursors["\(channelId)\n\(userId)"] ?? 0
+        return channelMessages
+            .filter { $0.channelId == channelId && $0.senderId != userId && $0.seq > cursor }
+            .min { $0.seq < $1.seq }?.id
+    }
+
     public func latestPeerMessageSeq(channelId: String, excluding userId: String) -> Int? {
         lock.lock()
         defer { lock.unlock() }

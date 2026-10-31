@@ -24,7 +24,7 @@ import VaporTesting
         accounts.addInboxFactForTesting(receiverId: ownerId, serverId: serverId, channelId: scope, messageId: UUID().uuidString.lowercased())
     }
     accounts.addStoredMentionForTesting(channelId: mentionScope, messageId: UUID().uuidString.lowercased(), targetId: ownerId)
-    _ = accounts.oauth.createMessageRecord(channelId: unreadScope, content: "unread filter", senderId: peerId)
+    let firstUnreadId = accounts.oauth.createMessageRecord(channelId: unreadScope, content: "unread filter", senderId: peerId).id
     accounts.oauth.setChannelReadCursor(channelId: unreadScope, userId: ownerId, seq: 0)
 
     try await withApp { app in
@@ -54,6 +54,10 @@ import VaporTesting
             #expect(Set(try await ids("all")) == [mentionScope, unreadScope])
             #expect(try await ids("mentions") == [mentionScope])
             #expect(try await ids("unread") == [unreadScope])
+            let unreadResponse = try await client.send(.get, headers: headers, to: URI(string: "/api/channels/inbox?filter=unread"))
+            let unreadBody = try JSONSerialization.jsonObject(with: Data((unreadResponse.body.string ?? "").utf8)) as? [String: Any]
+            let unreadItem = (unreadBody?["items"] as? [[String: Any]] ?? []).first
+            #expect(unreadItem?["firstUnreadMessageId"] as? String == firstUnreadId)
         }
     }
 }
