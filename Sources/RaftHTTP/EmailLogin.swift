@@ -5713,12 +5713,54 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
         }
 
+        var referralSourceUpdate: String?? = nil
+        var referralOtherUpdate: String?? = nil
+        var referralSkipped = false
+        if let raw = object["referralSource"] {
+            if raw is NSNull {
+                referralSourceUpdate = .some(nil)
+                referralOtherUpdate = .some(nil)
+            } else if let value = raw as? String,
+                      ["twitter_x", "linkedin", "friend_colleague", "search", "hn_reddit", "podcast_blog_newsletter", "other"].contains(value) {
+                referralSourceUpdate = .some(value)
+                if value == "other", let other = object["referralSourceOther"] as? String {
+                    let trimmed = String(other.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))
+                    referralOtherUpdate = .some(trimmed.isEmpty ? nil : trimmed)
+                } else {
+                    referralOtherUpdate = .some(nil)
+                }
+            } else {
+                return Self.json(400, "{\"error\":\"Invalid referralSource\"}")
+            }
+        } else if object["referralSourceOther"] != nil {
+            return Self.json(400, "{\"error\":\"referralSource is required when referralSourceOther is provided\"}")
+        }
+        if let raw = object["referralSourceSkipped"] {
+            guard let value = raw as? Bool else {
+                return Self.json(400, "{\"error\":\"referralSourceSkipped must be a boolean\"}")
+            }
+            referralSkipped = value
+        }
+
         lock.lock()
         guard var account = accounts.values.first(where: { $0.id == userId }) else {
             lock.unlock()
             return Self.invalidToken
         }
         var changed = false
+        if let value = referralSourceUpdate {
+            account.referralSource = value
+            account.referralSourceSkippedAt = nil
+            changed = true
+        }
+        if let value = referralOtherUpdate {
+            account.referralSourceOther = value
+            changed = true
+        }
+        if referralSkipped {
+            account.referralSourceSkippedAt = Date()
+            changed = true
+        }
         if let value = languagePreference { account.preferredLanguage = value; changed = true }
         if let value = timezonePreference { account.preferredTimezone = value; changed = true }
         if let value = modePreference { account.preferredTranslationMode = value; changed = true }
@@ -6022,6 +6064,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var preferredTranslationDisplay: String = "translated"
         var preferredTimeFormat: String? = nil
         var preferredMessageBodyFontSize: String? = nil
+        var referralSource: String? = nil
+        var referralSourceOther: String? = nil
+        var referralSourceSkippedAt: Date? = nil
     }
 
     private struct Request {
@@ -10801,7 +10846,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let preferredTimezone = account.preferredTimezone.map { jsonString($0) } ?? "null"
         let preferredTimeFormat = account.preferredTimeFormat.map { jsonString($0) } ?? "null"
         let preferredFontSize = account.preferredMessageBodyFontSize.map { jsonString($0) } ?? "null"
-        return "{\"id\":\(jsonString(account.id)),\"email\":\(jsonString(account.email)),\"name\":\(jsonString(account.name)),\"gravatarHash\":\(jsonString(hash)),\"displayLanguage\":\(language),\"profileSetupCompletedAt\":null,\"profileSetupProvider\":\(provider),\"avatarUrl\":\(avatar),\"shareUsageData\":\(share),\"preferredLanguage\":\(preferredLanguage),\"preferredTimezone\":\(preferredTimezone),\"preferredTranslationMode\":\(jsonString(account.preferredTranslationMode)),\"autoTranslationEnabled\":\(account.autoTranslationEnabled),\"preferredTranslationDisplay\":\(jsonString(account.preferredTranslationDisplay)),\"preferredTimeFormat\":\(preferredTimeFormat),\"preferredMessageBodyFontSize\":\(preferredFontSize)}"
+        let referralSource = account.referralSource.map { jsonString($0) } ?? "null"
+        let referralOther = account.referralSourceOther.map { jsonString($0) } ?? "null"
+        let skippedAt: String
+        if let date = account.referralSourceSkippedAt {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            skippedAt = jsonString(formatter.string(from: date))
+        } else {
+            skippedAt = "null"
+        }
+        return "{\"id\":\(jsonString(account.id)),\"email\":\(jsonString(account.email)),\"name\":\(jsonString(account.name)),\"gravatarHash\":\(jsonString(hash)),\"displayLanguage\":\(language),\"profileSetupCompletedAt\":null,\"profileSetupProvider\":\(provider),\"avatarUrl\":\(avatar),\"shareUsageData\":\(share),\"preferredLanguage\":\(preferredLanguage),\"preferredTimezone\":\(preferredTimezone),\"preferredTranslationMode\":\(jsonString(account.preferredTranslationMode)),\"autoTranslationEnabled\":\(account.autoTranslationEnabled),\"preferredTranslationDisplay\":\(jsonString(account.preferredTranslationDisplay)),\"preferredTimeFormat\":\(preferredTimeFormat),\"preferredMessageBodyFontSize\":\(preferredFontSize),\"referralSource\":\(referralSource),\"referralSourceOther\":\(referralOther),\"referralSourceSkippedAt\":\(skippedAt)}"
     }
 
     private static let reservedAgentNames: Set<String> = [
