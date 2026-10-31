@@ -2395,7 +2395,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// Records a channel the owner can post in. Resource-reference checks run only after this membership is visible.
-    public func addPostableChannel(serverId: String, channelId: String, memberId: String, kind: String = "channel", parentChannelId: String? = nil, name: String? = nil) {
+    public func addPostableChannel(serverId: String, channelId: String, memberId: String, kind: String = "channel", parentChannelId: String? = nil, parentMessageId: String? = nil, name: String? = nil) {
         lock.lock()
         var channel = postableChannels[channelId] ?? PostableChannel(serverId: serverId, memberIds: [])
         channel.serverId = serverId
@@ -2405,6 +2405,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         if let parentChannelId {
             channel.parentChannelId = parentChannelId
+        }
+        if let parentMessageId {
+            channel.parentMessageId = parentMessageId
         }
         if let name {
             channel.name = name
@@ -7600,16 +7603,36 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"Invalid target\"}")
         }
         let rawName = String(target.dropFirst())
-        let name = rawName.split(separator: ":", maxSplits: 1).first.map(String.init) ?? rawName
+        let segments = rawName.split(separator: ":", maxSplits: 1).map(String.init)
+        let name = segments.first ?? rawName
+        let shortId = segments.count > 1 ? segments[1] : nil
         lock.lock()
         let candidate = postableChannels.first { channelId, channel in
             channel.serverId == agent.serverId && channel.name == name && channel.deletedAt == nil
         }
+        var resolved: (String, PostableChannel)? = candidate
+        if let shortId, let (parentId, parent) = candidate {
+            guard oauth.channelAgentIds(channelId: parentId).contains(agent.id) else {
+                lock.unlock()
+                return Self.json(403, "{\"error\":\"Agent is not a member of this channel\"}")
+            }
+            resolved = postableChannels.first { _, channel in
+                channel.serverId == agent.serverId
+                    && channel.kind == "thread"
+                    && channel.parentChannelId == parentId
+                    && (channel.parentMessageId?.hasPrefix(shortId) ?? false)
+                    && channel.deletedAt == nil
+            }
+            if resolved == nil {
+                lock.unlock()
+                return Self.json(404, "{\"error\":\"Thread not found\"}")
+            }
+        }
         lock.unlock()
-        guard let (channelId, channel) = candidate else {
+        guard let (channelId, channel) = resolved else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
-        guard oauth.channelAgentIds(channelId: channelId).contains(agent.id) else {
+        if shortId == nil, !oauth.channelAgentIds(channelId: channelId).contains(agent.id) {
             return Self.json(403, "{\"error\":\"Agent is not a member of this channel\"}")
         }
         if channel.archived {

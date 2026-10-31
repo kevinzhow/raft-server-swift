@@ -71,3 +71,72 @@ import VaporTesting
         }
     }
 }
+
+@Test func internalAgentSendResolvesAThreadTargetThroughParentMembership() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111428"
+    let serverId = "33333333-3333-4333-8333-333333333551"
+    accounts.addAccount(id: ownerId, email: "agent-thread-send@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "agent-thread-send", name: "Agent Thread Send", ownerId: ownerId)
+    let parentAgent = accounts.oauth.createAgent(serverId: serverId, name: "ParentAgent")
+    let followerAgent = accounts.oauth.createAgent(serverId: serverId, name: "FollowerAgent")
+    let machineId = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "agent-thread-machine")
+    let apiKey = accounts.machineAPIKey(machineId: machineId) ?? ""
+    let parentMessageId = "abcdef1234567890abcdef1234567890"
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var loginHeaders = HTTPFields()
+            loginHeaders[.contentType] = "application/json"
+            let login = try await client.send(.post, headers: loginHeaders, to: "/api/auth/login") { request in
+                request.body = .init(string: "{\"email\":\"agent-thread-send@slock.test\",\"password\":\"password123\"}")
+            }
+            let token = (try JSONSerialization.jsonObject(with: Data((login.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
+            var userHeaders = HTTPFields()
+            userHeaders[.authorization] = "Bearer \(token)"
+            userHeaders[.contentType] = "application/json"
+            userHeaders[HTTPField.Name("X-Server-Id")!] = serverId
+            let parent = try await client.send(.post, headers: userHeaders, to: "/api/channels") { request in
+                request.body = .init(string: "{\"name\":\"parent-room\"}")
+            }
+            let parentId = (try JSONSerialization.jsonObject(with: Data((parent.body.string ?? "").utf8)) as? [String: Any])?["id"] as? String ?? ""
+            accounts.oauth.addChannelAgent(channelId: parentId, agentId: parentAgent)
+            let threadId = UUID().uuidString.lowercased()
+            accounts.addPostableChannel(
+                serverId: serverId,
+                channelId: threadId,
+                memberId: ownerId,
+                kind: "thread",
+                parentChannelId: parentId,
+                parentMessageId: parentMessageId,
+                name: "thread-room"
+            )
+
+            func send(_ agentId: String, _ target: String) async throws -> ClientResponse {
+                var headers = HTTPFields()
+                headers[.authorization] = "Bearer \(apiKey)"
+                headers[.contentType] = "application/json"
+                return try await client.send(.post, headers: headers, to: "/internal/agent/\(agentId)/send") { request in
+                    request.body = .init(string: "{\"target\":\"\(target)\",\"content\":\"thread message\"}")
+                }
+            }
+            func json(_ response: ClientResponse) throws -> [String: Any] {
+                try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any] ?? [:]
+            }
+
+            let sent = try await send(parentAgent, "#parent-room:abcdef12")
+            #expect(sent.status == .ok)
+            #expect(try json(sent)["channelId"] as? String == threadId)
+
+            #expect(try await send(followerAgent, "#parent-room:abcdef12").status == .forbidden)
+            #expect(try await send(parentAgent, "#parent-room:ffffffff").status == .notFound)
+        }
+    }
+}
