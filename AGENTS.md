@@ -1,36 +1,44 @@
-# 继续复刻
+# Raft source parity port
 
-等价复刻 raft-source `v1.21.23-source.1` 的 server 与 daemon。规格是 Node 测试里对外可见的状态码、JSON、响应头和套接字帧。daemon 与 server 基础面已落地，server 路由还在逐条补。这不是完成。
+Equivalent reimplementation of the `raft-source` server and daemon at tag `v1.21.23-source.1`. The specification is observable behavior asserted by the upstream Node suite: HTTP status codes, JSON bodies, response headers, and socket frames. Daemon and server foundations exist; the route surface is incomplete. This is not done.
 
-## 怎么接着做
+## Work unit
 
-一次只补一条 Node 断言过的路由。先写会失败的 Swift 测试，测试必须打到已发布的真实路径，再做最小实现。行为已经存在时，新测试只锁住它。Node 断言优先。
+One slice = one upstream route module (or one frame family) plus the data model, events, authorization, and acceptance tests it needs. 400–2000 changed lines, 2–5 turns, one commit. The plan and phase order live in `docs/PLAN.md`.
 
-不要移植私有辅助函数、别的 package、查询次数 spy、tracer sink、failpoint、编排器注入，除非 HTTP 状态或 JSON 本身就是断言，并且不靠 spy 就能打到。
+- Write the failing acceptance test first against the published path.
+- One test file may lock a group of Node assertions from one upstream module.
+- Do not port private helpers, query-count spies, tracer sinks, failpoints, or orchestrator injection unless the HTTP status/JSON/frame is the assertion and it is reachable without a spy.
+- Delete a `recorded*` side channel when a slice touches it; replace it with the real output.
 
-测试和提交：
+## Tests and commits
 
-- `make test` 使用 `/mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04`；系统 `/usr/bin/swift` 是 6.1.3，不要用它。
-- 单条测试：`swift test --filter <TestName>`。
-- 改完先跑目标测试，再跑 `make test`；全绿才提交。
-- 一个功能切片一个 commit，不按文件或半成品拆。提交信息用一句祈使句标题，正文写这个切片锁住的行为。
-- 全量里偶发 signal 6 或 11，隔离测试通过就再跑一次。用 `tee` 时退出码取 `PIPESTATUS[0]`。
+- `make test` uses `/mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04`; system `/usr/bin/swift` is 6.1.3, do not use it.
+- Single test: `swift test --filter <TestName>`.
+- Target test first, then `make test`; add `make test-e2e` when the slice spawns processes or binds ports. All green before commit.
+- One feature slice per commit. Imperative title; the body lists the behaviors the slice locks.
+- The full suite occasionally aborts with signal 6 or 11; rerun once after an isolated pass. With `tee`, use `${PIPESTATUS[0]}`.
+- Append locked behavior to `docs/BEHAVIOR.md`; keep `docs/PARITY.tsv` current when a slice changes a module's status.
 
-## 约束
+## Progress
 
-- Vapor 钉在 `0f2a8ee9f38b2589c066b604de3e3168ed54c82d`。不要改成 `branch: main`，不要手改 `Package.resolved`。
-- `/daemon/connect` 留在 SwiftNIO，不要挪到 Vapor。
-- 没有数据库时进程 `/health` 仍是 503 `{"status":"error","detail":"database unreachable"}`。
-- 两次真实 `RaftServer` 启动和完成门槛日志，留到 Node 断言过的 daemon 和 server 行为都没有缺口之后。
+`make parity` reads `docs/PARITY.tsv` and prints locked modules and weighted case coverage. Report that, not test counts or turn counts.
 
-## 文档
+## Constraints
 
-README 是真正的项目介绍（是什么、模块、构建、测试、运行、配置、限制）；已锁定的行为记在 `docs/BEHAVIOR.md`，只追加不重写。不要把行为日志写回 README。进度看 commit 历史。不要在 AGENTS.md 里追加逐条开发过程。
+- Vapor is pinned at `0f2a8ee9f38b2589c066b604de3e3168ed54c82d`. Do not switch to a branch, do not hand-edit `Package.resolved`.
+- `/daemon/connect` stays in SwiftNIO. The socket.io listener is SwiftNIO too, on its own port: the pinned Vapor snapshot has no WebSocket upgrade.
+- Without a database the process keeps `/health` at 503 `{"status":"error","detail":"database unreachable"}`.
+- Every slice runs a single-process startup smoke. The two-real-`RaftServer` gate and completion logging close Phase 4.
 
-## 标识
+## Documents
 
-下一次新用户从 `11111111-1111-4111-8111-111111111622` 起，下一台服务器从 `33333333-3333-4333-8333-333333333666` 起。
+README is the project introduction. `docs/BEHAVIOR.md` is the append-only locked-behavior log. `docs/PLAN.md` is the plan. This file is the working contract. Do not duplicate content between them; no per-step developer diary.
 
-## 源码
+## Identifiers
 
-`/mnt/data/tmp/grok/raft-source-v1.21.23/`，标签 `v1.21.23-source.1`。OAuth 账本在 `Sources/RaftHTTP/OAuthLedger.swift`，路由在 `Sources/RaftHTTPServer/FallbackApplication.swift`。
+Next new user starts at `11111111-1111-4111-8111-111111111622`; next server starts at `33333333-3333-4333-8333-333333333666`.
+
+## Source
+
+`/mnt/data/tmp/grok/raft-source-v1.21.23/`, tag `v1.21.23-source.1`. OAuth ledger in `Sources/RaftHTTP/OAuthLedger.swift`, routes in `Sources/RaftHTTPServer/FallbackApplication.swift`.

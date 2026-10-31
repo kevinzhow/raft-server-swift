@@ -13,6 +13,7 @@ This is an active behavioral port, not a production deployment.
 - **There is no database connection yet.** The process injects an always-throwing database ping, so `/health` stays at `503 {"status":"error","detail":"database unreachable"}`.
 - The executable starts **only the Vapor HTTP application**. The `/daemon/connect` SwiftNIO listener and the daemon client are complete libraries with tests, but they are not wired into `RaftServer` yet.
 - The locked behavioral reference lives in [docs/BEHAVIOR.md](docs/BEHAVIOR.md). It is the historical behavior log, not the project introduction.
+- Work is organized in vertical feature slices rather than per-assertion commits. The phase order and the upstream route/frame coverage metric live in [docs/PLAN.md](docs/PLAN.md); the working contract is [AGENTS.md](AGENTS.md).
 
 ## Known gaps
 
@@ -22,7 +23,7 @@ The port is behaviorally incomplete. The largest remaining gaps are:
 - `channels.inbox` serving rows, assistant flag-on flows, agent migration state machines, external-diagnostics detail, and parts of RBAC/guest projections still need Node-asserted slices.
 - The executable starts only the Vapor HTTP app. The SwiftNIO `/daemon/connect` listener and `RaftDaemonClient` are tested libraries but are not wired into `RaftServer`.
 - No database is connected: state is in-memory, resets on restart, and `/health` stays at `503 database unreachable`.
-- The two-real-`RaftServer` startup gate and completion logging are intentionally deferred until no Node-asserted daemon/server behavior remains.
+- The two-real-`RaftServer` startup gate and completion logging are the Phase 4 close-out in [docs/PLAN.md](docs/PLAN.md).
 
 ## Modules
 
@@ -141,22 +142,17 @@ Tests/
   RaftMachineSocketTests/ socket upgrade
 docs/
   BEHAVIOR.md            locked behavior reference (historical log)
-AGENTS.md                working agreements and constraints
+  PLAN.md                current plan, phases, and coverage metric
+AGENTS.md                working contract and hard constraints
 ```
 
-There is no `.github/` CI configuration, `scripts/` directory, or license file at this time. State is in-memory and resets on restart.
+There is no `.github/` CI configuration or license file at this time. State is in-memory and resets on restart.
 
 ## Working on the port
 
-The workflow is behavioral and incremental:
+Work proceeds in vertical feature slices. Slice definition, completion criteria, test commands, and commit rules are in [AGENTS.md](AGENTS.md); phase order and the coverage metric are in [docs/PLAN.md](docs/PLAN.md).
 
-1. Pick one Node-asserted behavior that is missing or wrong.
-2. Write a failing Swift test against the published path, not a private helper.
-3. Implement the minimum change that makes the behavior pass.
-4. Run the target test, then `make test`.
-5. Commit one feature slice per commit with a behavior-focused message.
-
-Private Node helpers, query-count spies, tracer sinks, failpoints, and orchestrator injection are generally not ported unless they are the API-visible contract. See `AGENTS.md` for the current constraints and ID counters.
+Private Node helpers, query-count spies, tracer sinks, failpoints, and orchestrator injection are not ported unless they are the API-visible contract.
 
 ## License
 
