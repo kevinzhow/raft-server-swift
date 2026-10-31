@@ -802,6 +802,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
         ))
     }
+    app.get("api", "tasks", "server", "snapshot-metrics") { request -> Response in
+        routeResponse(services.emailAccounts.taskSnapshotMetrics(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            rawQuery: request.url.query
+        ))
+    }
     app.get("api", "tasks", "server", "period-metrics") { request -> Response in
         routeResponse(services.emailAccounts.taskPeriodMetrics(
             authorization: request.headers[.authorization],

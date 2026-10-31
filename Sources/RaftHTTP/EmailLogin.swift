@@ -6892,6 +6892,31 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"channelOrder\":[\("\(array(order.channelOrder))")],\"agentOrder\":[\("\(array(order.agentOrder))")],\"dmOrder\":[\("\(array(order.dmOrder))")],\"pinnedOrder\":[\("\(array(order.pinnedOrder))")],\"hiddenDmIds\":[\("\(array(order.hiddenDmIds))")]}")
     }
 
+    public func addTaskSnapshot(
+        channelId: String,
+        title: String,
+        status: String,
+        createdAt: Date,
+        updatedAt: Date,
+        completedAt: Date? = nil
+    ) {
+        lock.lock()
+        let taskNumber = taskRecords.filter { $0.channelId == channelId }.count + 1
+        taskRecords.append(TaskRecord(
+            id: UUID().uuidString.lowercased(),
+            channelId: channelId,
+            title: title,
+            description: nil,
+            status: status,
+            taskNumber: taskNumber,
+            messageId: UUID().uuidString.lowercased(),
+            createdAt: createdAt,
+            completedAt: completedAt,
+            updatedAt: updatedAt
+        ))
+        lock.unlock()
+    }
+
     public func addCompletedTask(
         channelId: String,
         title: String,
@@ -6971,7 +6996,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return type == "channel" ? .readOnly : .missing
     }
 
-    private static let validTaskStatuses: Set<String> = ["todo", "in_progress", "done", "cancelled"]
+    private static let validTaskStatuses: Set<String> = ["todo", "in_progress", "in_review", "done", "cancelled"]
 
     private enum TaskStatusFilterResult {
         case valid(String?)
@@ -6997,6 +7022,64 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let assigneeType = task.assigneeType.map { jsonString($0) } ?? "null"
         let claimed = task.claimedAt.map { jsonString(ISO8601DateFormatter().string(from: $0)) } ?? "null"
         return "{\"id\":\(jsonString(task.id)),\"channelId\":\(jsonString(task.channelId)),\"title\":\(jsonString(task.title)),\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber),\"claimedById\":\(assignee),\"claimedByType\":\(assigneeType),\"claimedAt\":\(claimed),\"revision\":\(task.revision)}"
+    }
+
+    public func taskSnapshotMetrics(authorization: String?, serverId: String, rawQuery: String?) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        var channelFilter: String?
+        for pair in (rawQuery ?? "").split(separator: "&") {
+            let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
+            if parts.count == 2, parts[0] == "channelId" {
+                let rawChannel = parts[1].removingPercentEncoding ?? parts[1]
+                guard UUID(uuidString: rawChannel) != nil,
+                      let channel = oauth.channelInfo(id: rawChannel), channel.serverId == serverId
+                else {
+                    return Self.json(404, "{\"error\":\"Channel not found\"}")
+                }
+                if (oauth.channelType(id: rawChannel) ?? "channel") != "channel",
+                   !oauth.isChannelParticipant(channelId: rawChannel, userId: userId) {
+                    return Self.json(404, "{\"error\":\"Channel not found\"}")
+                }
+                channelFilter = rawChannel
+            }
+        }
+        let visible = Set(oauth.channelsForServer(serverId: serverId, userId: userId).filter { $0.joined }.map { $0.id })
+        lock.lock()
+        let rows = taskRecords.filter { task in
+            channelFilter.map({ $0 == task.channelId }) ?? visible.contains(task.channelId)
+        }
+        lock.unlock()
+        let inReview = rows.filter { $0.status == "in_review" }.count
+        let done = rows.filter { $0.status == "done" }.count
+        let durations = rows.compactMap { task -> Double? in
+            guard let completedAt = task.completedAt else { return nil }
+            return completedAt.timeIntervalSince(task.createdAt) / 3600
+        }.sorted()
+        func percentile(_ value: Double) -> Double {
+            guard !durations.isEmpty else { return 0 }
+            let index = max(0, min(durations.count - 1, Int(ceil(value * Double(durations.count))) - 1))
+            return durations[index]
+        }
+        let median = percentile(0.5)
+        let p90 = percentile(0.9)
+        func number(_ value: Double) -> String {
+            value == value.rounded() ? String(Int(value)) : String(format: "%.2f", value)
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let firstCreatedAt = rows.compactMap { $0.createdAt }.min()
+        let latestUpdatedAt = rows.compactMap { $0.updatedAt ?? $0.completedAt ?? $0.createdAt }.max()
+        let firstJSON = firstCreatedAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+        let latestJSON = latestUpdatedAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+        return Self.json(200, "{\"total\":\(rows.count),\"inReview\":\(inReview),\"done\":\(done),\"durationSamples\":\(durations.count),\"medianHours\":\(number(median)),\"p90Hours\":\(number(p90)),\"firstCreatedAt\":\(firstJSON),\"latestUpdatedAt\":\(latestJSON)}")
     }
 
     public func taskPeriodMetrics(authorization: String?, serverId: String, rawQuery: String?) -> HTTPReply {
@@ -7032,7 +7115,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         var channelFilter: String?
         if let rawChannel = params["channelId"] {
-            guard rawChannel.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
+            guard UUID(uuidString: rawChannel) != nil else {
                 return Self.json(400, "{\"error\":\"Invalid channelId\"}")
             }
             guard let channel = oauth.channelInfo(id: rawChannel), channel.serverId == serverId else {
@@ -7609,6 +7692,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var messageId: String
         var createdAt: Date
         var completedAt: Date? = nil
+        var updatedAt: Date? = nil
         var creatorId: String? = nil
         var assigneeId: String? = nil
         var assigneeType: String? = nil
