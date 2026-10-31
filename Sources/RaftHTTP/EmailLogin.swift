@@ -10053,6 +10053,32 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, taskJSON(task))
     }
 
+    public func unclaimTask(authorization: String?, serverId: String, taskId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        guard let index = taskRecords.firstIndex(where: { $0.id == taskId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Task not found\"}")
+        }
+        let channelId = taskRecords[index].channelId
+        lock.unlock()
+        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
+        case .missing: return Self.json(404, "{\"error\":\"Task not found\"}")
+        case .readOnly: return Self.json(403, "{\"error\":\"Join the channel to change tasks\"}")
+        case .write: break
+        }
+        lock.lock()
+        taskRecords[index].assigneeId = nil
+        taskRecords[index].assigneeType = nil
+        taskRecords[index].claimedAt = nil
+        taskRecords[index].revision += 1
+        let task = taskRecords[index]
+        lock.unlock()
+        return Self.json(200, taskJSON(task))
+    }
+
     public func updateTaskStatus(authorization: String?, serverId: String, taskId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
