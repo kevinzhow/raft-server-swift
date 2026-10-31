@@ -56,6 +56,21 @@ import VaporTesting
                 let response = try await client.send(.get, headers: headers(token), to: "/api/channels")
                 return try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [[String: Any]] ?? []
             }
+            let allRow = try await list(ownerToken).first { $0["name"] as? String == "all" }
+            #expect(allRow?["joined"] as? Bool == true)
+            let reserved = try await client.send(.post, headers: headers(ownerToken), to: "/api/channels") { request in
+                request.body = .init(string: "{\"name\":\"all\"}")
+            }
+            #expect(reserved.status == .badRequest)
+            let memberToggle = try await client.send(.patch, headers: headers(memberToken), to: "/api/channels/\(channel)") { request in
+                request.body = .init(string: "{\"visibility\":\"private\"}")
+            }
+            #expect(memberToggle.status == .forbidden)
+            let invalidToggle = try await client.send(.patch, headers: headers(ownerToken), to: "/api/channels/\(channel)") { request in
+                request.body = .init(string: "{\"visibility\":\"secret\"}")
+            }
+            #expect(invalidToggle.status == .badRequest)
+
             let publicRow = try await list(memberToken).first { $0["id"] as? String == channel }
             #expect(publicRow?["type"] as? String == "channel")
             #expect(publicRow?["joined"] as? Bool == false)

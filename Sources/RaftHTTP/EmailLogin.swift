@@ -11097,7 +11097,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
               let name = object["name"] as? String,
-              name.wholeMatch(of: /^[a-z0-9][a-z0-9-]{0,79}$/) != nil
+              name.wholeMatch(of: /^[a-z0-9][a-z0-9-]{0,79}$/) != nil,
+              name != "all"
         else {
             return Self.json(400, "{\"error\":\"Invalid channel\"}")
         }
@@ -11129,7 +11130,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let last = channel.lastMessageAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
             let muteSeq = channel.muteFromSeq.map(String.init) ?? "null"
             let archivedAt = oauth.channelArchivedAt(id: channel.id).map { jsonString(formatter.string(from: $0)) } ?? "null"
-            return "{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(channel.type)),\"joined\":\(channel.joined),\"archivedAt\":\(archivedAt),\"lastMessageAt\":\(last),\"activityMuted\":\(channel.activityMuted),\"muteFromSeq\":\(muteSeq),\"prefsVersion\":\(channel.prefsVersion),\"activityMuteSupported\":\(channel.type == "channel")}"
+            return "{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(channel.type)),\"joined\":\(channel.name == "all" || channel.joined),\"archivedAt\":\(archivedAt),\"lastMessageAt\":\(last),\"activityMuted\":\(channel.activityMuted),\"muteFromSeq\":\(muteSeq),\"prefsVersion\":\(channel.prefsVersion),\"activityMuteSupported\":\(channel.type == "channel")}"
         }.joined(separator: ",")
         return Self.json(200, "[\(rows)]")
     }
