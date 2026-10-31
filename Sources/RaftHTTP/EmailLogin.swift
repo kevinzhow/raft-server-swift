@@ -4235,6 +4235,22 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"items\":[\("\(items)")],\"hasMore\":\(records.count > page.count),\"totalCount\":null}")
     }
 
+    @discardableResult
+    public func addHumanMessageForTesting(channelId: String, senderId: String, content: String, messageType: String = "chat") -> String {
+        let id = UUID().uuidString.lowercased()
+        lock.lock()
+        humanMessageRows.append(StoredHumanMessage(
+            id: id,
+            channelId: channelId,
+            senderId: senderId,
+            content: content,
+            randomId: nil,
+            messageType: messageType
+        ))
+        lock.unlock()
+        return id
+    }
+
     public func threadFollowerIdsForTesting(threadChannelId: String) -> [String] {
         lock.lock()
         defer { lock.unlock() }
@@ -4375,7 +4391,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 }
             }
             let firstUnreadJSON = firstUnread.map { jsonString($0) } ?? "null"
-            summaries.append("\(jsonString(parentMessageId)):{\"threadChannelId\":\(jsonString(threadId)),\"replyCount\":\(replies.count),\"unreadCount\":\(unreadCount),\"firstUnreadMessageId\":\(firstUnreadJSON),\"participantIds\":[\(participantJSON)]}")
+            let latestReplies = replies.filter { $0.messageType != "system" }.suffix(3).map { reply -> String in
+                let senderName: String
+                let senderDisplay: String
+                if reply.senderType == "agent" {
+                    let info = oauth.agentRuntimeInfo(id: reply.senderId)
+                    senderName = info?.name ?? reply.senderId
+                    senderDisplay = info?.displayName ?? senderName
+                } else {
+                    let name = accounts.values.first { $0.id == reply.senderId }?.name ?? reply.senderId
+                    senderName = name
+                    senderDisplay = name
+                }
+                return "{\"preview\":\(jsonString(reply.content)),\"senderType\":\(jsonString(reply.senderType)),\"senderId\":\(jsonString(reply.senderId)),\"senderName\":\(jsonString(senderName)),\"senderDisplayName\":\(jsonString(senderDisplay))}"
+            }.joined(separator: ",")
+            summaries.append("\(jsonString(parentMessageId)):{\"threadChannelId\":\(jsonString(threadId)),\"replyCount\":\(replies.count),\"latestReplies\":[\(latestReplies)],\"unreadCount\":\(unreadCount),\"firstUnreadMessageId\":\(firstUnreadJSON),\"participantIds\":[\(participantJSON)]}")
         }
         lock.unlock()
         return Self.json(200, "{\(summaries.joined(separator: ","))}")

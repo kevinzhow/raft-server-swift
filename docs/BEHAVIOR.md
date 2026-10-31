@@ -22,3 +22,6 @@ thread 发消息要求 parent channel 成员身份（follow 不授予写权限�
 
 
 `GET /api/channels/:id/threads` 的每个 summary 带 viewer 维度 `unreadCount` 与 `firstUnreadMessageId`；只有 followed thread 才计数，未 follow 恒为 0/null。
+
+
+`GET /api/channels/:id/threads` 的 summary 带 `latestReplies`（最多 3 条 conversation reply，system 只计入 replyCount 不进 preview），字段含 preview/senderType/senderId/senderName/senderDisplayName。
