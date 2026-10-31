@@ -150,7 +150,7 @@ agent 读游标前进且 server 开启 read receipts 时，`channel:<id>` 房间
 `GET /api/channels/inbox` 返回 `{items,hasMore,totalCount,totalUnreadCount,activeUnreadCount,groups}`：channel row 有 `channelId,lastMessageId,firstUnreadMessageId,firstMentionMessageId,unreadCount,hasMention`，thread row 有 `threadChannelId,parentChannelId,latestActivityMessageId,...,isFollowing`。同一 scope 的多条 fact 聚合成一行；`channelId` 过滤把 thread 归到 parent；`q` 匹配内容或 sender 名；`limit/offset/sort` 分页；`filter` 支持 `all/unread/mentions/unread_mentions`；`groups` 聚合 parent channel 计数且不受分页影响；响应 `Cache-Control: private, no-store`。
 
 
-`POST /api/messages` 成功后向 `channel:<id>` 房间发 `message:new`，payload 是消息 HTTP body（id/channelId/content/attachments）。`POST /api/tasks/channel/:channelId` 成功后向同一房间发 `task:created`，payload 是 `{channelId,tasks:[{id,channelId,title,status}]}`；`POST /api/channels/threads/follow|unfollow` 成功后发 `thread:followers-updated`，payload `{threadChannelId}`。频道创建时该用户的在线 socket 自动加入 `channel:<id>`。
+`POST /api/messages` 成功后向 `channel:<id>` 房间发 `message:new`，payload 是消息 HTTP body（id/channelId/content/attachments）。`POST /api/tasks/channel/:channelId` 成功后向同一房间发 `task:created`，payload 是 `{channelId,tasks:[{id,channelId,title,status}]}`；`PATCH /api/tasks/:taskId/claim` 成功后发 `task:updated`，payload `{channelId,task:<task JSON>}`；`POST /api/channels/threads/follow|unfollow` 成功后发 `thread:followers-updated`，payload `{threadChannelId}`。频道创建时该用户的在线 socket 自动加入 `channel:<id>`。task JSON 带 `messageId`。
 
 
 消息 reaction 变更后向 `channel:<id>` 发 `message:updated`，payload 含 `id/channelId/content/senderName/commentRef/reactions`，不含 `agentSendKey/searchText/searchVector/reactionViewer/viewerVersion/reactedEmojis`。旧的 `messageUpdatedBroadcasts()` 侧通道已删除，断言走真实 socket。

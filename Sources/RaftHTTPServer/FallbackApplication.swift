@@ -1492,11 +1492,13 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.patch("api", "tasks", ":taskId", "claim") { request -> Response in
-        routeResponse(services.emailAccounts.claimTask(
+        let reply = services.emailAccounts.claimTask(
             authorization: request.headers[.authorization],
             serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
             taskId: request.parameters.get("taskId") ?? ""
-        ))
+        )
+        publishTaskUpdated(reply, services: services)
+        return routeResponse(reply)
     }
     app.patch("api", "tasks", ":taskId", "status") { request -> Response in
         routeResponse(services.emailAccounts.updateTaskStatus(
@@ -2455,6 +2457,16 @@ private struct PublicSearchMiddleware: Middleware {
         response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
         return response
     }
+}
+
+private func publishTaskUpdated(_ reply: HTTPReply, services: FallbackServices) {
+    guard reply.status == 200,
+          let emit = services.emailAccounts.realtimeEmitter,
+          let task = (try? JSONSerialization.jsonObject(with: Data(reply.body.utf8))) as? [String: Any],
+          let channelId = task["channelId"] as? String
+    else { return }
+    let taskJSON = String(decoding: reply.body.utf8, as: UTF8.self)
+    emit("channel:\(channelId)", "task:updated", "{\"channelId\":\(jsonChannelString(channelId)),\"task\":\(taskJSON)}")
 }
 
 private func publishTaskCreated(
