@@ -9630,6 +9630,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         if let reply = archivedChannelReply(channelId) { return reply }
+        if let reply = threadMemberMutationReply(channelId) { return reply }
         if oauth.isChannelParticipant(channelId: channelId, userId: userId) {
             return Self.json(200, "{\"ok\":true}")
         }
@@ -10003,6 +10004,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         if let reply = archivedChannelReply(channelId) { return reply }
+        if let reply = threadMemberMutationReply(channelId) { return reply }
         lock.lock()
         postableChannels[channelId]?.memberIds.remove(userId)
         lock.unlock()
@@ -10040,6 +10042,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         if let reply = archivedChannelReply(channelId) { return reply }
+        if let reply = threadMemberMutationReply(channelId) { return reply }
         guard channelActorCanSee(channelId: channelId, userId: userId) else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
@@ -10160,6 +10163,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
+        if let reply = threadMemberMutationReply(channelId) { return reply }
         if let reply = archivedChannelReply(channelId) { return reply }
         lock.lock()
         let actorChannelAdmin = channelHumanRoles["\(channelId)\n\(userId)"] == "admin"
@@ -10201,6 +10205,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         if let reply = archivedChannelReply(channelId) { return reply }
+        if let reply = threadMemberMutationReply(channelId) { return reply }
         guard channelActorCanSee(channelId: channelId, userId: userId) else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
@@ -10228,6 +10233,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         if let reply = archivedChannelReply(channelId) { return reply }
+        if let reply = threadMemberMutationReply(channelId) { return reply }
         guard channelActorCanSee(channelId: channelId, userId: userId) else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
@@ -10236,6 +10242,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         oauth.removeChannelAgent(channelId: channelId, agentId: agentId)
         return Self.json(200, "{\"ok\":true}")
+    }
+
+    private func threadMemberMutationReply(_ channelId: String) -> HTTPReply? {
+        lock.lock()
+        let kind = postableChannels[channelId]?.kind ?? oauth.channelType(id: channelId)
+        lock.unlock()
+        guard kind == "thread" else { return nil }
+        return Self.json(400, "{\"error\":\"Thread members are managed with follow/unfollow\"}")
     }
 
     private func channelActorCanSee(channelId: String, userId: String) -> Bool {
@@ -10275,6 +10289,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
+        if let reply = threadMemberMutationReply(channelId) { return reply }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId,
               oauth.isChannelParticipant(channelId: channelId, userId: userId)
                   || oauth.channelType(id: channelId) == "channel"
@@ -10282,6 +10297,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         if let reply = archivedChannelReply(channelId) { return reply }
+        if let reply = threadMemberMutationReply(channelId) { return reply }
         lock.lock()
         let actorRole = channelHumanRoles["\(channelId)\n\(userId)"]
         lock.unlock()
