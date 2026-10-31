@@ -203,6 +203,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var serverSwitcherOrders: [String: (ids: [String], version: Int)] = [:]
     private var serverOnboardingSettings: [String: (agentId: String?, greeting: Bool)] = [:]
     private var userOnboardingSettings: [String: UserOnboarding] = [:]
+    private var serverNotificationPrefs: [String: (muted: Bool, mentionsOnly: Bool, mode: String, version: Int)] = [:]
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -6564,6 +6565,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, onboardingJSON(serverId: serverId, userId: userId))
     }
 
+    private func serverNotificationJSON(_ prefs: (muted: Bool, mentionsOnly: Bool, mode: String, version: Int)) -> String {
+        "{\"serverPushMuted\":\(prefs.muted),\"serverPushMentionsOnly\":\(prefs.mentionsOnly),\"serverPushMode\":\(jsonString(prefs.mode)),\"prefsVersion\":\(prefs.version)}"
+    }
+
     public func memberNotificationSettings(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -6571,7 +6576,59 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(404, "{\"error\":\"Server not found\"}")
         }
-        return Self.json(200, "{\"serverId\":\(jsonString(serverId)),\"userId\":\(jsonString(userId))}")
+        lock.lock()
+        let prefs = serverNotificationPrefs["\(serverId)\n\(userId)"] ?? (muted: false, mentionsOnly: false, mode: "all", version: 0)
+        lock.unlock()
+        return Self.json(200, serverNotificationJSON(prefs))
+    }
+
+    public func patchServerNotificationSettings(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid notification settings\"}")
+        }
+        if let muted = object["serverPushMuted"], !(muted is Bool) {
+            return Self.json(400, "{\"error\":\"serverPushMuted must be a boolean\"}")
+        }
+        if let rawMode = object["serverPushMode"] {
+            guard let mode = rawMode as? String, ["all", "mentions", "none"].contains(mode) else {
+                return Self.json(400, "{\"error\":\"serverPushMode must be one of all, mentions, none\"}")
+            }
+        }
+        lock.lock()
+        let key = "\(serverId)\n\(userId)"
+        var prefs = serverNotificationPrefs[key] ?? (muted: false, mentionsOnly: false, mode: "all", version: 0)
+        if let mode = object["serverPushMode"] as? String {
+            prefs.mode = mode
+            prefs.muted = mode == "none"
+            prefs.mentionsOnly = mode == "mentions"
+        }
+        if let muted = object["serverPushMuted"] as? Bool {
+            prefs.muted = muted
+            if muted {
+                prefs.mode = "none"
+                prefs.mentionsOnly = false
+            } else if prefs.mode == "none" {
+                prefs.mode = "all"
+                prefs.mentionsOnly = false
+            }
+        }
+        let previous = serverNotificationPrefs[key]
+        let changed = previous == nil
+            || previous!.muted != prefs.muted
+            || previous!.mentionsOnly != prefs.mentionsOnly
+            || previous!.mode != prefs.mode
+        if changed {
+            prefs.version = (previous?.version ?? 0) + 1
+        }
+        serverNotificationPrefs[key] = prefs
+        lock.unlock()
+        return Self.json(200, serverNotificationJSON(prefs))
     }
 
     public func listServerMachines(authorization: String?, serverId: String) -> HTTPReply {

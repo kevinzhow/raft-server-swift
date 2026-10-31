@@ -1019,6 +1019,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.parameters.get("id") ?? ""
         ))
     }
+    app.patch("api", "servers", ":id", "notification-settings") { request -> Response in
+        routeResponse(services.emailAccounts.patchServerNotificationSettings(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("api", "servers", ":id", "onboarding-settings") { request -> Response in
         routeResponse(services.emailAccounts.serverOnboardingSettings(
             authorization: request.headers[.authorization],
