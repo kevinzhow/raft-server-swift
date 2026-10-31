@@ -219,6 +219,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var announcements: [(id: String, title: String, pages: [String], startsAt: Date, expiresAt: Date?)] = []
     private var announcementDismissals: Set<String> = []
     private var inboxDoneScopes: Set<String> = []
+    private var readReceiptsServers: Set<String> = []
     private var sidebarModes: [String: (channel: String, joint: String, dm: String, pinned: String, channelTabs: [String], agentTabs: [String])] = [:]
     private var sidebarSections: [String: (sections: [(id: String, name: String, emoji: String?, sortMode: String)], order: [String], placements: [(kind: String, id: String, sectionId: String, position: Int)], version: Int)] = [:]
     private var reminderRecords: [ReminderRecord] = []
@@ -10161,6 +10162,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "[\(rows)]")
     }
 
+    public func enableReadReceiptsForServer(_ serverId: String) {
+        lock.lock()
+        readReceiptsServers.insert(serverId)
+        lock.unlock()
+    }
+
+    public func setAgentReadCursorForTesting(agentId: String, channelId: String, seq: Int, version: Int = 1) {
+        lock.lock()
+        agentChannelReadCursors["\(channelId)\n\(agentId)"] = (seq, version)
+        lock.unlock()
+    }
+
     public func getChannelRoute(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -10176,8 +10189,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let info = oauth.channelUnreadInfo(channelId: channelId, userId: userId)
         lock.lock()
         let version = channelReadVersions["\(channelId)\n\(userId)"] ?? 0
+        let receiptsEnabled = readReceiptsServers.contains(serverId)
+        let agentPeers = oauth.channelAgentIds(channelId: channelId).compactMap { agentId -> String? in
+            guard let cursor = agentChannelReadCursors["\(channelId)\n\(agentId)"], cursor.seq > 0 else { return nil }
+            return "{\"peerKind\":\"agent\",\"peerId\":\(jsonString(agentId)),\"maxReadSeq\":\(cursor.seq)}"
+        }
         lock.unlock()
-        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"maxReadSeq\":\(info.maxReadSeq),\"readStateVersion\":\(version),\"activityMuteSupported\":\(supported)}")
+        let peersJSON = receiptsEnabled ? ",\"peerReadStates\":[\("\(agentPeers.joined(separator: ","))")]" : ""
+        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"maxReadSeq\":\(info.maxReadSeq),\"readStateVersion\":\(version),\"activityMuteSupported\":\(supported)\(peersJSON)}")
     }
 
     public func channelDisplaySettings(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
