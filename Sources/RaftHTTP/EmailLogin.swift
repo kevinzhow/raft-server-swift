@@ -4991,7 +4991,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    public func channelInbox(authorization: String?, serverId: String?, filter: String?) -> HTTPReply {
+    public func channelInbox(
+        authorization: String?,
+        serverId: String?,
+        filter: String?,
+        query: String? = nil
+    ) -> HTTPReply {
         let userId: String
         switch authorize(authorization) {
         case .rejected:
@@ -4999,50 +5004,231 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         case .user(let id):
             userId = id
         }
+        let params = Self.inboxQueryParameters(query)
+        let effectiveFilter = params["filter"] ?? filter ?? "all"
+        let limit = min(max(Int(params["limit"] ?? "") ?? 30, 1), 100)
+        let offset = max(Int(params["offset"] ?? "") ?? 0, 0)
+        let ascending = params["sort"] == "asc"
+        let channelFilter = params["channelId"].flatMap { $0.isEmpty ? nil : $0 }
+        let search = params["q"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
         lock.lock()
-        let baseRows = storedInboxFacts.filter { fact in
-            fact.receiverId == userId
-                && (serverId == nil || fact.serverId == serverId)
-                && !(fact.channelId.map { inboxDoneScopes.contains("\(userId)\n\($0)") } ?? false)
-        }
-        let rows: [StoredInboxFact]
-        if filter == "mentions" {
-            rows = baseRows.filter { fact in
-                guard let scopeId = fact.channelId else { return false }
-                return storedMentions.contains {
-                    $0.channelId == scopeId && $0.targetType == "user" && $0.targetId == userId
-                }
-            }
-        } else if filter == "unread" {
-            rows = baseRows.filter { fact in
-                guard let scopeId = fact.channelId else { return false }
-                return oauth.channelUnreadInfo(channelId: scopeId, userId: userId).unreadCount > 0
-            }
-        } else {
-            rows = baseRows
-        }
+        let facts = storedInboxFacts
+        let doneScopes = inboxDoneScopes
+        let mentions = storedMentions
+        let follows = threadFollows
+        let humanRows = humanMessageRows
+        let postable = postableChannels
         lock.unlock()
-        let items = rows.map { fact -> String in
-            let scopeId = fact.channelId ?? ""
-            let kind = postableChannels[scopeId]?.kind == "thread" ? "thread" : "channel"
-            let channelJSON = fact.channelId.map { jsonString($0) } ?? "null"
+
+        var lastFacts: [String: StoredInboxFact] = [:]
+        for fact in facts where fact.receiverType == "user" && fact.receiverId == userId {
+            guard let scopeId = fact.channelId else { continue }
+            if serverId != nil && fact.serverId != serverId { continue }
+            if doneScopes.contains("\(userId)\n\(scopeId)") { continue }
+            lastFacts[scopeId] = fact
+        }
+
+        var visibleScopes: Set<String> = []
+        if let serverId {
+            visibleScopes = Set(oauth.channelsForServer(serverId: serverId, userId: userId).map(\.id))
+        }
+
+        var rows: [InboxRow] = []
+        for (scopeId, fact) in lastFacts {
+            let scopeServer = fact.serverId ?? postable[scopeId]?.serverId
+            if let serverId, let scopeServer, scopeServer != serverId { continue }
+            let channel = postable[scopeId]
+            let type = channel?.kind ?? oauth.channelType(id: scopeId) ?? "channel"
+            if serverId != nil && channel == nil && oauth.channelInfo(id: scopeId) == nil { continue }
+            if type == "private" || type == "dm" {
+                if !visibleScopes.contains(scopeId) { continue }
+            }
+            let isThread = type == "thread"
+            let parentChannelId = isThread ? channel?.parentChannelId : nil
+            let detailMap = inboxMessageDetails(
+                scopeId: scopeId,
+                history: oauth.historyMessages(channelId: scopeId),
+                humans: humanRows
+            )
+            let scopeMentions = mentions.filter {
+                $0.channelId == scopeId
+                    && $0.targetType == "user"
+                    && $0.targetId == userId
+                    && ($0.notifiableAtSend || $0.notifiedAt != nil)
+            }
             let unread = oauth.channelUnreadInfo(channelId: scopeId, userId: userId).unreadCount
-            let hasMention = storedMentions.contains {
-                $0.channelId == scopeId && $0.targetType == "user" && $0.targetId == userId
-            }
-            let following = threadFollows["\(serverId ?? "")\n\(userId)\n\(scopeId)"] != nil
-            let firstUnread = oauth.firstUnreadMessageId(channelId: scopeId, userId: userId).map { jsonString($0) } ?? "null"
-            if kind == "thread" {
-                return "{\"kind\":\"thread\",\"threadChannelId\":\(channelJSON),\"lastMessageId\":\(jsonString(fact.messageId)),\"firstUnreadMessageId\":\(firstUnread),\"unreadCount\":\(unread),\"hasMention\":\(hasMention),\"isFollowing\":\(following)}"
-            }
-            return "{\"kind\":\"channel\",\"channelId\":\(channelJSON),\"lastMessageId\":\(jsonString(fact.messageId)),\"firstUnreadMessageId\":\(firstUnread),\"unreadCount\":\(unread),\"hasMention\":\(hasMention)}"
-        }.joined(separator: ",")
-        let totalUnreadCount = rows.reduce(0) { partial, fact in
-            partial + (fact.channelId.map { oauth.channelUnreadInfo(channelId: $0, userId: userId).unreadCount } ?? 0)
+            let firstUnread = oauth.firstUnreadMessageId(channelId: scopeId, userId: userId)
+            let firstMention = scopeMentions
+                .map { (messageId: $0.messageId, seq: detailMap[$0.messageId]?.seq ?? 0) }
+                .min { $0.seq < $1.seq }?.messageId
+            let lastMessageId = fact.messageId
+            let detail = detailMap[lastMessageId]
+            let isFollowing = follows["\(serverId ?? "")\n\(userId)\n\(scopeId)"] != nil
+            rows.append(InboxRow(
+                scopeId: scopeId,
+                kind: isThread ? "thread" : "channel",
+                parentChannelId: parentChannelId,
+                lastMessageId: lastMessageId,
+                lastActivityAt: detail?.createdAt ?? Date(timeIntervalSince1970: 0),
+                searchText: [
+                    detail?.content ?? "",
+                    detail.map { senderName(senderId: $0.senderId) } ?? "",
+                ].joined(separator: " ").lowercased(),
+                unreadCount: unread,
+                firstUnreadMessageId: firstUnread,
+                firstMentionMessageId: firstMention,
+                hasMention: !scopeMentions.isEmpty,
+                isFollowing: isFollowing
+            ))
         }
-        lock.unlock()
-        return Self.json(200, "{\"items\":[\("\(items)")],\"totalUnreadCount\":\(totalUnreadCount)}")
+
+        let activeUnreadCount = rows.reduce(0) { $0 + $1.unreadCount }
+        let filtered = rows.filter { row in
+            switch effectiveFilter {
+            case "unread": row.unreadCount > 0
+            case "mentions": row.hasMention
+            case "unread_mentions": row.unreadCount > 0 && row.hasMention
+            default: true
+            }
+        }.filter { row in
+            if let channelFilter {
+                let parent = row.kind == "thread" ? (row.parentChannelId ?? row.scopeId) : row.scopeId
+                if parent != channelFilter { return false }
+            }
+            if let search, !search.isEmpty, !row.searchText.contains(search) {
+                return false
+            }
+            return true
+        }
+
+        let totalCount = filtered.count
+        let totalUnreadCount = filtered.reduce(0) { $0 + $1.unreadCount }
+        let sorted = filtered.sorted { left, right in
+            if left.lastActivityAt != right.lastActivityAt {
+                return ascending ? left.lastActivityAt < right.lastActivityAt : left.lastActivityAt > right.lastActivityAt
+            }
+            return ascending ? left.scopeId < right.scopeId : left.scopeId > right.scopeId
+        }
+        let page = Array(sorted.dropFirst(offset).prefix(limit))
+        let hasMore = offset + page.count < totalCount
+
+        let items = page.map { row -> String in
+            let firstUnread = row.firstUnreadMessageId.map(jsonString) ?? "null"
+            let firstMention = row.firstMentionMessageId.map(jsonString) ?? "null"
+            if row.kind == "thread" {
+                let parent = row.parentChannelId.map(jsonString) ?? "null"
+                return "{\"kind\":\"thread\",\"threadChannelId\":\(jsonString(row.scopeId)),\"parentChannelId\":\(parent),\"latestActivityMessageId\":\(jsonString(row.lastMessageId)),\"firstUnreadMessageId\":\(firstUnread),\"firstMentionMessageId\":\(firstMention),\"unreadCount\":\(row.unreadCount),\"hasMention\":\(row.hasMention),\"isFollowing\":\(row.isFollowing)}"
+            }
+            return "{\"kind\":\"channel\",\"channelId\":\(jsonString(row.scopeId)),\"lastMessageId\":\(jsonString(row.lastMessageId)),\"firstUnreadMessageId\":\(firstUnread),\"firstMentionMessageId\":\(firstMention),\"unreadCount\":\(row.unreadCount),\"hasMention\":\(row.hasMention)}"
+        }.joined(separator: ",")
+
+        // Facets keep the query filter but ignore channelId, pagination, and the sort direction.
+        var groups: [String: InboxGroup] = [:]
+        for row in filtered {
+            let groupId = row.kind == "thread" ? (row.parentChannelId ?? row.scopeId) : row.scopeId
+            let existing = groups[groupId]
+            groups[groupId] = InboxGroup(
+                channelId: groupId,
+                channelName: oauth.channelInfo(id: groupId)?.name ?? postable[groupId]?.name ?? "",
+                channelType: oauth.channelType(id: groupId) ?? postable[groupId]?.kind ?? "channel",
+                count: (existing?.count ?? 0) + 1,
+                lastActivityAt: max(existing?.lastActivityAt ?? Date(timeIntervalSince1970: 0), row.lastActivityAt)
+            )
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let groupItems = groups.values.sorted { left, right in
+            let leftDM = left.channelType == "dm"
+            let rightDM = right.channelType == "dm"
+            if leftDM != rightDM { return leftDM }
+            if left.lastActivityAt != right.lastActivityAt { return left.lastActivityAt > right.lastActivityAt }
+            if left.channelName != right.channelName { return left.channelName < right.channelName }
+            return left.channelId < right.channelId
+        }.map { group in
+            "{\"channelId\":\(jsonString(group.channelId)),\"channelName\":\(jsonString(group.channelName)),\"channelType\":\(jsonString(group.channelType)),\"count\":\(group.count),\"lastActivityAt\":\(jsonString(formatter.string(from: group.lastActivityAt)))}"
+        }.joined(separator: ",")
+
+        return Self.json(
+            200,
+            "{\"items\":[\(items)],\"hasMore\":\(hasMore),\"totalCount\":\(totalCount),\"totalUnreadCount\":\(totalUnreadCount),\"activeUnreadCount\":\(activeUnreadCount),\"groups\":[\(groupItems)]}"
+        )
     }
+
+    private struct InboxRow {
+        var scopeId: String
+        var kind: String
+        var parentChannelId: String?
+        var lastMessageId: String
+        var lastActivityAt: Date
+        var searchText: String
+        var unreadCount: Int
+        var firstUnreadMessageId: String?
+        var firstMentionMessageId: String?
+        var hasMention: Bool
+        var isFollowing: Bool
+    }
+
+    private struct InboxGroup {
+        var channelId: String
+        var channelName: String
+        var channelType: String
+        var count: Int
+        var lastActivityAt: Date
+    }
+
+    private struct InboxMessageDetail {
+        var content: String
+        var senderId: String
+        var seq: Int
+        var createdAt: Date
+    }
+
+    private func inboxMessageDetails(
+        scopeId: String,
+        history: [OAuthLedger.HistoryMessage],
+        humans: [StoredHumanMessage]
+    ) -> [String: InboxMessageDetail] {
+        var details: [String: InboxMessageDetail] = [:]
+        for message in history {
+            details[message.id] = InboxMessageDetail(
+                content: message.content,
+                senderId: message.senderId,
+                seq: message.seq,
+                createdAt: message.createdAt
+            )
+        }
+        for message in humans where message.channelId == scopeId {
+            details[message.id] = InboxMessageDetail(
+                content: message.content,
+                senderId: message.senderId,
+                seq: details[message.id]?.seq ?? 0,
+                createdAt: message.createdAt
+            )
+        }
+        return details
+    }
+
+    private func senderName(senderId: String) -> String {
+        if let agent = oauth.agentRuntimeInfo(id: senderId) { return agent.name }
+        lock.lock()
+        let name = accounts.values.first { $0.id == senderId }?.name
+        lock.unlock()
+        return name ?? senderId
+    }
+
+    private static func inboxQueryParameters(_ query: String?) -> [String: String] {
+        guard let query, !query.isEmpty else { return [:] }
+        var result: [String: String] = [:]
+        for pair in query.split(separator: "&") {
+            let item = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            let name = String(item[0]).removingPercentEncoding ?? String(item[0])
+            let value = item.count == 2 ? (String(item[1]).removingPercentEncoding ?? String(item[1])) : ""
+            result[name] = value
+        }
+        return result
+    }
+
 
     /// `GET /internal/agent-api/mentions`. Outsider rows stay hidden until they were notifiable at send or later notified.
     public func agentMentionInbox(authorization: String?, limit rawLimit: String? = nil) -> HTTPReply {

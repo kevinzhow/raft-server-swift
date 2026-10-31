@@ -736,6 +736,7 @@ public final class OAuthLedger: @unchecked Sendable {
         public var content: String
         public var senderId: String
         public var seq: Int
+        public var createdAt: Date
     }
 
     public func historyMessages(channelId: String) -> [HistoryMessage] {
@@ -744,7 +745,7 @@ public final class OAuthLedger: @unchecked Sendable {
         return channelMessages
             .filter { $0.channelId == channelId }
             .sorted { $0.seq < $1.seq }
-            .map { HistoryMessage(id: $0.id, content: $0.content, senderId: $0.senderId, seq: $0.seq) }
+            .map { HistoryMessage(id: $0.id, content: $0.content, senderId: $0.senderId, seq: $0.seq, createdAt: $0.createdAt) }
     }
 
     public func messageContent(id: String) -> (channelId: String, content: String)? {

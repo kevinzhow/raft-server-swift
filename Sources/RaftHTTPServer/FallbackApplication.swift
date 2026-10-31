@@ -468,7 +468,8 @@ public func configure(_ app: Application, services: FallbackServices) {
         var response = routeResponse(services.emailAccounts.channelInbox(
             authorization: request.headers[.authorization],
             serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-            filter: desktopQuery(request.url.query, "filter")
+            filter: desktopQuery(request.url.query, "filter"),
+            query: request.url.query
         ))
         response.headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
         return response

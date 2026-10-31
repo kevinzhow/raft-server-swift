@@ -50,7 +50,7 @@ channelFiles.api	route	pending	-	auto-seed
 channels.api	route	partial	-	auto-seed
 channels.archive.api	route	partial	-	auto-seed
 channels.getJoined.api	route	partial	-	auto-seed
-channels.inbox.api	route	partial	-	auto-seed
+channels.inbox.api	route	partial	-	serving page, filters, search, pagination, groups covered; DB residue/query-shape cases pending
 channels.inbox.dmScope.api	route	partial	-	auto-seed
 channels.joinCapability.api	route	partial	-	auto-seed
 channels.joint.api	route	pending	-	auto-seed
