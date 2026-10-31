@@ -220,6 +220,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var announcementDismissals: Set<String> = []
     private var inboxDoneScopes: Set<String> = []
     private var sidebarModes: [String: (channel: String, joint: String, dm: String, pinned: String, channelTabs: [String], agentTabs: [String])] = [:]
+    private var sidebarSections: [String: (sections: [(id: String, name: String, emoji: String?, sortMode: String)], order: [String], placements: [(kind: String, id: String, sectionId: String, position: Int)], version: Int)] = [:]
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -8597,7 +8598,74 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"Invalid sidebar panel order\"}")
         }
         lock.lock()
+        var sections = sidebarSections[key] ?? ([], ["system:pinned", "system:joint", "system:channels", "system:dms"], [], 0)
+        lock.unlock()
+        let hasSectionFields = object["customSections"] != nil || object["sectionOrder"] != nil || object["sectionPlacements"] != nil
+        if hasSectionFields {
+            if let rawVersion = object["sectionsVersion"] {
+                guard let version = rawVersion as? Int, version == sections.version else {
+                    return Self.json(409, "{\"error\":\"Sidebar sections changed\",\"code\":\"SIDEBAR_SECTIONS_VERSION_CONFLICT\"}")
+                }
+            }
+            if let rawSections = object["customSections"] {
+                guard let entries = rawSections as? [[String: Any]] else {
+                    return Self.json(400, "{\"error\":\"Invalid custom sections\"}")
+                }
+                var parsed: [(id: String, name: String, emoji: String?, sortMode: String)] = []
+                for entry in entries {
+                    guard let id = entry["id"] as? String, !id.isEmpty,
+                          let name = entry["name"] as? String
+                    else { return Self.json(400, "{\"error\":\"Invalid custom sections\"}") }
+                    let emoji: String?
+                    if let raw = entry["emoji"], !(raw is NSNull) {
+                        guard let value = raw as? String else { return Self.json(400, "{\"error\":\"Invalid custom sections\"}") }
+                        emoji = value
+                    } else {
+                        emoji = nil
+                    }
+                    let sortMode = (entry["sortMode"] as? String) ?? "manual"
+                    guard ["manual", "recent", "az"].contains(sortMode) else {
+                        return Self.json(400, "{\"error\":\"Invalid custom sections\"}")
+                    }
+                    parsed.append((id, name.trimmingCharacters(in: .whitespacesAndNewlines), emoji, sortMode))
+                }
+                sections.sections = parsed
+            }
+            if let rawOrder = object["sectionOrder"] {
+                guard let requested = rawOrder as? [String] else {
+                    return Self.json(400, "{\"error\":\"Invalid section order\"}")
+                }
+                var order = requested
+                for system in ["system:pinned", "system:joint", "system:channels", "system:dms"] where !order.contains(system) {
+                    order.append(system)
+                }
+                sections.order = order
+            }
+            if let rawPlacements = object["sectionPlacements"] {
+                guard let entries = rawPlacements as? [[String: Any]] else {
+                    return Self.json(400, "{\"error\":\"Invalid section placements\"}")
+                }
+                var placements: [(kind: String, id: String, sectionId: String, position: Int)] = []
+                for entry in entries {
+                    guard let kind = entry["kind"] as? String, ["channel", "agent"].contains(kind),
+                          let id = entry["id"] as? String,
+                          let sectionId = entry["sectionId"] as? String
+                    else { return Self.json(400, "{\"error\":\"Invalid section placements\"}") }
+                    if kind == "channel" {
+                        lock.lock()
+                        let exists = postableChannels[id]?.deletedAt == nil && postableChannels[id] != nil
+                        lock.unlock()
+                        guard exists else { continue }
+                    }
+                    placements.append((kind, id, sectionId, placements.count))
+                }
+                sections.placements = placements
+            }
+            sections.version += 1
+        }
+        lock.lock()
         sidebarModes[key] = (channel, joint, dm, pinned, channelTabs, agentTabs)
+        if hasSectionFields { sidebarSections[key] = sections }
         lock.unlock()
         return sidebarOrder(authorization: authorization, serverId: serverId)
     }
@@ -8615,8 +8683,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         lock.lock()
         let modes = sidebarModes["\(serverId)\n\(userId)"] ?? ("manual", "manual", "manual", "manual", ["chat"], ["activity", "profile"])
+        let sections = sidebarSections["\(serverId)\n\(userId)"] ?? ([], [], [], 0)
         lock.unlock()
-        return Self.json(200, "{\"channelOrder\":[\("\(array(order.channelOrder))")],\"agentOrder\":[\("\(array(order.agentOrder))")],\"dmOrder\":[\("\(array(order.dmOrder))")],\"pinnedOrder\":[\("\(array(order.pinnedOrder))")],\"hiddenDmIds\":[\("\(array(order.hiddenDmIds))")],\"channelSortMode\":\(jsonString(modes.channel)),\"jointChannelSortMode\":\(jsonString(modes.joint)),\"dmSortMode\":\(jsonString(modes.dm)),\"pinnedSortMode\":\(jsonString(modes.pinned)),\"channelPanelTabOrder\":[\("\(array(modes.channelTabs))")],\"agentPanelTabOrder\":[\("\(array(modes.agentTabs))")]}")
+        let sectionJSON = sections.sections.map { section -> String in
+            "{\"id\":\(jsonString(section.id)),\"name\":\(jsonString(section.name)),\"emoji\":\(section.emoji.map { jsonString($0) } ?? "null"),\"sortMode\":\(jsonString(section.sortMode))}"
+        }.joined(separator: ",")
+        let placementJSON = sections.placements.map { placement in
+            "{\"kind\":\(jsonString(placement.kind)),\"id\":\(jsonString(placement.id)),\"sectionId\":\(jsonString(placement.sectionId)),\"position\":\(placement.position)}"
+        }.joined(separator: ",")
+        return Self.json(200, "{\"channelOrder\":[\("\(array(order.channelOrder))")],\"agentOrder\":[\("\(array(order.agentOrder))")],\"dmOrder\":[\("\(array(order.dmOrder))")],\"pinnedOrder\":[\("\(array(order.pinnedOrder))")],\"hiddenDmIds\":[\("\(array(order.hiddenDmIds))")],\"channelSortMode\":\(jsonString(modes.channel)),\"jointChannelSortMode\":\(jsonString(modes.joint)),\"dmSortMode\":\(jsonString(modes.dm)),\"pinnedSortMode\":\(jsonString(modes.pinned)),\"channelPanelTabOrder\":[\("\(array(modes.channelTabs))")],\"agentPanelTabOrder\":[\("\(array(modes.agentTabs))")],\"customSections\":[\("\(sectionJSON)")],\"sectionOrder\":[\("\(array(sections.order.isEmpty ? ["system:pinned", "system:joint", "system:channels", "system:dms"] : sections.order))")],\"sectionPlacements\":[\("\(placementJSON)")],\"sectionsVersion\":\(sections.version)}")
     }
 
     public func addTaskSnapshot(
