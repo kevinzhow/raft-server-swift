@@ -10243,6 +10243,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
+        lock.lock()
+        let readable = postableChannels[channelId].map { $0.kind == "channel" || $0.memberIds.contains(userId) }
+            ?? (oauth.channelType(id: channelId) == "channel" || oauth.isChannelParticipant(channelId: channelId, userId: userId))
+        lock.unlock()
+        guard readable else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
               let seq = object["seq"] as? Int, seq >= 0
         else {
@@ -10272,6 +10279,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        lock.lock()
+        let readableAll = postableChannels[channelId].map { $0.kind == "channel" || $0.memberIds.contains(userId) }
+            ?? (oauth.channelType(id: channelId) == "channel" || oauth.isChannelParticipant(channelId: channelId, userId: userId))
+        lock.unlock()
+        guard readableAll else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         if let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
@@ -10370,6 +10384,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        lock.lock()
+        let readableUnread = postableChannels[channelId].map { $0.kind == "channel" || $0.memberIds.contains(userId) }
+            ?? (oauth.channelType(id: channelId) == "channel" || oauth.isChannelParticipant(channelId: channelId, userId: userId))
+        lock.unlock()
+        guard readableUnread else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         let cursor = max(0, (oauth.latestPeerMessageSeq(channelId: channelId, excluding: userId) ?? 1) - 1)
