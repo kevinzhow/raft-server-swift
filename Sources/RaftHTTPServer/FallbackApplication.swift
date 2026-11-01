@@ -1738,16 +1738,30 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.patch("api", "servers", ":id", "sidebar-order") { request -> Response in
-        routeResponse(services.emailAccounts.patchSidebarOrder(
+        let id = request.parameters.get("id") ?? ""
+        if let reply = ServerScope.membersGuard(
+            serverId: id,
+            headerServerId: request.headers[HTTPField.Name("X-Server-Id")!]
+        ) {
+            return routeResponse(reply)
+        }
+        return routeResponse(services.emailAccounts.patchSidebarOrder(
             authorization: request.headers[.authorization],
-            serverId: request.parameters.get("id") ?? "",
+            serverId: id,
             body: request.body.string ?? "{}"
         ))
     }
     app.get("api", "servers", ":id", "sidebar-order") { request -> Response in
-        routeResponse(services.emailAccounts.sidebarOrder(
+        let id = request.parameters.get("id") ?? ""
+        if let reply = ServerScope.membersGuard(
+            serverId: id,
+            headerServerId: request.headers[HTTPField.Name("X-Server-Id")!]
+        ) {
+            return routeResponse(reply)
+        }
+        return routeResponse(services.emailAccounts.sidebarOrder(
             authorization: request.headers[.authorization],
-            serverId: request.parameters.get("id") ?? ""
+            serverId: id
         ))
     }
     app.get("api", "servers", ":id", "model-label-catalog") { request -> Response in
