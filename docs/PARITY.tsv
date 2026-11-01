@@ -67,7 +67,7 @@ corsPreflight.api	route	locked	43565c1	two-hour preflight cache
 daemon.wsAuth	route	locked	e8b381d	wire paths locked by process e2e; trace/argon2-only halves excluded
 desktopDownload	route	partial	-	auto-seed
 deviceAuth.api	route	partial	-	auto-seed
-errorHygieneBlackbox.api	route	pending	-	auto-seed
+errorHygieneBlackbox.api	route	locked	fb1b26e	typed 4xx for malformed ids/headers, no raw DB leak, short context id
 errorResponse.dmTarget	route	pending	-	auto-seed
 errorResponse	route	pending	-	auto-seed
 externalAgentDiagnostics.api	route	locked	672f241	presence/provider/push/cursor/connection projection and refusals
