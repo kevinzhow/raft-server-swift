@@ -19,3 +19,10 @@ public enum ComputerCredentialLookup: Sendable, Equatable {
     case machineUnlinked
     case keyMismatch
 }
+
+/// Result of a manual runtime-account usage refresh against a Computer.
+public enum RuntimeAccountUsageManualResult: Sendable, Equatable {
+    case snapshot(json: String)
+    case timeout
+    case offline
+}

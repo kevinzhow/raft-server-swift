@@ -279,6 +279,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             realtimeEmitterLock.unlock()
         }
     }
+    /// Test seam for a manual runtime-account usage refresh. Production has no live daemon relay here.
+    public var runtimeAccountUsageManualRefresh: (@Sendable (String, String) -> RuntimeAccountUsageManualResult)?
     /// Test seam called before each already-read SSE frame. Production leaves it nil.
     public var nativeNotificationLiveWriteHook: (@Sendable (_ index: Int, _ eventCount: Int) async -> Void)?
     /// `NATIVE_NOTIFICATION_ATTESTATION_MODE`. Nil means the variable is unset.
@@ -8587,16 +8589,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Runtime account usage provider not found\"}")
         }
         lock.lock()
-        guard machines.contains(where: { $0.id == machineId && $0.serverId == serverId }) else {
+        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Computer not found\"}")
         }
         let attacher = computerAttachers[machineId]
+        let online = machineOnline[machineId] == true
         lock.unlock()
+        _ = machine
         guard canInspectRuntimeAccountUsage(serverId: serverId, userId: userId, attacher: attacher) else {
             return Self.json(403, "{\"error\":\"The `editMachines` capability or attaching-human authority is required to refresh runtime account usage\"}")
         }
-        _ = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+        let manual = (object["reason"] as? String) == "manual"
         let key = "\(machineId)\n\(provider)"
         lock.lock()
         let now = Date()
@@ -8604,9 +8609,37 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(202, "{\"accepted\":false,\"state\":\"cooldown\"}")
         }
-        runtimeAccountUsageRefreshAt[key] = now
         lock.unlock()
-        return Self.json(202, "{\"accepted\":true,\"state\":\"requested\"}")
+
+        guard manual else {
+            lock.lock()
+            runtimeAccountUsageRefreshAt[key] = now
+            lock.unlock()
+            return Self.json(202, "{\"accepted\":true,\"state\":\"requested\"}")
+        }
+
+        guard online else {
+            return Self.json(202, "{\"accepted\":false,\"state\":\"computer_offline\"}")
+        }
+
+        let result = runtimeAccountUsageManualRefresh?(machineId, provider) ?? .timeout
+        switch result {
+        case .snapshot(let json):
+            let parsed = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
+            let staleAfter = (parsed?["staleAfter"] as? String).flatMap(Self.isoDate) ?? now.addingTimeInterval(1800)
+            lock.lock()
+            runtimeAccountUsage[key] = (json, staleAfter)
+            runtimeAccountUsageRefreshAt[key] = now
+            lock.unlock()
+            return Self.json(200, "{\"accepted\":true,\"state\":\"fresh\",\"snapshot\":\(json)}")
+        case .timeout:
+            lock.lock()
+            runtimeAccountUsageRefreshAt[key] = now
+            lock.unlock()
+            return Self.json(200, "{\"accepted\":true,\"state\":\"timeout\"}")
+        case .offline:
+            return Self.json(202, "{\"accepted\":false,\"state\":\"computer_offline\"}")
+        }
     }
 
     private func canInspectRuntimeAccountUsage(serverId: String, userId: String, attacher: String?) -> Bool {
