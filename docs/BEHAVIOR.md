@@ -278,3 +278,5 @@ Guest-visible 频道：public 频道是否对 guest 可见由频道级 `guestVis
 
 `GET /api/external-avatars/:id.webp`（匿名）：仅 active 的已物化头像返回 200，`Content-Type` 来自资产、`Content-Length`、`Content-Disposition: inline`、`Cache-Control: public, no-cache, must-revalidate`、`ETag: "sha256-<digest>"`、`X-Content-Type-Options: nosniff`、`Cross-Origin-Resource-Policy: cross-origin`。非 UUID、未知 id、inactive 或非 `.webp` 后缀 404；存储不可用 503。
 
+`RaftDaemon` 是活连接循环：握手成功打印 `daemon connected machine=... server=...`，会话结束后按 `DaemonReconnectPolicy` 重连（初始 1s，连续失败翻倍封顶 30s，jitter 窗口 5s，成功后重置）；迁移旧 key 的 401 终止循环并以非零退出。重连调度打印 `daemon reconnecting in <delay>ms (attempt <n>)`。DaemonLink 还记录 `daemon.connection.connect`（server_url_present/reconnect_attempt/outcome）、非 ping 入站的 consumer span（`inbound_message_kind`）、`agent.connection.inbound` 的关闭消息种类、activity sent 的 join keys（不含 producer fact id）；close/disconnect 清除 watchdog，不再发探针。
+

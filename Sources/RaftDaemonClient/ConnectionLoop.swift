@@ -126,11 +126,13 @@ public enum DaemonTraceValue: Equatable, Sendable {
 public struct DaemonTraceEvent: Equatable, Sendable {
     public var name: String
     public var status: String
+    public var kind: String
     public var attributes: [String: DaemonTraceValue]
 
-    public init(name: String, status: String, attributes: [String: DaemonTraceValue]) {
+    public init(name: String, status: String, kind: String = "internal", attributes: [String: DaemonTraceValue]) {
         self.name = name
         self.status = status
+        self.kind = kind
         self.attributes = attributes
     }
 }
@@ -388,6 +390,12 @@ public final class DaemonLink {
         sockets[socket].readyState = webSocketOpen
         guard shouldConnect else { return }
         clear(.connectTimeout)
+        let attemptAtOpen = reconnectAttempt
+        trace("daemon.connection.connect", [
+            "server_url_present": .bool(serverUrl != nil),
+            "reconnect_attempt": .int(attemptAtOpen),
+            "outcome": .string("connected"),
+        ])
         reconnectAttempt = 0
         reconnectDelay = minReconnectDelayMs
         markInbound("websocket_open")
@@ -402,6 +410,8 @@ public final class DaemonLink {
         guard socket == current else { return }
         markInbound(type)
         resetWatchdog()
+        guard type != "ping" else { return }
+        trace("daemon.connection.inbound", ["inbound_message_kind": .string(type)], kind: "consumer")
     }
 
     /// Outbound traffic does not move the inbound watchdog.
@@ -864,8 +874,13 @@ public final class DaemonLink {
         return -.infinity
     }
 
-    private func trace(_ name: String, _ attributes: [String: DaemonTraceValue], status: String = "ok") {
-        traceEvents.append(DaemonTraceEvent(name: name, status: status, attributes: attributes))
+    private func trace(
+        _ name: String,
+        _ attributes: [String: DaemonTraceValue],
+        status: String = "ok",
+        kind: String = "internal"
+    ) {
+        traceEvents.append(DaemonTraceEvent(name: name, status: status, kind: kind, attributes: attributes))
     }
 
     private func has(_ kind: AlarmKind) -> Bool {

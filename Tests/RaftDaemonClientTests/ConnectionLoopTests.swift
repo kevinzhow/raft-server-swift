@@ -757,3 +757,106 @@ private func status(_ agent: String, _ name: String, launch: String, seq: Int) -
     #expect(stopped.sockets[0].terminated == false)
     #expect(stopped.sockets.count == 1)
 }
+
+@Test func nonPingInboundMessagesCarryAConsumerSpan() {
+    let link = pinnedLink(inboundWatchdogMs: 50_000)
+    link.connect()
+    link.emitOpen(socket: 0)
+
+    link.receive(socket: 0, type: "ping")
+    #expect(link.traces(named: "daemon.connection.inbound").isEmpty)
+
+    link.receive(socket: 0, type: "agent:start")
+    let inbound = link.traces(named: "daemon.connection.inbound")
+    #expect(inbound.count == 1)
+    #expect(inbound.first?.status == "ok")
+    #expect(inbound.first?.kind == "consumer")
+    #expect(inbound.first?.attributes["inbound_message_kind"] == .string("agent:start"))
+    #expect(inbound.first?.attributes["message_type"] == nil)
+}
+
+@Test func activitySentSpanKeepsBannedFactIdsOutOfJoinKeys() {
+    let link = pinnedLink(inboundWatchdogMs: 50_000)
+    link.connect()
+    link.emitOpen(socket: 0)
+    link.send(readyFrame())
+    let factId = "daemon_activity:agent-1:launch-1:7"
+    link.send(DaemonOutboundFrame(
+        type: "agent:activity",
+        agentId: "agent-1",
+        activity: "working",
+        detail: "Tool call",
+        launchId: "launch-1",
+        clientSeq: 7,
+        producerFactId: factId,
+        entryKinds: ["tool_start"]
+    ))
+
+    let sent = link.traces(named: "daemon.agent.activity.sent")
+    #expect(sent.count == 1)
+    let attributes = sent[0].attributes
+    #expect(attributes["agent_id"] == .string("agent-1"))
+    #expect(attributes["launch_id"] == .string("launch-1"))
+    #expect(attributes["launch_id_present"] == .bool(true))
+    #expect(attributes["client_seq"] == .int(7))
+    #expect(attributes["client_seq_present"] == .bool(true))
+    #expect(attributes["correlation_id"] == .string("agent:agent-1:daemonActivity:launch-1:7"))
+    #expect(attributes["entry_kinds"] == .string("tool_start"))
+    #expect(attributes["send_path"] == .string("websocket_open"))
+    #expect(attributes["producer_fact_id"] == nil)
+    #expect(attributes["producerFactId"] == nil)
+    #expect(attributes["producer_fact_id_present"] == nil)
+    for value in attributes.values {
+        if case .string(let text) = value {
+            #expect(!text.contains(factId))
+        }
+    }
+    #expect(link.sockets[0].frames.last?.producerFactId == factId)
+}
+
+@Test func closeClearsTheWatchdogSoNoProbeFires() {
+    let link = pinnedLink(inboundWatchdogMs: 100)
+    link.connect()
+    link.emitOpen(socket: 0)
+    link.serverClose(socket: 0, code: 1000)
+    link.advance(150)
+    #expect(link.traces(named: "daemon.connection.inbound_probe_sent").isEmpty)
+    #expect(link.sockets[0].terminated == false)
+}
+
+@Test func disconnectClearsTheWatchdogSoNoProbeFires() {
+    let link = pinnedLink(inboundWatchdogMs: 100)
+    link.connect()
+    link.emitOpen(socket: 0)
+    link.disconnect()
+    link.advance(150)
+    #expect(link.traces(named: "daemon.connection.inbound_probe_sent").isEmpty)
+    #expect(link.sockets[0].terminated == false)
+}
+
+@Test func connectionEmitsTheDiagnosticConnectDropAndReconnectEvents() {
+    let link = pinnedLink(minReconnectDelayMs: 1_000, inboundWatchdogMs: 50_000)
+    link.send(DaemonOutboundFrame(type: "pong"))
+    link.connect()
+    link.emitOpen(socket: 0)
+    link.serverClose(socket: 0, code: 1006)
+
+    let connect = link.traces(named: "daemon.connection.connect")
+    #expect(connect.count == 1)
+    #expect(connect[0].status == "ok")
+    #expect(connect[0].attributes["server_url_present"] == .bool(false))
+    #expect(connect[0].attributes["reconnect_attempt"] == .int(0))
+    #expect(connect[0].attributes["outcome"] == .string("connected"))
+
+    let events = link.traceEvents
+        .filter { $0.name != "daemon.connection.connect" }
+        .map(\.name)
+    #expect(events == [
+        "daemon.connection.outbound_dropped",
+        "daemon.connection.disconnected",
+        "daemon.connection.reconnect_scheduled",
+    ])
+    #expect(link.traces(named: "daemon.connection.disconnected")[0].attributes["close_code"] == .int(1006))
+    #expect(link.traces(named: "daemon.connection.disconnected")[0].status == "cancelled")
+    #expect(link.traces(named: "daemon.connection.reconnect_scheduled")[0].attributes["reconnect_attempt"] == .int(1))
+}

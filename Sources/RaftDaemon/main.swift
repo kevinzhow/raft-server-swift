@@ -27,13 +27,24 @@ enum Entrypoint {
             fail("RaftDaemon requires MACHINE_KEY")
         }
         let port = components.port ?? (components.scheme == "https" ? 443 : 80)
-        do {
-            let handshake = try await DaemonClient.connect(host: host, port: port, apiKey: key)
-            FileHandle.standardOutput.write(
-                Data("daemon connected machine=\(handshake.context.machineId) server=\(handshake.context.serverId)\n".utf8)
-            )
-        } catch {
-            fail("daemon connect failed: \(error)")
+        let loop = DaemonReconnectLoop(
+            connect: {
+                try await DaemonClient.connect(host: host, port: port, apiKey: key)
+            },
+            onConnected: { handshake, _ in
+                FileHandle.standardOutput.write(
+                    Data("daemon connected machine=\(handshake.context.machineId) server=\(handshake.context.serverId)\n".utf8)
+                )
+            },
+            onScheduled: { delay, attempt in
+                FileHandle.standardOutput.write(
+                    Data("daemon reconnecting in \(delay)ms (attempt \(attempt))\n".utf8)
+                )
+            }
+        )
+        await loop.run()
+        if loop.lastStop == .migratedKey {
+            fail("daemon stopped: this machine key cannot authenticate again")
         }
     }
 }
