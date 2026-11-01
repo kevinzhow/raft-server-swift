@@ -123,6 +123,8 @@ public struct ClientEventRecord: Sendable {
 public final class EmailLoginDirectory: @unchecked Sendable {
     private let lock = NSLock()
     private var accounts: [String: Account] = [:]
+    private var authIdentityRows: [String: [(provider: String, providerEmail: String)]] = [:]
+    private var passwordResetTokens: [String: (userId: String, expiresAt: Date)] = [:]
     private var analyticsIds: [String: String] = [:]
     private var productEventRecords: [RecordedProductEvent] = []
     private var clientEventRecords: [ClientEventRecord] = []
@@ -1422,13 +1424,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    public func addAccount(id: String, email: String, password: String, avatarUrl: String? = nil) {
+    public func addAccount(id: String, email: String, password: String, avatarUrl: String? = nil, passwordCredentialEstablished: Bool = true) {
         let normalized = Self.normalize(email)
         lock.lock()
         accounts[normalized] = Account(
             id: id,
             email: normalized,
             passwordHash: Self.sha256(password),
+            passwordCredentialEstablishedAt: passwordCredentialEstablished ? Date() : nil,
             displayLanguage: nil,
             name: String(normalized.split(separator: "@").first ?? "user"),
             profileSetupSuggestedHandle: nil,
@@ -6852,6 +6855,100 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         ))
     }
 
+    private func identitiesJSONLocked(userId: String) -> (identities: String, passwordConfigured: Bool) {
+        let rows = (authIdentityRows[userId] ?? []).map { row in
+            "{\"provider\":\(jsonString(row.provider)),\"providerEmail\":\(jsonString(row.providerEmail))}"
+        }.joined(separator: ",")
+        let account = accounts.values.first { $0.id == userId }
+        return (rows, account?.passwordCredentialEstablishedAt != nil)
+    }
+
+    public func authIdentities(authorization: String?) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        let state = identitiesJSONLocked(userId: userId)
+        lock.unlock()
+        return Self.json(200, "{\"identities\":[\(state.identities)],\"passwordConfigured\":\(state.passwordConfigured)}")
+    }
+
+    public func unlinkAuthIdentity(authorization: String?, provider: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        var rows = authIdentityRows[userId] ?? []
+        guard let index = rows.firstIndex(where: { $0.provider == provider }) else {
+            let state = identitiesJSONLocked(userId: userId)
+            lock.unlock()
+            return Self.json(200, "{\"unlinked\":false,\"identities\":[\(state.identities)],\"passwordConfigured\":\(state.passwordConfigured)}")
+        }
+        let passwordConfigured = identitiesJSONLocked(userId: userId).passwordConfigured
+        if rows.count == 1, !passwordConfigured {
+            lock.unlock()
+            return Self.json(409, "{\"code\":\"PASSWORD_CREDENTIAL_REQUIRED\",\"error\":\"Set a password before disconnecting your final sign-in account.\"}")
+        }
+        rows.remove(at: index)
+        authIdentityRows[userId] = rows
+        let state = identitiesJSONLocked(userId: userId)
+        lock.unlock()
+        return Self.json(200, "{\"unlinked\":true,\"identities\":[\(state.identities)],\"passwordConfigured\":\(state.passwordConfigured)}")
+    }
+
+    public func resetPassword(body: String) -> HTTPReply {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let token = object["token"] as? String, !token.isEmpty,
+              let password = object["password"] as? String, !password.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"token and password are required\"}")
+        }
+        let hash = Self.sha256(token)
+        lock.lock()
+        guard let reset = passwordResetTokens[hash], reset.expiresAt > Date(),
+              let email = accounts.first(where: { $0.value.id == reset.userId })?.key
+        else {
+            lock.unlock()
+            return Self.json(400, "{\"error\":\"Invalid or expired reset token\"}")
+        }
+        passwordResetTokens.removeValue(forKey: hash)
+        accounts[email]?.passwordHash = Self.sha256(password)
+        accounts[email]?.passwordCredentialEstablishedAt = Date()
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    public func mintAccessTokenForTesting(userId: String) -> String {
+        lock.lock()
+        let token = openSessionLocked(userId: userId).accessToken
+        lock.unlock()
+        return token
+    }
+
+    public func authIdentityCount(userId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return (authIdentityRows[userId] ?? []).count
+    }
+
+    public func addAuthIdentityForTesting(userId: String, provider: String, providerEmail: String) {
+        lock.lock()
+        authIdentityRows[userId, default: []].append((provider, providerEmail))
+        lock.unlock()
+    }
+
+    public func addPasswordResetTokenForTesting(userId: String, token: String, expiresAt: Date) {
+        lock.lock()
+        passwordResetTokens[Self.sha256(token)] = (userId, expiresAt)
+        lock.unlock()
+    }
+
+    public func passwordCredentialEstablished(userId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return accounts.values.first { $0.id == userId }?.passwordCredentialEstablishedAt != nil
+    }
+
     public func login(body: String) -> HTTPReply {
         switch Self.parse(body) {
         case .invalid(let issues):
@@ -6866,12 +6963,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         let account = accounts[email]
         let matches = account.map { $0.passwordHash == Self.sha256(request.password) } ?? false
-        guard let account, matches, account.retiredAt == nil else {
+        guard var accountSnapshot = account, matches, accountSnapshot.retiredAt == nil else {
             lock.unlock()
             return Self.rejected
         }
-        let issued = openSessionLocked(userId: account.id)
-        let body = "{\"user\":{\"id\":\(jsonString(account.id)),\"email\":\(jsonString(account.email))},\"accessToken\":\(jsonString(issued.accessToken)),\"refreshToken\":\(jsonString(issued.refreshToken))}"
+        if accountSnapshot.passwordCredentialEstablishedAt == nil {
+            accountSnapshot.passwordCredentialEstablishedAt = Date()
+            accounts[email] = accountSnapshot
+        }
+        let issued = openSessionLocked(userId: accountSnapshot.id)
+        let body = "{\"user\":{\"id\":\(jsonString(accountSnapshot.id)),\"email\":\(jsonString(accountSnapshot.email))},\"accessToken\":\(jsonString(issued.accessToken)),\"refreshToken\":\(jsonString(issued.refreshToken))}"
         lock.unlock()
         return Self.json(200, body)
     }
@@ -7387,6 +7488,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var id: String
         var email: String
         var passwordHash: String
+        var passwordCredentialEstablishedAt: Date? = Date()
         var displayLanguage: String?
         var name: String
         var displayName: String? = nil

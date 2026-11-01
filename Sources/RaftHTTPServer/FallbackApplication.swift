@@ -2927,6 +2927,22 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.post("api", "auth", "logout") { request -> Response in
         return routeResponse(services.emailAccounts.logout(body: request.body.string ?? ""))
     }
+    app.get("api", "auth", "identities") { request -> Response in
+        routeResponse(services.emailAccounts.authIdentities(
+            authorization: request.headers[.authorization]
+        ))
+    }
+    app.delete("api", "auth", "identities", ":provider") { request -> Response in
+        routeResponse(services.emailAccounts.unlinkAuthIdentity(
+            authorization: request.headers[.authorization],
+            provider: request.parameters.get("provider") ?? ""
+        ))
+    }
+    app.post("api", "auth", "reset-password") { request -> Response in
+        routeResponse(services.emailAccounts.resetPassword(
+            body: request.body.string ?? ""
+        ))
+    }
     app.post("api", "auth", "login") { request -> Response in
         return routeResponse(services.emailAccounts.login(body: request.body.string ?? ""))
     }

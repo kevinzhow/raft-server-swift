@@ -346,3 +346,5 @@ Machine 描述与权限：`PATCH /api/servers/:id/machines/:machineId` 的 `desc
 
 双 `RaftServer` 启动门槛：两个真实进程可同时启动（各自 HTTP/daemon-connect/socket.io 端口），都打印 `raft-server ready http=... daemon-connect=... realtime=...`，各自 `/livez` 200、无数据库时 `/health` 503 `database unreachable`。两个进程的内存目录彼此隔离：在 A 注册的账号/Server 无法在 B 登录或读取。测试在两进程均就绪后打印 `two-RaftServer gate complete`。`/health` 的真实 200 仍由 PLAN 的 B2 决策门控制（需要 PostgresNIO + `DATABASE_URL`）。
 
+登录方式管理：`GET /api/auth/identities` 返回 `{identities:[{provider,providerEmail}],passwordConfigured}`（需要登录）。`DELETE /api/auth/identities/:provider` 只作用于当前用户；未登录 401；provider 不存在时幂等回 `unlinked:false`；删除最后一个登录方式且没有已建立的密码凭据时回 409 `{"code":"PASSWORD_CREDENTIAL_REQUIRED","error":"Set a password before disconnecting your final sign-in account."}` 且不删除；并发删除两个最后方式会串行化成一个 200 + 一个 409。`passwordConfigured` 只认 `passwordCredentialEstablishedAt`：仅有占位 hash 的社交账号为 false，旧版真实密码首次登录成功会自愈并建立凭据。`POST /api/auth/reset-password` 用未过期 token 设置密码并建立凭据，之后允许删除最后一个社交登录方式。
+
