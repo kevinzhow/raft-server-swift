@@ -294,3 +294,5 @@ OIDC interop：`GET /.well-known/openid-configuration` 与 `/api/oauth/.well-kno
 
 Managed MCP（`/internal/agent-api/mcp/*`，agent credential 的 `mcp` capability，缺权限 403 `requiredCapability:"mcp"`）：`GET /mcp/tools` 返回 `{catalogVersion,tools:[{mcpServerId,serverName,toolName,inputSchema,assignmentVersion:1,catalogVersion}],unavailable?}`；OAuth 连接器在 `oauthStatus != "connected"` 时不贡献工具，只进 `unavailable:[{mcpServerId,serverName,status:"reconnect_required"}]`，且工具行不含 `endpointUrl`/`headers`。`POST /mcp/call` 对非 UUID `mcpServerId` 回 400；工具不在目录、`expectedConfigVersion`/`expectedAssignmentVersion` 过期回 409 `managed_mcp_config_stale`，`error` 与 `suggestedNextAction` 都是 `"<tool>" is no longer offered by "<server>"; don't call it again. If you still need it, tell the person who asked.`。
 
+`GET /internal/agent-api/history` 的响应带 `channel_card:{id,name,type,description,archived}`：普通/私有/归档频道给自身卡片（`type` 取 `channel`/`private`，`archived` 反映归档）；thread 目标给父频道卡片；DM（`dm:@<name>`）给 200 但无 `channel_card`。`dm:@` 目标按 Server 内与 agent 共同的 DM 解析，未知/不可见仍 404。
+

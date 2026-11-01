@@ -14328,17 +14328,52 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             } else {
                 channelId = parent
             }
+        } else if reference.hasPrefix("dm:@") {
+            let handle = String(reference.dropFirst("dm:@".count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let humanId = accounts.values.first {
+                $0.name.lowercased() == handle || ($0.displayName ?? "").lowercased() == handle
+            }?.id
+            channelId = humanId.flatMap { target in
+                postableChannels.first { _, channel in
+                    channel.serverId == agent.serverId
+                        && channel.kind == "dm"
+                        && channel.deletedAt == nil
+                        && channel.memberIds.contains(agent.id)
+                        && channel.memberIds.contains(target)
+                }?.key
+            }
         } else {
             channelId = postableChannels.keys.first { $0 == reference }
         }
         let visible = channelId.flatMap { id -> Bool? in
             guard let channel = postableChannels[id] else { return nil }
+            if channel.kind == "dm" {
+                return channel.memberIds.contains(agent.id)
+            }
             return channel.kind == "channel" || channel.memberIds.contains(agent.id) || oauth.channelAgentIds(channelId: id).contains(agent.id)
         } ?? false
         lock.unlock()
         guard let channelId, visible else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
+        let channelCard: String = {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let channel = postableChannels[channelId], channel.kind != "dm" else { return "" }
+            let cardId: String
+            if channel.kind == "thread", let parent = channel.parentChannelId {
+                cardId = parent
+            } else {
+                cardId = channelId
+            }
+            guard let info = oauth.channelInfo(id: cardId) else { return "" }
+            let type = oauth.channelType(id: cardId) ?? "channel"
+            let archived = oauth.channelArchivedAt(id: cardId) != nil || postableChannels[cardId]?.archived == true
+            let description = info.description.map(jsonString) ?? "null"
+            return ",\"channel_card\":{\"id\":\(jsonString(cardId)),\"name\":\(jsonString(info.name)),\"type\":\(jsonString(type)),\"description\":\(description),\"archived\":\(archived)}"
+        }()
         let messages = oauth.historyMessages(channelId: channelId)
         let pageLimit = min(max(Int(limit ?? "") ?? 20, 1), 100)
         let beforeSeq = Int(before ?? "")
@@ -14386,7 +14421,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
             return "{\"id\":\(jsonString(message.id)),\"content\":\(jsonString(message.content)),\"seq\":\(message.seq),\"senderType\":\(jsonString(senderType)),\"senderId\":\(jsonString(message.senderId)),\"senderName\":\(jsonString(senderName)),\"createdAt\":\(jsonString(formatter.string(from: Date()))),\"attachments\":[]}"
         }.joined(separator: ",")
-        return Self.json(200, "{\"messages\":[\("\(json)")],\"has_more\":\(hasMore),\"has_older\":\(hasOlder),\"has_newer\":\(hasNewer),\"last_read_seq\":\(readSeq)}")
+        return Self.json(200, "{\"messages\":[\("\(json)")],\"has_more\":\(hasMore),\"has_older\":\(hasOlder),\"has_newer\":\(hasNewer),\"last_read_seq\":\(readSeq)\(channelCard)}")
     }
 
     public func agentChannelMembershipFromMachine(authorization: String?, agentId: String, channelId: String, join: Bool) -> HTTPReply {
