@@ -1139,6 +1139,25 @@ public func configure(_ app: Application, services: FallbackServices) {
         response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
         return response
     }
+    app.get("api", "agents", ":id", "hosted-runtime", "model") { request -> Response in
+        var response = routeResponse(services.emailAccounts.agentHostedModel(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? ""
+        ))
+        response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
+        return response
+    }
+    app.put("api", "agents", ":id", "hosted-runtime", "model") { request -> Response in
+        var response = routeResponse(services.emailAccounts.setAgentHostedModel(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
+        ))
+        response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
+        return response
+    }
     app.get("api", "agents", ":id", "hosted-runtime", "usage") { request -> Response in
         var response = routeResponse(services.emailAccounts.agentHostedUsage(
             authorization: request.headers[.authorization],

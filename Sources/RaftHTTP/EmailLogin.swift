@@ -155,6 +155,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var agentMachineIds: [String: String] = [:]
     private var hostedRuntimes: [String: (provider: String, model: String?, state: String, retryNeedsModel: Bool, createdAt: Date)] = [:]
     private var hostedUsage: [String: String] = [:]
+    private var hostedModelPickerServers: Set<String> = []
+    private var hostedModels: [String: HostedModelState] = [:]
+
+    private struct HostedModelState {
+        var models: [(id: String, label: String, provider: String)]
+        var defaultModel: String?
+        var defaultLabel: String?
+        var model: String?
+        var label: String?
+        var source: String
+        var locked: Bool
+    }
+
+    /// Raft's own default for hosted agents; naming it always follows the provider default.
+    private static let hostedDefaultModel = "deepseek-flash"
     private var agentArchiveRecords: [String: (workspaceState: String, machineName: String, serverId: String)] = [:]
     private var postableChannels: [String: PostableChannel] = [:]
     private var threadOrder: [String] = []
@@ -8375,6 +8390,168 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let model = hosted.model.map(jsonString) ?? "null"
         return Self.json(200, "{\"hostedRuntime\":{\"agentId\":\(jsonString(agentId)),\"provider\":\(jsonString(hosted.provider)),\"model\":\(model),\"state\":\(jsonString(hosted.state)),\"retryNeedsModel\":\(hosted.retryNeedsModel),\"createdAt\":\(jsonString(formatter.string(from: hosted.createdAt)))},\"onboardingSetup\":null}")
+    }
+
+    public func enableHostedModelPicker(serverId: String) {
+        lock.lock()
+        hostedModelPickerServers.insert(serverId)
+        lock.unlock()
+    }
+
+    public func setHostedModelForTesting(
+        agentId: String,
+        models: [(id: String, label: String, provider: String)] = [
+            ("deepseek-flash", "DeepSeek Flash", "deepseek"),
+            ("gpt-5.6-luna", "GPT-5.6 Luna", "openai"),
+        ],
+        defaultModel: String? = "deepseek-flash",
+        defaultLabel: String? = "DeepSeek Flash",
+        model: String? = "deepseek-flash",
+        label: String? = "DeepSeek Flash",
+        source: String = "default",
+        locked: Bool = false
+    ) {
+        lock.lock()
+        hostedModels[agentId] = HostedModelState(
+            models: models,
+            defaultModel: defaultModel,
+            defaultLabel: defaultLabel,
+            model: model,
+            label: label,
+            source: source,
+            locked: locked
+        )
+        lock.unlock()
+    }
+
+    /// Shared guard for the hosted model reads and writes: agent membership,
+    /// owner/admin/creator authority, an existing hosted runtime, and an
+    /// active provision. Returns the agent id or the reply to send.
+    private enum HostedModelGuardResult {
+        case allowed(String)
+        case refused(HTTPReply)
+    }
+
+    private func hostedModelGuard(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        action: String
+    ) -> HostedModelGuardResult {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return .refused(Self.json(401, "{\"error\":\"Unauthorized\"}"))
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
+            return .refused(Self.json(404, "{\"error\":\"Agent not found\"}"))
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner"
+                || oauth.memberRole(serverId: serverId, userId: userId) == "admin"
+                || agent.creatorUserId == userId
+        else {
+            return .refused(Self.json(403, "{\"error\":\"The `editAgents` capability or human creator authority is required to \(action) a cloud agent's model\"}"))
+        }
+        lock.lock()
+        let hosted = hostedRuntimes[agentId]
+        let models = hostedModels[agentId]
+        lock.unlock()
+        guard let hosted else {
+            return .refused(Self.json(404, "{\"error\":\"Agent is not a cloud agent\",\"code\":\"hosted_runtime_missing\"}"))
+        }
+        guard hosted.state == "active", models != nil else {
+            return .refused(Self.json(409, "{\"error\":\"The cloud runtime is not ready\",\"code\":\"hosted_runtime_model_not_ready\"}"))
+        }
+        return .allowed(agentId)
+    }
+
+    private func hostedModelView(_ state: HostedModelState, picker: Bool) -> String {
+        let models = state.models.map { model in
+            "{\"id\":\(jsonString(model.id)),\"label\":\(jsonString(model.label)),\"provider\":\(jsonString(model.provider))}"
+        }.joined(separator: ",")
+        let defaultModel = state.defaultModel.map(jsonString) ?? "null"
+        let defaultLabel = state.defaultLabel.map(jsonString) ?? "null"
+        let model = state.model.map(jsonString) ?? "null"
+        let label = state.label.map(jsonString) ?? "null"
+        return "{\"models\":[\(models)],\"default\":\(defaultModel),\"defaultLabel\":\(defaultLabel),\"model\":\(model),\"label\":\(label),\"source\":\(jsonString(state.source)),\"locked\":\(state.locked),\"picker\":\(picker)}"
+    }
+
+    public func agentHostedModel(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
+        switch hostedModelGuard(authorization: authorization, serverId: serverId, agentId: agentId, action: "view") {
+        case .refused(let reply):
+            return reply
+        case .allowed(let id):
+            lock.lock()
+            let state = hostedModels[id]
+            let picker = hostedModelPickerServers.contains(serverId)
+            lock.unlock()
+            guard let state else {
+                return Self.json(409, "{\"error\":\"The cloud runtime is not ready\",\"code\":\"hosted_runtime_model_not_ready\"}")
+            }
+            return Self.json(200, hostedModelView(state, picker: picker))
+        }
+    }
+
+    public func setAgentHostedModel(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        body: String
+    ) -> HTTPReply {
+        switch hostedModelGuard(authorization: authorization, serverId: serverId, agentId: agentId, action: "change") {
+        case .refused(let reply):
+            return reply
+        case .allowed(let id):
+            let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+            guard let raw = object?["model"] else {
+                return Self.json(400, "{\"error\":\"`model` must be a model id or null\",\"code\":\"hosted_runtime_model_invalid\"}")
+            }
+            let requested: String?
+            if raw is NSNull {
+                requested = nil
+            } else if let value = raw as? String,
+                      !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      value.count <= 200 {
+                requested = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                return Self.json(400, "{\"error\":\"`model` must be a model id or null\",\"code\":\"hosted_runtime_model_invalid\"}")
+            }
+            lock.lock()
+            let picker = hostedModelPickerServers.contains(serverId)
+            lock.unlock()
+            if let requested, requested != Self.hostedDefaultModel, !picker {
+                return Self.json(403, "{\"error\":\"This server does not pick a cloud agent model\",\"code\":\"model_picker_disabled\"}")
+            }
+            let picked: String?
+            if let requested, requested == Self.hostedDefaultModel, !picker {
+                picked = nil
+            } else {
+                picked = requested
+            }
+            lock.lock()
+            guard var state = hostedModels[id] else {
+                lock.unlock()
+                return Self.json(409, "{\"error\":\"The cloud runtime is not ready\",\"code\":\"hosted_runtime_model_not_ready\"}")
+            }
+            if let picked {
+                if state.locked {
+                    lock.unlock()
+                    return Self.json(409, "{\"error\":\"An administrator has set this agent's model\",\"code\":\"hosted_runtime_model_locked\"}")
+                }
+                guard let option = state.models.first(where: { $0.id == picked }) else {
+                    lock.unlock()
+                    return Self.json(422, "{\"error\":\"The provider does not offer this model\",\"code\":\"hosted_runtime_model_not_offered\"}")
+                }
+                state.model = option.id
+                state.label = option.label
+                state.source = "chosen"
+            } else {
+                state.model = state.defaultModel
+                state.label = state.defaultLabel
+                state.source = "default"
+            }
+            hostedModels[id] = state
+            lock.unlock()
+            return Self.json(200, hostedModelView(state, picker: picker))
+        }
     }
 
     public func agentRuntimeForm(
