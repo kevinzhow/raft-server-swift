@@ -71,7 +71,7 @@ errorHygieneBlackbox.api	route	pending	-	auto-seed
 errorResponse.dmTarget	route	pending	-	auto-seed
 errorResponse	route	pending	-	auto-seed
 externalAgentDiagnostics.api	route	partial	-	auto-seed
-externalAgentPresence.api	route	partial	-	auto-seed
+externalAgentPresence.api	route	locked	f3b0224	throttled last-seen writes, agent:seen, list projection, heartbeat stream
 externalAvatars.api	route	pending	-	auto-seed
 externalProjectionReactionRoutes	route	pending	-	auto-seed
 featureFlagOperatorPreview.api	route	locked	be8b567	removed routes stay 404
