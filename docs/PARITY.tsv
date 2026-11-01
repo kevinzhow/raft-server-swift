@@ -217,7 +217,7 @@ tasks.serverPagination.api	route	partial	-	auto-seed
 tasks.shapeSurfaces.api	route	pending	-	auto-seed
 tasks.snapshotMetrics.api	route	locked	e1fa956	covered by the existing metric/scope tests
 timezoneObservation.api	route	partial	-	auto-seed
-version.api	route	partial	-	auto-seed
+version.api	route	locked	5247150	build identity and explicit 503 covered
 accessRevocation.redis	socket	pending	-	auto-seed
 desktopAttention.api	socket	pending	-	auto-seed
 desktopAttentionEvents	socket	pending	-	auto-seed
