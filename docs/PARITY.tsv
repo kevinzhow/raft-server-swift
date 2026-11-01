@@ -145,7 +145,7 @@ internalComputer.runners	route	pending	-	auto-seed
 managedMcp.api	route	locked	a2f2554	control-plane catalog/CRUD, credential redaction, endpoint and OAuth metadata
 managedMcpAgentErrors	route	locked	c28061e	actionable failure text, flat/capped names, runtime tool prefix
 messageTranslations.api	route	partial	-	auto-seed
-messages.api	route	partial	eb9f456	mentions + reaction ack/viewer/guards/aggregation covered; actor pagination/search/permalink/forward pending
+messages.api	route	partial	f0f4466	mentions + reactions incl actor pagination covered; permalink/search/forward pending
 messages.mentionDeliveries.api	route	locked	e45a440	author-only coarse outcomes and NOT_JOINABLE cloak
 messagesContextWindow.api	route	locked	5247150	context window sizing and clean 400s
 messagesStorageColumns.api	route	locked	67b77fb	storage-only columns and sender timezone stay off human reads
