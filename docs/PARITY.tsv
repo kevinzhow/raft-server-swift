@@ -142,7 +142,7 @@ internalComputer.agentMigration	route	partial	-	auto-seed
 internalComputer.agentMigrationControl.bodyLimit.api	route	partial	-	auto-seed
 internalComputer.preflight	route	pending	-	auto-seed
 internalComputer.runners	route	pending	-	auto-seed
-managedMcp.api	route	pending	-	auto-seed
+managedMcp.api	route	locked	a2f2554	control-plane catalog/CRUD, credential redaction, endpoint and OAuth metadata
 managedMcpAgentErrors	route	locked	c28061e	actionable failure text, flat/capped names, runtime tool prefix
 messageTranslations.api	route	partial	-	auto-seed
 messages.api	route	partial	-	auto-seed
