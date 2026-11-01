@@ -15078,6 +15078,85 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    private struct ExternalAvatarAsset {
+        var id: String
+        var contentType: String
+        var bytes: Data
+        var sourceDigest: String
+        var active: Bool
+    }
+
+    private var externalAvatarAssets: [String: ExternalAvatarAsset] = [:]
+    private var externalAvatarStorageAvailable = true
+
+    public func addExternalAvatarForTesting(
+        id: String,
+        contentType: String = "image/webp",
+        bytes: Data,
+        sourceDigest: String,
+        active: Bool = true
+    ) {
+        lock.lock()
+        externalAvatarAssets[id] = ExternalAvatarAsset(
+            id: id,
+            contentType: contentType,
+            bytes: bytes,
+            sourceDigest: sourceDigest,
+            active: active
+        )
+        lock.unlock()
+    }
+
+    public func setExternalAvatarStorageAvailableForTesting(_ available: Bool) {
+        lock.lock()
+        externalAvatarStorageAvailable = available
+        lock.unlock()
+    }
+
+    public func externalAvatar(file: String) -> HTTPReply {
+        guard file.hasSuffix(".webp") else {
+            return Self.avatarPlainText(404, "Not found")
+        }
+        let id = String(file.dropLast(".webp".count))
+        guard ServerScope.isUUID(id) else {
+            return Self.avatarPlainText(404, "Not found")
+        }
+        lock.lock()
+        let asset = externalAvatarAssets[id]
+        let storageAvailable = externalAvatarStorageAvailable
+        lock.unlock()
+        guard let asset, asset.active else {
+            return Self.avatarPlainText(404, "Not found")
+        }
+        guard storageAvailable else {
+            return Self.avatarPlainText(503, "Avatar storage is unavailable")
+        }
+        return HTTPReply(
+            status: 200,
+            headers: [
+                "Content-Type": asset.contentType,
+                "Content-Length": String(asset.bytes.count),
+                "Content-Disposition": "inline",
+                "Cache-Control": "public, no-cache, must-revalidate",
+                "ETag": "\"sha256-\(asset.sourceDigest)\"",
+                "X-Content-Type-Options": "nosniff",
+                "Cross-Origin-Resource-Policy": "cross-origin",
+            ],
+            body: String(decoding: asset.bytes, as: UTF8.self)
+        )
+    }
+
+    private static func avatarPlainText(_ status: Int, _ body: String) -> HTTPReply {
+        HTTPReply(
+            status: status,
+            headers: [
+                "Content-Type": "text/plain; charset=utf-8",
+                "Content-Length": String(Data(body.utf8).count),
+            ],
+            body: body
+        )
+    }
+
     public func setAnnouncementImageStorageAvailableForTesting(_ available: Bool) {
         lock.lock()
         announcementImageStorageAvailable = available

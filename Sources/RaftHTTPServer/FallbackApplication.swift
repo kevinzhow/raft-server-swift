@@ -408,6 +408,9 @@ public func configure(_ app: Application, services: FallbackServices) {
             after: desktopQuery(request.url.query, "after")
         ))
     }
+    app.get("api", "external-avatars", ":file") { request -> Response in
+        routeResponse(services.emailAccounts.externalAvatar(file: request.parameters.get("file") ?? ""))
+    }
     app.get("api", "announcements", "images", ":imageId") { request -> Response in
         routeResponse(services.emailAccounts.announcementImage(id: request.parameters.get("imageId") ?? ""))
     }

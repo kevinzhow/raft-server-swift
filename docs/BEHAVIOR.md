@@ -276,3 +276,5 @@ Guest-visible 频道：public 频道是否对 guest 可见由频道级 `guestVis
 
 `GET /api/announcements/images/:imageId`（匿名）：仅当公告已发布（`publishedAt` 非空、status 非 draft）且 `startsAt` 已到时返回图片字节，`Content-Type` 取资产类型，`Cache-Control: public, max-age=31536000, immutable`，`Cross-Origin-Resource-Policy: cross-origin`；draft、未来发布或未知 id 404；公告过期后仍可读；存储不可用 503。
 
+`GET /api/external-avatars/:id.webp`（匿名）：仅 active 的已物化头像返回 200，`Content-Type` 来自资产、`Content-Length`、`Content-Disposition: inline`、`Cache-Control: public, no-cache, must-revalidate`、`ETag: "sha256-<digest>"`、`X-Content-Type-Options: nosniff`、`Cross-Origin-Resource-Policy: cross-origin`。非 UUID、未知 id、inactive 或非 `.webp` 后缀 404；存储不可用 503。
+
