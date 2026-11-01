@@ -125,6 +125,12 @@ public final class OAuthLedger: @unchecked Sendable {
         return true
     }
 
+    public func setAgentRuntime(id: String, runtime: String) {
+        lock.lock()
+        agents[id]?.runtime = runtime
+        lock.unlock()
+    }
+
     public func setAgentRole(serverId: String, agentId: String, role: String) {
         lock.lock()
         agentRoles["\(serverId)\n\(agentId)"] = role

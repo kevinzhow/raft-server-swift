@@ -153,6 +153,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var storedAgentDeliveries: [(agentId: String, messageId: String, channelType: String)] = []
     private var agentCredentials: [String: AgentCredential] = [:]
     private var agentMachineIds: [String: String] = [:]
+    private var agentMigrationServers: Set<String> = []
+    private var hostedMigrationServers: Set<String> = []
+    private var hostedMigrations: [String: HostedMigrationRecord] = [:]
+
+    private struct HostedMigrationRecord {
+        var agentId: String
+        var serverId: String
+        var supportRef: String
+        var revision: Int
+        var state: String
+        var sourceMachineId: String?
+    }
     private var hostedRuntimes: [String: (provider: String, model: String?, state: String, retryNeedsModel: Bool, createdAt: Date)] = [:]
     private var hostedUsage: [String: String] = [:]
     private var hostedModelPickerServers: Set<String> = []
@@ -7826,6 +7838,128 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(404, "{\"code\":\"migration_not_found\",\"error\":\"No active migration\"}")
     }
 
+    public func enableAgentMigrationForTesting(serverId: String) {
+        lock.lock()
+        agentMigrationServers.insert(serverId)
+        lock.unlock()
+    }
+
+    public func enableHostedMigrationForTesting(serverId: String) {
+        lock.lock()
+        hostedMigrationServers.insert(serverId)
+        lock.unlock()
+    }
+
+    public func seedHostedMigrationForTesting(
+        agentId: String,
+        serverId: String,
+        supportRef: String,
+        revision: Int = 1,
+        state: String = "in_transit",
+        sourceMachineId: String? = nil
+    ) {
+        lock.lock()
+        hostedMigrations[agentId] = HostedMigrationRecord(
+            agentId: agentId,
+            serverId: serverId,
+            supportRef: supportRef,
+            revision: revision,
+            state: state,
+            sourceMachineId: sourceMachineId
+        )
+        lock.unlock()
+    }
+
+    private func migrationError(_ status: Int, _ code: String, _ message: String) -> HTTPReply {
+        Self.json(status, "{\"error\":\(jsonString(message)),\"code\":\(jsonString(code)),\"details\":{\"failureReason\":\(jsonString(code))}}")
+    }
+
+    private func migrationStatusJSON(_ migration: HostedMigrationRecord) -> String {
+        let source = migration.sourceMachineId.map(jsonString) ?? "null"
+        return "{\"migrationRef\":\(jsonString(migration.supportRef)),\"agentId\":\(jsonString(migration.agentId)),\"state\":\(jsonString(migration.state)),\"sourceMachineId\":\(source),\"targetKind\":\"hosted\",\"targetMachineId\":null,\"provider\":\"antiproton\",\"failureReason\":null,\"abortReason\":null,\"transportErrorCode\":null,\"transportErrorMessage\":null,\"readyAt\":null,\"flippedAt\":null,\"arrivedAt\":null,\"completedAt\":null,\"abortedAt\":null,\"canceledAt\":null,\"cancelReason\":null,\"cancelNeedsAttention\":false}"
+    }
+
+    private func migrationUpdatedJSON(_ migration: HostedMigrationRecord) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let now = jsonString(formatter.string(from: Date()))
+        return "{\"agentId\":\(jsonString(migration.agentId)),\"migrationRef\":\(jsonString(migration.supportRef)),\"state\":\(jsonString(migration.state)),\"revision\":\(migration.revision),\"authority\":\"source\",\"disposition\":null,\"needsAttention\":false,\"dispatchAttempts\":0,\"attentionDeadlineAt\":null,\"sourceAcknowledgedAt\":null,\"targetAcknowledgedAt\":null,\"targetOutcome\":null,\"canceledAt\":null,\"updatedAt\":\(now)}"
+    }
+
+    public func confirmHostedMigration(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        body: String
+    ) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        let migrationEnabled = agentMigrationServers.contains(serverId)
+        let hostedEnabled = hostedMigrationServers.contains(serverId)
+        lock.unlock()
+        guard migrationEnabled else {
+            return migrationError(403, "agent_migration_ui_disabled", "Agent migration UI is not enabled on this server")
+        }
+        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted, info.serverId == serverId,
+              let role = oauth.memberRole(serverId: serverId, userId: userId)
+        else {
+            return migrationError(404, "AGENT_NOT_FOUND", "Agent not found")
+        }
+        guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
+            return migrationError(403, "not_supported", "The `migrateAgents` capability or human creator authority is required to confirm an agent migration")
+        }
+        guard hostedEnabled else {
+            return migrationError(403, "HOSTED_TARGET_UNAVAILABLE", "Moving agents to the cloud is not enabled on this server")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+        guard let migrationRef = object["migrationRef"] as? String,
+              migrationRef.range(of: "^mig_[A-Za-z0-9_-]{22}$", options: .regularExpression) != nil
+        else {
+            return migrationError(400, "MIGRATION_REF_INVALID", "migrationRef is required")
+        }
+        guard let rawRevision = object["expectedRevision"] as? NSNumber,
+              rawRevision.doubleValue.rounded() == rawRevision.doubleValue,
+              rawRevision.intValue >= 1
+        else {
+            return migrationError(400, "MIGRATION_REVISION_INVALID", "expectedRevision must be a positive integer")
+        }
+        let expectedRevision = rawRevision.intValue
+        lock.lock()
+        let migration = hostedMigrations[agentId]
+        let existingHosted = hostedRuntimes[agentId] != nil
+        let assignedMachine = agentMachineIds[agentId]
+        lock.unlock()
+        guard let migration, migration.supportRef == migrationRef, migration.serverId == serverId else {
+            return migrationError(404, "MIGRATION_NOT_FOUND", "Migration to the cloud not found")
+        }
+        guard migration.revision == expectedRevision else {
+            return migrationError(409, "MIGRATION_REVISION_STALE", "The migration changed since this review was shown")
+        }
+        guard migration.state == "in_transit" else {
+            return migrationError(409, "HOSTED_REVIEW_NOT_READY", "The move to the cloud is not waiting for confirmation")
+        }
+        guard !existingHosted else {
+            return migrationError(409, "HOSTED_TARGET_ALREADY_USED", "This agent has already run in the cloud")
+        }
+        guard migration.sourceMachineId != nil, assignedMachine == migration.sourceMachineId else {
+            return migrationError(409, "HOSTED_REVIEW_NOT_READY", "The agent is no longer on the migration's source computer")
+        }
+        var updated = migration
+        updated.state = "arriving"
+        updated.revision += 1
+        lock.lock()
+        hostedMigrations[agentId] = updated
+        hostedRuntimes[agentId] = ("antiproton", nil, "provisioning", false, Date())
+        lock.unlock()
+        oauth.setAgentRuntime(id: agentId, runtime: "external")
+        for member in oauth.memberIdsWithRoles(serverId: serverId) where member.role == "owner" || member.role == "admin" {
+            emitRealtime("user:\(member.id)", "agent:migration-updated", migrationUpdatedJSON(updated))
+        }
+        return Self.json(200, "{\"migration\":\(migrationStatusJSON(updated))}")
+    }
+
     public func agentDirectMessages(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -8433,6 +8567,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         hostedModelPickerServers.insert(serverId)
         lock.unlock()
+    }
+
+    public func hostedRuntimeStateForTesting(agentId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return hostedRuntimes[agentId]?.state
     }
 
     public func setHostedRuntimeStateForTesting(

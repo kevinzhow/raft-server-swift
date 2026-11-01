@@ -237,6 +237,9 @@ Guest 角色降级后，其 follow 的 thread 从 `GET /api/channels/inbox`（`a
 `POST/GET/DELETE /api/agents/:id/credentials`：未认证调用一律 401（不是 404），POST 也不要求 `X-Server-Id`。
 
 
+`POST /api/agents/:id/migration/confirm-hosted`：migration UI gate 关闭 403 `agent_migration_ui_disabled`；agent 不在该 server 404 `AGENT_NOT_FOUND`；无 owner/admin/creator 权限 403 `not_supported`；hosted 迁移 gate 关闭 403 `HOSTED_TARGET_UNAVAILABLE`。`migrationRef` 必须匹配 `mig_` + 22 字符，否则 400 `MIGRATION_REF_INVALID`；`expectedRevision` 必须为正整数，否则 400 `MIGRATION_REVISION_INVALID`。未知 migration 404 `MIGRATION_NOT_FOUND`；revision 不符 409 `MIGRATION_REVISION_STALE`；state 非 `in_transit` 或 source machine 不符 409 `HOSTED_REVIEW_NOT_READY`；已有 hosted runtime 409 `HOSTED_TARGET_ALREADY_USED`。成功时 agent 切到 `external`、创建 provisioning hosted runtime、migration 变为 `arriving` 且 revision+1，返回 `{migration}` 并向 owner/admin 的 `user:<id>` 房间发 `agent:migration-updated`。
+
+
 `POST /api/messages` 成功后向 `channel:<id>` 房间发 `message:new`，payload 是消息 HTTP body（id/channelId/content/attachments）。`POST /api/tasks/channel/:channelId` 成功后向同一房间发 `task:created`，payload 是 `{channelId,tasks:[{id,channelId,title,status}]}`；`PATCH /api/tasks/:taskId/claim` 成功后发 `task:updated`，payload `{channelId,task:<task JSON>}`；`POST /api/channels/threads/follow|unfollow` 成功后发 `thread:followers-updated`，payload `{threadChannelId}`。频道创建时该用户的在线 socket 自动加入 `channel:<id>`。task JSON 带 `messageId`。
 
 
