@@ -206,7 +206,7 @@ slackBridgedAgentMention	route	partial	-	auto-seed
 socketMembershipRevocation.api	route	partial	-	server-member removal and family revocation covered; channel leave/member transitions pending
 socketSendTimeAudience.api	route	pending	-	auto-seed
 storageResponseStream.callSites	route	pending	-	auto-seed
-systemNotifications.api	route	partial	-	v1 machine feed covered; v2 incident receipts pending
+systemNotifications.api	route	locked	8e0d4f8	v1 machine feed plus v2 attention receipts
 tasks.assignee.api	route	partial	-	auto-seed
 tasks.channelMembership.api	route	partial	-	auto-seed
 tasks.jointSurface.api	route	pending	-	auto-seed
