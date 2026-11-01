@@ -62,7 +62,7 @@ channels.unread.rwFailures.api	route	partial	-	auto-seed
 computerAdopt.api	route	pending	-	auto-seed
 computerAttach.api	route	pending	-	auto-seed
 computerLegacyMachines.api	route	pending	-	auto-seed
-computerRevocation.api	route	partial	-	auto-seed
+computerRevocation.api	route	locked	905d885	runner mint gate, machine delete revokes key, orphan 401
 corsPreflight.api	route	locked	43565c1	two-hour preflight cache
 daemon.wsAuth	route	locked	e8b381d	wire paths locked by process e2e; trace/argon2-only halves excluded
 desktopDownload	route	partial	-	auto-seed
