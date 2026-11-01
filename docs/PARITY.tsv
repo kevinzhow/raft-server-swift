@@ -36,7 +36,7 @@ attachmentPreviewBridge.api	route	pending	-	auto-seed
 attachmentUploadSessions.api	route	partial	-	auto-seed
 attachments.api	route	partial	-	auto-seed
 attachments	route	partial	-	auto-seed
-auditMediumInbox.api	route	pending	-	auto-seed
+auditMediumInbox.api	route	locked	a5dea45	guest visible recheck on done/followed/mention surfaces
 auth.api	route	partial	-	auto-seed
 authIdentityUnlink.api	route	pending	-	auto-seed
 authLoginTrace	route	pending	-	auto-seed
