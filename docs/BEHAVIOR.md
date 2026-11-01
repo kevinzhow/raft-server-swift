@@ -282,3 +282,5 @@ Guest-visible 频道：public 频道是否对 guest 可见由频道级 `guestVis
 
 Daemon proxy：`buildFetchDispatcher` 按 proxy URL 复用 dispatcher；隔离 lane 按 route/origin/headers/body 组合缓存、互不共享，并可单独驱逐；`NO_PROXY` 同时作用于 WebSocket 与 fetch。fetch 只对显式 `UND_ERR_HEADERS_TIMEOUT`/`UND_ERR_BODY_TIMEOUT` 归为 `read_timeout`；pre-response 超时只约束 connect/headers，不中断慢 body；transport 拒绝会驱逐该 dispatcher，HTTP 4xx/5xx 不会。`proxyFailureTrace` 的投影只含 route_family/method/outcome/reason/error_class/error_excerpt 等允许字段，屏蔽 query、路径、URL、用户目录与代理细节；lifecycle 与 post-response 本地故障各有独立 reason/excerpt。
 
+`/api/servers/:id/scope-attestation` 的 JWT（HS256，`SCOPE_ATTESTATION_SECRET`）claim 精确为 `scope/actorType:"user"/sub/serverId/aud/resource/exp`：member 可签 `web-trace-batch:create`（aud `trace-ingest-worker`），`feedback-report:create` 仅 owner/admin（aud `feedback-worker`）。`…/feedback/:reportId/transcript` 对非 UUID 与编码后的路径穿越（`..%2Fx`）都在触达 daemon 前 404；非 owner/admin/创建者 403；坏 `reportGeneratedAt` 400；成功 202。
+

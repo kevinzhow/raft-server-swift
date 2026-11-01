@@ -62,6 +62,14 @@ import VaporTesting
             #expect((traceBody["expiresAt"] as? String).flatMap { ISO8601DateFormatter().date(from: $0) } != nil || true)
             let traceAttestation = traceBody["attestation"] as? String ?? ""
             #expect(traceAttestation.split(separator: ".").count == 3)
+            let traceClaims = AttestationClaims.jwtClaims(traceAttestation)
+            #expect(traceClaims?["scope"] as? String == "web-trace-batch:create")
+            #expect(traceClaims?["actorType"] as? String == "user")
+            #expect(traceClaims?["sub"] as? String == memberId)
+            #expect(traceClaims?["serverId"] as? String == serverId)
+            #expect(traceClaims?["aud"] as? String == "trace-ingest-worker")
+            #expect(traceClaims?["resource"] as? String == "servers/\(serverId)/web-traces")
+            #expect((traceClaims?["exp"] as? Int ?? 0) > Int(Date().timeIntervalSince1970))
 
             let memberFeedback = try await attest(memberToken, "feedback-report:create")
             #expect(memberFeedback.status == .forbidden)
@@ -71,6 +79,27 @@ import VaporTesting
             let feedbackBody = try payload(ownerFeedback)
             #expect(feedbackBody["audience"] as? String == "feedback-worker")
             #expect(feedbackBody["resource"] as? String == "servers/\(serverId)/feedback-reports")
+            let feedbackClaims = AttestationClaims.jwtClaims(feedbackBody["attestation"] as? String ?? "")
+            #expect(feedbackClaims?["scope"] as? String == "feedback-report:create")
+            #expect(feedbackClaims?["actorType"] as? String == "user")
+            #expect(feedbackClaims?["sub"] as? String == ownerId)
+            #expect(feedbackClaims?["serverId"] as? String == serverId)
+            #expect(feedbackClaims?["aud"] as? String == "feedback-worker")
+            #expect(feedbackClaims?["resource"] as? String == "servers/\(serverId)/feedback-reports")
         }
+    }
+}
+
+
+private enum AttestationClaims {
+    static func jwtClaims(_ token: String) -> [String: Any]? {
+        let parts = token.split(separator: ".")
+        guard parts.count == 3 else { return nil }
+        var payload = String(parts[1])
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        while payload.count % 4 != 0 { payload += "=" }
+        guard let data = Data(base64Encoded: payload) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 }

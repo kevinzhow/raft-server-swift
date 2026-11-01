@@ -74,6 +74,8 @@ import VaporTesting
 
             let nonUUID = try await post(ownerToken, "report-1", body: "{}")
             #expect(nonUUID.status == .notFound)
+            let encodedTraversal = try await post(ownerToken, "..%2Fx", body: "{}")
+            #expect(encodedTraversal.status == .notFound)
 
             let forbidden = try await post(extraToken, UUID().uuidString.lowercased(), body: "{}")
             #expect(forbidden.status == .forbidden)
