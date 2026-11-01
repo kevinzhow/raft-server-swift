@@ -342,3 +342,5 @@ Managed MCP 控制面（`/api/mcp/*`）：成员可读 `GET /api/mcp/servers` �
 
 消息 randomId 幂等：`POST /api/messages` 带 `randomId` 首次发送后，相同 randomId 的重放无论正文/mention 是否变化都返回**第一条**消息的完整 JSON（id/channelId/content/attachments/mentions/randomId 全部一致），且只落一行；randomId 作用域是发送者 + 原 storage channel，跨频道重放回 409 `random_id_conflict` 且不回显原正文；附件重放要求完全相同的**有序**集合（重排 400 `attachment_replay_conflict`，换 randomId 复用附件 400 `attachment_already_linked`）；`randomId:"invalid"` 等 sentinel 文本按普通字符串接受并回显。并发同 randomId 的两个请求都会 200 且返回同一最终行。消息 JSON 现在带 `mentions:[{type,id,name}]`；DM 中的 mention 仍是 inert，`mentions` 回空数组。上游的 failpoint 并发屏障未移植（并发用真实双请求验收）。
 
+Machine 描述与权限：`PATCH /api/servers/:id/machines/:machineId` 的 `description` 先去首尾空白，空串清为 null；响应回 `{id,name,description}`，`GET /api/servers/:id/machines` 行内同步投影该值。owner/admin 或 machine 的创建者可改；其他成员 403 `Forbidden`；machine 属于别的 Server 时 404。人类成员的 `GET .../machines` 只看到本 Server 的 machine。
+
