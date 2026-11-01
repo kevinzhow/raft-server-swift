@@ -6,31 +6,29 @@ import Testing
 import Vapor
 import VaporTesting
 
-@Test func modelLabelCatalogIsMemberReadableAndWhitelisted() async throws {
+@Test func modelLabelCatalogIsMemberReadableAndLabelOnly() async throws {
     let accounts = EmailLoginDirectory()
-    let ownerId = "11111111-1111-4111-8111-111111111409"
-    let memberId = "11111111-1111-4111-8111-111111111410"
-    let guestId = "11111111-1111-4111-8111-111111111411"
-    let outsiderId = "11111111-1111-4111-8111-111111111412"
-    let serverId = "33333333-3333-4333-8333-333333333539"
-    for (id, email) in [
-        (ownerId, "catalog-owner@slock.test"),
-        (memberId, "catalog-member@slock.test"),
-        (guestId, "catalog-guest@slock.test"),
-        (outsiderId, "catalog-outsider@slock.test"),
+    let ownerId = "11111111-1111-4111-8111-111111111658"
+    let memberId = "11111111-1111-4111-8111-111111111659"
+    let guestId = "11111111-1111-4111-8111-111111111660"
+    let outsiderId = "11111111-1111-4111-8111-111111111661"
+    let serverId = "33333333-3333-4333-8333-333333333684"
+    for (id, email, role) in [
+        (ownerId, "label-owner@slock.test", "owner"),
+        (memberId, "label-member@slock.test", "member"),
+        (guestId, "label-guest@slock.test", "guest"),
+        (outsiderId, "label-outsider@slock.test", nil),
     ] {
         accounts.addAccount(id: id, email: email, password: "password123")
         accounts.markEmailVerified(userId: id)
+        if role == "owner" {
+            accounts.oauth.addOwnedServer(id: serverId, slug: "labels", name: "Labels", ownerId: id)
+        } else if let role {
+            accounts.oauth.addMember(serverId: serverId, userId: id, role: role)
+        }
     }
-    accounts.oauth.addOwnedServer(id: serverId, slug: "model-catalog", name: "Model Catalog", ownerId: ownerId)
-    accounts.oauth.addMember(serverId: serverId, userId: memberId, role: "member")
-    accounts.oauth.addMember(serverId: serverId, userId: guestId, role: "guest")
-    let machineId = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "model-catalog-computer")
-    accounts.setMachineRuntimeModels(
-        machineId: machineId,
-        runtime: "codex",
-        models: [("gpt-6-astra", "GPT-6-Astra"), ("gpt-5.6-sol", "GPT-5.6-Sol")]
-    )
+    let machine = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "label-machine")
+    accounts.setMachineRuntimeModels(machineId: machine, runtime: "codex", models: [("gpt-6-astra", "GPT-6-Astra"), ("gpt-5.6-sol", "GPT-5.6-Sol")])
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -40,46 +38,40 @@ import VaporTesting
             emailAccounts: accounts
         ))
         try await app.testing { client in
-            func login(_ email: String) async throws -> String {
+            func token(_ email: String) async throws -> String {
                 var headers = HTTPFields()
                 headers[.contentType] = "application/json"
-                let response = try await client.send(.post, headers: headers, to: "/api/auth/login") { request in
+                let login = try await client.send(.post, headers: headers, to: "/api/auth/login") { request in
                     request.body = .init(string: "{\"email\":\"\(email)\",\"password\":\"password123\"}")
                 }
-                return (try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
+                return (try JSONSerialization.jsonObject(with: Data((login.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
             }
-            func headers(_ token: String) -> HTTPFields {
-                var fields = HTTPFields()
-                fields[.authorization] = "Bearer \(token)"
-                fields[HTTPField.Name("X-Server-Id")!] = serverId
-                return fields
+            func catalog(_ bearer: String) async throws -> ClientResponse {
+                var headers = HTTPFields()
+                headers[.authorization] = "Bearer \(bearer)"
+                return try await client.get("/api/servers/\(serverId)/model-label-catalog", headers: headers)
             }
-            func catalog(_ token: String) async throws -> ([String: Any], Int) {
-                let response = try await client.send(.get, headers: headers(token), to: "/api/servers/\(serverId)/model-label-catalog")
-                let body = (try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any]) ?? [:]
-                return (body, response.status.code)
+            let owner = try await token("label-owner@slock.test")
+            let member = try await token("label-member@slock.test")
+            let guest = try await token("label-guest@slock.test")
+            let outsider = try await token("label-outsider@slock.test")
+
+            for bearer in [owner, member, guest] {
+                let response = try await catalog(bearer)
+                #expect(response.status == .ok)
+                let body = try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any]
+                let machines = body?["machines"] as? [String: Any]
+                let runtime = (machines?[machine] as? [String: Any])?["runtimes"] as? [String: Any]
+                let codex = runtime?["codex"] as? [String: Any]
+                let models = codex?["models"] as? [[String: Any]] ?? []
+                #expect(models.map { $0["id"] as? String } == ["gpt-6-astra", "gpt-5.6-sol"])
+                #expect(models.map { $0["label"] as? String } == ["GPT-6-Astra", "GPT-5.6-Sol"])
+                let modelKeys = Set((models.first ?? [:]).keys)
+                let codexKeys = Set((codex ?? [:]).keys)
+                #expect(modelKeys == Set(["id", "label"]))
+                #expect(codexKeys == Set(["models", "updatedAt"]))
             }
-            let memberToken = try await login("catalog-member@slock.test")
-            let guestToken = try await login("catalog-guest@slock.test")
-            let outsiderToken = try await login("catalog-outsider@slock.test")
-
-            let memberRead = try await catalog(memberToken)
-            #expect(memberRead.1 == 200)
-            let machines = memberRead.0["machines"] as? [String: Any]
-            let machine = machines?[machineId] as? [String: Any]
-            let runtimes = machine?["runtimes"] as? [String: Any]
-            let codex = runtimes?["codex"] as? [String: Any]
-            let models = codex?["models"] as? [[String: Any]] ?? []
-            #expect(models.compactMap { $0["id"] as? String } == ["gpt-6-astra", "gpt-5.6-sol"])
-            #expect(models.compactMap { $0["label"] as? String } == ["GPT-6-Astra", "GPT-5.6-Sol"])
-            #expect(Set(codex?.keys ?? [:].keys) == ["models", "updatedAt"])
-            #expect(models.allSatisfy { Set($0.keys) == ["id", "label"] })
-
-            let guestRead = try await catalog(guestToken)
-            #expect(guestRead.1 == 200)
-            #expect((((guestRead.0["machines"] as? [String: Any])?[machineId] as? [String: Any])?["runtimes"] as? [String: Any])?["codex"] != nil)
-
-            #expect(try await catalog(outsiderToken).1 == 403)
+            #expect(try await catalog(outsider).status == .forbidden)
         }
     }
 }

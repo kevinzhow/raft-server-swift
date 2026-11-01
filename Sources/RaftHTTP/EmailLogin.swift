@@ -9117,6 +9117,29 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true,\"action\":\(jsonString(action)),\"requestId\":\(jsonString(UUID().uuidString.lowercased())),\"operationId\":\(jsonString(UUID().uuidString.lowercased())),\"computerVersion\":\(jsonString(version))}")
     }
 
+    public func machineRuntimeRescan(authorization: String?, serverId: String, machineId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        lock.lock()
+        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Computer not found\"}")
+        }
+        let online = machineOnline[machineId] == true
+        lock.unlock()
+        guard role == "owner" || role == "admin" || machine.userId == userId else {
+            return Self.json(403, "{\"error\":\"The `editMachines` capability or machine creator authority is required to rescan runtimes\"}")
+        }
+        guard online else {
+            return Self.json(409, "{\"error\":\"Computer is offline\"}")
+        }
+        return Self.json(200, "{\"requested\":true}")
+    }
+
     public func modelLabelCatalog(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
