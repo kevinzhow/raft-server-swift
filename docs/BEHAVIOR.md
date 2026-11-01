@@ -300,3 +300,5 @@ Action card 结果回复：`POST /internal/agent-api/prepare-action`（agent `se
 
 实验性内部面 kill switch：`SLOCK_EXPERIMENTAL_SURFACES_DISABLED=true` 时所有 `/internal/agent-api/*` 与 `/internal/computer/*`（含未挂载路径）统一 503，响应头 `Sec-Slock-Api-Version: 1`，body 为 `{"error":"Experimental internal surface is disabled","code":"experimental_surface_disabled","retry_after":null}`；其他 `/api/*` 路由不受影响，关闭开关后恢复原行为。
 
+`GET /internal/agent-api/events` 现在同时返回 external agent 的 durable 频道 inbox：可见频道里未被 drain 的消息按时间排列，每条带 `seq/message_id/sender_id/sender_name/sender_type/senderType/content/mentioned/channel_*`。`sender_type` 与 camelCase `senderType` 始终一致：human、`system`（`senderId:"system"`/`messageType:"system"`）、`agent`、`third_party_app`（external projection）。外部投影消息附 `external_message:{message_id,provider,actor_name}`、`mentioned` 由真实 mention 行决定、正文保持原样；第三方事件正文把 `@handle` 改写为 `user:handle` 且带 `third_party_event.source`。调用后频道消息与第三方事件都被 drain，重放为空。
+

@@ -320,6 +320,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var managedMCPServers: [ManagedMCPServerRecord] = []
     private var actionCardRecords: [String: ActionCardRecord] = [:]
     private var pendingActionMessageEvents: [(agentId: String, messageId: String, content: String)] = []
+    private var agentChannelInboxDelivered: Set<String> = []
 
     private struct ActionCardRecord {
         var messageId: String
@@ -5351,6 +5352,49 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    @discardableResult
+    public func addSystemMessageForTesting(channelId: String, content: String) -> String {
+        let id = UUID().uuidString.lowercased()
+        lock.lock()
+        humanMessageRows.append(StoredHumanMessage(
+            id: id,
+            channelId: channelId,
+            senderId: "system",
+            content: content,
+            randomId: nil,
+            messageType: "system",
+            senderType: "user"
+        ))
+        lock.unlock()
+        return id
+    }
+
+    @discardableResult
+    public func addExternalProjectionMessageForTesting(
+        channelId: String,
+        senderName: String,
+        content: String,
+        externalMessageId: String,
+        provider: String = "slack"
+    ) -> String {
+        let id = UUID().uuidString.lowercased()
+        lock.lock()
+        humanMessageRows.append(StoredHumanMessage(
+            id: id,
+            channelId: channelId,
+            senderId: "external-projection-\(id.prefix(8))",
+            content: content,
+            randomId: nil,
+            messageType: "chat",
+            senderType: "external_projection",
+            externalMessageId: externalMessageId,
+            externalProvider: provider,
+            externalSenderName: senderName
+        ))
+        lock.unlock()
+        return id
+    }
+
     public func channelInbox(
         authorization: String?,
         serverId: String?,
@@ -5640,27 +5684,92 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
-    /// `GET /internal/agent-api/events`. Draining marks each third-party
-    /// event delivered, so a replay is empty.
+    /// `GET /internal/agent-api/events`. Durable channel messages for the
+    /// external agent plus pending third-party events; the call drains both.
     public func agentThirdPartyEvents(authorization: String?) -> HTTPReply {
         switch agentReadCredential(authorization) {
         case .failure(let reply):
             return reply
         case .success(let agentId):
+            guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted else {
+                return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            }
             lock.lock()
             let actionEvents = pendingActionMessageEvents.filter { $0.agentId == agentId }
             pendingActionMessageEvents.removeAll { $0.agentId == agentId }
-            lock.unlock()
-            var events: [String] = actionEvents.map { event in
-                "{\"message_id\":\(jsonString(event.messageId)),\"sender_type\":\"agent\",\"content\":\(jsonString(event.content))}"
+            var channelRows: [(message: StoredHumanMessage, channelName: String, channelType: String, senderName: String)] = []
+            for message in humanMessageRows {
+                guard message.senderId != agentId,
+                      let channel = postableChannels[message.channelId],
+                      channel.serverId == agent.serverId,
+                      channel.deletedAt == nil
+                else { continue }
+                let visible = channel.kind == "channel"
+                    || channel.memberIds.contains(agentId)
+                    || oauth.channelAgentIds(channelId: message.channelId).contains(agentId)
+                guard visible else { continue }
+                let key = "\(agentId)\n\(message.id)"
+                guard !agentChannelInboxDelivered.contains(key) else { continue }
+                let senderName = message.externalSenderName
+                    ?? accounts.values.first { $0.id == message.senderId }?.name
+                    ?? (message.senderId == "system" ? "system" : message.senderId)
+                let channelType = channel.kind == "dm" ? "dm" : "channel"
+                channelRows.append((message, channel.name, channelType, senderName))
             }
-            events += oauth.takeThirdPartyEventMessages(agentId: agentId).map { message in
+            for row in channelRows {
+                agentChannelInboxDelivered.insert("\(agentId)\n\(row.message.id)")
+            }
+            let mentionedIds = Set(storedMentions.filter {
+                $0.targetType == "agent" && $0.targetId == agentId
+            }.map(\.messageId))
+            lock.unlock()
+
+            var events: [String] = []
+            var seq = 0
+            for row in channelRows.sorted(by: { $0.message.createdAt < $1.message.createdAt }) {
+                seq += 1
+                let message = row.message
+                let senderType: String
+                if message.senderType == "external_projection" {
+                    senderType = "third_party_app"
+                } else if message.messageType == "system" || message.senderId == "system" {
+                    senderType = "system"
+                } else if message.senderType == "agent" {
+                    senderType = "agent"
+                } else {
+                    senderType = "human"
+                }
+                var rowJSON = "{\"seq\":\(seq),\"message_id\":\(jsonString(message.id)),\"sender_id\":\(jsonString(message.senderId)),\"sender_name\":\(jsonString(row.senderName)),\"sender_type\":\(jsonString(senderType)),\"senderType\":\(jsonString(senderType)),\"content\":\(jsonString(message.content)),\"mentioned\":\(mentionedIds.contains(message.id)),\"channel_id\":\(jsonString(message.channelId)),\"channel_name\":\(jsonString(row.channelName)),\"channel_type\":\(jsonString(row.channelType)),\"timestamp\":\(jsonString(Self.isoString(message.createdAt)))"
+                if senderType == "third_party_app" {
+                    let externalId = message.externalMessageId.map(jsonString) ?? "null"
+                    let provider = message.externalProvider.map(jsonString) ?? "null"
+                    let actor = message.externalSenderName.map(jsonString) ?? "null"
+                    rowJSON += ",\"external_message\":{\"message_id\":\(externalId),\"provider\":\(provider),\"actor_name\":\(actor)}"
+                }
+                rowJSON += "}"
+                events.append(rowJSON)
+            }
+            for event in actionEvents {
+                seq += 1
+                events.append("{\"seq\":\(seq),\"message_id\":\(jsonString(event.messageId)),\"sender_type\":\"agent\",\"senderType\":\"agent\",\"content\":\(jsonString(event.content)),\"mentioned\":true}")
+            }
+            for message in oauth.takeThirdPartyEventMessages(agentId: agentId) {
+                seq += 1
                 let resource = "urn:raft:server:\(message.serverId):agent-inbound"
-                let content = "Third-party event from \(message.clientKey): \(message.summary)\nresource: \(resource)"
-                return "{\"message_id\":\(jsonString(message.id)),\"sender_type\":\"third_party_app\",\"content\":\(jsonString(content)),\"third_party_event\":{\"id\":\(jsonString(message.id)),\"kind\":\(jsonString(message.kind)),\"summary\":\(jsonString(message.summary)),\"source\":{\"client_id\":\(jsonString(message.clientKey)),\"client_name\":\(jsonString(message.clientName)),\"oauth_client_id\":\(jsonString(message.clientRecordId)),\"resource\":\(jsonString(resource))}}}"
+                let content = Self.inertThirdPartyMentions(message.summary)
+                events.append("{\"seq\":\(seq),\"message_id\":\(jsonString(message.id)),\"sender_type\":\"third_party_app\",\"senderType\":\"third_party_app\",\"content\":\(jsonString(content)),\"mentioned\":false,\"third_party_event\":{\"id\":\(jsonString(message.id)),\"kind\":\(jsonString(message.kind)),\"summary\":\(jsonString(message.summary)),\"source\":{\"client_id\":\(jsonString(message.clientKey)),\"client_name\":\(jsonString(message.clientName)),\"oauth_client_id\":\(jsonString(message.clientRecordId)),\"resource\":\(jsonString(resource))}}}")
             }
             return Self.json(200, "{\"events\":[\(events.joined(separator: ","))]}")
         }
+    }
+
+    /// Third-party content stays inert: mentions read as plain `user:<handle>`.
+    private static func inertThirdPartyMentions(_ text: String) -> String {
+        text.replacingOccurrences(
+            of: "@([A-Za-z0-9_.-]+)",
+            with: "user:$1",
+            options: .regularExpression
+        )
     }
 
     /// `GET /internal/agent-api/wake-hints/stream`. The SSE projection opens
@@ -7153,6 +7262,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var taskClaimedAt: String? = nil
         var taskCompletedAt: String? = nil
         var senderTimezone: String? = nil
+        var externalMessageId: String? = nil
+        var externalProvider: String? = nil
+        var externalSenderName: String? = nil
     }
 
     public func removeChannelMemberForTesting(channelId: String, userId: String) {

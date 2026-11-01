@@ -2020,7 +2020,8 @@ public final class OAuthLedger: @unchecked Sendable {
         kind: String = "notification",
         summary: String,
         payloadJSON: String = "{}",
-        expiresAt: Date
+        expiresAt: Date,
+        status: String = "delivered"
     ) {
         lock.lock()
         agentEvents.append(AgentEvent(
@@ -2033,7 +2034,7 @@ public final class OAuthLedger: @unchecked Sendable {
             payloadHash: sha256(payloadJSON),
             payloadJSON: payloadJSON,
             externalEventId: nil,
-            status: "delivered",
+            status: status,
             expiresAt: expiresAt,
             createdAt: Date()
         ))
