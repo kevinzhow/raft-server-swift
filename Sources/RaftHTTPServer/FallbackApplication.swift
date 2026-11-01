@@ -606,6 +606,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             limit: desktopQuery(request.url.query, "limit")
         ))
     }
+    app.post("internal", "agent-api", "integrations", "token") { request -> Response in
+        routeResponse(services.emailAccounts.agentIntegrationToken(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("internal", "agent-api", "apps", ":appId", "config") { request -> Response in
         routeResponse(services.emailAccounts.agentAppConfig(
             authorization: request.headers[.authorization],

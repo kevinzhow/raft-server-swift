@@ -324,6 +324,102 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var agentGrantSets: [String: Set<String>] = [:]
     private var appConfigOverrides: [String: [String: [String: Any]]] = [:]
     private var appConfigRevisions: [String: [String: Int]] = [:]
+    private var agentIntegrationGrants: [String: Bool] = [:]
+    private var agentAudienceStatusOverrides: [String: String] = [:]
+
+    public func setAgentAudienceStatusForTesting(agentId: String, status: String) {
+        lock.lock()
+        agentAudienceStatusOverrides[agentId] = status
+        lock.unlock()
+    }
+    public func revokeAgentIntegrationGrantForTesting(agentId: String, clientKey: String) {
+        lock.lock()
+        agentIntegrationGrants["\(agentId)\n\(clientKey)"] = true
+        lock.unlock()
+    }
+
+    public func restoreAgentIntegrationGrantForTesting(agentId: String, clientKey: String) {
+        lock.lock()
+        agentIntegrationGrants["\(agentId)\n\(clientKey)"] = false
+        lock.unlock()
+    }
+
+    public func revokeAgentCredentialForTesting(apiKey: String) {
+        lock.lock()
+        agentCredentials[apiKey]?.revokedAt = Date()
+        lock.unlock()
+    }
+
+    public func agentIntegrationToken(authorization: String?, body: String) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let credential = agentCredentials[token]
+        lock.unlock()
+        guard let credential, credential.revokedAt == nil,
+              credential.scopes.contains("read"),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid integration token request\",\"code\":\"INVALID_REQUEST\"}")
+        }
+        for field in ["agentId", "serverId", "audience", "issuer", "expires_in", "scopes", "claims"]
+        where object[field] != nil {
+            return Self.json(400, "{\"error\":\"Request fields are derived from the credential\",\"code\":\"INVALID_REQUEST\"}")
+        }
+        guard let service = (object["service"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !service.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"service is required\",\"code\":\"INVALID_REQUEST\"}")
+        }
+        lock.lock()
+        let status = agentAudienceStatusOverrides[agent.id] ?? "active"
+        lock.unlock()
+        guard status == "active" else {
+            return Self.json(403, "{\"error\":\"Agent is not active\",\"code\":\"AGENT_INACTIVE\"}")
+        }
+        guard oauth.agentRole(serverId: agent.serverId, agentId: agent.id) != nil else {
+            return Self.json(403, "{\"error\":\"Agent is not a member of this Server\",\"code\":\"AGENT_NOT_MEMBER\"}")
+        }
+        guard let client = oauth.localClientForAgentAudience(clientId: service, serverId: agent.serverId),
+              client.enabled,
+              client.appType == "server_local",
+              client.allowedScopes.contains("openid"),
+              client.allowedScopes.contains("profile")
+        else {
+            return Self.json(403, "{\"error\":\"That App is not available on this Server\",\"code\":\"APP_UNAVAILABLE\"}")
+        }
+        let grantKey = "\(agent.id)\n\(client.clientId)"
+        lock.lock()
+        let revoked = agentIntegrationGrants[grantKey] == true
+        if !revoked {
+            agentIntegrationGrants[grantKey] = false
+        }
+        lock.unlock()
+        guard !revoked else {
+            return Self.json(403, "{\"error\":\"Agent access to this App has been revoked\",\"code\":\"GRANT_REVOKED\"}")
+        }
+        guard let slug = oauth.serverProfile(id: agent.serverId)?.slug,
+              let origin = OAuthDiscovery.issuerOrigin(serverURL),
+              let signed = oauth.signAgentAudienceToken(
+                  agentId: agent.id,
+                  agentName: agent.name,
+                  clientKey: client.clientId,
+                  serverId: agent.serverId,
+                  serverSlug: slug,
+                  issuer: "\(origin)/oidc/\(slug)"
+              )
+        else {
+            return Self.json(500, "{\"error\":\"Failed to issue the App token\"}")
+        }
+        var reply = Self.json(200, "{\"access_token\":\(jsonString(signed.token)),\"audience\":\(jsonString(client.clientId)),\"expires_in\":300}")
+        reply.headers["Cache-Control"] = "no-store"
+        return reply
+    }
 
     private struct ActionCardRecord {
         var messageId: String

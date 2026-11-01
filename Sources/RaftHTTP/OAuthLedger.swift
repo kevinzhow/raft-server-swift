@@ -131,6 +131,60 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    public struct AgentAudienceClient: Sendable {
+        public var id: String
+        public var clientId: String
+        public var name: String
+        public var appType: String
+        public var enabled: Bool
+        public var allowedScopes: [String]
+    }
+
+    /// A user-managed App this Server may mint an audience JWT for. A published
+    /// App needs an active installation on this Server; a server-local App
+    /// needs to belong to it.
+    public func localClientForAgentAudience(clientId: String, serverId: String) -> AgentAudienceClient? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let client = clients.first(where: { candidate in
+            guard candidate.clientId == clientId, isUserManaged(candidate) else { return false }
+            if candidate.appType == "server_local" { return candidate.serverId == serverId }
+            return installations.contains(where: {
+                $0.clientId == candidate.id && $0.serverId == serverId && $0.status == "active"
+            })
+        }) else { return nil }
+        return AgentAudienceClient(
+            id: client.id,
+            clientId: client.clientId,
+            name: client.name,
+            appType: client.appType,
+            enabled: client.enabled,
+            allowedScopes: client.allowedScopes ?? []
+        )
+    }
+
+    public func signAgentAudienceToken(
+        agentId: String,
+        agentName: String,
+        clientKey: String,
+        serverId: String,
+        serverSlug: String,
+        issuer: String
+    ) -> (token: String, jti: String, issuedAt: Int)? {
+        lock.lock()
+        let secret = jwtSecret
+        lock.unlock()
+        return OAuthIDToken.signAgentAudience(
+            agentId: agentId,
+            agentName: agentName,
+            clientKey: clientKey,
+            serverId: serverId,
+            serverSlug: serverSlug,
+            issuer: issuer,
+            secret: secret
+        )
+    }
+
     public func setAgentRole(serverId: String, agentId: String, role: String) {
         lock.lock()
         agentRoles["\(serverId)\n\(agentId)"] = role
@@ -2829,6 +2883,33 @@ private struct OAuthIdentity {
 }
 
 private enum OAuthIDToken {
+    static func signAgentAudience(
+        agentId: String,
+        agentName: String,
+        clientKey: String,
+        serverId: String,
+        serverSlug: String,
+        issuer: String,
+        secret: String,
+        ttl: Int = 300
+    ) -> (token: String, jti: String, issuedAt: Int)? {
+        guard !secret.isEmpty, let privateKey = signingKey(secret: secret) else { return nil }
+        let now = Int(Date().timeIntervalSince1970)
+        let jti = UUID().uuidString.lowercased()
+        let kidValue = kid(secret: secret) ?? ""
+        let login = "raft-agent-\(agentId)"
+        let header = "{\"alg\":\"ES256\",\"typ\":\"at+jwt\",\"kid\":\(jsonString(kidValue))}"
+        let payload = "{\"iss\":\(jsonString(issuer)),\"aud\":\(jsonString(clientKey)),\"sub\":\(jsonString(agentId)),\"server_id\":\(jsonString(serverId)),\"server_slug\":\(jsonString(serverSlug)),\"type\":\"agent\",\"token_use\":\"agent_access\",\"login\":\(jsonString(login)),\"preferred_username\":\(jsonString(agentName)),\"iat\":\(now),\"nbf\":\(now),\"exp\":\(now + ttl),\"jti\":\(jsonString(jti))}"
+        let signingInput = "\(base64url(Data(header.utf8))).\(base64url(Data(payload.utf8)))"
+        guard let signature = try? privateKey.signature(for: Data(signingInput.utf8)) else { return nil }
+        return ("\(signingInput).\(base64url(signature.rawRepresentation))", jti, now)
+    }
+
+    static func kid(secret: String) -> String? {
+        guard let key = signingKey(secret: secret) else { return nil }
+        return base64url(Data(SHA256.hash(data: key.publicKey.x963Representation).prefix(16)))
+    }
+
     static func sign(
         identity: OAuthIdentity,
         issuer: String,
