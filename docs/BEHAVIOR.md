@@ -213,6 +213,9 @@ agent 读游标前进且 server 开启 read receipts 时，`channel:<id>` 房间
 `GET/POST /api/agents/:id/onboarding-identity-adoption`：仅 owner/admin/creator，agent 必须是该 server 的 onboarding agent（否则 400）。GET 返回 `{canAdopt,changes}`，按 name/displayName/role/serverRole/avatarUrl 列出 before/after；POST 应用官方 Cindy 身份（Cindy / Cindy / Onboarding Assistant / admin / pixel:mug），返回 `appliedChanges` 和 `agent`，并广播 `agent:updated`；二次调用 changes/appliedChanges 为空；已有其他 active `Cindy` 时 409。
 
 
+`GET /api/agents/:id/runtime-form`：仅 owner/admin/creator，external agent 404 `no_runtime_form`。返回 v2 `{protocolVersion:2,runtimeId,schemaVersion,fields,values,capabilities}`；`values` 从存储 runtimeConfig 投影 `model`/`envVars`，Claude 另带 `provider/apiUrl/reasoningEffort/fastMode/command` 且永不返回 `apiKey`，Antigravity 不返回 model；Claude 的 `writeOnlyPointers` 为 `["/apiKey"]`。
+
+
 `POST /api/messages` 成功后向 `channel:<id>` 房间发 `message:new`，payload 是消息 HTTP body（id/channelId/content/attachments）。`POST /api/tasks/channel/:channelId` 成功后向同一房间发 `task:created`，payload 是 `{channelId,tasks:[{id,channelId,title,status}]}`；`PATCH /api/tasks/:taskId/claim` 成功后发 `task:updated`，payload `{channelId,task:<task JSON>}`；`POST /api/channels/threads/follow|unfollow` 成功后发 `thread:followers-updated`，payload `{threadChannelId}`。频道创建时该用户的在线 socket 自动加入 `channel:<id>`。task JSON 带 `messageId`。
 
 

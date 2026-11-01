@@ -8279,6 +8279,55 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         ))
     }
 
+    public func agentRuntimeForm(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        language: String?
+    ) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner"
+                || oauth.memberRole(serverId: serverId, userId: userId) == "admin"
+                || agent.creatorUserId == userId
+        else {
+            return Self.json(403, "{\"error\":\"The `editAgents` capability or human creator authority is required to edit agents\"}")
+        }
+        guard agent.runtime != "external", let schemaVersion = Self.runtimeFormSchemas[agent.runtime] else {
+            return Self.json(404, "{\"error\":\"This agent's runtime configuration has no editable runtime form\",\"issues\":[{\"code\":\"no_runtime_form\",\"pointer\":\"/runtimeConfig\"}]}")
+        }
+        let config = (agent.runtimeConfigJSON.flatMap { $0.data(using: .utf8) })
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any] ?? [:]
+        var values: [String: Any] = [:]
+        if agent.runtime != "antigravity",
+           let model = config["model"] as? [String: Any],
+           let id = (model["id"] as? String) ?? (model["name"] as? String) {
+            values["model"] = id
+        }
+        values["envVars"] = (config["envVars"] as? [String: String]) ?? [:]
+        var writeOnly: [String] = []
+        if agent.runtime == "claude" {
+            let provider = config["provider"] as? [String: Any]
+            values["provider"] = (provider?["kind"] as? String) ?? "default"
+            if let apiUrl = provider?["apiUrl"] as? String { values["apiUrl"] = apiUrl }
+            if let effort = config["reasoningEffort"] as? String { values["reasoningEffort"] = effort }
+            values["fastMode"] = (config["fastMode"] as? Bool) ?? false
+            if let command = config["command"] as? String { values["command"] = command }
+            writeOnly = ["/apiKey"]
+        }
+        let zh = Self.prefersChinese(language)
+        let label = zh ? "模型" : "Model"
+        let valueJSON = (try? JSONSerialization.data(withJSONObject: values))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        let fields = "[{\"key\":\"model\",\"kind\":\"select\",\"label\":\(jsonString(label)),\"required\":true}]"
+        let capabilities = "{\"providerKinds\":[\"preset\"],\"writeOnlyPointers\":[\(writeOnly.map(jsonString).joined(separator: ","))],\"forbiddenPointers\":[\"/hostUserState\"]}"
+        return Self.json(200, "{\"protocolVersion\":2,\"runtimeId\":\(jsonString(agent.runtime)),\"schemaVersion\":\(jsonString(schemaVersion)),\"fields\":\(fields),\"values\":\(valueJSON),\"capabilities\":\(capabilities)}")
+    }
+
     public func setAgentMachineForTesting(agentId: String, machineId: String) {
         lock.lock()
         agentMachineIds[agentId] = machineId
@@ -8561,6 +8610,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         "cursor": "cursor.create.v1",
         "opencode": "opencode.create.v1",
         "pi": "pi.create.v1",
+        "gemini": "gemini.create.v1",
+        "kimi": "kimi.create.v1",
+        "antigravity": "antigravity.create.v1",
     ]
 
     public func runtimeFormDefinition(

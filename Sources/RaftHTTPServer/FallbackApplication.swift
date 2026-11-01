@@ -1130,6 +1130,16 @@ public func configure(_ app: Application, services: FallbackServices) {
             action: "migrate"
         ))
     }
+    app.get("api", "agents", ":id", "runtime-form") { request -> Response in
+        var response = routeResponse(services.emailAccounts.agentRuntimeForm(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? "",
+            language: request.headers[HTTPField.Name("Accept-Language")!]
+        ))
+        applyRuntimeFormLanguage(&response, language: request.headers[HTTPField.Name("Accept-Language")!])
+        return response
+    }
     app.get("api", "agents", ":id", "onboarding-identity-adoption") { request -> Response in
         routeResponse(services.emailAccounts.onboardingIdentityAdoption(
             authorization: request.headers[.authorization],
