@@ -1781,6 +1781,28 @@ public func configure(_ app: Application, services: FallbackServices) {
         response.headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
         return response
     }
+    app.get("api", "servers", ":id", "system-notifications-v2") { request -> Response in
+        var response = routeResponse(services.emailAccounts.listSystemAttention(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+        response.headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
+        return response
+    }
+    app.post("api", "servers", ":id", "system-notifications-v2", ":incidentId", "seen") { request -> Response in
+        routeResponse(services.emailAccounts.markSystemAttentionSeen(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            incidentId: request.parameters.get("incidentId") ?? ""
+        ))
+    }
+    app.post("api", "servers", ":id", "system-notifications-v2", ":incidentId", "dismiss") { request -> Response in
+        routeResponse(services.emailAccounts.dismissSystemAttention(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            incidentId: request.parameters.get("incidentId") ?? ""
+        ))
+    }
     app.post("api", "servers", ":id", "machines") { request -> Response in
         routeResponse(services.emailAccounts.registerServerMachine(
             authorization: request.headers[.authorization],

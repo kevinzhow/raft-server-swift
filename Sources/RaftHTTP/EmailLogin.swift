@@ -212,6 +212,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var machineRuntimeModels: [String: [String: (models: [(id: String, label: String)], updatedAt: Date)]] = [:]
     private var proSeats: [String: Int] = [:]
     private var joinLinks: [String: JoinLinkRecord] = [:]
+    private var usageLimitAttentionServers: Set<String> = []
+    private var systemAttentionIncidents: [SystemAttentionIncident] = []
+    private var systemAttentionReceipts: [String: SystemAttentionReceipt] = [:]
     private var hostedAgents: Set<String> = []
     private var threadFollows: [String: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String)] = [:]
     private struct ThreadUnfollowRecord {
@@ -247,6 +250,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var machines: [MachineRecord] = []
     private var machineStatusVersions: [String: Int] = [:]
     private var machineOnline: [String: Bool] = [:]
+    private let realtimeEmitterLock = NSLock()
+    private var realtimeEmitterStorage: (@Sendable (String, String, String?) -> Void)?
     /// `MOBILE_APP_EMAIL_UNSUBSCRIBE_SECRET`, or `JWT_SECRET`. The test harness uses `test-jwt-secret`.
     public var mobileAppEmailUnsubscribeSecret: String = "test-jwt-secret"
     /// Cancels one scheduled mobile-app lifecycle email. Unset means there is no provider call to make.
@@ -258,7 +263,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Emitted when an agent read cursor advances. Arguments: serverId, channelId, agentId, maxReadSeq.
     public var onAgentReadUpdated: (@Sendable (String, String, String, Int) -> Void)?
     /// Production socket sink: room, event name, JSON payload.
-    public var realtimeEmitter: (@Sendable (String, String, String?) -> Void)?
+    public var realtimeEmitter: (@Sendable (String, String, String?) -> Void)? {
+        get {
+            realtimeEmitterLock.lock()
+            defer { realtimeEmitterLock.unlock() }
+            return realtimeEmitterStorage
+        }
+        set {
+            realtimeEmitterLock.lock()
+            realtimeEmitterStorage = newValue
+            realtimeEmitterLock.unlock()
+        }
+    }
     /// Test seam called before each already-read SSE frame. Production leaves it nil.
     public var nativeNotificationLiveWriteHook: (@Sendable (_ index: Int, _ eventCount: Int) async -> Void)?
     /// `NATIVE_NOTIFICATION_ATTESTATION_MODE`. Nil means the variable is unset.
@@ -5731,7 +5747,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     private func emitRealtime(_ room: String, _ event: String, _ payload: String?) {
-        realtimeEmitter?(room, event, payload)
+        realtimeEmitterLock.lock()
+        let emitter = realtimeEmitterStorage
+        realtimeEmitterLock.unlock()
+        emitter?(room, event, payload)
     }
 
     /// The HTTP body keeps a forwarded source the viewer can read. The channel broadcast always strips it.
@@ -6719,6 +6738,25 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var maxUses: Int?
         var useCount: Int
         var revokedAt: Date?
+    }
+
+    private struct SystemAttentionIncident {
+        var id: String
+        var serverId: String
+        var machineId: String
+        var provider: String
+        var windowKey: String
+        var activationGeneration: Int
+        var affectedAgentIds: [String]
+        var activatedAt: Date
+        var lastObservedAt: Date
+        var resetsAt: Date?
+        var state: String
+    }
+
+    private struct SystemAttentionReceipt {
+        var seenAt: Date?
+        var dismissedAt: Date?
     }
 
     private struct StoredReaction {
@@ -8422,6 +8460,131 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     private func serverSystemNotificationsBody(generatedAt: Date, notifications: [String]) -> String {
         "{\"contractVersion\":\"server-system-notifications-v1\",\"generatedAt\":\(jsonString(Self.isoString(generatedAt))),\"snapshotMode\":\"replace\",\"clientState\":{\"read\":\"none\",\"dismiss\":\"local_by_notification_id\"},\"notifications\":[\(notifications.joined(separator: ","))]}"
+    }
+
+    public func enableUsageLimitAttentionForServer(_ serverId: String) {
+        lock.lock()
+        usageLimitAttentionServers.insert(serverId)
+        lock.unlock()
+    }
+
+    public func disableUsageLimitAttentionForServer(_ serverId: String) {
+        lock.lock()
+        usageLimitAttentionServers.remove(serverId)
+        lock.unlock()
+    }
+
+    @discardableResult
+    public func addSystemAttentionIncidentForTesting(
+        serverId: String,
+        machineId: String,
+        provider: String = "codex",
+        windowKey: String = "primary",
+        affectedAgentIds: [String] = [],
+        activatedAt: Date = Date(),
+        resetsAt: Date? = nil
+    ) -> String {
+        lock.lock()
+        let generation = (systemAttentionIncidents
+            .filter { $0.serverId == serverId && $0.machineId == machineId && $0.provider == provider && $0.windowKey == windowKey }
+            .map(\.activationGeneration)
+            .max() ?? 0) + 1
+        let id = UUID().uuidString.lowercased()
+        systemAttentionIncidents.append(SystemAttentionIncident(
+            id: id,
+            serverId: serverId,
+            machineId: machineId,
+            provider: provider,
+            windowKey: windowKey,
+            activationGeneration: generation,
+            affectedAgentIds: affectedAgentIds,
+            activatedAt: activatedAt,
+            lastObservedAt: activatedAt,
+            resetsAt: resetsAt,
+            state: "active"
+        ))
+        lock.unlock()
+        return id
+    }
+
+    public func listSystemAttention(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        let generatedAt = Date()
+        let role = oauth.memberRole(serverId: serverId, userId: userId)
+        guard role == "owner" || role == "admin" else {
+            return Self.json(200, systemAttentionBody(generatedAt: generatedAt, notifications: []))
+        }
+        lock.lock()
+        guard usageLimitAttentionServers.contains(serverId) else {
+            lock.unlock()
+            return Self.json(200, systemAttentionBody(generatedAt: generatedAt, notifications: []))
+        }
+        let incidents = systemAttentionIncidents
+            .filter { $0.serverId == serverId && $0.state == "active" }
+            .filter { systemAttentionReceipts["\($0.id)\n\(userId)"]?.dismissedAt == nil }
+            .sorted { $0.activatedAt > $1.activatedAt }
+        let notifications = incidents.map { incident -> String in
+            let seenAt = systemAttentionReceipts["\(incident.id)\n\(userId)"]?.seenAt.map { jsonString(Self.isoString($0)) } ?? "null"
+            let resetsAt = incident.resetsAt.map { jsonString(Self.isoString($0)) } ?? "null"
+            let machineName = machines.first { $0.id == incident.machineId }?.name ?? ""
+            let affected = incident.affectedAgentIds.map(jsonString).joined(separator: ",")
+            return "{\"id\":\(jsonString(incident.id)),\"kind\":\"usage_limit_reached\",\"severity\":\"warning\",\"state\":\"active\",\"activatedAt\":\(jsonString(Self.isoString(incident.activatedAt))),\"lastObservedAt\":\(jsonString(Self.isoString(incident.lastObservedAt))),\"seenAt\":\(seenAt),\"machine\":{\"id\":\(jsonString(incident.machineId)),\"name\":\(jsonString(machineName))},\"provider\":\(jsonString(incident.provider)),\"windowKey\":\(jsonString(incident.windowKey)),\"resetsAt\":\(resetsAt),\"affectedAgentIds\":[\(affected)]}"
+        }
+        lock.unlock()
+        return Self.json(200, systemAttentionBody(generatedAt: generatedAt, notifications: notifications))
+    }
+
+    public func markSystemAttentionSeen(authorization: String?, serverId: String, incidentId: String) -> HTTPReply {
+        systemAttentionReceipt(authorization: authorization, serverId: serverId, incidentId: incidentId, dismiss: false)
+    }
+
+    public func dismissSystemAttention(authorization: String?, serverId: String, incidentId: String) -> HTTPReply {
+        systemAttentionReceipt(authorization: authorization, serverId: serverId, incidentId: incidentId, dismiss: true)
+    }
+
+    private func systemAttentionReceipt(
+        authorization: String?,
+        serverId: String,
+        incidentId: String,
+        dismiss: Bool
+    ) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard ServerScope.isUUID(incidentId) else {
+            return Self.json(400, "{\"error\":\"Invalid system attention incident\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner"
+                || oauth.memberRole(serverId: serverId, userId: userId) == "admin"
+        else {
+            return Self.json(404, "{\"error\":\"System attention incident not found\"}")
+        }
+        lock.lock()
+        guard usageLimitAttentionServers.contains(serverId),
+              systemAttentionIncidents.contains(where: {
+                  $0.id == incidentId && $0.serverId == serverId && $0.state == "active"
+              })
+        else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"System attention incident not found\"}")
+        }
+        let key = "\(incidentId)\n\(userId)"
+        let now = Date()
+        var receipt = systemAttentionReceipts[key] ?? SystemAttentionReceipt(seenAt: nil, dismissedAt: nil)
+        if receipt.seenAt == nil { receipt.seenAt = now }
+        if dismiss { receipt.dismissedAt = now }
+        systemAttentionReceipts[key] = receipt
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    private func systemAttentionBody(generatedAt: Date, notifications: [String]) -> String {
+        let unseen = notifications.reduce(0) { count, notification in
+            count + (notification.contains("\"seenAt\":null") ? 1 : 0)
+        }
+        return "{\"contractVersion\":\"server-system-attention-v1\",\"generatedAt\":\(jsonString(Self.isoString(generatedAt))),\"snapshotMode\":\"replace\",\"unseenCount\":\(unseen),\"notifications\":[\(notifications.joined(separator: ","))]}"
     }
 
     public func listServerMachines(authorization: String?, serverId: String) -> HTTPReply {        guard let userId = sessionUserId(authorization: authorization) else {
