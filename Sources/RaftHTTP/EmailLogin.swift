@@ -3648,9 +3648,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             guard let randomId = object["randomId"] as? String, !randomId.isEmpty, randomId.count <= 128 else {
                 return Self.json(400, "{\"error\":\"randomId must be a non-empty string with at most 128 characters\"}")
             }
-            reply = storeHumanMessage(channelId: channelId, senderId: userId, content: content, randomId: randomId, attachmentIds: attachmentIds, senderTimezone: senderTimezone)
+            reply = storeHumanMessage(channelId: channelId, senderId: userId, content: content, randomId: randomId, attachmentIds: attachmentIds, senderTimezone: senderTimezone, mentions: mentions)
         } else {
-            reply = storeHumanMessage(channelId: channelId, senderId: userId, content: content, randomId: nil, attachmentIds: attachmentIds, senderTimezone: senderTimezone)
+            reply = storeHumanMessage(channelId: channelId, senderId: userId, content: content, randomId: nil, attachmentIds: attachmentIds, senderTimezone: senderTimezone, mentions: mentions)
         }
         if reply.status == 200, channel.kind == "thread", let parentMessageId = channel.parentMessageId {
             lock.lock()
@@ -6750,7 +6750,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return humanMessageRows.count
     }
 
-    private func storeHumanMessage(channelId: String, senderId: String, content: String, randomId: String?, attachmentIds: [String], senderTimezone: String? = nil) -> HTTPReply {
+    private func storeHumanMessage(channelId: String, senderId: String, content: String, randomId: String?, attachmentIds: [String], senderTimezone: String? = nil, mentions: [MentionInput] = []) -> HTTPReply {
         lock.lock()
         if let randomId, let existing = humanMessageRows.first(where: { $0.senderId == senderId && $0.randomId == randomId }) {
             if existing.channelId != channelId {
@@ -6781,6 +6781,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 return Self.json(400, "{\"error\":\"Attachment \(id) is already attached to another message. Re-upload the file and send the new attachment ID.\",\"code\":\"attachment_already_linked\"}")
             }
         }
+        let storedMentionsForEcho = postableChannels[channelId]?.kind == "dm"
+            ? []
+            : mentions.map { StoredMessageMention(type: $0.type, id: $0.id, name: $0.name) }
         let stored = StoredHumanMessage(
             id: UUID().uuidString.lowercased(),
             channelId: channelId,
@@ -6788,7 +6791,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             content: content,
             randomId: randomId,
             attachmentIds: attachmentIds,
-            senderTimezone: senderTimezone
+            senderTimezone: senderTimezone,
+            mentions: storedMentionsForEcho
         )
         for (position, id) in attachmentIds.enumerated() {
             channelAttachments[id]?.messageId = stored.id
@@ -7540,6 +7544,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var reactorType: String
     }
 
+    private struct StoredMessageMention: Equatable {
+        var type: String
+        var id: String
+        var name: String
+    }
+
     private struct StoredHumanMessage {
         var id: String
         var channelId: String
@@ -7561,6 +7571,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var externalMessageId: String? = nil
         var externalProvider: String? = nil
         var externalSenderName: String? = nil
+        var mentions: [StoredMessageMention] = []
     }
 
     public func removeChannelMemberForTesting(channelId: String, userId: String) {
@@ -7888,7 +7899,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     private static func humanMessageJSON(_ message: StoredHumanMessage) -> HTTPReply {
-        var body = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(message.channelId)),\"content\":\(jsonString(message.content)),\"attachments\":[\(attachmentJSON(message.attachmentIds))]"
+        let mentionJSON = message.mentions.map { mention in
+            "{\"type\":\(jsonString(mention.type)),\"id\":\(jsonString(mention.id)),\"name\":\(jsonString(mention.name))}"
+        }.joined(separator: ",")
+        var body = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(message.channelId)),\"content\":\(jsonString(message.content)),\"attachments\":[\(attachmentJSON(message.attachmentIds))],\"mentions\":[\(mentionJSON)]"
         if let randomId = message.randomId {
             body += ",\"randomId\":\(jsonString(randomId))"
         }
