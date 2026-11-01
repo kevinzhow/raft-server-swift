@@ -1158,6 +1158,58 @@ public func configure(_ app: Application, services: FallbackServices) {
         response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
         return response
     }
+    app.get("api", "agents", ":id", "connections", ":provider") { request -> Response in
+        connectionResponse(services.emailAccounts.agentConnectionStatus(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? "",
+            provider: request.parameters.get("provider") ?? ""
+        ))
+    }
+    app.post("api", "agents", ":id", "connections", ":provider") { request -> Response in
+        connectionResponse(services.emailAccounts.startAgentConnection(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? "",
+            provider: request.parameters.get("provider") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.post("api", "agents", ":id", "connections", ":provider", "confirm") { request -> Response in
+        connectionResponse(services.emailAccounts.confirmAgentConnection(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? "",
+            provider: request.parameters.get("provider") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.put("api", "agents", ":id", "connections", ":provider") { request -> Response in
+        connectionResponse(services.emailAccounts.assignAgentConnection(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? "",
+            provider: request.parameters.get("provider") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.delete("api", "agents", ":id", "connections", ":provider", "connectors", ":connectorId") { request -> Response in
+        connectionResponse(services.emailAccounts.disconnectAgentConnector(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? "",
+            provider: request.parameters.get("provider") ?? "",
+            connectorId: request.parameters.get("connectorId") ?? ""
+        ))
+    }
+    app.delete("api", "agents", ":id", "connections", ":provider") { request -> Response in
+        connectionResponse(services.emailAccounts.disconnectAgentConnection(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? "",
+            provider: request.parameters.get("provider") ?? ""
+        ))
+    }
     app.post("api", "agents", ":id", "hosted-runtime", "retry") { request -> Response in
         routeResponse(services.emailAccounts.retryAgentProvisioning(
             authorization: request.headers[.authorization],
@@ -2753,6 +2805,14 @@ private struct PublicSearchMiddleware: Middleware {
         response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
         return response
     }
+}
+
+private func connectionResponse(_ reply: HTTPReply) -> Response {
+    var response = routeResponse(reply)
+    if reply.status == 200 {
+        response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
+    }
+    return response
 }
 
 private func applyRuntimeFormLanguage(_ response: inout Response, language: String?) {

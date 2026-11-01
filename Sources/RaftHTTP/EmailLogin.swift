@@ -157,6 +157,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var hostedUsage: [String: String] = [:]
     private var hostedModelPickerServers: Set<String> = []
     private var hostedModels: [String: HostedModelState] = [:]
+    private var agentConnectionOrigin = "http://localhost:3000"
+    private let agentConnectionLock = NSLock()
+    private var agentConnectionProviderStorage: (@Sendable (AgentConnectionProviderRequest) -> AgentConnectionProviderResult)?
+
+    /// Provider relay for `github` account connections. Production wires this to
+    /// the hosted runtime provider; tests replace it with a deterministic stub.
+    public var agentConnectionProvider: (@Sendable (AgentConnectionProviderRequest) -> AgentConnectionProviderResult)? {
+        get {
+            agentConnectionLock.lock()
+            defer { agentConnectionLock.unlock() }
+            return agentConnectionProviderStorage
+        }
+        set {
+            agentConnectionLock.lock()
+            agentConnectionProviderStorage = newValue
+            agentConnectionLock.unlock()
+        }
+    }
 
     private struct HostedModelState {
         var models: [(id: String, label: String, provider: String)]
@@ -8655,6 +8673,499 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             hostedModels[id] = state
             lock.unlock()
             return Self.json(200, hostedModelView(state, picker: picker))
+        }
+    }
+
+    public func setAgentConnectionOriginForTesting(origin: String) {
+        lock.lock()
+        agentConnectionOrigin = origin
+        lock.unlock()
+    }
+
+    private static let agentConnectionProviders: Set<String> = ["github"]
+
+    private static let agentConnectionIDPattern = "^[A-Za-z0-9_.~-]{1,200}$"
+
+    private static func isAgentConnectionIdentifier(_ value: String) -> Bool {
+        value.range(of: agentConnectionIDPattern, options: .regularExpression) != nil
+    }
+
+    private enum AgentConnectionLoadResult {
+        case loaded(agentId: String, userId: String, role: String)
+        case refused(HTTPReply)
+    }
+
+    private struct HostedConnectionConnectorRecord {
+        var id: String
+        var account: String
+        var creatorRaftUserId: String?
+        var createdAt: String?
+        var current: Bool
+    }
+
+    private struct HostedConnectionStatusRecord {
+        var connected: Bool
+        var account: String?
+        var connectedAt: String?
+        var connectedBy: String?
+        var scopes: [String]
+        var connectorId: String?
+        var connectors: [HostedConnectionConnectorRecord]
+    }
+
+    private func agentConnectionProviderCall(
+        method: String,
+        action: String,
+        provider: String,
+        agentId: String,
+        body: String? = nil
+    ) -> AgentConnectionProviderResult {
+        let relay = agentConnectionProvider
+        guard let relay else { return .unavailable }
+        return relay(AgentConnectionProviderRequest(
+            method: method,
+            action: action,
+            provider: provider,
+            agentId: agentId,
+            body: body
+        ))
+    }
+
+    private func loadAgentForConnection(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        provider: String
+    ) -> AgentConnectionLoadResult {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return .refused(Self.json(401, "{\"error\":\"Unauthorized\"}"))
+        }
+        guard Self.agentConnectionProviders.contains(provider) else {
+            return .refused(Self.json(404, "{\"error\":\"Unknown connection provider\",\"code\":\"agent_connection_provider_unknown\"}"))
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
+            return .refused(Self.json(404, "{\"error\":\"Agent not found\"}"))
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId),
+              role != "guest",
+              role == "owner" || role == "admin" || agent.creatorUserId == userId
+        else {
+            return .refused(Self.json(403, "{\"error\":\"Only the agent's creator or a server owner/admin can manage its connections\",\"code\":\"agent_connection_forbidden\"}"))
+        }
+        lock.lock()
+        let hosted = hostedRuntimes[agentId]
+        lock.unlock()
+        guard let hosted else {
+            return .refused(Self.json(400, "{\"error\":\"Agent is not a cloud agent\",\"code\":\"agent_connection_not_provider_backed\"}"))
+        }
+        guard hosted.state == "active" else {
+            return .refused(Self.json(409, "{\"error\":\"The agent is not provisioned on its provider yet\",\"code\":\"agent_connection_agent_not_active\",\"state\":\(jsonString(hosted.state))}"))
+        }
+        return .loaded(agentId: agentId, userId: userId, role: role)
+    }
+
+    private static func parseConnectionStatus(_ body: String) -> HostedConnectionStatusRecord? {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return nil
+        }
+        let connected = object["connected"] as? Bool ?? false
+        var connectors: [HostedConnectionConnectorRecord] = []
+        if let raw = object["connectors"] as? [Any] {
+            for entry in raw {
+                guard let row = entry as? [String: Any],
+                      let id = row["id"] as? String,
+                      isAgentConnectionIdentifier(id)
+                else { continue }
+                connectors.append(HostedConnectionConnectorRecord(
+                    id: id,
+                    account: row["account"] as? String ?? "",
+                    creatorRaftUserId: row["creatorRaftUserId"] as? String,
+                    createdAt: row["createdAt"] as? String,
+                    current: row["current"] as? Bool ?? false
+                ))
+                if connectors.count >= 100 { break }
+            }
+        }
+        let rawConnectorId = object["connectorId"] as? String
+        let connectorId = connected ? rawConnectorId.flatMap { isAgentConnectionIdentifier($0) ? $0 : nil } : nil
+        return HostedConnectionStatusRecord(
+            connected: connected,
+            account: object["account"] as? String,
+            connectedAt: object["connectedAt"] as? String,
+            connectedBy: object["connectedBy"] as? String,
+            scopes: (object["scopes"] as? [Any])?.compactMap { $0 as? String } ?? [],
+            connectorId: connectorId,
+            connectors: connectors
+        )
+    }
+
+    private func connectionMemberIdentity(serverId: String, userId: String) -> (name: String, displayName: String)? {
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else { return nil }
+        lock.lock()
+        let account = accounts.values.first { $0.id == userId }
+        lock.unlock()
+        guard let account else { return nil }
+        return (account.name, account.name)
+    }
+
+    private func connectionUserJSON(serverId: String, userId: String) -> String {
+        let identity = connectionMemberIdentity(serverId: serverId, userId: userId)
+        let name = identity.map { jsonString($0.name) } ?? "null"
+        let displayName = identity.map { jsonString($0.displayName) } ?? "null"
+        return "{\"id\":\(jsonString(userId)),\"name\":\(name),\"displayName\":\(displayName)}"
+    }
+
+    private func connectionStatusJSON(
+        _ parsed: HostedConnectionStatusRecord,
+        provider: String,
+        serverId: String,
+        userId: String,
+        role: String
+    ) -> String {
+        let connectedBy: String
+        if parsed.connected, let id = parsed.connectedBy {
+            let identity = connectionMemberIdentity(serverId: serverId, userId: id)
+            let name = identity.map { jsonString($0.displayName) } ?? "null"
+            connectedBy = "{\"id\":\(jsonString(id)),\"name\":\(name)}"
+        } else {
+            connectedBy = "null"
+        }
+        let connectors = parsed.connectors.map { connector -> String in
+            let creator: String
+            if let creatorId = connector.creatorRaftUserId {
+                creator = connectionUserJSON(serverId: serverId, userId: creatorId)
+            } else {
+                creator = "null"
+            }
+            let canManage = role == "owner" || role == "admin" || connector.creatorRaftUserId == userId
+            let createdAt = connector.createdAt.map(jsonString) ?? "null"
+            return "{\"id\":\(jsonString(connector.id)),\"account\":\(jsonString(connector.account)),\"createdAt\":\(createdAt),\"creator\":\(creator),\"current\":\(connector.current),\"canManage\":\(canManage)}"
+        }.joined(separator: ",")
+        let scopes = parsed.scopes.map { jsonString($0) }.joined(separator: ",")
+        let account = parsed.connected ? (parsed.account.map(jsonString) ?? "null") : "null"
+        let connectedAt = parsed.connected ? (parsed.connectedAt.map(jsonString) ?? "null") : "null"
+        let connectorId = parsed.connectorId.map(jsonString) ?? "null"
+        return "{\"provider\":\(jsonString(provider)),\"supported\":true,\"connected\":\(parsed.connected),\"account\":\(account),\"connectedAt\":\(connectedAt),\"connectedBy\":\(connectedBy),\"scopes\":[\(scopes)],\"connectorId\":\(connectorId),\"connectors\":[\(connectors)]}"
+    }
+
+    private static func providerErrorParts(_ body: String) -> (code: String?, message: String?) {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let error = object["error"] as? [String: Any]
+        else {
+            return (nil, nil)
+        }
+        return (error["code"] as? String, error["message"] as? String)
+    }
+
+    private func redactProviderMessage(_ message: String?) -> String? {
+        guard let message else { return nil }
+        var value = message
+        for pattern in [
+            "(ghp_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9]+",
+            "Bearer [A-Za-z0-9._~+/=-]+",
+            "sk-[A-Za-z0-9_-]+",
+        ] {
+            value = value.replacingOccurrences(of: pattern, with: "[redacted]", options: .regularExpression)
+        }
+        return value
+    }
+
+    private func agentConnectionProviderFailure(_ result: AgentConnectionProviderResult, thisServer: Bool = true) -> HTTPReply {
+        switch result {
+        case .unavailable:
+            return Self.json(502, "{\"error\":\"The provider could not complete the request\",\"code\":\"agent_connection_provider_error\",\"providerCode\":null,\"providerMessage\":null,\"providerStatus\":null}")
+        case .empty(let status):
+            return Self.json(502, "{\"error\":\"The provider could not complete the request\",\"code\":\"agent_connection_provider_error\",\"providerCode\":null,\"providerMessage\":null,\"providerStatus\":\(status)}")
+        case .response(let status, let body):
+            let parts = Self.providerErrorParts(body)
+            let message = redactProviderMessage(parts.message)
+            if (400..<500).contains(status) {
+                let error = message ?? "The provider refused the request"
+                return Self.json(409, "{\"error\":\(jsonString(error)),\"code\":\"agent_connection_provider_refused\",\"providerCode\":\(parts.code.map(jsonString) ?? "null"),\"providerMessage\":\(message.map(jsonString) ?? "null"),\"providerStatus\":\(status)}")
+            }
+            return Self.json(502, "{\"error\":\"The provider could not complete the request\",\"code\":\"agent_connection_provider_error\",\"providerCode\":\(parts.code.map(jsonString) ?? "null"),\"providerMessage\":\(message.map(jsonString) ?? "null"),\"providerStatus\":\(status)}")
+        }
+    }
+
+    /// A 404 from the provider may mean the connections route is missing
+    /// (unsupported) or that the provider no longer knows the agent. Only the
+    /// agent lookup can tell them apart.
+    private func agentConnection404Reply(
+        provider: String,
+        agentId: String,
+        body: String,
+        connectorScoped: Bool = false
+    ) -> HTTPReply {
+        let lookup = agentConnectionProviderCall(method: "GET", action: "agentLookup", provider: provider, agentId: agentId)
+        switch lookup {
+        case .response(let status, _) where (200..<300).contains(status):
+            if connectorScoped {
+                return Self.json(404, "{\"error\":\"That connection does not exist on this server\",\"code\":\"agent_connection_connector_not_found\"}")
+            }
+            return Self.json(409, "{\"error\":\"The provider does not support connections\",\"code\":\"agent_connection_unsupported\"}")
+        case .response(let status, let lookupBody) where status == 404:
+            return agentConnectionMissingReply(providerMessage: Self.providerErrorParts(lookupBody).message ?? Self.providerErrorParts(body).message)
+        default:
+            return agentConnectionProviderFailure(lookup)
+        }
+    }
+
+    private func agentConnectionMissingReply(providerMessage: String?) -> HTTPReply {
+        let message = redactProviderMessage(providerMessage)
+        return Self.json(409, "{\"error\":\"This agent no longer exists at its provider; connections are unavailable. Recreate the agent.\",\"code\":\"agent_connection_agent_missing_at_provider\",\"providerMessage\":\(message.map(jsonString) ?? "null")}")
+    }
+
+    private func agentConnectionStatus404Reply(provider: String, agentId: String) -> HTTPReply {
+        let lookup = agentConnectionProviderCall(method: "GET", action: "agentLookup", provider: provider, agentId: agentId)
+        switch lookup {
+        case .response(let status, _) where (200..<300).contains(status):
+            return Self.json(200, "{\"provider\":\(jsonString(provider)),\"supported\":false}")
+        case .response(let status, let lookupBody) where status == 404:
+            return agentConnectionMissingReply(providerMessage: Self.providerErrorParts(lookupBody).message)
+        default:
+            return agentConnectionProviderFailure(lookup)
+        }
+    }
+
+    private func pendingInvalidReply(providerCode: String? = nil, message: String? = nil) -> HTTPReply {
+        Self.json(404, "{\"error\":\"The connection link expired or is invalid; start again\",\"code\":\"agent_connection_pending_invalid\",\"providerCode\":\(providerCode.map(jsonString) ?? "null"),\"providerMessage\":\(redactProviderMessage(message).map(jsonString) ?? "null")}")
+    }
+
+    private func agentConnectionStatusFailure(_ result: AgentConnectionProviderResult, provider: String, agentId: String, serverId: String, userId: String, role: String) -> HTTPReply {
+        switch result {
+        case .response(let status, let body) where (200..<300).contains(status):
+            guard let parsed = Self.parseConnectionStatus(body) else {
+                return Self.json(502, "{\"error\":\"The provider could not complete the request\",\"code\":\"agent_connection_provider_error\",\"providerCode\":\"invalid_response\",\"providerMessage\":null,\"providerStatus\":\(status)}")
+            }
+            return Self.json(200, connectionStatusJSON(parsed, provider: provider, serverId: serverId, userId: userId, role: role))
+        case .response(let status, _) where status == 404:
+            return agentConnectionStatus404Reply(provider: provider, agentId: agentId)
+        default:
+            return agentConnectionProviderFailure(result)
+        }
+    }
+
+    public func agentConnectionStatus(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        provider: String
+    ) -> HTTPReply {
+        switch loadAgentForConnection(authorization: authorization, serverId: serverId, agentId: agentId, provider: provider) {
+        case .refused(let reply):
+            return reply
+        case .loaded(_, let userId, let role):
+            let result = agentConnectionProviderCall(method: "GET", action: "status", provider: provider, agentId: agentId)
+            return agentConnectionStatusFailure(result, provider: provider, agentId: agentId, serverId: serverId, userId: userId, role: role)
+        }
+    }
+
+    public func startAgentConnection(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        provider: String,
+        body: String
+    ) -> HTTPReply {
+        switch loadAgentForConnection(authorization: authorization, serverId: serverId, agentId: agentId, provider: provider) {
+        case .refused(let reply):
+            return reply
+        case .loaded(_, let userId, _):
+            let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+            let rawAccess = object?["access"]
+            let access: String?
+            if rawAccess == nil || rawAccess is NSNull {
+                access = nil
+            } else if let value = rawAccess as? String, value == "private" {
+                access = "private"
+            } else {
+                return Self.json(400, "{\"error\":\"access must be \\\"private\\\" when present\",\"code\":\"agent_connection_invalid\"}")
+            }
+            lock.lock()
+            let origin = agentConnectionOrigin
+            lock.unlock()
+            var bodyJSON = "{\"returnUrl\":\(jsonString("\(origin)/api/connections/callback/\(serverId)/\(agentId)")),\"initiatedBy\":{\"raftUserId\":\(jsonString(userId))}"
+            if let access {
+                bodyJSON += ",\"access\":\(jsonString(access))"
+            }
+            bodyJSON += "}"
+            let result = agentConnectionProviderCall(method: "POST", action: "start", provider: provider, agentId: agentId, body: bodyJSON)
+            switch result {
+            case .response(let status, let responseBody) where (200..<300).contains(status):
+                guard let parsed = (try? JSONSerialization.jsonObject(with: Data(responseBody.utf8))) as? [String: Any],
+                      let url = parsed["url"] as? String,
+                      let parsedURL = URL(string: url),
+                      parsedURL.scheme == "http" || parsedURL.scheme == "https"
+                else {
+                    return Self.json(502, "{\"error\":\"The provider could not complete the request\",\"code\":\"agent_connection_provider_error\",\"providerCode\":\"invalid_connection_url\",\"providerMessage\":null,\"providerStatus\":\(status)}")
+                }
+                let expiresAt = (parsed["expiresAt"] as? String).map(jsonString) ?? "\"\""
+                let scopes = ((parsed["scopes"] as? [Any])?.compactMap { $0 as? String } ?? []).map(jsonString).joined(separator: ",")
+                return Self.json(200, "{\"url\":\(jsonString(parsedURL.absoluteString)),\"expiresAt\":\(expiresAt),\"scopes\":[\(scopes)]}")
+            case .response(let status, let responseBody) where status == 404:
+                return agentConnection404Reply(provider: provider, agentId: agentId, body: responseBody)
+            default:
+                return agentConnectionProviderFailure(result)
+            }
+        }
+    }
+
+    public func confirmAgentConnection(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        provider: String,
+        body: String
+    ) -> HTTPReply {
+        switch loadAgentForConnection(authorization: authorization, serverId: serverId, agentId: agentId, provider: provider) {
+        case .refused(let reply):
+            return reply
+        case .loaded(_, let userId, let role):
+            let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+            guard let pending = object?["pending"] as? String, !pending.isEmpty else {
+                return Self.json(400, "{\"error\":\"pending is required\",\"code\":\"agent_connection_invalid\"}")
+            }
+            guard Self.isAgentConnectionIdentifier(pending) else {
+                return pendingInvalidReply()
+            }
+            let requestBody = "{\"pending\":\(jsonString(pending)),\"raftUserId\":\(jsonString(userId))}"
+            let result = agentConnectionProviderCall(method: "POST", action: "confirm", provider: provider, agentId: agentId, body: requestBody)
+            switch result {
+            case .response(let status, let responseBody) where (200..<300).contains(status):
+                guard let parsed = Self.parseConnectionStatus(responseBody) else {
+                    return Self.json(502, "{\"error\":\"The provider could not complete the request\",\"code\":\"agent_connection_provider_error\",\"providerCode\":\"invalid_response\",\"providerMessage\":null,\"providerStatus\":\(status)}")
+                }
+                return Self.json(200, connectionStatusJSON(parsed, provider: provider, serverId: serverId, userId: userId, role: role))
+            case .response(let status, let responseBody) where status == 404:
+                let parts = Self.providerErrorParts(responseBody)
+                return pendingInvalidReply(providerCode: parts.code, message: parts.message)
+            default:
+                return agentConnectionProviderFailure(result)
+            }
+        }
+    }
+
+    public func assignAgentConnection(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        provider: String,
+        body: String
+    ) -> HTTPReply {
+        switch loadAgentForConnection(authorization: authorization, serverId: serverId, agentId: agentId, provider: provider) {
+        case .refused(let reply):
+            return reply
+        case .loaded(_, let userId, let role):
+            let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+            guard let connectorId = object?["connectorId"] as? String, Self.isAgentConnectionIdentifier(connectorId) else {
+                return Self.json(400, "{\"error\":\"connectorId is required\",\"code\":\"agent_connection_invalid\"}")
+            }
+            let statusResult = agentConnectionProviderCall(method: "GET", action: "status", provider: provider, agentId: agentId)
+            guard case .response(let statusCode, let statusBody) = statusResult,
+                  (200..<300).contains(statusCode)
+            else {
+                if case .response(404, let body) = statusResult {
+                    return agentConnection404Reply(provider: provider, agentId: agentId, body: body)
+                }
+                return agentConnectionProviderFailure(statusResult)
+            }
+            guard let parsed = Self.parseConnectionStatus(statusBody),
+                  let connector = parsed.connectors.first(where: { $0.id == connectorId })
+            else {
+                return Self.json(404, "{\"error\":\"That connection does not exist on this server\",\"code\":\"agent_connection_connector_not_found\"}")
+            }
+            let isManager = role == "owner" || role == "admin"
+            guard isManager || connector.creatorRaftUserId == userId else {
+                return Self.json(403, "{\"error\":\"Only the connection's creator or a server admin can assign or disconnect it\",\"code\":\"agent_connection_connector_forbidden\"}")
+            }
+            let actingRole = connector.creatorRaftUserId == userId ? "creator" : "admin"
+            let requestBody = "{\"connectorId\":\(jsonString(connectorId)),\"actingRaftUserId\":\(jsonString(userId)),\"actingRole\":\(jsonString(actingRole))}"
+            let result = agentConnectionProviderCall(method: "PUT", action: "assign", provider: provider, agentId: agentId, body: requestBody)
+            switch result {
+            case .response(let status, _) where (200..<300).contains(status):
+                let refreshed = agentConnectionProviderCall(method: "GET", action: "status", provider: provider, agentId: agentId)
+                return agentConnectionStatusFailure(refreshed, provider: provider, agentId: agentId, serverId: serverId, userId: userId, role: role)
+            case .response(let status, let responseBody) where status == 404:
+                return agentConnection404Reply(provider: provider, agentId: agentId, body: responseBody, connectorScoped: true)
+            default:
+                return agentConnectionProviderFailure(result)
+            }
+        }
+    }
+
+    public func disconnectAgentConnection(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        provider: String
+    ) -> HTTPReply {
+        switch loadAgentForConnection(authorization: authorization, serverId: serverId, agentId: agentId, provider: provider) {
+        case .refused(let reply):
+            return reply
+        case .loaded:
+            let result = agentConnectionProviderCall(method: "DELETE", action: "disconnect", provider: provider, agentId: agentId)
+            switch result {
+            case .response(let status, let responseBody) where status == 404:
+                return agentConnection404Reply(provider: provider, agentId: agentId, body: responseBody)
+            case .response(let status, _) where (200..<300).contains(status):
+                return Self.json(204, "")
+            case .empty(let status) where (200..<300).contains(status):
+                return Self.json(204, "")
+            default:
+                return agentConnectionProviderFailure(result)
+            }
+        }
+    }
+
+    public func disconnectAgentConnector(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        provider: String,
+        connectorId: String
+    ) -> HTTPReply {
+        switch loadAgentForConnection(authorization: authorization, serverId: serverId, agentId: agentId, provider: provider) {
+        case .refused(let reply):
+            return reply
+        case .loaded(_, let userId, let role):
+            guard Self.isAgentConnectionIdentifier(connectorId) else {
+                return Self.json(400, "{\"error\":\"connectorId is required\",\"code\":\"agent_connection_invalid\"}")
+            }
+            let statusResult = agentConnectionProviderCall(method: "GET", action: "status", provider: provider, agentId: agentId)
+            guard case .response(let statusCode, let statusBody) = statusResult,
+                  (200..<300).contains(statusCode)
+            else {
+                if case .response(404, let body) = statusResult {
+                    return agentConnection404Reply(provider: provider, agentId: agentId, body: body)
+                }
+                return agentConnectionProviderFailure(statusResult)
+            }
+            guard let parsed = Self.parseConnectionStatus(statusBody),
+                  let connector = parsed.connectors.first(where: { $0.id == connectorId })
+            else {
+                return Self.json(404, "{\"error\":\"That connection does not exist on this server\",\"code\":\"agent_connection_connector_not_found\"}")
+            }
+            let isManager = role == "owner" || role == "admin"
+            guard isManager || connector.creatorRaftUserId == userId else {
+                return Self.json(403, "{\"error\":\"Only the connection's creator or a server admin can assign or disconnect it\",\"code\":\"agent_connection_connector_forbidden\"}")
+            }
+            let actingRole = connector.creatorRaftUserId == userId ? "creator" : "admin"
+            let requestBody = "{\"actingRaftUserId\":\(jsonString(userId)),\"actingRole\":\(jsonString(actingRole))}"
+            let result = agentConnectionProviderCall(method: "DELETE", action: "disconnectConnector", provider: provider, agentId: agentId, body: requestBody)
+            switch result {
+            case .response(let status, let responseBody) where status == 502:
+                let failed = (try? JSONSerialization.jsonObject(with: Data(responseBody.utf8))) as? [String: Any]
+                let failedCount = (failed?["failed"] as? [Any])?.count ?? 0
+                return Self.json(502, "{\"error\":\"Disconnect partially completed; retry to finish\",\"code\":\"agent_connection_connector_disconnect_partial\",\"failedCount\":\(failedCount)}")
+            case .response(let status, let responseBody) where status == 404:
+                return agentConnection404Reply(provider: provider, agentId: agentId, body: responseBody, connectorScoped: true)
+            case .response(let status, _) where (200..<300).contains(status):
+                return Self.json(204, "")
+            case .empty(let status) where (200..<300).contains(status):
+                return Self.json(204, "")
+            default:
+                return agentConnectionProviderFailure(result)
+            }
         }
     }
 

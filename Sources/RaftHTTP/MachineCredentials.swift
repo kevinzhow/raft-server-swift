@@ -26,3 +26,29 @@ public enum RuntimeAccountUsageManualResult: Sendable, Equatable {
     case timeout
     case offline
 }
+
+/// One call to a hosted runtime provider's connections surface. `action` names
+/// the provider operation; the body is the JSON sent upstream, if any.
+public struct AgentConnectionProviderRequest: Sendable, Equatable {
+    public var method: String
+    public var action: String
+    public var provider: String
+    public var agentId: String
+    public var body: String?
+
+    public init(method: String, action: String, provider: String, agentId: String, body: String? = nil) {
+        self.method = method
+        self.action = action
+        self.provider = provider
+        self.agentId = agentId
+        self.body = body
+    }
+}
+
+/// Provider answer for a connections call. A body is only meaningful with a
+/// response; `unavailable` stands in for a transport failure.
+public enum AgentConnectionProviderResult: Sendable, Equatable {
+    case response(status: Int, body: String)
+    case empty(status: Int)
+    case unavailable
+}
