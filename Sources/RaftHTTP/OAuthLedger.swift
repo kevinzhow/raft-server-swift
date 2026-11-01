@@ -1908,7 +1908,8 @@ public final class OAuthLedger: @unchecked Sendable {
         let external = (object?["externalEventId"] as? String ?? object?["external_event_id"] as? String)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         let payloadData = (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])) ?? Data()
-        let payloadHash = sha256(String(decoding: payloadData, as: UTF8.self))
+        let payloadJSON = String(decoding: payloadData, as: UTF8.self)
+        let payloadHash = sha256(payloadJSON)
         let now = Date()
         if let external, !external.isEmpty,
            let index = agentEvents.firstIndex(where: {
@@ -1933,6 +1934,7 @@ public final class OAuthLedger: @unchecked Sendable {
             kind: kind,
             summary: summary,
             payloadHash: payloadHash,
+            payloadJSON: payloadJSON,
             externalEventId: external,
             status: "delivering",
             expiresAt: now.addingTimeInterval(24 * 60 * 60),
@@ -1941,6 +1943,101 @@ public final class OAuthLedger: @unchecked Sendable {
         agentEvents.append(event)
         let document = "{\"id\":\(jsonString(event.id)),\"status\":\"queued\",\"deduped\":false,\"expiresAt\":\(jsonString(iso8601(event.expiresAt))),\"payloadHash\":\(jsonString(event.payloadHash))}"
         return json(202, document)
+    }
+
+    /// One re-readable third-party event body, scoped to the agent that owns it.
+    public struct ThirdPartyEventReadMessage: Sendable {
+        public var id: String
+        public var kind: String
+        public var summary: String
+        public var content: String
+        public var clientKey: String
+        public var clientName: String
+        public var externalEventId: String?
+        public var payloadHash: String
+        public var payloadJSON: String
+        public var createdAt: Date
+        public var expiresAt: Date
+    }
+
+    public enum ThirdPartyEventReadResult: Sendable {
+        case found(ThirdPartyEventReadMessage)
+        case expired
+        case ambiguous
+        case absent
+    }
+
+    /// `agent-event:<id8 | uuid>`: only ever resolves rows the acting agent owns,
+    /// so "not yours" and "does not exist" take the same path.
+    public func readThirdPartyAgentEventForAgent(agentId: String, ref rawRef: String) -> ThirdPartyEventReadResult {
+        let ref = rawRef.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let isFull = ref.wholeMatch(of: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/) != nil
+        let isShort = ref.wholeMatch(of: /^[0-9a-f]{8}$/) != nil
+        guard isFull || isShort else { return .absent }
+        lock.lock()
+        let matches = agentEvents
+            .filter { $0.agentId == agentId && (isFull ? $0.id == ref : $0.id.hasPrefix(ref)) }
+            .sorted { $0.createdAt < $1.createdAt }
+        lock.unlock()
+        if matches.isEmpty { return .absent }
+        if matches.count > 1 { return .ambiguous }
+        let event = matches[0]
+        if event.status == "expired" || event.expiresAt <= Date() {
+            return .expired
+        }
+        lock.lock()
+        let client = clients.first(where: { $0.id == event.clientId })
+        lock.unlock()
+        let clientKey = client?.clientId ?? ""
+        let clientName = client?.name ?? ""
+        let content = [
+            "Third-party \(event.kind): \(event.summary)",
+            "",
+            "event_id: \(event.id)",
+            "payload_hash: \(event.payloadHash)",
+            "resource: urn:raft:server:\(event.serverId):agent-inbound",
+        ].joined(separator: "\n")
+        return .found(ThirdPartyEventReadMessage(
+            id: event.id,
+            kind: event.kind,
+            summary: event.summary,
+            content: content,
+            clientKey: clientKey,
+            clientName: clientName,
+            externalEventId: event.externalEventId,
+            payloadHash: event.payloadHash,
+            payloadJSON: event.payloadJSON,
+            createdAt: event.createdAt,
+            expiresAt: event.expiresAt
+        ))
+    }
+
+    public func addThirdPartyAgentEventForTesting(
+        id: String,
+        serverId: String,
+        agentId: String,
+        clientRecordId: String,
+        kind: String = "notification",
+        summary: String,
+        payloadJSON: String = "{}",
+        expiresAt: Date
+    ) {
+        lock.lock()
+        agentEvents.append(AgentEvent(
+            id: id.lowercased(),
+            serverId: serverId,
+            agentId: agentId,
+            clientId: clientRecordId,
+            kind: kind,
+            summary: summary,
+            payloadHash: sha256(payloadJSON),
+            payloadJSON: payloadJSON,
+            externalEventId: nil,
+            status: "delivered",
+            expiresAt: expiresAt,
+            createdAt: Date()
+        ))
+        lock.unlock()
     }
 
     public func pendingThirdPartyEventMessages(agentId: String) -> [ThirdPartyEventMessage] {
@@ -2591,6 +2688,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var kind: String
         var summary: String
         var payloadHash: String
+        var payloadJSON: String = "{}"
         var externalEventId: String?
         var status: String
         var expiresAt: Date

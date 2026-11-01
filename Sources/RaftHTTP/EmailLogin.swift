@@ -13883,6 +13883,25 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard !reference.isEmpty else {
             return Self.json(400, "{\"error\":\"channel is required\"}")
         }
+        if reference.hasPrefix("agent-event:") {
+            let rawRef = String(reference.dropFirst("agent-event:".count))
+            switch oauth.readThirdPartyAgentEventForAgent(agentId: agent.id, ref: rawRef) {
+            case .ambiguous:
+                return Self.json(409, "{\"error\":\"That 8-character event address matches more than one of your events. Use the full event id, printed as `event_id:` in the event body.\",\"errorCode\":\"AMBIGUOUS_ID\",\"suggestedNextAction\":\"raft message read --target 'agent-event:<full-event-id>'\"}")
+            case .expired:
+                return Self.json(410, "{\"error\":\"This third-party event has expired and its payload is no longer retained.\",\"errorCode\":\"EXPIRED\"}")
+            case .absent:
+                return Self.json(404, "{\"error\":\"Channel not found or not visible\"}")
+            case .found(let message):
+                let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                let id = jsonString(message.id)
+                let external = message.externalEventId.map(jsonString) ?? "null"
+                let payload = message.payloadJSON.isEmpty ? "{}" : message.payloadJSON
+                let row = "{\"id\":\(id),\"content\":\(jsonString(message.content)),\"seq\":1,\"senderType\":\"third_party_app\",\"senderId\":\(jsonString(message.clientKey)),\"senderName\":\(jsonString(message.clientName)),\"createdAt\":\(jsonString(formatter.string(from: message.createdAt))),\"attachments\":[],\"third_party_event\":{\"id\":\(id),\"kind\":\(jsonString(message.kind)),\"client_id\":\(jsonString(message.clientKey)),\"client_name\":\(jsonString(message.clientName)),\"external_event_id\":\(external),\"payload_hash\":\(jsonString(message.payloadHash)),\"payload\":\(payload),\"expires_at\":\(jsonString(formatter.string(from: message.expiresAt)))}}"
+                return Self.json(200, "{\"messages\":[\(row)],\"has_more\":false,\"has_older\":false,\"has_newer\":false}")
+            }
+        }
         lock.lock()
         let channelId: String?
         if reference.hasPrefix("#") {
