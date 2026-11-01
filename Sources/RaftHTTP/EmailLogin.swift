@@ -303,6 +303,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var machines: [MachineRecord] = []
     private var machineStatusVersions: [String: Int] = [:]
     private var machineOnline: [String: Bool] = [:]
+    private var agentCredentialUseThrottleOverrideMs: Int?
+    private var agentLastSeenAt: [String: Date] = [:]
+
+    /// Production throttle for credential-use writes.
+    public static let agentCredentialUseDefaultThrottleMs = 60_000
     private var deletedMachineWorkspaces: Set<String> = []
     private let realtimeEmitterLock = NSLock()
     private var realtimeEmitterStorage: (@Sendable (String, String, String?) -> Void)?
@@ -5619,6 +5624,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let credential, credential.scopes.contains("read") else {
             return .failure(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
         }
+        recordAgentCredentialUse(token: token)
         return .success(credential.agentId)
     }
 
@@ -7050,11 +7056,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
-        agentCredentials[token]?.lastUsedAt = Date()
         let agentId = credential.agentId
         let credentialId = credential.id
         let scopes = credential.scopes.sorted()
         lock.unlock()
+        recordAgentCredentialUse(token: token)
         guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
@@ -7750,10 +7756,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        lock.lock()
+        let seen = agentLastSeenAt
+        lock.unlock()
         let rows = oauth.serverAgents(serverId: serverId).map { agent -> String in
             let canSeeConfig = role == "owner" || role == "admin" || agent.creatorUserId == userId
             let creatorJSON = agent.creatorUserId.map { "{\"type\":\"human\",\"id\":\(jsonString($0))}" } ?? "null"
-        let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"model\":\(jsonString(Self.agentModel(from: agent.runtimeConfigJSON, external: agent.runtime == "external"))),\"external\":\(agent.runtime == "external"),\"serverRole\":\"member\",\"creator\":\(creatorJSON),\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
+            var base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"model\":\(jsonString(Self.agentModel(from: agent.runtimeConfigJSON, external: agent.runtime == "external"))),\"external\":\(agent.runtime == "external"),\"serverRole\":\"member\",\"creator\":\(creatorJSON),\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
+            if agent.runtime == "external" {
+                let lastSeen = seen[agent.id].map { jsonString(formatter.string(from: $0)) } ?? "null"
+                base += ",\"lastSeenAt\":\(lastSeen)"
+            }
             if canSeeConfig {
                 return base + ",\"runtimeConfig\":\(agent.runtimeConfigJSON ?? "null"),\"envVars\":\(agent.envVarsJSON ?? "null")}"
             }
@@ -8009,6 +8024,74 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let usedJSON = lastUsedAt.map { jsonString(ISO8601DateFormatter().string(from: $0)) } ?? "null"
         return Self.json(200, "{\"setupState\":\(jsonString(setupState)),\"credentialLastUsedAt\":\(usedJSON),\"lastActivityAt\":null}")
+    }
+
+    public func setAgentCredentialUseThrottleMsForTesting(_ value: Int?) {
+        lock.lock()
+        agentCredentialUseThrottleOverrideMs = value
+        lock.unlock()
+    }
+
+    public func agentCredentialLastUsedAtForTesting(apiKey: String) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return agentCredentials[apiKey]?.lastUsedAt
+    }
+
+    private func recordAgentCredentialUse(token: String) {
+        let now = Date()
+        lock.lock()
+        guard var credential = agentCredentials[token], credential.revokedAt == nil else {
+            lock.unlock()
+            return
+        }
+        let throttle = agentCredentialUseThrottleOverrideMs ?? Self.agentCredentialUseDefaultThrottleMs
+        if let last = credential.lastUsedAt, now.timeIntervalSince(last) * 1000 < Double(throttle) {
+            lock.unlock()
+            return
+        }
+        credential.lastUsedAt = now
+        agentCredentials[token] = credential
+        agentLastSeenAt[credential.agentId] = now
+        lock.unlock()
+        guard let agent = oauth.agentRuntimeInfo(id: credential.agentId), agent.runtime == "external" else { return }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        emitRealtime("server:\(agent.serverId)", "agent:seen", "{\"agentId\":\(jsonString(agent.id)),\"lastSeenAt\":\(jsonString(formatter.string(from: now)))}")
+    }
+
+    public func refreshAgentWakeStreamCredential(token: String) {
+        recordAgentCredentialUse(token: token)
+    }
+
+    public enum AgentWakeStreamStart {
+        case start(token: String, firstFrame: String)
+        case refused(HTTPReply)
+    }
+
+    public func beginAgentWakeHintsStream(authorization: String?, since: String?) -> AgentWakeStreamStart {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return .refused(Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}"))
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let credential = agentCredentials[token]
+        lock.unlock()
+        guard let credential, credential.revokedAt == nil, credential.scopes.contains("read") else {
+            return .refused(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
+        }
+        let raw = (since ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !raw.isEmpty, raw != "latest" {
+            guard let value = Int(raw), value >= 0 else {
+                return .refused(Self.json(400, "{\"error\":\"since / Last-Event-ID must be a non-negative integer (messageSeq) or 'latest'\",\"code\":\"since_invalid\"}"))
+            }
+        }
+        recordAgentCredentialUse(token: token)
+        let frames = oauth.pendingThirdPartyEventMessages(agentId: credential.agentId).map { message in
+            let data = "{\"seq\":null,\"message_id\":\(jsonString(message.id)),\"wake_reason\":\"message_pending\"}"
+            return "event: wake-hint\nid: null\ndata: \(data)\n\n"
+        }.joined()
+        return .start(token: token, firstFrame: ": connected\n\n" + frames)
     }
 
     public func markAgentCredentialUsed(agentId: String) {

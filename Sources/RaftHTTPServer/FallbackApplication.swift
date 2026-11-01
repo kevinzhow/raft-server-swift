@@ -653,10 +653,41 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.get("internal", "agent-api", "wake-hints", "stream") { request -> Response in
-        routeResponse(services.emailAccounts.agentWakeHintsStream(
+        let heartbeatEnv = ProcessInfo.processInfo.environment["SLOCK_WAKE_STREAM_HEARTBEAT_MS"]
+        if services.nodeEnv == "test", heartbeatEnv == nil {
+            return routeResponse(services.emailAccounts.agentWakeHintsStream(
+                authorization: request.headers[.authorization],
+                since: desktopQuery(request.url.query, "since")
+            ))
+        }
+        switch services.emailAccounts.beginAgentWakeHintsStream(
             authorization: request.headers[.authorization],
             since: desktopQuery(request.url.query, "since")
-        ))
+        ) {
+        case .refused(let reply):
+            return routeResponse(reply)
+        case .start(let token, let firstFrame):
+            let rawHeartbeat = heartbeatEnv.flatMap(Int.init)
+            let heartbeatMs = min(60_000, max(50, rawHeartbeat ?? 15_000))
+            let boundedTicks = services.nodeEnv == "test" ? 3 : Int.max
+            var headers = HTTPFields()
+            headers[.contentType] = "text/event-stream"
+            headers[.cacheControl] = "no-cache, no-transform"
+            headers[HTTPField.Name("X-Accel-Buffering")!] = "no"
+            var response = Response(status: .ok, headers: headers)
+            response.body = Response.Body { writer in
+                try await writer.write(firstFrame)
+                var ticks = 0
+                while !Task.isCancelled {
+                    try await Task.sleep(nanoseconds: UInt64(heartbeatMs) * 1_000_000)
+                    services.emailAccounts.refreshAgentWakeStreamCredential(token: token)
+                    try await writer.write(": heartbeat\n\n")
+                    ticks += 1
+                    if ticks >= boundedTicks { return }
+                }
+            }
+            return response
+        }
     }
     app.get("internal", "agent-api", "events") { request -> Response in
         routeResponse(services.emailAccounts.agentThirdPartyEvents(authorization: request.headers[.authorization]))
