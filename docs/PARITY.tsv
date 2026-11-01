@@ -46,7 +46,7 @@ authRefreshTrace	route	pending	-	auto-seed
 authRevocation.api	route	pending	-	auto-seed
 billing.api	route	pending	-	auto-seed
 channelAdmin.api	route	partial	-	auto-seed
-channelFiles.api	route	pending	-	auto-seed
+channelFiles.api	route	locked	3afd934	channel/thread file union, source metadata, cursor paging
 channels.api	route	partial	-	auto-seed
 channels.archive.api	route	partial	-	auto-seed
 channels.getJoined.api	route	partial	-	auto-seed
