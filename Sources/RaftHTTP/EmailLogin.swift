@@ -11468,6 +11468,78 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(201, "{\"apiKey\":\(jsonString(apiKey)),\"machineId\":\(jsonString(machineId))}")
     }
 
+    /// `POST /internal/computer/runners/:agentId/credentials`. A live Computer
+    /// mints an agent credential for a runner of its own machine only.
+    public func computerMintRunnerCredential(authorization: String?, agentId: String, body: String) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Invalid computer credential\"}")
+        }
+        let apiKey = String(authorization.dropFirst("Bearer ".count))
+        guard case .linked(let computerId, let machineId) = computerCredential(apiKey: apiKey) else {
+            return Self.json(401, "{\"error\":\"Invalid computer credential\"}")
+        }
+        lock.lock()
+        guard let computer = computers.first(where: { $0.id == computerId }),
+              let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted,
+              agent.serverId == computer.serverId,
+              agentMachineIds[agentId] == machineId
+        else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Agent not found\",\"code\":\"agent_missing\"}")
+        }
+        lock.unlock()
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+        let allowed = ["send", "read", "mentions", "tasks", "reactions", "server", "channels", "knowledge", "mcp", "raftbench"]
+        let scopes: [String]
+        if let raw = object["scopes"] {
+            guard let list = raw as? [Any], list.allSatisfy({ $0 is String }) else {
+                return Self.json(400, "{\"error\":\"scopes must be an array of capability literals\",\"code\":\"scopes_invalid\"}")
+            }
+            let values = Set(list.compactMap { $0 as? String })
+            guard values.allSatisfy({ allowed.contains($0) }) else {
+                let expected = allowed.joined(separator: ", ")
+                return Self.json(400, "{\"error\":\"scopes must each be one of: \(expected)\",\"code\":\"scopes_invalid\"}")
+            }
+            guard !values.isEmpty else {
+                return Self.json(400, "{\"error\":\"scopes must include at least one capability\",\"code\":\"scopes_empty\"}")
+            }
+            scopes = values.sorted()
+        } else {
+            scopes = allowed
+        }
+        var name = "computer-runner"
+        if let rawName = object["name"], !(rawName is NSNull) {
+            guard let text = rawName as? String, !text.isEmpty, text.count <= 200 else {
+                return Self.json(400, "{\"error\":\"name must be a non-empty string up to 200 chars\",\"code\":\"name_invalid\"}")
+            }
+            name = text
+        }
+        let minted = mintAgentCredential(agentId: agentId, scopes: scopes, name: name)
+        lock.lock()
+        let credentialId = agentCredentials[minted]?.id ?? UUID().uuidString.lowercased()
+        lock.unlock()
+        let scopeJSON = scopes.map { jsonString($0) }.joined(separator: ",")
+        return Self.json(201, "{\"credentialId\":\(jsonString(credentialId)),\"apiKey\":\(jsonString(minted)),\"scopes\":[\(scopeJSON)],\"agentId\":\(jsonString(agentId)),\"agentName\":\(jsonString(agent.name)),\"serverId\":\(jsonString(agent.serverId))}")
+    }
+
+    public func computerRecordForTesting(apiKey: String) -> (revokedAt: Date?, machineId: String?)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let computer = computers.first(where: { $0.apiKey == apiKey }) else { return nil }
+        return (computer.revokedAt, computer.machineId)
+    }
+
+    /// Models the pre-fix FK `SET NULL`: the machine disappears with no
+    /// revocation receipt on the Computer.
+    public func removeMachineWithoutRevocationForTesting(machineId: String) {
+        lock.lock()
+        machines.removeAll { $0.id == machineId }
+        for index in computers.indices where computers[index].machineId == machineId {
+            computers[index].machineId = nil
+        }
+        lock.unlock()
+    }
+
     public func computerRunners(authorization: String?) -> HTTPReply {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
             return Self.json(401, "{\"error\":\"Invalid computer credential\"}")

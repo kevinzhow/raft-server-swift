@@ -336,3 +336,5 @@ Agent audience JWT 内建：`POST /internal/agent-api/integrations/token` 不读
 
 Agent 读位置：`GET /internal/agent-api/events` 每次每个会话最多交回 5 条未读（`sender != agent` 且 seq 高于该会话 cursor），并把这些消息的 cursor 推进到最后一交回的 seq；还有剩余时 `has_more:true`，下一次调用返回余下部分，排空后为空。agent 通过 `/internal/agent-api/send` 发消息时，只有当自身消息之下没有其他发送者的未读消息时 cursor 才前进到自身消息，否则保持不动且那些未读仍会被拉取；agent 自己的消息永不出现在自己的 pull 里。人类通过 `POST /api/messages` 发送时，其读 cursor 总是前进到自身消息（不受下方未读影响）。`/internal/agent-api/send` 现在也接受 `#channel` 目标（含 thread 后缀）。
 
+Computer runner credential mint：`POST /internal/computer/runners/:agentId/credentials`（`sk_computer_*`）只在 Computer 仍绑定到现存 machine 时可用；agent 必须属于同一 Server 且分配到该 machine，否则 404 `agent_missing`。成功回 201 `{credentialId,apiKey,scopes,agentId,agentName,serverId}`，scopes 校验为固定集合（空集 400 `scopes_empty`，未知值 400 `scopes_invalid`），name 最长 200。删除 machine 时 Computer key 立即失效：删除后 `/internal/computer/runners` 与 runner mint 都回 401，且保留 `revokedAt` 收据、把 `machineId` 清空；历史遗留（machine 消失但无收据）同样 401。
+

@@ -2159,6 +2159,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("internal", "computer", "runners", ":agentId", "credentials") { request -> Response in
+        routeResponse(services.emailAccounts.computerMintRunnerCredential(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("internal", "computer", "runners") { request -> Response in
         routeResponse(services.emailAccounts.computerRunners(authorization: request.headers[.authorization]))
     }
