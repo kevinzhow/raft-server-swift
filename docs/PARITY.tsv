@@ -113,7 +113,7 @@ internalAgentApi.crossReplicaWake	route	partial	-	auto-seed
 internalAgentApi.dmPeerKind	route	partial	-	auto-seed
 internalAgentApi.eventsSenderType	route	partial	-	auto-seed
 internalAgentApi.externalInboxPull	route	partial	-	auto-seed
-internalAgentApi.feedbackLocator	route	partial	-	auto-seed
+internalAgentApi.feedbackLocator	route	locked	a6f414f	locator ingest receipts, duplicate replay, typed failures, index projection
 internalAgentApi.grantCoverage	route	partial	-	auto-seed
 internalAgentApi.grants	route	partial	-	auto-seed
 internalAgentApi.historyUnread	route	partial	-	auto-seed
