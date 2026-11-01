@@ -219,6 +219,9 @@ agent 读游标前进且 server 开启 read receipts 时，`channel:<id>` 房间
 `GET /api/agents/:id/hosted-runtime`：仅 owner/admin/creator；非 hosted agent 404 `{code:"hosted_runtime_missing"}`；hosted agent 返回 `{hostedRuntime:{agentId,provider,model,state,retryNeedsModel,createdAt},onboardingSetup}`，响应 `Cache-Control: no-store`。
 
 
+`GET /api/agents/:id/hosted-runtime/usage`：同一权限；`bucket` 只接受 `1h/1d`，`from/to` 必须为 ISO 且窗口 ≤31 天，否则 400 `hosted_runtime_usage_invalid_query`；未就绪 409 `hosted_runtime_usage_not_ready`；成功返回 provider usage body，`Cache-Control: no-store`。
+
+
 `POST /api/messages` 成功后向 `channel:<id>` 房间发 `message:new`，payload 是消息 HTTP body（id/channelId/content/attachments）。`POST /api/tasks/channel/:channelId` 成功后向同一房间发 `task:created`，payload 是 `{channelId,tasks:[{id,channelId,title,status}]}`；`PATCH /api/tasks/:taskId/claim` 成功后发 `task:updated`，payload `{channelId,task:<task JSON>}`；`POST /api/channels/threads/follow|unfollow` 成功后发 `thread:followers-updated`，payload `{threadChannelId}`。频道创建时该用户的在线 socket 自动加入 `channel:<id>`。task JSON 带 `messageId`。
 
 

@@ -154,6 +154,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var agentCredentials: [String: AgentCredential] = [:]
     private var agentMachineIds: [String: String] = [:]
     private var hostedRuntimes: [String: (provider: String, model: String?, state: String, retryNeedsModel: Bool, createdAt: Date)] = [:]
+    private var hostedUsage: [String: String] = [:]
     private var agentArchiveRecords: [String: (workspaceState: String, machineName: String, serverId: String)] = [:]
     private var postableChannels: [String: PostableChannel] = [:]
     private var threadOrder: [String] = []
@@ -8278,6 +8279,65 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             agent: updated,
             role: "admin"
         ))
+    }
+
+    public func setHostedUsageForTesting(agentId: String, json: String) {
+        lock.lock()
+        hostedUsage[agentId] = json
+        lock.unlock()
+    }
+
+    public func agentHostedUsage(authorization: String?, serverId: String, agentId: String, query: String?) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner"
+                || oauth.memberRole(serverId: serverId, userId: userId) == "admin"
+                || agent.creatorUserId == userId
+        else {
+            return Self.json(403, "{\"error\":\"The `editAgents` capability or human creator authority is required to view cloud agent usage\"}")
+        }
+        lock.lock()
+        let hosted = hostedRuntimes[agentId]
+        let body = hostedUsage[agentId]
+        lock.unlock()
+        guard hosted != nil else {
+            return Self.json(404, "{\"error\":\"Agent is not a cloud agent\",\"code\":\"hosted_runtime_missing\"}")
+        }
+        var params: [String: String] = [:]
+        for pair in (query ?? "").split(separator: "&") {
+            let item = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            let name = String(item[0]).removingPercentEncoding ?? String(item[0])
+            let value = item.count == 2 ? (String(item[1]).removingPercentEncoding ?? String(item[1])) : ""
+            params[name] = value
+        }
+        let bucket = params["bucket"] ?? "1d"
+        guard ["1h", "1d"].contains(bucket) else {
+            return Self.json(400, "{\"error\":\"Invalid usage query\",\"code\":\"hosted_runtime_usage_invalid_query\"}")
+        }
+        let now = Date()
+        func parse(_ name: String) -> Date? {
+            guard let raw = params[name], !raw.isEmpty else { return nil }
+            return Self.isoDate(raw)
+        }
+        if params["from"] != nil, parse("from") == nil {
+            return Self.json(400, "{\"error\":\"Invalid usage query\",\"code\":\"hosted_runtime_usage_invalid_query\"}")
+        }
+        if params["to"] != nil, parse("to") == nil {
+            return Self.json(400, "{\"error\":\"Invalid usage query\",\"code\":\"hosted_runtime_usage_invalid_query\"}")
+        }
+        let from = parse("from") ?? now.addingTimeInterval(-7 * 24 * 60 * 60)
+        let to = parse("to") ?? now
+        guard to >= from, to.timeIntervalSince(from) <= 31 * 24 * 60 * 60 else {
+            return Self.json(400, "{\"error\":\"Invalid usage query\",\"code\":\"hosted_runtime_usage_invalid_query\"}")
+        }
+        guard let body else {
+            return Self.json(409, "{\"error\":\"The cloud runtime is not ready\",\"code\":\"hosted_runtime_usage_not_ready\"}")
+        }
+        return Self.json(200, body)
     }
 
     public func setHostedRuntimeForTesting(

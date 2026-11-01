@@ -68,6 +68,27 @@ import VaporTesting
             #expect(hosted?["retryNeedsModel"] as? Bool == true)
             #expect(body?["onboardingSetup"] is NSNull)
             #expect(try await status(owner, "missing").status == .notFound)
+
+            func usage(_ bearer: String, _ query: String = "") async throws -> ClientResponse {
+                var headers = HTTPFields()
+                headers[.authorization] = "Bearer \(bearer)"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
+                return try await client.get("/api/agents/\(agent)/hosted-runtime/usage\(query)", headers: headers)
+            }
+            #expect(try await usage(owner).status == .conflict)
+            let usageJSON = "{\"raftAgentId\":\"\(agent)\",\"bucket\":\"1d\",\"from\":\"2026-09-25T00:00:00.000Z\",\"to\":\"2026-10-02T00:00:00.000Z\",\"asOf\":\"2026-10-02T00:00:00.000Z\",\"partial\":false,\"rows\":[{\"at\":\"2026-10-01T00:00:00.000Z\",\"resource\":\"model.tokens\",\"dimensions\":{\"model\":\"m1\",\"kind\":\"input\"},\"unit\":\"tokens\",\"quantity\":10}]}"
+            accounts.setHostedUsageForTesting(agentId: agent, json: usageJSON)
+            #expect(try await usage(member).status == .forbidden)
+            let usageResponse = try await usage(owner)
+            #expect(usageResponse.status == .ok)
+            #expect(usageResponse.headers[HTTPField.Name("Cache-Control")!] == "no-store")
+            let usageBody = try JSONSerialization.jsonObject(with: Data((usageResponse.body.string ?? "").utf8)) as? [String: Any]
+            #expect(usageBody?["bucket"] as? String == "1d")
+            #expect((usageBody?["rows"] as? [[String: Any]] ?? []).count == 1)
+            #expect(try await usage(owner, "?bucket=5m").status == .badRequest)
+            #expect(try await usage(owner, "?from=yesterday").status == .badRequest)
+            #expect(try await usage(owner, "?from=2026-02-01T00:00:00Z&to=2026-01-01T00:00:00Z").status == .badRequest)
+            #expect(try await usage(owner, "?from=2026-01-01T00:00:00Z&to=2026-03-01T00:00:00Z").status == .badRequest)
         }
     }
 }
