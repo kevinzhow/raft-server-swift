@@ -38,7 +38,7 @@ attachments.api	route	partial	-	auto-seed
 attachments	route	partial	-	auto-seed
 auditMediumInbox.api	route	locked	a5dea45	guest visible recheck on done/followed/mention surfaces
 auth.api	route	partial	-	auto-seed
-authIdentityUnlink.api	route	pending	-	auto-seed
+authIdentityUnlink.api	route	locked	d2f8a6c	owner-bound unlink, final-method 409, credential provenance, reset
 authLoginTrace	route	pending	-	auto-seed
 authPendingSocialLink.api	route	pending	-	auto-seed
 authRefreshAttemptRoute	route	pending	-	auto-seed
