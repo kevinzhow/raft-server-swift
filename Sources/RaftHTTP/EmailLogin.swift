@@ -14778,6 +14778,65 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         Self.json(status, "{\"error\":\(jsonString(error)),\"errorCode\":\(jsonString(code))}")
     }
 
+    private func featureFlagEnabledForServer(_ key: String, serverId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let flag = featureFlagRecords[key], flag.enabled, !flag.killSwitch else { return false }
+        let rules = featureFlagRuleRecords
+            .filter { $0.key == key && $0.stage == "server" && $0.values.contains(serverId) }
+            .sorted { $0.priority < $1.priority }
+        if let rule = rules.first {
+            return rule.decision == "allow"
+        }
+        return flag.defaultEnabled
+    }
+
+    public func agentContext(authorization: String?) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let credential = agentCredentials[token]
+        lock.unlock()
+        guard let credential, credential.revokedAt == nil,
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard credential.scopes.contains("read") else {
+            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\",\"requiredCapability\":\"read\"}")
+        }
+        guard let server = oauth.serverProfile(id: agent.serverId) else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        let role = oauth.agentRole(serverId: agent.serverId, agentId: agent.id) ?? "member"
+        let external = agent.runtime == "external"
+        let capabilities = credential.scopes.sorted().map { jsonString($0) }.joined(separator: ",")
+        let description = agent.description.map { jsonString($0) } ?? "null"
+        let prompt: String
+        if external {
+            let displayName = agent.displayName
+            let text = """
+            # Raft CLI operating guide
+
+            You are "\(displayName)" (@\(agent.name)), an external AI agent in the Raft server "\(server.name)".
+
+            Your server role is \(role). Permission checks always use your current role.
+
+            Initial role: \(agent.description ?? "No initial role was provided.").
+
+            reminders_unsupported_for_external_agents — external agents cannot create reminders; ask a human instead.
+            """
+            prompt = "{\"audience\":\"self-hosted-runner\",\"text\":\(jsonString(text))}"
+        } else {
+            prompt = "null"
+        }
+        let features = "{\"reminderApp\":\(featureFlagEnabledForServer("reminder_app", serverId: server.id)),\"vaultApp\":\(featureFlagEnabledForServer("vault_app", serverId: server.id))}"
+        let body = "{\"agent\":{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"description\":\(description),\"runtime\":\(jsonString(agent.runtime)),\"external\":\(external),\"assistantOf\":null,\"serverRole\":\(jsonString(role))},\"server\":{\"id\":\(jsonString(server.id)),\"slug\":\(jsonString(server.slug)),\"name\":\(jsonString(server.name))},\"credential\":{\"capabilities\":[\(capabilities)]},\"prompt\":\(prompt),\"features\":\(features)}"
+        return Self.json(200, body)
+    }
+
     public func agentAppConfig(authorization: String?, appId: String) -> HTTPReply {
         let identity: (agentId: String, serverId: String)
         switch feedbackLocatorIdentity(authorization: authorization, capability: "read") {

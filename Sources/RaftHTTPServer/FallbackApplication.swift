@@ -632,6 +632,11 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.get("internal", "agent-api", "context") { request -> Response in
+        routeResponse(services.emailAccounts.agentContext(
+            authorization: request.headers[.authorization]
+        ))
+    }
     app.get("internal", "agent-api", "apps", ":appId", "config") { request -> Response in
         routeResponse(services.emailAccounts.agentAppConfig(
             authorization: request.headers[.authorization],

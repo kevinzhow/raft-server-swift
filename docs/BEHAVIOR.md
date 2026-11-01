@@ -320,3 +320,5 @@ Agent attachment 下载：`GET /internal/agent-api/attachments/:id`（`read` cap
 
 Server 成员/机器实时面：`PATCH /api/servers/:id/members/:memberId` 角色实际变化时向 `server:<id>` 推 `server:member-updated`，payload `{serverId,userId,previousRole,role}`。`DELETE` 成员成功时先推 `server:<id>` `server:member-removed` `{serverId,userId}`，再推 `user:<memberId>` `server:membership-removed` `{serverId}`；被移除成员的 profile 对 owner/admin（或本人）仍可读，带 `membershipStatus:"removed"`。机器 POST/PATCH/DELETE 各自向 `server:<id>` 推 `machine:updated` `{serverId,machineId}`。
 
+`GET /internal/agent-api/context`（`read` capability，否则 403 `capability_not_authorized` + `requiredCapability:"read"`）：返回 `{agent:{id,name,displayName,description,runtime,external,assistantOf:null,serverRole},server:{id,slug,name},credential:{capabilities:[...sorted]},prompt,features:{reminderApp,vaultApp}}`。external agent 的 `prompt` 为 `{audience:"self-hosted-runner",text}`，文本含 handle/displayName/server/role/初始 description 与 `reminders_unsupported_for_external_agents`，不含 `<your-handle>` 占位符；managed agent 的 `prompt` 为 null。features 来自 `reminder_app`/`vault_app` 的 server 规则（缺省 false）。
+
