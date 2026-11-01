@@ -653,7 +653,7 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.get("internal", "agent-api", "wake-hints", "stream") { request -> Response in
-        let heartbeatEnv = ProcessInfo.processInfo.environment["SLOCK_WAKE_STREAM_HEARTBEAT_MS"]
+        let heartbeatEnv = services.emailAccounts.wakeStreamHeartbeatMs
         if services.nodeEnv == "test", heartbeatEnv == nil {
             return routeResponse(services.emailAccounts.agentWakeHintsStream(
                 authorization: request.headers[.authorization],
@@ -667,7 +667,7 @@ public func configure(_ app: Application, services: FallbackServices) {
         case .refused(let reply):
             return routeResponse(reply)
         case .start(let token, let firstFrame):
-            let rawHeartbeat = heartbeatEnv.flatMap(Int.init)
+            let rawHeartbeat = heartbeatEnv
             let heartbeatMs = min(60_000, max(50, rawHeartbeat ?? 15_000))
             let boundedTicks = services.nodeEnv == "test" ? 3 : Int.max
             var headers = HTTPFields()

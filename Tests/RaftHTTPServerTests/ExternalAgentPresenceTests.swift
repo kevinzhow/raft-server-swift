@@ -188,11 +188,10 @@ private func agentRows(_ client: any Client, token: String, serverId: String) as
 }
 
 @Test func openWakeHintStreamKeepsTheExternalAgentSeen() async throws {
-    setenv("SLOCK_WAKE_STREAM_HEARTBEAT_MS", "100", 1)
-    defer { unsetenv("SLOCK_WAKE_STREAM_HEARTBEAT_MS") }
     let fixture = makePresenceFixture(suffix: "204")
     let accounts = fixture.accounts
     accounts.setAgentCredentialUseThrottleMsForTesting(50)
+    accounts.setWakeStreamHeartbeatMsForTesting(100)
     let events = PresenceEventBox()
     accounts.realtimeEmitter = { room, event, payload in
         events.append(room: room, event: event, payload: payload)

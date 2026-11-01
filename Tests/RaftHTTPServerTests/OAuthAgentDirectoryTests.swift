@@ -136,6 +136,21 @@ private func directoryObject(_ response: ClientResponse) throws -> [String: Any]
             #expect(asAgent.status == .ok)
             #expect((try directoryObject(asAgent)["agents"] as? [[String: Any]])?.map { $0["id"] as? String } == [agentId])
 
+            var writeHeaders = agentHeaders
+            writeHeaders[.contentType] = "application/json"
+            let agentWrite = try await client.send(.post, headers: writeHeaders, to: "/api/oauth/agent-events") { request in
+                request.body = .init(string: "{\"kind\":\"notification\",\"summary\":\"must not send\"}")
+            }
+            #expect(agentWrite.status == .forbidden)
+            let humanWrite = try await client.send(.post, headers: {
+                var fields = headers
+                fields[.contentType] = "application/json"
+                return fields
+            }(), to: "/api/oauth/agent-events") { request in
+                request.body = .init(string: "{\"kind\":\"notification\",\"summary\":\"must not send\"}")
+            }
+            #expect(humanWrite.status == .forbidden)
+
             accounts.oauth.removeAgentMember(serverId: serverId, agentId: agentId)
             #expect(try await client.send(.get, headers: agentHeaders, to: "/api/oauth/agents").status == .unauthorized)
 
@@ -228,6 +243,12 @@ private func directoryObject(_ response: ClientResponse) throws -> [String: Any]
 
             accounts.oauth.revokeAccessTokens(clientRecordId: created.id)
             #expect(try await client.send(.get, headers: headers, to: "/api/oauth/agents").status == .unauthorized)
+
+            let expiring = try await exchange(try directoryObject(try await authorize("\"openid\",\"profile\",\"agent:read\""))["code"] as? String ?? "")
+            var expiringHeaders = HTTPFields()
+            expiringHeaders[.authorization] = "Bearer \(expiring)"
+            accounts.oauth.expireAccessTokensForTesting(clientRecordId: created.id)
+            #expect(try await client.send(.get, headers: expiringHeaders, to: "/api/oauth/agents").status == .unauthorized)
 
             let renewed = try await exchange(try directoryObject(try await authorize("\"openid\",\"profile\",\"agent:read\""))["code"] as? String ?? "")
             var renewedHeaders = HTTPFields()

@@ -304,6 +304,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var machineStatusVersions: [String: Int] = [:]
     private var machineOnline: [String: Bool] = [:]
     private var agentCredentialUseThrottleOverrideMs: Int?
+    private var wakeStreamHeartbeatOverrideMs: Int?
     private var agentLastSeenAt: [String: Date] = [:]
 
     /// Production throttle for credential-use writes.
@@ -8039,6 +8040,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let usedJSON = lastUsedAt.map { jsonString(ISO8601DateFormatter().string(from: $0)) } ?? "null"
         return Self.json(200, "{\"setupState\":\(jsonString(setupState)),\"credentialLastUsedAt\":\(usedJSON),\"lastActivityAt\":null}")
+    }
+
+    public func setWakeStreamHeartbeatMsForTesting(_ value: Int?) {
+        lock.lock()
+        wakeStreamHeartbeatOverrideMs = value
+        lock.unlock()
+    }
+
+    public var wakeStreamHeartbeatMs: Int? {
+        lock.lock()
+        let override = wakeStreamHeartbeatOverrideMs
+        lock.unlock()
+        if let override { return override }
+        return ProcessInfo.processInfo.environment["SLOCK_WAKE_STREAM_HEARTBEAT_MS"].flatMap(Int.init)
     }
 
     public func setAgentCredentialUseThrottleMsForTesting(_ value: Int?) {

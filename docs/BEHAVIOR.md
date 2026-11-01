@@ -266,3 +266,5 @@ External agent presence：任意 agent credential 认证的 API 调用会以 60s
 
 `POST /api/agent/login` 只在 `SLOCK_SELF_HOSTED_RUNNER_BOOTSTRAP_ENABLED=true` 时开启；关闭时 404 `self_hosted_runner_bootstrap_disabled`，开启后缺 `bootstrapToken`（含空白）400 `missing_bootstrap_token`，未知 token 401 `token_invalid`。`POST /internal/agent/:agentId/runtime-profile/migration-done` 需 machine key 且 agent 同 Server；空 `migrationKey` 回 `{ok,deprecated,noop:"no pending migration",message}`，非空回 `{ok,deprecated,message}`，无效 key 401 `auth_required`。
 
+`GET /api/oauth/agents` 与 `/oidc/<server>/api/oauth/agents`：访问令牌过期、被撤销，或 agent 的 Server 成员关系/授权被撤销后一律 401 且不返回 `agents`；human/agent 令牌对 `/api/oauth/agent-events` 的写入都是 403；仅在 scopes 中声明 `agent:read` 的旧令牌不会因客户端后续放开 scope 而升级。
+

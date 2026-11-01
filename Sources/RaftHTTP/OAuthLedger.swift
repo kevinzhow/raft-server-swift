@@ -1300,6 +1300,14 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func expireAccessTokensForTesting(clientRecordId: String) {
+        lock.lock()
+        for index in tokens.indices where tokens[index].clientId == clientRecordId {
+            tokens[index].expiresAt = Date(timeIntervalSince1970: 0)
+        }
+        lock.unlock()
+    }
+
     public func revokeAccessTokens(clientRecordId: String) {
         lock.lock()
         for index in tokens.indices where tokens[index].clientId == clientRecordId {
@@ -1513,6 +1521,7 @@ public final class OAuthLedger: @unchecked Sendable {
         }
         if token.principalType == "agent" {
             guard let agentId = token.agentId,
+                  let agent = agents[agentId], !agent.deleted,
                   agentRoles["\(server.id)\n\(agentId)"] != nil
             else {
                 return json(401, "{\"error\":\"Invalid or expired access token\"}", cacheControl: "no-store")
