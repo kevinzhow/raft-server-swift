@@ -250,5 +250,5 @@ Guest 角色降级后，其 follow 的 thread 从 `GET /api/channels/inbox`（`a
 
 `/daemon/connect` 接受握手后向 `server:<serverId>` 发 `machine:status`：online 为 `{machineId,status:"online",statusVersion}`，断开为 `{status:"offline",...,cause:"socket_close"}`；`statusVersion` 每次自增。
 
-
+`GET /api/channels/:id/files` 的完整分页投影：`{files:[{id,messageId,channelId,filename,mimeType,sizeBytes,width,height,thumbnailUrl,createdAt,uploader:{type,id,name,displayName},source:{type,channelId,parentMessageId,parentMessageShortId}}],nextCursor}`；按 `createdAt` 降序、`id` 降序，包含该频道下 thread 的附件并带父消息 id 与前 8 位 short id。`limit` 默认 500、夹在 1..500；`cursor` 为 `{createdAt,id}` 的 base64url，非法 400 `Invalid cursor`；下一页游标取自本页最后一条。user/agent uploader 解析名称，非 UUID 或未知 uploader 名称 null；private 频道非成员 404 `Channel not found`。
 

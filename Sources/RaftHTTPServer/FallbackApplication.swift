@@ -1456,7 +1456,9 @@ public func configure(_ app: Application, services: FallbackServices) {
         routeResponse(services.emailAccounts.channelFiles(
             authorization: request.headers[.authorization],
             serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-            channelId: request.parameters.get("channelId") ?? ""
+            channelId: request.parameters.get("channelId") ?? "",
+            limit: desktopQuery(request.url.query, "limit"),
+            cursor: desktopQuery(request.url.query, "cursor")
         ))
     }
     app.post("api", "attachments", "upload-sessions") { request -> Response in

@@ -6934,6 +6934,35 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func addChannelFileForTesting(
+        channelId: String,
+        id: String,
+        uploaderId: String,
+        uploaderType: String = "user",
+        messageId: String,
+        filename: String,
+        mimeType: String,
+        sizeBytes: Int,
+        createdAt: Date,
+        thumbnailKey: String? = nil
+    ) {
+        lock.lock()
+        channelAttachments[id] = ChannelAttachment(
+            id: id,
+            channelId: channelId,
+            uploaderId: uploaderId,
+            filename: filename,
+            messageId: messageId,
+            messagePosition: 0,
+            mimeType: mimeType,
+            sizeBytes: sizeBytes,
+            uploaderType: uploaderType,
+            createdAt: createdAt,
+            thumbnailKey: thumbnailKey
+        )
+        lock.unlock()
+    }
+
     private func visibleAttachment(userId: String, serverId: String?, attachment: ChannelAttachment) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -6943,29 +6972,148 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return channel.kind == "channel" || channel.memberIds.contains(userId)
     }
 
-    public func channelFiles(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
+    private static func channelFilesBase64URLEncode(_ value: String) -> String {
+        Data(value.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private static func channelFilesBase64URLDecode(_ value: String) -> String? {
+        var base64 = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while base64.count % 4 != 0 { base64 += "=" }
+        guard let data = Data(base64Encoded: base64) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private static func channelFilesLimit(_ raw: String?) -> Int {
+        guard let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let value = Double(raw), value.isFinite
+        else { return 500 }
+        return max(1, min(Int(value.rounded(.down)), 500))
+    }
+
+    private static func channelFileMimeType(filename: String, stored: String?) -> String {
+        if let stored, !stored.isEmpty { return stored }
+        let ext = (filename as NSString).pathExtension.lowercased()
+        switch ext {
+        case "pdf": return "application/pdf"
+        case "png": return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "gif": return "image/gif"
+        case "webp": return "image/webp"
+        case "txt": return "text/plain"
+        case "html", "htm": return "text/html"
+        default: return "application/octet-stream"
+        }
+    }
+
+    public func channelFiles(
+        authorization: String?,
+        serverId: String,
+        channelId: String,
+        limit rawLimit: String? = nil,
+        cursor rawCursor: String? = nil
+    ) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
-        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+        guard let channel = postableChannels[channelId] ?? nil,
+              channel.serverId == serverId,
+              channel.deletedAt == nil
+        else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
+        let kind = channel.kind
+        let isMember = channel.memberIds.contains(userId)
+        guard kind == "channel" || isMember else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        let limit = Self.channelFilesLimit(rawLimit)
+        let cursor: (createdAt: Date, id: String)?
+        if let rawCursor, !rawCursor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard let decoded = Self.channelFilesBase64URLDecode(rawCursor),
+                  let object = (try? JSONSerialization.jsonObject(with: Data(decoded.utf8))) as? [String: Any],
+                  let createdAtRaw = object["createdAt"] as? String,
+                  let createdAt = Self.isoDate(createdAtRaw),
+                  let id = object["id"] as? String
+            else {
+                return Self.json(400, "{\"error\":\"Invalid cursor\"}")
+            }
+            cursor = (createdAt, id)
+        } else {
+            cursor = nil
+        }
+
         lock.lock()
-        let visible = postableChannels[channelId]?.kind == "channel"
-            || postableChannels[channelId]?.memberIds.contains(userId) == true
-        let rows = visible
-            ? channelAttachments.values.filter { $0.channelId == channelId }.map { attachment in
-                "{\"id\":\"\(attachment.id)\",\"filename\":\(jsonString(attachment.filename)),\"mimeType\":\(attachment.mimeType.map { jsonString($0) } ?? "null"),\"sizeBytes\":\(attachment.sizeBytes.map(String.init) ?? "null")}"
-            }.sorted()
-            : []
-        lock.unlock()
-        guard visible else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        var scopeChannels: Set<String> = [channelId]
+        for (id, candidate) in postableChannels
+        where candidate.serverId == serverId && candidate.kind == "thread"
+            && candidate.parentChannelId == channelId && candidate.deletedAt == nil {
+            scopeChannels.insert(id)
         }
-        return Self.json(200, "{\"files\":[\("\(rows.joined(separator: ","))")]}")
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var files: [ChannelAttachment] = []
+        for attachment in channelAttachments.values {
+            guard scopeChannels.contains(attachment.channelId) else { continue }
+            if let messageId = attachment.messageId,
+               !humanMessageRows.contains(where: { $0.id == messageId && $0.channelId == attachment.channelId }) {
+                continue
+            }
+            if let cursor {
+                if attachment.createdAt > cursor.createdAt { continue }
+                if attachment.createdAt == cursor.createdAt && attachment.id >= cursor.id { continue }
+            }
+            files.append(attachment)
+        }
+        files.sort { left, right in
+            if left.createdAt != right.createdAt { return left.createdAt > right.createdAt }
+            return left.id > right.id
+        }
+        let page = Array(files.prefix(limit))
+        let nextCursor: String?
+        if files.count > limit, let last = page.last {
+            let encoded = "{\"createdAt\":\(jsonString(formatter.string(from: last.createdAt))),\"id\":\(jsonString(last.id))}"
+            nextCursor = Self.channelFilesBase64URLEncode(encoded)
+        } else {
+            nextCursor = nil
+        }
+        let rows = page.map { attachment -> String in
+            let source = postableChannels[attachment.channelId]
+            let isThread = source?.kind == "thread"
+            let parentMessageId = isThread ? source?.parentMessageId : nil
+            let parentJSON = parentMessageId.map(jsonString) ?? "null"
+            let parentShort = parentMessageId.map { jsonString(String($0.prefix(8))) } ?? "null"
+            let uploaderName: String?
+            let uploaderDisplay: String?
+            if attachment.uploaderType == "agent" {
+                let agent = oauth.agentRuntimeInfo(id: attachment.uploaderId)
+                uploaderName = agent?.name
+                uploaderDisplay = agent?.displayName
+            } else if attachment.uploaderType == "user" {
+                let account = accounts.values.first { $0.id == attachment.uploaderId }
+                uploaderName = account?.name
+                uploaderDisplay = account?.name
+            } else {
+                uploaderName = nil
+                uploaderDisplay = nil
+            }
+            let nameJSON = uploaderName.map(jsonString) ?? "null"
+            let displayJSON = (uploaderDisplay ?? uploaderName).map(jsonString) ?? "null"
+            let mime = Self.channelFileMimeType(filename: attachment.filename, stored: attachment.mimeType)
+            let size = attachment.sizeBytes.map(String.init) ?? "null"
+            let width = attachment.width.map(String.init) ?? "null"
+            let height = attachment.height.map(String.init) ?? "null"
+            let thumbnail = attachment.thumbnailKey.map { _ in jsonString("/api/attachments/\(attachment.id)/thumbnail") } ?? "null"
+            return "{\"id\":\(jsonString(attachment.id)),\"messageId\":\(jsonString(attachment.messageId ?? "")),\"channelId\":\(jsonString(attachment.channelId)),\"filename\":\(jsonString(attachment.filename)),\"mimeType\":\(jsonString(mime)),\"sizeBytes\":\(size),\"width\":\(width),\"height\":\(height),\"thumbnailUrl\":\(thumbnail),\"createdAt\":\(jsonString(formatter.string(from: attachment.createdAt))),\"uploader\":{\"type\":\(jsonString(attachment.uploaderType == "agent" ? "agent" : "user")),\"id\":\(jsonString(attachment.uploaderId)),\"name\":\(nameJSON),\"displayName\":\(displayJSON)},\"source\":{\"type\":\(jsonString(isThread ? "thread" : "channel")),\"channelId\":\(jsonString(attachment.channelId)),\"parentMessageId\":\(parentJSON),\"parentMessageShortId\":\(parentShort)}}"
+        }
+        lock.unlock()
+        let nextJSON = nextCursor.map(jsonString) ?? "null"
+        return Self.json(200, "{\"files\":[\(rows.joined(separator: ","))],\"nextCursor\":\(nextJSON)}")
     }
 
     public func readAttachment(authorization: String?, serverId: String?, attachmentId: String, kind: String) -> HTTPReply {
@@ -6999,6 +7147,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var sizeBytes: Int? = nil
         var width: Int? = nil
         var height: Int? = nil
+        var uploaderType: String = "user"
+        var createdAt: Date = Date()
+        var thumbnailKey: String? = nil
     }
 
     public struct ChannelMessageEvent: Equatable, Sendable {
