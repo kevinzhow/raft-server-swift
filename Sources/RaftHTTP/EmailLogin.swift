@@ -316,6 +316,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var agentCredentialUseThrottleOverrideMs: Int?
     private var wakeStreamHeartbeatOverrideMs: Int?
     private var agentLastSeenAt: [String: Date] = [:]
+    private var externalPushWebhooks: [String: (url: String, secret: String)] = [:]
+    private var agentStatusProtocolAdoptedAt: [String: Date] = [:]
+    private var agentCursorPullState: [String: (lastPulledAt: Date, pendingAcks: Int)] = [:]
+    private var agentProviderPositions: [String: (provider: String, state: String, providerAgentId: String?, syncPending: Bool, lastErrorCode: String?, lastErrorAt: Date?, activatedAt: Date?)] = [:]
 
     /// Production throttle for credential-use writes.
     public static let agentCredentialUseDefaultThrottleMs = 60_000
@@ -8269,6 +8273,70 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(403, "{\"code\":\"assistant_not_enabled\",\"error\":\"Assistant ownership is not enabled\"}")
     }
 
+    public func putAgentPushWebhook(authorization: String?, body: String) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let credential = agentCredentials[token]
+        lock.unlock()
+        guard let credential, credential.revokedAt == nil else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let rawURL = object["url"] as? String,
+              let components = URLComponents(string: rawURL),
+              components.scheme?.lowercased() == "https",
+              let host = components.host, !host.isEmpty,
+              let secret = object["secret"] as? String, !secret.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"url and secret are required\"}")
+        }
+        lock.lock()
+        externalPushWebhooks[credential.agentId] = (url: rawURL, secret: secret)
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    public func setAgentStatusProtocolAdoptedForTesting(agentId: String, at date: Date?) {
+        lock.lock()
+        agentStatusProtocolAdoptedAt[agentId] = date
+        lock.unlock()
+    }
+
+    public func setAgentCursorPullStateForTesting(agentId: String, lastPulledAt: Date?, pendingAcks: Int) {
+        lock.lock()
+        if let lastPulledAt {
+            agentCursorPullState[agentId] = (lastPulledAt, pendingAcks)
+        } else {
+            agentCursorPullState[agentId] = nil
+        }
+        lock.unlock()
+    }
+
+    public func setAgentProviderPositionForTesting(
+        agentId: String,
+        provider: String = "antiproton",
+        state: String,
+        providerAgentId: String?,
+        syncPending: Bool = false,
+        lastErrorCode: String? = nil,
+        lastErrorAt: Date? = nil,
+        activatedAt: Date?
+    ) {
+        lock.lock()
+        agentProviderPositions[agentId] = (provider, state, providerAgentId, syncPending, lastErrorCode, lastErrorAt, activatedAt)
+        lock.unlock()
+    }
+
+    private static func isoOrNull(_ date: Date?) -> String {
+        guard let date else { return "null" }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return jsonString(formatter.string(from: date))
+    }
+
     public func externalAgentDiagnostics(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -8284,7 +8352,43 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard info.runtime == "external" else {
             return Self.json(400, "{\"code\":\"agent_not_external\",\"error\":\"External diagnostics require an external Agent\"}")
         }
-        return Self.json(200, "{\"agentId\":\(jsonString(agentId)),\"runtime\":\"external\",\"provider\":null,\"presence\":{\"lastSeenAt\":null,\"online\":false,\"onlineWindowMs\":120000},\"status\":{\"activity\":\"idle\",\"statusProtocolAdoptedAt\":null},\"push\":{\"registered\":false,\"enabled\":false,\"endpointHost\":null,\"consecutiveFailures\":0,\"lastDeliveryAt\":null},\"events\":{\"lastCursorPullAt\":null,\"pendingCursorAckCount\":0},\"connections\":[]}")
+        lock.lock()
+        let lastSeen = agentLastSeenAt[agentId]
+        let activity = agentActivities[agentId]?.activity ?? "idle"
+        let adoptedAt = agentStatusProtocolAdoptedAt[agentId]
+        let webhook = externalPushWebhooks[agentId]
+        let cursor = agentCursorPullState[agentId]
+        let position = agentProviderPositions[agentId]
+        let hosted = hostedRuntimes[agentId]
+        lock.unlock()
+
+        let online = lastSeen.map { Date().timeIntervalSince($0) <= 120 } ?? false
+        let presence = "{\"lastSeenAt\":\(Self.isoOrNull(lastSeen)),\"online\":\(online),\"onlineWindowMs\":120000}"
+        let status = "{\"activity\":\(jsonString(activity)),\"statusProtocolAdoptedAt\":\(Self.isoOrNull(adoptedAt))}"
+
+        let endpointHost = webhook.flatMap { URLComponents(string: $0.url)?.host }
+        let push = "{\"registered\":\(webhook != nil),\"enabled\":\(webhook != nil),\"endpointHost\":\(endpointHost.map(jsonString) ?? "null"),\"disabledReason\":null,\"disabledAt\":null,\"consecutiveFailures\":0,\"lastAttemptAt\":null,\"lastDeliveryAt\":null,\"lastError\":null,\"nextAttemptAt\":null}"
+
+        let events = "{\"lastCursorPullAt\":\(Self.isoOrNull(cursor?.lastPulledAt)),\"pendingCursorAckCount\":\(cursor?.pendingAcks ?? 0)}"
+
+        let provider: String
+        if let position {
+            let errorCode = position.lastErrorCode.map(jsonString) ?? "null"
+            provider = "{\"kind\":\(jsonString(position.provider)),\"state\":\(jsonString(position.state)),\"providerAgentId\":\(position.providerAgentId.map(jsonString) ?? "null"),\"syncPending\":\(position.syncPending),\"lastErrorCode\":\(errorCode),\"lastErrorAt\":\(Self.isoOrNull(position.lastErrorAt)),\"activatedAt\":\(Self.isoOrNull(position.activatedAt))}"
+        } else if let hosted {
+            provider = "{\"kind\":\"antiproton\",\"state\":\(jsonString(hosted.state)),\"providerAgentId\":null,\"syncPending\":false,\"lastErrorCode\":null,\"lastErrorAt\":null,\"activatedAt\":\(Self.isoOrNull(hosted.createdAt))}"
+        } else {
+            provider = "null"
+        }
+
+        let connections: String
+        if hosted != nil {
+            connections = "[{\"provider\":\"github\",\"state\":\"unavailable\",\"account\":null,\"reason\":\"Cloud connections are not enabled for this server\"}]"
+        } else {
+            connections = "[{\"provider\":\"github\",\"state\":\"not_applicable\",\"account\":null,\"reason\":null}]"
+        }
+
+        return Self.json(200, "{\"agentId\":\(jsonString(agentId)),\"runtime\":\"external\",\"provider\":\(provider),\"presence\":\(presence),\"status\":\(status),\"push\":\(push),\"events\":\(events),\"connections\":\(connections)}")
     }
 
     public func agentMigrationStatus(authorization: String?, serverId: String, agentId: String) -> HTTPReply {

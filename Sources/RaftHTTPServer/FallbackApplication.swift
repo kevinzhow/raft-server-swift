@@ -1054,6 +1054,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.put("internal", "agent-api", "push-webhook") { request -> Response in
+        routeResponse(services.emailAccounts.putAgentPushWebhook(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("api", "agents", ":id", "external-diagnostics") { request -> Response in
         routeResponse(services.emailAccounts.externalAgentDiagnostics(
             authorization: request.headers[.authorization],
