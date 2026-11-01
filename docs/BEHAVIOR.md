@@ -350,3 +350,5 @@ Machine 描述与权限：`PATCH /api/servers/:id/machines/:machineId` 的 `desc
 
 OAuth 回调 redirect 安全：`POST /api/oauth/authorize/human` 只在请求的 `returnUrl` 与已登记值完全一致且为安全 URL（HTTPS，或 loopback HTTP，无凭据/fragment）时签发 code；未登记 callback、与登记值不符、或历史遗留的 `javascript:`/`data:` 值一律 400 且响应不含 `code`。`createOAuthClient` 与更新路径（`updateClientReturnUrl`）都拒绝脚本/data URL，错误信息含 `returnUrl`。
 
+错误卫生（black-box）：畸形 `X-Server-Id`/路径 id（非 UUID 或 UUID 后跟中文文本）在 middleware/路由层就是 typed 4xx，不泄漏 pg cast/query/params/表名等内部信息，也不会被吞成 500；`/api/servers/not-a-uuid/members` 回 404 `Server not found`，路径与 header 不一致回 typed 4xx 且无 `internal_server_error`。`/api/messages/context/:id` 的畸形 id 回 400、畸形 `channelId` 回 400；`/api/messages/channel/:id`、成员 profile、public channel/thread、MCP agent、integrations agent/client/share-link/marketplace 的畸形 id 回 404；8 位短 id 在 `context` 上是合法目标并回 200。
+
