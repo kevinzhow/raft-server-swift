@@ -1158,6 +1158,14 @@ public func configure(_ app: Application, services: FallbackServices) {
         response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
         return response
     }
+    app.post("api", "agents", ":id", "hosted-runtime", "retry") { request -> Response in
+        routeResponse(services.emailAccounts.retryAgentProvisioning(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("api", "agents", ":id", "hosted-runtime", "usage") { request -> Response in
         var response = routeResponse(services.emailAccounts.agentHostedUsage(
             authorization: request.headers[.authorization],

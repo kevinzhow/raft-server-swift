@@ -8398,6 +8398,110 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func setHostedRuntimeStateForTesting(
+        agentId: String,
+        state: String,
+        retryNeedsModel: Bool = false
+    ) {
+        lock.lock()
+        if let existing = hostedRuntimes[agentId] {
+            hostedRuntimes[agentId] = (existing.provider, existing.model, state, retryNeedsModel, existing.createdAt)
+        } else {
+            hostedRuntimes[agentId] = ("antiproton", nil, state, retryNeedsModel, Date())
+        }
+        lock.unlock()
+    }
+
+    public func retryAgentProvisioning(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        body: String
+    ) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner"
+                || oauth.memberRole(serverId: serverId, userId: userId) == "admin"
+                || agent.creatorUserId == userId
+        else {
+            return Self.json(403, "{\"error\":\"The `editAgents` capability or human creator authority is required to retry provisioning\"}")
+        }
+        lock.lock()
+        let hosted = hostedRuntimes[agentId]
+        lock.unlock()
+        guard let hosted else {
+            return Self.json(404, "{\"error\":\"Agent is not a cloud agent\",\"code\":\"hosted_runtime_missing\"}")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        var modelProvided = false
+        var providedModel: String?
+        if let raw = object?["model"] {
+            modelProvided = true
+            if raw is NSNull {
+                providedModel = nil
+            } else if let value = raw as? String,
+                      !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      value.count <= 200 {
+                providedModel = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                return Self.json(400, "{\"error\":\"`model` must be a model id or null\",\"code\":\"hosted_runtime_model_invalid\"}")
+            }
+        }
+        if modelProvided, hosted.retryNeedsModel {
+            lock.lock()
+            let picker = hostedModelPickerServers.contains(serverId)
+            let state = hostedModels[agentId]
+            lock.unlock()
+            if let providedModel, providedModel != Self.hostedDefaultModel, !picker {
+                return Self.json(403, "{\"error\":\"This server does not pick a cloud agent model\",\"code\":\"model_picker_disabled\"}")
+            }
+            let picked = providedModel == Self.hostedDefaultModel && !picker ? nil : providedModel
+            if let picked {
+                if state?.locked == true {
+                    return Self.json(409, "{\"error\":\"An administrator has set this agent's model\",\"code\":\"hosted_runtime_model_locked\"}")
+                }
+                guard state?.models.contains(where: { $0.id == picked }) == true else {
+                    return Self.json(422, "{\"error\":\"The provider does not offer this model\",\"code\":\"hosted_runtime_model_not_offered\"}")
+                }
+            }
+        }
+        switch hosted.state {
+        case "failed":
+            if hosted.retryNeedsModel, !modelProvided {
+                return Self.json(409, "{\"error\":\"The provider refused the picked model; retry with `model` set to an offered id, or null for the default\",\"code\":\"hosted_runtime_model_required\"}")
+            }
+        case "provisioning", "deleting":
+            break
+        default:
+            return Self.json(409, "{\"error\":\"Nothing to retry\",\"code\":\"hosted_runtime_nothing_to_retry\"}")
+        }
+        lock.lock()
+        hostedRuntimes[agentId] = (hosted.provider, hosted.model, "provisioning", false, hosted.createdAt)
+        if modelProvided, var state = hostedModels[agentId] {
+            let picked = providedModel == Self.hostedDefaultModel && hostedModelPickerServers.contains(serverId) == false ? nil : providedModel
+            if let picked, let option = state.models.first(where: { $0.id == picked }) {
+                state.model = option.id
+                state.label = option.label
+                state.source = "chosen"
+            } else if picked == nil {
+                state.model = state.defaultModel
+                state.label = state.defaultLabel
+                state.source = "default"
+            }
+            hostedModels[agentId] = state
+        }
+        let updated = hostedRuntimes[agentId]!
+        lock.unlock()
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let modelJSON = updated.model.map(jsonString) ?? "null"
+        return Self.json(200, "{\"hostedRuntime\":{\"agentId\":\(jsonString(agentId)),\"provider\":\(jsonString(updated.provider)),\"model\":\(modelJSON),\"state\":\(jsonString(updated.state)),\"retryNeedsModel\":\(updated.retryNeedsModel),\"createdAt\":\(jsonString(formatter.string(from: updated.createdAt)))}}")
+    }
+
     public func setHostedModelForTesting(
         agentId: String,
         models: [(id: String, label: String, provider: String)] = [
