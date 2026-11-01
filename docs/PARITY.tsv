@@ -75,7 +75,7 @@ externalAgentPresence.api	route	partial	-	auto-seed
 externalAvatars.api	route	pending	-	auto-seed
 externalProjectionReactionRoutes	route	pending	-	auto-seed
 featureFlagOperatorPreview.api	route	locked	be8b567	removed routes stay 404
-featureFlags.api	route	partial	-	auto-seed
+featureFlags.api	route	locked	a60f7d1	member eval, rule order, client facts, kill switch
 featureFlagsAdmin.removed.api	route	locked	be8b567	removed routes stay 404
 feedbackAgentEventTail.e2e.api	route	pending	-	auto-seed
 feedbackMachineEvidence.e2e.api	route	pending	-	auto-seed
@@ -169,7 +169,7 @@ productFeedback.multiApp.api	route	partial	-	auto-seed
 providerConnections.api	route	partial	-	auto-seed
 providerProbeEnforcement.api	route	pending	-	auto-seed
 providerProbes.api	route	pending	-	auto-seed
-publicFeatureFlags.api	route	partial	-	auto-seed
+publicFeatureFlags.api	route	locked	a60f7d1	pre-auth flag projection and query validation
 publicSearch.api	route	partial	-	auto-seed
 publicSearchServiceAccess.api	route	partial	-	auto-seed
 publicSearchSettingsFence.realPg	route	partial	-	auto-seed
