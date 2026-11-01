@@ -194,7 +194,7 @@ serverLabs.api	route	locked	8700cda	labs role parity, version CAS, audit, readba
 serverMemberEvents.api	route	partial	-	auto-seed
 serverSetupGate.daemonReady	route	partial	-	auto-seed
 servers.activityUnreadSummary.api	route	partial	-	auto-seed
-servers.api	route	partial	-	auto-seed
+servers.api	route	partial	-	join-link list/revoke, machine registration, machine feed added; remaining server routes pending
 servers.joinCommunity.api	route	partial	-	auto-seed
 servers.mentionRedriveAuthz.api	route	partial	-	auto-seed
 servers.scopeAttestation.api	route	partial	-	auto-seed
@@ -206,7 +206,7 @@ slackBridgedAgentMention	route	partial	-	auto-seed
 socketMembershipRevocation.api	route	partial	-	server-member removal and family revocation covered; channel leave/member transitions pending
 socketSendTimeAudience.api	route	pending	-	auto-seed
 storageResponseStream.callSites	route	pending	-	auto-seed
-systemNotifications.api	route	pending	-	auto-seed
+systemNotifications.api	route	partial	-	v1 machine feed covered; v2 incident receipts pending
 tasks.assignee.api	route	partial	-	auto-seed
 tasks.channelMembership.api	route	partial	-	auto-seed
 tasks.jointSurface.api	route	pending	-	auto-seed
