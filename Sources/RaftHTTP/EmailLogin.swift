@@ -207,6 +207,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var userOnboardingSettings: [String: UserOnboarding] = [:]
     private var serverNotificationPrefs: [String: (muted: Bool, mentionsOnly: Bool, mode: String, version: Int)] = [:]
     private var setupPhases: [String: String] = [:]
+    private var setupHandoffs: Set<String> = []
     private var guestRoleServers: Set<String> = []
     private var computers: [(id: String, serverId: String, name: String, apiKey: String, machineId: String?, revokedAt: Date?, online: Bool, version: String?)] = []
     private var computerAttachers: [String: String] = [:]
@@ -10493,6 +10494,52 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         lock.unlock()
         return Self.json(200, setupProjectionJSON(serverId: serverId, userId: userId, role: role))
+    }
+
+    public func serverSetupReset(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"INSUFFICIENT_PERMISSION\"}")
+        }
+        guard role == "owner" else {
+            return Self.json(403, "{\"error\":\"INSUFFICIENT_PERMISSION\"}")
+        }
+        lock.lock()
+        let hasAgent = serverAgents.values.contains { $0.serverId == serverId }
+        if hasAgent {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"SERVER_ALREADY_SET_UP\"}")
+        }
+        var revokedComputers = 0
+        for index in computers.indices where computers[index].serverId == serverId && computers[index].revokedAt == nil {
+            computers[index].revokedAt = Date()
+            if computers[index].machineId != nil { revokedComputers += 1 }
+        }
+        setupPhases = setupPhases.filter { !$0.key.hasPrefix("\(serverId)\n") }
+        setupHandoffs.remove(serverId)
+        lock.unlock()
+        var projection = setupProjectionJSON(serverId: serverId, userId: userId, role: role)
+        projection.removeLast()
+        projection += ",\"revokedComputers\":\(revokedComputers)}"
+        return Self.json(200, projection)
+    }
+
+    public func serverSetupHandoff(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.serverProfile(id: serverId) != nil else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner" else {
+            return Self.json(403, "{\"error\":\"INSUFFICIENT_PERMISSION\"}")
+        }
+        lock.lock()
+        setupHandoffs.insert(serverId)
+        lock.unlock()
+        return Self.json(200, setupProjectionJSON(serverId: serverId, userId: userId, role: "owner"))
     }
 
     public func enableGuestRoleTransitions(serverId: String) {

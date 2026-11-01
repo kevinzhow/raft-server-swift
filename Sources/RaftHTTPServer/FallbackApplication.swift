@@ -1664,6 +1664,18 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("api", "servers", ":id", "setup-reset") { request -> Response in
+        routeResponse(services.emailAccounts.serverSetupReset(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
+    app.post("api", "servers", ":id", "setup-handoff") { request -> Response in
+        routeResponse(services.emailAccounts.serverSetupHandoff(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
     app.delete("api", "servers", ":id", "invites", ":inviteId") { request -> Response in
         routeResponse(services.emailAccounts.revokeServerInvite(
             authorization: request.headers[.authorization],
