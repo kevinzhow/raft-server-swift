@@ -652,6 +652,20 @@ public func configure(_ app: Application, services: FallbackServices) {
             limit: desktopQuery(request.url.query, "limit")
         ))
     }
+    app.post("internal", "agent-api", "prepare-action") { request -> Response in
+        routeResponse(services.emailAccounts.prepareActionCard(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? ""
+        ))
+    }
+    app.post("api", "actions", ":messageId", "execute") { request -> Response in
+        routeResponse(services.emailAccounts.executeActionCard(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            messageId: request.parameters.get("messageId") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("internal", "agent-api", "mcp", "tools") { request -> Response in
         routeResponse(services.emailAccounts.managedMCPToolSnapshot(
             authorization: request.headers[.authorization]

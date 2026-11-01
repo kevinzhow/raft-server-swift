@@ -318,6 +318,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var agentLastSeenAt: [String: Date] = [:]
     private var feedbackLocatorRecords: [FeedbackLocatorRecord] = []
     private var managedMCPServers: [ManagedMCPServerRecord] = []
+    private var actionCardRecords: [String: ActionCardRecord] = [:]
+    private var pendingActionMessageEvents: [(agentId: String, messageId: String, content: String)] = []
+
+    private struct ActionCardRecord {
+        var messageId: String
+        var serverId: String
+        var requesterAgentId: String
+        var storageChannelId: String
+        var localCarrierChannelId: String
+        var actionType: String
+        var channelName: String?
+        var visibility: String
+        var state: String
+        var executedByUserId: String?
+    }
 
     private struct ManagedMCPServerRecord {
         var id: String
@@ -5113,6 +5128,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public struct InboxFact: Equatable, Sendable {
         public var receiverType: String
         public var receiverId: String
+        public var personalMention: Bool = false
+        public var unreadEligible: Bool = true
+
+        public init(receiverType: String, receiverId: String, personalMention: Bool = false, unreadEligible: Bool = true) {
+            self.receiverType = receiverType
+            self.receiverId = receiverId
+            self.personalMention = personalMention
+            self.unreadEligible = unreadEligible
+        }
     }
 
     public struct MentionActionRecord: Equatable, Sendable {
@@ -5161,7 +5185,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         defer { lock.unlock() }
         let wanted = Set(receiverIds)
         return storedInboxFacts.filter { $0.messageId == messageId && wanted.contains($0.receiverId) }.map {
-            InboxFact(receiverType: $0.receiverType, receiverId: $0.receiverId)
+            InboxFact(
+                receiverType: $0.receiverType,
+                receiverId: $0.receiverId,
+                personalMention: $0.personalMention,
+                unreadEligible: $0.unreadEligible
+            )
         }
     }
 
@@ -5597,12 +5626,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         case .failure(let reply):
             return reply
         case .success(let agentId):
-            let events = oauth.takeThirdPartyEventMessages(agentId: agentId).map { message in
+            lock.lock()
+            let actionEvents = pendingActionMessageEvents.filter { $0.agentId == agentId }
+            pendingActionMessageEvents.removeAll { $0.agentId == agentId }
+            lock.unlock()
+            var events: [String] = actionEvents.map { event in
+                "{\"message_id\":\(jsonString(event.messageId)),\"sender_type\":\"agent\",\"content\":\(jsonString(event.content))}"
+            }
+            events += oauth.takeThirdPartyEventMessages(agentId: agentId).map { message in
                 let resource = "urn:raft:server:\(message.serverId):agent-inbound"
                 let content = "Third-party event from \(message.clientKey): \(message.summary)\nresource: \(resource)"
                 return "{\"message_id\":\(jsonString(message.id)),\"sender_type\":\"third_party_app\",\"content\":\(jsonString(content)),\"third_party_event\":{\"id\":\(jsonString(message.id)),\"kind\":\(jsonString(message.kind)),\"summary\":\(jsonString(message.summary)),\"source\":{\"client_id\":\(jsonString(message.clientKey)),\"client_name\":\(jsonString(message.clientName)),\"oauth_client_id\":\(jsonString(message.clientRecordId)),\"resource\":\(jsonString(resource))}}}"
-            }.joined(separator: ",")
-            return Self.json(200, "{\"events\":[\(events)]}")
+            }
+            return Self.json(200, "{\"events\":[\(events.joined(separator: ","))]}")
         }
     }
 
@@ -7013,6 +7049,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var channelId: String?
         var serverId: String?
         var personalMention: Bool
+        var unreadEligible: Bool = true
     }
 
     private struct AgentCredential {
@@ -14256,6 +14293,286 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(409, "{\"code\":\"managed_mcp_config_stale\",\"error\":\(jsonString(staleText)),\"suggestedNextAction\":\(jsonString(staleText))}")
         }
         return Self.json(502, "{\"code\":\"managed_mcp_upstream_unavailable\",\"error\":\"The managed MCP transport is not available in this build\"}")
+    }
+
+    // MARK: - Action cards (`POST /internal/agent-api/prepare-action`, `POST /api/actions/:id/execute`)
+
+    private func actionCardTarget(serverId: String, agentId: String, target: String) -> (local: String, storage: String)? {
+        guard target.hasPrefix("#") else { return nil }
+        let name = String(target.dropFirst())
+        lock.lock()
+        var local: String?
+        for (id, channel) in postableChannels {
+            guard channel.serverId == serverId, channel.name == name, channel.deletedAt == nil,
+                  channel.kind == "channel" || channel.kind == "private" || channel.kind == "joint"
+            else { continue }
+            if channel.kind != "channel",
+               !channel.memberIds.contains(agentId),
+               !oauth.channelAgentIds(channelId: id).contains(agentId) {
+                continue
+            }
+            local = id
+            break
+        }
+        let storage = local.flatMap { id in jointProjections.first { $0.localChannelId == id }?.canonicalChannelId } ?? local
+        lock.unlock()
+        guard let local, let storage else { return nil }
+        return (local, storage)
+    }
+
+    public func prepareActionCard(authorization: String?, body: String) -> HTTPReply {
+        let identity: (agentId: String, serverId: String)
+        switch feedbackLocatorIdentity(authorization: authorization, capability: "send") {
+        case .refused(let reply): return reply
+        case .success(let agentId, let serverId): identity = (agentId, serverId)
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let target = object["target"] as? String,
+              let action = object["action"] as? [String: Any],
+              (action["type"] as? String) == "channel:create",
+              let channelName = action["name"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"Invalid action card request\",\"code\":\"INVALID_PAYLOAD\"}")
+        }
+        let trimmedName = channelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty, trimmedName.count <= 64 else {
+            return Self.json(400, "{\"error\":\"Invalid channel name\",\"code\":\"INVALID_PAYLOAD\"}")
+        }
+        let visibility = (action["visibility"] as? String) == "private" ? "private" : "channel"
+        guard let resolved = actionCardTarget(serverId: identity.serverId, agentId: identity.agentId, target: target) else {
+            return Self.json(404, "{\"error\":\"Target channel not found\",\"code\":\"TARGET_NOT_FOUND\"}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: identity.agentId) else {
+            return Self.json(404, "{\"error\":\"Requester agent not found\",\"code\":\"AGENT_NOT_FOUND\"}")
+        }
+        let messageId = UUID().uuidString.lowercased()
+        let content = "@\(agent.name) proposed creating channel #\(trimmedName)"
+        lock.lock()
+        humanMessageRows.append(StoredHumanMessage(
+            id: messageId,
+            channelId: resolved.storage,
+            senderId: identity.agentId,
+            content: content,
+            randomId: nil,
+            messageType: "system",
+            senderType: "agent",
+            actionKind: "action-card"
+        ))
+        actionCardRecords[messageId] = ActionCardRecord(
+            messageId: messageId,
+            serverId: identity.serverId,
+            requesterAgentId: identity.agentId,
+            storageChannelId: resolved.storage,
+            localCarrierChannelId: resolved.local,
+            actionType: "channel:create",
+            channelName: trimmedName,
+            visibility: visibility,
+            state: "prepared",
+            executedByUserId: nil
+        )
+        lock.unlock()
+        let metadata = "{\"kind\":\"action-card\",\"state\":\"prepared\",\"action\":{\"type\":\"channel:create\",\"name\":\(jsonString(trimmedName)),\"visibility\":\(jsonString(visibility))},\"carrierChannelId\":\(jsonString(resolved.storage))}"
+        return Self.json(201, "{\"messageId\":\(jsonString(messageId)),\"metadata\":\(metadata)}")
+    }
+
+    private func actionCardServerName(_ serverId: String) -> String {
+        oauth.serverProfile(id: serverId)?.name ?? "this Server"
+    }
+
+    /// Writes the durable result reply into the card's thread, records the
+    /// preparer's unread mention fact, and queues the external-agent event.
+    private func postActionCardReply(
+        card: ActionCardRecord,
+        confirmerUserId: String,
+        success: Bool,
+        resultName: String?,
+        failureReason: String?
+    ) {
+        guard let requester = oauth.agentRuntimeInfo(id: card.requesterAgentId) else { return }
+        lock.lock()
+        let confirmer = accounts.values.first { $0.id == confirmerUserId }
+        let confirmerHandle = confirmer?.name ?? "a human"
+        let serverName = oauth.serverProfile(id: card.serverId)?.name ?? "this Server"
+        let storageServerId = postableChannels[card.storageChannelId]?.serverId ?? card.serverId
+        var canonicalThread = postableChannels.first { _, channel in
+            channel.kind == "thread"
+                && channel.parentChannelId == card.storageChannelId
+                && channel.parentMessageId == card.messageId
+        }?.key
+        var createdThread = false
+        if canonicalThread == nil {
+            let threadId = oauth.createThreadChannel(parentChannelId: card.storageChannelId, parentMessageId: card.messageId)
+            var thread = postableChannels[threadId] ?? PostableChannel(serverId: storageServerId, memberIds: [])
+            thread.serverId = storageServerId
+            thread.kind = "thread"
+            thread.parentChannelId = card.storageChannelId
+            thread.parentMessageId = card.messageId
+            thread.name = "thread"
+            thread.memberIds.insert(card.requesterAgentId)
+            thread.memberIds.insert(confirmerUserId)
+            if let parentMembers = postableChannels[card.storageChannelId]?.memberIds {
+                thread.memberIds.formUnion(parentMembers)
+            }
+            postableChannels[threadId] = thread
+            canonicalThread = threadId
+            createdThread = true
+        }
+        guard let threadId = canonicalThread else {
+            lock.unlock()
+            return
+        }
+        // Give each Joint projection its own thread row pointing at the
+        // canonical thread, so either human surface can read the reply.
+        for link in jointProjections where link.canonicalChannelId == card.storageChannelId {
+            let existing = postableChannels.first { _, channel in
+                channel.kind == "thread" && channel.parentChannelId == link.localChannelId && channel.parentMessageId == card.messageId
+            }?.key
+            let localThreadId: String
+            if let existing {
+                localThreadId = existing
+            } else {
+                let created = oauth.createThreadChannel(parentChannelId: link.localChannelId, parentMessageId: card.messageId)
+                var thread = postableChannels[created] ?? PostableChannel(serverId: link.serverId, memberIds: [])
+                thread.serverId = link.serverId
+                thread.kind = "thread"
+                thread.parentChannelId = link.localChannelId
+                thread.parentMessageId = card.messageId
+                thread.name = "thread"
+                thread.memberIds.insert(card.requesterAgentId)
+                thread.memberIds.insert(confirmerUserId)
+                if let parentMembers = postableChannels[link.localChannelId]?.memberIds {
+                    thread.memberIds.formUnion(parentMembers)
+                }
+                postableChannels[created] = thread
+                jointProjections.append(JointChannelLink(localChannelId: created, canonicalChannelId: threadId, serverId: link.serverId))
+                localThreadId = created
+            }
+            if localThreadId != threadId {
+                postableChannels[localThreadId]?.memberIds.insert(card.requesterAgentId)
+                postableChannels[localThreadId]?.memberIds.insert(confirmerUserId)
+            }
+        }
+        _ = createdThread
+        let cardRef = "\(card.messageId.prefix(8))"
+        let content: String
+        if success {
+            content = [
+                "@\(requester.name) your action card `\(cardRef)` (creating channel #\(card.channelName ?? "")) was executed by @\(confirmerHandle) on \(serverName), acting with @\(confirmerHandle)'s permissions.",
+                resultName.map { "Result: created channel #\($0)." },
+            ].compactMap { $0 }.joined(separator: "\n")
+        } else {
+            content = "@\(requester.name) your action card `\(cardRef)` (creating channel #\(card.channelName ?? "")) failed when @\(confirmerHandle) tried to execute it on \(serverName): \(failureReason ?? "the action could not be completed"). The card is still pending and can be retried."
+        }
+        let replyId = UUID().uuidString.lowercased()
+        humanMessageRows.append(StoredHumanMessage(
+            id: replyId,
+            channelId: threadId,
+            senderId: "system",
+            content: content,
+            randomId: nil,
+            messageType: "system",
+            senderType: "system"
+        ))
+        storedInboxFacts.append(StoredInboxFact(
+            messageId: replyId,
+            receiverType: "agent",
+            receiverId: card.requesterAgentId,
+            channelId: threadId,
+            serverId: card.serverId,
+            personalMention: true,
+            unreadEligible: true
+        ))
+        storedInboxFacts.append(StoredInboxFact(
+            messageId: replyId,
+            receiverType: "user",
+            receiverId: confirmerUserId,
+            channelId: threadId,
+            serverId: card.serverId,
+            personalMention: true,
+            unreadEligible: false
+        ))
+        storedMentions.append(StoredMention(
+            id: UUID().uuidString.lowercased(),
+            messageId: replyId,
+            channelId: threadId,
+            senderId: "system",
+            targetType: "agent",
+            targetId: card.requesterAgentId,
+            handle: requester.name,
+            notifiableAtSend: true,
+            notifiedAt: nil,
+            notifiedByType: nil,
+            notifiedById: nil,
+            notifiedAction: nil
+        ))
+        if requester.runtime == "external" {
+            pendingActionMessageEvents.append((card.requesterAgentId, replyId, content))
+        }
+        lock.unlock()
+        emitRealtime("channel:\(threadId)", "message:new", "{\"id\":\(jsonString(replyId)),\"channelId\":\(jsonString(threadId)),\"content\":\(jsonString(content))}")
+    }
+
+    public func executeActionCard(authorization: String?, serverId: String, messageId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        lock.lock()
+        let card = actionCardRecords[messageId]
+        lock.unlock()
+        guard let card else {
+            return Self.json(404, "{\"error\":\"Action card not found\",\"code\":\"NOT_FOUND\"}")
+        }
+        guard oauth.memberRole(serverId: card.serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        if let expected = object?["expectedState"] as? String, expected == "executed", card.state != "executed" {
+            return Self.json(409, "{\"error\":\"The action card is not executed\",\"code\":\"STATE_MISMATCH\"}")
+        }
+        if card.state == "executed" {
+            return Self.json(200, "{\"messageId\":\(jsonString(messageId)),\"metadata\":{\"kind\":\"action-card\",\"state\":\"executed\"}}")
+        }
+        let name = card.channelName ?? ""
+        lock.lock()
+        let duplicate = postableChannels.values.contains {
+            $0.serverId == card.serverId && $0.name == name && $0.deletedAt == nil
+                && ($0.kind == "channel" || $0.kind == "private")
+        }
+        lock.unlock()
+        if duplicate {
+            let reason = "a channel named #\(name) already exists"
+            postActionCardReply(card: card, confirmerUserId: userId, success: false, resultName: nil, failureReason: reason)
+            return Self.json(409, "{\"error\":\"\(reason)\",\"code\":\"ACTION_FAILED\",\"reason\":\(jsonString(reason))}")
+        }
+        let channelId = oauth.createChannel(
+            serverId: card.serverId,
+            name: name,
+            creatorUserId: userId,
+            type: card.visibility == "private" ? "private" : "channel"
+        )
+        addPostableChannel(
+            serverId: card.serverId,
+            channelId: channelId,
+            memberId: userId,
+            kind: card.visibility == "private" ? "private" : "channel",
+            name: name
+        )
+        addPostableChannel(serverId: card.serverId, channelId: channelId, memberId: card.requesterAgentId, kind: card.visibility == "private" ? "private" : "channel", name: name)
+        oauth.addChannelHuman(channelId: channelId, userId: userId)
+        oauth.addChannelAgent(channelId: channelId, agentId: card.requesterAgentId)
+        lock.lock()
+        if var updated = actionCardRecords[messageId] {
+            updated.state = "executed"
+            updated.executedByUserId = userId
+            actionCardRecords[messageId] = updated
+        }
+        lock.unlock()
+        postActionCardReply(card: card, confirmerUserId: userId, success: true, resultName: name, failureReason: nil)
+        let metadata = "{\"kind\":\"action-card\",\"state\":\"executed\",\"action\":{\"type\":\"channel:create\",\"name\":\(jsonString(name))},\"result\":{\"kind\":\"channel\",\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name))}}"
+        return Self.json(200, "{\"messageId\":\(jsonString(messageId)),\"metadata\":\(metadata)}")
     }
 
     public func agentHistory(authorization: String?, agentId: String? = nil, channelRef: String?, before: String?, after: String?, around: String? = nil, limit: String?) -> HTTPReply {
