@@ -204,6 +204,9 @@ agent 读游标前进且 server 开启 read receipts 时，`channel:<id>` 房间
 `GET /api/servers/:id/member-graph` 在 human directory 隐藏时对普通 member 403、owner 200；`GET /api/servers/unread-summary` 不需要 `X-Server-Id`，跨 server 返回成员所在 server 的行；`GET/PATCH /api/servers/:id/sidebar-order` 缺/错 `X-Server-Id` 400。
 
 
+`PATCH /api/servers/:id/sidebar-order` 支持 typed `pinned` refs（`channel/agent/human`）：DM channel 归一化为 human/agent peer，private 不可见 channel 和不存在的人/agent 被丢弃，重复 ref 去重；返回 `pinned/pinnedChannelIds/pinnedAgentIds/pinnedOrder/pinnedVersion`，同值重放不升版本也不发事件；首次变更向 `user:<id>` 发 `pinned:updated` `{pinned,pinnedVersion}`；与 legacy `pinnedChannelIds` 混用或非法 kind 400。
+
+
 `POST /api/messages` 成功后向 `channel:<id>` 房间发 `message:new`，payload 是消息 HTTP body（id/channelId/content/attachments）。`POST /api/tasks/channel/:channelId` 成功后向同一房间发 `task:created`，payload 是 `{channelId,tasks:[{id,channelId,title,status}]}`；`PATCH /api/tasks/:taskId/claim` 成功后发 `task:updated`，payload `{channelId,task:<task JSON>}`；`POST /api/channels/threads/follow|unfollow` 成功后发 `thread:followers-updated`，payload `{threadChannelId}`。频道创建时该用户的在线 socket 自动加入 `channel:<id>`。task JSON 带 `messageId`。
 
 

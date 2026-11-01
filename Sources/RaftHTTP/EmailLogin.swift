@@ -245,6 +245,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var channelAuthorityRevisions: [String: Int] = [:]
     private var sidebarModes: [String: (channel: String, joint: String, dm: String, pinned: String, channelTabs: [String], agentTabs: [String])] = [:]
     private var sidebarSections: [String: (sections: [(id: String, name: String, emoji: String?, sortMode: String)], order: [String], placements: [(kind: String, id: String, sectionId: String, position: Int)], version: Int)] = [:]
+    private var sidebarPinnedRefs: [String: (refs: [(kind: String, id: String)], channelIds: [String], agentIds: [String], version: Int)] = [:]
     private var reminderRecords: [ReminderRecord] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
@@ -10705,6 +10706,38 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
+    private enum SidebarPinnedChannelResolution {
+        case missing
+        case channel((kind: String, id: String))
+        case dm((kind: String, id: String), legacyId: String)
+    }
+
+    private func sidebarPinnedChannel(
+        id: String,
+        serverId: String,
+        userId: String
+    ) -> SidebarPinnedChannelResolution {
+        guard let channel = oauth.channelInfo(id: id), channel.serverId == serverId else {
+            return .missing
+        }
+        let type = oauth.channelType(id: id) ?? "channel"
+        if type == "dm" {
+            let agents = oauth.channelAgentIds(channelId: id)
+            if agents.count == 1 {
+                return .dm(("agent", agents[0]), legacyId: id)
+            }
+            let humans = oauth.channelHumanIds(channelId: id).filter { $0 != userId }
+            if let peer = humans.first {
+                return .dm(("human", peer), legacyId: id)
+            }
+            return .missing
+        }
+        if type == "private" && !oauth.channelHumanIds(channelId: id).contains(userId) {
+            return .missing
+        }
+        return .channel(("channel", id))
+    }
+
     public func patchSidebarOrder(authorization: String?, serverId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -10808,9 +10841,87 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             sections.version += 1
         }
         lock.lock()
+        var pinnedState = sidebarPinnedRefs[key] ?? ([], [], [], 0)
+        lock.unlock()
+        var pinnedChanged = false
+        if let rawPinned = object["pinned"] {
+            guard object["pinnedChannelIds"] == nil else {
+                return Self.json(400, "{\"error\":\"Invalid sidebar pinned references\"}")
+            }
+            guard let entries = rawPinned as? [[String: Any]] else {
+                return Self.json(400, "{\"error\":\"Invalid sidebar pinned references\"}")
+            }
+            var refs: [(kind: String, id: String)] = []
+            var channelIds: [String] = []
+            var agentIds: [String] = []
+            for entry in entries {
+                guard let kind = entry["kind"] as? String,
+                      ["channel", "agent", "human"].contains(kind),
+                      let id = entry["id"] as? String,
+                      !id.isEmpty
+                else {
+                    return Self.json(400, "{\"error\":\"Invalid sidebar pinned references\"}")
+                }
+                if kind == "channel" {
+                    switch sidebarPinnedChannel(id: id, serverId: serverId, userId: userId) {
+                    case .missing:
+                        continue
+                    case .channel(let canonical):
+                        refs.append(canonical)
+                        channelIds.append(id)
+                    case .dm(let canonical, let legacyId):
+                        refs.append(canonical)
+                        channelIds.append(legacyId)
+                    }
+                } else if kind == "agent" {
+                    guard let agent = oauth.agentRuntimeInfo(id: id), agent.serverId == serverId, !agent.deleted else { continue }
+                    refs.append(("agent", id))
+                    agentIds.append(id)
+                } else {
+                    guard oauth.memberRole(serverId: serverId, userId: id) != nil else { continue }
+                    refs.append(("human", id))
+                }
+            }
+            var seen = Set<String>()
+            refs = refs.filter { seen.insert("\($0.kind)\n\($0.id)").inserted }
+            channelIds = Array(NSOrderedSet(array: channelIds)) as? [String] ?? channelIds
+            agentIds = Array(NSOrderedSet(array: agentIds)) as? [String] ?? agentIds
+            pinnedChanged = refs.map { "\($0.kind)\n\($0.id)" } != pinnedState.refs.map { "\($0.kind)\n\($0.id)" }
+            if pinnedChanged {
+                pinnedState = (refs, channelIds, agentIds, pinnedState.version + 1)
+            }
+        } else if let rawChannels = object["pinnedChannelIds"] {
+            guard let ids = rawChannels as? [String] else {
+                return Self.json(400, "{\"error\":\"Invalid sidebar pinned references\"}")
+            }
+            var refs: [(kind: String, id: String)] = []
+            var channelIds: [String] = []
+            for id in ids {
+                switch sidebarPinnedChannel(id: id, serverId: serverId, userId: userId) {
+                case .missing:
+                    continue
+                case .channel(let canonical):
+                    refs.append(canonical)
+                    channelIds.append(id)
+                case .dm(let canonical, let legacyId):
+                    refs.append(canonical)
+                    channelIds.append(legacyId)
+                }
+            }
+            pinnedChanged = refs.map { "\($0.kind)\n\($0.id)" } != pinnedState.refs.map { "\($0.kind)\n\($0.id)" }
+            if pinnedChanged {
+                pinnedState = (refs, channelIds, [], pinnedState.version + 1)
+            }
+        }
+        lock.lock()
+        if pinnedChanged { sidebarPinnedRefs[key] = pinnedState }
         sidebarModes[key] = (channel, joint, dm, pinned, channelTabs, agentTabs)
         if hasSectionFields { sidebarSections[key] = sections }
         lock.unlock()
+        if pinnedChanged {
+            let refsJSON = pinnedState.refs.map { "{\"kind\":\(jsonString($0.kind)),\"id\":\(jsonString($0.id))}" }.joined(separator: ",")
+            emitRealtime("user:\(userId)", "pinned:updated", "{\"pinned\":[\(refsJSON)],\"pinnedVersion\":\(pinnedState.version)}")
+        }
         return sidebarOrder(authorization: authorization, serverId: serverId)
     }
 
@@ -10831,14 +10942,39 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         let modes = sidebarModes["\(serverId)\n\(userId)"] ?? ("manual", "manual", "manual", "manual", ["chat"], ["activity", "profile"])
         let sections = sidebarSections["\(serverId)\n\(userId)"] ?? ([], [], [], 0)
+        let storedPinned = sidebarPinnedRefs["\(serverId)\n\(userId)"]
         lock.unlock()
+        let pinnedState: (refs: [(kind: String, id: String)], channelIds: [String], agentIds: [String], version: Int)
+        if let storedPinned {
+            pinnedState = storedPinned
+        } else {
+            var refs: [(kind: String, id: String)] = []
+            var channelIds: [String] = []
+            var agentIds: [String] = []
+            for id in order.pinnedOrder {
+                if oauth.agentRuntimeInfo(id: id)?.serverId == serverId {
+                    refs.append(("agent", id))
+                    agentIds.append(id)
+                } else if oauth.channelInfo(id: id)?.serverId == serverId {
+                    refs.append(("channel", id))
+                    channelIds.append(id)
+                } else {
+                    refs.append(("human", id))
+                }
+            }
+            pinnedState = (refs, channelIds, agentIds, 0)
+        }
+        let pinnedJSON = pinnedState.refs.map {
+            "{\"kind\":\(jsonString($0.kind)),\"id\":\(jsonString($0.id))}"
+        }.joined(separator: ",")
+        let legacyPinnedOrder = storedPinned == nil ? order.pinnedOrder : (pinnedState.channelIds + pinnedState.agentIds)
         let sectionJSON = sections.sections.map { section -> String in
             "{\"id\":\(jsonString(section.id)),\"name\":\(jsonString(section.name)),\"emoji\":\(section.emoji.map { jsonString($0) } ?? "null"),\"sortMode\":\(jsonString(section.sortMode))}"
         }.joined(separator: ",")
         let placementJSON = sections.placements.map { placement in
             "{\"kind\":\(jsonString(placement.kind)),\"id\":\(jsonString(placement.id)),\"sectionId\":\(jsonString(placement.sectionId)),\"position\":\(placement.position)}"
         }.joined(separator: ",")
-        return Self.json(200, "{\"channelOrder\":[\("\(array(visibleChannelOrder))")],\"agentOrder\":[\("\(array(order.agentOrder))")],\"dmOrder\":[\("\(array(order.dmOrder))")],\"pinnedOrder\":[\("\(array(order.pinnedOrder))")],\"hiddenDmIds\":[\("\(array(order.hiddenDmIds))")],\"channelSortMode\":\(jsonString(modes.channel)),\"jointChannelSortMode\":\(jsonString(modes.joint)),\"dmSortMode\":\(jsonString(modes.dm)),\"pinnedSortMode\":\(jsonString(modes.pinned)),\"channelPanelTabOrder\":[\("\(array(modes.channelTabs))")],\"agentPanelTabOrder\":[\("\(array(modes.agentTabs))")],\"customSections\":[\("\(sectionJSON)")],\"sectionOrder\":[\("\(array(sections.order.isEmpty ? ["system:pinned", "system:joint", "system:channels", "system:dms"] : sections.order))")],\"sectionPlacements\":[\("\(placementJSON)")],\"sectionsVersion\":\(sections.version)}")
+        return Self.json(200, "{\"channelOrder\":[\("\(array(visibleChannelOrder))")],\"agentOrder\":[\("\(array(order.agentOrder))")],\"dmOrder\":[\("\(array(order.dmOrder))")],\"pinned\":[\(pinnedJSON)],\"pinnedChannelIds\":[\("\(array(pinnedState.channelIds))")],\"pinnedAgentIds\":[\("\(array(pinnedState.agentIds))")],\"pinnedOrder\":[\("\(array(legacyPinnedOrder))")],\"pinnedVersion\":\(pinnedState.version),\"hiddenDmIds\":[\("\(array(order.hiddenDmIds))")],\"channelSortMode\":\(jsonString(modes.channel)),\"jointChannelSortMode\":\(jsonString(modes.joint)),\"dmSortMode\":\(jsonString(modes.dm)),\"pinnedSortMode\":\(jsonString(modes.pinned)),\"channelPanelTabOrder\":[\("\(array(modes.channelTabs))")],\"agentPanelTabOrder\":[\("\(array(modes.agentTabs))")],\"customSections\":[\("\(sectionJSON)")],\"sectionOrder\":[\("\(array(sections.order.isEmpty ? ["system:pinned", "system:joint", "system:channels", "system:dms"] : sections.order))")],\"sectionPlacements\":[\("\(placementJSON)")],\"sectionsVersion\":\(sections.version)}")
     }
 
     public func addTaskSnapshot(
