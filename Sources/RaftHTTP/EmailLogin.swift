@@ -6320,6 +6320,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return key
     }
 
+    public func addMessageReactionForTesting(messageId: String, emoji: String, reactorId: String, reactorType: String) {
+        lock.lock()
+        messageReactions.append(StoredReaction(messageId: messageId, emoji: emoji, reactorId: reactorId, reactorType: reactorType))
+        noteDiscussionChangeLocked(messageId: messageId, emoji: emoji)
+        lock.unlock()
+    }
+
     public func addChannelAgent(channelId: String, agentId: String) {
         lock.lock()
         var members = channelAgentMembers[channelId] ?? []
@@ -6479,21 +6486,28 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let token = String(authorization.dropFirst("Bearer ".count))
         lock.lock()
-        guard let credential = agentCredentials[token], credential.scopes.contains("reactions"),
-              let agent = serverAgents[credential.agentId]
-        else {
+        guard let credential = agentCredentials[token], credential.scopes.contains("reactions") else {
             lock.unlock()
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
         let agentId = credential.agentId
-        guard let message = humanMessageRows.first(where: { $0.id.caseInsensitiveCompare(messageId) == .orderedSame }),
-              postableChannels[message.channelId]?.serverId == agent.serverId,
+        let agentServerId: String?
+        if let agent = serverAgents[agentId] {
+            agentServerId = agent.serverId
+        } else if let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted {
+            agentServerId = agent.serverId
+        } else {
+            agentServerId = nil
+        }
+        guard let agentServerId,
+              let message = humanMessageRows.first(where: { $0.id.caseInsensitiveCompare(messageId) == .orderedSame }),
+              postableChannels[message.channelId]?.serverId == agentServerId,
               channelAgentMembers[message.channelId]?.contains(agentId) == true
         else {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Message not found\"}")
         }
-        let bodyJSON = writeAgentReactionLocked(message: message, agentId: agentId, emoji: emoji, serverId: agent.serverId, remove: remove)
+        let bodyJSON = writeAgentReactionLocked(message: message, agentId: agentId, emoji: emoji, serverId: agentServerId, remove: remove)
         lock.unlock()
         return Self.json(200, bodyJSON)
     }
@@ -6635,8 +6649,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// On #all, a member of a hidden human directory sees only themself. Agents stay visible. Owners are not hidden.
     private func reactionActorVisibilityLocked(channelId: String, requesterId: String) -> (humans: Set<String>, agents: Set<String>, hash: String) {
         guard let channel = postableChannels[channelId] else { return ([], [], "") }
+        let requesterRole = serverMemberRoles["\(channel.serverId)\n\(requesterId)"]
+            ?? oauth.memberRole(serverId: channel.serverId, userId: requesterId)
         let hiddenDirectory = hideHumansFromMembers[channel.serverId] == true
-            && serverMemberRoles["\(channel.serverId)\n\(requesterId)"] == "member"
+            && requesterRole == "member"
             && channel.name == "all"
             && (channel.kind == "channel" || channel.kind == "private")
         let roster = jointRosterLocked(channelId: channelId) ?? channel.memberIds
