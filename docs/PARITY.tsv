@@ -111,7 +111,7 @@ internalAgentApi.context	route	partial	-	auto-seed
 internalAgentApi.contract	route	partial	-	auto-seed
 internalAgentApi.crossReplicaWake	route	partial	-	auto-seed
 internalAgentApi.dmPeerKind	route	partial	-	auto-seed
-internalAgentApi.eventsSenderType	route	partial	-	auto-seed
+internalAgentApi.eventsSenderType	route	locked	798e237	durable external inbox, sender_type/senderType echo, external_message
 internalAgentApi.externalInboxPull	route	partial	-	auto-seed
 internalAgentApi.feedbackLocator	route	locked	a6f414f	locator ingest receipts, duplicate replay, typed failures, index projection
 internalAgentApi.grantCoverage	route	partial	-	auto-seed
