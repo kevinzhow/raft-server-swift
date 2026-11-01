@@ -84,7 +84,7 @@ guestActivities.review.api	route	locked	6ceb12d	guest thread revocation hides in
 guestRbac.api	route	pending	-	auto-seed
 guestVisibilityBoundaries.api	route	pending	-	auto-seed
 hostedAgentMigration.api	route	locked	d6b4c05	hosted start/confirm gates, model, revision and replay
-identitySetup.api	route	pending	-	auto-seed
+identitySetup.api	route	locked	f744692	pending registration, complete-profile CAS, server write gate
 inboxPressure.realPg	route	pending	-	auto-seed
 independentAudit.api	route	pending	-	auto-seed
 integrations.api	route	partial	-	auto-seed
