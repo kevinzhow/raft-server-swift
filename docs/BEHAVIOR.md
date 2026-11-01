@@ -254,3 +254,5 @@ Guest 角色降级后，其 follow 的 thread 从 `GET /api/channels/inbox`（`a
 
 消息历史 HTTP 读（`/api/messages/channel/:id`、`/api/messages/context/:id`、`/api/messages/sync`）不序列化 `searchText`/`searchVector`/`senderTimezone`。`POST /api/messages` 与 `/api/v2/messages` 存储合法 IANA `timezone`（trim，UTC 或含 `/`，≤128），无效/缺省为 null 且不失败；v1 回消息本体、v2 回 `{message}`，两者都不回显 `senderTimezone`。
 
+`GET /api/agents/manageable` 不需要 `X-Server-Id`：`{ok:true,data:{agents:[{id,name,serverId,serverName}],reason,manageable_server_count}}`。跨 Server 合并；owner/admin 看本 Server 全部 Agent，普通 member 只看自己创建的；`reason` 为 `ok` / `no_agents_on_manageable_servers` / `no_manageable_server`，不返回 `suggested_next_action`。
+
