@@ -231,6 +231,9 @@ agent 读游标前进且 server 开启 read receipts 时，`channel:<id>` 房间
 GitHub 账号连接（`/api/agents/:id/connections/github`，provider 由注入的 relay 承担）：`GET` 返回 `{provider,supported,connected,account,connectedAt,connectedBy:{id,name},scopes,connectorId,connectors:[{id,account,createdAt,creator:{id,name,displayName},current,canManage}]}` 并 `Cache-Control: no-store`；其他 provider 404 `agent_connection_provider_unknown`；非 hosted 400 `agent_connection_not_provider_backed`；未 active 409 `agent_connection_agent_not_active`；普通成员/guest 403 `agent_connection_forbidden`（即使是 creator 的 guest 也拒绝）。`POST` 接受可选 `access:"private"`，其余 400 `agent_connection_invalid`，请求体带 `returnUrl`、`initiatedBy.raftUserId`（调用者）并返回 `{url,expiresAt,scopes}`。`POST .../confirm` 要求合法 `pending`（否则 400/404 `agent_connection_pending_invalid`），请求体用当前登录用户而非客户端 `by`。provider 404 按 agent lookup 分类：agent 存在 → `{provider,supported:false}` 或 409 `agent_connection_unsupported`；agent 不存在 → 409 `agent_connection_agent_missing_at_provider`；provider 4xx → 409 `agent_connection_provider_refused`（消息脱敏）；5xx → 502 `agent_connection_provider_error`。`PUT`/`DELETE .../connectors/:connectorId` 需要 connector creator 或 owner/admin（403 `agent_connection_connector_forbidden`），未知 connector 404，成功 assign 返回最新 status、删除 204；`DELETE /connections/:provider` 解除挂载 204。
 
 
+Guest 角色降级后，其 follow 的 thread 从 `GET /api/channels/inbox`（`all` 与 `unread`）消失；`GET /api/messages/channel/:threadId` 对 guest 返回 403，即使该 thread 属于公开频道。
+
+
 `POST /api/messages` 成功后向 `channel:<id>` 房间发 `message:new`，payload 是消息 HTTP body（id/channelId/content/attachments）。`POST /api/tasks/channel/:channelId` 成功后向同一房间发 `task:created`，payload 是 `{channelId,tasks:[{id,channelId,title,status}]}`；`PATCH /api/tasks/:taskId/claim` 成功后发 `task:updated`，payload `{channelId,task:<task JSON>}`；`POST /api/channels/threads/follow|unfollow` 成功后发 `thread:followers-updated`，payload `{threadChannelId}`。频道创建时该用户的在线 socket 自动加入 `channel:<id>`。task JSON 带 `messageId`。
 
 

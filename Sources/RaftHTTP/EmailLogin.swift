@@ -4528,9 +4528,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let visible: Bool = {
             guard let channel = postableChannels[channelId], channel.serverId == serverId else { return false }
             if channel.kind == "channel" { return true }
-            if channel.kind == "thread", let parentId = channel.parentChannelId,
-               let parent = postableChannels[parentId], parent.kind == "channel" {
-                return true
+            let guest = serverId.flatMap { oauth.memberRole(serverId: $0, userId: userId) } == "guest"
+            if channel.kind == "thread" {
+                if guest { return false }
+                if let parentId = channel.parentChannelId,
+                   let parent = postableChannels[parentId], parent.kind == "channel" {
+                    return true
+                }
             }
             return channel.memberIds.contains(userId)
         }()
@@ -4606,6 +4610,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// `GET /api/messages/channel/:channelId`. A non-UUID is `Channel not found`. A UUID the caller cannot see uses the neutral body.
     public func listChannelMessages(channelId: String, authorization: String?, serverId: String?, limit rawLimit: String? = nil, before rawBefore: String? = nil, after rawAfter: String? = nil) -> HTTPReply {
+        if let serverId, let userId = sessionUserId(authorization: authorization) {
+            lock.lock()
+            let threadScope = postableChannels[channelId]?.kind == "thread"
+            lock.unlock()
+            if threadScope, oauth.memberRole(serverId: serverId, userId: userId) == "guest" {
+                return Self.json(403, "{\"error\":\"Forbidden\"}")
+            }
+        }
         let before = Self.parsePageCursor(rawBefore)
         let after = Self.parsePageCursor(rawAfter)
         if before == .invalid || after == .invalid || (before.value != nil && after.value != nil && rawBefore != nil && rawAfter != nil) {
@@ -4624,9 +4636,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let visible: Bool = {
             guard let channel = postableChannels[channelId], channel.serverId == serverId, let userId else { return false }
             if channel.kind == "channel" { return true }
-            if channel.kind == "thread", let parentId = channel.parentChannelId,
-               let parent = postableChannels[parentId], parent.kind == "channel" {
-                return true
+            let guest = serverId.flatMap { oauth.memberRole(serverId: $0, userId: userId) } == "guest"
+            if channel.kind == "thread" {
+                if guest { return false }
+                if let parentId = channel.parentChannelId,
+                   let parent = postableChannels[parentId], parent.kind == "channel" {
+                    return true
+                }
             }
             return channel.memberIds.contains(userId)
         }()
@@ -5095,6 +5111,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 if !visibleScopes.contains(scopeId) { continue }
             }
             let isThread = type == "thread"
+            if isThread, let scopeServer, oauth.memberRole(serverId: scopeServer, userId: userId) == "guest" {
+                continue
+            }
             let parentChannelId = isThread ? channel?.parentChannelId : nil
             if isThread, let parentChannelId,
                postable[parentChannelId]?.kind == "dm",
