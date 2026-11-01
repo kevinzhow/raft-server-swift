@@ -196,7 +196,7 @@ serverSetupGate.daemonReady	route	partial	-	auto-seed
 servers.activityUnreadSummary.api	route	partial	-	auto-seed
 servers.api	route	partial	-	join-link list/revoke, machine registration, machine feed added; remaining server routes pending
 servers.joinCommunity.api	route	partial	-	auto-seed
-servers.mentionRedriveAuthz.api	route	partial	-	auto-seed
+servers.mentionRedriveAuthz.api	route	locked	6ea6dda	NOT_ACCESSIBLE/NOT_JOINABLE auth and version body
 servers.scopeAttestation.api	route	partial	-	auto-seed
 servers.transcriptFeedback.api	route	partial	-	auto-seed
 shareArtifacts.api	route	partial	-	auto-seed
