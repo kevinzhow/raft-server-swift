@@ -348,8 +348,8 @@ processMemory	daemon	pending	-	auto-seed
 providerConnectionLaunch	daemon	pending	-	auto-seed
 providerProbe	daemon	pending	-	auto-seed
 providerRequestFetch	daemon	pending	-	auto-seed
-proxy	daemon	pending	-	auto-seed
-proxyFailureTrace	daemon	pending	-	auto-seed
+proxy	daemon	locked	2ff64f5	dispatcher cache, NO_PROXY, isolated lanes, timeouts, eviction
+proxyFailureTrace	daemon	locked	2ff64f5	content-free typed projection and canned excerpts
 raftDiskJanitor	daemon	pending	-	auto-seed
 raftHome	daemon	pending	-	auto-seed
 recentDeliveryIds	daemon	pending	-	auto-seed
