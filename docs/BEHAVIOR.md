@@ -354,3 +354,5 @@ OAuth 回调 redirect 安全：`POST /api/oauth/authorize/human` 只在请求的
 
 频道批量加成员：`POST /api/channels/:id/members/batch` 接受 `{userIds,agentIds}`，先去重并保留顺序；所有用户必须是 Server 成员，否则整批 400 `{"error":"One or more users are not members of this server","code":"users_not_in_server","invalidUserIds":[...]}`，不写入任何成员或系统消息。成功回 `{ok:true,added:{userIds,agentIds},alreadyMembers:{userIds,agentIds}}`；每个新加入的人类/agent 产生一次 `@<name> was added to this channel.` 系统消息，重复调用只列 alreadyMembers、不重复消息。
 
+消息创建 body 边界：`POST /api/messages` 在写库前拒绝非字符串 `channelId`、非法 `attachmentIds` 元素和非布尔 `asTask`（400 `{error}`，不产生消息）。App/Computer 引用在 server gate 关闭时 400 `Computer and App references are not enabled in this server`；gate 开启但 `app:<id>` 未安装时 400 `App reference is not installed in this server`，两者都不落消息。
+

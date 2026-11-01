@@ -3618,6 +3618,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(400, "{\"error\":\"Invalid message request body\"}")
         }
+        if let asTask = object["asTask"], !(asTask is Bool) {
+            return Self.json(400, "{\"error\":\"asTask must be a boolean\"}")
+        }
         lock.lock()
         let channel = postableChannels[channelId]
         let referencesEnabled = composerResourceServers.contains(channel?.serverId ?? "")
