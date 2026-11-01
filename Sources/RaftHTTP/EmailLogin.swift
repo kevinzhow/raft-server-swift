@@ -8404,8 +8404,27 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"machine\":\(machine),\"apiKey\":\(jsonString(apiKey))}")
     }
 
-    public func serverSystemNotifications(authorization: String?, serverId: String) -> HTTPReply {
+    public func serverUsage(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        guard role != "guest" else {
+            return Self.json(403, "{\"error\":\"Guests cannot access server management data\"}")
+        }
+        let agents = oauth.serverAgents(serverId: serverId).count
+        lock.lock()
+        let machinesCount = machines.filter { $0.serverId == serverId }.count
+        lock.unlock()
+        let channels = oauth.channelsForServer(serverId: serverId, userId: userId, includeArchived: true)
+            .filter { ($0.type == "channel" || $0.type == "private") && oauth.channelArchivedAt(id: $0.id) == nil }
+            .count
+        return Self.json(200, "{\"agents\":\(agents),\"machines\":\(machinesCount),\"channels\":\(channels)}")
+    }
+
+    public func serverSystemNotifications(authorization: String?, serverId: String) -> HTTPReply {        guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {

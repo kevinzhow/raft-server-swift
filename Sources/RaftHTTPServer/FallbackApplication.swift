@@ -1773,6 +1773,12 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("internal", "computer", "runners") { request -> Response in
         routeResponse(services.emailAccounts.computerRunners(authorization: request.headers[.authorization]))
     }
+    app.get("api", "servers", ":id", "usage") { request -> Response in
+        routeResponse(services.emailAccounts.serverUsage(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
     app.get("api", "servers", ":id", "system-notifications") { request -> Response in
         var response = routeResponse(services.emailAccounts.serverSystemNotifications(
             authorization: request.headers[.authorization],

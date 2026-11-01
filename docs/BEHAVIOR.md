@@ -162,6 +162,9 @@ agent 读游标前进且 server 开启 read receipts 时，`channel:<id>` 房间
 `GET /api/servers/:id/system-notifications-v2` 返回 `server-system-attention-v1` replace 快照；仅 owner/admin 且 `usage_limit_attention_v0` 开启时有内容，普通 member 空。每个 incident 带 `id/kind/severity/state/activatedAt/lastObservedAt/seenAt/machine/provider/windowKey/resetsAt/affectedAgentIds`，`unseenCount` 统计 `seenAt=null`。`POST .../:incidentId/seen|dismiss` 写 per-user receipt，`dismiss` 同时置 seen；非法 UUID 400，非 owner/admin、gate 关闭、跨 server 或非 active incident 404。
 
 
+`GET /api/servers/:id/usage` 对成员返回 `{agents,machines,channels}`：agents 为非删除 agent 数，machines 为该 server 的全部 machine 数，channels 只计非归档 `channel/private`（不含 thread/DM）；guest 403，非成员 404，未登录 401。
+
+
 `POST /api/messages` 成功后向 `channel:<id>` 房间发 `message:new`，payload 是消息 HTTP body（id/channelId/content/attachments）。`POST /api/tasks/channel/:channelId` 成功后向同一房间发 `task:created`，payload 是 `{channelId,tasks:[{id,channelId,title,status}]}`；`PATCH /api/tasks/:taskId/claim` 成功后发 `task:updated`，payload `{channelId,task:<task JSON>}`；`POST /api/channels/threads/follow|unfollow` 成功后发 `thread:followers-updated`，payload `{threadChannelId}`。频道创建时该用户的在线 socket 自动加入 `channel:<id>`。task JSON 带 `messageId`。
 
 
