@@ -360,3 +360,5 @@ OAuth 回调 redirect 安全：`POST /api/oauth/authorize/human` 只在请求的
 
 消息发送的 Server membership 门：当该 Server 已有成员记录、但发送者已不在成员表中时，`POST /api/messages`/`/api/v2/messages` 在解析频道/mention 和写库前回 403 `{"error":"Not a member of this server"}`，不产生消息或 mention。隐藏目录关闭后，typed mention 恢复为普通可见目标（非频道成员仍产生 pending action）。Reaction 的 `reactorNames` 现在优先使用人类 displayName（未设置时回退 name）。
 
+Reaction 权限与实时快照：系统消息 400 `System messages cannot receive reactions`；公开频道非成员 POST/DELETE 403，私有/已删除频道对非成员统一 404（存在性不泄漏）；归档频道 409 `channel_archived`；短 id 只在调用者可见的消息中匹配。Agent 通过 legacy machine key 或 Agent API 的 reaction 与人类反应聚合，`reactorNames` 使用 agent runtime displayName（缺失时回退 name）。每次实际变化把同一份 `{serverId,messageId,viewerVersion,reactedEmojis}` 快照放进 mutation ACK、`GET .../reactions/viewer` 与 `user:<id>` 的 `reaction_viewer:updated` 事件；幂等添加/删除不递增版本；`channel:*` 的 `message:updated` payload 不含 viewer 字段。
+

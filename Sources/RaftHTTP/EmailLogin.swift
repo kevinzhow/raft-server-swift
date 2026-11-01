@@ -141,7 +141,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var humanMessageRows: [StoredHumanMessage] = []
     private var channelAttachments: [String: ChannelAttachment] = [:]
     private var recordedChannelMessageEvents: [ChannelMessageEvent] = []
-    private var recordedReactionViewerEvents: [ReactionViewerEvent] = []
     private var forwardedBundles: [String: [ForwardedSource]] = [:]
     private var forwardRecords: [String: StoredForwardRecord] = [:]
     private var messageReactions: [StoredReaction] = []
@@ -4685,23 +4684,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var attachments: [ChannelAttachment]
     }
 
-    public struct ReactionViewerEvent: Equatable, Sendable {
-        public var room: String
-        public var name: String
-        public var payload: String
-    }
-
     /// Stored forwarded-bundle metadata. The reaction route projects it for the HTTP body and the channel broadcast.
     public func setForwardedBundle(messageId: String, items: [ForwardedSource]) {
         lock.lock()
         forwardedBundles[messageId] = items
         lock.unlock()
-    }
-
-    public func reactionViewerEvents() -> [ReactionViewerEvent] {
-        lock.lock()
-        defer { lock.unlock() }
-        return recordedReactionViewerEvents
     }
 
     /// An uploaded file on a channel. The send route keeps the caller's `attachmentIds` order, not upload time.
@@ -6418,13 +6405,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             noteDiscussionChangeLocked(messageId: message.id, emoji: emoji)
         }
         let viewerJSON = reactionViewerJSONLocked(messageId: message.id, userId: userId, serverId: serverId ?? "")
-        recordedReactionViewerEvents.append(ReactionViewerEvent(
-            room: "user:\(userId)",
-            name: "reaction_viewer:updated",
-            payload: viewerJSON
-        ))
         let bodyJSON = finishReactionLocked(message: message, actorId: userId, serverId: serverId, viewerJSON: viewerJSON)
         lock.unlock()
+        emitRealtime("user:\(userId)", "reaction_viewer:updated", viewerJSON)
         return Self.json(200, bodyJSON)
     }
 
@@ -6901,9 +6884,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 order.append(row.emoji)
                 buckets[row.emoji] = ([], [])
             }
-            let name = row.reactorType == "agent"
-                ? (serverAgents[row.reactorId]?.name ?? "Unknown agent")
-                : (accounts.values.first { $0.id == row.reactorId }.map { $0.displayName ?? $0.name } ?? "Unknown user")
+            let name: String
+            if row.reactorType == "agent" {
+                if let runtime = oauth.agentRuntimeInfo(id: row.reactorId) {
+                    name = runtime.displayName.isEmpty ? runtime.name : runtime.displayName
+                } else {
+                    name = serverAgents[row.reactorId]?.name ?? "Unknown agent"
+                }
+            } else {
+                name = accounts.values.first { $0.id == row.reactorId }.map { $0.displayName ?? $0.name } ?? "Unknown user"
+            }
             var bucket = buckets[row.emoji] ?? ([], [])
             bucket.ids.append(row.reactorId)
             bucket.names.append(name)

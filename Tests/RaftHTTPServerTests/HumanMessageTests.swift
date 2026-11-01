@@ -1583,6 +1583,10 @@ private func deleteJSON(
         #expect(response.status == .ok)
         return (try JSONSerialization.jsonObject(with: Data(bodyText(response).utf8)) as? [String: Any]) ?? [:]
     }
+    let viewerEvents = ReactionViewerEventCollector()
+    accounts.realtimeEmitter = { room, event, payload in
+        viewerEvents.append(room: room, event: event, payload: payload)
+    }
     try await withApp { app in
         configure(app, services: FallbackServices(
             nodeEnv: "test",
@@ -1610,7 +1614,7 @@ private func deleteJSON(
             #expect(firstViewer.messageId == messageId)
             #expect(firstViewer.version == 1)
             #expect(firstViewer.emojis == ["👍"])
-            let firstEvent = accounts.reactionViewerEvents().last { $0.room == "user:\(ownerId)" && $0.name == "reaction_viewer:updated" }
+            let firstEvent = viewerEvents.events.last { $0.room == "user:\(ownerId)" && $0.event == "reaction_viewer:updated" }
             let firstEventBody = try JSONSerialization.jsonObject(with: Data((firstEvent?.payload ?? "").utf8)) as? [String: Any]
             #expect(viewerFields(firstEventBody) == firstViewer)
 
@@ -1628,7 +1632,7 @@ private func deleteJSON(
             #expect(canonicalViewer.messageId == messageId)
             #expect(canonicalViewer.version == 3)
             #expect(canonicalViewer.emojis == ["❤️", "👀", "👍"])
-            let canonicalEvent = accounts.reactionViewerEvents().last { $0.room == "user:\(ownerId)" && $0.name == "reaction_viewer:updated" }
+            let canonicalEvent = viewerEvents.events.last { $0.room == "user:\(ownerId)" && $0.event == "reaction_viewer:updated" }
             let canonicalEventBody = try JSONSerialization.jsonObject(with: Data((canonicalEvent?.payload ?? "").utf8)) as? [String: Any]
             #expect(viewerFields(canonicalEventBody) == canonicalViewer)
 
@@ -4243,5 +4247,23 @@ private func deleteJSON(
             let page = try await client.send(.get, headers: headers, to: URI(string: "/api/messages/channel/\(channelId)"))
             #expect(page.status == .forbidden || page.status == .notFound)
         }
+    }
+}
+
+
+private final class ReactionViewerEventCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [(room: String, event: String, payload: String?)] = []
+
+    func append(room: String, event: String, payload: String?) {
+        lock.lock()
+        storage.append((room, event, payload))
+        lock.unlock()
+    }
+
+    var events: [(room: String, event: String, payload: String?)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
     }
 }
