@@ -10242,6 +10242,22 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "[\(rows)]")
     }
 
+    public func revokeServerInvite(authorization: String?, serverId: String, inviteId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Only server owners and admins can revoke invites\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Only server owners and admins can revoke invites\"}")
+        }
+        lock.lock()
+        serverInvites.removeAll { $0.id == inviteId && $0.serverId == serverId }
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true}")
+    }
+
     public func createServerInvite(authorization: String?, serverId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)

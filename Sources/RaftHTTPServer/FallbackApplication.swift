@@ -1644,6 +1644,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.delete("api", "servers", ":id", "invites", ":inviteId") { request -> Response in
+        routeResponse(services.emailAccounts.revokeServerInvite(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            inviteId: request.parameters.get("inviteId") ?? ""
+        ))
+    }
     app.post("api", "servers", ":id", "leave") { request -> Response in
         routeResponse(services.emailAccounts.leaveServer(
             authorization: request.headers[.authorization],
