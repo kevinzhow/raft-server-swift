@@ -13,7 +13,7 @@ agentChannelJoint.api	route	partial	-	auto-seed
 agentCredentialSecurity.api	route	partial	-	auto-seed
 agentCredentials.api	route	partial	-	auto-seed
 agentDiscovery.api	route	locked	b5c5dbc	manageable union, creator override, empty reason
-agentKnowledgeSearchSerialization	route	pending	-	auto-seed
+agentKnowledgeSearchSerialization	route	locked	$(git rev-parse --short HEAD)	match reasons kept, internal scoring fields projected out
 agentLogin.gate	route	locked	4c138e3	env-gated /api/agent/login, missing/invalid token codes
 agentMigrationErrors.contract	route	partial	-	auto-seed
 agentMigrationFence.realPg	route	partial	-	auto-seed
