@@ -319,6 +319,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var agentLastSeenAt: [String: Date] = [:]
     private var feedbackLocatorRecords: [FeedbackLocatorRecord] = []
     private var managedMCPServers: [ManagedMCPServerRecord] = []
+    private var managedMCPAssignments: [String: [String: (enabled: Bool, allowedTools: [String]?)]] = [:]
     private var actionCardRecords: [String: ActionCardRecord] = [:]
     private var pendingActionMessageEvents: [(agentId: String, messageId: String, content: String)] = []
     private var agentGrantSets: [String: Set<String>] = [:]
@@ -575,6 +576,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var endpointUrl: String
         var toolCatalogJSON: String
         var catalogVersion: Int
+        var credentialHeaderNames: [String] = []
+        var credentialHeaders: [String: String] = [:]
     }
 
     private struct FeedbackLocatorRecord {
@@ -15933,6 +15936,323 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         postActionCardReply(card: card, confirmerUserId: userId, success: true, resultName: name, failureReason: nil)
         let metadata = "{\"kind\":\"action-card\",\"state\":\"executed\",\"action\":{\"type\":\"channel:create\",\"name\":\(jsonString(name))},\"result\":{\"kind\":\"channel\",\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name))}}"
         return Self.json(200, "{\"messageId\":\(jsonString(messageId)),\"metadata\":\(metadata)}")
+    }
+
+    // MARK: - Managed MCP control plane (`/api/mcp/*`)
+
+    private enum ManagedMCPControlAuth {
+        case ok(userId: String, role: String)
+        case refused(HTTPReply)
+    }
+
+    private func managedMCPControlAuth(authorization: String?, serverId: String) -> ManagedMCPControlAuth {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return .refused(Self.json(401, "{\"error\":\"Unauthorized\"}"))
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return .refused(Self.json(404, "{\"error\":\"Server not found\"}"))
+        }
+        return .ok(userId: userId, role: role)
+    }
+
+    private static func managedMCPEndpointError(_ raw: String) -> String? {
+        guard let components = URLComponents(string: raw),
+              components.scheme?.lowercased() == "https",
+              let host = components.host, !host.isEmpty,
+              components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil,
+              !raw.contains("?"), !raw.contains("#")
+        else { return "managed_mcp_endpoint_invalid" }
+        return nil
+    }
+
+    private static func managedMCPEndpointSanitized(_ raw: String) -> String {
+        guard var components = URLComponents(string: raw) else { return raw }
+        components.query = nil
+        components.fragment = nil
+        components.user = nil
+        components.password = nil
+        return components.string ?? raw
+    }
+
+    private func managedMCPServerJSON(_ record: ManagedMCPServerRecord) -> String {
+        let names = record.credentialHeaderNames.sorted().map(jsonString).joined(separator: ",")
+        let provider = record.provider.map(jsonString) ?? "null"
+        let authMode = record.authMode.map(jsonString) ?? "null"
+        let oauthStatus = record.oauthStatus.map(jsonString) ?? "null"
+        return "{\"id\":\(jsonString(record.id)),\"name\":\(jsonString(record.name)),\"provider\":\(provider),\"authMode\":\(authMode),\"oauthStatus\":\(oauthStatus),\"endpointUrl\":\(jsonString(Self.managedMCPEndpointSanitized(record.endpointUrl))),\"hasCredentials\":\(!record.credentialHeaders.isEmpty),\"credentialHeaderNames\":[\(names)],\"assignment\":null}"
+    }
+
+    private func managedMCPAgentJSON(agentId: String, serverId: String) -> String {
+        guard let agent = oauth.agentRuntimeInfo(id: agentId) else { return "null" }
+        return "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName))}"
+    }
+
+    public func listManagedMCPServers(authorization: String?, serverId: String) -> HTTPReply {
+        let auth: (userId: String, role: String)
+        switch managedMCPControlAuth(authorization: authorization, serverId: serverId) {
+        case .refused(let reply): return reply
+        case .ok(let userId, let role): auth = (userId, role)
+        }
+        lock.lock()
+        let rows = managedMCPServers.filter { $0.serverId == serverId }.map { managedMCPServerJSON($0) }
+        lock.unlock()
+        _ = auth
+        return Self.json(200, "{\"servers\":[\(rows.joined(separator: ","))],\"recommendations\":[{\"id\":\"notion\"},{\"id\":\"linear\"}]}")
+    }
+
+    public func createManagedMCPServer(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        let auth: (userId: String, role: String)
+        switch managedMCPControlAuth(authorization: authorization, serverId: serverId) {
+        case .refused(let reply): return reply
+        case .ok(let userId, let role): auth = (userId, role)
+        }
+        guard auth.role == "owner" || auth.role == "admin" else {
+            return Self.json(403, "{\"error\":\"Only server owners and admins can manage MCP servers\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let name = object["name"] as? String, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let endpointUrl = object["endpointUrl"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"name and endpointUrl are required\",\"code\":\"managed_mcp_request_invalid\"}")
+        }
+        if let code = Self.managedMCPEndpointError(endpointUrl) {
+            return Self.json(400, "{\"error\":\"Endpoint must be a public HTTPS URL without credentials, query, or fragment\",\"code\":\(jsonString(code))}")
+        }
+        let provider = (object["provider"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let authMode = (object["authMode"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if provider == "notion", authMode == "oauth", endpointUrl != "https://mcp.notion.com/mcp" {
+            return Self.json(409, "{\"error\":\"That provider must use its managed endpoint\",\"code\":\"managed_mcp_auth_invalid\"}")
+        }
+        var headerNames: [String] = []
+        var headers: [String: String] = [:]
+        if let rawHeaders = object["headers"] as? [String: Any] {
+            for (key, value) in rawHeaders {
+                guard let text = value as? String else {
+                    return Self.json(400, "{\"error\":\"Header values must be strings\",\"code\":\"managed_mcp_request_invalid\"}")
+                }
+                headerNames.append(key)
+                headers[key] = text
+            }
+        }
+        let id = UUID().uuidString.lowercased()
+        let record = ManagedMCPServerRecord(
+            id: id,
+            serverId: serverId,
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            provider: provider,
+            authMode: authMode,
+            oauthStatus: authMode == "oauth" ? "disconnected" : nil,
+            endpointUrl: endpointUrl,
+            toolCatalogJSON: "[]",
+            catalogVersion: 1,
+            credentialHeaderNames: headerNames,
+            credentialHeaders: headers
+        )
+        lock.lock()
+        managedMCPServers.append(record)
+        lock.unlock()
+        return Self.json(201, managedMCPServerJSON(record))
+    }
+
+    public func patchManagedMCPServer(authorization: String?, serverId: String, serverIdPath: String, body: String) -> HTTPReply {
+        let auth: (userId: String, role: String)
+        switch managedMCPControlAuth(authorization: authorization, serverId: serverId) {
+        case .refused(let reply): return reply
+        case .ok(let userId, let role): auth = (userId, role)
+        }
+        guard auth.role == "owner" || auth.role == "admin" else {
+            return Self.json(403, "{\"error\":\"Only server owners and admins can manage MCP servers\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid request\",\"code\":\"managed_mcp_request_invalid\"}")
+        }
+        lock.lock()
+        guard let index = managedMCPServers.firstIndex(where: { $0.id == serverIdPath && $0.serverId == serverId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"MCP server not found\",\"code\":\"managed_mcp_server_not_found\"}")
+        }
+        if let name = object["name"] as? String, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            managedMCPServers[index].name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let endpointUrl = object["endpointUrl"] as? String {
+            if let code = Self.managedMCPEndpointError(endpointUrl) {
+                lock.unlock()
+                return Self.json(400, "{\"error\":\"Endpoint must be a public HTTPS URL without credentials, query, or fragment\",\"code\":\(jsonString(code))}")
+            }
+            managedMCPServers[index].endpointUrl = endpointUrl
+        }
+        if let patch = object["credentialPatch"] as? [String: Any] {
+            if let removals = patch["removeHeaderNames"] as? [Any] {
+                for raw in removals {
+                    guard let headerName = raw as? String else { continue }
+                    managedMCPServers[index].credentialHeaders.removeValue(forKey: headerName)
+                    managedMCPServers[index].credentialHeaderNames.removeAll { $0.caseInsensitiveCompare(headerName) == .orderedSame }
+                }
+            }
+            if let upserts = patch["upsertHeaders"] as? [String: Any] {
+                for (key, value) in upserts {
+                    guard let text = value as? String else {
+                        lock.unlock()
+                        return Self.json(400, "{\"error\":\"Header values must be strings\",\"code\":\"managed_mcp_request_invalid\"}")
+                    }
+                    managedMCPServers[index].credentialHeaders[key] = text
+                    if !managedMCPServers[index].credentialHeaderNames.contains(where: { $0.caseInsensitiveCompare(key) == .orderedSame }) {
+                        managedMCPServers[index].credentialHeaderNames.append(key)
+                    }
+                }
+            }
+        }
+        let record = managedMCPServers[index]
+        lock.unlock()
+        return Self.json(200, managedMCPServerJSON(record))
+    }
+
+    public func deleteManagedMCPServer(authorization: String?, serverId: String, serverIdPath: String) -> HTTPReply {
+        let auth: (userId: String, role: String)
+        switch managedMCPControlAuth(authorization: authorization, serverId: serverId) {
+        case .refused(let reply): return reply
+        case .ok(let userId, let role): auth = (userId, role)
+        }
+        guard auth.role == "owner" || auth.role == "admin" else {
+            return Self.json(403, "{\"error\":\"Only server owners and admins can manage MCP servers\"}")
+        }
+        lock.lock()
+        let before = managedMCPServers.count
+        managedMCPServers.removeAll { $0.id == serverIdPath && $0.serverId == serverId }
+        let removed = managedMCPServers.count != before
+        lock.unlock()
+        guard removed else {
+            return Self.json(404, "{\"error\":\"MCP server not found\",\"code\":\"managed_mcp_server_not_found\"}")
+        }
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    public func managedMCPAgentCatalog(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
+        guard ServerScope.isUUID(agentId) else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
+            return Self.json(404, "{\"error\":\"Agent not found\",\"code\":\"managed_mcp_agent_not_found\"}")
+        }
+        switch managedMCPControlAuth(authorization: authorization, serverId: serverId) {
+        case .refused(let reply): return reply
+        case .ok: break
+        }
+        lock.lock()
+        let rows = managedMCPServers.filter { $0.serverId == serverId }.map { managedMCPServerJSON($0) }
+        lock.unlock()
+        return Self.json(200, "{\"agent\":\(managedMCPAgentJSON(agentId: agentId, serverId: serverId)),\"servers\":[\(rows.joined(separator: ","))]}")
+    }
+
+    public func setManagedMCPAssignments(authorization: String?, serverId: String, agentId: String, body: String) -> HTTPReply {
+        switch managedMCPControlAuth(authorization: authorization, serverId: serverId) {
+        case .refused(let reply): return reply
+        case .ok: break
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let raw = object["assignments"] as? [Any]
+        else {
+            return Self.json(400, "{\"error\":\"assignments is required\",\"code\":\"managed_mcp_request_invalid\"}")
+        }
+        lock.lock()
+        let serverIds = Set(managedMCPServers.filter { $0.serverId == serverId }.map(\.id))
+        var stored: [String: (enabled: Bool, allowedTools: [String]?)] = [:]
+        var response: [String] = []
+        for entry in raw {
+            guard let row = entry as? [String: Any], let id = row["mcpServerId"] as? String, serverIds.contains(id) else {
+                lock.unlock()
+                return Self.json(404, "{\"error\":\"MCP server not found\",\"code\":\"managed_mcp_server_not_found\"}")
+            }
+            let enabled = row["enabled"] as? Bool ?? true
+            let tools = (row["allowedTools"] as? [Any])?.compactMap { $0 as? String }
+            stored[id] = (enabled, tools)
+            let toolJSON = tools.map { $0.map(jsonString).joined(separator: ",") } ?? "null"
+            response.append("{\"mcpServerId\":\(jsonString(id)),\"enabled\":\(enabled),\"allowedTools\":\(tools == nil ? "null" : "[\(toolJSON)]")}")
+        }
+        managedMCPAssignments[agentId] = stored
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true,\"assignments\":[\(response.joined(separator: ","))]}")
+    }
+
+    public func setSingleManagedMCPAssignment(authorization: String?, serverId: String, agentId: String, mcpServerId: String, body: String) -> HTTPReply {
+        switch managedMCPControlAuth(authorization: authorization, serverId: serverId) {
+        case .refused(let reply): return reply
+        case .ok: break
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid request\",\"code\":\"managed_mcp_request_invalid\"}")
+        }
+        lock.lock()
+        guard managedMCPServers.contains(where: { $0.id == mcpServerId && $0.serverId == serverId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"MCP server not found\",\"code\":\"managed_mcp_server_not_found\"}")
+        }
+        let enabled = object["enabled"] as? Bool ?? true
+        let tools = (object["allowedTools"] as? [Any])?.compactMap { $0 as? String }
+        managedMCPAssignments[agentId, default: [:]][mcpServerId] = (enabled, tools)
+        lock.unlock()
+        let toolJSON = tools.map { $0.map(jsonString).joined(separator: ",") } ?? "null"
+        return Self.json(200, "{\"assignment\":{\"mcpServerId\":\(jsonString(mcpServerId)),\"enabled\":\(enabled),\"allowedTools\":\(tools == nil ? "null" : "[\(toolJSON)]")}}")
+    }
+
+    public func testManagedMCPConfiguration(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        let auth: (userId: String, role: String)
+        switch managedMCPControlAuth(authorization: authorization, serverId: serverId) {
+        case .refused(let reply): return reply
+        case .ok(let userId, let role): auth = (userId, role)
+        }
+        guard auth.role == "owner" || auth.role == "admin" else {
+            return Self.json(403, "{\"error\":\"Only server owners and admins can test MCP servers\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let endpointUrl = object["endpointUrl"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"endpointUrl is required\",\"code\":\"managed_mcp_request_invalid\"}")
+        }
+        if let code = Self.managedMCPEndpointError(endpointUrl) {
+            return Self.json(400, "{\"error\":\"Endpoint must be a public HTTPS URL without credentials, query, or fragment\",\"code\":\(jsonString(code))}")
+        }
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    public func managedMCPOAuthCallback() -> HTTPReply {
+        let body = """
+        <!doctype html><html><head><title>RAFT MCP</title></head><body><main><h1>RAFT</h1><p>MCP was not connected.</p><p>Close window</p><div id=\"raft-managed-mcp-oauth-result\"></div><script type=\"application/json\" id=\"managed-mcp-oauth-result\">{}</script></main></body></html>
+        """
+        var reply = HTTPReply(
+            status: 400,
+            headers: [
+                "Content-Type": "text/html; charset=utf-8",
+                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'",
+            ],
+            body: body
+        )
+        reply.headers["Cache-Control"] = "no-store"
+        return reply
+    }
+
+    public func managedMCPOAuthClientMetadata() -> HTTPReply {
+        let base = serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let clientId = base + "/api/mcp/oauth/client-metadata"
+        let redirect = base + "/api/mcp/oauth/callback"
+        var reply = Self.json(200, "{\"client_id\":\(jsonString(clientId)),\"redirect_uris\":[\"\(redirect)\"]}")
+        reply.headers["Cache-Control"] = "no-store"
+        return reply
+    }
+
+    public func setManagedMCPServerEndpointForTesting(id: String, endpointUrl: String) {
+        lock.lock()
+        if let index = managedMCPServers.firstIndex(where: { $0.id == id }) {
+            managedMCPServers[index].endpointUrl = endpointUrl
+        }
+        lock.unlock()
     }
 
     public func agentHistory(authorization: String?, agentId: String? = nil, channelRef: String?, before: String?, after: String?, around: String? = nil, limit: String?) -> HTTPReply {

@@ -222,8 +222,70 @@ public func configure(_ app: Application, services: FallbackServices) {
         }
         return routeResponse(PublicVisits.pageReply(found: false, mode: nil))
     }
+    app.get("api", "mcp", "servers") { request -> Response in
+        routeResponse(services.emailAccounts.listManagedMCPServers(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+        ))
+    }
+    app.post("api", "mcp", "servers") { request -> Response in
+        routeResponse(services.emailAccounts.createManagedMCPServer(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.post("api", "mcp", "servers", "test-configuration") { request -> Response in
+        routeResponse(services.emailAccounts.testManagedMCPConfiguration(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.patch("api", "mcp", "servers", ":id") { request -> Response in
+        routeResponse(services.emailAccounts.patchManagedMCPServer(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            serverIdPath: request.parameters.get("id") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.delete("api", "mcp", "servers", ":id") { request -> Response in
+        routeResponse(services.emailAccounts.deleteManagedMCPServer(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            serverIdPath: request.parameters.get("id") ?? ""
+        ))
+    }
+    app.get("api", "mcp", "oauth", "callback") { _ -> Response in
+        routeResponse(services.emailAccounts.managedMCPOAuthCallback())
+    }
+    app.get("api", "mcp", "oauth", "client-metadata") { _ -> Response in
+        routeResponse(services.emailAccounts.managedMCPOAuthClientMetadata())
+    }
     app.get("api", "mcp", "agents", ":agentId") { request -> Response in
-        routeResponse(IntegrationRoutes.mcpAgent(agentId: request.parameters.get("agentId") ?? ""))
+        routeResponse(services.emailAccounts.managedMCPAgentCatalog(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("agentId") ?? ""
+        ))
+    }
+    app.put("api", "mcp", "agents", ":agentId", "assignments") { request -> Response in
+        routeResponse(services.emailAccounts.setManagedMCPAssignments(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("agentId") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
+    app.put("api", "mcp", "agents", ":agentId", "assignments", ":mcpServerId") { request -> Response in
+        routeResponse(services.emailAccounts.setSingleManagedMCPAssignment(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("agentId") ?? "",
+            mcpServerId: request.parameters.get("mcpServerId") ?? "",
+            body: request.body.string ?? ""
+        ))
     }
     app.get("api", "integrations", "marketplace") { request -> Response in
         routeResponse(services.emailAccounts.integrationMarketplace(
