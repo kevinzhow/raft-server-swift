@@ -5584,6 +5584,31 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     @discardableResult
+    public func addChannelMessageForTesting(
+        channelId: String,
+        content: String,
+        senderId: String,
+        createdAt: Date = Date(),
+        senderType: String = "user",
+        messageType: String = "chat"
+    ) -> String {
+        let id = UUID().uuidString.lowercased()
+        lock.lock()
+        humanMessageRows.append(StoredHumanMessage(
+            id: id,
+            channelId: channelId,
+            senderId: senderId,
+            content: content,
+            randomId: nil,
+            messageType: messageType,
+            senderType: senderType,
+            createdAt: createdAt
+        ))
+        lock.unlock()
+        return id
+    }
+
+    @discardableResult
     public func addSystemMessageForTesting(channelId: String, content: String) -> String {
         let id = UUID().uuidString.lowercased()
         lock.lock()
@@ -14901,7 +14926,227 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"taskIds\":[\(idsJSON)]}")
     }
 
-    /// Thread lookups for agent history; callers hold the directory lock.
+    private var agentInboxAvailableForTesting: Bool?
+
+    public func setAgentInboxAvailableForTesting(_ value: Bool?) {
+        lock.lock()
+        agentInboxAvailableForTesting = value
+        lock.unlock()
+    }
+
+    private struct AgentInboxRow {
+        var target: String
+        var kind: String
+        var lastReadSeq: Int
+        var unread: Int
+        var mentions: Int
+        var latestSeq: Int
+        var activitySeq: Int
+        var latestSenderName: String
+        var latestAt: Date?
+        var joinedAt: Date
+    }
+
+    private static func isoMillis(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+
+    /// `GET /internal/agent-api/inbox/conversations`.
+    public func agentInboxConversations(
+        authorization: String?,
+        limit rawLimit: String?,
+        beforeSeq rawBefore: String?,
+        view rawView: String?
+    ) -> HTTPReply {
+        let identity: (agentId: String, serverId: String)
+        switch feedbackLocatorIdentity(authorization: authorization, capability: "read") {
+        case .refused(let reply): return reply
+        case .success(let agentId, let serverId): identity = (agentId, serverId)
+        }
+        lock.lock()
+        let available = agentInboxAvailableForTesting ?? true
+        lock.unlock()
+        guard available else {
+            return Self.json(503, "{\"error\":\"The agent inbox is unavailable\",\"code\":\"INBOX_UNAVAILABLE\",\"suggestedNextAction\":\"Retry after the inbox service recovers.\"}")
+        }
+        let view = rawView ?? "unread"
+        guard view == "unread" || view == "mentions" else {
+            return Self.json(400, "{\"error\":\"view must be unread or mentions\"}")
+        }
+        let limit: Int
+        if let rawLimit, !rawLimit.isEmpty {
+            guard let parsed = Int(rawLimit), parsed >= 1, parsed <= 100 else {
+                return Self.json(400, "{\"error\":\"limit must be between 1 and 100\"}")
+            }
+            limit = parsed
+        } else {
+            limit = 20
+        }
+        var before: Int?
+        if let rawBefore, !rawBefore.isEmpty {
+            guard let parsed = Int(rawBefore), parsed > 0 else {
+                return Self.json(400, "{\"error\":\"before_seq must be a positive integer\"}")
+            }
+            before = parsed
+        }
+        lock.lock()
+        let serverId = identity.serverId
+        let agentId = identity.agentId
+        var rows: [AgentInboxRow] = []
+
+        func latestMessage(_ storageChannelId: String) -> (seq: Int, message: StoredHumanMessage?) {
+            let messages = humanMessageRows.filter { $0.channelId == storageChannelId }
+            guard let last = messages.last else { return (0, nil) }
+            let global = (humanMessageRows.firstIndex { $0.id == last.id } ?? 0) + 1
+            return (global, last)
+        }
+        func senderName(_ message: StoredHumanMessage?) -> String? {
+            guard let message else { return nil }
+            if let external = message.externalSenderName { return external }
+            if message.senderId == "system" { return "system" }
+            return accounts.values.first { $0.id == message.senderId }?.name
+                ?? oauth.agentRuntimeInfo(id: message.senderId)?.name
+        }
+        func mentionStats(channelId: String) -> (count: Int, maxSeq: Int?) {
+            let ids = Set(storedMentions.filter {
+                $0.targetType == "agent" && $0.targetId == agentId && $0.channelId == channelId
+            }.map(\.messageId))
+            guard !ids.isEmpty else { return (0, nil) }
+            let messages = humanMessageRows.filter { $0.channelId == channelId }
+            var maxSeq: Int?
+            for (index, message) in messages.enumerated() where ids.contains(message.id) {
+                maxSeq = index + 1
+            }
+            return (ids.count, maxSeq)
+        }
+
+        // Channel and DM rows.
+        for (id, channel) in postableChannels {
+            guard channel.serverId == serverId, channel.deletedAt == nil else { continue }
+            let visible = channel.kind == "channel"
+                || channel.memberIds.contains(agentId)
+                || oauth.channelAgentIds(channelId: id).contains(agentId)
+            guard visible else { continue }
+            var target: String
+            var kind: String
+            if channel.kind == "dm" {
+                let peer = channel.memberIds.compactMap { member -> (String, String)? in
+                    guard member != agentId,
+                          let account = accounts.values.first(where: { $0.id == member }),
+                          oauth.memberRole(serverId: serverId, userId: member) != nil
+                    else { return nil }
+                    return (member, account.name)
+                }.first
+                guard let peer else { continue }
+                target = "dm:@\(peer.1)"
+                kind = "dm"
+            } else if channel.kind == "channel" || channel.kind == "private" || channel.kind == "joint" {
+                target = "#\(channel.name)"
+                kind = "channel"
+            } else {
+                continue
+            }
+            let storage = jointProjections.first { $0.localChannelId == id }?.canonicalChannelId ?? id
+            let latest = latestMessage(storage)
+            guard latest.seq > 0 else { continue }
+            let cursor = agentChannelReadCursors["\(id)\n\(agentId)"]?.seq ?? 0
+            let unread = humanMessageRows.filter { $0.channelId == storage }.enumerated().filter { index, message in
+                index + 1 > cursor && message.senderId != agentId
+            }.count
+            let mentions = mentionStats(channelId: storage)
+            rows.append(AgentInboxRow(
+                target: target,
+                kind: kind,
+                lastReadSeq: cursor,
+                unread: unread,
+                mentions: mentions.count,
+                latestSeq: latest.seq,
+                activitySeq: latest.seq,
+                latestSenderName: senderName(latest.message) ?? "",
+                latestAt: latest.message?.createdAt,
+                joinedAt: latest.message?.createdAt ?? Date()
+            ))
+        }
+
+        // Followed thread rows.
+        for follow in threadFollows.values where follow.userId == agentId && follow.serverId == serverId {
+            guard let thread = postableChannels[follow.threadChannelId], thread.deletedAt == nil,
+                  let parentId = thread.parentChannelId,
+                  let parent = postableChannels[parentId], parent.deletedAt == nil
+            else { continue }
+            let visible = thread.memberIds.contains(agentId)
+                || oauth.channelAgentIds(channelId: follow.threadChannelId).contains(agentId)
+                || parent.memberIds.contains(agentId)
+                || oauth.channelAgentIds(channelId: parentId).contains(agentId)
+            guard visible else { continue }
+            let storage = jointProjections.first { $0.localChannelId == follow.threadChannelId }?.canonicalChannelId ?? follow.threadChannelId
+            let latest = latestMessage(storage)
+            guard latest.seq > 0 else { continue }
+            let cursor = agentChannelReadCursors["\(follow.threadChannelId)\n\(agentId)"]?.seq ?? 0
+            let unread = humanMessageRows.filter { $0.channelId == storage }.enumerated().filter { index, message in
+                index + 1 > cursor && message.senderId != agentId
+            }.count
+            let mentions = mentionStats(channelId: storage)
+            let parentShort = String((thread.parentMessageId ?? "").prefix(8))
+            let target: String
+            if parent.kind == "dm" {
+                let peer = parent.memberIds.compactMap { member -> String? in
+                    guard member != agentId,
+                          let account = accounts.values.first(where: { $0.id == member }),
+                          oauth.memberRole(serverId: serverId, userId: member) != nil
+                    else { return nil }
+                    return account.name
+                }.first ?? "unknown"
+                target = "dm:@\(peer):\(parentShort)"
+            } else {
+                target = "#\(parent.name):\(parentShort)"
+            }
+            rows.append(AgentInboxRow(
+                target: target,
+                kind: "thread",
+                lastReadSeq: cursor,
+                unread: unread,
+                mentions: mentions.count,
+                latestSeq: latest.seq,
+                activitySeq: latest.seq,
+                latestSenderName: senderName(latest.message) ?? "",
+                latestAt: latest.message?.createdAt,
+                joinedAt: threadFollowStarts["\(serverId)\n\(agentId)\n\(follow.threadChannelId)"] ?? Date()
+            ))
+        }
+        lock.unlock()
+
+        let totals = (
+            conversations: rows.count,
+            dms: rows.filter { $0.kind == "dm" }.count,
+            mentions: rows.filter { $0.mentions > 0 }.count
+        )
+        var filtered = rows
+        if view == "mentions" {
+            filtered = filtered.filter { $0.mentions > 0 }
+        } else {
+            filtered = filtered.filter { $0.unread > 0 || $0.mentions > 0 }
+        }
+        if let before {
+            filtered = filtered.filter { $0.activitySeq < before }
+        }
+        filtered.sort { left, right in
+            if left.activitySeq != right.activitySeq { return left.activitySeq > right.activitySeq }
+            return left.target < right.target
+        }
+        let hasMore = filtered.count > limit
+        let page = Array(filtered.prefix(limit))
+        let nextBefore = hasMore ? page.last?.activitySeq : nil
+        let items = page.map { row -> String in
+            let latestAt = row.latestAt.map { jsonString(Self.isoMillis($0)) } ?? "null"
+            return "{\"target\":\(jsonString(row.target)),\"kind\":\(jsonString(row.kind)),\"unread\":\(row.unread),\"mentions\":\(row.mentions),\"lastReadSeq\":\(row.lastReadSeq),\"activitySeq\":\(row.activitySeq),\"latestSenderName\":\(jsonString(row.latestSenderName)),\"latestAt\":\(latestAt)}"
+        }.joined(separator: ",")
+        let nextJSON = nextBefore.map(String.init) ?? "null"
+        return Self.json(200, "{\"view\":\(jsonString(view)),\"items\":[\(items)],\"totals\":{\"conversations\":\(totals.conversations),\"dms\":\(totals.dms),\"mentions\":\(totals.mentions)},\"hasMore\":\(hasMore),\"nextBeforeSeq\":\(nextJSON)}")
+    }
+
     private func agentHistoryThread(parentId: String, anchorMessageId: String) -> String? {
         for (id, channel) in postableChannels {
             guard channel.kind == "thread" else { continue }
