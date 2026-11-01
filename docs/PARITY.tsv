@@ -126,7 +126,7 @@ internalAgentApi.killSwitch	route	locked	cc93ddd	env kill switch for /internal/a
 internalAgentApi.mcp	route	locked	a9faeb6	credential-bound tool catalog, unavailable connectors, stale-call 409
 internalAgentApi.mentionActions	route	partial	-	auto-seed
 internalAgentApi.raftbench	route	partial	-	auto-seed
-internalAgentApi.readPosition	route	partial	-	auto-seed
+internalAgentApi.readPosition	route	locked	b955555	5-row conversation cap, has_more, send cursor guard, human cursor
 internalAgentApi.registryParity	route	partial	-	auto-seed
 internalAgentApi.selfCausedNoticeFreshness.api	route	partial	-	auto-seed
 internalAgentApi.send	route	partial	-	auto-seed
