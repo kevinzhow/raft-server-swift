@@ -2858,6 +2858,7 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     var middleware = Middlewares()
+    middleware.use(ExperimentalSurfaceGate(directory: services.emailAccounts))
     middleware.use(BufferedRequestBodyMiddleware())
     middleware.use(CorsMiddleware(origins: services.corsOrigins))
     middleware.use(PublicSearchMiddleware(
@@ -2913,6 +2914,26 @@ private struct PublicSearchMiddleware: Middleware {
         var response = try await next.respond(to: request)
         response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
         return response
+    }
+}
+
+private struct ExperimentalSurfaceGate: Middleware {
+    let directory: EmailLoginDirectory
+
+    func respond(to request: Request, chainingTo next: any Responder) async throws -> Response {
+        let path = request.url.path
+        let isExperimental = path.hasPrefix("/internal/agent-api") || path.hasPrefix("/internal/computer")
+        if isExperimental, directory.experimentalSurfacesDisabled {
+            var headers = HTTPFields()
+            headers[.contentType] = "application/json"
+            headers[HTTPField.Name("Sec-Slock-Api-Version")!] = "1"
+            return Response(
+                status: .serviceUnavailable,
+                headers: headers,
+                body: .init(string: "{\"error\":\"Experimental internal surface is disabled\",\"code\":\"experimental_surface_disabled\",\"retry_after\":null}")
+            )
+        }
+        return try await next.respond(to: request)
     }
 }
 

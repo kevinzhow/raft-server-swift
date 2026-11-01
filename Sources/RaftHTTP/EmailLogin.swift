@@ -448,6 +448,27 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     public init() {}
 
+    private var experimentalSurfacesDisabledForTesting: Bool?
+
+    /// Operator kill switch for `/internal/agent-api` and `/internal/computer`.
+    /// `SLOCK_EXPERIMENTAL_SURFACES_DISABLED=true` disables them; tests may
+    /// override without touching the process environment.
+    public func setExperimentalSurfacesDisabledForTesting(_ value: Bool?) {
+        lock.lock()
+        experimentalSurfacesDisabledForTesting = value
+        lock.unlock()
+    }
+
+    public var experimentalSurfacesDisabled: Bool {
+        lock.lock()
+        let override = experimentalSurfacesDisabledForTesting
+        lock.unlock()
+        if let override { return override }
+        return (ProcessInfo.processInfo.environment["SLOCK_EXPERIMENTAL_SURFACES_DISABLED"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "true"
+    }
+
     public struct MobileAppEmailContact: Equatable, Sendable {
         public var userId: String
         public var email: String
