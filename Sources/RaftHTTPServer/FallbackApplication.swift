@@ -2717,6 +2717,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: data
         ))
     }
+    app.post("api", "auth", "me", "complete-profile") { request -> Response in
+        routeResponse(services.emailAccounts.completeProfile(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? ""
+        ))
+    }
     app.post("api", "auth", "me", "timezone-observation") { request -> Response in
         return routeResponse(services.emailAccounts.observeTimezone(
             authorization: request.headers[.authorization],

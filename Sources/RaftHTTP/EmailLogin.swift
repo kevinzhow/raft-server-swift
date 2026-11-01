@@ -1107,6 +1107,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             name: String(normalized.split(separator: "@").first ?? "user"),
             profileSetupSuggestedHandle: nil,
             profileSetupProvider: nil,
+            profileSetupCompletedAt: Date(),
             avatarUrl: avatarUrl
         )
         analyticsIds[id] = UUID().uuidString.lowercased()
@@ -1381,7 +1382,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let issued = openSessionLocked(userId: id)
         emailVerifications += 1
         lock.unlock()
-        let user = "{\"id\":\(jsonString(id)),\"email\":\(jsonString(normalized)),\"name\":\(jsonString(pendingName)),\"profileSetupCompletedAt\":null,\"profileSetupSuggestedHandle\":\(jsonString(suggested))}"
+        let user = "{\"id\":\(jsonString(id)),\"email\":\(jsonString(normalized)),\"name\":\(jsonString(pendingName)),\"profileSetupCompletedAt\":null,\"profileSetupSuggestedHandle\":\(jsonString(suggested)),\"profileSetupProvider\":null}"
         let response = "{\"user\":\(user),\"accessToken\":\(jsonString(issued.accessToken)),\"refreshToken\":\(jsonString(issued.refreshToken))}"
         return Self.json(200, response)
     }
@@ -6869,8 +6870,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var passwordHash: String
         var displayLanguage: String?
         var name: String
+        var displayName: String? = nil
         var profileSetupSuggestedHandle: String?
         var profileSetupProvider: String? = nil
+        var profileSetupCompletedAt: Date? = nil
         var avatarUrl: String? = nil
         var shareUsageData: Bool? = nil
         var emailVerified: Bool = false
@@ -15266,9 +15269,65 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "[\(rows)]")
     }
 
+    public func completeProfile(authorization: String?, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let rawName = object["name"] as? String,
+              let rawDisplay = object["displayName"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"name and displayName are required\",\"code\":\"PROFILE_SETUP_INVALID\"}")
+        }
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = rawDisplay.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !displayName.isEmpty else {
+            return Self.json(400, "{\"error\":\"name and displayName are required\",\"code\":\"PROFILE_SETUP_INVALID\"}")
+        }
+        let lowered = name.lowercased()
+        if lowered.hasPrefix("pending_") || Self.reservedAgentNames.contains(lowered) {
+            return Self.json(400, "{\"error\":\"This username is reserved. Choose another name.\",\"code\":\"PROFILE_SETUP_NAME_RESERVED\"}")
+        }
+        lock.lock()
+        guard let key = accounts.first(where: { $0.value.id == userId })?.key, var account = accounts[key] else {
+            lock.unlock()
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        if let completedAt = account.profileSetupCompletedAt {
+            let replay = account.name == name && (account.displayName ?? account.name) == displayName
+            lock.unlock()
+            if replay {
+                let user = Self.userJSON(accounts[key] ?? account)
+                return Self.json(200, "{\"name\":\(jsonString(account.name)),\"displayName\":\(jsonString(account.displayName ?? account.name)),\"profileSetupCompletedAt\":\(jsonString(Self.isoString(completedAt))),\"user\":\(user)}")
+            }
+            return Self.json(409, "{\"error\":\"Profile setup is already completed\",\"code\":\"PROFILE_SETUP_ALREADY_COMPLETED\"}")
+        }
+        let taken = Set(accounts.values.filter { $0.id != userId }.map { $0.name.lowercased() })
+        guard !taken.contains(lowered) else {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"That username is taken\",\"code\":\"PROFILE_SETUP_NAME_TAKEN\"}")
+        }
+        account.name = name
+        account.displayName = displayName
+        account.profileSetupCompletedAt = Date()
+        accounts[key] = account
+        lock.unlock()
+        let completed = account.profileSetupCompletedAt ?? Date()
+        let user = Self.userJSON(account)
+        return Self.json(200, "{\"name\":\(jsonString(name)),\"displayName\":\(jsonString(displayName)),\"profileSetupCompletedAt\":\(jsonString(Self.isoString(completed))),\"user\":\(user)}")
+    }
+
     public func createServer(authorization: String?, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        let profileSetupPending = accounts.values.first { $0.id == userId }.map {
+            $0.emailVerified && $0.profileSetupCompletedAt == nil
+        } ?? false
+        lock.unlock()
+        if profileSetupPending {
+            return Self.json(403, "{\"error\":\"Profile setup required\",\"code\":\"PROFILE_SETUP_REQUIRED\"}")
         }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
               let rawName = object["name"] as? String,
@@ -16070,6 +16129,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let hash = sha256(account.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
         let language = account.displayLanguage.map { jsonString($0) } ?? "null"
         let provider = account.profileSetupProvider.map { jsonString($0) } ?? "null"
+        let displayName = jsonString(account.displayName ?? account.name)
+        let suggestedHandle = account.profileSetupSuggestedHandle.map { jsonString($0) } ?? "null"
+        let completedAt: String
+        if let completed = account.profileSetupCompletedAt {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            completedAt = jsonString(formatter.string(from: completed))
+        } else {
+            completedAt = "null"
+        }
         let avatar = account.avatarUrl.map { jsonString($0) } ?? "null"
         let share: String
         if let value = account.shareUsageData {
@@ -16091,7 +16160,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         } else {
             skippedAt = "null"
         }
-        return "{\"id\":\(jsonString(account.id)),\"email\":\(jsonString(account.email)),\"name\":\(jsonString(account.name)),\"gravatarHash\":\(jsonString(hash)),\"displayLanguage\":\(language),\"profileSetupCompletedAt\":null,\"profileSetupProvider\":\(provider),\"avatarUrl\":\(avatar),\"shareUsageData\":\(share),\"preferredLanguage\":\(preferredLanguage),\"preferredTimezone\":\(preferredTimezone),\"preferredTranslationMode\":\(jsonString(account.preferredTranslationMode)),\"autoTranslationEnabled\":\(account.autoTranslationEnabled),\"preferredTranslationDisplay\":\(jsonString(account.preferredTranslationDisplay)),\"preferredTimeFormat\":\(preferredTimeFormat),\"preferredMessageBodyFontSize\":\(preferredFontSize),\"referralSource\":\(referralSource),\"referralSourceOther\":\(referralOther),\"referralSourceSkippedAt\":\(skippedAt)}"
+        return "{\"id\":\(jsonString(account.id)),\"email\":\(jsonString(account.email)),\"name\":\(jsonString(account.name)),\"displayName\":\(displayName),\"gravatarHash\":\(jsonString(hash)),\"displayLanguage\":\(language),\"profileSetupCompletedAt\":\(completedAt),\"profileSetupSuggestedHandle\":\(suggestedHandle),\"profileSetupProvider\":\(provider),\"avatarUrl\":\(avatar),\"shareUsageData\":\(share),\"preferredLanguage\":\(preferredLanguage),\"preferredTimezone\":\(preferredTimezone),\"preferredTranslationMode\":\(jsonString(account.preferredTranslationMode)),\"autoTranslationEnabled\":\(account.autoTranslationEnabled),\"preferredTranslationDisplay\":\(jsonString(account.preferredTranslationDisplay)),\"preferredTimeFormat\":\(preferredTimeFormat),\"preferredMessageBodyFontSize\":\(preferredFontSize),\"referralSource\":\(referralSource),\"referralSourceOther\":\(referralOther),\"referralSourceSkippedAt\":\(skippedAt)}"
     }
 
     private static let reservedAgentNames: Set<String> = [

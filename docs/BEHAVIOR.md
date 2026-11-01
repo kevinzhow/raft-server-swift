@@ -268,3 +268,5 @@ External agent presence：任意 agent credential 认证的 API 调用会以 60s
 
 `GET /api/oauth/agents` 与 `/oidc/<server>/api/oauth/agents`：访问令牌过期、被撤销，或 agent 的 Server 成员关系/授权被撤销后一律 401 且不返回 `agents`；human/agent 令牌对 `/api/oauth/agent-events` 的写入都是 403；仅在 scopes 中声明 `agent:read` 的旧令牌不会因客户端后续放开 scope 而升级。
 
+Identity setup：`POST /api/auth/register` 建 pending 账户（`name` 为 `pending_` + 20 hex，`profileSetupSuggestedHandle` 来自邮箱/名字，`profileSetupProvider:null`），`profileSetupCompletedAt:null`。`POST /api/auth/me/complete-profile` 用 `{name,displayName}`：`pending_` 前缀或保留名（如 Reminders）400 `PROFILE_SETUP_NAME_RESERVED`；完成后同名同 displayName 重放 200，不同 payload 409 `PROFILE_SETUP_ALREADY_COMPLETED`；并发两个不同 payload 只允许一个成功。资料未完成且邮箱已验证时 `POST /api/servers` 403 `{error:"Profile setup required",code:"PROFILE_SETUP_REQUIRED"}`；完成或既有账户可创建。
+
