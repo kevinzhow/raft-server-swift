@@ -8,7 +8,7 @@ agentAppAccess.api	route	pending	-	auto-seed
 agentArchive.api	route	partial	-	auto-seed
 agentAudienceJwt.api	route	locked	8d61ce1	built-in ES256 audience JWT, live grant gates, scoped issuer claims
 agentAudienceJwt.grafana	route	pending	-	auto-seed
-agentAudienceJwtBuiltIn.api	route	partial	-	auto-seed
+agentAudienceJwtBuiltIn.api	route	locked	adf3ae2	ignored legacy columns, installation-gated issuance, compat GET/410 PUT
 agentChannelJoint.api	route	partial	-	auto-seed
 agentCredentialSecurity.api	route	partial	-	auto-seed
 agentCredentials.api	route	partial	-	auto-seed
