@@ -1,5 +1,5 @@
 module	area	status	commit	notes
-actionCards.resultReply.api	route	pending	-	auto-seed
+actionCards.resultReply.api	route	locked	739cf7b	durable thread reply, mention facts, joint canonical storage, external events
 actions.privateAccess.api	route	pending	-	auto-seed
 activityContractHeader.api	route	locked	09c0eb0	contract header on rejected activity responses
 agentApiErrorTrace	route	pending	-	auto-seed
