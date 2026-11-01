@@ -131,6 +131,29 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    @discardableResult
+    public func adoptAgentIdentity(
+        serverId: String,
+        agentId: String,
+        name: String,
+        displayName: String,
+        description: String?,
+        avatarUrl: String?,
+        role: String
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let key = agents.keys.first(where: { $0 == agentId }), agents[key]?.serverId == serverId else {
+            return false
+        }
+        agents[key]?.name = name
+        agents[key]?.displayName = displayName
+        agents[key]?.description = description
+        agents[key]?.avatarUrl = avatarUrl
+        agentRoles["\(serverId)\n\(agentId)"] = role
+        return true
+    }
+
     public func agentRole(serverId: String, agentId: String) -> String? {
         lock.lock()
         defer { lock.unlock() }
@@ -237,6 +260,7 @@ public final class OAuthLedger: @unchecked Sendable {
         public var name: String
         public var displayName: String
         public var description: String?
+        public var avatarUrl: String?
         public var creatorUserId: String?
         public var runtime: String
         public var runtimeConfigJSON: String?
@@ -254,6 +278,7 @@ public final class OAuthLedger: @unchecked Sendable {
             name: agent.name,
             displayName: agent.displayName,
             description: agent.description,
+            avatarUrl: agent.avatarUrl,
             creatorUserId: agent.creatorUserId,
             runtime: agent.runtime,
             runtimeConfigJSON: agent.runtimeConfigJSON,

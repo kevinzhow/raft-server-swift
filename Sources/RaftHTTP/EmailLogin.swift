@@ -8146,6 +8146,139 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    private struct OnboardingAdoptionChange {
+        var field: String
+        var before: String?
+        var after: String?
+    }
+
+    private func onboardingAdoptionState(
+        serverId: String,
+        agentId: String
+    ) -> (agent: OAuthLedger.AgentRuntimeInfo, role: String, changes: [OnboardingAdoptionChange])? {
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
+            return nil
+        }
+        let role = oauth.agentRole(serverId: serverId, agentId: agentId) ?? "member"
+        var changes: [OnboardingAdoptionChange] = []
+        if agent.name != "Cindy" {
+            changes.append(OnboardingAdoptionChange(field: "name", before: agent.name, after: "Cindy"))
+        }
+        if agent.displayName != "Cindy" {
+            changes.append(OnboardingAdoptionChange(field: "displayName", before: agent.displayName, after: "Cindy"))
+        }
+        if agent.description != "Onboarding Assistant" {
+            changes.append(OnboardingAdoptionChange(field: "role", before: agent.description, after: "Onboarding Assistant"))
+        }
+        if role != "admin" {
+            changes.append(OnboardingAdoptionChange(field: "serverRole", before: role, after: "admin"))
+        }
+        if agent.avatarUrl != "pixel:mug" {
+            changes.append(OnboardingAdoptionChange(field: "avatarUrl", before: agent.avatarUrl, after: "pixel:mug"))
+        }
+        return (agent, role, changes)
+    }
+
+    private func onboardingAdoptionJSON(
+        canAdopt: Bool,
+        changes: [OnboardingAdoptionChange],
+        appliedChanges: [OnboardingAdoptionChange]? = nil,
+        agent: OAuthLedger.AgentRuntimeInfo? = nil,
+        role: String? = nil
+    ) -> String {
+        func changesJSON(_ values: [OnboardingAdoptionChange]) -> String {
+            values.map { change in
+                let before = change.before.map(jsonString) ?? "null"
+                let after = change.after.map(jsonString) ?? "null"
+                return "{\"field\":\(jsonString(change.field)),\"before\":\(before),\"after\":\(after)}"
+            }.joined(separator: ",")
+        }
+        var body = "{\"canAdopt\":\(canAdopt),\"changes\":[\(changesJSON(changes))]"
+        if let appliedChanges {
+            body += ",\"appliedChanges\":[\(changesJSON(appliedChanges))]"
+        }
+        if let agent {
+            let description = agent.description.map(jsonString) ?? "null"
+            let avatar = agent.avatarUrl.map(jsonString) ?? "null"
+            body += ",\"agent\":{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"description\":\(description),\"avatarUrl\":\(avatar),\"serverRole\":\(jsonString(role ?? "member"))}"
+        }
+        return body + "}"
+    }
+
+    public func onboardingIdentityAdoption(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let state = onboardingAdoptionState(serverId: serverId, agentId: agentId) else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner"
+                || oauth.memberRole(serverId: serverId, userId: userId) == "admin"
+                || state.agent.creatorUserId == userId
+        else {
+            return Self.json(403, "{\"error\":\"The `editAgents` capability or human creator authority is required to edit agents\"}")
+        }
+        lock.lock()
+        let onboardingAgentId = serverOnboardingSettings[serverId]?.agentId
+        lock.unlock()
+        guard onboardingAgentId == agentId else {
+            return Self.json(400, "{\"error\":\"Agent is not this server's onboarding agent\"}")
+        }
+        return Self.json(200, onboardingAdoptionJSON(canAdopt: !state.changes.isEmpty, changes: state.changes))
+    }
+
+    public func adoptOnboardingIdentity(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let state = onboardingAdoptionState(serverId: serverId, agentId: agentId) else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner"
+                || oauth.memberRole(serverId: serverId, userId: userId) == "admin"
+                || state.agent.creatorUserId == userId
+        else {
+            return Self.json(403, "{\"error\":\"The `editAgents` capability or human creator authority is required to edit agents\"}")
+        }
+        lock.lock()
+        let onboardingAgentId = serverOnboardingSettings[serverId]?.agentId
+        lock.unlock()
+        guard onboardingAgentId == agentId else {
+            return Self.json(400, "{\"error\":\"Agent is not this server's onboarding agent\"}")
+        }
+        let changes = state.changes
+        guard !changes.isEmpty else {
+            return Self.json(200, onboardingAdoptionJSON(
+                canAdopt: false,
+                changes: [],
+                appliedChanges: [],
+                agent: state.agent,
+                role: state.role
+            ))
+        }
+        if oauth.serverAgents(serverId: serverId).contains(where: { $0.id != agentId && $0.name == "Cindy" }) {
+            return Self.json(409, "{\"error\":\"Agent name is already taken\"}")
+        }
+        oauth.adoptAgentIdentity(
+            serverId: serverId,
+            agentId: agentId,
+            name: "Cindy",
+            displayName: "Cindy",
+            description: "Onboarding Assistant",
+            avatarUrl: "pixel:mug",
+            role: "admin"
+        )
+        emitRealtime("server:\(serverId)", "agent:updated", "{\"agentId\":\(jsonString(agentId))}")
+        let updated = oauth.agentRuntimeInfo(id: agentId) ?? state.agent
+        return Self.json(200, onboardingAdoptionJSON(
+            canAdopt: false,
+            changes: [],
+            appliedChanges: changes,
+            agent: updated,
+            role: "admin"
+        ))
+    }
+
     public func setAgentMachineForTesting(agentId: String, machineId: String) {
         lock.lock()
         agentMachineIds[agentId] = machineId

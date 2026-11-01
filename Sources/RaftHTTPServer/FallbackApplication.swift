@@ -1130,6 +1130,20 @@ public func configure(_ app: Application, services: FallbackServices) {
             action: "migrate"
         ))
     }
+    app.get("api", "agents", ":id", "onboarding-identity-adoption") { request -> Response in
+        routeResponse(services.emailAccounts.onboardingIdentityAdoption(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? ""
+        ))
+    }
+    app.post("api", "agents", ":id", "onboarding-identity-adoption") { request -> Response in
+        routeResponse(services.emailAccounts.adoptOnboardingIdentity(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? ""
+        ))
+    }
     app.post("api", "agents", ":id", "credentials") { request -> Response in
         var response = routeResponse(services.emailAccounts.issueAgentCredential(
             authorization: request.headers[.authorization],
