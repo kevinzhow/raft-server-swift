@@ -115,7 +115,7 @@ internalAgentApi.eventsSenderType	route	locked	798e237	durable external inbox, s
 internalAgentApi.externalInboxPull	route	partial	-	auto-seed
 internalAgentApi.feedbackLocator	route	locked	a6f414f	locator ingest receipts, duplicate replay, typed failures, index projection
 internalAgentApi.grantCoverage	route	partial	-	auto-seed
-internalAgentApi.grants	route	partial	-	auto-seed
+internalAgentApi.grants	route	locked	60a162e	per-agent grants on join/task APIs, shared 403, reset
 internalAgentApi.historyUnread	route	partial	-	auto-seed
 internalAgentApi.hostedProfile.api	route	locked	672f241	hosted description lock, rename, self-hosted edit
 internalAgentApi.idempotentWrites	route	partial	-	auto-seed
