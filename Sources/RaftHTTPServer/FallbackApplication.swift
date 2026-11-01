@@ -1130,6 +1130,15 @@ public func configure(_ app: Application, services: FallbackServices) {
             action: "migrate"
         ))
     }
+    app.get("api", "agents", ":id", "hosted-runtime") { request -> Response in
+        var response = routeResponse(services.emailAccounts.agentHostedRuntime(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            agentId: request.parameters.get("id") ?? ""
+        ))
+        response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
+        return response
+    }
     app.get("api", "agents", ":id", "runtime-form") { request -> Response in
         var response = routeResponse(services.emailAccounts.agentRuntimeForm(
             authorization: request.headers[.authorization],

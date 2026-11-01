@@ -216,6 +216,9 @@ agent 读游标前进且 server 开启 read receipts 时，`channel:<id>` 房间
 `GET /api/agents/:id/runtime-form`：仅 owner/admin/creator，external agent 404 `no_runtime_form`。返回 v2 `{protocolVersion:2,runtimeId,schemaVersion,fields,values,capabilities}`；`values` 从存储 runtimeConfig 投影 `model`/`envVars`，Claude 另带 `provider/apiUrl/reasoningEffort/fastMode/command` 且永不返回 `apiKey`，Antigravity 不返回 model；Claude 的 `writeOnlyPointers` 为 `["/apiKey"]`。
 
 
+`GET /api/agents/:id/hosted-runtime`：仅 owner/admin/creator；非 hosted agent 404 `{code:"hosted_runtime_missing"}`；hosted agent 返回 `{hostedRuntime:{agentId,provider,model,state,retryNeedsModel,createdAt},onboardingSetup}`，响应 `Cache-Control: no-store`。
+
+
 `POST /api/messages` 成功后向 `channel:<id>` 房间发 `message:new`，payload 是消息 HTTP body（id/channelId/content/attachments）。`POST /api/tasks/channel/:channelId` 成功后向同一房间发 `task:created`，payload 是 `{channelId,tasks:[{id,channelId,title,status}]}`；`PATCH /api/tasks/:taskId/claim` 成功后发 `task:updated`，payload `{channelId,task:<task JSON>}`；`POST /api/channels/threads/follow|unfollow` 成功后发 `thread:followers-updated`，payload `{threadChannelId}`。频道创建时该用户的在线 socket 自动加入 `channel:<id>`。task JSON 带 `messageId`。
 
 

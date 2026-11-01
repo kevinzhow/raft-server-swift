@@ -153,6 +153,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var storedAgentDeliveries: [(agentId: String, messageId: String, channelType: String)] = []
     private var agentCredentials: [String: AgentCredential] = [:]
     private var agentMachineIds: [String: String] = [:]
+    private var hostedRuntimes: [String: (provider: String, model: String?, state: String, retryNeedsModel: Bool, createdAt: Date)] = [:]
     private var agentArchiveRecords: [String: (workspaceState: String, machineName: String, serverId: String)] = [:]
     private var postableChannels: [String: PostableChannel] = [:]
     private var threadOrder: [String] = []
@@ -8277,6 +8278,43 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             agent: updated,
             role: "admin"
         ))
+    }
+
+    public func setHostedRuntimeForTesting(
+        agentId: String,
+        provider: String = "openai",
+        model: String? = nil,
+        state: String = "active",
+        retryNeedsModel: Bool = false
+    ) {
+        lock.lock()
+        hostedRuntimes[agentId] = (provider, model, state, retryNeedsModel, Date())
+        lock.unlock()
+    }
+
+    public func agentHostedRuntime(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner"
+                || oauth.memberRole(serverId: serverId, userId: userId) == "admin"
+                || agent.creatorUserId == userId
+        else {
+            return Self.json(403, "{\"error\":\"The `editAgents` capability or human creator authority is required to view cloud agent status\"}")
+        }
+        lock.lock()
+        let hosted = hostedRuntimes[agentId]
+        lock.unlock()
+        guard let hosted else {
+            return Self.json(404, "{\"error\":\"Agent is not a cloud agent\",\"code\":\"hosted_runtime_missing\"}")
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let model = hosted.model.map(jsonString) ?? "null"
+        return Self.json(200, "{\"hostedRuntime\":{\"agentId\":\(jsonString(agentId)),\"provider\":\(jsonString(hosted.provider)),\"model\":\(model),\"state\":\(jsonString(hosted.state)),\"retryNeedsModel\":\(hosted.retryNeedsModel),\"createdAt\":\(jsonString(formatter.string(from: hosted.createdAt)))},\"onboardingSetup\":null}")
     }
 
     public func agentRuntimeForm(
