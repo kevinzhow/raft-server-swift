@@ -155,6 +155,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var agentMachineIds: [String: String] = [:]
     private var agentMigrationServers: Set<String> = []
     private var hostedMigrationServers: Set<String> = []
+    private var hostedRuntimeServers: Set<String> = []
     private var hostedMigrations: [String: HostedMigrationRecord] = [:]
 
     private struct HostedMigrationRecord {
@@ -7850,6 +7851,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func enableHostedRuntimeForTesting(serverId: String) {
+        lock.lock()
+        hostedRuntimeServers.insert(serverId)
+        lock.unlock()
+    }
+
     public func seedHostedMigrationForTesting(
         agentId: String,
         serverId: String,
@@ -8178,6 +8185,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if action == "stop" {
             return Self.json(200, "{\"ok\":true}")
         }
+        if action == "migrate" {
+            let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+            if let target = object?["target"] as? [String: Any], target["kind"] as? String == "hosted" {
+                return startHostedMigration(info: info, userId: userId, serverId: info.serverId, target: target)
+            }
+            return Self.json(202, "{\"ok\":true,\"status\":\"accepted\"}")
+        }
         let mode = ((try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any])?["mode"] as? String ?? "session"
         guard mode == "restart" || mode == "session" || mode == "full" else {
             return Self.json(400, "{\"error\":\"mode must be restart, session, or full\"}")
@@ -8186,6 +8200,74 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"resetAgentWorkspace requires creator or server admin authority\"}")
         }
         return Self.json(202, "{\"ok\":true,\"status\":\"accepted\"}")
+    }
+
+    private func startHostedMigration(
+        info: OAuthLedger.AgentManagementInfo,
+        userId: String,
+        serverId: String,
+        target: [String: Any]
+    ) -> HTTPReply {
+        lock.lock()
+        let hostedEnabled = hostedMigrationServers.contains(serverId)
+        let runtimeEnabled = hostedRuntimeServers.contains(serverId)
+        let picker = hostedModelPickerServers.contains(serverId)
+        let existingHosted = hostedRuntimes[info.id] != nil
+        let activeMigration = hostedMigrations[info.id]
+        let machineId = agentMachineIds[info.id]
+        lock.unlock()
+        guard hostedEnabled else {
+            return migrationError(403, "HOSTED_TARGET_UNAVAILABLE", "Moving agents to the cloud is not enabled on this server")
+        }
+        guard runtimeEnabled else {
+            return migrationError(409, "HOSTED_TARGET_UNAVAILABLE", "Cloud agents are not enabled for this server")
+        }
+        let provider = target["provider"] as? String ?? "antiproton"
+        guard provider == "antiproton" else {
+            return migrationError(422, "HOSTED_TARGET_UNAVAILABLE", "Unknown cloud provider")
+        }
+        var hostedModel: String?
+        if let raw = target["hostedModel"] {
+            guard let value = raw as? String,
+                  !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  value.count <= 200
+            else {
+                return migrationError(400, "HOSTED_TARGET_MODEL_INVALID", "`target.hostedModel` must be a model id or null")
+            }
+            hostedModel = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard machineId != nil else {
+            return migrationError(409, "AGENT_HAS_NO_SOURCE_MACHINE", "Agent has no source computer")
+        }
+        guard !existingHosted else {
+            return migrationError(409, "HOSTED_TARGET_ALREADY_USED", "This agent has already run in the cloud")
+        }
+        if let activeMigration, activeMigration.state != "canceled" {
+            return migrationError(409, "MIGRATION_ALREADY_IN_PROGRESS", "Agent already has an active migration")
+        }
+        if let hostedModel, hostedModel != Self.hostedDefaultModel, !picker {
+            return migrationError(422, "HOSTED_TARGET_MODEL_INVALID", "This model cannot be used for a cloud agent here (picker_disabled)")
+        }
+        let supportRef = "mig_" + String(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(22))
+        let record = HostedMigrationRecord(
+            agentId: info.id,
+            serverId: serverId,
+            supportRef: supportRef,
+            revision: 1,
+            state: "preparing",
+            sourceMachineId: machineId
+        )
+        lock.lock()
+        hostedMigrations[info.id] = record
+        lock.unlock()
+        for member in oauth.memberIdsWithRoles(serverId: serverId) where member.role == "owner" || member.role == "admin" {
+            emitRealtime("user:\(member.id)", "agent:migration-updated", migrationUpdatedJSON(record))
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let deadline = jsonString(formatter.string(from: Date().addingTimeInterval(3600)))
+        let source = record.sourceMachineId.map(jsonString) ?? "null"
+        return Self.json(200, "{\"migrationRef\":\(jsonString(supportRef)),\"state\":\(jsonString(record.state)),\"targetKind\":\"hosted\",\"sourceMachineId\":\(source),\"targetMachineId\":null,\"prepDeadlineAt\":\(deadline),\"transferDeadlineAt\":\(deadline),\"arrivalDeadlineAt\":\(deadline)}")
     }
 
     public func assignAgentMachine(authorization: String?, agentId: String, body: String) -> HTTPReply {

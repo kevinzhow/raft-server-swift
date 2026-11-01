@@ -237,6 +237,8 @@ Guest 角色降级后，其 follow 的 thread 从 `GET /api/channels/inbox`（`a
 `POST/GET/DELETE /api/agents/:id/credentials`：未认证调用一律 401（不是 404），POST 也不要求 `X-Server-Id`。
 
 
+`POST /api/agents/:id/migrate`（`target.kind:"hosted"`）：migration UI gate 关闭 403 `agent_migration_ui_disabled`；无权限 403 `not_supported`；hosted 迁移 gate 关闭 403 `HOSTED_TARGET_UNAVAILABLE`；hosted runtime 未启用/未知 provider 409/422 `HOSTED_TARGET_UNAVAILABLE`；`hostedModel` 非字符串/null 400 `HOSTED_TARGET_MODEL_INVALID`；无 source machine 409 `AGENT_HAS_NO_SOURCE_MACHINE`；已有 hosted runtime 409 `HOSTED_TARGET_ALREADY_USED`；已有 active migration 409 `MIGRATION_ALREADY_IN_PROGRESS`。成功返回 200 `{migrationRef,state,targetKind:"hosted",sourceMachineId,targetMachineId:null,prepDeadlineAt,transferDeadlineAt,arrivalDeadlineAt}` 并广播 `agent:migration-updated`。
+
 `POST /api/agents/:id/migration/confirm-hosted`：migration UI gate 关闭 403 `agent_migration_ui_disabled`；agent 不在该 server 404 `AGENT_NOT_FOUND`；无 owner/admin/creator 权限 403 `not_supported`；hosted 迁移 gate 关闭 403 `HOSTED_TARGET_UNAVAILABLE`。`migrationRef` 必须匹配 `mig_` + 22 字符，否则 400 `MIGRATION_REF_INVALID`；`expectedRevision` 必须为正整数，否则 400 `MIGRATION_REVISION_INVALID`。未知 migration 404 `MIGRATION_NOT_FOUND`；revision 不符 409 `MIGRATION_REVISION_STALE`；state 非 `in_transit` 或 source machine 不符 409 `HOSTED_REVIEW_NOT_READY`；已有 hosted runtime 409 `HOSTED_TARGET_ALREADY_USED`。成功时 agent 切到 `external`、创建 provisioning hosted runtime、migration 变为 `arriving` 且 revision+1，返回 `{migration}` 并向 owner/admin 的 `user:<id>` 房间发 `agent:migration-updated`。
 
 

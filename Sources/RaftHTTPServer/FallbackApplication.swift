@@ -1135,7 +1135,8 @@ public func configure(_ app: Application, services: FallbackServices) {
         routeResponse(services.emailAccounts.agentRuntimeAction(
             authorization: request.headers[.authorization],
             agentId: request.parameters.get("id") ?? "",
-            action: "migrate"
+            action: "migrate",
+            body: request.body.string ?? ""
         ))
     }
     app.get("api", "agents", ":id", "hosted-runtime") { request -> Response in
