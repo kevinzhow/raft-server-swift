@@ -197,8 +197,8 @@ servers.activityUnreadSummary.api	route	partial	-	auto-seed
 servers.api	route	partial	-	join-link list/revoke, machine registration, machine feed added; remaining server routes pending
 servers.joinCommunity.api	route	partial	-	auto-seed
 servers.mentionRedriveAuthz.api	route	locked	6ea6dda	NOT_ACCESSIBLE/NOT_JOINABLE auth and version body
-servers.scopeAttestation.api	route	partial	-	auto-seed
-servers.transcriptFeedback.api	route	partial	-	auto-seed
+servers.scopeAttestation.api	route	locked	b00f30b	HS256 claims and member/owner capability scopes
+servers.transcriptFeedback.api	route	locked	b00f30b	202/400/403/404 transcript feedback gates
 shareArtifacts.api	route	partial	-	auto-seed
 sidebarOrder.roundTrips.api	route	partial	-	auto-seed
 slackBridge.api	route	partial	-	auto-seed
