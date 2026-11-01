@@ -284,6 +284,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var threadFollowerRemovals: [String: (serverId: String, threadChannelId: String, agentId: String)] = [:]
     private var channelReadVersions: [String: Int] = [:]
     private var agentChannelReadCursors: [String: (seq: Int, version: Int)] = [:]
+    private var userChannelReadCursors: [String: Int] = [:]
     private var agentActivities: [String: (activity: String, detail: String)] = [:]
     private var announcements: [(id: String, title: String, pages: [String], startsAt: Date, expiresAt: Date?, status: String, publishedAt: Date?, imageId: String?)] = []
     private var announcementImageAssets: [String: AnnouncementImageAsset] = [:]
@@ -320,7 +321,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var managedMCPServers: [ManagedMCPServerRecord] = []
     private var actionCardRecords: [String: ActionCardRecord] = [:]
     private var pendingActionMessageEvents: [(agentId: String, messageId: String, content: String)] = []
-    private var agentChannelInboxDelivered: Set<String> = []
     private var agentGrantSets: [String: Set<String>] = [:]
     private var appConfigOverrides: [String: [String: [String: Any]]] = [:]
     private var appConfigRevisions: [String: [String: Int]] = [:]
@@ -5951,6 +5951,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// `GET /internal/agent-api/events`. Durable channel messages for the
     /// external agent plus pending third-party events; the call drains both.
+    /// At most this many channel rows per conversation in one pull. The pull
+    /// advances each conversation's cursor, and `has_more` says whether
+    /// another call has anything left.
+    private static let agentInboxPullCap = 5
+
     public func agentThirdPartyEvents(authorization: String?) -> HTTPReply {
         switch agentReadCredential(authorization) {
         case .failure(let reply):
@@ -5962,27 +5967,47 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.lock()
             let actionEvents = pendingActionMessageEvents.filter { $0.agentId == agentId }
             pendingActionMessageEvents.removeAll { $0.agentId == agentId }
-            var channelRows: [(message: StoredHumanMessage, channelName: String, channelType: String, senderName: String)] = []
-            for message in humanMessageRows {
-                guard message.senderId != agentId,
-                      let channel = postableChannels[message.channelId],
-                      channel.serverId == agent.serverId,
-                      channel.deletedAt == nil
-                else { continue }
-                let visible = channel.kind == "channel"
-                    || channel.memberIds.contains(agentId)
-                    || oauth.channelAgentIds(channelId: message.channelId).contains(agentId)
+
+            // Every visible conversation, keyed by the channel the agent reads.
+            var conversations: [(id: String, storage: String, name: String, type: String)] = []
+            for (id, channel) in postableChannels.sorted(by: { $0.key < $1.key }) {
+                guard channel.serverId == agent.serverId, channel.deletedAt == nil else { continue }
+                let visible: Bool
+                if channel.kind == "dm" || channel.kind == "thread" || channel.kind == "private" {
+                    visible = channel.memberIds.contains(agentId)
+                        || oauth.channelAgentIds(channelId: id).contains(agentId)
+                } else {
+                    visible = true
+                }
                 guard visible else { continue }
-                let key = "\(agentId)\n\(message.id)"
-                guard !agentChannelInboxDelivered.contains(key) else { continue }
-                let senderName = message.externalSenderName
-                    ?? accounts.values.first { $0.id == message.senderId }?.name
-                    ?? (message.senderId == "system" ? "system" : message.senderId)
-                let channelType = channel.kind == "dm" ? "dm" : "channel"
-                channelRows.append((message, channel.name, channelType, senderName))
+                let storage = jointProjections.first { $0.localChannelId == id }?.canonicalChannelId ?? id
+                conversations.append((id, storage, channel.name, channel.kind == "dm" ? "dm" : "channel"))
             }
-            for row in channelRows {
-                agentChannelInboxDelivered.insert("\(agentId)\n\(row.message.id)")
+
+            var selected: [(seq: Int, message: StoredHumanMessage, conversation: (id: String, storage: String, name: String, type: String), senderName: String)] = []
+            var seenMessages = Set<String>()
+            var hasMore = false
+            for conversation in conversations {
+                let key = "\(conversation.id)\n\(agentId)"
+                let cursor = agentChannelReadCursors[key]?.seq ?? 0
+                let pending = humanMessageRows.enumerated().filter { offset, message in
+                    message.channelId == conversation.storage
+                        && offset + 1 > cursor
+                        && message.senderId != agentId
+                }
+                if pending.count > Self.agentInboxPullCap { hasMore = true }
+                for (offset, message) in pending.prefix(Self.agentInboxPullCap) {
+                    guard seenMessages.insert(message.id).inserted else { continue }
+                    let senderName = message.externalSenderName
+                        ?? accounts.values.first { $0.id == message.senderId }?.name
+                        ?? (message.senderId == "system" ? "system" : message.senderId)
+                    selected.append((offset + 1, message, conversation, senderName))
+                }
+                if let last = pending.prefix(Self.agentInboxPullCap).last {
+                    let previous = agentChannelReadCursors[key] ?? (seq: 0, version: 0)
+                    let newSeq = max(previous.seq, last.offset + 1)
+                    agentChannelReadCursors[key] = (newSeq, previous.version + (newSeq > previous.seq ? 1 : 0))
+                }
             }
             let mentionedIds = Set(storedMentions.filter {
                 $0.targetType == "agent" && $0.targetId == agentId
@@ -5990,9 +6015,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
 
             var events: [String] = []
-            var seq = 0
-            for row in channelRows.sorted(by: { $0.message.createdAt < $1.message.createdAt }) {
-                seq += 1
+            var nextSeq = 0
+            for row in selected.sorted(by: { $0.seq < $1.seq }) {
+                nextSeq = max(nextSeq, row.seq)
                 let message = row.message
                 let senderType: String
                 if message.senderType == "external_projection" {
@@ -6004,7 +6029,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 } else {
                     senderType = "human"
                 }
-                var rowJSON = "{\"seq\":\(seq),\"message_id\":\(jsonString(message.id)),\"sender_id\":\(jsonString(message.senderId)),\"sender_name\":\(jsonString(row.senderName)),\"sender_type\":\(jsonString(senderType)),\"senderType\":\(jsonString(senderType)),\"content\":\(jsonString(message.content)),\"mentioned\":\(mentionedIds.contains(message.id)),\"channel_id\":\(jsonString(message.channelId)),\"channel_name\":\(jsonString(row.channelName)),\"channel_type\":\(jsonString(row.channelType)),\"timestamp\":\(jsonString(Self.isoString(message.createdAt)))"
+                var rowJSON = "{\"seq\":\(row.seq),\"message_id\":\(jsonString(message.id)),\"sender_id\":\(jsonString(message.senderId)),\"sender_name\":\(jsonString(row.senderName)),\"sender_type\":\(jsonString(senderType)),\"senderType\":\(jsonString(senderType)),\"content\":\(jsonString(message.content)),\"mentioned\":\(mentionedIds.contains(message.id)),\"channel_id\":\(jsonString(row.conversation.id)),\"channel_name\":\(jsonString(row.conversation.name)),\"channel_type\":\(jsonString(row.conversation.type)),\"timestamp\":\(jsonString(Self.isoString(message.createdAt)))"
                 if senderType == "third_party_app" {
                     let externalId = message.externalMessageId.map(jsonString) ?? "null"
                     let provider = message.externalProvider.map(jsonString) ?? "null"
@@ -6015,16 +6040,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 events.append(rowJSON)
             }
             for event in actionEvents {
-                seq += 1
-                events.append("{\"seq\":\(seq),\"message_id\":\(jsonString(event.messageId)),\"sender_type\":\"agent\",\"senderType\":\"agent\",\"content\":\(jsonString(event.content)),\"mentioned\":true}")
+                nextSeq += 1
+                events.append("{\"seq\":\(nextSeq),\"message_id\":\(jsonString(event.messageId)),\"sender_type\":\"agent\",\"senderType\":\"agent\",\"content\":\(jsonString(event.content)),\"mentioned\":true}")
             }
             for message in oauth.takeThirdPartyEventMessages(agentId: agentId) {
-                seq += 1
+                nextSeq += 1
                 let resource = "urn:raft:server:\(message.serverId):agent-inbound"
                 let content = Self.inertThirdPartyMentions(message.summary)
-                events.append("{\"seq\":\(seq),\"message_id\":\(jsonString(message.id)),\"sender_type\":\"third_party_app\",\"senderType\":\"third_party_app\",\"content\":\(jsonString(content)),\"mentioned\":false,\"third_party_event\":{\"id\":\(jsonString(message.id)),\"kind\":\(jsonString(message.kind)),\"summary\":\(jsonString(message.summary)),\"source\":{\"client_id\":\(jsonString(message.clientKey)),\"client_name\":\(jsonString(message.clientName)),\"oauth_client_id\":\(jsonString(message.clientRecordId)),\"resource\":\(jsonString(resource))}}}")
+                events.append("{\"seq\":\(nextSeq),\"message_id\":\(jsonString(message.id)),\"sender_type\":\"third_party_app\",\"senderType\":\"third_party_app\",\"content\":\(jsonString(content)),\"mentioned\":false,\"third_party_event\":{\"id\":\(jsonString(message.id)),\"kind\":\(jsonString(message.kind)),\"summary\":\(jsonString(message.summary)),\"source\":{\"client_id\":\(jsonString(message.clientKey)),\"client_name\":\(jsonString(message.clientName)),\"oauth_client_id\":\(jsonString(message.clientRecordId)),\"resource\":\(jsonString(resource))}}}")
             }
-            return Self.json(200, "{\"events\":[\(events.joined(separator: ","))]}")
+            return Self.json(200, "{\"events\":[\(events.joined(separator: ","))],\"has_more\":\(hasMore)}")
         }
     }
 
@@ -6767,6 +6792,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             channelAttachments[id]?.messagePosition = position
         }
         humanMessageRows.append(stored)
+        let sequence = humanMessageRows.count
+        let cursorKey = "\(channelId)\n\(senderId)"
+        userChannelReadCursors[cursorKey] = max(userChannelReadCursors[cursorKey] ?? 0, sequence)
         recordedChannelMessageEvents.append(ChannelMessageEvent(
             room: "channel:\(channelId)",
             name: "message:new",
@@ -15104,42 +15132,75 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"Invalid send request\"}")
         }
         let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("dm:@") else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
-        }
-        var raw = String(trimmed.dropFirst("dm:@".count))
-        var suffix: String?
-        if let colon = raw.lastIndex(of: ":") {
-            suffix = String(raw[raw.index(after: colon)...])
-            raw = String(raw[..<colon])
-        }
-        if suffix != nil {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
-        }
-        var kind: String?
-        if let tilde = raw.firstIndex(of: "~") {
-            kind = String(raw[raw.index(after: tilde)...])
-            raw = String(raw[..<tilde])
-        }
-        lock.lock()
-        let resolution = resolveDMPeerLocked(serverId: identity.serverId, agentId: identity.agentId, name: raw, kind: kind)
-        lock.unlock()
-        if let failure = dmPeerFailure(resolution) { return failure }
-        guard case .resolved(let peerId, _, _) = resolution else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
-        }
         let channelId: String
-        lock.lock()
-        let existing = dmChannelIdLocked(serverId: identity.serverId, agentId: identity.agentId, peerId: peerId)
-        lock.unlock()
-        if let existing {
-            channelId = existing
+        if trimmed.hasPrefix("#") {
+            var raw = String(trimmed.dropFirst())
+            var suffix: String?
+            if let colon = raw.lastIndex(of: ":") {
+                suffix = String(raw[raw.index(after: colon)...])
+                raw = String(raw[..<colon])
+            }
+            lock.lock()
+            var parentId: String?
+            for (id, channel) in postableChannels {
+                guard channel.serverId == identity.serverId, channel.name == raw, channel.deletedAt == nil,
+                      channel.kind == "channel" || channel.kind == "private" || channel.kind == "joint"
+                else { continue }
+                if channel.kind == "channel"
+                    || channel.memberIds.contains(identity.agentId)
+                    || oauth.channelAgentIds(channelId: id).contains(identity.agentId) {
+                    parentId = id
+                    break
+                }
+            }
+            var resolved = parentId
+            if let parentId, let suffix, !suffix.isEmpty {
+                resolved = agentHistoryThread(parentId: parentId, anchorMessageId: oauth.historyMessages(channelId: parentId).first { $0.id.hasPrefix(suffix) }?.id ?? "")
+                    ?? agentHistoryThreadById(parentId: parentId, suffix: suffix)
+                    ?? agentHistoryThreadByAnchorPrefix(parentId: parentId, suffix: suffix)
+            }
+            lock.unlock()
+            guard let resolved else {
+                return Self.json(404, "{\"error\":\"Channel not found\"}")
+            }
+            channelId = resolved
+        } else if trimmed.hasPrefix("dm:@") {
+            var raw = String(trimmed.dropFirst("dm:@".count))
+            var suffix: String?
+            if let colon = raw.lastIndex(of: ":") {
+                suffix = String(raw[raw.index(after: colon)...])
+                raw = String(raw[..<colon])
+            }
+            if suffix != nil {
+                return Self.json(404, "{\"error\":\"Channel not found\"}")
+            }
+            var kind: String?
+            if let tilde = raw.firstIndex(of: "~") {
+                kind = String(raw[raw.index(after: tilde)...])
+                raw = String(raw[..<tilde])
+            }
+            lock.lock()
+            let resolution = resolveDMPeerLocked(serverId: identity.serverId, agentId: identity.agentId, name: raw, kind: kind)
+            lock.unlock()
+            if let failure = dmPeerFailure(resolution) { return failure }
+            guard case .resolved(let peerId, _, _) = resolution else {
+                return Self.json(404, "{\"error\":\"Channel not found\"}")
+            }
+            lock.lock()
+            let existing = dmChannelIdLocked(serverId: identity.serverId, agentId: identity.agentId, peerId: peerId)
+            lock.unlock()
+            if let existing {
+                channelId = existing
+            } else {
+                channelId = oauth.createDirectChannel(serverId: identity.serverId, firstUserId: identity.agentId, secondUserId: peerId)
+                addPostableChannel(serverId: identity.serverId, channelId: channelId, memberId: identity.agentId, kind: "dm", name: "dm")
+                addPostableChannel(serverId: identity.serverId, channelId: channelId, memberId: peerId, kind: "dm", name: "dm")
+                oauth.addChannelHuman(channelId: channelId, userId: peerId)
+            }
         } else {
-            channelId = oauth.createDirectChannel(serverId: identity.serverId, firstUserId: identity.agentId, secondUserId: peerId)
-            addPostableChannel(serverId: identity.serverId, channelId: channelId, memberId: identity.agentId, kind: "dm", name: "dm")
-            addPostableChannel(serverId: identity.serverId, channelId: channelId, memberId: peerId, kind: "dm", name: "dm")
-            oauth.addChannelHuman(channelId: channelId, userId: peerId)
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
+
         let messageId = UUID().uuidString.lowercased()
         lock.lock()
         humanMessageRows.append(StoredHumanMessage(
@@ -15151,8 +15212,23 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             messageType: "chat",
             senderType: "agent"
         ))
+        let ownSeq = humanMessageRows.count
+        // Sending is not reading: the cursor may pass the own message only when
+        // no message from someone else below it is still unhanded.
+        let cursorKey = "\(channelId)\n\(identity.agentId)"
+        let cursor = agentChannelReadCursors[cursorKey]?.seq ?? 0
+        let unreadBelow = humanMessageRows.enumerated().contains { offset, message in
+            message.channelId == channelId
+                && message.senderId != identity.agentId
+                && offset + 1 > cursor
+                && offset + 1 < ownSeq
+        }
+        if !unreadBelow, ownSeq > cursor {
+            let previous = agentChannelReadCursors[cursorKey] ?? (seq: 0, version: 0)
+            agentChannelReadCursors[cursorKey] = (ownSeq, previous.version + 1)
+        }
         lock.unlock()
-        let message = "{\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(content))}"
+        let message = "{\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(content)),\"seq\":\(ownSeq)}"
         return v2 ? Self.json(200, "{\"message\":\(message)}") : Self.json(200, message)
     }
 
@@ -16971,6 +17047,25 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return readReceiptsServers.contains(serverId)
+    }
+
+    public func agentReadCursor(channelId: String, agentId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return agentChannelReadCursors["\(channelId)\n\(agentId)"]?.seq ?? 0
+    }
+
+    public func humanReadCursor(channelId: String, userId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return userChannelReadCursors["\(channelId)\n\(userId)"] ?? 0
+    }
+
+    public func humanMessageSequence(id: String) -> Int? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = humanMessageRows.firstIndex(where: { $0.id == id }) else { return nil }
+        return index + 1
     }
 
     public func setAgentReadCursorForTesting(agentId: String, channelId: String, seq: Int, version: Int = 1) {
