@@ -133,7 +133,7 @@ internalAgentApi.send	route	partial	-	auto-seed
 internalAgentApi.senderMentionDeliveries	route	partial	-	auto-seed
 internalAgentApi.systemThread.realPg	route	partial	-	auto-seed
 internalAgentApi.taskWriteFreshness.api	route	partial	-	auto-seed
-internalAgentApi.threadRead	route	partial	-	auto-seed
+internalAgentApi.threadRead	route	locked	c7e4e7a	thread entity discrimination, runnable Next action, DM consumption scope
 internalAgentApi.userChannels.realPg	route	partial	-	auto-seed
 internalAgentApi.userChannels	route	partial	-	auto-seed
 internalAgentApi.wakeHintStream	route	partial	-	auto-seed
