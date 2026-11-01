@@ -234,6 +234,9 @@ GitHub 账号连接（`/api/agents/:id/connections/github`，provider 由注入�
 Guest 角色降级后，其 follow 的 thread 从 `GET /api/channels/inbox`（`all` 与 `unread`）消失；`GET /api/messages/channel/:threadId` 对 guest 返回 403，即使该 thread 属于公开频道。
 
 
+`POST/GET/DELETE /api/agents/:id/credentials`：未认证调用一律 401（不是 404），POST 也不要求 `X-Server-Id`。
+
+
 `POST /api/messages` 成功后向 `channel:<id>` 房间发 `message:new`，payload 是消息 HTTP body（id/channelId/content/attachments）。`POST /api/tasks/channel/:channelId` 成功后向同一房间发 `task:created`，payload 是 `{channelId,tasks:[{id,channelId,title,status}]}`；`PATCH /api/tasks/:taskId/claim` 成功后发 `task:updated`，payload `{channelId,task:<task JSON>}`；`POST /api/channels/threads/follow|unfollow` 成功后发 `thread:followers-updated`，payload `{threadChannelId}`。频道创建时该用户的在线 socket 自动加入 `channel:<id>`。task JSON 带 `messageId`。
 
 
