@@ -1801,6 +1801,25 @@ public func configure(_ app: Application, services: FallbackServices) {
             runtime: request.parameters.get("runtime") ?? ""
         ))
     }
+    app.get("api", "servers", ":id", "machines", ":machineId", "runtime-account-usage", ":provider") { request -> Response in
+        var response = routeResponse(services.emailAccounts.machineRuntimeAccountUsage(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            machineId: request.parameters.get("machineId") ?? "",
+            provider: request.parameters.get("provider") ?? ""
+        ))
+        response.headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
+        return response
+    }
+    app.post("api", "servers", ":id", "machines", ":machineId", "runtime-account-usage", ":provider", "refresh") { request -> Response in
+        routeResponse(services.emailAccounts.refreshMachineRuntimeAccountUsage(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            machineId: request.parameters.get("machineId") ?? "",
+            provider: request.parameters.get("provider") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.delete("api", "servers", ":id", "machines", ":machineId", "workspaces", ":directoryName") { request -> Response in
         routeResponse(services.emailAccounts.deleteMachineWorkspace(
             authorization: request.headers[.authorization],

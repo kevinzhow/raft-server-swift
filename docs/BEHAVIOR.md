@@ -171,6 +171,9 @@ agent 读游标前进且 server 开启 read receipts 时，`channel:<id>` 房间
 `GET /api/servers/:id/machines/:machineId/runtime-options` 仅 owner/admin 或 machine creator；返回 `{context:"new_agent",machineId,options}`，每项含 `runtimeId/capabilityStatus/admissionStatus/admissionReason/current/availableForNew/manageableForCurrentAgent/canSelectInThisContext`。能力表来自 machine 的 `runtimes`：已上报为 `available`，纯内置未上报为 `update_required`，CLI 未上报为 `not_installed`；默认不提供 grok。`GET .../runtime-models/:runtime` 返回 `{kind:"live",value:{models,default},models,default}`；member 403。
 
 
+`GET /api/servers/:id/machines/:machineId/runtime-account-usage/:provider` 仅 owner/admin 或 Computer attacher；provider 限定 `claude/codex/kimi/grok`，返回 `{state:"fresh|stale|missing",snapshot}`，`Cache-Control: private, no-store`，只含 masked label。`POST .../refresh` 202 首次 `{accepted:true,state:"requested"}`，60s 内重复 `{accepted:false,state:"cooldown"}`；普通 member 403。
+
+
 `POST /api/messages` 成功后向 `channel:<id>` 房间发 `message:new`，payload 是消息 HTTP body（id/channelId/content/attachments）。`POST /api/tasks/channel/:channelId` 成功后向同一房间发 `task:created`，payload 是 `{channelId,tasks:[{id,channelId,title,status}]}`；`PATCH /api/tasks/:taskId/claim` 成功后发 `task:updated`，payload `{channelId,task:<task JSON>}`；`POST /api/channels/threads/follow|unfollow` 成功后发 `thread:followers-updated`，payload `{threadChannelId}`。频道创建时该用户的在线 socket 自动加入 `channel:<id>`。task JSON 带 `messageId`。
 
 

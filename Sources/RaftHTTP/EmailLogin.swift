@@ -209,6 +209,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var setupPhases: [String: String] = [:]
     private var guestRoleServers: Set<String> = []
     private var computers: [(id: String, serverId: String, name: String, apiKey: String, machineId: String?, revokedAt: Date?, online: Bool, version: String?)] = []
+    private var computerAttachers: [String: String] = [:]
+    private var runtimeAccountUsage: [String: (json: String, staleAfter: Date)] = [:]
+    private var runtimeAccountUsageRefreshAt: [String: Date] = [:]
     private var machineRuntimeModels: [String: [String: (models: [(id: String, label: String)], updatedAt: Date)]] = [:]
     private var proSeats: [String: Int] = [:]
     private var joinLinks: [String: JoinLinkRecord] = [:]
@@ -8413,6 +8416,92 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"machine\":\(machine),\"apiKey\":\(jsonString(apiKey))}")
     }
 
+    public func setRuntimeAccountUsageForTesting(
+        machineId: String,
+        provider: String,
+        json: String,
+        staleAfter: Date
+    ) {
+        lock.lock()
+        runtimeAccountUsage["\(machineId)\n\(provider)"] = (json, staleAfter)
+        lock.unlock()
+    }
+
+    public func machineRuntimeAccountUsage(
+        authorization: String?,
+        serverId: String,
+        machineId: String,
+        provider: String
+    ) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard Self.runtimeAccountUsageProviders.contains(provider) else {
+            return Self.json(404, "{\"error\":\"Runtime account usage provider not found\"}")
+        }
+        lock.lock()
+        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Computer not found\"}")
+        }
+        let attacher = computerAttachers[machineId]
+        let record = runtimeAccountUsage["\(machineId)\n\(provider)"]
+        lock.unlock()
+        guard canInspectRuntimeAccountUsage(serverId: serverId, userId: userId, attacher: attacher) else {
+            return Self.json(403, "{\"error\":\"The `editMachines` capability or attaching-human authority is required to inspect runtime account usage\"}")
+        }
+        _ = machine
+        guard let record else {
+            return Self.json(200, "{\"state\":\"missing\",\"snapshot\":null}")
+        }
+        let state = record.staleAfter <= Date() ? "stale" : "fresh"
+        return Self.json(200, "{\"state\":\(jsonString(state)),\"snapshot\":\(record.json)}")
+    }
+
+    public func refreshMachineRuntimeAccountUsage(
+        authorization: String?,
+        serverId: String,
+        machineId: String,
+        provider: String,
+        body: String
+    ) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard Self.runtimeAccountUsageProviders.contains(provider) else {
+            return Self.json(404, "{\"error\":\"Runtime account usage provider not found\"}")
+        }
+        lock.lock()
+        guard machines.contains(where: { $0.id == machineId && $0.serverId == serverId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Computer not found\"}")
+        }
+        let attacher = computerAttachers[machineId]
+        lock.unlock()
+        guard canInspectRuntimeAccountUsage(serverId: serverId, userId: userId, attacher: attacher) else {
+            return Self.json(403, "{\"error\":\"The `editMachines` capability or attaching-human authority is required to refresh runtime account usage\"}")
+        }
+        _ = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        let key = "\(machineId)\n\(provider)"
+        lock.lock()
+        let now = Date()
+        if let last = runtimeAccountUsageRefreshAt[key], now.timeIntervalSince(last) < 60 {
+            lock.unlock()
+            return Self.json(202, "{\"accepted\":false,\"state\":\"cooldown\"}")
+        }
+        runtimeAccountUsageRefreshAt[key] = now
+        lock.unlock()
+        return Self.json(202, "{\"accepted\":true,\"state\":\"requested\"}")
+    }
+
+    private func canInspectRuntimeAccountUsage(serverId: String, userId: String, attacher: String?) -> Bool {
+        if attacher == userId { return true }
+        let role = oauth.memberRole(serverId: serverId, userId: userId)
+        return role == "owner" || role == "admin"
+    }
+
+    private static let runtimeAccountUsageProviders: Set<String> = ["claude", "codex", "kimi", "grok"]
+
     public func machineRuntimeOptions(authorization: String?, serverId: String, machineId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -8824,6 +8913,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let apiKey = Self.computerAPIKeyMaterial()
         lock.lock()
         computers.append((id: UUID().uuidString.lowercased(), serverId: serverId, name: name, apiKey: apiKey, machineId: machineId, revokedAt: nil, online: false, version: nil))
+        computerAttachers[machineId] = userId
         lock.unlock()
         return Self.json(201, "{\"apiKey\":\(jsonString(apiKey)),\"machineId\":\(jsonString(machineId))}")
     }
@@ -8852,7 +8942,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    public func linkComputerForTesting(serverId: String, machineId: String, online: Bool = false, version: String? = "1.0.0") {
+    public func linkComputerForTesting(serverId: String, machineId: String, online: Bool = false, version: String? = "1.0.0", attachedByUserId: String? = nil) {
         lock.lock()
         computers.append((
             id: UUID().uuidString.lowercased(),
@@ -8864,6 +8954,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             online: online,
             version: version
         ))
+        if let attachedByUserId { computerAttachers[machineId] = attachedByUserId }
         lock.unlock()
     }
 
