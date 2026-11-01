@@ -272,3 +272,5 @@ Identity setup：`POST /api/auth/register` 建 pending 账户（`name` 为 `pend
 
 Guest-visible 频道：public 频道是否对 guest 可见由频道级 `guestVisible` 决定（本实现默认 true，测试可显式关闭）。关闭后 guest 的 inbox（含 `filter=mentions`）、done 列表、followed threads 与 direct thread 读取都不再返回该频道/其 thread；重新开启后恢复。残留的 mention/follow/done 记录本身不会授予访问。
 
+`GET /api/messages/:messageId/mention-deliveries`：只有消息作者且当前仍可读该频道时返回 200 `{messageId,deliveries:[{targetId,targetHandle,outcome,reasonCategory?}]}`；无权/他人/跨 Server/未知消息/失去频道访问统一 404 `{status:"NOT_JOINABLE"}`；agent credential 401 且不返回 `deliveries`。终态 `IDENTITY_DRIFT` 回 `lost/unclassified`，`QUOTA_LIMITED` 回 `lost/quota`，无 occurrence 回 `unknown`。
+

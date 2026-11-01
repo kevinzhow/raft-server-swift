@@ -7052,6 +7052,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var senderTimezone: String? = nil
     }
 
+    public func removeChannelMemberForTesting(channelId: String, userId: String) {
+        oauth.removeChannelHuman(channelId: channelId, userId: userId)
+        lock.lock()
+        postableChannels[channelId]?.memberIds.remove(userId)
+        lock.unlock()
+    }
+
     public func setChannelGuestVisibleForTesting(channelId: String, visible: Bool) {
         lock.lock()
         guestVisibleChannels[channelId] = visible
@@ -14895,7 +14902,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"collapseLongMessages\":\(prefs.collapseLongMessages),\"prefsVersion\":\(prefs.prefsVersion)}")
     }
 
-    public func addStoredMentionForTesting(channelId: String, messageId: String, targetId: String, targetType: String = "user") {
+    public func addStoredMentionForTesting(
+        channelId: String,
+        messageId: String,
+        targetId: String,
+        targetType: String = "user",
+        handle: String = "peer",
+        terminalCode: String? = nil
+    ) {
         lock.lock()
         storedMentions.append(StoredMention(
             id: UUID().uuidString.lowercased(),
@@ -14904,12 +14918,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             senderId: "peer",
             targetType: targetType,
             targetId: targetId,
-            handle: "peer",
+            handle: handle,
             notifiableAtSend: true,
             notifiedAt: nil,
             notifiedByType: nil,
             notifiedById: nil,
-            notifiedAction: nil
+            notifiedAction: nil,
+            terminalCode: terminalCode
         ))
         lock.unlock()
     }
