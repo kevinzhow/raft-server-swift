@@ -358,3 +358,5 @@ OAuth 回调 redirect 安全：`POST /api/oauth/authorize/human` 只在请求的
 
 消息 mention 解析（`POST /api/messages` v1 与 `/api/v2/messages`）：正文里的 `@handle` 与显式 `mentions` 一起解析。v1 直接把每个匹配的人类/agent 记为 mention（同一 handle 可同时命中人类与 agent）；v2 对 0 个或多个匹配的 raw handle 回 `unresolvedMentionHandles:["@handle"]` 且不落 mention，只有唯一匹配才记录。显式 typed mentions 必须能绑定到唯一 handle：同名但不同 target 的两条 typed mention 在写库前 400 `mention_binding_conflict`。隐藏人类目录下，普通成员的 raw/typed 隐藏用户不再可解析（raw 回 unresolved，typed 静默丢弃），但 owner/admin、共享普通频道的成员以及 joint roster 中的 peer 仍可见；可见的非频道成员继续产生 sender-only `pendingMentionActions`。`unresolvedMentionHandles` 只出现在 v2 发送响应，socket 与冷读消息负载不含它。
 
+消息发送的 Server membership 门：当该 Server 已有成员记录、但发送者已不在成员表中时，`POST /api/messages`/`/api/v2/messages` 在解析频道/mention 和写库前回 403 `{"error":"Not a member of this server"}`，不产生消息或 mention。隐藏目录关闭后，typed mention 恢复为普通可见目标（非频道成员仍产生 pending action）。Reaction 的 `reactorNames` 现在优先使用人类 displayName（未设置时回退 name）。
+

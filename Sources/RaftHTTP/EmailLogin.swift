@@ -3609,6 +3609,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard isEmailVerified(userId: userId) else {
             return Self.json(403, "{\"error\":\"Email verification required\"}")
         }
+        if let serverId, !serverId.isEmpty,
+           !oauth.memberIds(serverId: serverId).isEmpty,
+           oauth.memberRole(serverId: serverId, userId: userId) == nil {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
         guard Self.humanMessageBodyIsValid(body) else {
             return Self.json(400, "{\"error\":\"Invalid message request body\"}")
         }
@@ -6898,7 +6903,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
             let name = row.reactorType == "agent"
                 ? (serverAgents[row.reactorId]?.name ?? "Unknown agent")
-                : (accounts.values.first { $0.id == row.reactorId }?.name ?? "Unknown user")
+                : (accounts.values.first { $0.id == row.reactorId }.map { $0.displayName ?? $0.name } ?? "Unknown user")
             var bucket = buckets[row.emoji] ?? ([], [])
             bucket.ids.append(row.reactorId)
             bucket.names.append(name)

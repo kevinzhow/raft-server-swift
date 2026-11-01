@@ -250,6 +250,32 @@ private func mentionObject(_ response: ClientResponse) throws -> [String: Any] {
             #expect(actions.compactMap { $0["targetType"] as? String }.sorted() == ["agent", "user", "user"])
             let rows = accounts.messageMentionRows(messageId: visibleId)
             #expect(rows.count == 3)
+
+            accounts.setHideHumansFromMembers(serverId: serverId, hidden: false)
+            let nonHidden = try await mentionSend(
+                client,
+                headers: headers,
+                path: "/api/v2/messages",
+                body: "{\"channelId\":\"\(channel)\",\"content\":\"non-hidden typed\",\"mentions\":[{\"type\":\"user\",\"id\":\"\(hiddenId)\",\"name\":\"hidden_target\"}]}"
+            )
+            #expect(nonHidden.status == .ok)
+            let nonHiddenBody = try mentionObject(nonHidden)
+            let nonHiddenActions = nonHiddenBody["pendingMentionActions"] as? [[String: Any]] ?? []
+            #expect(nonHiddenActions.map { $0["targetType"] as? String } == ["user"])
+            let nonHiddenId = try #require((nonHiddenBody["message"] as? [String: Any])?["id"] as? String)
+            #expect(accounts.messageMentionRows(messageId: nonHiddenId).count == 1)
+
+            accounts.oauth.removeMember(serverId: serverId, userId: senderId)
+            let beforeOrphan = accounts.humanMessageCount
+            let orphan = try await mentionSend(
+                client,
+                headers: headers,
+                path: "/api/v2/messages",
+                body: "{\"channelId\":\"\(channel)\",\"content\":\"orphan human @hidden_target\"}"
+            )
+            #expect(orphan.status == .forbidden)
+            #expect(try mentionObject(orphan) as NSDictionary == ["error": "Not a member of this server"] as NSDictionary)
+            #expect(accounts.humanMessageCount == beforeOrphan)
         }
     }
 }
