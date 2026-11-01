@@ -317,6 +317,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var wakeStreamHeartbeatOverrideMs: Int?
     private var agentLastSeenAt: [String: Date] = [:]
     private var feedbackLocatorRecords: [FeedbackLocatorRecord] = []
+    private var managedMCPServers: [ManagedMCPServerRecord] = []
+
+    private struct ManagedMCPServerRecord {
+        var id: String
+        var serverId: String
+        var name: String
+        var provider: String?
+        var authMode: String?
+        var oauthStatus: String?
+        var endpointUrl: String
+        var toolCatalogJSON: String
+        var catalogVersion: Int
+    }
 
     private struct FeedbackLocatorRecord {
         var serverId: String
@@ -14133,6 +14146,116 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }.joined(separator: ",")
         lock.unlock()
         return Self.json(200, "{\"locators\":[\(locators)]}")
+    }
+
+    public func addManagedMCPServerForTesting(
+        serverId: String,
+        name: String,
+        provider: String? = nil,
+        authMode: String? = nil,
+        oauthStatus: String? = nil,
+        endpointUrl: String = "https://example.com/mcp",
+        tools: [(name: String, inputSchemaJSON: String)] = [],
+        catalogVersion: Int = 1
+    ) -> String {
+        let id = UUID().uuidString.lowercased()
+        let catalog = tools.map { tool in
+            "{\"name\":\(jsonString(tool.name)),\"inputSchema\":\(tool.inputSchemaJSON)}"
+        }.joined(separator: ",")
+        lock.lock()
+        managedMCPServers.append(ManagedMCPServerRecord(
+            id: id,
+            serverId: serverId,
+            name: name,
+            provider: provider,
+            authMode: authMode,
+            oauthStatus: oauthStatus,
+            endpointUrl: endpointUrl,
+            toolCatalogJSON: "[\(catalog)]",
+            catalogVersion: catalogVersion
+        ))
+        lock.unlock()
+        return id
+    }
+
+    private func managedMCPUnavailable(_ record: ManagedMCPServerRecord) -> Bool {
+        record.authMode == "oauth" && record.oauthStatus != "connected"
+    }
+
+    private func managedMCPTools(_ record: ManagedMCPServerRecord) -> [(name: String, schemaJSON: String)] {
+        guard let data = record.toolCatalogJSON.data(using: .utf8),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return [] }
+        return rows.compactMap { row in
+            guard let name = row["name"] as? String else { return nil }
+            let schema = row["inputSchema"] ?? ["type": "object"]
+            let schemaData = (try? JSONSerialization.data(withJSONObject: schema, options: [.sortedKeys])) ?? Data("{}".utf8)
+            return (name, String(decoding: schemaData, as: UTF8.self))
+        }
+    }
+
+    public func managedMCPToolSnapshot(authorization: String?) -> HTTPReply {
+        let identity: (agentId: String, serverId: String)
+        switch feedbackLocatorIdentity(authorization: authorization, capability: "mcp") {
+        case .refused(let reply): return reply
+        case .success(let agentId, let serverId): identity = (agentId, serverId)
+        }
+        lock.lock()
+        let records = managedMCPServers.filter { $0.serverId == identity.serverId }
+        lock.unlock()
+        var tools: [String] = []
+        var unavailable: [String] = []
+        var catalogVersion = 1
+        for record in records {
+            if managedMCPUnavailable(record) {
+                unavailable.append("{\"mcpServerId\":\(jsonString(record.id)),\"serverName\":\(jsonString(record.name)),\"status\":\"reconnect_required\"}")
+                continue
+            }
+            catalogVersion = max(catalogVersion, record.catalogVersion)
+            for tool in managedMCPTools(record) {
+                tools.append("{\"mcpServerId\":\(jsonString(record.id)),\"serverName\":\(jsonString(record.name)),\"toolName\":\(jsonString(tool.name)),\"inputSchema\":\(tool.schemaJSON),\"assignmentVersion\":1,\"catalogVersion\":\(record.catalogVersion)}")
+            }
+        }
+        var document = "{\"catalogVersion\":\(catalogVersion),\"tools\":[\(tools.joined(separator: ","))]"
+        if !unavailable.isEmpty {
+            document += ",\"unavailable\":[\(unavailable.joined(separator: ","))]"
+        }
+        document += "}"
+        return Self.json(200, document)
+    }
+
+    public func callManagedMCPTool(authorization: String?, body: String) -> HTTPReply {
+        let identity: (agentId: String, serverId: String)
+        switch feedbackLocatorIdentity(authorization: authorization, capability: "mcp") {
+        case .refused(let reply): return reply
+        case .success(let agentId, let serverId): identity = (agentId, serverId)
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let rawServerId = object["mcpServerId"] as? String,
+              ServerScope.isUUID(rawServerId),
+              let toolName = object["toolName"] as? String, !toolName.isEmpty
+        else {
+            return Self.json(400, "{\"code\":\"managed_mcp_invalid_request\",\"error\":\"mcpServerId must be a UUID and toolName is required\"}")
+        }
+        lock.lock()
+        let record = managedMCPServers.first { $0.id == rawServerId && $0.serverId == identity.serverId }
+        lock.unlock()
+        guard let record else {
+            return Self.json(404, "{\"code\":\"managed_mcp_server_not_found\",\"error\":\"MCP server not found\"}")
+        }
+        guard !managedMCPUnavailable(record) else {
+            return Self.json(409, "{\"code\":\"managed_mcp_reconnect_required\",\"error\":\"The managed MCP connector needs to be reconnected\",\"suggestedNextAction\":\"Ask a server admin to reconnect the connector, then retry.\"}")
+        }
+        let staleText = "\"\(toolName)\" is no longer offered by \"\(record.name)\"; don't call it again. If you still need it, tell the person who asked."
+        let offered = managedMCPTools(record).map(\.name)
+        let staleVersion = object["expectedConfigVersion"] as? NSNumber
+        let staleAssignment = object["expectedAssignmentVersion"] as? NSNumber
+        if !offered.contains(toolName)
+            || (staleVersion != nil && staleVersion?.intValue != record.catalogVersion)
+            || (staleAssignment != nil && staleAssignment?.intValue != 1) {
+            return Self.json(409, "{\"code\":\"managed_mcp_config_stale\",\"error\":\(jsonString(staleText)),\"suggestedNextAction\":\(jsonString(staleText))}")
+        }
+        return Self.json(502, "{\"code\":\"managed_mcp_upstream_unavailable\",\"error\":\"The managed MCP transport is not available in this build\"}")
     }
 
     public func agentHistory(authorization: String?, agentId: String? = nil, channelRef: String?, before: String?, after: String?, around: String? = nil, limit: String?) -> HTTPReply {

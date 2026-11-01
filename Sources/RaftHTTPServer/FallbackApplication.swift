@@ -652,6 +652,17 @@ public func configure(_ app: Application, services: FallbackServices) {
             limit: desktopQuery(request.url.query, "limit")
         ))
     }
+    app.get("internal", "agent-api", "mcp", "tools") { request -> Response in
+        routeResponse(services.emailAccounts.managedMCPToolSnapshot(
+            authorization: request.headers[.authorization]
+        ))
+    }
+    app.post("internal", "agent-api", "mcp", "call") { request -> Response in
+        routeResponse(services.emailAccounts.callManagedMCPTool(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? ""
+        ))
+    }
     app.post("internal", "agent-api", "feedback-locators") { request -> Response in
         routeResponse(services.emailAccounts.ingestFeedbackLocator(
             authorization: request.headers[.authorization],
