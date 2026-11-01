@@ -1410,6 +1410,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return mobileAppEmailContactsByKey.values.sorted { $0.email < $1.email }
     }
 
+    public func setAccountProfileForTesting(id: String, name: String, displayName: String? = nil) {
+        lock.lock()
+        if let key = accounts.first(where: { $0.value.id == id })?.key, var account = accounts[key] {
+            account.name = name
+            account.displayName = displayName ?? name
+            accounts[key] = account
+        }
+        lock.unlock()
+    }
+
     public func addAccount(id: String, email: String, password: String, avatarUrl: String? = nil) {
         let normalized = Self.normalize(email)
         lock.lock()
@@ -14978,6 +14988,134 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return appConfigReply(agentId: agent.id, appId: appId) ?? appConfigError(404, error: "Unknown app", code: "RAP_APP_CONFIG_APP_UNKNOWN")
     }
 
+    private enum DMPeerResolution {
+        case resolved(peerId: String, peerKind: String, name: String)
+        case ambiguous(String)
+        case invalidKind(String, String)
+        case notFound
+    }
+
+    /// Callers hold the directory lock.
+    private func resolveDMPeerLocked(serverId: String, agentId: String, name rawName: String, kind rawKind: String?) -> DMPeerResolution {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let kind = rawKind?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let kind, kind != "agent", kind != "human" {
+            return .invalidKind(kind, name)
+        }
+        let humans = accounts.values.filter {
+            $0.id != agentId
+                && ($0.name.caseInsensitiveCompare(name) == .orderedSame
+                    || ($0.displayName ?? "").caseInsensitiveCompare(name) == .orderedSame)
+                && oauth.memberRole(serverId: serverId, userId: $0.id) != nil
+        }.map(\.id)
+        let agents = oauth.serverAgents(serverId: serverId)
+            .filter { $0.id != agentId && $0.name.caseInsensitiveCompare(name) == .orderedSame }
+            .map(\.id)
+        switch kind {
+        case "agent":
+            guard let id = agents.first else { return .notFound }
+            return .resolved(peerId: id, peerKind: "agent", name: name)
+        case "human":
+            guard let id = humans.first else { return .notFound }
+            return .resolved(peerId: id, peerKind: "human", name: name)
+        default:
+            if !humans.isEmpty, !agents.isEmpty { return .ambiguous(name) }
+            if let id = humans.first { return .resolved(peerId: id, peerKind: "human", name: name) }
+            if let id = agents.first { return .resolved(peerId: id, peerKind: "agent", name: name) }
+            return .notFound
+        }
+    }
+
+    /// Callers hold the directory lock.
+    private func dmChannelIdLocked(serverId: String, agentId: String, peerId: String) -> String? {
+        postableChannels.first { _, channel in
+            channel.serverId == serverId
+                && channel.kind == "dm"
+                && channel.deletedAt == nil
+                && channel.memberIds.contains(agentId)
+                && channel.memberIds.contains(peerId)
+        }?.key
+    }
+
+    private func dmPeerFailure(_ resolution: DMPeerResolution) -> HTTPReply? {
+        switch resolution {
+        case .ambiguous(let name):
+            return Self.json(409, "{\"error\":\"More than one DM peer is named \(name). Address it as dm:@\(name)~agent or dm:@\(name)~human.\",\"code\":\"DM_TARGET_AMBIGUOUS\",\"suggestedNextAction\":\"Retry with dm:@\(name)~agent for the agent or dm:@\(name)~human for the human.\"}")
+        case .invalidKind(let kind, _):
+            return Self.json(400, "{\"error\":\"Unknown DM peer kind \(kind).\",\"code\":\"DM_TARGET_INVALID_PEER_KIND\",\"suggestedNextAction\":\"Use dm:@<name>~human or dm:@<name>~agent.\"}")
+        case .notFound:
+            return Self.json(404, "{\"error\":\"Channel not found or not visible\"}")
+        case .resolved:
+            return nil
+        }
+    }
+
+    public func agentSendMessage(authorization: String?, body: String, v2: Bool) -> HTTPReply {
+        let identity: (agentId: String, serverId: String)
+        switch feedbackLocatorIdentity(authorization: authorization, capability: "send") {
+        case .refused(let reply): return reply
+        case .success(let agentId, let serverId): identity = (agentId, serverId)
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let target = object["target"] as? String,
+              let content = object["content"] as? String,
+              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"Invalid send request\"}")
+        }
+        let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("dm:@") else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        var raw = String(trimmed.dropFirst("dm:@".count))
+        var suffix: String?
+        if let colon = raw.lastIndex(of: ":") {
+            suffix = String(raw[raw.index(after: colon)...])
+            raw = String(raw[..<colon])
+        }
+        if suffix != nil {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        var kind: String?
+        if let tilde = raw.firstIndex(of: "~") {
+            kind = String(raw[raw.index(after: tilde)...])
+            raw = String(raw[..<tilde])
+        }
+        lock.lock()
+        let resolution = resolveDMPeerLocked(serverId: identity.serverId, agentId: identity.agentId, name: raw, kind: kind)
+        lock.unlock()
+        if let failure = dmPeerFailure(resolution) { return failure }
+        guard case .resolved(let peerId, _, _) = resolution else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        let channelId: String
+        lock.lock()
+        let existing = dmChannelIdLocked(serverId: identity.serverId, agentId: identity.agentId, peerId: peerId)
+        lock.unlock()
+        if let existing {
+            channelId = existing
+        } else {
+            channelId = oauth.createDirectChannel(serverId: identity.serverId, firstUserId: identity.agentId, secondUserId: peerId)
+            addPostableChannel(serverId: identity.serverId, channelId: channelId, memberId: identity.agentId, kind: "dm", name: "dm")
+            addPostableChannel(serverId: identity.serverId, channelId: channelId, memberId: peerId, kind: "dm", name: "dm")
+            oauth.addChannelHuman(channelId: channelId, userId: peerId)
+        }
+        let messageId = UUID().uuidString.lowercased()
+        lock.lock()
+        humanMessageRows.append(StoredHumanMessage(
+            id: messageId,
+            channelId: channelId,
+            senderId: identity.agentId,
+            content: content,
+            randomId: nil,
+            messageType: "chat",
+            senderType: "agent"
+        ))
+        lock.unlock()
+        let message = "{\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(content))}"
+        return v2 ? Self.json(200, "{\"message\":\(message)}") : Self.json(200, message)
+    }
+
     private enum AgentTaskAuthResult {
         case ok(agentId: String, serverId: String)
         case refused(HTTPReply)
@@ -15721,42 +15859,45 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 refusal = Self.json(404, "{\"error\":\"Channel not found or not visible\"}")
             }
         } else if reference.hasPrefix("dm:@") {
-            let raw = String(reference.dropFirst("dm:@".count))
-            let segments = raw.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
-            let handle = (segments.first ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            let suffix = segments.count > 1 ? segments[1] : nil
-            let humanId = accounts.values.first {
-                $0.name.lowercased() == handle || ($0.displayName ?? "").lowercased() == handle
-            }?.id
-            let dmId = humanId.flatMap { target in
-                postableChannels.first { _, channel in
-                    channel.serverId == agent.serverId
-                        && channel.kind == "dm"
-                        && channel.deletedAt == nil
-                        && channel.memberIds.contains(agent.id)
-                        && channel.memberIds.contains(target)
-                }?.key
+            var raw = String(reference.dropFirst("dm:@".count))
+            var suffix: String?
+            if let colon = raw.lastIndex(of: ":") {
+                suffix = String(raw[raw.index(after: colon)...])
+                raw = String(raw[..<colon])
             }
-            if let dmId {
-                if let suffix, !suffix.isEmpty {
-                    let anchor = oauth.historyMessages(channelId: dmId).first { $0.id.hasPrefix(suffix) }
-                    let threadId = anchor.flatMap { found in
-                        agentHistoryThread(parentId: dmId, anchorMessageId: found.id)
-                    }
-                    if let threadId {
-                        channelId = threadId
-                        canonicalTarget = reference
-                        consumptionScope = "{\"agent_id\":\(jsonString(agent.id)),\"channel_id\":\(jsonString(threadId)),\"channel_type\":\"thread\",\"target\":\(jsonString(reference))}"
+            var kind: String?
+            if let tilde = raw.firstIndex(of: "~") {
+                kind = String(raw[raw.index(after: tilde)...])
+                raw = String(raw[..<tilde])
+            }
+            let resolution = resolveDMPeerLocked(serverId: agent.serverId, agentId: agent.id, name: raw, kind: kind)
+            if let failure = dmPeerFailure(resolution) {
+                refusal = failure
+            } else if case .resolved(let peerId, _, _) = resolution {
+                if let dmId = dmChannelIdLocked(serverId: agent.serverId, agentId: agent.id, peerId: peerId) {
+                    if let suffix, !suffix.isEmpty {
+                        let anchor = oauth.historyMessages(channelId: dmId).first { $0.id.hasPrefix(suffix) }
+                        var threadId = anchor.flatMap { found in
+                            agentHistoryThread(parentId: dmId, anchorMessageId: found.id)
+                        }
+                        if threadId == nil {
+                            threadId = agentHistoryThreadById(parentId: dmId, suffix: suffix)
+                        }
+                        if let threadId {
+                            channelId = threadId
+                            canonicalTarget = reference
+                            consumptionScope = "{\"agent_id\":\(jsonString(agent.id)),\"channel_id\":\(jsonString(threadId)),\"channel_type\":\"thread\",\"target\":\(jsonString(reference))}"
+                        } else {
+                            refusal = Self.json(404, "{\"error\":\"Channel not found or not visible\"}")
+                        }
                     } else {
-                        refusal = Self.json(404, "{\"error\":\"Channel not found or not visible\"}")
+                        channelId = dmId
+                        canonicalTarget = reference
+                        consumptionScope = "{\"agent_id\":\(jsonString(agent.id)),\"channel_id\":\(jsonString(dmId)),\"channel_type\":\"dm\",\"target\":\(jsonString(reference))}"
                     }
                 } else {
-                    channelId = dmId
-                    canonicalTarget = reference
-                    consumptionScope = "{\"agent_id\":\(jsonString(agent.id)),\"channel_id\":\(jsonString(dmId)),\"channel_type\":\"dm\",\"target\":\(jsonString(reference))}"
+                    refusal = Self.json(404, "{\"error\":\"Channel not found or not visible\"}")
                 }
-            } else {
-                refusal = Self.json(404, "{\"error\":\"Channel not found or not visible\"}")
             }
         } else {
             channelId = postableChannels.keys.first { $0 == reference }
@@ -15808,7 +15949,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 let end = min(filtered.count, start + pageLimit)
                 page = Array(filtered[start..<end])
             } else {
-                page = []
+                return Self.json(404, "{\"error\":\"Message not found\"}")
             }
         } else if afterSeq != nil {
             page = Array(filtered.prefix(pageLimit))

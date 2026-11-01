@@ -664,6 +664,20 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("internal", "agent-api", "send") { request -> Response in
+        routeResponse(services.emailAccounts.agentSendMessage(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "",
+            v2: false
+        ))
+    }
+    app.post("internal", "agent-api", "v2", "send") { request -> Response in
+        routeResponse(services.emailAccounts.agentSendMessage(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "",
+            v2: true
+        ))
+    }
     app.get("internal", "agent-api", "tasks") { request -> Response in
         routeResponse(services.emailAccounts.agentTasksList(
             authorization: request.headers[.authorization],
