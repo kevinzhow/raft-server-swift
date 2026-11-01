@@ -179,6 +179,99 @@ func theServerProcessServesHealthAndAcceptsADaemon() async throws {
     #expect(online.contains("\"statusVersion\":"))
 }
 
+@Test(.enabled(if: e2eEnabled))
+func twoRaftServerProcessesStartAndStayIndependent() async throws {
+    let root = repositoryRoot()
+    let serverBinary = ProcessInfo.processInfo.environment["RAFT_SERVER_BIN"]
+        ?? root.appendingPathComponent(".build/debug/RaftServer").path
+    #expect(FileManager.default.isExecutableFile(atPath: serverBinary))
+
+    let httpA = try await freePort()
+    let daemonA = try await freePort()
+    let socketA = try await freePort()
+    let httpB = try await freePort()
+    let daemonB = try await freePort()
+    let socketB = try await freePort()
+    func process(_ httpPort: Int, _ daemonPort: Int, _ socketPort: Int) throws -> ServerProcess {
+        try ServerProcess(
+            executable: serverBinary,
+            environment: [
+                "PORT": String(httpPort),
+                "DAEMON_CONNECT_PORT": String(daemonPort),
+                "SOCKET_PORT": String(socketPort),
+                "NODE_ENV": "test",
+                "JWT_SECRET": "test-jwt-secret",
+                "SERVER_URL": "http://127.0.0.1:\(httpPort)",
+            ]
+        )
+    }
+    let first = try process(httpA, daemonA, socketA)
+    let second = try process(httpB, daemonB, socketB)
+    defer { first.stop() }
+    defer { second.stop() }
+    try first.start()
+    try second.start()
+    guard await first.waitForOutput("raft-server ready") else {
+        Issue.record("first server did not print its ready line: \(first.output.text)")
+        return
+    }
+    guard await second.waitForOutput("raft-server ready") else {
+        Issue.record("second server did not print its ready line: \(second.output.text)")
+        return
+    }
+    #expect(first.output.text.contains("http=127.0.0.1:\(httpA)"))
+    #expect(first.output.text.contains("daemon-connect=127.0.0.1:\(daemonA)"))
+    #expect(second.output.text.contains("http=127.0.0.1:\(httpB)"))
+    #expect(second.output.text.contains("daemon-connect=127.0.0.1:\(daemonB)"))
+    try await waitForHTTP(port: httpA)
+    try await waitForHTTP(port: httpB)
+
+    for port in [httpA, httpB] {
+        let (healthStatus, healthBody) = try await http(port: port, method: "GET", path: "/health")
+        #expect(healthStatus == 503)
+        #expect(String(decoding: healthBody, as: UTF8.self) == "{\"status\":\"error\",\"detail\":\"database unreachable\"}")
+        let (livezStatus, _) = try await http(port: port, method: "GET", path: "/livez")
+        #expect(livezStatus == 200)
+    }
+
+    let email = "two-server-\(UUID().uuidString.lowercased())@slock.test"
+    let (registerStatus, registerBody) = try await http(
+        port: httpA,
+        method: "POST",
+        path: "/api/auth/register",
+        body: "{\"email\":\(json(email)),\"password\":\"password123\",\"name\":\"Two Server Owner\",\"acceptTerms\":true,\"termsVersion\":\"2026-05-12\",\"privacyVersion\":\"2026-05-12\"}"
+    )
+    #expect(registerStatus == 200)
+    let token = try jsonObject(registerBody)["accessToken"] as? String ?? ""
+    #expect(!token.isEmpty)
+    let slug = "two-server-\(UUID().uuidString.lowercased().prefix(8))"
+    let (createStatus, _) = try await http(
+        port: httpA,
+        method: "POST",
+        path: "/api/servers",
+        token: token,
+        body: "{\"name\":\"Two Server\",\"slug\":\(json(slug))}"
+    )
+    #expect(createStatus == 200)
+
+    // The second process keeps its own in-memory directory: the first
+    // process's user and session do not exist there.
+    let (foreignLogin, _) = try await http(
+        port: httpB,
+        method: "POST",
+        path: "/api/auth/login",
+        body: "{\"email\":\(json(email)),\"password\":\"password123\"}"
+    )
+    #expect(foreignLogin == 401)
+    let (localServers, localServersBody) = try await http(port: httpA, method: "GET", path: "/api/servers", token: token)
+    #expect(localServers == 200)
+    #expect(String(decoding: localServersBody, as: UTF8.self).contains(slug))
+    let (foreignServers, _) = try await http(port: httpB, method: "GET", path: "/api/servers", token: token)
+    #expect(foreignServers == 401)
+
+    print("two-RaftServer gate complete: A=http://127.0.0.1:\(httpA) B=http://127.0.0.1:\(httpB)")
+}
+
 private func repositoryRoot() -> URL {
     URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()

@@ -344,3 +344,5 @@ Managed MCP 控制面（`/api/mcp/*`）：成员可读 `GET /api/mcp/servers` �
 
 Machine 描述与权限：`PATCH /api/servers/:id/machines/:machineId` 的 `description` 先去首尾空白，空串清为 null；响应回 `{id,name,description}`，`GET /api/servers/:id/machines` 行内同步投影该值。owner/admin 或 machine 的创建者可改；其他成员 403 `Forbidden`；machine 属于别的 Server 时 404。人类成员的 `GET .../machines` 只看到本 Server 的 machine。
 
+双 `RaftServer` 启动门槛：两个真实进程可同时启动（各自 HTTP/daemon-connect/socket.io 端口），都打印 `raft-server ready http=... daemon-connect=... realtime=...`，各自 `/livez` 200、无数据库时 `/health` 503 `database unreachable`。两个进程的内存目录彼此隔离：在 A 注册的账号/Server 无法在 B 登录或读取。测试在两进程均就绪后打印 `two-RaftServer gate complete`。`/health` 的真实 200 仍由 PLAN 的 B2 决策门控制（需要 PostgresNIO + `DATABASE_URL`）。
+
