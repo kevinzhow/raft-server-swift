@@ -606,6 +606,19 @@ public func configure(_ app: Application, services: FallbackServices) {
             limit: desktopQuery(request.url.query, "limit")
         ))
     }
+    app.get("internal", "agent-api", "apps", ":appId", "config") { request -> Response in
+        routeResponse(services.emailAccounts.agentAppConfig(
+            authorization: request.headers[.authorization],
+            appId: request.parameters.get("appId") ?? ""
+        ))
+    }
+    app.patch("internal", "agent-api", "apps", ":appId", "config") { request -> Response in
+        routeResponse(services.emailAccounts.patchAgentAppConfig(
+            authorization: request.headers[.authorization],
+            appId: request.parameters.get("appId") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("internal", "agent-api", "tasks") { request -> Response in
         routeResponse(services.emailAccounts.agentTasksList(
             authorization: request.headers[.authorization],

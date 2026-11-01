@@ -322,6 +322,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var pendingActionMessageEvents: [(agentId: String, messageId: String, content: String)] = []
     private var agentChannelInboxDelivered: Set<String> = []
     private var agentGrantSets: [String: Set<String>] = [:]
+    private var appConfigOverrides: [String: [String: [String: Any]]] = [:]
+    private var appConfigRevisions: [String: [String: Int]] = [:]
 
     private struct ActionCardRecord {
         var messageId: String
@@ -14451,6 +14453,126 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     // MARK: - Action cards (`POST /internal/agent-api/prepare-action`, `POST /api/actions/:id/execute`)
+
+    private static let appConfigSchemaJSON = "{\"enabled\":{\"type\":\"boolean\"},\"threshold_bytes\":{\"type\":\"integer\",\"minimum\":4096,\"maximum\":1073741824},\"interval_seconds\":{\"type\":\"integer\",\"minimum\":900,\"maximum\":604800}}"
+    private static func appConfigDefaults() -> [String: Any] {
+        ["enabled": true, "threshold_bytes": 65536, "interval_seconds": 3600]
+    }
+
+    private func appConfigReply(agentId: String, appId: String) -> HTTPReply? {
+        guard appId == "system.cleaner" else { return nil }
+        lock.lock()
+        let revision = appConfigRevisions[agentId]?[appId] ?? 0
+        let overrides = appConfigOverrides[agentId]?[appId] ?? [:]
+        lock.unlock()
+        var effective = Self.appConfigDefaults()
+        for (key, value) in overrides {
+            effective[key] = value
+        }
+        let order = ["enabled", "threshold_bytes", "interval_seconds"]
+        var overridesJSON: [String] = []
+        for key in order {
+            guard let value = overrides[key] else { continue }
+            overridesJSON.append("\(jsonString(key)):\(Self.appConfigValueJSON(value))")
+        }
+        var effectiveJSON: [String] = []
+        for key in order {
+            guard let value = effective[key] else { continue }
+            effectiveJSON.append("\(jsonString(key)):\(Self.appConfigValueJSON(value))")
+        }
+        let body = "{\"appId\":\(jsonString(appId)),\"revision\":\(revision),\"schema\":\(Self.appConfigSchemaJSON),\"defaults\":{\"enabled\":true,\"threshold_bytes\":65536,\"interval_seconds\":3600},\"overrides\":{\(overridesJSON.joined(separator: ","))},\"effective\":{\(effectiveJSON.joined(separator: ","))}}"
+        return Self.json(200, body)
+    }
+
+    private static func appConfigValueJSON(_ value: Any) -> String {
+        if let bool = value as? Bool { return bool ? "true" : "false" }
+        if let number = value as? NSNumber { return String(number.intValue) }
+        if let string = value as? String { return jsonString(string) }
+        return "null"
+    }
+
+    private func appConfigError(_ status: Int, error: String, code: String) -> HTTPReply {
+        Self.json(status, "{\"error\":\(jsonString(error)),\"errorCode\":\(jsonString(code))}")
+    }
+
+    public func agentAppConfig(authorization: String?, appId: String) -> HTTPReply {
+        let identity: (agentId: String, serverId: String)
+        switch feedbackLocatorIdentity(authorization: authorization, capability: "read") {
+        case .refused(let reply): return reply
+        case .success(let agentId, let serverId): identity = (agentId, serverId)
+        }
+        guard let reply = appConfigReply(agentId: identity.agentId, appId: appId) else {
+            return appConfigError(404, error: "Unknown app", code: "RAP_APP_CONFIG_APP_UNKNOWN")
+        }
+        return reply
+    }
+
+    public func patchAgentAppConfig(authorization: String?, appId: String, body: String) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let credential = agentCredentials[token]
+        lock.unlock()
+        guard let credential, credential.revokedAt == nil,
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard credential.scopes.contains("tasks") else {
+            return Self.json(403, "{\"error\":\"missing required capability\",\"requiredCapability\":\"tasks\"}")
+        }
+        guard appId == "system.cleaner" else {
+            return appConfigError(404, error: "Unknown app", code: "RAP_APP_CONFIG_APP_UNKNOWN")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let expectedRevision = object["expectedRevision"] as? NSNumber
+        else {
+            return Self.json(400, "{\"error\":\"Invalid config request\",\"errorCode\":\"RAP_APP_CONFIG_INVALID\"}")
+        }
+        let set = object["set"] as? [String: Any] ?? [:]
+        let unset = (object["unset"] as? [Any])?.compactMap { $0 as? String } ?? []
+        for (key, value) in set {
+            switch key {
+            case "enabled":
+                guard value is Bool || (value as? NSNumber).map({ String(cString: $0.objCType) == "c" || String(cString: $0.objCType) == "B" }) == true else {
+                    return Self.json(400, "{\"error\":\"Invalid value for enabled\",\"errorCode\":\"RAP_APP_CONFIG_INVALID\"}")
+                }
+            case "threshold_bytes", "interval_seconds":
+                guard let number = value as? NSNumber,
+                      String(cString: number.objCType) != "c", String(cString: number.objCType) != "B"
+                else {
+                    return Self.json(400, "{\"error\":\"Invalid value for \(key)\",\"errorCode\":\"RAP_APP_CONFIG_INVALID\"}")
+                }
+                let intValue = number.intValue
+                if key == "threshold_bytes", intValue < 4096 || intValue > 1_073_741_824 {
+                    return Self.json(400, "{\"error\":\"Invalid value for threshold_bytes\",\"errorCode\":\"RAP_APP_CONFIG_INVALID\"}")
+                }
+                if key == "interval_seconds", intValue < 900 || intValue > 604_800 {
+                    return Self.json(400, "{\"error\":\"Invalid value for interval_seconds\",\"errorCode\":\"RAP_APP_CONFIG_INVALID\"}")
+                }
+            default:
+                return Self.json(400, "{\"error\":\"Unknown config key\",\"errorCode\":\"RAP_APP_CONFIG_INVALID\"}")
+            }
+        }
+        for key in unset where !["enabled", "threshold_bytes", "interval_seconds"].contains(key) {
+            return Self.json(400, "{\"error\":\"Unknown config key\",\"errorCode\":\"RAP_APP_CONFIG_INVALID\"}")
+        }
+        lock.lock()
+        let current = appConfigRevisions[agent.id]?[appId] ?? 0
+        guard expectedRevision.intValue == current else {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"Config revision is stale; current revision is \(current)\",\"errorCode\":\"RAP_APP_CONFIG_REVISION_STALE\",\"currentRevision\":\(current)}")
+        }
+        var overrides = appConfigOverrides[agent.id]?[appId] ?? [:]
+        for (key, value) in set { overrides[key] = value }
+        for key in unset { overrides.removeValue(forKey: key) }
+        appConfigOverrides[agent.id, default: [:]][appId] = overrides
+        appConfigRevisions[agent.id, default: [:]][appId] = current + 1
+        lock.unlock()
+        return appConfigReply(agentId: agent.id, appId: appId) ?? appConfigError(404, error: "Unknown app", code: "RAP_APP_CONFIG_APP_UNKNOWN")
+    }
 
     private enum AgentTaskAuthResult {
         case ok(agentId: String, serverId: String)
