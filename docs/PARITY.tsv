@@ -70,7 +70,7 @@ deviceAuth.api	route	partial	-	auto-seed
 errorHygieneBlackbox.api	route	pending	-	auto-seed
 errorResponse.dmTarget	route	pending	-	auto-seed
 errorResponse	route	pending	-	auto-seed
-externalAgentDiagnostics.api	route	partial	-	auto-seed
+externalAgentDiagnostics.api	route	locked	672f241	presence/provider/push/cursor/connection projection and refusals
 externalAgentPresence.api	route	locked	f3b0224	throttled last-seen writes, agent:seen, list projection, heartbeat stream
 externalAvatars.api	route	locked	008c4f1	active webp asset gate, cache/ETag/CORP headers, storage 503
 externalProjectionReactionRoutes	route	pending	-	auto-seed
