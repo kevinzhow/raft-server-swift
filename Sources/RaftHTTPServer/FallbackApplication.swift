@@ -1779,6 +1779,21 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.parameters.get("id") ?? ""
         ))
     }
+    app.get("api", "servers", ":id", "machines", ":machineId", "workspaces") { request -> Response in
+        routeResponse(services.emailAccounts.machineWorkspaces(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            machineId: request.parameters.get("machineId") ?? ""
+        ))
+    }
+    app.delete("api", "servers", ":id", "machines", ":machineId", "workspaces", ":directoryName") { request -> Response in
+        routeResponse(services.emailAccounts.deleteMachineWorkspace(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            machineId: request.parameters.get("machineId") ?? "",
+            directoryName: request.parameters.get("directoryName") ?? ""
+        ))
+    }
     app.get("api", "servers", ":id", "system-notifications") { request -> Response in
         var response = routeResponse(services.emailAccounts.serverSystemNotifications(
             authorization: request.headers[.authorization],

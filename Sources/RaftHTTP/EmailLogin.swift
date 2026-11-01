@@ -250,6 +250,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var machines: [MachineRecord] = []
     private var machineStatusVersions: [String: Int] = [:]
     private var machineOnline: [String: Bool] = [:]
+    private var deletedMachineWorkspaces: Set<String> = []
     private let realtimeEmitterLock = NSLock()
     private var realtimeEmitterStorage: (@Sendable (String, String, String?) -> Void)?
     /// `MOBILE_APP_EMAIL_UNSUBSCRIBE_SECRET`, or `JWT_SECRET`. The test harness uses `test-jwt-secret`.
@@ -8402,6 +8403,69 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let apiKey = machineAPIKey(machineId: machineId) ?? ""
         let machine = "{\"id\":\(jsonString(machineId)),\"serverId\":\(jsonString(serverId)),\"name\":\(jsonString(name)),\"userId\":\(jsonString(userId)),\"description\":null}"
         return Self.json(200, "{\"machine\":\(machine),\"apiKey\":\(jsonString(apiKey))}")
+    }
+
+    public func machineWorkspaces(authorization: String?, serverId: String, machineId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        lock.lock()
+        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Machine not found in this server\"}")
+        }
+        let canManage = role == "owner" || role == "admin" || machine.userId == userId
+        let keys = agentMachineIds.filter { $0.value == machineId }.map(\.key)
+        let deleted = deletedMachineWorkspaces
+        lock.unlock()
+        guard canManage else {
+            return Self.json(403, "{\"error\":\"You do not have permission to view machine workspaces\"}")
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let epoch = formatter.string(from: Date(timeIntervalSince1970: 0))
+        let rows = keys.compactMap { agentId -> String? in
+            guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId else { return nil }
+            if deleted.contains("\(machineId)\n\(agentId)") { return nil }
+            let agentStatus: String
+            lock.lock()
+            agentStatus = serverAgents[agentId]?.status ?? "inactive"
+            lock.unlock()
+            let status = agent.deleted ? "deleted" : (agentStatus == "inactive" ? "stopped" : "active")
+            let name = agent.displayName.isEmpty ? agent.name : agent.displayName
+            return "{\"directoryName\":\(jsonString(agent.id)),\"totalSizeBytes\":0,\"lastModified\":\(jsonString(epoch)),\"fileCount\":0,\"status\":\(jsonString(status)),\"agentName\":\(jsonString(name)),\"agentStatus\":\(jsonString(agentStatus))}"
+        }
+        return Self.json(200, "[\(rows.joined(separator: ","))]")
+    }
+
+    public func deleteMachineWorkspace(authorization: String?, serverId: String, machineId: String, directoryName: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        lock.lock()
+        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Machine not found in this server\"}")
+        }
+        let canManage = role == "owner" || role == "admin" || machine.userId == userId
+        let ownsDirectory = agentMachineIds[directoryName] == machineId
+        lock.unlock()
+        guard canManage else {
+            return Self.json(403, "{\"error\":\"The `controlComputers` capability or machine creator authority is required to delete machine workspaces\"}")
+        }
+        guard ownsDirectory, let agent = oauth.agentRuntimeInfo(id: directoryName), agent.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Workspace not found\"}")
+        }
+        lock.lock()
+        deletedMachineWorkspaces.insert("\(machineId)\n\(directoryName)")
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true}")
     }
 
     public func serverUsage(authorization: String?, serverId: String) -> HTTPReply {
