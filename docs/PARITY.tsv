@@ -14,7 +14,7 @@ agentCredentialSecurity.api	route	partial	-	auto-seed
 agentCredentials.api	route	partial	-	auto-seed
 agentDiscovery.api	route	locked	b5c5dbc	manageable union, creator override, empty reason
 agentKnowledgeSearchSerialization	route	pending	-	auto-seed
-agentLogin.gate	route	partial	-	auto-seed
+agentLogin.gate	route	locked	4c138e3	env-gated /api/agent/login, missing/invalid token codes
 agentMigrationErrors.contract	route	partial	-	auto-seed
 agentMigrationFence.realPg	route	partial	-	auto-seed
 agentMigrationReceiptDm.api	route	partial	-	auto-seed
@@ -94,7 +94,7 @@ internal.attestedSend.api	route	partial	-	auto-seed
 internal.channelMembership.api	route	partial	-	auto-seed
 internal.profile.api	route	pending	-	auto-seed
 internal.reminders.api	route	pending	-	auto-seed
-internal.runtimeProfile.api	route	partial	-	auto-seed
+internal.runtimeProfile.api	route	locked	4c138e3	deprecated migration-done noop/handled shapes
 internal.scopeAttestation.api	route	partial	-	auto-seed
 internal.scopeAttestation.bodyLimit.api	route	partial	-	auto-seed
 internal.scopeAttestation.transcriptOutcome.api	route	partial	-	auto-seed
