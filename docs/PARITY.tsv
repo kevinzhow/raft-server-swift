@@ -6,7 +6,7 @@ agentApiErrorTrace	route	pending	-	auto-seed
 agentApiIdempotentWrites.realPg	route	pending	-	auto-seed
 agentAppAccess.api	route	pending	-	auto-seed
 agentArchive.api	route	partial	-	auto-seed
-agentAudienceJwt.api	route	pending	-	auto-seed
+agentAudienceJwt.api	route	locked	8d61ce1	built-in ES256 audience JWT, live grant gates, scoped issuer claims
 agentAudienceJwt.grafana	route	pending	-	auto-seed
 agentAudienceJwtBuiltIn.api	route	partial	-	auto-seed
 agentChannelJoint.api	route	partial	-	auto-seed
