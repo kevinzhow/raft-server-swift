@@ -156,7 +156,7 @@ notifications.api	route	partial	-	auto-seed
 oauth.api	route	partial	-	auto-seed
 oauthAgentDirectory.api	route	locked	87f8e28	minimal server-bound directory; expiry/revocation/scope guards
 oauthOfflineSource.api	route	pending	-	auto-seed
-oauthPkceDowngrade.api	route	partial	-	auto-seed
+oauthPkceDowngrade.api	route	locked	8a6e0ca	unsolicited verifier rejected without consuming code on all grants/mounts
 oauthRedirectSecurity.api	route	partial	-	auto-seed
 oauthServerinfo.contract	route	partial	-	auto-seed
 oauthServerinfoDocs.contract	route	partial	-	auto-seed
