@@ -10775,6 +10775,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let machineId = registerMachine(serverId: serverId, userId: userId, name: name)
         let apiKey = machineAPIKey(machineId: machineId) ?? ""
         let machine = "{\"id\":\(jsonString(machineId)),\"serverId\":\(jsonString(serverId)),\"name\":\(jsonString(name)),\"userId\":\(jsonString(userId)),\"description\":null}"
+        emitRealtime("server:\(serverId)", "machine:updated", "{\"serverId\":\(jsonString(serverId)),\"machineId\":\(jsonString(machineId))}")
         return Self.json(200, "{\"machine\":\(machine),\"apiKey\":\(jsonString(apiKey))}")
     }
 
@@ -11380,6 +11381,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let machine = machines[index]
         lock.unlock()
+        emitRealtime("server:\(serverId)", "machine:updated", "{\"serverId\":\(jsonString(serverId)),\"machineId\":\(jsonString(machineId))}")
         return Self.json(200, "{\"id\":\(jsonString(machine.id)),\"name\":\(jsonString(machine.name)),\"description\":\(machine.description.map { jsonString($0) } ?? "null")}")
     }
 
@@ -11590,6 +11592,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             computers[computerIndex].revokedAt = Date()
         }
         lock.unlock()
+        emitRealtime("server:\(serverId)", "machine:updated", "{\"serverId\":\(jsonString(serverId)),\"machineId\":\(jsonString(machineId))}")
         return Self.json(200, "{\"ok\":true}")
     }
 
@@ -12336,8 +12339,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
-        guard oauth.memberRole(serverId: serverId, userId: memberId) != nil else {
-            return Self.json(404, "{\"error\":\"User not found\"}")
+        let targetRole = oauth.memberRole(serverId: serverId, userId: memberId)
+        if targetRole == nil {
+            lock.lock()
+            let removed = removedServerMembers.contains("\(serverId)\n\(memberId)")
+            let account = accounts.values.first { $0.id == memberId }
+            lock.unlock()
+            let canSee = role == "owner" || role == "admin" || memberId == userId
+            guard removed, canSee, let account else {
+                return Self.json(404, "{\"error\":\"User not found\"}")
+            }
+            let email = canSee ? jsonString(account.email) : "null"
+            return Self.json(200, "{\"userId\":\(jsonString(memberId)),\"name\":\(jsonString(account.name)),\"displayName\":\(jsonString(account.name)),\"email\":\(email),\"avatarUrl\":\(account.avatarUrl.map { jsonString($0) } ?? "null"),\"membershipStatus\":\"removed\"}")
         }
         lock.lock()
         let hiddenDirectory = hideHumansFromMembers[serverId] == true
@@ -12870,6 +12883,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"The owner cannot leave the server\"}")
         }
         oauth.removeMember(serverId: serverId, userId: userId)
+        lock.lock()
+        removedServerMembers.insert("\(serverId)\n\(userId)")
+        lock.unlock()
         return Self.json(200, "{\"ok\":true}")
     }
 
@@ -13025,6 +13041,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if newRole == "guest", let allChannel = oauth.allChannelId(serverId: serverId) {
             oauth.removeChannelHuman(channelId: allChannel, userId: memberId)
         }
+        if newRole != targetRole {
+            let payload = "{\"serverId\":\(jsonString(serverId)),\"userId\":\(jsonString(memberId)),\"previousRole\":\(jsonString(targetRole)),\"role\":\(jsonString(newRole))}"
+            emitRealtime("server:\(serverId)", "server:member-updated", payload)
+        }
         return Self.json(200, "{\"ok\":true,\"changed\":true}")
     }
 
@@ -13050,6 +13070,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
         }
         oauth.removeMember(serverId: serverId, userId: memberId)
+        lock.lock()
+        removedServerMembers.insert("\(serverId)\n\(memberId)")
+        lock.unlock()
+        emitRealtime("server:\(serverId)", "server:member-removed", "{\"serverId\":\(jsonString(serverId)),\"userId\":\(jsonString(memberId))}")
+        emitRealtime("user:\(memberId)", "server:membership-removed", "{\"serverId\":\(jsonString(serverId))}")
         return Self.json(200, "{\"ok\":true}")
     }
 
@@ -14931,6 +14956,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     private var agentInboxAvailableForTesting: Bool?
+    private var removedServerMembers: Set<String> = []
 
     public func setAgentInboxAvailableForTesting(_ value: Bool?) {
         lock.lock()

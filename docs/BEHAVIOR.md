@@ -318,3 +318,5 @@ Agent attachment 下载：`GET /internal/agent-api/attachments/:id`（`read` cap
 
 `PATCH /api/servers/:id/notification-settings` 在偏好实际变化时向 `user:<id>` 推 `notification_prefs:updated`，payload 为 `{serverId,scopeId:serverId,prefs:{serverPushMuted,serverPushMentionsOnly,serverPushMode},prefsVersion}`；同值重复 PATCH 不递增版本、不推送。GET/PATCH 仍是按成员隔离，owner 读取自己的默认偏好。
 
+Server 成员/机器实时面：`PATCH /api/servers/:id/members/:memberId` 角色实际变化时向 `server:<id>` 推 `server:member-updated`，payload `{serverId,userId,previousRole,role}`。`DELETE` 成员成功时先推 `server:<id>` `server:member-removed` `{serverId,userId}`，再推 `user:<memberId>` `server:membership-removed` `{serverId}`；被移除成员的 profile 对 owner/admin（或本人）仍可读，带 `membershipStatus:"removed"`。机器 POST/PATCH/DELETE 各自向 `server:<id>` 推 `machine:updated` `{serverId,machineId}`。
+
