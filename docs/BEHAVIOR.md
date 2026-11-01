@@ -252,3 +252,5 @@ Guest 角色降级后，其 follow 的 thread 从 `GET /api/channels/inbox`（`a
 
 `GET /api/channels/:id/files` 的完整分页投影：`{files:[{id,messageId,channelId,filename,mimeType,sizeBytes,width,height,thumbnailUrl,createdAt,uploader:{type,id,name,displayName},source:{type,channelId,parentMessageId,parentMessageShortId}}],nextCursor}`；按 `createdAt` 降序、`id` 降序，包含该频道下 thread 的附件并带父消息 id 与前 8 位 short id。`limit` 默认 500、夹在 1..500；`cursor` 为 `{createdAt,id}` 的 base64url，非法 400 `Invalid cursor`；下一页游标取自本页最后一条。user/agent uploader 解析名称，非 UUID 或未知 uploader 名称 null；private 频道非成员 404 `Channel not found`。
 
+消息历史 HTTP 读（`/api/messages/channel/:id`、`/api/messages/context/:id`、`/api/messages/sync`）不序列化 `searchText`/`searchVector`/`senderTimezone`。`POST /api/messages` 与 `/api/v2/messages` 存储合法 IANA `timezone`（trim，UTC 或含 `/`，≤128），无效/缺省为 null 且不失败；v1 回消息本体、v2 回 `{message}`，两者都不回显 `senderTimezone`。
+
