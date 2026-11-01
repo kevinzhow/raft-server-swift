@@ -163,6 +163,129 @@ public final class OAuthLedger: @unchecked Sendable {
         )
     }
 
+    /// The App row as the legacy Agent JWT settings route reads it.
+    public struct LegacyAgentJWTClient: Sendable {
+        public var id: String
+        public var clientKey: String
+        public var serverId: String
+        public var appType: String
+        public var enabled: Bool
+        public var allowedScopes: [String]
+        public var installationStatus: String?
+    }
+
+    public func legacyAgentJWTClient(clientRecordId: String) -> LegacyAgentJWTClient? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let client = clients.first(where: { $0.id == clientRecordId && isUserManaged($0) }) else {
+            return nil
+        }
+        let installation = installations.first { $0.clientId == client.id }
+        return LegacyAgentJWTClient(
+            id: client.id,
+            clientKey: client.clientId,
+            serverId: client.serverId,
+            appType: client.appType,
+            enabled: client.enabled,
+            allowedScopes: client.allowedScopes ?? [],
+            installationStatus: installation?.status
+        )
+    }
+
+    public func legacyAgentJWTInstallationStatus(clientRecordId: String, serverId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return installations.first { $0.clientId == clientRecordId && $0.serverId == serverId }?.status
+    }
+
+    public func setClientAgentJWTEnabledForTesting(clientRecordId: String, enabled: Bool?) {
+        lock.lock()
+        if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
+            clients[index].agentJwtEnabled = enabled
+        }
+        lock.unlock()
+    }
+
+    public func clientAgentJWTEnabled(clientRecordId: String) -> Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        return clients.first { $0.id == clientRecordId }?.agentJwtEnabled
+    }
+
+    public func setInstallationAgentJWTEnabledForTesting(clientRecordId: String, serverId: String, enabled: Bool?) {
+        lock.lock()
+        if let index = installations.firstIndex(where: { $0.clientId == clientRecordId && $0.serverId == serverId }) {
+            installations[index].agentJwtEnabled = enabled
+        }
+        lock.unlock()
+    }
+
+    public func installationAgentJWTEnabled(clientRecordId: String, serverId: String) -> Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        return installations.first { $0.clientId == clientRecordId && $0.serverId == serverId }?.agentJwtEnabled
+    }
+
+    /// Conversion into a private share: the App keeps issuing for its source
+    /// because conversion installs it there too.
+    @discardableResult
+    public func convertClientToPrivateShareForTesting(
+        clientRecordId: String,
+        installedByUserId: String
+    ) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = clients.firstIndex(where: { $0.id == clientRecordId }) else { return nil }
+        clients[index].appType = "third_party_global"
+        clients[index].humanMarketplaceVisible = false
+        if !installations.contains(where: { $0.clientId == clientRecordId && $0.serverId == clients[index].serverId }) {
+            installations.append(Installation(
+                id: UUID().uuidString.lowercased(),
+                serverId: clients[index].serverId,
+                clientId: clientRecordId,
+                installedByUserId: installedByUserId,
+                approvedGroups: [],
+                grantRevision: 0,
+                status: "active"
+            ))
+        }
+        return "raft_share_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+    }
+
+    public func installSharedClientForTesting(
+        clientRecordId: String,
+        serverId: String,
+        installedByUserId: String
+    ) {
+        lock.lock()
+        if !installations.contains(where: { $0.clientId == clientRecordId && $0.serverId == serverId }) {
+            installations.append(Installation(
+                id: UUID().uuidString.lowercased(),
+                serverId: serverId,
+                clientId: clientRecordId,
+                installedByUserId: installedByUserId,
+                approvedGroups: [],
+                grantRevision: 0,
+                status: "active"
+            ))
+        }
+        lock.unlock()
+    }
+
+    public func setInstallationStatusForTesting(clientRecordId: String, serverId: String, status: String) {
+        lock.lock()
+        if let index = installations.firstIndex(where: { $0.clientId == clientRecordId && $0.serverId == serverId }) {
+            installations[index].status = status
+        }
+        lock.unlock()
+    }
+
+    public func removeInstallationForTesting(clientRecordId: String, serverId: String) {
+        lock.lock()
+        installations.removeAll { $0.clientId == clientRecordId && $0.serverId == serverId }
+        lock.unlock()
+    }
+
     public func signAgentAudienceToken(
         agentId: String,
         agentName: String,
@@ -2835,6 +2958,9 @@ public final class OAuthLedger: @unchecked Sendable {
         var outboundGroups: [String] = []
         var pendingOutboundRevisionId: String? = nil
         var pendingOutboundGroups: [String] = []
+        /// Legacy App-level switch. Built-in issuance ignores it; the column
+        /// survives only for old web bundles.
+        var agentJwtEnabled: Bool? = false
         var enabled: Bool = true
         var externalProvider: String? = nil
         var externalState: String? = nil
@@ -2889,6 +3015,8 @@ public final class OAuthLedger: @unchecked Sendable {
         var approvedGroups: [String]
         var grantRevision: Int
         var status: String
+        /// Legacy installation-level switch, ignored by issuance.
+        var agentJwtEnabled: Bool? = false
     }
 
     private struct AccessRequest {

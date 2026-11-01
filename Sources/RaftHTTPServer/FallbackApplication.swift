@@ -242,6 +242,16 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("api", "integrations", "agents", ":agentId") { request -> Response in
         routeResponse(IntegrationRoutes.integrationAgent(agentId: request.parameters.get("agentId") ?? ""))
     }
+    app.get("api", "integrations", "clients", ":clientId", "agent-jwt") { request -> Response in
+        routeResponse(services.emailAccounts.legacyAppAgentJWTSettings(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            clientRecordId: request.parameters.get("clientId") ?? ""
+        ))
+    }
+    app.put("api", "integrations", "clients", ":clientId", "agent-jwt") { _ -> Response in
+        routeResponse(services.emailAccounts.refuseLegacyAppAgentJWTWrite())
+    }
     app.get("api", "integrations", "clients", ":clientId", "app-notifications") { request -> Response in
         routeResponse(IntegrationRoutes.appNotifications(clientId: request.parameters.get("clientId") ?? ""))
     }

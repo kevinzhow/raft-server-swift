@@ -519,7 +519,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         guard let client = oauth.localClientForAgentAudience(clientId: service, serverId: agent.serverId),
               client.enabled,
-              client.appType == "server_local",
               client.allowedScopes.contains("openid"),
               client.allowedScopes.contains("profile")
         else {
@@ -14861,6 +14860,47 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         } catch {
             return Self.json(409, "{\"error\":\"The permission request changed since it was displayed\",\"code\":\"permission_revision_stale\"}")
         }
+    }
+
+    /// `GET /api/integrations/clients/:clientId/agent-jwt`. Read-only state for
+    /// web bundles from the previous release.
+    public func legacyAppAgentJWTSettings(authorization: String?, serverId: String, clientRecordId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        let role = oauth.memberRole(serverId: serverId, userId: userId)
+        guard role == "owner" || role == "admin" else {
+            var reply = Self.json(403, "{\"error\":\"Only server owners and admins can read Agent JWT access\"}")
+            reply.headers["Cache-Control"] = "private, no-store"
+            return reply
+        }
+        guard let client = oauth.legacyAgentJWTClient(clientRecordId: clientRecordId) else {
+            var reply = Self.json(404, "{\"error\":\"App not found on this Server\"}")
+            reply.headers["Cache-Control"] = "private, no-store"
+            return reply
+        }
+        let source = client.serverId == serverId
+        let installationStatus = oauth.legacyAgentJWTInstallationStatus(clientRecordId: clientRecordId, serverId: serverId)
+        if !source, client.appType != "third_party_global" || installationStatus == nil {
+            var reply = Self.json(404, "{\"error\":\"App not found on this Server\"}")
+            reply.headers["Cache-Control"] = "private, no-store"
+            return reply
+        }
+        let scopesOK = client.allowedScopes.contains("openid") && client.allowedScopes.contains("profile")
+        let installationOK = installationStatus == nil || installationStatus == "active"
+        let effective = client.enabled && scopesOK && installationOK
+            && (client.appType == "server_local" || installationStatus == "active")
+        let scopeValue = source ? "app" : "installation"
+        let body = "{\"scope\":\(jsonString(scopeValue)),\"enabled\":true,\"appEnabled\":true,\"effectiveEnabled\":\(effective),\"canEnable\":false,\"audience\":\(jsonString(client.clientKey)),\"expiresIn\":300}"
+        var reply = Self.json(200, body)
+        reply.headers["Cache-Control"] = "private, no-store"
+        return reply
+    }
+
+    public func refuseLegacyAppAgentJWTWrite() -> HTTPReply {
+        var reply = Self.json(410, "{\"error\":\"Agent JWT is built in for every App; there is no setting to change\"}")
+        reply.headers["Cache-Control"] = "private, no-store"
+        return reply
     }
 
     public func agentContext(authorization: String?) -> HTTPReply {

@@ -332,3 +332,5 @@ DM peer kind：`dm:@<name>~agent` / `dm:@<name>~human` 选定同名人类或 age
 
 Managed MCP agent 错误文案：常见失败码映射为可执行的一句话（reconnect、credentials、stale tool、unavailable、gone），connector/tool 名称先压平为单行、按 80 字符截断并加引号，防止换行或超长文本逃逸；gone 类消息带 `mcp_<id8>_` 前缀提示。运行时工具名为 `mcp_<server8>_<tool>_<fnv1a32>`，同一 connector 的所有工具共享前缀。
 
+Agent audience JWT 内建：`POST /internal/agent-api/integrations/token` 不读取旧的 App/installation `agentJwtEnabled` 列（两者缺省仍为 false，置 null/true 均不影响签发）。App 可用性边界与 Agent Login 一致：App 归属的 Server 可直接签发（即使转换为私有 share 后仍可）；其他 Server 需要该 App 处于 `third_party_global` 且存在 active installation，share link 本身不算安装。installation suspended、App disabled、allowedScopes 缺 openid/profile、installation 被删除都回 403；不可用的私有 App 与未知 App 的状态与 `errorCode` 相同。兼容读 `GET /api/integrations/clients/:id/agent-jwt` 仅 owner/admin 可用（其他成员 403 `Only server owners and admins can read Agent JWT access`），回 `{scope:"app"|"installation",enabled:true,appEnabled:true,effectiveEnabled,canEnable:false,audience,expiresIn:300}` 且 `Cache-Control: private, no-store`；`PUT` 恒回 410 `Agent JWT is built in for every App; there is no setting to change`，不改任何状态、不影响后续签发。
+
