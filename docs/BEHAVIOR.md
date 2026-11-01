@@ -280,3 +280,5 @@ Guest-visible 频道：public 频道是否对 guest 可见由频道级 `guestVis
 
 `RaftDaemon` 是活连接循环：握手成功打印 `daemon connected machine=... server=...`，会话结束后按 `DaemonReconnectPolicy` 重连（初始 1s，连续失败翻倍封顶 30s，jitter 窗口 5s，成功后重置）；迁移旧 key 的 401 终止循环并以非零退出。重连调度打印 `daemon reconnecting in <delay>ms (attempt <n>)`。DaemonLink 还记录 `daemon.connection.connect`（server_url_present/reconnect_attempt/outcome）、非 ping 入站的 consumer span（`inbound_message_kind`）、`agent.connection.inbound` 的关闭消息种类、activity sent 的 join keys（不含 producer fact id）；close/disconnect 清除 watchdog，不再发探针。
 
+Daemon proxy：`buildFetchDispatcher` 按 proxy URL 复用 dispatcher；隔离 lane 按 route/origin/headers/body 组合缓存、互不共享，并可单独驱逐；`NO_PROXY` 同时作用于 WebSocket 与 fetch。fetch 只对显式 `UND_ERR_HEADERS_TIMEOUT`/`UND_ERR_BODY_TIMEOUT` 归为 `read_timeout`；pre-response 超时只约束 connect/headers，不中断慢 body；transport 拒绝会驱逐该 dispatcher，HTTP 4xx/5xx 不会。`proxyFailureTrace` 的投影只含 route_family/method/outcome/reason/error_class/error_excerpt 等允许字段，屏蔽 query、路径、URL、用户目录与代理细节；lifecycle 与 post-response 本地故障各有独立 reason/excerpt。
+

@@ -127,3 +127,13 @@ private func text(_ attributes: [String: DaemonProxyAttr]) -> String {
     #expect(excerpt.contains("secret") == false)
     #expect(excerpt.contains("Ledger") == false)
 }
+
+@Test func transportTracesGivePostResponseLocalFaultsTheirOwnExcerpt() {
+    let excerpt = DaemonProxyFailure.transportExcerpt(DaemonProxyTransportError(
+        normalizedCode: "local_post_response_failure",
+        upstreamLayer: "unknown"
+    ))
+    #expect(excerpt == "Local daemon failed after the upstream response completed")
+    #expect(!excerpt.contains("secret"))
+    #expect(!excerpt.contains("Ledger"))
+}
