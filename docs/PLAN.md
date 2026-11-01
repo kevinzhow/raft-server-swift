@@ -105,7 +105,36 @@
 
 ### Phase 4：纵向功能队列 + 收尾
 
-按上游用例数排序逐条开切片：
+#### 执行策略（2026-11 修订）
+
+实测：route 65/219 模块 locked（141/2000 用例），socket 2/7，daemon 3/180；整体 70/406 模块、211/4632 用例。按“每轮锁一个小模块”的节奏无法达到里程碑，原因是用例高度集中：
+
+- 剩余 ≤5 例的小模块共 68 个、仅 185 例；全部锁掉模块约 60%，但用例只有约 16%。
+- 前 10 大模块共 641 例；`141 + 641 = 782`，仍差 18 例到 40%。
+- 因此 40% 用例门槛**要求前 10 大模块几乎全部完成**，再补少量小模块；60% 模块门槛也要求小模块几乎无余量（`realPg`/tracer/spy/failpoint/source-scan 类不可移植用例会造成缺口）。
+
+执行规则：
+
+1. **大模块优先**：按模块分组连续开切片，不再以“能不能一轮锁掉”选模块；每个切片锁住一组上游断言并记录该模块已覆盖的组。
+2. **`locked` 定义**：模块的可移植用例全部有验收断言才标记 `locked`；不可移植用例在 commit 正文与 `docs/PARITY.tsv` 的 notes 中逐项注明，不静默计入。
+3. **小模块机会主义**：只有在可完整覆盖时才顺手锁；不再为模块数锁半套行为。
+4. **daemon 独立工作流**：daemon 180 模块/2616 例是整体覆盖率的单点瓶颈，作为并行队列，用真实 socket 驱动 reconnect/watchdog/outbound replay，而不是只做 route。
+5. **B2 保持决策门**：`/health` 200 需要 PostgresNIO + `DATABASE_URL` + `pg-up`，默认不做；未获确认前继续 503。
+
+实际执行顺序（按依赖与上下文，而非纯用例数）：
+
+1. `messages.api`（74，randomId 组已完成）
+2. `servers.api`（103）
+3. `channels.threads.api`（50，复用 thread/read 模型）
+4. `auth.api`（48）与 `internalAgentApi.auth`（93）
+5. `agents.api`（87）
+6. `attachments.api`（41）
+7. `channels.inbox.api`（40）
+8. `internalAgentApi.send`（65）
+9. `internal.channelMembership.api`（43）
+10. daemon 真实 socket 队列
+
+原按用例数排序的模块清单：
 
 | 模块 | 用例 |
 | --- | --- |
