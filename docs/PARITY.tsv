@@ -208,7 +208,7 @@ socketSendTimeAudience.api	route	pending	-	auto-seed
 storageResponseStream.callSites	route	pending	-	auto-seed
 systemNotifications.api	route	locked	8e0d4f8	v1 machine feed plus v2 attention receipts
 tasks.assignee.api	route	partial	-	auto-seed
-tasks.channelMembership.api	route	partial	-	auto-seed
+tasks.channelMembership.api	route	locked	bb36d22	public read-only tasks, private cloak, status filter
 tasks.jointSurface.api	route	pending	-	auto-seed
 tasks.orphanCleanup.api	route	pending	-	auto-seed
 tasks.periodMetrics.api	route	locked	e1fa956	covered by the existing metric/scope tests
