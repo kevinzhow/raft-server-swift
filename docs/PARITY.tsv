@@ -12,7 +12,7 @@ agentAudienceJwtBuiltIn.api	route	partial	-	auto-seed
 agentChannelJoint.api	route	partial	-	auto-seed
 agentCredentialSecurity.api	route	partial	-	auto-seed
 agentCredentials.api	route	partial	-	auto-seed
-agentDiscovery.api	route	pending	-	auto-seed
+agentDiscovery.api	route	locked	b5c5dbc	manageable union, creator override, empty reason
 agentKnowledgeSearchSerialization	route	pending	-	auto-seed
 agentLogin.gate	route	partial	-	auto-seed
 agentMigrationErrors.contract	route	partial	-	auto-seed
