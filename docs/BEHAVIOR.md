@@ -258,3 +258,5 @@ Guest 角色降级后，其 follow 的 thread 从 `GET /api/channels/inbox`（`a
 
 任务频道可见性：public 频道的 Server 成员即使未加入频道也可 `GET /api/tasks/channel/:id`（200）与按编号读，但 claim/status/create/convert-message 均 403；private 频道非成员对 list/number/claim/convert 均 404。`convert-message` 能解析 API 发送的消息（human message 存储）。`GET /api/tasks/channel/:id` 与 `GET /api/tasks/server` 的 `status` 只接受单个合法值，未知或重复参数 400。
 
+`/api/reminders` 对人是只读：`GET`（可选 `ownerAgentId`）对成员返回 `{reminders:[{id,title,ownerAgentId,fireAt}]}`；owner/admin 看本 Server 全部 Agent，普通成员只看自己创建的 Agent；显式指定不可检查的 Agent 403，未知 Agent 404。`POST /api/reminders` 与 `DELETE /api/reminders/:id` 未挂载，均 404。
+
