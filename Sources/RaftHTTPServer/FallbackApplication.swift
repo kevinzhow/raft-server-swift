@@ -1801,6 +1801,60 @@ public func configure(_ app: Application, services: FallbackServices) {
             runtime: request.parameters.get("runtime") ?? ""
         ))
     }
+    app.get("api", "servers", ":id", "machines", ":machineId", "runtime-form-definitions", ":runtimeId") { request -> Response in
+        var response = routeResponse(services.emailAccounts.runtimeFormDefinition(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            machineId: request.parameters.get("machineId") ?? "",
+            runtimeId: request.parameters.get("runtimeId") ?? "",
+            protocolVersion: 1,
+            schemaVersion: desktopQuery(request.url.query, "schemaVersion"),
+            language: request.headers[HTTPField.Name("Accept-Language")!]
+        ))
+        applyRuntimeFormLanguage(&response, language: request.headers[HTTPField.Name("Accept-Language")!])
+        return response
+    }
+    app.get("api", "servers", ":id", "machines", ":machineId", "runtime-forms", "v2", ":runtimeId") { request -> Response in
+        var response = routeResponse(services.emailAccounts.runtimeFormDefinition(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            machineId: request.parameters.get("machineId") ?? "",
+            runtimeId: request.parameters.get("runtimeId") ?? "",
+            protocolVersion: 2,
+            schemaVersion: nil,
+            language: request.headers[HTTPField.Name("Accept-Language")!]
+        ))
+        applyRuntimeFormLanguage(&response, language: request.headers[HTTPField.Name("Accept-Language")!])
+        return response
+    }
+    app.get("api", "servers", ":id", "machines", ":machineId", "runtime-form-definitions", ":runtimeId", "option-sources", ":sourceId") { request -> Response in
+        var response = routeResponse(services.emailAccounts.runtimeFormOptionSource(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            machineId: request.parameters.get("machineId") ?? "",
+            runtimeId: request.parameters.get("runtimeId") ?? "",
+            sourceId: request.parameters.get("sourceId") ?? "",
+            protocolVersion: 1,
+            schemaVersion: desktopQuery(request.url.query, "schemaVersion"),
+            language: request.headers[HTTPField.Name("Accept-Language")!]
+        ))
+        applyRuntimeFormLanguage(&response, language: request.headers[HTTPField.Name("Accept-Language")!])
+        return response
+    }
+    app.get("api", "servers", ":id", "machines", ":machineId", "runtime-forms", "v2", ":runtimeId", "option-sources", ":sourceId") { request -> Response in
+        var response = routeResponse(services.emailAccounts.runtimeFormOptionSource(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            machineId: request.parameters.get("machineId") ?? "",
+            runtimeId: request.parameters.get("runtimeId") ?? "",
+            sourceId: request.parameters.get("sourceId") ?? "",
+            protocolVersion: 2,
+            schemaVersion: nil,
+            language: request.headers[HTTPField.Name("Accept-Language")!]
+        ))
+        applyRuntimeFormLanguage(&response, language: request.headers[HTTPField.Name("Accept-Language")!])
+        return response
+    }
     app.get("api", "servers", ":id", "machines", ":machineId", "runtime-account-usage", ":provider") { request -> Response in
         var response = routeResponse(services.emailAccounts.machineRuntimeAccountUsage(
             authorization: request.headers[.authorization],
@@ -2562,6 +2616,12 @@ private struct PublicSearchMiddleware: Middleware {
         response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
         return response
     }
+}
+
+private func applyRuntimeFormLanguage(_ response: inout Response, language: String?) {
+    let zh = language?.lowercased().hasPrefix("zh") == true
+    response.headers[HTTPField.Name("Content-Language")!] = zh ? "zh-CN" : "en"
+    response.headers[HTTPField.Name("Vary")!] = "Accept-Language"
 }
 
 private func publishTaskUpdated(_ reply: HTTPReply, services: FallbackServices) {

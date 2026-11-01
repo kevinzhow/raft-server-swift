@@ -8416,6 +8416,121 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"machine\":\(machine),\"apiKey\":\(jsonString(apiKey))}")
     }
 
+    private static let runtimeFormSchemas: [String: String] = [
+        "builtin": "builtin-pi.create.v3",
+        "claude": "claude.create.v1",
+        "codex": "codex.create.v1",
+        "kimi-sdk": "kimi-sdk.create.v1",
+        "cursor": "cursor.create.v1",
+        "opencode": "opencode.create.v1",
+        "pi": "pi.create.v1",
+    ]
+
+    public func runtimeFormDefinition(
+        authorization: String?,
+        serverId: String,
+        machineId: String,
+        runtimeId: String,
+        protocolVersion: Int,
+        schemaVersion: String?,
+        language: String?
+    ) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        lock.lock()
+        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Computer not found\"}")
+        }
+        lock.unlock()
+        guard role == "owner" || role == "admin" || machine.userId == userId else {
+            return Self.json(403, "{\"error\":\"The `editMachines` capability or machine creator authority is required to inspect runtime forms\"}")
+        }
+        guard let expected = Self.runtimeFormSchemas[runtimeId] else {
+            return Self.json(404, "{\"error\":\"Runtime form not found\",\"issues\":[{\"code\":\"unknown_form_runtime\",\"pointer\":\"/runtimeId\"}]}")
+        }
+        if protocolVersion == 1, let schemaVersion, schemaVersion != expected {
+            return Self.json(409, "{\"error\":\"Runtime form schema is stale or unknown\",\"issues\":[{\"code\":\"stale_form_schema\",\"pointer\":\"/schemaVersion\"}]}")
+        }
+        let zh = Self.prefersChinese(language)
+        if protocolVersion == 2 {
+            let label = zh ? "模型" : "Model"
+            return Self.json(200, "{\"protocolVersion\":2,\"runtimeId\":\(jsonString(runtimeId)),\"schemaVersion\":\(jsonString(expected)),\"fields\":[{\"key\":\"model\",\"kind\":\"select\",\"label\":\(jsonString(label)),\"required\":true}],\"capabilities\":{\"providerKinds\":[\"preset\"],\"writeOnlyPointers\":[\"/apiKey\"],\"forbiddenPointers\":[\"/hostUserState\"]}}")
+        }
+        let properties: String
+        let required: String
+        let sources: String
+        if runtimeId == "builtin" {
+            properties = "{\"apiKey\":{\"type\":\"string\",\"writeOnly\":true},\"supportsImageInput\":{\"type\":\"boolean\"},\"providerId\":{\"type\":\"string\"},\"model\":{\"type\":\"string\"}}"
+            required = "[\"providerId\",\"model\"]"
+            sources = "{\"provider\":{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"provider\"},\"model\":{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\"}}"
+        } else {
+            properties = "{\"model\":{\"type\":\"string\"}}"
+            required = "[\"model\"]"
+            sources = "{\"model\":{\"protocolVersion\":1,\"runtimeId\":\(jsonString(runtimeId)),\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\"}}"
+        }
+        return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\(jsonString(runtimeId)),\"schemaVersion\":\(jsonString(expected)),\"dataSchema\":{\"type\":\"object\",\"properties\":\(properties),\"required\":\(required)},\"uiSchema\":{},\"capabilities\":{\"providerKinds\":[\"preset\"],\"writeOnlyPointers\":[\"/apiKey\"],\"forbiddenPointers\":[\"/hostUserState\"]},\"optionSources\":\(sources)}")
+    }
+
+    public func runtimeFormOptionSource(
+        authorization: String?,
+        serverId: String,
+        machineId: String,
+        runtimeId: String,
+        sourceId: String,
+        protocolVersion: Int,
+        schemaVersion: String?,
+        language: String?
+    ) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        lock.lock()
+        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Computer not found\"}")
+        }
+        let cachedModels = machineRuntimeModels[machineId]?[runtimeId]?.models ?? []
+        lock.unlock()
+        guard role == "owner" || role == "admin" || machine.userId == userId else {
+            return Self.json(403, "{\"error\":\"The `editMachines` capability or machine creator authority is required to inspect runtime form option sources\"}")
+        }
+        guard let expected = Self.runtimeFormSchemas[runtimeId] else {
+            return Self.json(404, "{\"error\":\"Runtime form option source not found\",\"issues\":[{\"code\":\"unknown_form_runtime\",\"pointer\":\"/runtimeId\"}]}")
+        }
+        if protocolVersion == 1, let schemaVersion, schemaVersion != expected {
+            return Self.json(409, "{\"error\":\"Runtime form schema is stale or unknown\",\"issues\":[{\"code\":\"stale_form_schema\",\"pointer\":\"/schemaVersion\"}]}")
+        }
+        let zh = Self.prefersChinese(language)
+        switch sourceId {
+        case "provider" where runtimeId == "builtin":
+            let options = "{\"value\":\"deepseek\",\"label\":\(jsonString(zh ? "DeepSeek" : "DeepSeek")),\"providerKind\":\"preset\"},{\"value\":\"moonshotai\",\"label\":\(jsonString(zh ? "月之暗面" : "Moonshot AI")),\"providerKind\":\"preset\"}"
+            return Self.json(200, "{\"sourceId\":\"provider\",\"schemaVersion\":\(jsonString(expected)),\"kind\":\"select\",\"options\":[\(options)]}")
+        case "model":
+            if runtimeId == "builtin" {
+                let deepseek = "{\"value\":\"deepseek-chat\",\"label\":\"DeepSeek Chat\"}"
+                let moonshot = "{\"value\":\"kimi-k2\",\"label\":\"Kimi K2\"}"
+                return Self.json(200, "{\"sourceId\":\"model\",\"schemaVersion\":\(jsonString(expected)),\"kind\":\"dependent_select\",\"optionsByValue\":{\"deepseek\":[\(deepseek)],\"moonshotai\":[\(moonshot)]}}")
+            }
+            let options = cachedModels.map { "{\"value\":\(jsonString($0.id)),\"label\":\(jsonString($0.label))}" }.joined(separator: ",")
+            return Self.json(200, "{\"sourceId\":\"model\",\"schemaVersion\":\(jsonString(expected)),\"kind\":\"select\",\"options\":[\(options)]}")
+        default:
+            return Self.json(404, "{\"error\":\"Runtime form option source not found\",\"issues\":[{\"code\":\"unknown_option_source\",\"pointer\":\"/sourceId\"}]}")
+        }
+    }
+
+    private static func prefersChinese(_ language: String?) -> Bool {
+        guard let language else { return false }
+        return language.lowercased().hasPrefix("zh")
+    }
+
     public func setRuntimeAccountUsageForTesting(
         machineId: String,
         provider: String,
