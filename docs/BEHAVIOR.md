@@ -195,6 +195,9 @@ agent 读游标前进且 server 开启 read receipts 时，`channel:<id>` 房间
 `POST /api/servers/:id/setup-reset` 仅 owner：admin/member 403 `INSUFFICIENT_PERMISSION`；server 已有 agent 时 409 `SERVER_ALREADY_SET_UP`；成功时重置 setup phase、撤销该 server 的 Computer，并在 projection 上追加 `revokedComputers`。`POST /api/servers/:id/setup-handoff` 仅 owner，缺失 server 404，非 owner 403，成功/重复调用都返回当前 setup projection。
 
 
+`POST /api/servers/:id/machines/:machineId/computer-lifecycle-operations`：校验 `action/operationId/parentOperationId/targetVersion/completionMode`；仅 owner/admin 或 machine creator；非 managed Computer 409 `not_a_computer`；start 在线 409 `computer_already_online`、非 start 离线 409 `computer_offline`；upgrade 无 target 409 `computer_upgrade_unavailable`，带 `legacy_k_promoted` 409 ready pending；成功 201 返回 operation 投影。
+
+
 `POST /api/messages` 成功后向 `channel:<id>` 房间发 `message:new`，payload 是消息 HTTP body（id/channelId/content/attachments）。`POST /api/tasks/channel/:channelId` 成功后向同一房间发 `task:created`，payload 是 `{channelId,tasks:[{id,channelId,title,status}]}`；`PATCH /api/tasks/:taskId/claim` 成功后发 `task:updated`，payload `{channelId,task:<task JSON>}`；`POST /api/channels/threads/follow|unfollow` 成功后发 `thread:followers-updated`，payload `{threadChannelId}`。频道创建时该用户的在线 socket 自动加入 `channel:<id>`。task JSON 带 `messageId`。
 
 

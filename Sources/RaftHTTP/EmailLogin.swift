@@ -9241,6 +9241,73 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var runtimes: [String] = []
     }
 
+    public func computerLifecycleOperation(
+        authorization: String?,
+        serverId: String,
+        machineId: String,
+        body: String
+    ) -> HTTPReply {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let action = object["action"] as? String,
+              ["start", "stop", "restart", "upgrade"].contains(action)
+        else {
+            return Self.json(400, "{\"error\":\"Unknown Computer lifecycle action\",\"code\":\"unknown_action\"}")
+        }
+        guard let operationId = object["operationId"] as? String, ServerScope.isUUID(operationId) else {
+            return Self.json(400, "{\"error\":\"A valid operationId is required\",\"code\":\"invalid_operation_id\"}")
+        }
+        guard let parentOperationId = object["parentOperationId"] as? String, ServerScope.isUUID(parentOperationId) else {
+            return Self.json(400, "{\"error\":\"A valid parentOperationId is required\",\"code\":\"invalid_parent_operation_id\"}")
+        }
+        let targetVersion = object["targetVersion"] as? String
+        if action == "upgrade" {
+            if let targetVersion, targetVersion.wholeMatch(of: /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/) == nil {
+                return Self.json(400, "{\"error\":\"A valid targetVersion is required only for upgrade\",\"code\":\"invalid_target_version\"}")
+            }
+        } else if targetVersion != nil {
+            return Self.json(400, "{\"error\":\"A valid targetVersion is required only for upgrade\",\"code\":\"invalid_target_version\"}")
+        }
+        if let completionMode = object["completionMode"] {
+            guard action == "upgrade", completionMode as? String == "legacy_k_promoted" else {
+                return Self.json(400, "{\"error\":\"Unknown Computer lifecycle completion mode\",\"code\":\"invalid_completion_mode\"}")
+            }
+        }
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        lock.lock()
+        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Machine not found in this server\"}")
+        }
+        let computer = computers.first { $0.machineId == machineId && $0.serverId == serverId && $0.revokedAt == nil }
+        let online = machineOnline[machineId] == true || computer?.online == true
+        lock.unlock()
+        guard role == "owner" || role == "admin" || machine.userId == userId else {
+            return Self.json(403, "{\"error\":\"The `controlComputers` capability or machine creator authority is required to control Computers\"}")
+        }
+        guard computer != nil else {
+            return Self.json(409, "{\"error\":\"Lifecycle operations are only available for managed Computers\",\"code\":\"not_a_computer\"}")
+        }
+        if action == "start", online {
+            return Self.json(409, "{\"error\":\"Computer is already online\",\"code\":\"computer_already_online\"}")
+        }
+        if action != "start", !online {
+            return Self.json(409, "{\"error\":\"Computer is not online\",\"code\":\"computer_offline\"}")
+        }
+        if action == "upgrade", targetVersion == nil {
+            return Self.json(409, "{\"error\":\"Hands could not select a newer alpha release for this Computer.\",\"code\":\"computer_upgrade_unavailable\"}")
+        }
+        if object["completionMode"] != nil {
+            return Self.json(409, "{\"error\":\"The live Computer ready attestation is not visible yet.\",\"code\":\"computer_lifecycle_completion_ready_pending\"}")
+        }
+        let versionJSON = targetVersion.map(jsonString) ?? "null"
+        return Self.json(201, "{\"operationId\":\(jsonString(operationId)),\"parentOperationId\":\(jsonString(parentOperationId)),\"serverId\":\(jsonString(serverId)),\"machineId\":\(jsonString(machineId)),\"actorUserId\":\(jsonString(userId)),\"action\":\(jsonString(action)),\"dispatchMode\":\"local\",\"connectionEpochBefore\":null,\"targetVersion\":\(versionJSON)}")
+    }
+
     public func mentionDeliveryDiagnostic(
         authorization: String?,
         serverId: String,
