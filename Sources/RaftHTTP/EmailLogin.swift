@@ -10749,6 +10749,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         serverNotificationPrefs[key] = prefs
         lock.unlock()
+        if changed {
+            let payload = "{\"serverId\":\(jsonString(serverId)),\"scopeId\":\(jsonString(serverId)),\"prefs\":{\"serverPushMuted\":\(prefs.muted),\"serverPushMentionsOnly\":\(prefs.mentionsOnly),\"serverPushMode\":\(jsonString(prefs.mode))},\"prefsVersion\":\(prefs.version)}"
+            emitRealtime("user:\(userId)", "notification_prefs:updated", payload)
+        }
         return Self.json(200, serverNotificationJSON(prefs))
     }
 

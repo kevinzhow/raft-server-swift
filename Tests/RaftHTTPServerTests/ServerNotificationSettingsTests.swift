@@ -17,6 +17,10 @@ import VaporTesting
     accounts.markEmailVerified(userId: memberId)
     accounts.oauth.addOwnedServer(id: serverId, slug: "notify", name: "Notify", ownerId: ownerId)
     accounts.oauth.addMember(serverId: serverId, userId: memberId, role: "member")
+    let emitted = NotificationSettingsEvents()
+    accounts.realtimeEmitter = { room, event, payload in
+        emitted.append(room: room, event: event, payload: payload)
+    }
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -77,10 +81,22 @@ import VaporTesting
             #expect(mutedBody?["serverPushMentionsOnly"] as? Bool == false)
             #expect(mutedBody?["serverPushMode"] as? String == "none")
             #expect(mutedBody?["prefsVersion"] as? Int == 2)
+            #expect(emitted.events.last?.room == "user:\(memberId)")
+            #expect(emitted.events.last?.event == "notification_prefs:updated")
+            let mutedPayload = emitted.events.last?.payload.flatMap { $0.data(using: .utf8) }
+                .flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
+            #expect(mutedPayload?["serverId"] as? String == serverId)
+            #expect(mutedPayload?["scopeId"] as? String == serverId)
+            #expect(mutedPayload?["prefsVersion"] as? Int == 2)
+            let mutedPrefs = mutedPayload?["prefs"] as? [String: Any]
+            #expect(mutedPrefs?["serverPushMuted"] as? Bool == true)
+            #expect(mutedPrefs?["serverPushMode"] as? String == "none")
+            let beforeRepeat = emitted.events.count
 
             let repeated = try await patch(memberToken, "{\"serverPushMuted\":true}")
             let repeatedBody = try JSONSerialization.jsonObject(with: Data((repeated.body.string ?? "").utf8)) as? [String: Any]
             #expect(repeatedBody?["prefsVersion"] as? Int == 2)
+            #expect(emitted.events.count == beforeRepeat)
 
             let all = try await patch(memberToken, "{\"serverPushMode\":\"all\"}")
             let allBody = try JSONSerialization.jsonObject(with: Data((all.body.string ?? "").utf8)) as? [String: Any]
@@ -92,5 +108,23 @@ import VaporTesting
             #expect(ownerView["serverPushMode"] as? String == "all")
             #expect(ownerView["prefsVersion"] as? Int == 0)
         }
+    }
+}
+
+
+private final class NotificationSettingsEvents: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [(room: String, event: String, payload: String?)] = []
+
+    func append(room: String, event: String, payload: String?) {
+        lock.lock()
+        storage.append((room, event, payload))
+        lock.unlock()
+    }
+
+    var events: [(room: String, event: String, payload: String?)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
     }
 }

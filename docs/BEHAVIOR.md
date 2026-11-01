@@ -316,3 +316,5 @@ Agent attachment 下载：`GET /internal/agent-api/attachments/:id`（`read` cap
 
 `GET /api/servers/:id/apps`：composer resource references 未启用时 404；启用后所有成员拿到精确的两项 `{appId,displayName}`：`system.cleaner/Memory Cleaner`、`system.reminder/Reminder`，内部 `system.canary` 不出现，行内不带额外字段。`GET /api/servers/:id/member-graph`：除既有可见性/隐藏目录/自检外，序列化结果不含成员 email，也不含 agent 的 env vars（如 `GRAPH_SECRET`）。
 
+`PATCH /api/servers/:id/notification-settings` 在偏好实际变化时向 `user:<id>` 推 `notification_prefs:updated`，payload 为 `{serverId,scopeId:serverId,prefs:{serverPushMuted,serverPushMentionsOnly,serverPushMode},prefsVersion}`；同值重复 PATCH 不递增版本、不推送。GET/PATCH 仍是按成员隔离，owner 读取自己的默认偏好。
+
