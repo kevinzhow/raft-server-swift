@@ -256,3 +256,5 @@ Guest 角色降级后，其 follow 的 thread 从 `GET /api/channels/inbox`（`a
 
 `GET /api/agents/manageable` 不需要 `X-Server-Id`：`{ok:true,data:{agents:[{id,name,serverId,serverName}],reason,manageable_server_count}}`。跨 Server 合并；owner/admin 看本 Server 全部 Agent，普通 member 只看自己创建的；`reason` 为 `ok` / `no_agents_on_manageable_servers` / `no_manageable_server`，不返回 `suggested_next_action`。
 
+任务频道可见性：public 频道的 Server 成员即使未加入频道也可 `GET /api/tasks/channel/:id`（200）与按编号读，但 claim/status/create/convert-message 均 403；private 频道非成员对 list/number/claim/convert 均 404。`convert-message` 能解析 API 发送的消息（human message 存储）。`GET /api/tasks/channel/:id` 与 `GET /api/tasks/server` 的 `status` 只接受单个合法值，未知或重复参数 400。
+

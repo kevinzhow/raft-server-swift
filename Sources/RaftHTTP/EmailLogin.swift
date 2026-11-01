@@ -14070,9 +14070,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let messageId = object["messageId"] as? String,
-              let channelId = oauth.messageChannelId(messageId)
+              let messageId = object["messageId"] as? String
         else {
+            return Self.json(404, "{\"error\":\"Message not found\"}")
+        }
+        let storedChannelId: String?
+        if let known = oauth.messageChannelId(messageId) {
+            storedChannelId = known
+        } else {
+            lock.lock()
+            storedChannelId = humanMessageRows.first { $0.id == messageId }?.channelId
+            lock.unlock()
+        }
+        guard let channelId = storedChannelId else {
             return Self.json(404, "{\"error\":\"Message not found\"}")
         }
         switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {

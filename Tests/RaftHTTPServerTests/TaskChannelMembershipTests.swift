@@ -6,30 +6,37 @@ import Testing
 import Vapor
 import VaporTesting
 
-@Test func taskWritesAndPrivateReadsFollowChannelMembership() async throws {
-    let accounts = EmailLoginDirectory()
-    let ownerId = "11111111-1111-4111-8111-111111111301"
-    let readerId = "11111111-1111-4111-8111-111111111302"
-    let memberId = "11111111-1111-4111-8111-111111111303"
-    let serverId = "33333333-3333-4333-8333-333333333480"
-    for (id, email) in [
-        (ownerId, "task-owner@slock.test"),
-        (readerId, "task-reader@slock.test"),
-        (memberId, "task-member@slock.test"),
-    ] {
-        accounts.addAccount(id: id, email: email, password: "password123")
-        accounts.markEmailVerified(userId: id)
+private func taskMembershipLogin(_ client: any Client, email: String) async throws -> String {
+    var headers = HTTPFields()
+    headers[.contentType] = "application/json"
+    let response = try await client.send(.post, headers: headers, to: "/api/auth/login") { request in
+        request.body = .init(string: "{\"email\":\"\(email)\",\"password\":\"password123\"}")
     }
-    accounts.oauth.addOwnedServer(id: serverId, slug: "task-contract", name: "Task Contract", ownerId: ownerId)
+    return (try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
+}
+
+private func taskHeaders(_ token: String, _ serverId: String) -> HTTPFields {
+    var headers = HTTPFields()
+    headers[.authorization] = "Bearer \(token)"
+    headers[.contentType] = "application/json"
+    headers[HTTPField.Name("X-Server-Id")!] = serverId
+    return headers
+}
+
+@Test func publicChannelTasksAreReadableButImmutableForNonMembers() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111771001"
+    let readerId = "11111111-1111-4111-8111-111111771002"
+    let serverId = "33333333-3333-4333-8333-333333771001"
+    accounts.addAccount(id: ownerId, email: "task-owner-771@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.addAccount(id: readerId, email: "task-reader-771@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: readerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "task-readonly", name: "Task Readonly", ownerId: ownerId)
     accounts.oauth.addMember(serverId: serverId, userId: readerId, role: "member")
-    accounts.oauth.addMember(serverId: serverId, userId: memberId, role: "member")
-    let publicChannel = accounts.oauth.createChannel(serverId: serverId, name: "readonly-public", creatorUserId: ownerId)
-    let publicMessage = accounts.oauth.createMessageRecord(channelId: publicChannel, content: "convert me", senderId: ownerId).id
-    let publicTask = accounts.addTasks(channelId: publicChannel, titles: ["readonly task"]).first ?? ""
-    let privateChannel = accounts.oauth.createChannel(serverId: serverId, name: "private-tasks", creatorUserId: ownerId, type: "private")
-    accounts.oauth.addChannelHuman(channelId: privateChannel, userId: memberId)
-    let privateMessage = accounts.oauth.createMessageRecord(channelId: privateChannel, content: "private convert target", senderId: memberId).id
-    let privateTask = accounts.addTasks(channelId: privateChannel, titles: ["private task"]).first ?? ""
+    let channel = accounts.oauth.createChannel(serverId: serverId, name: "readonly-public", creatorUserId: ownerId)
+    accounts.addPostableChannel(serverId: serverId, channelId: channel, memberId: ownerId, name: "readonly-public")
+    accounts.oauth.addChannelHuman(channelId: channel, userId: ownerId)
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -39,60 +46,138 @@ import VaporTesting
             emailAccounts: accounts
         ))
         try await app.testing { client in
-            func login(_ email: String) async throws -> String {
-                var headers = HTTPFields()
-                headers[.contentType] = "application/json"
-                let response = try await client.send(.post, headers: headers, to: "/api/auth/login") { request in
-                    request.body = .init(string: "{\"email\":\"\(email)\",\"password\":\"password123\"}")
-                }
-                return (try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
-            }
-            func headers(_ token: String) -> HTTPFields {
-                var fields = HTTPFields()
-                fields[.authorization] = "Bearer \(token)"
-                fields[.contentType] = "application/json"
-                fields[HTTPField.Name("X-Server-Id")!] = serverId
-                return fields
-            }
-            let ownerToken = try await login("task-owner@slock.test")
-            let readerToken = try await login("task-reader@slock.test")
-            let memberToken = try await login("task-member@slock.test")
+            let ownerToken = try await taskMembershipLogin(client, email: "task-owner-771@slock.test")
+            let readerToken = try await taskMembershipLogin(client, email: "task-reader-771@slock.test")
+            let ownerHeaders = taskHeaders(ownerToken, serverId)
+            let readerHeaders = taskHeaders(readerToken, serverId)
 
-            func call(_ method: HTTPRequest.Method, _ token: String, _ path: String, body: String? = nil) async throws -> ClientResponse {
-                try await client.send(method, headers: headers(token), to: URI(string: path)) { request in
-                    if let body { request.body = .init(string: body) }
-                }
+            let created = try await client.send(.post, headers: ownerHeaders, to: "/api/tasks/channel/\(channel)") { request in
+                request.body = .init(string: "{\"tasks\":[{\"title\":\"readonly task\"}]}")
             }
+            let createdBody = try JSONSerialization.jsonObject(with: Data((created.body.string ?? "").utf8)) as? [String: Any]
+            let taskId = (createdBody?["taskIds"] as? [String])?.first ?? ""
+            let message = try await client.send(.post, headers: ownerHeaders, to: "/api/messages") { request in
+                request.body = .init(string: "{\"channelId\":\"\(channel)\",\"content\":\"convert me\"}")
+            }
+            let messageId = (try JSONSerialization.jsonObject(with: Data((message.body.string ?? "").utf8)) as? [String: Any])?["id"] as? String ?? ""
 
-            let readerList = try await call(.get, readerToken, "/api/tasks/channel/\(publicChannel)")
-            #expect(readerList.status == .ok)
-            let listBody = try JSONSerialization.jsonObject(with: Data((readerList.body.string ?? "").utf8)) as? [String: Any]
-            #expect((listBody?["tasks"] as? [[String: Any]] ?? []).contains { $0["id"] as? String == publicTask })
-            #expect(try await call(.patch, readerToken, "/api/tasks/\(publicTask)/claim").status == .forbidden)
-            #expect(try await call(.patch, readerToken, "/api/tasks/\(publicTask)/status", body: "{\"status\":\"in_progress\"}").status == .forbidden)
-            #expect(try await call(.post, readerToken, "/api/tasks/channel/\(publicChannel)", body: "{\"tasks\":[{\"title\":\"should not create\"}]}").status == .forbidden)
-            #expect(try await call(.post, readerToken, "/api/tasks/convert-message", body: "{\"messageId\":\"\(publicMessage)\"}").status == .forbidden)
+            let list = try await client.get(URI(string: "/api/tasks/channel/\(channel)"), headers: readerHeaders)
+            #expect(list.status == .ok)
+            let listBody = try JSONSerialization.jsonObject(with: Data((list.body.string ?? "").utf8)) as? [String: Any]
+            let tasks = listBody?["tasks"] as? [[String: Any]] ?? []
+            #expect(tasks.contains { $0["id"] as? String == taskId })
 
-            let memberList = try await call(.get, memberToken, "/api/tasks/channel/\(privateChannel)")
+            #expect(try await client.send(.patch, headers: readerHeaders, to: "/api/tasks/\(taskId)/claim").status == .forbidden)
+            let status = try await client.send(.patch, headers: readerHeaders, to: "/api/tasks/\(taskId)/status") { request in
+                request.body = .init(string: "{\"status\":\"in_progress\"}")
+            }
+            #expect(status.status == .forbidden)
+            let create = try await client.send(.post, headers: readerHeaders, to: "/api/tasks/channel/\(channel)") { request in
+                request.body = .init(string: "{\"tasks\":[{\"title\":\"should not create\"}]}")
+            }
+            #expect(create.status == .forbidden)
+            let convert = try await client.send(.post, headers: readerHeaders, to: "/api/tasks/convert-message") { request in
+                request.body = .init(string: "{\"messageId\":\"\(messageId)\"}")
+            }
+            #expect(convert.status == .forbidden)
+        }
+    }
+}
+
+@Test func privateChannelTasksStayHiddenFromServerHumansOutsideTheChannel() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111771003"
+    let memberId = "11111111-1111-4111-8111-111111771004"
+    let readerId = "11111111-1111-4111-8111-111111771005"
+    let serverId = "33333333-3333-4333-8333-333333771002"
+    for (id, email, role) in [
+        (ownerId, "private-task-owner-771@slock.test", "owner"),
+        (memberId, "private-task-member-771@slock.test", "member"),
+        (readerId, "private-task-reader-771@slock.test", "member"),
+    ] {
+        accounts.addAccount(id: id, email: email, password: "password123")
+        accounts.markEmailVerified(userId: id)
+        if role == "owner" {
+            accounts.oauth.addOwnedServer(id: serverId, slug: "private-task", name: "Private Task", ownerId: id)
+        } else {
+            accounts.oauth.addMember(serverId: serverId, userId: id, role: role)
+        }
+    }
+    let channel = accounts.oauth.createChannel(serverId: serverId, name: "private-tasks", creatorUserId: ownerId, type: "private")
+    for id in [ownerId, memberId] {
+        accounts.addPostableChannel(serverId: serverId, channelId: channel, memberId: id, kind: "private", name: "private-tasks")
+        accounts.oauth.addChannelHuman(channelId: channel, userId: id)
+    }
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            let memberToken = try await taskMembershipLogin(client, email: "private-task-member-771@slock.test")
+            let readerToken = try await taskMembershipLogin(client, email: "private-task-reader-771@slock.test")
+            let memberHeaders = taskHeaders(memberToken, serverId)
+            let readerHeaders = taskHeaders(readerToken, serverId)
+
+            let created = try await client.send(.post, headers: memberHeaders, to: "/api/tasks/channel/\(channel)") { request in
+                request.body = .init(string: "{\"tasks\":[{\"title\":\"private task\"}]}")
+            }
+            let taskId = ((try JSONSerialization.jsonObject(with: Data((created.body.string ?? "").utf8)) as? [String: Any])?["taskIds"] as? [String])?.first ?? ""
+            let message = try await client.send(.post, headers: memberHeaders, to: "/api/messages") { request in
+                request.body = .init(string: "{\"channelId\":\"\(channel)\",\"content\":\"private convert target\"}")
+            }
+            let messageId = (try JSONSerialization.jsonObject(with: Data((message.body.string ?? "").utf8)) as? [String: Any])?["id"] as? String ?? ""
+
+            let memberList = try await client.get(URI(string: "/api/tasks/channel/\(channel)"), headers: memberHeaders)
             #expect(memberList.status == .ok)
-            let memberListBody = (try JSONSerialization.jsonObject(with: Data((memberList.body.string ?? "").utf8))) as? [String: Any]
-            #expect((memberListBody?["tasks"] as? [[String: Any]] ?? []).contains { $0["id"] as? String == privateTask })
-            let memberNumber = try await call(.get, memberToken, "/api/tasks/channel/\(privateChannel)/number/1")
-            #expect(memberNumber.status == .ok)
-            let memberNumberBody = (try JSONSerialization.jsonObject(with: Data((memberNumber.body.string ?? "").utf8))) as? [String: Any]
-            #expect((memberNumberBody?["task"] as? [String: Any])?["id"] as? String == privateTask)
+            let memberListBody = try JSONSerialization.jsonObject(with: Data((memberList.body.string ?? "").utf8)) as? [String: Any]
+            #expect((memberListBody?["tasks"] as? [[String: Any]] ?? []).contains { $0["id"] as? String == taskId })
+            let number = try await client.get(URI(string: "/api/tasks/channel/\(channel)/number/1"), headers: memberHeaders)
+            #expect(number.status == .ok)
+            #expect((try JSONSerialization.jsonObject(with: Data((number.body.string ?? "").utf8)) as? [String: Any])?["task"] != nil)
 
-            #expect(try await call(.get, readerToken, "/api/tasks/channel/\(privateChannel)").status == .notFound)
-            #expect(try await call(.get, readerToken, "/api/tasks/channel/\(privateChannel)/number/1").status == .notFound)
-            #expect(try await call(.patch, readerToken, "/api/tasks/\(privateTask)/claim").status == .notFound)
-            #expect(try await call(.post, readerToken, "/api/tasks/convert-message", body: "{\"messageId\":\"\(privateMessage)\"}").status == .notFound)
+            #expect(try await client.get(URI(string: "/api/tasks/channel/\(channel)"), headers: readerHeaders).status == .notFound)
+            #expect(try await client.get(URI(string: "/api/tasks/channel/\(channel)/number/1"), headers: readerHeaders).status == .notFound)
+            #expect(try await client.send(.patch, headers: readerHeaders, to: "/api/tasks/\(taskId)/claim").status == .notFound)
+            let convert = try await client.send(.post, headers: readerHeaders, to: "/api/tasks/convert-message") { request in
+                request.body = .init(string: "{\"messageId\":\"\(messageId)\"}")
+            }
+            #expect(convert.status == .notFound)
+        }
+    }
+}
 
-            #expect(try await call(.get, ownerToken, "/api/tasks/channel/\(publicChannel)?status=in_progress").status == .ok)
-            #expect(try await call(.get, ownerToken, "/api/tasks/channel/\(publicChannel)?status=bogus").status == .badRequest)
-            #expect(try await call(.get, ownerToken, "/api/tasks/channel/\(publicChannel)?status=todo&status=bogus").status == .badRequest)
-            #expect(try await call(.get, ownerToken, "/api/tasks/server?status=in_progress").status == .ok)
-            #expect(try await call(.get, ownerToken, "/api/tasks/server?status=bogus").status == .badRequest)
-            #expect(try await call(.get, ownerToken, "/api/tasks/server?status=todo&status=bogus").status == .badRequest)
+@Test func channelAndServerTaskListsValidateTheStatusFilter() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111771006"
+    let serverId = "33333333-3333-4333-8333-333333771003"
+    accounts.addAccount(id: ownerId, email: "task-status-owner-771@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "task-status", name: "Task Status", ownerId: ownerId)
+    let channel = accounts.oauth.createChannel(serverId: serverId, name: "status-filter-room", creatorUserId: ownerId)
+    accounts.addPostableChannel(serverId: serverId, channelId: channel, memberId: ownerId, name: "status-filter-room")
+    accounts.oauth.addChannelHuman(channelId: channel, userId: ownerId)
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            let token = try await taskMembershipLogin(client, email: "task-status-owner-771@slock.test")
+            let headers = taskHeaders(token, serverId)
+            for base in ["/api/tasks/channel/\(channel)", "/api/tasks/server"] {
+                #expect(try await client.get(URI(string: "\(base)?status=in_progress"), headers: headers).status == .ok)
+                let bad = try await client.get(URI(string: "\(base)?status=bogus"), headers: headers)
+                #expect(bad.status == .badRequest)
+                let repeated = try await client.get(URI(string: "\(base)?status=todo&status=bogus"), headers: headers)
+                #expect(repeated.status == .badRequest)
+            }
         }
     }
 }
