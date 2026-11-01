@@ -10712,6 +10712,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         case dm((kind: String, id: String), legacyId: String)
     }
 
+    private func sidebarHumanDMChannelId(peerId: String, userId: String, serverId: String) -> String? {
+        oauth.channelsForServer(serverId: serverId, userId: userId, includeArchived: true)
+            .first {
+                $0.type == "dm"
+                    && oauth.channelHumanIds(channelId: $0.id).contains(userId)
+                    && oauth.channelHumanIds(channelId: $0.id).contains(peerId)
+                    && oauth.channelAgentIds(channelId: $0.id).isEmpty
+            }?.id
+    }
+
     private func sidebarPinnedChannel(
         id: String,
         serverId: String,
@@ -10874,29 +10884,48 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                         channelIds.append(legacyId)
                     }
                 } else if kind == "agent" {
-                    guard let agent = oauth.agentRuntimeInfo(id: id), agent.serverId == serverId, !agent.deleted else { continue }
+                    guard let agent = oauth.agentRuntimeInfo(id: id), agent.serverId == serverId else { continue }
                     refs.append(("agent", id))
                     agentIds.append(id)
                 } else {
-                    guard oauth.memberRole(serverId: serverId, userId: id) != nil else { continue }
+                    lock.lock()
+                    let exists = accounts.values.contains { $0.id == id }
+                    lock.unlock()
+                    guard exists else { continue }
                     refs.append(("human", id))
+                    if let dm = sidebarHumanDMChannelId(peerId: id, userId: userId, serverId: serverId) {
+                        channelIds.append(dm)
+                    }
                 }
             }
             var seen = Set<String>()
             refs = refs.filter { seen.insert("\($0.kind)\n\($0.id)").inserted }
-            channelIds = Array(NSOrderedSet(array: channelIds)) as? [String] ?? channelIds
-            agentIds = Array(NSOrderedSet(array: agentIds)) as? [String] ?? agentIds
+            var channelSeen = Set<String>()
+            channelIds = channelIds.filter { channelSeen.insert($0).inserted }
+            var agentSeen = Set<String>()
+            agentIds = agentIds.filter { agentSeen.insert($0).inserted }
             pinnedChanged = refs.map { "\($0.kind)\n\($0.id)" } != pinnedState.refs.map { "\($0.kind)\n\($0.id)" }
             if pinnedChanged {
                 pinnedState = (refs, channelIds, agentIds, pinnedState.version + 1)
             }
-        } else if let rawChannels = object["pinnedChannelIds"] {
-            guard let ids = rawChannels as? [String] else {
+        } else if object["pinnedChannelIds"] != nil || object["pinnedAgentIds"] != nil || object["pinnedOrder"] != nil {
+            func stringArray(_ field: String) -> [String]? {
+                guard let raw = object[field] else { return [] }
+                return raw as? [String]
+            }
+            guard let requestedChannels = stringArray("pinnedChannelIds"),
+                  let requestedAgents = stringArray("pinnedAgentIds"),
+                  let requestedOrder = object["pinnedOrder"] == nil ? nil : stringArray("pinnedOrder")
+            else {
                 return Self.json(400, "{\"error\":\"Invalid sidebar pinned references\"}")
             }
-            var refs: [(kind: String, id: String)] = []
+            var refs = pinnedState.refs.filter { $0.kind == "human" }
             var channelIds: [String] = []
-            for id in ids {
+            var agentIds: [String] = []
+            let channelSource = requestedChannels.isEmpty && object["pinnedChannelIds"] == nil
+                ? (requestedOrder ?? []).filter { oauth.channelInfo(id: $0) != nil }
+                : requestedChannels
+            for id in channelSource {
                 switch sidebarPinnedChannel(id: id, serverId: serverId, userId: userId) {
                 case .missing:
                     continue
@@ -10908,9 +10937,23 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                     channelIds.append(legacyId)
                 }
             }
+            let agentSource = requestedAgents.isEmpty && object["pinnedAgentIds"] == nil
+                ? (requestedOrder ?? []).filter { oauth.agentRuntimeInfo(id: $0)?.serverId == serverId }
+                : requestedAgents
+            for id in agentSource {
+                guard let agent = oauth.agentRuntimeInfo(id: id), agent.serverId == serverId else { continue }
+                refs.append(("agent", id))
+                agentIds.append(id)
+            }
+            var seen = Set<String>()
+            refs = refs.filter { seen.insert("\($0.kind)\n\($0.id)").inserted }
+            var channelSeen = Set<String>()
+            channelIds = channelIds.filter { channelSeen.insert($0).inserted }
+            var agentSeen = Set<String>()
+            agentIds = agentIds.filter { agentSeen.insert($0).inserted }
             pinnedChanged = refs.map { "\($0.kind)\n\($0.id)" } != pinnedState.refs.map { "\($0.kind)\n\($0.id)" }
             if pinnedChanged {
-                pinnedState = (refs, channelIds, [], pinnedState.version + 1)
+                pinnedState = (refs, channelIds, agentIds, pinnedState.version + 1)
             }
         }
         lock.lock()
