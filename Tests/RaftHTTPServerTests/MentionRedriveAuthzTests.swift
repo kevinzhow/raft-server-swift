@@ -51,6 +51,13 @@ import VaporTesting
                     request.body = .init(string: body)
                 }
             }
+            func diagnostic(_ bearer: String, message: String? = nil, agentId: String? = nil) async throws -> ClientResponse {
+                let message = message ?? messageId
+                var headers = HTTPFields()
+                headers[.authorization] = "Bearer \(bearer)"
+                let target = agentId ?? agent
+                return try await client.get("/api/servers/\(serverId)/machines/\(machine)/agents/\(target)/diagnostic/mention-delivery/\(message)", headers: headers)
+            }
             let owner = try await token("redrive-owner@slock.test")
             let member = try await token("redrive-member@slock.test")
 
@@ -75,6 +82,19 @@ import VaporTesting
             let mismatch = try await redrive(owner, agentId: unassigned)
             #expect(mismatch.status == .notFound)
             #expect((try JSONSerialization.jsonObject(with: Data((mismatch.body.string ?? "").utf8)) as? [String: Any])?["status"] as? String == "NOT_ACCESSIBLE")
+
+            let diagnosticRefused = try await diagnostic(member)
+            #expect(diagnosticRefused.status == .notFound)
+            #expect((try JSONSerialization.jsonObject(with: Data((diagnosticRefused.body.string ?? "").utf8)) as? [String: Any])?["status"] as? String == "NOT_ACCESSIBLE")
+            let diagnosticAllowed = try await diagnostic(owner)
+            #expect(diagnosticAllowed.status == .notFound)
+            #expect((try JSONSerialization.jsonObject(with: Data((diagnosticAllowed.body.string ?? "").utf8)) as? [String: Any])?["status"] as? String == "NOT_JOINABLE")
+            let diagnosticBadId = try await diagnostic(owner, message: "not-a-uuid")
+            #expect(diagnosticBadId.status == .notFound)
+            #expect((try JSONSerialization.jsonObject(with: Data((diagnosticBadId.body.string ?? "").utf8)) as? [String: Any])?["status"] as? String == "NOT_JOINABLE")
+            let diagnosticMismatch = try await diagnostic(owner, agentId: unassigned)
+            #expect(diagnosticMismatch.status == .notFound)
+            #expect((try JSONSerialization.jsonObject(with: Data((diagnosticMismatch.body.string ?? "").utf8)) as? [String: Any])?["status"] as? String == "NOT_ACCESSIBLE")
         }
     }
 }

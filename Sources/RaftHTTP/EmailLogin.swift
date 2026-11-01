@@ -9240,6 +9240,38 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var runtimes: [String] = []
     }
 
+    public func mentionDeliveryDiagnostic(
+        authorization: String?,
+        serverId: String,
+        machineId: String,
+        agentId: String,
+        messageId: String
+    ) -> HTTPReply {
+        guard ServerScope.isUUID(messageId) else {
+            return Self.json(404, "{\"status\":\"NOT_JOINABLE\"}")
+        }
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId),
+              let agent = oauth.agentRuntimeInfo(id: agentId),
+              agent.serverId == serverId, !agent.deleted
+        else {
+            return Self.json(404, "{\"status\":\"NOT_ACCESSIBLE\"}")
+        }
+        lock.lock()
+        let machineMatches = machines.contains { $0.id == machineId && $0.serverId == serverId }
+        let assigned = agentMachineIds[agentId] == machineId
+        lock.unlock()
+        guard machineMatches, assigned else {
+            return Self.json(404, "{\"status\":\"NOT_ACCESSIBLE\"}")
+        }
+        guard role == "owner" || role == "admin" || agent.creatorUserId == userId else {
+            return Self.json(404, "{\"status\":\"NOT_ACCESSIBLE\"}")
+        }
+        return Self.json(404, "{\"status\":\"NOT_JOINABLE\"}")
+    }
+
     public func agentSessionTranscript(
         authorization: String?,
         serverId: String,

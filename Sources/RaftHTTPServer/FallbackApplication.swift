@@ -1531,6 +1531,15 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.get("api", "servers", ":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "mention-delivery", ":messageId") { request -> Response in
+        routeResponse(services.emailAccounts.mentionDeliveryDiagnostic(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            machineId: request.parameters.get("machineId") ?? "",
+            agentId: request.parameters.get("agentId") ?? "",
+            messageId: request.parameters.get("messageId") ?? ""
+        ))
+    }
     app.get("api", "servers", ":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "session-transcript") { request -> Response in
         routeResponse(services.emailAccounts.agentSessionTranscript(
             authorization: request.headers[.authorization],
