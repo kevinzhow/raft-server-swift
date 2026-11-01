@@ -2227,7 +2227,11 @@ public final class OAuthLedger: @unchecked Sendable {
             return json(401, "{\"error\":\"Client credentials are required\"}")
         }
         let grantType = fields["grantType"] ?? fields["grant_type"] ?? ""
+        let verifierPresent = fields["code_verifier"] != nil || jsonBodyHasKey(body, "code_verifier")
         if grantType == "urn:slock:grant-type:agent_request" {
+            if verifierPresent {
+                return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"This authorization request is not a PKCE request\"}")
+            }
             return exchangeAgentRequest(fields: fields, credentials: credentials, scopeServerId: scopeServerId)
         }
         guard grantType == "authorization_code" else {
@@ -2235,7 +2239,7 @@ public final class OAuthLedger: @unchecked Sendable {
         }
         let rawCode = (fields["code"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let isOIDC = rawCode.hasPrefix("raft_oidc_")
-        if !isOIDC, fields["code_verifier"] != nil || jsonBodyHasKey(body, "code_verifier") {
+        if !isOIDC, verifierPresent {
             return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization code, redirect URI, or PKCE verifier is invalid\"}")
         }
         let code = isOIDC ? rawCode : rawCode.lowercased()
@@ -2263,6 +2267,10 @@ public final class OAuthLedger: @unchecked Sendable {
             guard request.oidc else {
                 lock.unlock()
                 return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization code, redirect URI, or PKCE verifier is invalid\"}")
+            }
+            if request.codeChallenge == nil, verifierPresent {
+                lock.unlock()
+                return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"This authorization request is not a PKCE request\"}")
             }
             if let challenge = request.codeChallenge {
                 guard let verifier = fields["code_verifier"], !verifier.isEmpty,

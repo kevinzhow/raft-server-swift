@@ -326,3 +326,5 @@ Agent knowledge search payload（`serializeKnowledgeSearch`）：`{ok:true,query
 
 App 出站权限审阅：`GET /api/integrations/marketplace` 列出本 Server 已发布的第三方 App，行内带 `appNotificationPendingGroups`、`appNotificationPendingRevisionId`、`canReviewAppNotifications`（reviewer allowlist）。`POST /api/integrations/clients/:id/app-notifications/permissions/review` 必须携带 UUID 形式的 `expected_revision_id`；缺失、null、数字、空串或非 UUID 一律 400 且不改变 pending；与当前 pending revision 不符回 409 `permission_revision_stale`；匹配时提交该 revision 的 groups、清空 pending 并回 200 `{ok,groups}`。
 
+PKCE downgrade 防护：`POST /api/oauth/token` 与 `/oidc/<server>/api/oauth/token` 对 `authorization_code`（含 OIDC 非 PKCE code）和 `urn:slock:grant-type:agent_request`，只要请求体出现 `code_verifier`（包括空串、null、数组或任意类型）就回 400 `invalid_grant`，且不消耗 code；真正的非 PKCE 兑换在缺少该参数时仍成功一次，重放按 grant 类型回 409（普通/agent request）或 400（OIDC）。
+
