@@ -314,3 +314,5 @@ Agent attachment 下载：`GET /internal/agent-api/attachments/:id`（`read` cap
 
 `GET /internal/agent-api/inbox/conversations`（agent `read`）：从真实频道/DM/thread-follow 数据构建 offered 会话，按全局 `activity_seq` 降序。返回 `{view,items,totals:{conversations,dms,mentions},hasMore,nextBeforeSeq}`；item 为 `{target,kind,unread,mentions,lastReadSeq,activitySeq,latestSenderName,latestAt}`。target：频道 `#name`、DM `dm:@<peer>`、thread `#parent:<parentShort>` / `dm:@<peer>:<parentShort>`，Joint thread 用本地父频道名 + canonical parent short。`limit` 1–100（默认 20）、`before_seq` 正整数、`view` 仅 `unread|mentions`，非法 400。`view=mentions` 只留 `mentions>0`；totals 基于全部 offered 会话。无可寻址人类对端的 DM 不列出也不计数；inbox 后端不可用时 503 `INBOX_UNAVAILABLE`。
 
+`GET /api/servers/:id/apps`：composer resource references 未启用时 404；启用后所有成员拿到精确的两项 `{appId,displayName}`：`system.cleaner/Memory Cleaner`、`system.reminder/Reminder`，内部 `system.canary` 不出现，行内不带额外字段。`GET /api/servers/:id/member-graph`：除既有可见性/隐藏目录/自检外，序列化结果不含成员 email，也不含 agent 的 env vars（如 `GRAPH_SECRET`）。
+

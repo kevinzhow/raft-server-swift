@@ -55,6 +55,10 @@ import VaporTesting
             #expect(appsList.compactMap { $0["appId"] as? String } == ["system.cleaner", "system.reminder"])
             #expect(appsList.first { $0["appId"] as? String == "system.cleaner" }?["displayName"] as? String == "Memory Cleaner")
             #expect(!appsList.contains { $0["appId"] as? String == "system.canary" })
+            #expect(appsList as NSArray == [
+                ["appId": "system.cleaner", "displayName": "Memory Cleaner"],
+                ["appId": "system.reminder", "displayName": "Reminder"],
+            ] as NSArray)
         }
     }
 }

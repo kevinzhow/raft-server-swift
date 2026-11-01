@@ -19,7 +19,7 @@ import VaporTesting
     accounts.markEmailVerified(userId: "11111111-1111-4111-8111-111111111400")
     accounts.oauth.addOwnedServer(id: serverId, slug: "graph", name: "Graph", ownerId: ownerId)
     accounts.oauth.addMember(serverId: serverId, userId: memberId, role: "member")
-    let agent = accounts.oauth.createAgent(serverId: serverId, name: "GraphBot")
+    let agent = accounts.oauth.createAgent(serverId: serverId, name: "GraphBot", envVarsJSON: "{\"GRAPH_SECRET\":\"graph-secret-should-not-leak\"}")
     let deletedAgent = accounts.oauth.createAgent(serverId: serverId, name: "DeletedGraphBot")
     accounts.oauth.deleteAgent(id: deletedAgent)
     let publicChannel = accounts.oauth.createChannel(serverId: serverId, name: "graph-public", creatorUserId: ownerId)
@@ -88,6 +88,8 @@ import VaporTesting
             let serialized = response.body.string ?? ""
             #expect(!serialized.contains("graph-owner@slock.test"))
             #expect(!serialized.contains("graph-member@slock.test"))
+            #expect(!serialized.contains("graph-secret-should-not-leak"))
+            #expect(!serialized.contains("GRAPH_SECRET"))
 
             var missingHeader = HTTPFields()
             missingHeader[.authorization] = "Bearer \(memberToken)"
