@@ -186,7 +186,7 @@ readMutations.api	route	partial	-	auto-seed
 readMutationsResidueBoundary.api	route	partial	-	auto-seed
 releaseNotes.api	route	partial	-	auto-seed
 releaseNotesConcurrency.realPg	route	partial	-	auto-seed
-reminders.api	route	partial	-	auto-seed
+reminders.api	route	locked	576e45b	read-only listing, scope by agent creator, writes 404
 rwStaleRead	route	pending	-	auto-seed
 securityLifecycle.api	route	pending	-	auto-seed
 serverAgreements.api	route	partial	-	auto-seed
