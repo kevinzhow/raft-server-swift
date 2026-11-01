@@ -934,6 +934,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             agentId: request.parameters.get("id") ?? ""
         ))
     }
+    app.post("api", "agent", "login") { request -> Response in
+        routeResponse(services.emailAccounts.agentLogin(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? ""
+        ))
+    }
     app.post("api", "agents", ":id", "bootstrap-tokens") { request -> Response in
         routeResponse(services.emailAccounts.createAgentBootstrapToken(
             authorization: request.headers[.authorization],

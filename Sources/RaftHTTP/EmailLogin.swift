@@ -7810,6 +7810,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"agentId\":\(jsonString(agentId)),\"runtimes\":[],\"models\":[]}")
     }
 
+    public func agentLogin(authorization: String?, body: String) -> HTTPReply {
+        let enabled = (ProcessInfo.processInfo.environment["SLOCK_SELF_HOSTED_RUNNER_BOOTSTRAP_ENABLED"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "true"
+        guard enabled else {
+            return Self.json(404, "{\"error\":\"Self-hosted runner bootstrap is not enabled\",\"code\":\"self_hosted_runner_bootstrap_disabled\"}")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+        let token = (object["bootstrapToken"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !token.isEmpty else {
+            return Self.json(400, "{\"error\":\"bootstrapToken is required\",\"code\":\"missing_bootstrap_token\"}")
+        }
+        return Self.json(401, "{\"error\":\"token_invalid\",\"code\":\"token_invalid\"}")
+    }
+
     public func createAgentBootstrapToken(authorization: String?, serverId: String, agentId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

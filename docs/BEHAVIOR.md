@@ -264,3 +264,5 @@ Guest 角色降级后，其 follow 的 thread 从 `GET /api/channels/inbox`（`a
 
 External agent presence：任意 agent credential 认证的 API 调用会以 60s 窗口节流写 `last_used_at`；写成功时向 `server:<id>` 房间推 `agent:seen` 事件 `{agentId,lastSeenAt}`，仅 external agent 推送。`GET /api/agents` 对 external agent 返回 `lastSeenAt`（未见过为 null），managed agent 不返回该字段。`GET /internal/agent-api/wake-hints/stream` 打开即记为 seen，并按 `SLOCK_WAKE_STREAM_HEARTBEAT_MS`（默认 15s，夹在 50ms..60s）心跳刷新 `last_used_at` 且继续推送 `agent:seen`；流保持 SSE `text/event-stream`。
 
+`POST /api/agent/login` 只在 `SLOCK_SELF_HOSTED_RUNNER_BOOTSTRAP_ENABLED=true` 时开启；关闭时 404 `self_hosted_runner_bootstrap_disabled`，开启后缺 `bootstrapToken`（含空白）400 `missing_bootstrap_token`，未知 token 401 `token_invalid`。`POST /internal/agent/:agentId/runtime-profile/migration-done` 需 machine key 且 agent 同 Server；空 `migrationKey` 回 `{ok,deprecated,noop:"no pending migration",message}`，非空回 `{ok,deprecated,message}`，无效 key 401 `auth_required`。
+
