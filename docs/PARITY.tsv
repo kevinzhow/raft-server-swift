@@ -122,7 +122,7 @@ internalAgentApi.idempotentWrites	route	partial	-	auto-seed
 internalAgentApi.inboxEligibility	route	partial	-	auto-seed
 internalAgentApi.inboxList	route	partial	-	auto-seed
 internalAgentApi.inboxPush	route	partial	-	auto-seed
-internalAgentApi.killSwitch	route	partial	-	auto-seed
+internalAgentApi.killSwitch	route	locked	cc93ddd	env kill switch for /internal/agent-api and /internal/computer
 internalAgentApi.mcp	route	locked	a9faeb6	credential-bound tool catalog, unavailable connectors, stale-call 409
 internalAgentApi.mentionActions	route	partial	-	auto-seed
 internalAgentApi.raftbench	route	partial	-	auto-seed
