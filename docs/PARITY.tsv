@@ -80,7 +80,7 @@ featureFlagsAdmin.removed.api	route	locked	be8b567	removed routes stay 404
 feedbackAgentEventTail.e2e.api	route	pending	-	auto-seed
 feedbackMachineEvidence.e2e.api	route	pending	-	auto-seed
 feedbackTranscriptOutcome.e2e.api	route	partial	-	auto-seed
-guestActivities.review.api	route	pending	-	auto-seed
+guestActivities.review.api	route	locked	6ceb12d	guest thread revocation hides inbox rows and denies reads
 guestRbac.api	route	pending	-	auto-seed
 guestVisibilityBoundaries.api	route	pending	-	auto-seed
 hostedAgentMigration.api	route	partial	-	auto-seed
