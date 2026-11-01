@@ -148,7 +148,7 @@ messageTranslations.api	route	partial	-	auto-seed
 messages.api	route	partial	-	auto-seed
 messages.mentionDeliveries.api	route	pending	-	auto-seed
 messagesContextWindow.api	route	locked	5247150	context window sizing and clean 400s
-messagesStorageColumns.api	route	pending	-	auto-seed
+messagesStorageColumns.api	route	locked	67b77fb	storage-only columns and sender timezone stay off human reads
 messagesThreadSummaries.api	route	partial	-	auto-seed
 mobileAppEmailUnsubscribe.api	route	partial	-	auto-seed
 mobileDownload	route	partial	-	auto-seed
