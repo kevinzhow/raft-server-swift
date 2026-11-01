@@ -8131,6 +8131,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func setMachineRuntimesForTesting(machineId: String, runtimes: [String]) {
+        lock.lock()
+        if let index = machines.firstIndex(where: { $0.id == machineId }) {
+            machines[index].runtimes = runtimes
+        }
+        lock.unlock()
+    }
+
     public func setAgentMachineForTesting(agentId: String, machineId: String) {
         lock.lock()
         agentMachineIds[agentId] = machineId
@@ -8403,6 +8411,67 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let apiKey = machineAPIKey(machineId: machineId) ?? ""
         let machine = "{\"id\":\(jsonString(machineId)),\"serverId\":\(jsonString(serverId)),\"name\":\(jsonString(name)),\"userId\":\(jsonString(userId)),\"description\":null}"
         return Self.json(200, "{\"machine\":\(machine),\"apiKey\":\(jsonString(apiKey))}")
+    }
+
+    public func machineRuntimeOptions(authorization: String?, serverId: String, machineId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        lock.lock()
+        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Computer not found\"}")
+        }
+        let installed = Set(machine.runtimes)
+        lock.unlock()
+        guard role == "owner" || role == "admin" || machine.userId == userId else {
+            return Self.json(403, "{\"error\":\"The `editMachines` capability or machine creator authority is required to inspect runtime options\"}")
+        }
+        let catalog: [(id: String, binary: String)] = [
+            ("claude", "claude"),
+            ("codex", "codex"),
+            ("builtin", ""),
+            ("kimi-sdk", ""),
+            ("cursor", "cursor-agent"),
+            ("opencode", "opencode"),
+            ("pi", "pi"),
+        ]
+        let options = catalog.map { runtime -> String in
+            let capability = installed.contains(runtime.id)
+                ? "available"
+                : (runtime.binary.isEmpty ? "update_required" : "not_installed")
+            let canSelect = capability == "available"
+            return "{\"runtimeId\":\(jsonString(runtime.id)),\"capabilityStatus\":\(jsonString(capability)),\"admissionStatus\":\"available_for_new\",\"admissionReason\":null,\"current\":false,\"availableForNew\":true,\"manageableForCurrentAgent\":false,\"canSelectInThisContext\":\(canSelect)}"
+        }.joined(separator: ",")
+        return Self.json(200, "{\"context\":\"new_agent\",\"machineId\":\(jsonString(machine.id)),\"options\":[\(options)]}")
+    }
+
+    public func machineRuntimeModels(authorization: String?, serverId: String, machineId: String, runtime: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        lock.lock()
+        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Machine not found in this server\"}")
+        }
+        let models = machineRuntimeModels[machineId]?[runtime]?.models ?? []
+        lock.unlock()
+        guard role == "owner" || role == "admin" || machine.userId == userId else {
+            return Self.json(403, "{\"error\":\"The `editMachines` capability or machine creator authority is required to inspect runtime models\"}")
+        }
+        let modelJSON = models.map {
+            "{\"id\":\(jsonString($0.id)),\"label\":\(jsonString($0.label))}"
+        }.joined(separator: ",")
+        let defaultModel = models.first?.id
+        let defaultJSON = defaultModel.map(jsonString) ?? "null"
+        return Self.json(200, "{\"kind\":\"live\",\"value\":{\"models\":[\(modelJSON)],\"default\":\(defaultJSON)},\"models\":[\(modelJSON)],\"default\":\(defaultJSON)}")
     }
 
     public func machineWorkspaces(authorization: String?, serverId: String, machineId: String) -> HTTPReply {
@@ -8906,6 +8975,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var name: String
         var description: String?
         var apiKey: String?
+        var runtimes: [String] = []
     }
 
     public func redriveMentionDelivery(authorization: String?, serverId: String, agentId: String) -> HTTPReply {

@@ -1786,6 +1786,21 @@ public func configure(_ app: Application, services: FallbackServices) {
             machineId: request.parameters.get("machineId") ?? ""
         ))
     }
+    app.get("api", "servers", ":id", "machines", ":machineId", "runtime-options") { request -> Response in
+        routeResponse(services.emailAccounts.machineRuntimeOptions(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            machineId: request.parameters.get("machineId") ?? ""
+        ))
+    }
+    app.get("api", "servers", ":id", "machines", ":machineId", "runtime-models", ":runtime") { request -> Response in
+        routeResponse(services.emailAccounts.machineRuntimeModels(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            machineId: request.parameters.get("machineId") ?? "",
+            runtime: request.parameters.get("runtime") ?? ""
+        ))
+    }
     app.delete("api", "servers", ":id", "machines", ":machineId", "workspaces", ":directoryName") { request -> Response in
         routeResponse(services.emailAccounts.deleteMachineWorkspace(
             authorization: request.headers[.authorization],
