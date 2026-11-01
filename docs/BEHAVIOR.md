@@ -198,6 +198,9 @@ agent 读游标前进且 server 开启 read receipts 时，`channel:<id>` 房间
 `POST /api/servers/:id/machines/:machineId/computer-lifecycle-operations`：校验 `action/operationId/parentOperationId/targetVersion/completionMode`；仅 owner/admin 或 machine creator；非 managed Computer 409 `not_a_computer`；start 在线 409 `computer_already_online`、非 start 离线 409 `computer_offline`；upgrade 无 target 409 `computer_upgrade_unavailable`，带 `legacy_k_promoted` 409 ready pending；成功 201 返回 operation 投影。
 
 
+`POST /api/servers` 新 server slug 少于 5 字符 400 `Slug must be at least 5 characters`；`POST /api/servers/:id/members` 未挂载 404；`GET/PATCH /api/servers/:id/product-analytics-settings` owner/admin 可写、member 只读；`GET /api/servers/:id/members` 缺/错 `X-Server-Id` 400，`GET /api/servers/:id` 非成员 403。
+
+
 `POST /api/messages` 成功后向 `channel:<id>` 房间发 `message:new`，payload 是消息 HTTP body（id/channelId/content/attachments）。`POST /api/tasks/channel/:channelId` 成功后向同一房间发 `task:created`，payload 是 `{channelId,tasks:[{id,channelId,title,status}]}`；`PATCH /api/tasks/:taskId/claim` 成功后发 `task:updated`，payload `{channelId,task:<task JSON>}`；`POST /api/channels/threads/follow|unfollow` 成功后发 `thread:followers-updated`，payload `{threadChannelId}`。频道创建时该用户的在线 socket 自动加入 `channel:<id>`。task JSON 带 `messageId`。
 
 
