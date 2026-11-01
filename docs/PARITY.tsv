@@ -104,7 +104,7 @@ internalAgentApi.agentEventRead	route	locked	f74bbae	owner-scoped event re-read,
 internalAgentApi.agentStatus	route	partial	-	auto-seed
 internalAgentApi.appConfig	route	locked	c70339a	credential-bound config, CAS revision 409, per-agent overrides
 internalAgentApi.attachmentComments	route	partial	-	auto-seed
-internalAgentApi.attachmentDownloadUrl	route	partial	-	auto-seed
+internalAgentApi.attachmentDownloadUrl	route	locked	367c453	agent download + presigned URL, uniform 404, 409 without presign
 internalAgentApi.auth	route	partial	-	auto-seed
 internalAgentApi.channelCard	route	locked	cbe47a1	channel/private/thread cards, DM card-free, dm:@ resolution
 internalAgentApi.context	route	partial	-	auto-seed
