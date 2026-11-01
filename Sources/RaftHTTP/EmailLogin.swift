@@ -3647,16 +3647,39 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
         }
         let attachmentIds = (object["attachmentIds"] as? [Any])?.compactMap { $0 as? String } ?? []
-        let mentions = Self.mentionInputs(object["mentions"])
+        let typedMentions = Self.mentionInputs(object["mentions"])
+        if Self.mentionBindingConflict(typedMentions) {
+            return Self.json(400, "{\"error\":\"A mention handle is bound to more than one target\",\"code\":\"mention_binding_conflict\"}")
+        }
+        let mentionResolution = resolvedMessageMentions(
+            serverId: serverId ?? "",
+            senderId: userId,
+            content: content,
+            typed: typedMentions,
+            warnUnresolved: contract == "v2"
+        )
+        let mentions = mentionResolution.mentions
+        let unresolvedMentionHandles = mentionResolution.unresolved
         let senderTimezone = Self.parseOptionalIanaTimezone(object["timezone"])
         let reply: HTTPReply
+        var createdMessage = false
         if object["randomId"] != nil {
             guard let randomId = object["randomId"] as? String, !randomId.isEmpty, randomId.count <= 128 else {
                 return Self.json(400, "{\"error\":\"randomId must be a non-empty string with at most 128 characters\"}")
             }
-            reply = storeHumanMessage(channelId: channelId, senderId: userId, content: content, randomId: randomId, attachmentIds: attachmentIds, senderTimezone: senderTimezone, mentions: mentions)
+            let stored = storeHumanMessage(channelId: channelId, senderId: userId, content: content, randomId: randomId, attachmentIds: attachmentIds, senderTimezone: senderTimezone, mentions: mentions)
+            reply = stored.reply
+            createdMessage = stored.created
         } else {
-            reply = storeHumanMessage(channelId: channelId, senderId: userId, content: content, randomId: nil, attachmentIds: attachmentIds, senderTimezone: senderTimezone, mentions: mentions)
+            let stored = storeHumanMessage(channelId: channelId, senderId: userId, content: content, randomId: nil, attachmentIds: attachmentIds, senderTimezone: senderTimezone, mentions: mentions)
+            reply = stored.reply
+            createdMessage = stored.created
+        }
+        if createdMessage, reply.status == 200,
+           let data = reply.body.data(using: .utf8),
+           let stored = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let messageId = stored["id"] as? String {
+            recordMemberMentionRows(messageId: messageId, channelId: channelId, mentions: mentions)
         }
         if reply.status == 200, channel.kind == "thread", let parentMessageId = channel.parentMessageId {
             lock.lock()
@@ -3687,7 +3710,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
         }
         if contract == "v2" {
-            return v2HumanSend(reply, channelId: channelId, mentions: mentions)
+            return v2HumanSend(reply, channelId: channelId, mentions: mentions, unresolvedMentionHandles: unresolvedMentionHandles)
         }
         return withPendingMentionActions(reply, channelId: channelId, mentions: mentions)
     }
@@ -4093,7 +4116,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             content: content,
             randomId: randomId,
             attachmentIds: []
-        )
+        ).reply
         guard storedReply.status == 200,
               let data = storedReply.body.data(using: .utf8),
               let stored = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -4322,7 +4345,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// `POST /api/v2/messages`. The message is always nested. A stopped agent DM adds `agent_stopped`.
-    private func v2HumanSend(_ reply: HTTPReply, channelId: String, mentions: [MentionInput]) -> HTTPReply {
+    private func v2HumanSend(_ reply: HTTPReply, channelId: String, mentions: [MentionInput], unresolvedMentionHandles: [String] = []) -> HTTPReply {
         guard reply.status == 200,
               let data = reply.body.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -4336,6 +4359,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         if !warnings.isEmpty {
             body += ",\"deliveryWarnings\":[\(warnings)]"
+        }
+        if !unresolvedMentionHandles.isEmpty {
+            let handles = unresolvedMentionHandles.map { jsonString($0) }.joined(separator: ",")
+            body += ",\"unresolvedMentionHandles\":[\(handles)]"
         }
         body += "}"
         return Self.json(200, body)
@@ -4385,8 +4412,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 guard accounts.values.contains(where: { $0.id == mention.id }), !members.contains(mention.id) else { continue }
                 avatar = accounts.values.first { $0.id == mention.id }?.avatarUrl
             } else {
-                guard let agent = serverAgents[mention.id], agent.serverId == serverId else { continue }
-                avatar = agent.avatarUrl
+                if oauth.channelAgentIds(channelId: channelId).contains(mention.id) { continue }
+                if let agent = serverAgents[mention.id], agent.serverId == serverId {
+                    avatar = agent.avatarUrl
+                } else if let agent = oauth.agentRuntimeInfo(id: mention.id), agent.serverId == serverId, !agent.deleted {
+                    avatar = agent.avatarUrl
+                } else {
+                    continue
+                }
             }
             let avatarJSON = avatar.map { jsonString($0) } ?? "null"
             let existing = storedMentions.first { $0.messageId == messageId && $0.targetType == mention.type && $0.targetId == mention.id }
@@ -4418,6 +4451,135 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.string(from: Date().addingTimeInterval(7 * 24 * 60 * 60))
+    }
+
+    private static func mentionBindingConflict(_ mentions: [MentionInput]) -> Bool {
+        var byName: [String: String] = [:]
+        for mention in mentions where mention.type == "user" || mention.type == "agent" {
+            guard ServerScope.isUUID(mention.id), !mention.name.isEmpty else { continue }
+            let key = mention.name.lowercased()
+            let signature = "\(mention.type):\(mention.id)"
+            if let previous = byName[key], previous != signature { return true }
+            byName[key] = signature
+        }
+        return false
+    }
+
+    private static func rawMentionHandles(_ content: String) -> [String] {
+        var handles: [String] = []
+        for match in content.matches(of: /(?:^|[^A-Za-z0-9_.-])@([A-Za-z0-9_.-]+)/) {
+            let handle = String(match.1)
+            if !handle.isEmpty, !handles.contains(handle) { handles.append(handle) }
+        }
+        return handles
+    }
+
+    /// Caller holds the directory lock.
+    private func mentionHumanVisibleLocked(serverId: String, senderId: String, targetId: String) -> Bool {
+        if targetId == senderId { return true }
+        guard hideHumansFromMembers[serverId] == true else { return true }
+        guard let targetRole = oauth.memberRole(serverId: serverId, userId: targetId) else { return false }
+        let senderRole = oauth.memberRole(serverId: serverId, userId: senderId)
+        guard senderRole == "member" else { return true }
+        if targetRole == "owner" || targetRole == "admin" { return true }
+        for (id, channel) in postableChannels
+        where channel.serverId == serverId && channel.deletedAt == nil && channel.memberIds.contains(senderId) {
+            if channel.name != "all" && channel.memberIds.contains(targetId) { return true }
+            if jointRosterLocked(channelId: id)?.contains(targetId) == true { return true }
+        }
+        return false
+    }
+
+    private func resolvedMessageMentions(
+        serverId: String,
+        senderId: String,
+        content: String,
+        typed: [MentionInput],
+        warnUnresolved: Bool
+    ) -> (mentions: [MentionInput], unresolved: [String]) {
+        lock.lock()
+        defer { lock.unlock() }
+        var resolved: [MentionInput] = []
+        var seen = Set<String>()
+        func append(type: String, id: String, name: String) {
+            let key = "\(type):\(id)"
+            guard seen.insert(key).inserted else { return }
+            resolved.append(MentionInput(type: type, id: id, name: name))
+        }
+        var typedNames = Set<String>()
+        for mention in typed where mention.type == "user" || mention.type == "agent" {
+            guard ServerScope.isUUID(mention.id), !mention.name.isEmpty else { continue }
+            typedNames.insert(mention.name.lowercased())
+            if mention.type == "user" {
+                let hiddenDirectory = hideHumansFromMembers[serverId] == true
+                    && oauth.memberRole(serverId: serverId, userId: senderId) == "member"
+                if hiddenDirectory {
+                    guard mentionHumanVisibleLocked(serverId: serverId, senderId: senderId, targetId: mention.id) else { continue }
+                } else {
+                    guard accounts.values.contains(where: { $0.id == mention.id }) else { continue }
+                }
+                append(type: "user", id: mention.id, name: mention.name)
+            } else {
+                let runtime = oauth.agentRuntimeInfo(id: mention.id)
+                let directory = serverAgents[mention.id]
+                guard runtime?.serverId == serverId || directory?.serverId == serverId else { continue }
+                append(type: "agent", id: mention.id, name: mention.name)
+            }
+        }
+        var agentNames: [(id: String, name: String)] = oauth.serverAgents(serverId: serverId).map { ($0.id, $0.name) }
+        for (id, agent) in serverAgents where agent.serverId == serverId {
+            if !agentNames.contains(where: { $0.id == id }) { agentNames.append((id, agent.name)) }
+        }
+        var unresolved: [String] = []
+        for handle in Self.rawMentionHandles(content) where !typedNames.contains(handle.lowercased()) {
+            let humanMatches = accounts.values.filter { account in
+                account.id != senderId
+                    && (account.name.caseInsensitiveCompare(handle) == .orderedSame
+                        || (account.displayName ?? "").caseInsensitiveCompare(handle) == .orderedSame)
+                    && mentionHumanVisibleLocked(serverId: serverId, senderId: senderId, targetId: account.id)
+            }.map(\.id)
+            let agentMatches = agentNames.filter { $0.name.caseInsensitiveCompare(handle) == .orderedSame }.map(\.id)
+            let total = humanMatches.count + agentMatches.count
+            if warnUnresolved {
+                guard total == 1 else {
+                    unresolved.append("@" + handle)
+                    continue
+                }
+            }
+            for id in humanMatches { append(type: "user", id: id, name: handle) }
+            for id in agentMatches { append(type: "agent", id: id, name: handle) }
+        }
+        return (resolved, unresolved)
+    }
+
+    private func recordMemberMentionRows(messageId: String, channelId: String, mentions: [MentionInput]) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let channel = postableChannels[channelId] else { return }
+        for mention in mentions where mention.type == "user" || mention.type == "agent" {
+            guard ServerScope.isUUID(mention.id) else { continue }
+            let isMember = mention.type == "user"
+                ? channel.memberIds.contains(mention.id)
+                : oauth.channelAgentIds(channelId: channelId).contains(mention.id)
+            guard isMember else { continue }
+            guard !storedMentions.contains(where: {
+                $0.messageId == messageId && $0.targetType == mention.type && $0.targetId == mention.id
+            }) else { continue }
+            storedMentions.append(StoredMention(
+                id: UUID().uuidString.lowercased(),
+                messageId: messageId,
+                channelId: channelId,
+                senderId: "system",
+                targetType: mention.type,
+                targetId: mention.id,
+                handle: mention.name,
+                notifiableAtSend: true,
+                notifiedAt: nil,
+                notifiedByType: nil,
+                notifiedById: nil,
+                notifiedAction: nil
+            ))
+        }
     }
 
     private static func mentionInputs(_ value: Any?) -> [MentionInput] {
@@ -6756,35 +6918,35 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return humanMessageRows.count
     }
 
-    private func storeHumanMessage(channelId: String, senderId: String, content: String, randomId: String?, attachmentIds: [String], senderTimezone: String? = nil, mentions: [MentionInput] = []) -> HTTPReply {
+    private func storeHumanMessage(channelId: String, senderId: String, content: String, randomId: String?, attachmentIds: [String], senderTimezone: String? = nil, mentions: [MentionInput] = []) -> (reply: HTTPReply, created: Bool) {
         lock.lock()
         if let randomId, let existing = humanMessageRows.first(where: { $0.senderId == senderId && $0.randomId == randomId }) {
             if existing.channelId != channelId {
                 lock.unlock()
-                return Self.json(409, "{\"error\":\"randomId has already been used for a different message\",\"code\":\"random_id_conflict\"}")
+                return (Self.json(409, "{\"error\":\"randomId has already been used for a different message\",\"code\":\"random_id_conflict\"}"), false)
             }
             let matches = attachmentOrderMatches(message: existing, attachmentIds: attachmentIds, uploaderId: senderId)
             let snapshot = existing
             lock.unlock()
             if matches {
-                return Self.humanMessageJSON(snapshot)
+                return (Self.humanMessageJSON(snapshot), false)
             }
-            return Self.json(400, "{\"error\":\"This idempotent send was already committed with a different ordered attachment set.\",\"code\":\"attachment_replay_conflict\"}")
+            return (Self.json(400, "{\"error\":\"This idempotent send was already committed with a different ordered attachment set.\",\"code\":\"attachment_replay_conflict\"}"), false)
         }
         var seenAttachmentIds = Set<String>()
         for id in attachmentIds {
             if seenAttachmentIds.contains(id) {
                 lock.unlock()
-                return Self.json(400, "{\"error\":\"Attachment \(id) was requested more than once. Send each attachment ID exactly once.\",\"code\":\"attachment_duplicate\"}")
+                return (Self.json(400, "{\"error\":\"Attachment \(id) was requested more than once. Send each attachment ID exactly once.\",\"code\":\"attachment_duplicate\"}"), false)
             }
             seenAttachmentIds.insert(id)
             guard let row = channelAttachments[id], row.channelId == channelId, row.uploaderId == senderId else {
                 lock.unlock()
-                return Self.json(400, "{\"error\":\"Attachment \(id) is not available for this sender. Re-upload the file and send the new attachment ID.\",\"code\":\"attachment_not_found\"}")
+                return (Self.json(400, "{\"error\":\"Attachment \(id) is not available for this sender. Re-upload the file and send the new attachment ID.\",\"code\":\"attachment_not_found\"}"), false)
             }
             if row.messageId != nil {
                 lock.unlock()
-                return Self.json(400, "{\"error\":\"Attachment \(id) is already attached to another message. Re-upload the file and send the new attachment ID.\",\"code\":\"attachment_already_linked\"}")
+                return (Self.json(400, "{\"error\":\"Attachment \(id) is already attached to another message. Re-upload the file and send the new attachment ID.\",\"code\":\"attachment_already_linked\"}"), false)
             }
         }
         let storedMentionsForEcho = postableChannels[channelId]?.kind == "dm"
@@ -6817,7 +6979,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
         let reply = Self.humanMessageJSON(stored)
         emitRealtime("channel:\(channelId)", "message:new", reply.body)
-        return reply
+        return (reply, true)
     }
 
     /// Replay accepts only the stored ids, positions, and uploader. It does not write.
