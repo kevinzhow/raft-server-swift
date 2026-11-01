@@ -1536,6 +1536,19 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// `updateOAuthClient`'s return-URL guard: an existing client cannot be
+    /// moved to a script or data URL either.
+    public func updateClientReturnUrl(clientRecordId: String, returnUrl: String?) throws {
+        if let returnUrl, !Self.isSafeReturnURL(returnUrl) {
+            throw OAuthClientRejection(message: "returnUrl must be HTTPS (or loopback HTTP), without credentials or fragment")
+        }
+        lock.lock()
+        if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
+            clients[index].returnUrl = returnUrl
+        }
+        lock.unlock()
+    }
+
     public func setClientReturnUrl(clientRecordId: String, returnUrl: String?) {
         lock.lock()
         if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {

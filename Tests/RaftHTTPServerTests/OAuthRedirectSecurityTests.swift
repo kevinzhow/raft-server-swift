@@ -6,53 +6,72 @@ import Testing
 import Vapor
 import VaporTesting
 
-private func redirectBody(_ response: ClientResponse) throws -> [String: Any] {
-    let data = Data((response.body.string ?? "").utf8)
-    return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+private struct RedirectFixture {
+    let accounts: EmailLoginDirectory
+    let serverId: String
+    let ownerId: String
+    let ownerEmail: String
+    let callback: String
 }
 
-@Test func humanAuthorizationRejectsUnsafeOrMismatchedReturnUrls() async throws {
+private func makeRedirectFixture(suffix: String) -> RedirectFixture {
     let accounts = EmailLoginDirectory()
-    let ownerId = "11111111-1111-4111-8111-111111111234"
-    let serverId = "33333333-3333-4333-8333-333333333429"
-    let callback = "https://client.example.test/callback"
-    accounts.addAccount(id: ownerId, email: "redirect-234@slock.test", password: "password123")
+    let number = Int(suffix) ?? 0
+    let serverId = String(format: "33333333-3333-4333-8333-%012d", 900_000 + number)
+    let ownerId = String(format: "11111111-1111-4111-8111-%012d", 900_000 + number)
+    let ownerEmail = "oauth-redirect-\(suffix)@slock.test"
+    accounts.addAccount(id: ownerId, email: ownerEmail, password: "password123")
     accounts.markEmailVerified(userId: ownerId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "redirect-234", name: "Redirect", ownerId: ownerId)
-    _ = try accounts.oauth.createClient(
+    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-redirect-\(suffix)", name: "OAuth Redirect", ownerId: ownerId)
+    return RedirectFixture(
+        accounts: accounts,
         serverId: serverId,
-        createdByUserId: ownerId,
-        name: "Registered callback",
-        clientId: "redirect-registered-234",
-        returnUrl: callback
+        ownerId: ownerId,
+        ownerEmail: ownerEmail,
+        callback: "https://client.example.test/callback"
     )
+}
+
+private func redirectLogin(_ client: any Client, email: String) async throws -> String {
+    var headers = HTTPFields()
+    headers[.contentType] = "application/json"
+    let response = try await client.send(.post, headers: headers, to: "/api/auth/login") { request in
+        request.body = .init(string: "{\"email\":\"\(email)\",\"password\":\"password123\"}")
+    }
+    return (try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
+}
+
+private func redirectObject(_ response: ClientResponse) throws -> [String: Any] {
+    (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+}
+
+@Test func humanOAuthCallbackRejectsUnsafeAndUnregisteredRedirects() async throws {
+    let fixture = makeRedirectFixture(suffix: "931")
+    let accounts = fixture.accounts
     let unregistered = try accounts.oauth.createClient(
-        serverId: serverId,
-        createdByUserId: ownerId,
-        name: "No callback",
-        clientId: "redirect-unregistered-234"
+        serverId: fixture.serverId,
+        createdByUserId: fixture.ownerId,
+        name: "Unregistered callback",
+        clientId: "redirect-unregistered-931"
+    )
+    let registered = try accounts.oauth.createClient(
+        serverId: fixture.serverId,
+        createdByUserId: fixture.ownerId,
+        name: "Audit callback",
+        clientId: "redirect-audit-931",
+        returnUrl: fixture.callback
     )
     let legacy = try accounts.oauth.createClient(
-        serverId: serverId,
-        createdByUserId: ownerId,
-        name: "Legacy unsafe",
-        clientId: "redirect-legacy-234"
+        serverId: fixture.serverId,
+        createdByUserId: fixture.ownerId,
+        name: "Legacy callback",
+        clientId: "redirect-legacy-931",
+        returnUrl: fixture.callback
     )
-    accounts.oauth.setClientReturnUrl(clientRecordId: legacy.id, returnUrl: "javascript:window.auditExecuted=true//")
-
-    var rejectedUnsafeRegistration = false
-    do {
-        _ = try accounts.oauth.createClient(
-            serverId: serverId,
-            createdByUserId: ownerId,
-            name: "Unsafe registration",
-            clientId: "redirect-unsafe-234",
-            returnUrl: "javascript:alert(1)"
-        )
-    } catch {
-        rejectedUnsafeRegistration = true
-    }
-    #expect(rejectedUnsafeRegistration)
+    accounts.oauth.setClientReturnUrl(
+        clientRecordId: legacy.id,
+        returnUrl: "javascript:window.auditExecuted=true//"
+    )
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -62,39 +81,68 @@ private func redirectBody(_ response: ClientResponse) throws -> [String: Any] {
             emailAccounts: accounts
         ))
         try await app.testing { client in
-            var loginHeaders = HTTPFields()
-            loginHeaders[.contentType] = "application/json"
-            let login = try await client.send(.post, headers: loginHeaders, to: "/api/auth/login") { request in
-                request.body = .init(string: "{\"email\":\"redirect-234@slock.test\",\"password\":\"password123\"}")
-            }
-            let session = try redirectBody(login)["accessToken"] as? String ?? ""
-
-            func authorize(_ clientId: String, _ returnUrl: String) async throws -> ClientResponse {
+            let token = try await redirectLogin(client, email: fixture.ownerEmail)
+            func authorize(clientKey: String, returnUrl: String) async throws -> ClientResponse {
                 var headers = HTTPFields()
-                headers[.authorization] = "Bearer \(session)"
+                headers[.authorization] = "Bearer \(token)"
                 headers[.contentType] = "application/json"
                 return try await client.send(.post, headers: headers, to: "/api/oauth/authorize/human") { request in
-                    request.body = .init(string: "{\"clientId\":\"\(clientId)\",\"serverId\":\"\(serverId)\",\"returnUrl\":\"\(returnUrl)\",\"scopes\":[\"openid\",\"profile\"]}")
+                    request.body = .init(string: "{\"clientId\":\"\(clientKey)\",\"serverId\":\"\(fixture.serverId)\",\"returnUrl\":\"\(returnUrl)\",\"scopes\":[\"openid\",\"profile\"]}")
                 }
             }
 
-            let mismatch = try await authorize("redirect-registered-234", "https://attacker.example.test/callback")
-            #expect(mismatch.status == .badRequest)
-            #expect(try redirectBody(mismatch)["code"] == nil)
-
-            let valid = try await authorize("redirect-registered-234", callback)
-            #expect(valid.status == .ok)
-            #expect((try redirectBody(valid)["code"] as? String)?.isEmpty == false)
-            #expect(try redirectBody(valid)["returnUrl"] as? String == callback)
-
-            let unregisteredResponse = try await authorize("redirect-unregistered-234", "https://attacker.example.test/callback")
+            let unregisteredResponse = try await authorize(
+                clientKey: unregistered.clientId,
+                returnUrl: "https://attacker.example.test/callback"
+            )
             #expect(unregisteredResponse.status == .badRequest)
-            #expect(try redirectBody(unregisteredResponse)["code"] == nil)
-            _ = unregistered
+            #expect(try redirectObject(unregisteredResponse)["code"] == nil)
 
-            let legacyResponse = try await authorize("redirect-legacy-234", "javascript:window.auditExecuted=true//")
+            let legacyResponse = try await authorize(
+                clientKey: legacy.clientId,
+                returnUrl: "javascript:window.auditExecuted=true//"
+            )
             #expect(legacyResponse.status == .badRequest)
-            #expect(try redirectBody(legacyResponse)["code"] == nil)
+            #expect(try redirectObject(legacyResponse)["code"] == nil)
+
+            let mismatch = try await authorize(
+                clientKey: registered.clientId,
+                returnUrl: "https://attacker.example.test/callback"
+            )
+            #expect(mismatch.status == .badRequest)
+            #expect(try redirectObject(mismatch)["code"] == nil)
+
+            let valid = try await authorize(clientKey: registered.clientId, returnUrl: fixture.callback)
+            #expect(valid.status == .ok)
+            let validBody = try redirectObject(valid)
+            #expect((validBody["code"] as? String)?.isEmpty == false)
+            #expect(validBody["returnUrl"] as? String == fixture.callback)
         }
+    }
+}
+
+@Test func oauthClientCreateAndUpdateRejectScriptReturnUrls() throws {
+    let fixture = makeRedirectFixture(suffix: "932")
+    #expect(throws: OAuthClientRejection.self) {
+        _ = try fixture.accounts.oauth.createClient(
+            serverId: fixture.serverId,
+            createdByUserId: fixture.ownerId,
+            name: "Audit registration",
+            clientId: "redirect-script-932",
+            returnUrl: "javascript:alert(1)"
+        )
+    }
+    let created = try fixture.accounts.oauth.createClient(
+        serverId: fixture.serverId,
+        createdByUserId: fixture.ownerId,
+        name: "Audit registration",
+        clientId: "redirect-safe-932",
+        returnUrl: fixture.callback
+    )
+    #expect(throws: OAuthClientRejection.self) {
+        try fixture.accounts.oauth.updateClientReturnUrl(
+            clientRecordId: created.id,
+            returnUrl: "data:text/html,test"
+        )
     }
 }

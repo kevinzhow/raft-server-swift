@@ -348,3 +348,5 @@ Machine 描述与权限：`PATCH /api/servers/:id/machines/:machineId` 的 `desc
 
 登录方式管理：`GET /api/auth/identities` 返回 `{identities:[{provider,providerEmail}],passwordConfigured}`（需要登录）。`DELETE /api/auth/identities/:provider` 只作用于当前用户；未登录 401；provider 不存在时幂等回 `unlinked:false`；删除最后一个登录方式且没有已建立的密码凭据时回 409 `{"code":"PASSWORD_CREDENTIAL_REQUIRED","error":"Set a password before disconnecting your final sign-in account."}` 且不删除；并发删除两个最后方式会串行化成一个 200 + 一个 409。`passwordConfigured` 只认 `passwordCredentialEstablishedAt`：仅有占位 hash 的社交账号为 false，旧版真实密码首次登录成功会自愈并建立凭据。`POST /api/auth/reset-password` 用未过期 token 设置密码并建立凭据，之后允许删除最后一个社交登录方式。
 
+OAuth 回调 redirect 安全：`POST /api/oauth/authorize/human` 只在请求的 `returnUrl` 与已登记值完全一致且为安全 URL（HTTPS，或 loopback HTTP，无凭据/fragment）时签发 code；未登记 callback、与登记值不符、或历史遗留的 `javascript:`/`data:` 值一律 400 且响应不含 `code`。`createOAuthClient` 与更新路径（`updateClientReturnUrl`）都拒绝脚本/data URL，错误信息含 `returnUrl`。
+
