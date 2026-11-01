@@ -321,6 +321,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var actionCardRecords: [String: ActionCardRecord] = [:]
     private var pendingActionMessageEvents: [(agentId: String, messageId: String, content: String)] = []
     private var agentChannelInboxDelivered: Set<String> = []
+    private var agentGrantSets: [String: Set<String>] = [:]
 
     private struct ActionCardRecord {
         var messageId: String
@@ -13746,6 +13747,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
+        if let reply = agentGrantDenial(agentId: agent.id, scope: "channel:join") { return reply }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == agent.serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
@@ -14120,6 +14122,26 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return "null"
     }
 
+    public func setAgentGrantsForTesting(agentId: String, scopes: [String]) {
+        lock.lock()
+        agentGrantSets[agentId] = Set(scopes)
+        lock.unlock()
+    }
+
+    public func resetAgentGrantsForTesting(agentId: String) {
+        lock.lock()
+        agentGrantSets.removeValue(forKey: agentId)
+        lock.unlock()
+    }
+
+    private func agentGrantDenial(agentId: String, scope: String) -> HTTPReply? {
+        lock.lock()
+        let grants = agentGrantSets[agentId]
+        lock.unlock()
+        guard let grants, !grants.contains(scope) else { return nil }
+        return Self.json(403, "{\"error\":\"missing required scope\",\"requiredScope\":\(jsonString(scope)),\"reason\":\"missing_scope\"}")
+    }
+
     private enum FeedbackLocatorIdentityResult {
         case success(agentId: String, serverId: String)
         case refused(HTTPReply)
@@ -14429,6 +14451,104 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     // MARK: - Action cards (`POST /internal/agent-api/prepare-action`, `POST /api/actions/:id/execute`)
+
+    private enum AgentTaskAuthResult {
+        case ok(agentId: String, serverId: String)
+        case refused(HTTPReply)
+    }
+
+    private func agentTaskAuth(authorization: String?, legacyAgentId: String?) -> AgentTaskAuthResult {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return .refused(Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}"))
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let credential = agentCredentials[token]
+        let machine = machines.first { $0.apiKey == token }
+        lock.unlock()
+        if let credential, credential.revokedAt == nil {
+            guard credential.scopes.contains("tasks") else {
+                return .refused(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
+            }
+            guard let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else {
+                return .refused(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
+            }
+            return .ok(agentId: agent.id, serverId: agent.serverId)
+        }
+        if let machine, let legacyAgentId,
+           let agent = oauth.agentRuntimeInfo(id: legacyAgentId), !agent.deleted,
+           agent.serverId == machine.serverId {
+            return .ok(agentId: agent.id, serverId: agent.serverId)
+        }
+        return .refused(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
+    }
+
+    private func agentTaskChannel(serverId: String, agentId: String, reference: String) -> String? {
+        let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        if trimmed.hasPrefix("#") {
+            let name = String(trimmed.dropFirst())
+            for (id, channel) in postableChannels {
+                guard channel.serverId == serverId, channel.name == name, channel.deletedAt == nil else { continue }
+                guard channel.kind == "channel"
+                    || channel.memberIds.contains(agentId)
+                    || oauth.channelAgentIds(channelId: id).contains(agentId)
+                else { continue }
+                return id
+            }
+            return nil
+        }
+        guard postableChannels[trimmed]?.serverId == serverId else { return nil }
+        return trimmed
+    }
+
+    public func agentTasksList(authorization: String?, legacyAgentId: String?, channelRef: String?) -> HTTPReply {
+        let auth: (agentId: String, serverId: String)
+        switch agentTaskAuth(authorization: authorization, legacyAgentId: legacyAgentId) {
+        case .refused(let reply): return reply
+        case .ok(let agentId, let serverId): auth = (agentId, serverId)
+        }
+        if let reply = agentGrantDenial(agentId: auth.agentId, scope: "task:read") { return reply }
+        guard let channelRef,
+              let channelId = agentTaskChannel(serverId: auth.serverId, agentId: auth.agentId, reference: channelRef)
+        else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        lock.lock()
+        let rows = taskRecords.filter { $0.channelId == channelId }.map { task in
+            "{\"id\":\(jsonString(task.id)),\"channelId\":\(jsonString(task.channelId)),\"title\":\(jsonString(task.title)),\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber)}"
+        }.joined(separator: ",")
+        lock.unlock()
+        return Self.json(200, "{\"tasks\":[\(rows)]}")
+    }
+
+    public func agentTasksCreate(authorization: String?, legacyAgentId: String?, body: String) -> HTTPReply {
+        let auth: (agentId: String, serverId: String)
+        switch agentTaskAuth(authorization: authorization, legacyAgentId: legacyAgentId) {
+        case .refused(let reply): return reply
+        case .ok(let agentId, let serverId): auth = (agentId, serverId)
+        }
+        if let reply = agentGrantDenial(agentId: auth.agentId, scope: "task:write") { return reply }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let channelRef = object["channel"] as? String,
+              let channelId = agentTaskChannel(serverId: auth.serverId, agentId: auth.agentId, reference: channelRef),
+              let rawTasks = object["tasks"] as? [[String: Any]]
+        else {
+            return Self.json(400, "{\"error\":\"Invalid task request\"}")
+        }
+        let titles = rawTasks.compactMap { task -> String? in
+            let title = (task["title"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return title.isEmpty ? nil : title
+        }
+        guard !titles.isEmpty, titles.count == rawTasks.count else {
+            return Self.json(400, "{\"error\":\"Invalid task request\"}")
+        }
+        let ids = addTasks(channelId: channelId, titles: titles)
+        let idsJSON = ids.map { jsonString($0) }.joined(separator: ",")
+        return Self.json(200, "{\"taskIds\":[\(idsJSON)]}")
+    }
 
     /// Thread lookups for agent history; callers hold the directory lock.
     private func agentHistoryThread(parentId: String, anchorMessageId: String) -> String? {
@@ -14993,6 +15113,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == machine.serverId else {
             return Self.json(404, "{\"error\":\"Agent not found\"}")
         }
+        if join, let reply = agentGrantDenial(agentId: agent.id, scope: "channel:join") { return reply }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == agent.serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }

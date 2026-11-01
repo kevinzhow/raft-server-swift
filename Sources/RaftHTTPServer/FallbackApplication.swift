@@ -606,6 +606,27 @@ public func configure(_ app: Application, services: FallbackServices) {
             limit: desktopQuery(request.url.query, "limit")
         ))
     }
+    app.get("internal", "agent-api", "tasks") { request -> Response in
+        routeResponse(services.emailAccounts.agentTasksList(
+            authorization: request.headers[.authorization],
+            legacyAgentId: nil,
+            channelRef: desktopQuery(request.url.query, "channel")
+        ))
+    }
+    app.post("internal", "agent-api", "tasks") { request -> Response in
+        routeResponse(services.emailAccounts.agentTasksCreate(
+            authorization: request.headers[.authorization],
+            legacyAgentId: nil,
+            body: request.body.string ?? ""
+        ))
+    }
+    app.post("internal", "agent", ":agentId", "tasks") { request -> Response in
+        routeResponse(services.emailAccounts.agentTasksCreate(
+            authorization: request.headers[.authorization],
+            legacyAgentId: request.parameters.get("agentId"),
+            body: request.body.string ?? ""
+        ))
+    }
     app.post("internal", "agent-api", "channels", ":channelId", "join") { request -> Response in
         routeResponse(services.emailAccounts.agentJoinChannel(
             authorization: request.headers[.authorization],
