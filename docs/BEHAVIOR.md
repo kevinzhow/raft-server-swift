@@ -274,3 +274,5 @@ Guest-visible 频道：public 频道是否对 guest 可见由频道级 `guestVis
 
 `GET /api/messages/:messageId/mention-deliveries`：只有消息作者且当前仍可读该频道时返回 200 `{messageId,deliveries:[{targetId,targetHandle,outcome,reasonCategory?}]}`；无权/他人/跨 Server/未知消息/失去频道访问统一 404 `{status:"NOT_JOINABLE"}`；agent credential 401 且不返回 `deliveries`。终态 `IDENTITY_DRIFT` 回 `lost/unclassified`，`QUOTA_LIMITED` 回 `lost/quota`，无 occurrence 回 `unknown`。
 
+`GET /api/announcements/images/:imageId`（匿名）：仅当公告已发布（`publishedAt` 非空、status 非 draft）且 `startsAt` 已到时返回图片字节，`Content-Type` 取资产类型，`Cache-Control: public, max-age=31536000, immutable`，`Cross-Origin-Resource-Policy: cross-origin`；draft、未来发布或未知 id 404；公告过期后仍可读；存储不可用 503。
+

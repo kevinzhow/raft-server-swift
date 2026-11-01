@@ -285,7 +285,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var channelReadVersions: [String: Int] = [:]
     private var agentChannelReadCursors: [String: (seq: Int, version: Int)] = [:]
     private var agentActivities: [String: (activity: String, detail: String)] = [:]
-    private var announcements: [(id: String, title: String, pages: [String], startsAt: Date, expiresAt: Date?)] = []
+    private var announcements: [(id: String, title: String, pages: [String], startsAt: Date, expiresAt: Date?, status: String, publishedAt: Date?, imageId: String?)] = []
+    private var announcementImageAssets: [String: AnnouncementImageAsset] = [:]
+    private var announcementImageStorageAvailable = true
+
+    private struct AnnouncementImageAsset {
+        var id: String
+        var announcementId: String
+        var contentType: String
+        var bytes: Data
+    }
     private var announcementDismissals: Set<String> = []
     private var inboxDoneScopes: Set<String> = []
     private var guestVisibleChannels: [String: Bool] = [:]
@@ -15018,12 +15027,92 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     @discardableResult
-    public func addAnnouncementForTesting(title: String, pages: [String], startsAt: Date = Date(), expiresAt: Date? = nil) -> String {
+    public func addAnnouncementForTesting(
+        title: String,
+        pages: [String],
+        startsAt: Date = Date(),
+        expiresAt: Date? = nil,
+        status: String = "published",
+        publishedAt: Date? = nil,
+        imageId: String? = nil
+    ) -> String {
         let id = UUID().uuidString.lowercased()
         lock.lock()
-        announcements.append((id: id, title: title, pages: pages, startsAt: startsAt, expiresAt: expiresAt))
+        announcements.append((
+            id: id,
+            title: title,
+            pages: pages,
+            startsAt: startsAt,
+            expiresAt: expiresAt,
+            status: status,
+            publishedAt: publishedAt ?? (status == "draft" ? nil : Date()),
+            imageId: imageId
+        ))
         lock.unlock()
         return id
+    }
+
+    public func setAnnouncementStateForTesting(
+        id: String,
+        status: String,
+        publishedAt: Date?,
+        startsAt: Date
+    ) {
+        lock.lock()
+        if let index = announcements.firstIndex(where: { $0.id == id }) {
+            announcements[index].status = status
+            announcements[index].publishedAt = publishedAt
+            announcements[index].startsAt = startsAt
+        }
+        lock.unlock()
+    }
+
+    public func addAnnouncementImageForTesting(id: String, announcementId: String, contentType: String, bytes: Data) {
+        lock.lock()
+        announcementImageAssets[id] = AnnouncementImageAsset(
+            id: id,
+            announcementId: announcementId,
+            contentType: contentType,
+            bytes: bytes
+        )
+        lock.unlock()
+    }
+
+    public func setAnnouncementImageStorageAvailableForTesting(_ available: Bool) {
+        lock.lock()
+        announcementImageStorageAvailable = available
+        lock.unlock()
+    }
+
+    public func announcementImage(id: String) -> HTTPReply {
+        guard ServerScope.isUUID(id) else {
+            return Self.json(404, "{\"error\":\"Announcement image not found\"}")
+        }
+        lock.lock()
+        let asset = announcementImageAssets[id]
+        let announcement = announcements.first { $0.id == asset?.announcementId }
+        let storageAvailable = announcementImageStorageAvailable
+        lock.unlock()
+        guard let asset, let announcement,
+              announcement.publishedAt != nil,
+              announcement.status != "draft",
+              announcement.startsAt <= Date()
+        else {
+            return Self.json(404, "{\"error\":\"Announcement image not found\"}")
+        }
+        guard storageAvailable else {
+            return Self.json(503, "{\"error\":\"Announcement image storage unavailable\"}")
+        }
+        return HTTPReply(
+            status: 200,
+            headers: [
+                "Content-Type": asset.contentType,
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "Cross-Origin-Resource-Policy": "cross-origin",
+                "Content-Length": String(asset.bytes.count),
+            ],
+            body: String(decoding: asset.bytes, as: UTF8.self)
+        )
     }
 
     public func activeAnnouncements(authorization: String?, after: String?) -> HTTPReply {
