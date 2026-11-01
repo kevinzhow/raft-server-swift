@@ -100,7 +100,7 @@ internal.scopeAttestation.bodyLimit.api	route	partial	-	auto-seed
 internal.scopeAttestation.transcriptOutcome.api	route	partial	-	auto-seed
 internal.search.api	route	pending	-	auto-seed
 internal	route	partial	-	auto-seed
-internalAgentApi.agentEventRead	route	partial	-	auto-seed
+internalAgentApi.agentEventRead	route	locked	f74bbae	owner-scoped event re-read, EXPIRED, AMBIGUOUS_ID, neutral 404
 internalAgentApi.agentStatus	route	partial	-	auto-seed
 internalAgentApi.appConfig	route	partial	-	auto-seed
 internalAgentApi.attachmentComments	route	partial	-	auto-seed
