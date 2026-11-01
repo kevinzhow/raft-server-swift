@@ -9240,7 +9240,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var runtimes: [String] = []
     }
 
-    public func redriveMentionDelivery(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
+    public func redriveMentionDelivery(
+        authorization: String?,
+        serverId: String,
+        machineId: String,
+        agentId: String,
+        messageId: String,
+        body: String
+    ) -> HTTPReply {
+        guard ServerScope.isUUID(messageId) else {
+            return Self.json(404, "{\"status\":\"NOT_JOINABLE\"}")
+        }
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
@@ -9250,8 +9260,23 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(404, "{\"status\":\"NOT_ACCESSIBLE\"}")
         }
+        lock.lock()
+        let machineMatches = machines.contains { $0.id == machineId && $0.serverId == serverId }
+        let assigned = agentMachineIds[agentId] == machineId
+        lock.unlock()
+        guard machineMatches, assigned else {
+            return Self.json(404, "{\"status\":\"NOT_ACCESSIBLE\"}")
+        }
         guard role == "owner" || role == "admin" || agent.creatorUserId == userId else {
             return Self.json(404, "{\"status\":\"NOT_ACCESSIBLE\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              object.count == 1,
+              let version = object["expectedVersion"] as? NSNumber,
+              version.doubleValue.rounded() == version.doubleValue,
+              version.intValue >= 0
+        else {
+            return Self.json(400, "{\"status\":\"INVALID_REQUEST\"}")
         }
         return Self.json(404, "{\"status\":\"NOT_JOINABLE\"}")
     }

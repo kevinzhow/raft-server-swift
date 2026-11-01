@@ -1535,7 +1535,10 @@ public func configure(_ app: Application, services: FallbackServices) {
         routeResponse(services.emailAccounts.redriveMentionDelivery(
             authorization: request.headers[.authorization],
             serverId: request.parameters.get("id") ?? "",
-            agentId: request.parameters.get("agentId") ?? ""
+            machineId: request.parameters.get("machineId") ?? "",
+            agentId: request.parameters.get("agentId") ?? "",
+            messageId: request.parameters.get("messageId") ?? "",
+            body: request.body.string ?? ""
         ))
     }
     app.post("api", "servers", ":id", "scope-attestation") { request -> Response in
