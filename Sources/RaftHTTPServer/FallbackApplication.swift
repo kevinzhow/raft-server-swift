@@ -606,6 +606,18 @@ public func configure(_ app: Application, services: FallbackServices) {
             limit: desktopQuery(request.url.query, "limit")
         ))
     }
+    app.get("internal", "agent-api", "attachments", ":attachmentId") { request -> Response in
+        routeResponse(services.emailAccounts.agentAttachmentDownload(
+            authorization: request.headers[.authorization],
+            attachmentId: request.parameters.get("attachmentId") ?? ""
+        ))
+    }
+    app.get("internal", "agent-api", "attachments", ":attachmentId", "url") { request -> Response in
+        routeResponse(services.emailAccounts.agentAttachmentDownloadURL(
+            authorization: request.headers[.authorization],
+            attachmentId: request.parameters.get("attachmentId") ?? ""
+        ))
+    }
     app.post("internal", "agent-api", "integrations", "token") { request -> Response in
         routeResponse(services.emailAccounts.agentIntegrationToken(
             authorization: request.headers[.authorization],

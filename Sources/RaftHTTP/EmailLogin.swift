@@ -326,6 +326,138 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var appConfigRevisions: [String: [String: Int]] = [:]
     private var agentIntegrationGrants: [String: Bool] = [:]
     private var agentAudienceStatusOverrides: [String: String] = [:]
+    private var agentAttachmentBytes: [String: Data] = [:]
+    private var agentAttachmentPresign: (@Sendable (String, Int, String, String) throws -> String)?
+
+    public func setAgentAttachmentPresignForTesting(_ handler: (@Sendable (String, Int, String, String) throws -> String)?) {
+        lock.lock()
+        agentAttachmentPresign = handler
+        lock.unlock()
+    }
+
+    public func addAgentAttachmentForTesting(
+        channelId: String,
+        id: String,
+        uploaderId: String,
+        filename: String,
+        mimeType: String,
+        sizeBytes: Int,
+        storageKey: String? = nil,
+        bytes: Data
+    ) {
+        lock.lock()
+        channelAttachments[id] = ChannelAttachment(
+            id: id,
+            channelId: channelId,
+            uploaderId: uploaderId,
+            filename: filename,
+            messageId: nil,
+            messagePosition: nil,
+            mimeType: mimeType,
+            sizeBytes: sizeBytes,
+            storageKey: storageKey
+        )
+        agentAttachmentBytes[id] = bytes
+        lock.unlock()
+    }
+
+    private static func rfc5987Encode(_ value: String) -> String {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!#$&+-.^_`|~")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
+    private static let agentAttachmentUnavailableMessage = "Attachment is unavailable."
+    private static let agentAttachmentUnavailableNextAction = "If this value came from a feedback report, do not use its artifactId here. Use the reportId with the Raft Feedback Admin integration instead: run `raft integration invoke --service \"Raft Feedback Admin\" --action download_feedback_transcript --param id=REPORT_ID --output PATH`."
+
+    private func agentAttachmentUnavailableReply() -> HTTPReply {
+        let error = Self.agentAttachmentUnavailableMessage + " " + Self.agentAttachmentUnavailableNextAction
+        return Self.json(404, "{\"error\":\(jsonString(error)),\"code\":\"ATTACHMENT_UNAVAILABLE\",\"suggestedNextAction\":\(jsonString(Self.agentAttachmentUnavailableNextAction))}")
+    }
+
+    private func agentAttachmentUnavailableURLReply() -> HTTPReply {
+        Self.json(409, "{\"error\":\"This Server's file storage cannot mint download URLs.\",\"code\":\"download_url_unavailable\",\"suggestedNextAction\":\"Download the attachment bytes instead: GET /internal/agent-api/attachments/:attachmentId (`raft attachment view --id <attachmentId> --output <path>`).\"}")
+    }
+
+    private func agentVisibleAttachment(agentId: String, serverId: String, attachmentId: String) -> ChannelAttachment? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let attachment = channelAttachments[attachmentId],
+              let channel = postableChannels[attachment.channelId],
+              channel.serverId == serverId,
+              channel.deletedAt == nil
+        else { return nil }
+        let visible = channel.kind == "channel"
+            || channel.memberIds.contains(agentId)
+            || oauth.channelAgentIds(channelId: attachment.channelId).contains(agentId)
+        return visible ? attachment : nil
+    }
+
+    private func agentAttachmentIdentity(authorization: String?) -> (agentId: String, serverId: String)? {
+        switch feedbackLocatorIdentity(authorization: authorization, capability: "read") {
+        case .refused: return nil
+        case .success(let agentId, let serverId): return (agentId, serverId)
+        }
+    }
+
+    public func agentAttachmentDownload(authorization: String?, attachmentId: String) -> HTTPReply {
+        guard let identity = agentAttachmentIdentity(authorization: authorization) else {
+            switch feedbackLocatorIdentity(authorization: authorization, capability: "read") {
+            case .refused(let reply): return reply
+            case .success: return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
+            }
+        }
+        guard let attachment = agentVisibleAttachment(agentId: identity.agentId, serverId: identity.serverId, attachmentId: attachmentId) else {
+            return agentAttachmentUnavailableReply()
+        }
+        lock.lock()
+        let bytes = agentAttachmentBytes[attachmentId] ?? Data()
+        lock.unlock()
+        var reply = HTTPReply(
+            status: 200,
+            headers: [
+                "Content-Type": attachment.mimeType ?? "application/octet-stream",
+                "Content-Length": String(bytes.count),
+            ],
+            body: String(decoding: bytes, as: UTF8.self)
+        )
+        reply.headers["Cache-Control"] = "private, no-store"
+        return reply
+    }
+
+    public func agentAttachmentDownloadURL(authorization: String?, attachmentId: String) -> HTTPReply {
+        guard let identity = agentAttachmentIdentity(authorization: authorization) else {
+            switch feedbackLocatorIdentity(authorization: authorization, capability: "read") {
+            case .refused(let reply): return reply
+            case .success: return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
+            }
+        }
+        guard let attachment = agentVisibleAttachment(agentId: identity.agentId, serverId: identity.serverId, attachmentId: attachmentId) else {
+            return agentAttachmentUnavailableReply()
+        }
+        lock.lock()
+        let presign = agentAttachmentPresign
+        lock.unlock()
+        guard let presign else {
+            return agentAttachmentUnavailableURLReply()
+        }
+        let ext = (attachment.filename as NSString).pathExtension
+        let storageKey = attachment.storageKey ?? (ext.isEmpty ? "\(identity.serverId)/\(attachmentId)" : "\(identity.serverId)/\(attachmentId).\(ext)")
+        let filename = attachment.filename
+        let mimeType = attachment.mimeType ?? "application/octet-stream"
+        let disposition = "attachment; filename=\"\(filename)\"; filename*=UTF-8''\(Self.rfc5987Encode(filename))"
+        let url: String
+        do {
+            url = try presign(storageKey, 300, disposition, mimeType)
+        } catch {
+            return Self.json(500, "{\"error\":\"Failed to mint a download URL\"}")
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let expiresAt = formatter.string(from: Date().addingTimeInterval(300))
+        var reply = Self.json(200, "{\"url\":\(jsonString(url)),\"expiresAt\":\(jsonString(expiresAt)),\"filename\":\(jsonString(filename)),\"mimeType\":\(jsonString(mimeType))}")
+        reply.headers["Cache-Control"] = "private, no-store"
+        return reply
+    }
 
     public func setAgentAudienceStatusForTesting(agentId: String, status: String) {
         lock.lock()
@@ -7676,6 +7808,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var uploaderType: String = "user"
         var createdAt: Date = Date()
         var thumbnailKey: String? = nil
+        var storageKey: String? = nil
     }
 
     public struct ChannelMessageEvent: Equatable, Sendable {
