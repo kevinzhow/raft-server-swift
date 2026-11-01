@@ -1615,6 +1615,19 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.get("api", "servers", ":id", "join-links") { request -> Response in
+        routeResponse(services.emailAccounts.listJoinLinks(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+    }
+    app.delete("api", "servers", ":id", "join-links", ":linkId") { request -> Response in
+        routeResponse(services.emailAccounts.revokeJoinLink(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            linkId: request.parameters.get("linkId") ?? ""
+        ))
+    }
     app.get("api", "auth", "invite-info") { request -> Response in
         routeResponse(services.emailAccounts.inviteInfo(token: desktopQuery(request.url.query, "token")))
     }
@@ -1759,6 +1772,14 @@ public func configure(_ app: Application, services: FallbackServices) {
     }
     app.get("internal", "computer", "runners") { request -> Response in
         routeResponse(services.emailAccounts.computerRunners(authorization: request.headers[.authorization]))
+    }
+    app.get("api", "servers", ":id", "system-notifications") { request -> Response in
+        var response = routeResponse(services.emailAccounts.serverSystemNotifications(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? ""
+        ))
+        response.headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
+        return response
     }
     app.post("api", "servers", ":id", "machines") { request -> Response in
         routeResponse(services.emailAccounts.registerServerMachine(

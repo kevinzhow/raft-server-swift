@@ -5,6 +5,8 @@ import RaftHTTP
 import Testing
 @testable import RaftRealtime
 
+@Suite(.serialized)
+struct RealtimeTransportTests {
 @Test func handshakeParserMatchesTheUpstreamShapes() throws {
     let web = parseSocketHandshakeAuth(Data("{\"token\":\"tok\",\"serverId\":\"srv\"}".utf8))
     #expect(try web.get() == SocketHandshakeAuth(token: "tok", serverId: "srv", clientKind: .web))
@@ -304,6 +306,7 @@ import Testing
     #expect(reactions.first?["emoji"] as? String == "👍")
 }
 
+}
 private struct StubAuth: RealtimeAuthorizing {
     var tokens: [String: String]
     var roles: [String: String]

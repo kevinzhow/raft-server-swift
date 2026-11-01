@@ -211,7 +211,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var computers: [(id: String, serverId: String, name: String, apiKey: String, machineId: String?, revokedAt: Date?, online: Bool, version: String?)] = []
     private var machineRuntimeModels: [String: [String: (models: [(id: String, label: String)], updatedAt: Date)]] = [:]
     private var proSeats: [String: Int] = [:]
-    private var joinLinks: [String: (serverId: String, role: String)] = [:]
+    private var joinLinks: [String: JoinLinkRecord] = [:]
     private var hostedAgents: Set<String> = []
     private var threadFollows: [String: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String)] = [:]
     private struct ThreadUnfollowRecord {
@@ -246,6 +246,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var webPushSubscriptions: [WebPushSubscription] = []
     private var machines: [MachineRecord] = []
     private var machineStatusVersions: [String: Int] = [:]
+    private var machineOnline: [String: Bool] = [:]
     /// `MOBILE_APP_EMAIL_UNSUBSCRIBE_SECRET`, or `JWT_SECRET`. The test harness uses `test-jwt-secret`.
     public var mobileAppEmailUnsubscribeSecret: String = "test-jwt-secret"
     /// Cancels one scheduled mobile-app lifecycle email. Unset means there is no provider call to make.
@@ -6708,6 +6709,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var status: String = "inactive"
     }
 
+    private struct JoinLinkRecord {
+        var id: String
+        var token: String
+        var serverId: String
+        var role: String
+        var createdAt: Date
+        var expiresAt: Date?
+        var maxUses: Int?
+        var useCount: Int
+        var revokedAt: Date?
+    }
+
     private struct StoredReaction {
         var messageId: String
         var emoji: String
@@ -8073,6 +8086,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return next
     }
 
+    public func setMachineOnline(machineId: String, online: Bool) {
+        lock.lock()
+        machineOnline[machineId] = online
+        lock.unlock()
+    }
+
+    public func setAgentMachineForTesting(agentId: String, machineId: String) {
+        lock.lock()
+        agentMachineIds[agentId] = machineId
+        lock.unlock()
+    }
+
+    public func setAgentStatusForTesting(agentId: String, status: String) {
+        lock.lock()
+        serverAgents[agentId]?.status = status
+        lock.unlock()
+    }
+
     /// Keyed lookup shared by `/daemon/connect` and the legacy machine surface.
     public func machineCredential(apiKey: String) -> MachineCredentialIdentity? {        lock.lock()
         defer { lock.unlock() }
@@ -8335,8 +8366,65 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"machine\":\(machine),\"apiKey\":\(jsonString(apiKey))}")
     }
 
-    public func listServerMachines(authorization: String?, serverId: String) -> HTTPReply {
+    public func serverSystemNotifications(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let generatedAt = Date()
+        if role == "guest" {
+            return Self.json(200, serverSystemNotificationsBody(generatedAt: generatedAt, notifications: []))
+        }
+        lock.lock()
+        let rows = machines.filter { $0.serverId == serverId }
+        let online = machineOnline
+        let computerMachineIds = Set(computers.compactMap { computer -> String? in
+            guard computer.serverId == serverId, computer.revokedAt == nil else { return nil }
+            return computer.machineId
+        })
+        var activeByMachine: [String: Int] = [:]
+        for agent in serverAgents.values where agent.serverId == serverId && agent.status == "active" {
+            if let machineId = agentMachineIds[agent.id] {
+                activeByMachine[machineId, default: 0] += 1
+            }
+        }
+        lock.unlock()
+
+        let rawDaemons = rows
+            .filter { !computerMachineIds.contains($0.id) }
+            .sorted { $0.id < $1.id }
+        let offline = rawDaemons.filter { online[$0.id] != true }
+        var notifications: [String] = []
+        if !offline.isEmpty {
+            let activeCount = offline.reduce(0) { $0 + (activeByMachine[$1.id] ?? 0) }
+            let names = offline.map(\.name).joined(separator: ", ")
+            let singular = offline.count == 1
+            let title = "\(names) \(singular ? "is" : "are") offline"
+            let body = activeCount > 0
+                ? "\(activeCount) \(activeCount == 1 ? "agent is" : "agents are") active on \(singular ? "this computer" : "these computers") and can't run until \(singular ? "it reconnects" : "they reconnect")."
+                : "No agents are active on \(singular ? "this computer" : "these computers") right now — reconnect when you need \(singular ? "it" : "them") next."
+            let ids = offline.map(\.id).joined(separator: ",")
+            let machineRefs = offline.map {
+                "{\"id\":\(jsonString($0.id)),\"name\":\(jsonString($0.name))}"
+            }.joined(separator: ",")
+            let copyTitle = singular ? "machine.offline.title.one" : "machine.offline.title.many"
+            let copyBody = activeCount > 0
+                ? (singular ? "machine.offline.body.active.one" : "machine.offline.body.active.many")
+                : (singular ? "machine.offline.body.idle.one" : "machine.offline.body.idle.many")
+            let evaluation = "{\"clock\":\"server\",\"evaluatedAt\":\(jsonString(Self.isoString(generatedAt))),\"offlineAfterMs\":0,\"statusAuthority\":\"canonical_machine_read_model\",\"runKind\":\"raw_daemon\",\"versionAuthority\":\"latest_daemon_release\"}"
+            let notification = "{\"id\":\(jsonString("machine-offline:\(ids)")),\"type\":\"machine.offline\",\"schemaVersion\":1,\"state\":\"active\",\"kind\":\"\(activeCount > 0 ? "error" : "warning")\",\"title\":\(jsonString(title)),\"body\":\(jsonString(body)),\"copy\":{\"titleKey\":\(jsonString(copyTitle)),\"bodyKey\":\(jsonString(copyBody)),\"actionLabelKey\":\"common.view\",\"params\":{\"machineNames\":\(jsonString(names)),\"machineCount\":\(offline.count),\"activeAgentCount\":\(activeCount),\"targetDaemonVersion\":null}},\"action\":{\"label\":\"View\",\"targetType\":\"machine\",\"targetId\":\(jsonString(offline[0].id))},\"payload\":{\"machines\":[\(machineRefs)],\"activeAgentCount\":\(activeCount),\"targetDaemonVersion\":null,\"evaluation\":\(evaluation)}}"
+            notifications.append(notification)
+        }
+        return Self.json(200, serverSystemNotificationsBody(generatedAt: generatedAt, notifications: notifications))
+    }
+
+    private func serverSystemNotificationsBody(generatedAt: Date, notifications: [String]) -> String {
+        "{\"contractVersion\":\"server-system-notifications-v1\",\"generatedAt\":\(jsonString(Self.isoString(generatedAt))),\"snapshotMode\":\"replace\",\"clientState\":{\"read\":\"none\",\"dismiss\":\"local_by_notification_id\"},\"notifications\":[\(notifications.joined(separator: ","))]}"
+    }
+
+    public func listServerMachines(authorization: String?, serverId: String) -> HTTPReply {        guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
@@ -9433,20 +9521,95 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return PublicVisits.authRequired(authorization: authorization)
         }
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            return Self.json(403, "{\"error\":\"Only server owners and admins can create join links\"}")
         }
         guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            return Self.json(403, "{\"error\":\"Only server owners and admins can create join links\"}")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+        var expiresAt: Date?
+        if let raw = object["expiresAt"] as? String, !raw.isEmpty {
+            guard let parsed = Self.isoDate(raw) else {
+                return Self.json(400, "{\"error\":\"expiresAt must be a valid date\"}")
+            }
+            expiresAt = parsed
+        }
+        var maxUses: Int?
+        if let raw = object["maxUses"], !(raw is NSNull) {
+            if let string = raw as? String, string.isEmpty {
+                maxUses = nil
+            } else if let number = raw as? NSNumber, number.doubleValue.rounded() == number.doubleValue,
+                      number.intValue >= 1 {
+                maxUses = number.intValue
+            } else {
+                return Self.json(400, "{\"error\":\"maxUses must be a positive integer\"}")
+            }
         }
         let token = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        let link = JoinLinkRecord(
+            id: UUID().uuidString.lowercased(),
+            token: token,
+            serverId: serverId,
+            role: "member",
+            createdAt: Date(),
+            expiresAt: expiresAt,
+            maxUses: maxUses,
+            useCount: 0,
+            revokedAt: nil
+        )
         lock.lock()
-        joinLinks[token] = (serverId, "member")
+        joinLinks[token] = link
         lock.unlock()
-        return Self.json(200, "{\"token\":\(jsonString(token)),\"maxUses\":null,\"expiresAt\":null}")
+        let expiresJSON = expiresAt.map { jsonString(Self.isoString($0)) } ?? "null"
+        let maxUsesJSON = maxUses.map(String.init) ?? "null"
+        return Self.json(200, "{\"token\":\(jsonString(token)),\"link\":\(joinLinkJSON(link)),\"maxUses\":\(maxUsesJSON),\"expiresAt\":\(expiresJSON)}")
+    }
+
+    public func listJoinLinks(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Only server owners and admins can view join links\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Only server owners and admins can view join links\"}")
+        }
+        lock.lock()
+        let now = Date()
+        let links = joinLinks.values
+            .filter { $0.serverId == serverId && $0.revokedAt == nil }
+            .filter { !Self.joinLinkExpired($0, now: now) && !Self.joinLinkExhausted($0) }
+            .sorted { $0.createdAt > $1.createdAt }
+            .map(joinLinkJSON)
+            .joined(separator: ",")
+        lock.unlock()
+        return Self.json(200, "[\(links)]")
+    }
+
+    public func revokeJoinLink(authorization: String?, serverId: String, linkId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return PublicVisits.authRequired(authorization: authorization)
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Only server owners and admins can revoke join links\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Only server owners and admins can revoke join links\"}")
+        }
+        lock.lock()
+        if let key = joinLinks.first(where: { $0.value.id == linkId && $0.value.serverId == serverId })?.key {
+            joinLinks[key]?.revokedAt = Date()
+        }
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true}")
     }
 
     public func inviteInfo(token: String?) -> HTTPReply {
         guard let token, let link = joinLinks[token.lowercased()] else {
+            return Self.json(404, "{\"error\":\"Invite not found\"}")
+        }
+        guard link.revokedAt == nil, !Self.joinLinkExpired(link, now: Date()), !Self.joinLinkExhausted(link) else {
             return Self.json(404, "{\"error\":\"Invite not found\"}")
         }
         guard let profile = oauth.serverProfile(id: link.serverId) else {
@@ -9465,18 +9628,55 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
               let rawToken = object["token"] as? String,
-              let link = joinLinks[rawToken.lowercased()]
+              let existing = joinLinks[rawToken.lowercased()],
+              existing.revokedAt == nil,
+              !Self.joinLinkExpired(existing, now: Date()),
+              !Self.joinLinkExhausted(existing)
         else {
             return Self.json(400, "{\"error\":\"Invalid invite\"}")
         }
         lock.lock()
-        let message = seatLimitMessageLocked(serverId: link.serverId)
-        lock.unlock()
+        let message = seatLimitMessageLocked(serverId: existing.serverId)
         if let message {
+            lock.unlock()
             return Self.json(400, "{\"error\":\(jsonString(message))}")
         }
-        oauth.addMember(serverId: link.serverId, userId: userId, role: link.role)
-        return Self.json(200, "{\"ok\":true,\"serverId\":\(jsonString(link.serverId))}")
+        let oldCount = joinLinks[rawToken.lowercased()]?.useCount ?? 0
+        joinLinks[rawToken.lowercased()]?.useCount = oldCount + 1
+        lock.unlock()
+        oauth.addMember(serverId: existing.serverId, userId: userId, role: existing.role)
+        return Self.json(200, "{\"ok\":true,\"serverId\":\(jsonString(existing.serverId))}")
+    }
+
+    private func joinLinkJSON(_ link: JoinLinkRecord) -> String {
+        let expiresAt = link.expiresAt.map { jsonString(Self.isoString($0)) } ?? "null"
+        let revokedAt = link.revokedAt.map { jsonString(Self.isoString($0)) } ?? "null"
+        let maxUses = link.maxUses.map(String.init) ?? "null"
+        return "{\"id\":\(jsonString(link.id)),\"token\":\(jsonString(link.token)),\"createdAt\":\(jsonString(Self.isoString(link.createdAt))),\"expiresAt\":\(expiresAt),\"maxUses\":\(maxUses),\"useCount\":\(link.useCount),\"revokedAt\":\(revokedAt)}"
+    }
+
+    private static func joinLinkExpired(_ link: JoinLinkRecord, now: Date) -> Bool {
+        if let expiresAt = link.expiresAt, expiresAt <= now { return true }
+        return false
+    }
+
+    private static func joinLinkExhausted(_ link: JoinLinkRecord) -> Bool {
+        if let maxUses = link.maxUses, link.useCount >= maxUses { return true }
+        return false
+    }
+
+    private static func isoDate(_ value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
+    }
+
+    private static func isoString(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
     }
 
     public func listServerInvites(authorization: String?, serverId: String) -> HTTPReply {

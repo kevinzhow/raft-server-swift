@@ -129,6 +129,7 @@ enum Entrypoint {
                 lookup: LedgerMachineLookup(accounts: emailAccounts),
                 port: configuredDaemonPort,
                 onStatusChange: { machine, online in
+                    emailAccounts.setMachineOnline(machineId: machine.id, online: online)
                     let version = emailAccounts.bumpMachineStatusVersion(machineId: machine.id)
                     let status = online ? "online" : "offline"
                     let cause = online ? "" : ",\"cause\":\"socket_close\""

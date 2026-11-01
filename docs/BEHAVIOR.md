@@ -153,6 +153,12 @@ agent 读游标前进且 server 开启 read receipts 时，`channel:<id>` 房间
 `POST /api/servers/:id/machines` 仅 owner/admin，返回 `{machine:{id,serverId,name,userId,description},apiKey}`，key 为 `sk_machine_` + 64 hex；普通 member 403，缺 name 400，非成员 404。
 
 
+`POST /api/servers/:id/join-links` 仅 owner/admin，返回 `{token,link:{id,token,createdAt,expiresAt,maxUses,useCount,revokedAt}}`；`GET` 只列未撤销、未过期、未耗尽的链接；`DELETE /api/servers/:id/join-links/:linkId` 撤销并返回 `{ok:true}`。邀请接受后 `useCount` 自增，耗尽或过期返回 400 `Invalid invite`。
+
+
+`GET /api/servers/:id/system-notifications` 返回 `server-system-notifications-v1` replace 快照，`Cache-Control: private, no-store`；owner/admin/member 走 `viewMachines`，guest 空通知，非成员 403。离线 raw daemon 聚合成 `machine-offline:<ids>`，`kind` 按 active agent 数为 `error`/`warning`，managed Computer 不进入该 feed。
+
+
 `POST /api/messages` 成功后向 `channel:<id>` 房间发 `message:new`，payload 是消息 HTTP body（id/channelId/content/attachments）。`POST /api/tasks/channel/:channelId` 成功后向同一房间发 `task:created`，payload 是 `{channelId,tasks:[{id,channelId,title,status}]}`；`PATCH /api/tasks/:taskId/claim` 成功后发 `task:updated`，payload `{channelId,task:<task JSON>}`；`POST /api/channels/threads/follow|unfollow` 成功后发 `thread:followers-updated`，payload `{threadChannelId}`。频道创建时该用户的在线 socket 自动加入 `channel:<id>`。task JSON 带 `messageId`。
 
 
