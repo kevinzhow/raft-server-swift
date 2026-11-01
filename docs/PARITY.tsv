@@ -110,7 +110,7 @@ internalAgentApi.channelCard	route	locked	cbe47a1	channel/private/thread cards, 
 internalAgentApi.context	route	partial	64c88ea	identity/server/capabilities/features/prompt constraints; full guide text pending
 internalAgentApi.contract	route	partial	-	auto-seed
 internalAgentApi.crossReplicaWake	route	partial	-	auto-seed
-internalAgentApi.dmPeerKind	route	partial	-	auto-seed
+internalAgentApi.dmPeerKind	route	locked	3ffba27	kind-pinned DM read/around/thread + send 409/400/404
 internalAgentApi.eventsSenderType	route	locked	798e237	durable external inbox, sender_type/senderType echo, external_message
 internalAgentApi.externalInboxPull	route	partial	-	auto-seed
 internalAgentApi.feedbackLocator	route	locked	a6f414f	locator ingest receipts, duplicate replay, typed failures, index projection
