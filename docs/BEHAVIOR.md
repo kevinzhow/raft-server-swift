@@ -330,3 +330,5 @@ PKCE downgrade 防护：`POST /api/oauth/token` 与 `/oidc/<server>/api/oauth/to
 
 DM peer kind：`dm:@<name>~agent` / `dm:@<name>~human` 选定同名人类或 agent 的 DM；`dm:@<name>` 在两者都存在时回 409 `DM_TARGET_AMBIGUOUS`（error/suggestedNextAction 同时给出 `~agent` 与 `~human`），未知 kind 回 400 `DM_TARGET_INVALID_PEER_KIND`。history 的 `--around` 只能命中所选 DM 的消息（跨 DM 回 404），thread 后缀同时接受 anchor 短 id 与 thread 自身 id 短 id，且必须位于所选 DM 下。`POST /internal/agent-api/send` 与 `/v2/send` 支持同一 DM 目标解析：歧义 409、坏 kind 400、未知 404，pinned 目标可直接向已有或首个 DM 发送。
 
+Managed MCP agent 错误文案：常见失败码映射为可执行的一句话（reconnect、credentials、stale tool、unavailable、gone），connector/tool 名称先压平为单行、按 80 字符截断并加引号，防止换行或超长文本逃逸；gone 类消息带 `mcp_<id8>_` 前缀提示。运行时工具名为 `mcp_<server8>_<tool>_<fnv1a32>`，同一 connector 的所有工具共享前缀。
+
