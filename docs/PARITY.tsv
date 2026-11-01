@@ -88,7 +88,7 @@ identitySetup.api	route	locked	f744692	pending registration, complete-profile CA
 inboxPressure.realPg	route	pending	-	auto-seed
 independentAudit.api	route	pending	-	auto-seed
 integrations.api	route	partial	-	auto-seed
-integrations.appPermissionReview.api	route	pending	-	auto-seed
+integrations.appPermissionReview.api	route	locked	60e2842	revision-bound approval, 400 on bad id, 409 stale, pending projection
 internal.agentScope.api	route	locked	e1fa956	covered by the existing metric/scope tests
 internal.attestedSend.api	route	partial	-	auto-seed
 internal.channelMembership.api	route	partial	-	auto-seed
