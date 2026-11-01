@@ -652,6 +652,24 @@ public func configure(_ app: Application, services: FallbackServices) {
             limit: desktopQuery(request.url.query, "limit")
         ))
     }
+    app.post("internal", "agent-api", "feedback-locators") { request -> Response in
+        routeResponse(services.emailAccounts.ingestFeedbackLocator(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? ""
+        ))
+    }
+    app.get("internal", "agent-api", "feedback-locators") { request -> Response in
+        routeResponse(services.emailAccounts.listFeedbackLocators(
+            authorization: request.headers[.authorization],
+            reportId: desktopQuery(request.url.query, "report_id"),
+            runtime: desktopQuery(request.url.query, "runtime"),
+            nativeStatus: desktopQuery(request.url.query, "native_status"),
+            nativeLookupMethod: desktopQuery(request.url.query, "native_lookup_method"),
+            servedExactSha256: desktopQuery(request.url.query, "served_exact_sha256"),
+            routeBasis: desktopQuery(request.url.query, "route_basis"),
+            limit: desktopQuery(request.url.query, "limit")
+        ))
+    }
     app.get("internal", "agent-api", "wake-hints") { request -> Response in
         routeResponse(services.emailAccounts.agentWakeHints(
             authorization: request.headers[.authorization],
