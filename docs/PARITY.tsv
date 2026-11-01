@@ -102,7 +102,7 @@ internal.search.api	route	pending	-	auto-seed
 internal	route	partial	-	auto-seed
 internalAgentApi.agentEventRead	route	locked	f74bbae	owner-scoped event re-read, EXPIRED, AMBIGUOUS_ID, neutral 404
 internalAgentApi.agentStatus	route	partial	-	auto-seed
-internalAgentApi.appConfig	route	partial	-	auto-seed
+internalAgentApi.appConfig	route	locked	c70339a	credential-bound config, CAS revision 409, per-agent overrides
 internalAgentApi.attachmentComments	route	partial	-	auto-seed
 internalAgentApi.attachmentDownloadUrl	route	partial	-	auto-seed
 internalAgentApi.auth	route	partial	-	auto-seed
