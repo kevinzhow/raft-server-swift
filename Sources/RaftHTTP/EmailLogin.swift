@@ -9240,6 +9240,41 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var runtimes: [String] = []
     }
 
+    public func agentSessionTranscript(
+        authorization: String?,
+        serverId: String,
+        machineId: String,
+        agentId: String
+    ) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(404, "{\"error\":\"Server not found\"}")
+        }
+        lock.lock()
+        let machineExists = machines.contains { $0.id == machineId && $0.serverId == serverId }
+        let assignedMachine = agentMachineIds[agentId]
+        let online = machineOnline[machineId] == true
+        lock.unlock()
+        guard machineExists else {
+            return Self.json(404, "{\"error\":\"Machine not found in this server\"}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
+            return Self.json(404, "{\"error\":\"Agent not found in this server\"}")
+        }
+        guard assignedMachine == machineId else {
+            return Self.json(400, "{\"error\":\"Agent is not assigned to this machine\"}")
+        }
+        guard role == "owner" || role == "admin" || agent.creatorUserId == userId else {
+            return Self.json(403, "{\"error\":\"The `editAgents` capability or human creator authority is required to view agent diagnostics\"}")
+        }
+        guard online else {
+            return Self.json(409, "{\"error\":\"Computer is offline\",\"code\":\"machine_offline\"}")
+        }
+        return Self.json(200, "{\"sessionId\":null,\"transcript\":[]}")
+    }
+
     public func redriveMentionDelivery(
         authorization: String?,
         serverId: String,
