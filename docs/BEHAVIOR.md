@@ -352,3 +352,5 @@ OAuth 回调 redirect 安全：`POST /api/oauth/authorize/human` 只在请求的
 
 错误卫生（black-box）：畸形 `X-Server-Id`/路径 id（非 UUID 或 UUID 后跟中文文本）在 middleware/路由层就是 typed 4xx，不泄漏 pg cast/query/params/表名等内部信息，也不会被吞成 500；`/api/servers/not-a-uuid/members` 回 404 `Server not found`，路径与 header 不一致回 typed 4xx 且无 `internal_server_error`。`/api/messages/context/:id` 的畸形 id 回 400、畸形 `channelId` 回 400；`/api/messages/channel/:id`、成员 profile、public channel/thread、MCP agent、integrations agent/client/share-link/marketplace 的畸形 id 回 404；8 位短 id 在 `context` 上是合法目标并回 200。
 
+频道批量加成员：`POST /api/channels/:id/members/batch` 接受 `{userIds,agentIds}`，先去重并保留顺序；所有用户必须是 Server 成员，否则整批 400 `{"error":"One or more users are not members of this server","code":"users_not_in_server","invalidUserIds":[...]}`，不写入任何成员或系统消息。成功回 `{ok:true,added:{userIds,agentIds},alreadyMembers:{userIds,agentIds}}`；每个新加入的人类/agent 产生一次 `@<name> was added to this channel.` 系统消息，重复调用只列 alreadyMembers、不重复消息。
+

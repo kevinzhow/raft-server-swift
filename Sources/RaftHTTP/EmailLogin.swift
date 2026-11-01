@@ -16717,6 +16717,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 alreadyUsers.append(target)
             } else {
                 accountsForInvite(userId: target, serverId: serverId, channelId: channelId)
+                let name = accounts.values.first { $0.id == target }?.name ?? target
+                recordBatchMembershipNotice(channelId: channelId, name: name)
                 addedUsers.append(target)
             }
         }
@@ -16726,6 +16728,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 alreadyAgents.append(agentId)
             } else {
                 oauth.addChannelAgent(channelId: channelId, agentId: agentId)
+                addPostableChannel(serverId: serverId, channelId: channelId, memberId: agentId, kind: "channel")
+                let name = oauth.agentRuntimeInfo(id: agentId)?.name ?? agentId
+                recordBatchMembershipNotice(channelId: channelId, name: name)
                 addedAgents.append(agentId)
             }
         }
@@ -16733,6 +16738,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             values.map { jsonString($0) }.joined(separator: ",")
         }
         return Self.json(200, "{\"ok\":true,\"added\":{\"userIds\":[\("\(array(addedUsers))")],\"agentIds\":[\("\(array(addedAgents))")]},\"alreadyMembers\":{\"userIds\":[\("\(array(alreadyUsers))")],\"agentIds\":[\("\(array(alreadyAgents))")]}}")
+    }
+
+    private func recordBatchMembershipNotice(channelId: String, name: String) {
+        lock.lock()
+        humanMessageRows.append(StoredHumanMessage(
+            id: UUID().uuidString.lowercased(),
+            channelId: channelId,
+            senderId: "system",
+            content: "@\(name) was added to this channel.",
+            randomId: nil,
+            messageType: "system",
+            senderType: "system"
+        ))
+        lock.unlock()
     }
 
     private func accountsForInvite(userId: String, serverId: String, channelId: String) {
@@ -17567,6 +17586,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return userChannelReadCursors["\(channelId)\n\(userId)"] ?? 0
+    }
+
+    public func systemMessageContents(channelId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return humanMessageRows
+            .filter { $0.channelId == channelId && $0.messageType == "system" }
+            .map(\.content)
     }
 
     public func humanMessageSequence(id: String) -> Int? {
