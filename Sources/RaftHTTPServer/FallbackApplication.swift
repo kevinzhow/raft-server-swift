@@ -225,6 +225,20 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("api", "mcp", "agents", ":agentId") { request -> Response in
         routeResponse(IntegrationRoutes.mcpAgent(agentId: request.parameters.get("agentId") ?? ""))
     }
+    app.get("api", "integrations", "marketplace") { request -> Response in
+        routeResponse(services.emailAccounts.integrationMarketplace(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+        ))
+    }
+    app.post("api", "integrations", "clients", ":clientId", "app-notifications", "permissions", "review") { request -> Response in
+        routeResponse(services.emailAccounts.reviewAppNotificationPermissions(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            clientId: request.parameters.get("clientId") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("api", "integrations", "agents", ":agentId") { request -> Response in
         routeResponse(IntegrationRoutes.integrationAgent(agentId: request.parameters.get("agentId") ?? ""))
     }

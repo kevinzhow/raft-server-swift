@@ -14791,6 +14791,68 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return flag.defaultEnabled
     }
 
+    private var marketplaceReviewerOverride: Set<String>?
+
+    public func setMarketplaceReviewerIdsForTesting(_ ids: Set<String>?) {
+        lock.lock()
+        marketplaceReviewerOverride = ids
+        lock.unlock()
+    }
+
+    private func marketplaceReviewerIds() -> Set<String> {
+        lock.lock()
+        let override = marketplaceReviewerOverride
+        lock.unlock()
+        if let override { return override }
+        let raw = ProcessInfo.processInfo.environment["SLOCK_MARKETPLACE_REVIEWER_USER_IDS"] ?? ""
+        return Set(raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+    }
+
+    public func integrationMarketplace(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let reviewers = marketplaceReviewerIds()
+        let rows = oauth.appPermissionReviewRows(serverId: serverId).map { row -> String in
+            let groups = row.pendingGroups.map { jsonString($0) }.joined(separator: ",")
+            let revision = row.pendingRevisionId.map(jsonString) ?? "null"
+            return "{\"id\":\(jsonString(row.id)),\"clientId\":\(jsonString(row.clientId)),\"name\":\(jsonString(row.name)),\"appNotificationPendingGroups\":[\(groups)],\"appNotificationPendingRevisionId\":\(revision),\"canReviewAppNotifications\":\(reviewers.contains(userId))}"
+        }.joined(separator: ",")
+        return Self.json(200, "[\(rows)]")
+    }
+
+    public func reviewAppNotificationPermissions(
+        authorization: String?,
+        serverId: String,
+        clientId: String,
+        body: String
+    ) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let raw = object["expected_revision_id"] as? String,
+              ServerScope.isUUID(raw)
+        else {
+            return Self.json(400, "{\"error\":\"expected_revision_id must be a revision UUID\",\"code\":\"invalid_expected_revision_id\"}")
+        }
+        do {
+            let groups = try oauth.approveAppOutboundPermission(clientRecordId: clientId, expectedRevisionId: raw)
+            let groupsJSON = groups.map { jsonString($0) }.joined(separator: ",")
+            return Self.json(200, "{\"ok\":true,\"groups\":[\(groupsJSON)]}")
+        } catch OAuthLedger.AppPermissionReviewError.notFound {
+            return Self.json(404, "{\"error\":\"App not found\"}")
+        } catch {
+            return Self.json(409, "{\"error\":\"The permission request changed since it was displayed\",\"code\":\"permission_revision_stale\"}")
+        }
+    }
+
     public func agentContext(authorization: String?) -> HTTPReply {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
             return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")

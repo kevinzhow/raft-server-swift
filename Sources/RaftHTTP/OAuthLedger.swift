@@ -1313,6 +1313,67 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    public struct AppPermissionReviewRow: Sendable {
+        public var id: String
+        public var clientId: String
+        public var name: String
+        public var pendingGroups: [String]
+        public var pendingRevisionId: String?
+    }
+
+    public enum AppPermissionReviewError: Error, Sendable {
+        case notFound
+        case stale
+    }
+
+    public func appPermissionReviewRows(serverId: String) -> [AppPermissionReviewRow] {
+        lock.lock()
+        defer { lock.unlock() }
+        return clients
+            .filter {
+                $0.serverId == serverId
+                    && $0.appType == "third_party_global"
+                    && $0.publishStatus == "published"
+                    && $0.enabled
+            }
+            .map {
+                AppPermissionReviewRow(
+                    id: $0.id,
+                    clientId: $0.clientId,
+                    name: $0.name,
+                    pendingGroups: $0.pendingOutboundGroups,
+                    pendingRevisionId: $0.pendingOutboundRevisionId
+                )
+            }
+    }
+
+    @discardableResult
+    public func createAppOutboundPermissionRevision(clientRecordId: String, groups: [String]) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = clients.firstIndex(where: { $0.id == clientRecordId }) else { return nil }
+        let revisionId = UUID().uuidString.lowercased()
+        clients[index].pendingOutboundRevisionId = revisionId
+        clients[index].pendingOutboundGroups = groups
+        return revisionId
+    }
+
+    public func approveAppOutboundPermission(clientRecordId: String, expectedRevisionId: String) throws -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = clients.firstIndex(where: { $0.id == clientRecordId }) else {
+            throw AppPermissionReviewError.notFound
+        }
+        guard clients[index].pendingOutboundRevisionId == expectedRevisionId else {
+            throw AppPermissionReviewError.stale
+        }
+        let groups = clients[index].pendingOutboundGroups
+        clients[index].outboundGroups = groups
+        clients[index].pendingOutboundRevisionId = nil
+        clients[index].pendingOutboundGroups = []
+        return groups
+    }
+
     public func registerExternalApp(clientRecordId: String, provider: String, state: String) {
         lock.lock()
         if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
@@ -2764,6 +2825,8 @@ public final class OAuthLedger: @unchecked Sendable {
         var returnUrl: String? = nil
         var allowedScopes: [String]? = nil
         var outboundGroups: [String] = []
+        var pendingOutboundRevisionId: String? = nil
+        var pendingOutboundGroups: [String] = []
         var enabled: Bool = true
         var externalProvider: String? = nil
         var externalState: String? = nil
