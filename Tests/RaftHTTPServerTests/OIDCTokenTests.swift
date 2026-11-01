@@ -113,7 +113,9 @@ private func jwtPayload(_ token: String) throws -> [String: Any] {
             #expect(claims["server_id"] as? String == serverId)
 
             let replay = try await exchange(code: code, verifier: oidcVerifier)
-            #expect(replay.status == .conflict)
+            #expect(replay.status == .badRequest)
+            #expect(try oidcObject(replay)["error"] as? String == "invalid_grant")
+            #expect(try oidcObject(replay)["next_action"] == nil)
         }
     }
 }

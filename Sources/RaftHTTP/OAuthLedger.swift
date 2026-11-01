@@ -1206,6 +1206,12 @@ public final class OAuthLedger: @unchecked Sendable {
     }
 
     /// Moves a human authorization code one second past its 10-minute life. The token endpoint must not mint.
+    public func removeAuthorizationCodeForTesting(id: String) {
+        lock.lock()
+        requests.removeAll { $0.id == id }
+        lock.unlock()
+    }
+
     public func expireAuthorizationCode(id: String) {
         lock.lock()
         if let index = requests.firstIndex(where: { $0.id == id }) {
@@ -2066,6 +2072,9 @@ public final class OAuthLedger: @unchecked Sendable {
         }
         if request.consumedAt != nil {
             lock.unlock()
+            if isOIDC {
+                return json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization request is invalid or has expired\"}")
+            }
             return json(409, "{\"error\":\"request_already_consumed\",\"error_description\":\"This Login with Raft request is one-time and has already been exchanged. Discard it and obtain a fresh request before retrying.\",\"next_action\":\"obtain_fresh_request\"}")
         }
         let now = Date()
