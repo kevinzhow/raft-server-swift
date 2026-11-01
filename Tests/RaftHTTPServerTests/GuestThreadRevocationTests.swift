@@ -23,6 +23,7 @@ import VaporTesting
         accounts.oauth.addChannelHuman(channelId: channel, userId: id)
     }
     accounts.enableGuestRoleTransitions(serverId: serverId)
+    accounts.setChannelGuestVisibleForTesting(channelId: channel, visible: false)
 
     try await withApp { app in
         configure(app, services: FallbackServices(

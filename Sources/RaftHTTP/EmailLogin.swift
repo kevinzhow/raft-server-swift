@@ -288,6 +288,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var announcements: [(id: String, title: String, pages: [String], startsAt: Date, expiresAt: Date?)] = []
     private var announcementDismissals: Set<String> = []
     private var inboxDoneScopes: Set<String> = []
+    private var guestVisibleChannels: [String: Bool] = [:]
     private var readReceiptsServers: Set<String> = []
     private var channelHumanRoles: [String: String] = [:]
     private var channelAuthorityRevisions: [String: Int] = [:]
@@ -4526,6 +4527,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             if let parentId = thread.parentChannelId, let parent = postableChannels[parentId], parent.deletedAt != nil {
                 continue
             }
+            if oauth.memberRole(serverId: serverId, userId: userId) == "guest", !guestCanSeeScopeLocked(follow.threadChannelId) {
+                continue
+            }
             let info = oauth.channelUnreadInfo(channelId: follow.threadChannelId, userId: userId)
             let threadReplies = humanMessageRows.filter { $0.channelId == follow.threadChannelId }
             var unreadCount = info.unreadCount
@@ -4806,8 +4810,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if let serverId, let userId = sessionUserId(authorization: authorization) {
             lock.lock()
             let threadScope = postableChannels[channelId]?.kind == "thread"
+            let guestVisible = guestCanSeeScopeLocked(channelId)
             lock.unlock()
-            if threadScope, oauth.memberRole(serverId: serverId, userId: userId) == "guest" {
+            if threadScope, oauth.memberRole(serverId: serverId, userId: userId) == "guest", !guestVisible {
                 return Self.json(403, "{\"error\":\"Forbidden\"}")
             }
         }
@@ -5133,9 +5138,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
         lock.lock()
+        let guest = serverId.flatMap { oauth.memberRole(serverId: $0, userId: userId) } == "guest"
         let scopes = inboxDoneScopes
             .filter { $0.hasPrefix("\(userId)\n") }
             .map { String($0.dropFirst("\(userId)\n".count)) }
+            .filter { !guest || guestCanSeeScopeLocked($0) }
             .sorted()
             .prefix(max(0, limit))
         let items = scopes.map { scopeId -> String in
@@ -5304,7 +5311,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 if !visibleScopes.contains(scopeId) { continue }
             }
             let isThread = type == "thread"
-            if isThread, let scopeServer, oauth.memberRole(serverId: scopeServer, userId: userId) == "guest" {
+            if let scopeServer, oauth.memberRole(serverId: scopeServer, userId: userId) == "guest",
+               !guestCanSeeScopeLocked(scopeId) {
                 continue
             }
             let parentChannelId = isThread ? channel?.parentChannelId : nil
@@ -7042,6 +7050,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var taskClaimedAt: String? = nil
         var taskCompletedAt: String? = nil
         var senderTimezone: String? = nil
+    }
+
+    public func setChannelGuestVisibleForTesting(channelId: String, visible: Bool) {
+        lock.lock()
+        guestVisibleChannels[channelId] = visible
+        lock.unlock()
+    }
+
+    private func guestCanSeeScopeLocked(_ scopeId: String) -> Bool {
+        if postableChannels[scopeId]?.kind == "thread",
+           let parentId = postableChannels[scopeId]?.parentChannelId {
+            return guestVisibleChannels[parentId] ?? true
+        }
+        return guestVisibleChannels[scopeId] ?? true
     }
 
     public func setChannelPostablePrivateForTesting(channelId: String) {

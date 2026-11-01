@@ -270,3 +270,5 @@ External agent presence：任意 agent credential 认证的 API 调用会以 60s
 
 Identity setup：`POST /api/auth/register` 建 pending 账户（`name` 为 `pending_` + 20 hex，`profileSetupSuggestedHandle` 来自邮箱/名字，`profileSetupProvider:null`），`profileSetupCompletedAt:null`。`POST /api/auth/me/complete-profile` 用 `{name,displayName}`：`pending_` 前缀或保留名（如 Reminders）400 `PROFILE_SETUP_NAME_RESERVED`；完成后同名同 displayName 重放 200，不同 payload 409 `PROFILE_SETUP_ALREADY_COMPLETED`；并发两个不同 payload 只允许一个成功。资料未完成且邮箱已验证时 `POST /api/servers` 403 `{error:"Profile setup required",code:"PROFILE_SETUP_REQUIRED"}`；完成或既有账户可创建。
 
+Guest-visible 频道：public 频道是否对 guest 可见由频道级 `guestVisible` 决定（本实现默认 true，测试可显式关闭）。关闭后 guest 的 inbox（含 `filter=mentions`）、done 列表、followed threads 与 direct thread 读取都不再返回该频道/其 thread；重新开启后恢复。残留的 mention/follow/done 记录本身不会授予访问。
+
