@@ -117,7 +117,7 @@ internalAgentApi.feedbackLocator	route	partial	-	auto-seed
 internalAgentApi.grantCoverage	route	partial	-	auto-seed
 internalAgentApi.grants	route	partial	-	auto-seed
 internalAgentApi.historyUnread	route	partial	-	auto-seed
-internalAgentApi.hostedProfile.api	route	partial	-	auto-seed
+internalAgentApi.hostedProfile.api	route	locked	672f241	hosted description lock, rename, self-hosted edit
 internalAgentApi.idempotentWrites	route	partial	-	auto-seed
 internalAgentApi.inboxEligibility	route	partial	-	auto-seed
 internalAgentApi.inboxList	route	partial	-	auto-seed
