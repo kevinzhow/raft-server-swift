@@ -350,6 +350,29 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Raw `SLOCK_DEVICE_LOGIN_ENABLED`. Unset or empty keeps device login on. `false`, `0`, `no`, and `off` turn it off.
     public var deviceLoginGate: String?
     private var linkedIdentities: [LinkedIdentity] = []
+    private var featureFlagRecords: [String: FeatureFlagRecord] = [
+        "attachment_comments_v0": FeatureFlagRecord(key: "attachment_comments_v0", defaultEnabled: true),
+    ]
+    private var featureFlagRuleRecords: [FeatureFlagRuleRecord] = []
+
+    private struct FeatureFlagRecord {
+        var key: String
+        var enabled = true
+        var killSwitch = false
+        var defaultEnabled = false
+    }
+
+    private struct FeatureFlagRuleRecord {
+        var key: String
+        var stage: String
+        var decision: String
+        var values: [String]
+        var clientOs: [String]?
+        var minClientBuild: Int?
+        var clientBuildTypes: [String]?
+        var priority = 0
+        var createdAt = Date()
+    }
 
     public static let termsVersion = "2026-05-12"
     public static let privacyVersion = "2026-05-12"
@@ -2466,6 +2489,135 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// `POST /api/feature-flags/evaluate`. Admin flag routes are not mounted. An empty key list is rejected before any flag read.
+    public func createFeatureFlagForTesting(
+        key: String,
+        defaultEnabled: Bool = false,
+        enabled: Bool = true,
+        killSwitch: Bool = false
+    ) {
+        lock.lock()
+        featureFlagRecords[key] = FeatureFlagRecord(
+            key: key,
+            enabled: enabled,
+            killSwitch: killSwitch,
+            defaultEnabled: defaultEnabled
+        )
+        lock.unlock()
+    }
+
+    public func addFeatureFlagRuleForTesting(
+        key: String,
+        stage: String,
+        decision: String,
+        values: [String],
+        clientOs: [String]? = nil,
+        minClientBuild: Int? = nil,
+        clientBuildTypes: [String]? = nil,
+        priority: Int = 0
+    ) {
+        lock.lock()
+        featureFlagRuleRecords.append(FeatureFlagRuleRecord(
+            key: key,
+            stage: stage,
+            decision: decision,
+            values: values,
+            clientOs: clientOs,
+            minClientBuild: minClientBuild,
+            clientBuildTypes: clientBuildTypes,
+            priority: priority
+        ))
+        lock.unlock()
+    }
+
+    public func setFeatureFlagKillSwitchForTesting(key: String, killSwitch: Bool) {
+        lock.lock()
+        featureFlagRecords[key]?.killSwitch = killSwitch
+        lock.unlock()
+    }
+
+    private struct FeatureFlagClientFacts {
+        var os: String?
+        var buildNumber: Int?
+        var buildType: String?
+    }
+
+    private static func featureFlagClientFacts(_ object: [String: Any]) -> FeatureFlagClientFacts {
+        let osValues: Set<String> = ["android", "ios", "ohos"]
+        let buildTypes: Set<String> = ["release", "alpha", "debug"]
+        let os = (object["os"] as? String).flatMap { osValues.contains($0) ? $0 : nil }
+        let buildType = (object["buildType"] as? String).flatMap { buildTypes.contains($0) ? $0 : nil }
+        var buildNumber: Int?
+        if let raw = object["buildNumber"] {
+            if let string = raw as? String, string.range(of: "^[0-9]{1,15}$", options: .regularExpression) != nil {
+                buildNumber = Int(string)
+            } else if let number = raw as? NSNumber,
+                      String(cString: number.objCType) != "c",
+                      String(cString: number.objCType) != "B",
+                      number.doubleValue >= 0,
+                      number.doubleValue.rounded() == number.doubleValue,
+                      number.doubleValue <= Double(Int.max) {
+                buildNumber = number.intValue
+            }
+        }
+        return FeatureFlagClientFacts(os: os, buildNumber: buildNumber, buildType: buildType)
+    }
+
+    private func featureFlagRules(key: String, stage: String) -> [FeatureFlagRuleRecord] {
+        featureFlagRuleRecords
+            .filter { $0.key == key && $0.stage == stage }
+            .sorted { lhs, rhs in
+                if lhs.priority != rhs.priority { return lhs.priority < rhs.priority }
+                return lhs.createdAt < rhs.createdAt
+            }
+    }
+
+    private func featureFlagRuleReply(key: String, rule: FeatureFlagRuleRecord, stage: String) -> HTTPReply {
+        Self.json(200, "{\"evaluations\":[{\"key\":\(jsonString(key)),\"enabled\":\(rule.decision == "allow"),\"reason\":\(jsonString(stage + "_rule"))}]}")
+    }
+
+    private func evaluateFeatureFlagKey(
+        key: String,
+        userId: String,
+        serverId: String?,
+        platform: String?,
+        client: FeatureFlagClientFacts
+    ) -> (enabled: Bool, reason: String) {
+        guard let flag = featureFlagRecords[key] else {
+            return (false, "missing_flag")
+        }
+        if flag.killSwitch { return (false, "kill_switch") }
+        if !flag.enabled { return (false, "flag_disabled") }
+        if let rule = featureFlagRules(key: key, stage: "user").first(where: { $0.values.contains(userId) }) {
+            return (rule.decision == "allow", "user_rule")
+        }
+        if let platform,
+           let rule = featureFlagRules(key: key, stage: "platform").first(where: { $0.values.contains(platform) }) {
+            return (rule.decision == "allow", "platform_rule")
+        }
+        if let serverId {
+            for rule in featureFlagRules(key: key, stage: "client") where rule.values.contains(serverId) {
+                let hasConstraint = rule.clientOs != nil || rule.minClientBuild != nil || rule.clientBuildTypes != nil
+                guard hasConstraint else { continue }
+                if let clientOs = rule.clientOs {
+                    guard let os = client.os, clientOs.contains(os) else { continue }
+                }
+                if let buildTypes = rule.clientBuildTypes {
+                    guard let buildType = client.buildType, buildTypes.contains(buildType) else { continue }
+                }
+                if let minimum = rule.minClientBuild {
+                    guard let buildNumber = client.buildNumber, buildNumber >= minimum else { continue }
+                }
+                return (rule.decision == "allow", "client_rule")
+            }
+        }
+        if let serverId,
+           let rule = featureFlagRules(key: key, stage: "server").first(where: { $0.values.contains(serverId) }) {
+            return (rule.decision == "allow", "server_rule")
+        }
+        return (flag.defaultEnabled, "default")
+    }
+
+    /// `POST /api/feature-flags/evaluate`. Admin flag routes are not mounted.
     public func evaluateFeatureFlags(body: String, authorization: String?) -> HTTPReply {
         let userId: String
         switch authorize(authorization) {
@@ -2490,12 +2642,33 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if parsed.isEmpty || parsed.count > 50 || parsed.contains(where: { $0 == nil }) {
             return Self.json(400, "{\"error\":\"keys must contain 1-50 valid feature flag keys\"}")
         }
+        var serverId: String?
+        if let rawServerId = object["serverId"], !(rawServerId is NSNull) {
+            guard let value = rawServerId as? String, ServerScope.isUUID(value) else {
+                return Self.json(400, "{\"error\":\"serverId must be a valid UUID\"}")
+            }
+            serverId = value
+        }
+        if let serverId, oauth.memberRole(serverId: serverId, userId: userId) == nil {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        var platform: String?
+        if let rawPlatform = object["platform"], !(rawPlatform is NSNull) {
+            guard let value = rawPlatform as? String, value == "web" || value == "mobile" else {
+                return Self.json(400, "{\"error\":\"platform must be web or mobile\"}")
+            }
+            platform = value
+        }
+        let client = Self.featureFlagClientFacts(object)
         let unique = parsed.compactMap { $0 }.reduce(into: [String]()) { list, key in
             if !list.contains(key) { list.append(key) }
         }
-        let evaluations = unique.map {
-            "{\"key\":\(jsonString($0)),\"enabled\":false,\"reason\":\"missing_flag\"}"
+        lock.lock()
+        let evaluations = unique.map { key -> String in
+            let result = evaluateFeatureFlagKey(key: key, userId: userId, serverId: serverId, platform: platform, client: client)
+            return "{\"key\":\(jsonString(key)),\"enabled\":\(result.enabled),\"reason\":\(jsonString(result.reason))}"
         }.joined(separator: ",")
+        lock.unlock()
         return Self.json(200, "{\"evaluations\":[\(evaluations)]}")
     }
 

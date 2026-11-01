@@ -260,3 +260,5 @@ Guest 角色降级后，其 follow 的 thread 从 `GET /api/channels/inbox`（`a
 
 `/api/reminders` 对人是只读：`GET`（可选 `ownerAgentId`）对成员返回 `{reminders:[{id,title,ownerAgentId,fireAt}]}`；owner/admin 看本 Server 全部 Agent，普通成员只看自己创建的 Agent；显式指定不可检查的 Agent 403，未知 Agent 404。`POST /api/reminders` 与 `DELETE /api/reminders/:id` 未挂载，均 404。
 
+`POST /api/feature-flags/evaluate`（成员限定）：`keys` 1–50 个合法 key（或 `key`）；`serverId` 必须为 UUID 且调用者是成员（否则 400/403）；`platform` 仅 `web`/`mobile`（否则 400）。求值顺序 kill switch → 未启用 → user → platform → client → server → 默认，返回 `{evaluations:[{key,enabled,reason}]}`，reason 为 `kill_switch`/`flag_disabled`/`user_rule`/`platform_rule`/`client_rule`/`server_rule`/`default`/`missing_flag`。client 规则按 `values` 命中 server，并要求 `clientOs`/`buildType`（`android|ios|ohos`、`release|alpha|debug`）和 `minClientBuild`；`buildNumber` 接受 1–15 位数字串或非负整数，缺失/畸形视为未上报，请求仍 200。`attachment_comments_v0` 默认开启。`GET /api/public/feature-flags` 已锁定为仅 pre-auth flag、platform 规则与默认决定，`Cache-Control: public, max-age=60`，凭据被忽略；非法 keys/platform 400。
+
