@@ -160,7 +160,7 @@ oauthPkceDowngrade.api	route	partial	-	auto-seed
 oauthRedirectSecurity.api	route	partial	-	auto-seed
 oauthServerinfo.contract	route	partial	-	auto-seed
 oauthServerinfoDocs.contract	route	partial	-	auto-seed
-oidc.api	route	partial	-	auto-seed
+oidc.api	route	locked	eec3052	standard and scoped issuer: discovery, PKCE, ID token, claims, invalid_grant
 otlpRelay	route	pending	-	auto-seed
 productEvents.api	route	partial	-	auto-seed
 productFeedback.api	route	partial	-	auto-seed
