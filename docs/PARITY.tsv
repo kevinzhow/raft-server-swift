@@ -106,7 +106,7 @@ internalAgentApi.appConfig	route	partial	-	auto-seed
 internalAgentApi.attachmentComments	route	partial	-	auto-seed
 internalAgentApi.attachmentDownloadUrl	route	partial	-	auto-seed
 internalAgentApi.auth	route	partial	-	auto-seed
-internalAgentApi.channelCard	route	partial	-	auto-seed
+internalAgentApi.channelCard	route	locked	cbe47a1	channel/private/thread cards, DM card-free, dm:@ resolution
 internalAgentApi.context	route	partial	-	auto-seed
 internalAgentApi.contract	route	partial	-	auto-seed
 internalAgentApi.crossReplicaWake	route	partial	-	auto-seed
