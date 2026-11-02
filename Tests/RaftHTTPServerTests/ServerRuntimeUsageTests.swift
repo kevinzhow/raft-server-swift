@@ -196,3 +196,41 @@ private func runtimeObject(_ response: ClientResponse) throws -> [String: Any] {
         }
     }
 }
+
+@Test func machineDeleteCleansProfilesButRefusesActiveAgents() async throws {
+    let fixture = makeRuntimeFixture(suffix: "998")
+    let agentId = fixture.accounts.oauth.createAgent(serverId: fixture.serverId, name: "profile-agent-998", runtime: "codex")
+    fixture.accounts.setAgentRuntimeProfileForTesting(agentId: agentId, machineId: fixture.machineId)
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: fixture.accounts
+        ))
+        try await app.testing { client in
+            let owner = try await runtimeLogin(client, email: fixture.ownerEmail)
+            let path = "/api/servers/\(fixture.serverId)/machines/\(fixture.machineId)"
+            let blocked = try await client.send(.delete, headers: runtimeHeaders(owner, fixture.serverId), to: URI(string: path))
+            #expect(blocked.status == .conflict)
+            #expect(((try runtimeObject(blocked)["error"] as? String) ?? "").contains("runtime profiles still reference active agents"))
+            #expect(fixture.accounts.agentRuntimeProfileMachineId(agentId: agentId) == fixture.machineId)
+
+            fixture.accounts.oauth.deleteAgent(id: agentId)
+            let cleaned = try await client.send(.delete, headers: runtimeHeaders(owner, fixture.serverId), to: URI(string: path))
+            #expect(cleaned.status == .ok)
+            #expect(fixture.accounts.agentRuntimeProfileMachineId(agentId: agentId) == nil)
+
+            let staleMachine = fixture.accounts.registerMachine(serverId: fixture.serverId, userId: fixture.ownerId, name: "stale-profile-machine-998")
+            let staleAgent = fixture.accounts.oauth.createAgent(serverId: fixture.serverId, name: "stale-agent-998", runtime: "codex")
+            fixture.accounts.setAgentRuntimeProfileForTesting(agentId: staleAgent, machineId: staleMachine, staleAfterMigration: true)
+            let staleDelete = try await client.send(
+                .delete,
+                headers: runtimeHeaders(owner, fixture.serverId),
+                to: URI(string: "/api/servers/\(fixture.serverId)/machines/\(staleMachine)")
+            )
+            #expect(staleDelete.status == .ok)
+            #expect(fixture.accounts.agentRuntimeProfileMachineId(agentId: staleAgent) == nil)
+        }
+    }
+}

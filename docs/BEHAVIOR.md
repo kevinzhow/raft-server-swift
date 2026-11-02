@@ -378,3 +378,5 @@ Forward source×destination 矩阵：channel/private/DM/joint 四种源 × chann
 
 Servers runtime 组：`GET .../runtime-options` 需要 owner/admin 或 machine 创建者；member/attacher 不因 Computer attach 获得该权限。`GET .../runtime-models/:runtime` 返回 `{kind:"live",value:{models,default},models,default}`，权限同上。`POST .../runtimes/rescan` 离线 409 `Computer is offline`，在线且授权 200 `{requested:true}`。`GET .../runtime-account-usage/:provider` 仅 owner/admin 或 Computer 的 attaching human；未知 provider 404；响应 `Cache-Control: private, no-store`，`state: missing|fresh|stale`。`POST .../refresh`：非 manual 202 `requested`，60s 内重复 202 `cooldown`；manual 在线且拿到快照 200 `fresh`，超时 200 `timeout`，离线 202 `computer_offline`。
 
+Machine delete 与 runtime profiles：存在指向该 machine 且仍关联 active（未删除）agent 的 runtime profile 时，`DELETE /api/servers/:id/machines/:machineId` 回 409 `MACHINE_HAS_ACTIVE_RUNTIME_PROFILE`，错误文本含 `runtime profiles still reference active agents` 且 machine 保留；agent 已删除或 profile 已标记 migration 完成后的 stale source 会被清理，随后删除成功。
+

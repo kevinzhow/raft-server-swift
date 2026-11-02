@@ -154,6 +154,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var storedAgentDeliveries: [(agentId: String, messageId: String, channelType: String)] = []
     private var agentCredentials: [String: AgentCredential] = [:]
     private var agentMachineIds: [String: String] = [:]
+    private var agentRuntimeProfiles: [String: (machineId: String, staleAfterMigration: Bool)] = [:]
     private var agentMigrationServers: Set<String> = []
     private var hostedMigrationServers: Set<String> = []
     private var hostedRuntimeServers: Set<String> = []
@@ -10860,6 +10861,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"protocolVersion\":2,\"runtimeId\":\(jsonString(agent.runtime)),\"schemaVersion\":\(jsonString(schemaVersion)),\"fields\":\(fields),\"values\":\(valueJSON),\"capabilities\":\(capabilities)}")
     }
 
+    public func setAgentRuntimeProfileForTesting(agentId: String, machineId: String, staleAfterMigration: Bool = false) {
+        lock.lock()
+        agentRuntimeProfiles[agentId] = (machineId, staleAfterMigration)
+        lock.unlock()
+    }
+
+    public func agentRuntimeProfileMachineId(agentId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return agentRuntimeProfiles[agentId]?.machineId
+    }
+
     public func setAgentMachineForTesting(agentId: String, machineId: String) {
         lock.lock()
         agentMachineIds[agentId] = machineId
@@ -12021,6 +12034,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if role != "owner", role != "admin", machines[index].userId != userId {
             lock.unlock()
             return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        let blockingProfile = agentRuntimeProfiles.contains { agentId, profile in
+            profile.machineId == machineId
+                && !profile.staleAfterMigration
+                && oauth.agentRuntimeInfo(id: agentId).map { !$0.deleted } == true
+        }
+        if blockingProfile {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"This computer cannot be deleted: runtime profiles still reference active agents. Move or delete those agents first.\",\"code\":\"MACHINE_HAS_ACTIVE_RUNTIME_PROFILE\"}")
+        }
+        agentRuntimeProfiles = agentRuntimeProfiles.filter { agentId, profile in
+            guard profile.machineId == machineId else { return true }
+            if profile.staleAfterMigration { return false }
+            return oauth.agentRuntimeInfo(id: agentId).map { !$0.deleted } == true
         }
         machines.remove(at: index)
         for computerIndex in computers.indices where computers[computerIndex].machineId?.caseInsensitiveCompare(machineId) == .orderedSame {
