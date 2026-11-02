@@ -11,7 +11,7 @@ agentAudienceJwt.grafana	route	pending	-	auto-seed
 agentAudienceJwtBuiltIn.api	route	locked	adf3ae2	ignored legacy columns, installation-gated issuance, compat GET/410 PUT
 agentChannelJoint.api	route	partial	-	auto-seed
 agentCredentialSecurity.api	route	partial	-	auto-seed
-agentCredentials.api	route	partial	-	auto-seed
+agentCredentials.api	route	locked	2d8de22	mint/list/revoke authority, no-store, whoami, masked inventory, creator demotion, 403/404 anti-enum; excluded DB audit rows
 agentDiscovery.api	route	locked	b5c5dbc	manageable union, creator override, empty reason
 agentKnowledgeSearchSerialization	route	locked	6d32122	match reasons kept, internal scoring fields projected out
 agentLogin.gate	route	locked	4c138e3	env-gated /api/agent/login, missing/invalid token codes
