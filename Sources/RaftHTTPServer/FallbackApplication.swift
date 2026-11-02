@@ -858,6 +858,30 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("internal", "agent-api", "tasks", "claim") { request -> Response in
+        routeResponse(services.emailAccounts.agentTaskClaim(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.post("internal", "agent-api", "tasks", "update-status") { request -> Response in
+        routeResponse(services.emailAccounts.agentTaskUpdateStatus(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.post("internal", "agent-api", "tasks", "delete") { request -> Response in
+        routeResponse(services.emailAccounts.agentTaskDelete(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.post("internal", "agent-api", "tasks", "convert") { request -> Response in
+        routeResponse(services.emailAccounts.agentTaskConvert(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}"
+        ))
+    }
     app.post("internal", "agent-api", "channels", ":channelId", "join") { request -> Response in
         routeResponse(services.emailAccounts.agentJoinChannel(
             authorization: request.headers[.authorization],

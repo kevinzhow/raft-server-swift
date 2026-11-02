@@ -18077,6 +18077,185 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"tasks\":[\(rows)]}")
     }
 
+    public func agentTaskClaim(authorization: String?, body: String) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        if let reply = agentGrantDenial(agentId: agent.id, scope: "task:write") { return reply }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let channelRef = object["channel"] as? String,
+              let channelId = agentTaskChannel(serverId: agent.serverId, agentId: agent.id, reference: channelRef)
+        else {
+            return Self.json(400, "{\"error\":\"Invalid task claim request\"}")
+        }
+        let taskNumbers = (object["task_numbers"] as? [Any])?.compactMap { $0 as? Int } ?? []
+        let messageIds = (object["message_ids"] as? [Any])?.compactMap { $0 as? String } ?? []
+        var results: [String] = []
+        lock.lock()
+        for number in taskNumbers {
+            guard let index = taskRecords.firstIndex(where: { $0.channelId == channelId && $0.taskNumber == number }) else {
+                results.append("{\"taskNumber\":\(number),\"success\":false,\"reason\":\"not found\"}")
+                continue
+            }
+            if taskRecords[index].assigneeId == agent.id {
+                results.append("{\"taskNumber\":\(number),\"success\":false,\"reason\":\"already claimed by you\"}")
+                continue
+            }
+            if let assignee = taskRecords[index].assigneeId, assignee != agent.id {
+                results.append("{\"taskNumber\":\(number),\"success\":false,\"reason\":\"already claimed\"}")
+                continue
+            }
+            taskRecords[index].assigneeId = agent.id
+            taskRecords[index].assigneeType = "agent"
+            taskRecords[index].claimedAt = Date()
+            if taskRecords[index].status == "todo" { taskRecords[index].status = "in_progress" }
+            taskRecords[index].revision += 1
+            let task = taskRecords[index]
+            results.append("{\"taskNumber\":\(task.taskNumber),\"messageId\":\(jsonString(task.messageId)),\"success\":true}")
+        }
+        for prefix in messageIds {
+            guard let index = taskRecords.firstIndex(where: { $0.channelId == channelId && $0.messageId.hasPrefix(prefix) }) else {
+                results.append("{\"messageId\":\(jsonString(prefix)),\"success\":false,\"reason\":\"not found\"}")
+                continue
+            }
+            let task = taskRecords[index]
+            if task.assigneeId == agent.id {
+                results.append("{\"messageId\":\(jsonString(task.messageId)),\"success\":false,\"reason\":\"already claimed by you\",\"taskNumber\":\(task.taskNumber)}")
+                continue
+            }
+            if let assignee = task.assigneeId, assignee != agent.id {
+                results.append("{\"messageId\":\(jsonString(task.messageId)),\"success\":false,\"reason\":\"already claimed\",\"taskNumber\":\(task.taskNumber)}")
+                continue
+            }
+            taskRecords[index].assigneeId = agent.id
+            taskRecords[index].assigneeType = "agent"
+            taskRecords[index].claimedAt = Date()
+            if taskRecords[index].status == "todo" { taskRecords[index].status = "in_progress" }
+            taskRecords[index].revision += 1
+            let claimed = taskRecords[index]
+            results.append("{\"messageId\":\(jsonString(claimed.messageId)),\"success\":true,\"taskNumber\":\(claimed.taskNumber)}")
+        }
+        lock.unlock()
+        return Self.json(200, "{\"results\":[\(results.joined(separator: ","))]}")
+    }
+
+    public func agentTaskUpdateStatus(authorization: String?, body: String) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        if let reply = agentGrantDenial(agentId: agent.id, scope: "task:write") { return reply }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let channelRef = object["channel"] as? String,
+              let channelId = agentTaskChannel(serverId: agent.serverId, agentId: agent.id, reference: channelRef),
+              let taskNumber = object["task_number"] as? Int,
+              let status = object["status"] as? String,
+              Self.validTaskStatuses.contains(status)
+        else {
+            return Self.json(400, "{\"error\":\"Invalid task status request\"}")
+        }
+        lock.lock()
+        guard let index = taskRecords.firstIndex(where: { $0.channelId == channelId && $0.taskNumber == taskNumber }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Task not found\"}")
+        }
+        let current = taskRecords[index]
+        let isAdmin = oauth.agentRole(serverId: agent.serverId, agentId: agent.id) == "admin"
+        if !isAdmin {
+            if status == "todo", current.status == "in_progress", current.assigneeId != agent.id {
+                lock.unlock()
+                return Self.json(409, "{\"error\":\"Task cannot transition from in_progress to todo\"}")
+            }
+            if current.status == "todo", ["done", "closed", "in_review", "cancelled"].contains(status) {
+                lock.unlock()
+                return Self.json(409, "{\"error\":\"Task cannot transition from todo to \(status)\"}")
+            }
+        }
+        taskRecords[index].status = status
+        if status == "done" || status == "closed" { taskRecords[index].completedAt = Date() }
+        if status == "in_progress" { taskRecords[index].claimedAt = Date() }
+        if status == "todo" { taskRecords[index].claimedAt = nil }
+        taskRecords[index].revision += 1
+        let task = taskRecords[index]
+        lock.unlock()
+        return Self.json(200, taskJSON(task))
+    }
+
+    public func agentTaskDelete(authorization: String?, body: String) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        if let reply = agentGrantDenial(agentId: agent.id, scope: "task:write") { return reply }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let channelRef = object["channel"] as? String,
+              let channelId = agentTaskChannel(serverId: agent.serverId, agentId: agent.id, reference: channelRef),
+              let taskNumber = object["task_number"] as? Int
+        else {
+            return Self.json(400, "{\"error\":\"Invalid task delete request\"}")
+        }
+        lock.lock()
+        guard let index = taskRecords.firstIndex(where: { $0.channelId == channelId && $0.taskNumber == taskNumber }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Task not found\"}")
+        }
+        let task = taskRecords[index]
+        let isAdmin = oauth.agentRole(serverId: agent.serverId, agentId: agent.id) == "admin"
+        guard isAdmin || task.creatorId == agent.id else {
+            lock.unlock()
+            return Self.json(403, "{\"error\":\"Only the task creator can delete it\",\"code\":\"task_delete_forbidden\"}")
+        }
+        taskRecords.remove(at: index)
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    public func agentTaskConvert(authorization: String?, body: String) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        if let reply = agentGrantDenial(agentId: agent.id, scope: "task:write") { return reply }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let channelRef = object["channel"] as? String,
+              let channelId = agentTaskChannel(serverId: agent.serverId, agentId: agent.id, reference: channelRef),
+              let messageRef = object["message_id"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"Invalid task convert request\"}")
+        }
+        lock.lock()
+        guard let message = humanMessageRows.first(where: { $0.id == messageRef || $0.id.hasPrefix(messageRef) }), message.channelId == channelId else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Message not found\"}")
+        }
+        if taskRecords.contains(where: { $0.messageId == message.id }) {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"Message is already a task\"}")
+        }
+        let taskNumber = taskRecords.filter { $0.channelId == channelId }.count + 1
+        let id = UUID().uuidString.lowercased()
+        var record = TaskRecord(
+            id: id,
+            channelId: channelId,
+            title: "Converted message",
+            description: nil,
+            status: "todo",
+            taskNumber: taskNumber,
+            messageId: message.id,
+            createdAt: Date()
+        )
+        record.creatorId = agent.id
+        taskRecords.append(record)
+        let json = taskJSON(record)
+        lock.unlock()
+        return Self.json(200, "{\"task\":\(json)}")
+    }
+
     public func agentTasksCreate(authorization: String?, legacyAgentId: String?, body: String) -> HTTPReply {
         let auth: (agentId: String, serverId: String)
         switch agentTaskAuth(authorization: authorization, legacyAgentId: legacyAgentId) {

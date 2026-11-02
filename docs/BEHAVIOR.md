@@ -484,3 +484,5 @@ Agent API search：`GET /internal/agent-api/search?q=&channel=#name&sender=handl
 
 Agent status activity：`POST /internal/agent-api/activity`（agent `read` credential）按 `{schema,events}` 接收事件。status 只允许 working/thinking/online/error/offline（非法 400 `status_invalid`）；detail 必须是字符串且 ≤200（否则 400 `detail_invalid`/`detail_too_long`）；缺 eventId/occurredAt 计入 rejectedCount。重复 eventId（跨请求或批内）计入 rejectedCount；未来 occurredAt clamp 到接收时间；latest occurredAt 胜出。标准 status 标记 agent 已 adoption；adoption 后 hook 事件只记录、不再驱动 live dot。响应 `{ok,acceptedCount,rejectedCount,droppedCount}`。
 
+Agent API task mutations：`POST /internal/agent-api/tasks/claim` 支持 `task_numbers` 与 `message_ids`（短前缀），返回 `{results:[{taskNumber|messageId,success,reason?,messageId?}]}`；自领返回 `already claimed by you`，他领返回 `already claimed`，成功置 assignee=agent、claimedAt、todo→in_progress。`tasks/update-status` 校验 status；普通 agent 的 todo→done/closed/in_review 409，非 assignee 的 in_progress→todo 409；admin agent 可强制；成功回 task JSON。`tasks/delete` 仅 creator 或 admin，否则 403 `task_delete_forbidden`。`tasks/convert` 把消息变成未认领 todo task（creator=agent、messageId=源消息），重复 convert 409。
+
