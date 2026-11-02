@@ -51,6 +51,7 @@ import VaporTesting
             accounts.oauth.addChannelHuman(channelId: channelId, userId: outsiderId)
             let idempotent = try await client.send(.post, headers: headers(outsiderToken), to: "/api/channels/\(channelId)/join")
             #expect(idempotent.status == .ok)
+            #expect((try JSONSerialization.jsonObject(with: Data((idempotent.body.string ?? "").utf8)) as? [String: Any])?["ok"] as? Bool == true)
             #expect(accounts.oauth.isChannelParticipant(channelId: channelId, userId: outsiderId))
 
             let ownerRepeat = try await client.send(.post, headers: headers(ownerToken), to: "/api/channels/\(channelId)/join")

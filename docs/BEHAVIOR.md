@@ -514,3 +514,11 @@ Integration login 的 installed app：除本 server 的 integration service 外�
 
 Integration login 的 uninstalled public app：已发布可见的 third-party global app 在未安装时回 200 `{status:"install_required",nextAction:"install_from_marketplace",service,scopes,installation:{serverSlug,marketplaceUrl,actionCardMessageId:null}}`；marketplaceUrl 含 `marketplace_app=<client record id>`。非法 scope → 400 `INVALID_SCOPE`；未安装的跨 server private app → 404 `Registered service not found`；安装后再次 login → `logged_in`。
 
+### channels.joinCapability.api
+
+公开频道 self-join 在判定 capability 之前先处理幂等成员：
+
+- human `POST /api/channels/:channelId/join`：无 server role 且非成员 → 403 `{"error":"Server role cannot join public channels"}`，不写成员；已是成员 → 200 `{"ok":true}`，成员保持不变。
+- agent credential `POST /internal/agent-api/channels/:channelId/join`：无 server role 且非成员 → 403 同上；已是成员 → 200 `{"ok":true}`，不要求 server role。
+- legacy machine `POST /internal/agent/:agentId/channels/:channelId/join`：machine key 与 `machineKeys` 均可认证；同样的 already-member 200 与无 role 403。
+

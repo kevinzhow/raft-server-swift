@@ -24,7 +24,7 @@
 
 | 事实 | 数值 / 证据 |
 | --- | --- |
-| 当前测试 | `make test` 绿，847 个 `@Test`；`make test-e2e` 2 条 |
+| 当前测试 | `make test` 绿，848 个 `@Test`；`make test-e2e` 2 条 |
 | 粒度问题 | 已改为功能纵向切片；每个切片一个 commit |
 | 上游 server 路由 | 219 个 `*.test.ts`，2000 条 `test(...)` |
 | 上游 daemon | 180 个测试模块，2616 条 `test(...)` |

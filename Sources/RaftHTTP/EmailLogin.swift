@@ -17285,7 +17285,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
-        if let reply = agentGrantDenial(agentId: agent.id, scope: "channel:join") { return reply }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == agent.serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
@@ -17293,6 +17292,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if oauth.channelAgentIds(channelId: channelId).contains(agent.id) {
             return Self.json(200, "{\"ok\":true}")
         }
+        if let reply = agentGrantDenial(agentId: agent.id, scope: "channel:join") { return reply }
         guard oauth.agentRole(serverId: agent.serverId, agentId: agent.id) != nil else {
             return Self.json(403, "{\"error\":\"Server role cannot join public channels\"}")
         }
@@ -19919,19 +19919,26 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let apiKey = String(authorization.dropFirst("Bearer ".count))
         lock.lock()
         let machine = machines.first { $0.apiKey == apiKey }
+        let legacy = machineKeys[apiKey]
         lock.unlock()
-        guard let machine else {
+        guard let machineServerId = machine?.serverId ?? legacy?.serverId else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
-        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == machine.serverId else {
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == machineServerId else {
             return Self.json(404, "{\"error\":\"Agent not found\"}")
         }
-        if join, let reply = agentGrantDenial(agentId: agent.id, scope: "channel:join") { return reply }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == agent.serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         if let reply = archivedChannelReply(channelId) { return reply }
+        if join, oauth.channelAgentIds(channelId: channelId).contains(agent.id) {
+            return Self.json(200, "{\"ok\":true}")
+        }
+        if join, let reply = agentGrantDenial(agentId: agent.id, scope: "channel:join") { return reply }
         if join {
+            guard oauth.agentRole(serverId: agent.serverId, agentId: agent.id) != nil else {
+                return Self.json(403, "{\"error\":\"Server role cannot join public channels\"}")
+            }
             oauth.addChannelAgent(channelId: channelId, agentId: agent.id)
         } else {
             oauth.removeChannelAgent(channelId: channelId, agentId: agent.id)
