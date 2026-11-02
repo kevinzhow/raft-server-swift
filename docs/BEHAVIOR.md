@@ -670,3 +670,12 @@ RFC 074 personal assistant：
 - `whenToUse` 校验：≤160 code point、单行（无控制字符）、inline code 之外的裸 `@scope/pkg` 拒绝；拒绝统一 400 `{errorCode:"INVALID_APP_METADATA"}` 且不写库。空串表示清空（读回 null），合法值原样存储。
 - `GET /internal/agent-api/integrations` 的 `services[].whenToUse` 为 inert 渲染：裸 `@alice` → `user:alice`，反引号内 `` `@acme/metrics` `` 原样保留。
 - `services` 只列 enabled 的非 builtin App：被禁用的 server-local App 不出现（daemon prompt 与 `raft integration list` 都不再看到它）。
+
+### internalAgentApi.auth：register app 卡片组
+
+- `POST /internal/agent-api/integrations/app/prepare`（`mode:"register"`，需 agent credential `send`）：校验 name/returnUrl/target，201 回 `{status:"prepared",actionCardMessageId,action:{type:"integration:register_app",name,clientKey?,homepageUrl?,returnUrl,scopes}}`；未给 `clientKey` 时 action 不含该键。
+- 卡片消息 `actionMetadata.presentation`：`title:"Register Connected App <name>"`、`confirmLabel:"Register App"`、`genericApprovalAllowed:true`、`displayItems` 含 `name/clientKey?/returnUrl/scopes`；`warning` 明示请求 agent 成为初始 owner 且卡片不存 client secret。prepare 与历史里都不出现 `raft_secret_`。
+- `POST /api/actions/:messageId/execute`：仅 owner/admin；返回 `metadata.result.kind:"integration-app-registration"`、`mode:"register"`、`clientId`、`clientKey`、`clientName`、`scopes`，metadata 不含 secret。
+- 执行时创建 `server_local` App：clientKey 为请求值或 `"<slug>-<6 hex>"`（如 `generated-demo-abcdef`），returnUrl/homepageUrl/appType 按卡片写入，请求 agent 成为 App owner 维护者；同一卡片重放（`expectedState:"executed"`）返回既有结果且不重复建 App。
+- 目标频道不可见 → 404 `Target channel not found`；缺 name/returnUrl/mode 非 register → 400 `INVALID_APP_METADATA`；clientKey 冲突由创建期校验拒绝（409 `APP_REGISTRATION_REJECTED`）。
+- 初始 secret 的一次性 owner 私有 wake 未移植（无 orchestrator 投递通道）；卡片、历史与执行 metadata 一律 secret-free。

@@ -11,12 +11,15 @@ private struct IntegrationAppFixture {
     let serverId: String
     let foreignServerId: String
     let ownerId: String
+    let ownerToken: String
     let adminAgentId: String
     let adminAgentKey: String
     let ownerAgentId: String
     let ownerAgentKey: String
     let memberAgentId: String
     let memberAgentKey: String
+    let channelId: String
+    let channelName: String
     let ordinaryClientId: String
     let ordinaryClientKey: String
     let platformClientId: String
@@ -37,6 +40,14 @@ private func makeIntegrationAppFixture(_ suffix: String) -> IntegrationAppFixtur
     accounts.oauth.setAgentRole(serverId: serverId, agentId: adminAgentId, role: "admin")
     let ownerAgentId = accounts.oauth.createAgent(serverId: serverId, name: "OwnerQueryAgent\(suffix)", creatorUserId: ownerId, runtime: "external")
     let memberAgentId = accounts.oauth.createAgent(serverId: serverId, name: "MemberQueryAgent\(suffix)", creatorUserId: ownerId, runtime: "external")
+
+    let channelName = "app-registration-room-\(suffix)"
+    let channelId = accounts.oauth.createChannel(serverId: serverId, name: channelName, creatorUserId: ownerId)
+    accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, kind: "channel", name: channelName)
+    accounts.oauth.addChannelHuman(channelId: channelId, userId: ownerId)
+    for agent in [adminAgentId, ownerAgentId] {
+        accounts.oauth.addChannelAgent(channelId: channelId, agentId: agent)
+    }
 
     let ordinary = try! accounts.oauth.createClient(
         serverId: serverId,
@@ -64,17 +75,28 @@ private func makeIntegrationAppFixture(_ suffix: String) -> IntegrationAppFixtur
         serverId: serverId,
         foreignServerId: foreignServerId,
         ownerId: ownerId,
+        ownerToken: accounts.mintAccessTokenForTesting(userId: ownerId),
         adminAgentId: adminAgentId,
         adminAgentKey: accounts.mintAgentCredential(agentId: adminAgentId, scopes: ["read", "server"], name: "admin-\(suffix)"),
         ownerAgentId: ownerAgentId,
-        ownerAgentKey: accounts.mintAgentCredential(agentId: ownerAgentId, scopes: ["read"], name: "owner-\(suffix)"),
+        ownerAgentKey: accounts.mintAgentCredential(agentId: ownerAgentId, scopes: ["read", "send"], name: "owner-\(suffix)"),
         memberAgentId: memberAgentId,
         memberAgentKey: accounts.mintAgentCredential(agentId: memberAgentId, scopes: ["read"], name: "member-\(suffix)"),
+        channelId: channelId,
+        channelName: channelName,
         ordinaryClientId: ordinary.id,
         ordinaryClientKey: ordinary.clientId,
         platformClientId: platform.id,
         platformClientKey: platform.clientId
     )
+}
+
+private func integrationAppHumanHeaders(_ token: String, _ serverId: String) -> HTTPFields {
+    var headers = HTTPFields()
+    headers[.authorization] = "Bearer \(token)"
+    headers[.contentType] = "application/json"
+    headers[HTTPField.Name("X-Server-Id")!] = serverId
+    return headers
 }
 
 private func integrationAppHeaders(_ key: String) -> HTTPFields {
@@ -260,6 +282,123 @@ private func integrationAppStatus(
             let keys = services.compactMap { $0["clientId"] as? String }
             #expect(keys.contains(f.ordinaryClientKey))
             #expect(!keys.contains(disabled.clientId), "a disabled server-local app must not appear in services")
+        }
+    }
+}
+
+private func registerPrepare(
+    _ client: any Client,
+    _ key: String,
+    body: String
+) async throws -> ClientResponse {
+    try await client.send(
+        .post,
+        headers: integrationAppHeaders(key),
+        to: "/internal/agent-api/integrations/app/prepare"
+    ) { request in
+        request.body = .init(string: body)
+    }
+}
+
+@Test func registerAppCardPreparesWithoutASecretAndExecutesIntoAnOwnedApp() async throws {
+    let f = makeIntegrationAppFixture("005")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let prepared = try await registerPrepare(client, f.ownerAgentKey, body: """
+            {"mode":"register","target":"#\(f.channelName)","name":"Prepared Demo","clientKey":"prepared-demo","homepageUrl":"https://prepared.example.test","returnUrl":"https://prepared.example.test/auth/raft/callback","scopes":["openid","profile"]}
+            """)
+            #expect(prepared.status.code == 201)
+            let preparedBody = try integrationAppJSON(prepared)
+            #expect(preparedBody["status"] as? String == "prepared")
+            let cardMessageId = try #require(preparedBody["actionCardMessageId"] as? String)
+            let action = try #require(preparedBody["action"] as? [String: Any])
+            #expect(action["type"] as? String == "integration:register_app")
+            #expect(action["clientKey"] as? String == "prepared-demo")
+            #expect(action["returnUrl"] as? String == "https://prepared.example.test/auth/raft/callback")
+            #expect(action["scopes"] as? [String] == ["openid", "profile"])
+
+            let history = try await client.get(
+                URI(string: "/api/messages/channel/\(f.channelId)"),
+                headers: integrationAppHumanHeaders(f.ownerToken, f.serverId)
+            )
+            #expect(history.status == .ok)
+            let rows = (try integrationAppJSON(history)["messages"] as? [[String: Any]]) ?? []
+            let row = try #require(rows.first { $0["id"] as? String == cardMessageId })
+            let metadata = try #require(row["actionMetadata"] as? [String: Any])
+            let presentation = try #require(metadata["presentation"] as? [String: Any])
+            #expect(presentation["title"] as? String == "Register Connected App Prepared Demo")
+            #expect(presentation["confirmLabel"] as? String == "Register App")
+            #expect(presentation["genericApprovalAllowed"] as? Bool == true)
+            let displayItems = (presentation["displayItems"] as? [[String: Any]]) ?? []
+            #expect(displayItems.contains { $0["key"] as? String == "returnUrl" && $0["value"] as? String == "https://prepared.example.test/auth/raft/callback" })
+            #expect(!String(decoding: try JSONSerialization.data(withJSONObject: [row], options: [.sortedKeys]), as: UTF8.self).contains("raft_secret_"))
+
+            let execute = try await client.send(
+                .post,
+                headers: integrationAppHumanHeaders(f.ownerToken, f.serverId),
+                to: URI(string: "/api/actions/\(cardMessageId)/execute")
+            ) { request in
+                request.body = .init(string: "{\"expectedState\":\"prepared\"}")
+            }
+            #expect(execute.status == .ok)
+            let executeBody = try integrationAppJSON(execute)
+            let executedMetadata = try #require(executeBody["metadata"] as? [String: Any])
+            #expect(executedMetadata["state"] as? String == "executed")
+            let result = try #require(executedMetadata["result"] as? [String: Any])
+            #expect(result["kind"] as? String == "integration-app-registration")
+            #expect(result["mode"] as? String == "register")
+            #expect(result["clientKey"] as? String == "prepared-demo")
+            #expect(result["scopes"] as? [String] == ["openid", "profile"])
+            #expect(!String(decoding: try JSONSerialization.data(withJSONObject: [executedMetadata], options: [.sortedKeys]), as: UTF8.self).contains("raft_secret_"))
+
+            let list = try await integrationAppList(client, f.ownerAgentKey)
+            let app = try #require(list.apps.first { $0["clientKey"] as? String == "prepared-demo" })
+            #expect(app["name"] as? String == "Prepared Demo")
+            #expect(app["callbackUrl"] as? String == "https://prepared.example.test/auth/raft/callback")
+            #expect(app["appType"] as? String == "server_local")
+            #expect(app["authority"] as? String == "owner")
+
+            let duplicate = try await client.send(
+                .post,
+                headers: integrationAppHumanHeaders(f.ownerToken, f.serverId),
+                to: URI(string: "/api/actions/\(cardMessageId)/execute")
+            ) { request in
+                request.body = .init(string: "{\"expectedState\":\"executed\"}")
+            }
+            #expect(duplicate.status == .ok)
+            let afterDuplicate = try await integrationAppList(client, f.ownerAgentKey)
+            #expect(afterDuplicate.apps.filter { $0["clientKey"] as? String == "prepared-demo" }.count == 1)
+        }
+    }
+}
+
+@Test func registerAppCardGeneratesAClientKeyWhenTheRequestDefersIt() async throws {
+    let f = makeIntegrationAppFixture("006")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let prepared = try await registerPrepare(client, f.ownerAgentKey, body: """
+            {"mode":"register","target":"#\(f.channelName)","name":"Generated Demo","returnUrl":"https://generated.example.test/auth/raft/callback"}
+            """)
+            #expect(prepared.status.code == 201)
+            let preparedBody = try integrationAppJSON(prepared)
+            #expect((preparedBody["action"] as? [String: Any])?["clientKey"] == nil)
+            let cardMessageId = try #require(preparedBody["actionCardMessageId"] as? String)
+
+            let execute = try await client.send(
+                .post,
+                headers: integrationAppHumanHeaders(f.ownerToken, f.serverId),
+                to: URI(string: "/api/actions/\(cardMessageId)/execute")
+            ) { request in
+                request.body = .init(string: "{\"expectedState\":\"prepared\"}")
+            }
+            #expect(execute.status == .ok)
+            let result = try #require((try integrationAppJSON(execute)["metadata"] as? [String: Any])?["result"] as? [String: Any])
+            let generated = try #require(result["clientKey"] as? String)
+            #expect(generated.wholeMatch(of: /^generated-demo-[a-f0-9]{6}$/) != nil)
+            let list = try await integrationAppList(client, f.ownerAgentKey)
+            #expect(list.apps.contains { $0["clientKey"] as? String == generated && $0["appType"] as? String == "server_local" })
         }
     }
 }
