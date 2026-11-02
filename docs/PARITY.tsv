@@ -34,7 +34,7 @@ assistant.api	route	partial	-	auto-seed
 attachmentComments.api	route	pending	-	auto-seed
 attachmentPreviewBridge.api	route	pending	-	auto-seed
 attachmentUploadSessions.api	route	partial	-	auto-seed
-attachments.api	route	partial	197866f	access + upload limits + URL TTL + preview token/framing + query-token two-hop + sk_computer covered; XLSX, upload-disabled, joint/storage pending
+attachments.api	route	locked	a7a2a6d	access/upload/TTL/preview tokens/query-token/sk_computer/joint+legacy visibility/agent upload/revoked+retired auth covered; excluded XLSX worker-pool preview, storage streaming/Range/abort, deployment stream hosts, legacy machine-key migration and internal helpers
 attachments	route	partial	-	auto-seed
 auditMediumInbox.api	route	locked	a5dea45	guest visible recheck on done/followed/mention surfaces
 auth.api	route	partial	-	auto-seed
