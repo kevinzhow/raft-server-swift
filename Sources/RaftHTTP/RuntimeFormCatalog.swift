@@ -559,6 +559,358 @@ enum RuntimeFormCatalog {
   }
 }
 """#,
+        "claude": #"""
+{
+  "protocolVersion": 2,
+  "runtimeId": "claude",
+  "schemaVersion": "claude.create.v1",
+  "requiredClientCapabilities": [
+    "select.custom_value",
+    "choice.labels",
+    "option_source.status"
+  ],
+  "dataSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "provider",
+      "model"
+    ],
+    "properties": {
+      "provider": {
+        "type": "string",
+        "title": "Provider",
+        "minLength": 1,
+        "x-optionSource": "provider"
+      },
+      "apiUrl": {
+        "type": "string",
+        "title": "API URL",
+        "format": "uri"
+      },
+      "apiKey": {
+        "type": "string",
+        "title": "API Key",
+        "writeOnly": true
+      },
+      "model": {
+        "type": "string",
+        "title": "Model",
+        "minLength": 1,
+        "x-optionSource": "model"
+      },
+      "reasoningEffort": {
+        "type": "string",
+        "title": "Reasoning",
+        "x-optionsFrom": {
+          "field": "model",
+          "attribute": "supportedReasoningEfforts",
+          "defaultAttribute": "defaultReasoningEffort"
+        }
+      },
+      "fastMode": {
+        "type": "boolean",
+        "title": "Fast mode"
+      },
+      "command": {
+        "type": "string",
+        "title": "Claude Command"
+      },
+      "envVars": {
+        "type": "object",
+        "title": "Environment Variables",
+        "additionalProperties": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "uiSchema": {
+    "order": [
+      "provider",
+      "apiUrl",
+      "apiKey",
+      "model",
+      "reasoningEffort",
+      "fastMode",
+      "command",
+      "envVars"
+    ],
+    "layout": {
+      "advanced": [
+        "/command",
+        "/envVars"
+      ]
+    },
+    "visibility": [
+      {
+        "pointer": "/apiUrl",
+        "when": {
+          "pointer": "/provider",
+          "in": [
+            "custom"
+          ]
+        }
+      },
+      {
+        "pointer": "/apiKey",
+        "when": {
+          "pointer": "/provider",
+          "in": [
+            "custom"
+          ]
+        }
+      }
+    ],
+    "localization": {
+      "provider": {
+        "label": "Provider",
+        "hint": "Default leaves Claude Code provider settings untouched. Custom sets ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY for this agent."
+      },
+      "apiUrl": {
+        "label": "API URL",
+        "placeholder": "https://gateway.example.com"
+      },
+      "apiKey": {
+        "label": "API Key",
+        "placeholder": "sk-ant-..."
+      },
+      "model": {
+        "label": "Model",
+        "hint": "Models Claude Code accepts. You can also type a model ID."
+      },
+      "reasoningEffort": {
+        "label": "Reasoning",
+        "hint": "Available values depend on the selected model.",
+        "choices": {
+          "low": {
+            "label": "Low",
+            "description": "Fast responses with lighter reasoning"
+          },
+          "medium": {
+            "label": "Medium",
+            "description": "Balances speed and reasoning depth for everyday tasks"
+          },
+          "high": {
+            "label": "High",
+            "description": "Greater reasoning depth for complex problems"
+          },
+          "xhigh": {
+            "label": "Extra High",
+            "description": "Extra high reasoning depth for complex problems"
+          },
+          "max": {
+            "label": "Max",
+            "description": "Maximum reasoning depth for the hardest problems"
+          },
+          "ultra": {
+            "label": "Ultra",
+            "description": "Maximum reasoning with automatic task delegation"
+          }
+        }
+      },
+      "fastMode": {
+        "label": "Fast mode",
+        "hint": "Launch this runtime with higher speed at a higher cost per token."
+      },
+      "command": {
+        "label": "Claude Command",
+        "hint": "Executable path or command name; Slock adds the Claude stream-json runtime arguments.",
+        "placeholder": "claude"
+      },
+      "envVars": {
+        "label": "Environment Variables",
+        "hint": "These will be injected into the runtime command environment."
+      }
+    }
+  },
+  "capabilities": {
+    "providerKinds": [],
+    "writeOnlyPointers": [
+      "/apiKey"
+    ],
+    "forbiddenPointers": [
+      "/hostUserState"
+    ]
+  },
+  "optionSources": {
+    "provider": {
+      "protocolVersion": 1,
+      "runtimeId": "claude",
+      "schemaVersion": "claude.create.v1",
+      "sourceId": "provider",
+      "kind": "select",
+      "pointer": "/provider"
+    },
+    "model": {
+      "protocolVersion": 1,
+      "runtimeId": "claude",
+      "schemaVersion": "claude.create.v1",
+      "sourceId": "model",
+      "kind": "select",
+      "pointer": "/model"
+    }
+  }
+}
+"""#,
+        "cursor": #"""
+{
+  "protocolVersion": 2,
+  "runtimeId": "cursor",
+  "schemaVersion": "cursor.create.v1",
+  "requiredClientCapabilities": [
+    "select.custom_value",
+    "option_source.status"
+  ],
+  "dataSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "model"
+    ],
+    "properties": {
+      "model": {
+        "type": "string",
+        "title": "Model",
+        "minLength": 1,
+        "x-optionSource": "model"
+      },
+      "envVars": {
+        "type": "object",
+        "title": "Environment Variables",
+        "additionalProperties": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "uiSchema": {
+    "order": [
+      "model",
+      "envVars"
+    ],
+    "layout": {
+      "advanced": [
+        "/envVars"
+      ]
+    },
+    "visibility": [],
+    "localization": {
+      "model": {
+        "label": "Model",
+        "hint": "Models available from this computer's Cursor CLI. You can also type a model ID."
+      },
+      "envVars": {
+        "label": "Environment Variables",
+        "hint": "These will be injected into the runtime command environment."
+      }
+    }
+  },
+  "capabilities": {
+    "providerKinds": [],
+    "writeOnlyPointers": [],
+    "forbiddenPointers": [
+      "/hostUserState"
+    ]
+  },
+  "optionSources": {
+    "model": {
+      "protocolVersion": 1,
+      "runtimeId": "cursor",
+      "schemaVersion": "cursor.create.v1",
+      "sourceId": "model",
+      "kind": "select",
+      "pointer": "/model"
+    }
+  }
+}
+"""#,
+        "kimi-sdk": #"""
+{
+  "protocolVersion": 2,
+  "runtimeId": "kimi-sdk",
+  "schemaVersion": "kimi-sdk.create.v1",
+  "dataSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "model"
+    ],
+    "properties": {
+      "model": {
+        "type": "string",
+        "title": "Model",
+        "minLength": 1,
+        "x-optionSource": "model"
+      },
+      "reasoningEffort": {
+        "type": "string",
+        "title": "Thinking effort",
+        "minLength": 1,
+        "x-optionsFrom": {
+          "field": "model",
+          "attribute": "supportedReasoningEfforts",
+          "defaultAttribute": "defaultReasoningEffort"
+        }
+      },
+      "envVars": {
+        "type": "object",
+        "title": "Environment Variables",
+        "additionalProperties": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "uiSchema": {
+    "order": [
+      "model",
+      "reasoningEffort",
+      "envVars"
+    ],
+    "layout": {
+      "advanced": [
+        "/envVars"
+      ]
+    },
+    "visibility": [],
+    "localization": {
+      "model": {
+        "label": "Model",
+        "hint": "Models available from this computer's Kimi configuration."
+      },
+      "reasoningEffort": {
+        "label": "Thinking effort",
+        "hint": "Available values are declared by the selected model."
+      },
+      "envVars": {
+        "label": "Environment Variables",
+        "hint": "These will be injected into the runtime command environment."
+      }
+    }
+  },
+  "capabilities": {
+    "providerKinds": [],
+    "writeOnlyPointers": [],
+    "forbiddenPointers": [
+      "/hostUserState"
+    ]
+  },
+  "optionSources": {
+    "model": {
+      "protocolVersion": 1,
+      "runtimeId": "kimi-sdk",
+      "schemaVersion": "kimi-sdk.create.v1",
+      "sourceId": "model",
+      "kind": "select",
+      "pointer": "/model"
+    }
+  },
+  "requiredClientCapabilities": [
+    "option_source.status"
+  ]
+}
+"""#,
     ]
 
     static let optionSources: [String: String] = [
@@ -935,6 +1287,339 @@ enum RuntimeFormCatalog {
   "status": "fallback",
   "reason": "missing_config",
   "retryable": false
+}
+"""#,
+        "claude/provider": #"""
+{
+  "protocolVersion": 1,
+  "runtimeId": "claude",
+  "schemaVersion": "claude.create.v1",
+  "sourceId": "provider",
+  "kind": "select",
+  "pointer": "/provider",
+  "options": [
+    {
+      "value": "default",
+      "label": "Default"
+    },
+    {
+      "value": "custom",
+      "label": "Custom"
+    }
+  ],
+  "defaultValue": "default",
+  "customValueAllowed": false
+}
+"""#,
+        "claude/model": #"""
+{
+  "protocolVersion": 1,
+  "runtimeId": "claude",
+  "schemaVersion": "claude.create.v1",
+  "sourceId": "model",
+  "kind": "select",
+  "pointer": "/model",
+  "options": [
+    {
+      "value": "opus",
+      "label": "Claude Opus",
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "value": "fable",
+      "label": "Claude Fable",
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "value": "sonnet",
+      "label": "Claude Sonnet",
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "value": "haiku",
+      "label": "Claude Haiku",
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
+    },
+    {
+      "value": "claude-opus-5-5",
+      "label": "Claude Opus 5.5",
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "value": "claude-opus-5",
+      "label": "Claude Opus 5",
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "value": "claude-opus-4-8",
+      "label": "Claude Opus 4.8",
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "value": "claude-opus-4-7",
+      "label": "Claude Opus 4.7",
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "value": "claude-opus-4-6",
+      "label": "Claude Opus 4.6",
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "value": "claude-fable-5-1",
+      "label": "Claude Fable 5.1",
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "value": "claude-fable-5",
+      "label": "Claude Fable 5",
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "value": "claude-sonnet-5-5",
+      "label": "Claude Sonnet 5.5",
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "value": "claude-sonnet-5",
+      "label": "Claude Sonnet 5",
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "value": "claude-sonnet-4-6",
+      "label": "Claude Sonnet 4.6",
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "value": "claude-haiku-5-5",
+      "label": "Claude Haiku 5.5",
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "value": "claude-haiku-4-5",
+      "label": "Claude Haiku 4.5",
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
+    }
+  ],
+  "defaultValue": "opus",
+  "customValueAllowed": true,
+  "status": "fallback",
+  "reason": "machine_offline",
+  "retryable": true
+}
+"""#,
+        "cursor/model": #"""
+{
+  "protocolVersion": 1,
+  "runtimeId": "cursor",
+  "schemaVersion": "cursor.create.v1",
+  "sourceId": "model",
+  "kind": "select",
+  "pointer": "/model",
+  "options": [
+    {
+      "value": "composer-2-fast",
+      "label": "Composer 2 Fast"
+    },
+    {
+      "value": "composer-2",
+      "label": "Composer 2"
+    },
+    {
+      "value": "auto",
+      "label": "Auto"
+    }
+  ],
+  "defaultValue": "composer-2-fast",
+  "customValueAllowed": true,
+  "status": "fallback",
+  "reason": "missing_config",
+  "retryable": false
+}
+"""#,
+        "kimi-sdk/edit": #"""
+{
+  "protocolVersion": 2,
+  "runtimeId": "kimi-sdk",
+  "schemaVersion": "kimi-sdk.create.v1",
+  "dataSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "model"
+    ],
+    "properties": {
+      "model": {
+        "type": "string",
+        "title": "Model",
+        "minLength": 1,
+        "x-optionSource": "model"
+      },
+      "reasoningEffort": {
+        "type": "string",
+        "title": "Thinking effort",
+        "minLength": 1,
+        "x-optionsFrom": {
+          "field": "model",
+          "attribute": "supportedReasoningEfforts",
+          "defaultAttribute": "defaultReasoningEffort"
+        }
+      },
+      "envVars": {
+        "type": "object",
+        "title": "Environment Variables",
+        "additionalProperties": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "uiSchema": {
+    "order": [
+      "model",
+      "reasoningEffort",
+      "envVars"
+    ],
+    "layout": {
+      "advanced": [
+        "/envVars"
+      ]
+    },
+    "visibility": [],
+    "localization": {
+      "model": {
+        "label": "Model",
+        "hint": "Models available from this computer's Kimi configuration."
+      },
+      "reasoningEffort": {
+        "label": "Thinking effort",
+        "hint": "Available values are declared by the selected model."
+      },
+      "envVars": {
+        "label": "Environment Variables",
+        "hint": "These will be injected into the runtime command environment."
+      }
+    }
+  },
+  "capabilities": {
+    "providerKinds": [],
+    "writeOnlyPointers": [],
+    "forbiddenPointers": [
+      "/hostUserState"
+    ]
+  },
+  "optionSources": {
+    "model": {
+      "protocolVersion": 1,
+      "runtimeId": "kimi-sdk",
+      "schemaVersion": "kimi-sdk.create.v1",
+      "sourceId": "model",
+      "kind": "select",
+      "pointer": "/model"
+    }
+  },
+  "requiredClientCapabilities": [
+    "option_source.status"
+  ],
+  "values": {
+    "model": "kimi-k2",
+    "reasoningEffort": "high",
+    "envVars": {}
+  }
 }
 """#,
     ]

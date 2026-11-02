@@ -641,6 +641,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public var machineRuntimeModelProbe: (@Sendable (_ machineId: String, _ runtimeId: String, _ force: Bool) -> RuntimeModelProbeOutcome)?
     /// Whether this server can route a probe to the Computer. Defaults to true.
     public var machineRoutedLocally: (@Sendable (_ machineId: String) -> Bool)?
+    /// Built-in model catalog authority as reported by the Computer. Production
+    /// has no live authority channel here, so the default is the modern mode.
+    public var builtinCatalogMode: String = "supported"
     /// Test seam called before each already-read SSE frame. Production leaves it nil.
     public var nativeNotificationLiveWriteHook: (@Sendable (_ index: Int, _ eventCount: Int) async -> Void)?
     /// `NATIVE_NOTIFICATION_ATTESTATION_MODE`. Nil means the variable is unset.
@@ -11250,6 +11253,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         "grok": "grok.create.v1",
     ]
 
+    /// Runtimes that still publish a v1 form definition.
+    private static let runtimeFormV1Runtimes: Set<String> = ["builtin", "claude", "cursor", "kimi-sdk"]
+
     /// Runtimes whose released form only exists at protocol v2; v1 clients
     /// must see them as having no form at all.
     private static let runtimeFormV2Only: Set<String> = [
@@ -11295,7 +11301,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 return Self.json(200, form)
             }
             let label = zh ? "模型" : "Model"
-            return Self.json(200, "{\"protocolVersion\":2,\"runtimeId\":\(jsonString(runtimeId)),\"schemaVersion\":\(jsonString(expected)),\"fields\":[{\"key\":\"model\",\"kind\":\"select\",\"label\":\(jsonString(label)),\"required\":true}],\"capabilities\":{\"providerKinds\":[\"preset\"],\"writeOnlyPointers\":[\"/apiKey\"],\"forbiddenPointers\":[\"/hostUserState\"]}}")
+            return Self.json(200, "{\"protocolVersion\":2,\"runtimeId\":\(jsonString(runtimeId)),\"schemaVersion\":\(jsonString(expected)),\"requiredClientCapabilities\":[\"option_source.status\"],\"fields\":[{\"key\":\"model\",\"kind\":\"select\",\"label\":\(jsonString(label)),\"required\":true}],\"capabilities\":{\"providerKinds\":[\"preset\"],\"writeOnlyPointers\":[\"/apiKey\"],\"forbiddenPointers\":[\"/hostUserState\"]}}")
+        }
+        if runtimeId == "kimi-sdk", let definition = RuntimeFormCatalog.optionSources["kimi-sdk/edit"] {
+            return Self.json(200, definition)
         }
         let properties: String
         let required: String
@@ -11363,6 +11372,34 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             if sourceId == "model", runtimeId == "kimi" || runtimeId == "gemini" {
                 return Self.json(200, RuntimeFormCatalog.optionSources["\(runtimeId)/model"] ?? "")
             }
+            if sourceId == "model", runtimeId == "kimi-sdk" {
+                return Self.kimiSDKSource(
+                    resolution: runtimeProbeResolution(machineId: machineId, runtimeId: runtimeId, refresh: refresh),
+                    protocolVersion: 2,
+                    expected: expected
+                )
+            }
+            if sourceId == "model", runtimeId == "builtin" {
+                return builtinModelSource(protocolVersion: 2, expected: expected)
+            }
+            if sourceId == "provider", runtimeId == "claude" {
+                return Self.json(200, RuntimeFormCatalog.optionSources["claude/provider"] ?? "")
+            }
+            if sourceId == "model", runtimeId == "claude" || runtimeId == "cursor" {
+                let resolution = runtimeProbeResolution(machineId: machineId, runtimeId: runtimeId, refresh: refresh)
+                switch resolution {
+                case .live(let models, let defaultModel):
+                    let defaultValue = defaultModel ?? models.first?.id ?? ""
+                    let options = models.map { Self.runtimeProbeOptionJSON($0, reasoning: runtimeId == "claude") }.joined(separator: ",")
+                    return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\(jsonString(runtimeId)),\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\",\"kind\":\"select\",\"pointer\":\"/model\",\"options\":[\(options)],\"defaultValue\":\(jsonString(defaultValue)),\"customValueAllowed\":true,\"status\":\"live\"}")
+                case .notLive(let reason):
+                    let raw = RuntimeFormCatalog.optionSources["\(runtimeId)/model"] ?? ""
+                    let adjusted = raw
+                        .replacingOccurrences(of: "\"reason\": \"missing_config\"", with: "\"reason\": \"\(reason)\"")
+                        .replacingOccurrences(of: "\"retryable\": false", with: "\"retryable\": \(Self.runtimeReasonRetryable(reason))")
+                    return Self.json(200, adjusted)
+                }
+            }
             if sourceId == "model", ["opencode", "codex", "grok", "pi"].contains(runtimeId) {
                 switch Self.resolveRuntimeModelProbe(
                     machineId: machineId,
@@ -11419,6 +11456,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
         }
 
+        if sourceId == "model", runtimeId == "kimi-sdk" {
+            return Self.kimiSDKSource(
+                resolution: runtimeProbeResolution(machineId: machineId, runtimeId: runtimeId, refresh: refresh),
+                protocolVersion: 1,
+                expected: expected
+            )
+        }
+        if sourceId == "model", runtimeId == "builtin" {
+            return builtinModelSource(protocolVersion: 1, expected: expected)
+        }
         lock.lock()
         let cachedModels = machineRuntimeModels[machineId]?[runtimeId]?.models ?? []
         lock.unlock()
@@ -11493,6 +11540,90 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
         }
         return json + "}"
+    }
+
+    private func runtimeProbeResolution(machineId: String, runtimeId: String, refresh: Bool) -> RuntimeProbeResolution {
+        Self.resolveRuntimeModelProbe(
+            machineId: machineId,
+            runtimeId: runtimeId,
+            refresh: refresh,
+            routedLocally: machineRoutedLocally,
+            probe: machineRuntimeModelProbe,
+            cached: { [weak self] in
+                guard let self else { return [] }
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                return self.machineRuntimeModels[machineId]?[runtimeId]?.models ?? []
+            }
+        )
+    }
+
+    private static func kimiSDKSource(
+        resolution: RuntimeProbeResolution,
+        protocolVersion: Int,
+        expected: String
+    ) -> HTTPReply {
+        let managed = RuntimeModelProbeModel(id: "kimi-code/kimi-for-coding", label: "Kimi for Coding (default)")
+        switch resolution {
+        case .live(let models, let defaultModel):
+            let options = models.map { runtimeProbeOptionJSON($0, reasoning: true) }.joined(separator: ",")
+            let defaultValue = defaultModel ?? models.first?.id ?? ""
+            let status = protocolVersion == 2 ? ",\"status\":\"live\"" : ""
+            return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\"kimi-sdk\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\",\"kind\":\"select\",\"pointer\":\"/model\",\"options\":[\(options)],\"defaultValue\":\(jsonString(defaultValue))\(status)}")
+        case .notLive(let reason):
+            let retryable = runtimeReasonRetryable(reason)
+            if protocolVersion == 2 {
+                if reason == "missing_config" || reason == "machine_offline" {
+                    let option = runtimeProbeOptionJSON(managed, reasoning: true)
+                    return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\"kimi-sdk\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\",\"kind\":\"select\",\"pointer\":\"/model\",\"options\":[\(option)],\"defaultValue\":\"kimi-code/kimi-for-coding\",\"status\":\"fallback\",\"reason\":\(jsonString(reason)),\"retryable\":\(retryable)}")
+                }
+                return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\"kimi-sdk\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\",\"kind\":\"select\",\"pointer\":\"/model\",\"options\":[],\"defaultValue\":\"\",\"status\":\"unavailable\",\"reason\":\(jsonString(reason)),\"retryable\":\(retryable)}")
+            }
+            if reason == "missing_config" || reason == "machine_offline" {
+                let option = runtimeProbeOptionJSON(managed, reasoning: true)
+                return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\"kimi-sdk\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\",\"kind\":\"select\",\"pointer\":\"/model\",\"options\":[\(option)],\"defaultValue\":\"kimi-code/kimi-for-coding\"}")
+            }
+            let code: String
+            switch reason {
+            case "no_models": code = "runtime_model_source_no_models"
+            case "unsupported": code = "runtime_model_source_unsupported"
+            default: code = "runtime_model_source_error"
+            }
+            return Self.json(409, "{\"issues\":[{\"code\":\"\(code)\",\"pointer\":\"/optionSources/model\"}]}")
+        }
+    }
+
+    private func builtinModelSource(protocolVersion: Int, expected: String) -> HTTPReply {
+        let mode = builtinCatalogMode
+        if mode == "legacy" {
+            return Self.json(409, "{\"error\":\"This Computer is too old to prove which Built-in models it supports. Upgrade the Computer before selecting or starting this model.\",\"code\":\"builtin_catalog_capability_required\",\"daemonVersion\":\"1.0.17\",\"computerVersion\":\"1.0.17\",\"recovery\":\"upgrade_required\"}")
+        }
+        let bundled = "{\"deepseek\":[{\"value\":\"deepseek-chat\",\"label\":\"DeepSeek Chat\"}],\"moonshotai\":[{\"value\":\"kimi-k2\",\"label\":\"Kimi K2\"}]}"
+        if protocolVersion == 1 {
+            if mode == "timeout" {
+                return Self.json(409, "{\"issues\":[{\"code\":\"builtin_catalog_unavailable\",\"pointer\":\"/optionSources/model\"}]}")
+            }
+            let groups = mode == "offline" ? bundled : liveBuiltinGroups(bundled: bundled)
+            return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\",\"kind\":\"dependent_select\",\"pointer\":\"/model\",\"optionsByValue\":\(groups)}")
+        }
+        switch mode {
+        case "timeout":
+            return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\",\"kind\":\"dependent_select\",\"pointer\":\"/model\",\"optionsByValue\":{},\"status\":\"unavailable\",\"reason\":\"probe_timeout\",\"retryable\":true}")
+        case "offline":
+            return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\",\"kind\":\"dependent_select\",\"pointer\":\"/model\",\"optionsByValue\":\(bundled),\"status\":\"fallback\",\"reason\":\"machine_offline\",\"retryable\":true}")
+        default:
+            let groups = liveBuiltinGroups(bundled: bundled)
+            return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\",\"kind\":\"dependent_select\",\"pointer\":\"/model\",\"optionsByValue\":\(groups),\"status\":\"live\"}")
+        }
+    }
+
+    private func liveBuiltinGroups(bundled: String) -> String {
+        lock.lock()
+        let models = machines.isEmpty ? [] : Array(machineRuntimeModels.values.flatMap { $0["builtin"]?.models ?? [] })
+        lock.unlock()
+        guard !models.isEmpty else { return bundled }
+        let options = models.map { "{\"value\":\(jsonString($0.id)),\"label\":\(jsonString($0.label))}" }.joined(separator: ",")
+        return "{\"deepseek\":[\(options)]}"
     }
 
     private static let grokBundledModels: [RuntimeModelProbeModel] = [
@@ -11666,7 +11797,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let v2Marker = includeRuntimeFormV2 && RuntimeFormCatalog.v2Forms[runtime.id] != nil
                 ? ",\"runtimeFormV2\":{\"protocolVersion\":2}"
                 : ""
-            return "{\"runtimeId\":\(jsonString(runtime.id)),\"capabilityStatus\":\(jsonString(capability)),\"admissionStatus\":\"available_for_new\",\"admissionReason\":null,\"current\":false,\"availableForNew\":true,\"manageableForCurrentAgent\":false,\"canSelectInThisContext\":\(canSelect)\(v2Marker)}"
+            let v1Ref = !includeRuntimeFormV2 && Self.runtimeFormV1Runtimes.contains(runtime.id)
+                ? ",\"formDefinitionRef\":{\"protocolVersion\":1,\"runtimeId\":\(jsonString(runtime.id)),\"schemaVersion\":\(jsonString(Self.runtimeFormSchemas[runtime.id] ?? ""))}"
+                : ""
+            return "{\"runtimeId\":\(jsonString(runtime.id)),\"capabilityStatus\":\(jsonString(capability)),\"admissionStatus\":\"available_for_new\",\"admissionReason\":null,\"current\":false,\"availableForNew\":true,\"manageableForCurrentAgent\":false,\"canSelectInThisContext\":\(canSelect)\(v2Marker)\(v1Ref)}"
         }.joined(separator: ",")
         return Self.json(200, "{\"context\":\"new_agent\",\"machineId\":\(jsonString(machine.id)),\"options\":[\(options)]}")
     }

@@ -330,3 +330,199 @@ private func v1SourceURL(_ fixture: FormCatalogFixture, _ runtime: String, _ sou
         }
     }
 }
+
+@Test func kimiSDKOffersTheManagedDefaultAndKeepsV1FailuresTyped() async throws {
+    let fixture = makeFormCatalogFixture(suffix: "1204", runtimes: ["kimi-sdk"])
+    let recorder = RuntimeProbeRecorder()
+    fixture.accounts.machineRuntimeModelProbe = { _, _, _ in recorder.probe }
+    fixture.accounts.machineRoutedLocally = { _ in recorder.routedLocally }
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: fixture.accounts
+        ))
+        try await app.testing { client in
+            let token = try await formCatalogLogin(client, email: fixture.ownerEmail)
+            let headers = formCatalogHeaders(token, fixture.serverId)
+            let source = v1SourceURL(fixture, "kimi-sdk", "model")
+
+            recorder.probe = .missingConfig
+            let fallback = try await client.get(URI(string: source), headers: headers)
+            #expect(fallback.status == .ok)
+            let fallbackBody = try formCatalogObject(fallback)
+            #expect(fallbackBody["options"] as? NSArray == [
+                ["value": "kimi-code/kimi-for-coding", "label": "Kimi for Coding (default)"],
+            ] as NSArray)
+            #expect(fallbackBody["defaultValue"] as? String == "kimi-code/kimi-for-coding")
+            #expect(fallbackBody["status"] == nil)
+
+            recorder.probe = .error(code: "computer_offline", retryable: true)
+            let offline = try await client.get(URI(string: source), headers: headers)
+            #expect(offline.status == .ok)
+            #expect(try formCatalogObject(offline)["defaultValue"] as? String == "kimi-code/kimi-for-coding")
+
+            recorder.probe = .error(code: "", retryable: true)
+            let failed = try await client.get(URI(string: source), headers: headers)
+            #expect(failed.status == .conflict)
+            #expect(try formCatalogObject(failed)["issues"] as? NSArray == [[
+                "code": "runtime_model_source_error", "pointer": "/optionSources/model",
+            ]] as NSArray)
+
+            recorder.probe = .noModels
+            let empty = try await client.get(URI(string: source), headers: headers)
+            #expect(empty.status == .conflict)
+            #expect(try formCatalogObject(empty)["issues"] as? NSArray == [[
+                "code": "runtime_model_source_no_models", "pointer": "/optionSources/model",
+            ]] as NSArray)
+
+            recorder.probe = .unsupported
+            let unsupported = try await client.get(URI(string: source), headers: headers)
+            #expect(unsupported.status == .conflict)
+            #expect(try formCatalogObject(unsupported)["issues"] as? NSArray == [[
+                "code": "runtime_model_source_unsupported", "pointer": "/optionSources/model",
+            ]] as NSArray)
+
+            recorder.probe = .live(
+                models: [
+                    RuntimeModelProbeModel(
+                        id: "kimi-code/k3",
+                        label: "K3",
+                        supportedReasoningEfforts: ["balanced-plus"],
+                        defaultReasoningEffort: "balanced-plus"
+                    ),
+                    RuntimeModelProbeModel(id: "kimi-code/k2", label: "K2"),
+                ],
+                default: "kimi-code/k3"
+            )
+            let live = try await client.get(URI(string: source), headers: headers)
+            #expect(live.status == .ok)
+            let liveBody = try formCatalogObject(live)
+            #expect(liveBody["options"] as? NSArray == [
+                [
+                    "value": "kimi-code/k3", "label": "K3",
+                    "supportedReasoningEfforts": ["balanced-plus"],
+                    "defaultReasoningEffort": "balanced-plus",
+                ],
+                ["value": "kimi-code/k2", "label": "K2"],
+            ] as NSArray)
+            #expect(liveBody["status"] == nil)
+
+            let definition = try await client.get(
+                URI(string: "/api/servers/\(fixture.serverId)/machines/\(fixture.machineId)/runtime-form-definitions/kimi-sdk?schemaVersion=kimi-sdk.create.v1"),
+                headers: headers
+            )
+            #expect(definition.status == .ok)
+            let definitionBody = try formCatalogObject(definition)
+            #expect(definitionBody["runtimeId"] as? String == "kimi-sdk")
+            #expect((definitionBody["dataSchema"] as? [String: Any])?["required"] as? [String] == ["model"])
+            #expect(Set((definitionBody["optionSources"] as? [String: Any] ?? [:]).keys) == Set(["model"]))
+
+            let optionsPath = "/api/servers/\(fixture.serverId)/machines/\(fixture.machineId)/runtime-options"
+            let v1Row = try #require((try formCatalogObject(try await client.get(URI(string: optionsPath), headers: headers))["options"] as? [[String: Any]] ?? []).first { $0["runtimeId"] as? String == "kimi-sdk" })
+            #expect(v1Row["formDefinitionRef"] as? NSDictionary == [
+                "protocolVersion": 1, "runtimeId": "kimi-sdk", "schemaVersion": "kimi-sdk.create.v1",
+            ] as NSDictionary)
+            let v2Row = try #require((try formCatalogObject(try await client.get(URI(string: optionsPath), headers: formCatalogHeaders(token, fixture.serverId, v2: true)))["options"] as? [[String: Any]] ?? []).first { $0["runtimeId"] as? String == "kimi-sdk" })
+            #expect(v2Row["runtimeFormV2"] as? NSDictionary == ["protocolVersion": 2] as NSDictionary)
+            #expect(v2Row["formDefinitionRef"] == nil)
+        }
+    }
+}
+
+@Test func builtinAndKimiV2SourcesReportStatusInsteadOfHardFailures() async throws {
+    let fixture = makeFormCatalogFixture(suffix: "1205", runtimes: ["builtin", "kimi-sdk"])
+    let recorder = RuntimeProbeRecorder()
+    fixture.accounts.machineRuntimeModelProbe = { _, _, _ in recorder.probe }
+    fixture.accounts.machineRoutedLocally = { _ in recorder.routedLocally }
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: fixture.accounts
+        ))
+        try await app.testing { client in
+            let token = try await formCatalogLogin(client, email: fixture.ownerEmail)
+            let headers = formCatalogHeaders(token, fixture.serverId)
+            let kimi = optionSourceURL(fixture, "kimi-sdk", "model")
+            let builtin = optionSourceURL(fixture, "builtin", "model")
+
+            for runtime in ["kimi-sdk", "builtin"] {
+                let form = try await client.get(URI(string: runtimeFormURL(fixture, runtime)), headers: headers)
+                #expect(form.status == .ok)
+                let capabilities = try formCatalogObject(form)["requiredClientCapabilities"] as? [String] ?? []
+                #expect(capabilities.contains("option_source.status"))
+            }
+
+            recorder.probe = .missingConfig
+            let missing = try formCatalogObject(try await client.get(URI(string: kimi), headers: headers))
+            #expect(missing["status"] as? String == "fallback")
+            #expect(missing["reason"] as? String == "missing_config")
+            #expect(missing["retryable"] as? Bool == false)
+            #expect(missing["defaultValue"] as? String == "kimi-code/kimi-for-coding")
+
+            recorder.probe = .error(code: "computer_offline", retryable: true)
+            let offline = try formCatalogObject(try await client.get(URI(string: kimi), headers: headers))
+            #expect(offline["status"] as? String == "fallback")
+            #expect(offline["reason"] as? String == "machine_offline")
+            #expect(offline["retryable"] as? Bool == true)
+
+            for (probe, reason, retryable) in [
+                (RuntimeModelProbeOutcome.error(code: "", retryable: true), "probe_failed", true),
+                (.error(code: "detect_timeout", retryable: true), "probe_timeout", true),
+                (.noModels, "no_models", true),
+                (.unsupported, "unsupported", false),
+            ] {
+                recorder.probe = probe
+                let body = try formCatalogObject(try await client.get(URI(string: kimi), headers: headers))
+                #expect(body["status"] as? String == "unavailable")
+                #expect(body["reason"] as? String == reason)
+                #expect(body["retryable"] as? Bool == retryable)
+                #expect(body["options"] as? [Any] != nil)
+                #expect((body["options"] as? [Any])?.isEmpty == true)
+            }
+
+            recorder.probe = .live(models: [RuntimeModelProbeModel(id: "kimi-code/k3", label: "K3")], default: "kimi-code/k3")
+            let liveKimi = try formCatalogObject(try await client.get(URI(string: kimi), headers: headers))
+            #expect(liveKimi["status"] as? String == "live")
+            #expect(liveKimi["reason"] == nil)
+
+            let live = try formCatalogObject(try await client.get(URI(string: builtin), headers: headers))
+            #expect(live["status"] as? String == "live")
+            let provider = try formCatalogObject(try await client.get(URI(string: optionSourceURL(fixture, "builtin", "provider")), headers: headers))
+            #expect(provider["status"] == nil)
+
+            fixture.accounts.builtinCatalogMode = "offline"
+            let bundled = try formCatalogObject(try await client.get(URI(string: builtin), headers: headers))
+            #expect(bundled["status"] as? String == "fallback")
+            #expect(bundled["reason"] as? String == "machine_offline")
+            #expect(((bundled["optionsByValue"] as? [String: Any])?["deepseek"] as? [[String: Any]] ?? []).isEmpty == false)
+
+            fixture.accounts.builtinCatalogMode = "timeout"
+            let timedOut = try await client.get(URI(string: builtin), headers: headers)
+            #expect(timedOut.status == .ok)
+            let timedOutBody = try formCatalogObject(timedOut)
+            #expect(timedOutBody["status"] as? String == "unavailable")
+            #expect(timedOutBody["reason"] as? String == "probe_timeout")
+            #expect(timedOutBody["retryable"] as? Bool == true)
+            #expect((timedOutBody["optionsByValue"] as? [String: Any])?.isEmpty == true)
+
+            fixture.accounts.builtinCatalogMode = "legacy"
+            let legacy = try await client.get(URI(string: builtin), headers: headers)
+            #expect(legacy.status == .conflict)
+            #expect(try formCatalogObject(legacy)["code"] as? String == "builtin_catalog_capability_required")
+
+            fixture.accounts.builtinCatalogMode = "timeout"
+            let v1Builtin = try await client.get(
+                URI(string: "/api/servers/\(fixture.serverId)/machines/\(fixture.machineId)/runtime-form-definitions/builtin/option-sources/model?schemaVersion=builtin-pi.create.v3"),
+                headers: headers
+            )
+            #expect(v1Builtin.status == .conflict)
+            #expect(try formCatalogObject(v1Builtin)["issues"] as? NSArray == [[
+                "code": "builtin_catalog_unavailable", "pointer": "/optionSources/model",
+            ]] as NSArray)
+        }
+    }
+}
