@@ -416,6 +416,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var managedMCPServers: [ManagedMCPServerRecord] = []
     private var managedMCPAssignments: [String: [String: (enabled: Bool, allowedTools: [String]?)]] = [:]
     private var actionCardRecords: [String: ActionCardRecord] = [:]
+    private var marketplaceInstallCards: [String: MarketplaceInstallCard] = [:]
     private var pendingActionMessageEvents: [(agentId: String, messageId: String, content: String)] = []
     private var agentGrantSets: [String: Set<String>] = [:]
     private var appConfigOverrides: [String: [String: [String: Any]]] = [:]
@@ -659,6 +660,26 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var visibility: String
         var state: String
         var executedByUserId: String?
+    }
+
+    /// A prepared Marketplace install card. The action payload is rebuilt from
+    /// this record on every read, so the message projection never carries a
+    /// stale canonical action.
+    private struct MarketplaceInstallCard {
+        var messageId: String
+        var serverId: String
+        var clientRecordId: String
+        var clientKey: String
+        var clientName: String
+        var clientNameSha256: String
+        var agentId: String
+        var agentName: String
+        var scopes: [String]
+        var storageChannelId: String
+        var localCarrierChannelId: String
+        var state: String
+        var executedByUserId: String?
+        var resultJSON: String?
     }
 
     private struct ManagedMCPServerRecord {
@@ -3567,6 +3588,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let parts = rows[start..<end].map { row -> String in
                 let seq = (rows.firstIndex { $0.id == row.id } ?? 0) + 1
                 let metadata = forwardMetadataJSONLocked(messageId: row.id, userId: userId, serverId: serverId)
+                    ?? actionCardMetadataLocked(messageId: row.id)
                 var json = "{\"id\":\(jsonString(row.id)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(row.content)),\"seq\":\(seq)"
                 if let metadata {
                     json += ",\"actionMetadata\":\(metadata)"
@@ -5733,7 +5755,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let limitedIndexed = Array(indexed.suffix(pageLimit))
         let listed = limitedIndexed.map { index, message -> String in
             var row = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(channelId)),\"seq\":\(index + 1),\"content\":\(jsonString(message.content))"
-            if let metadata = forwardMetadataJSONLocked(messageId: message.id, userId: userId, serverId: serverId) {
+            if let metadata = forwardMetadataJSONLocked(messageId: message.id, userId: userId, serverId: serverId)
+                ?? actionCardMetadataLocked(messageId: message.id) {
                 row += ",\"actionMetadata\":\(metadata)"
             }
             row += "}"
@@ -5861,7 +5884,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let windowJSON = "{\"schemaVersion\":1,\"domain\":\"receiver_visible_messages_v1\",\"serverId\":\(jsonString(serverId ?? "")),\"receiverKind\":\"user\",\"receiverId\":\(jsonString(userId ?? "")),\"scopeId\":\(jsonString(channelId)),\"coveredFromSeq\":\(coveredFrom),\"coveredAfterSeq\":\(coveredAfter),\"coveredThroughSeq\":\(coveredThrough),\"remoteHighWaterSeq\":\(highWater),\"hasGap\":\(pageHasGap),\"hasNewer\":\(pageHasNewer),\"completeThroughLatest\":\(completeThroughLatest)}"
         let listed = pageRows.map { message in
             var row = "{\"id\":\(jsonString(message.id)),\"content\":\(jsonString(message.content)),\"attachments\":[\(Self.attachmentJSON(message.attachmentIds))],\"reactions\":[\(reactionJSONLocked(messageId: message.id))],\"mentions\":[\(visibleMentionJSONLocked(messageId: message.id))]"
-            if let userId, let metadata = forwardMetadataJSONLocked(messageId: message.id, userId: userId, serverId: serverId) {
+            var metadata = actionCardMetadataLocked(messageId: message.id)
+            if let userId {
+                metadata = forwardMetadataJSONLocked(messageId: message.id, userId: userId, serverId: serverId) ?? metadata
+            }
+            if let metadata {
                 row += ",\"actionMetadata\":\(metadata)"
             }
             row += "}"
@@ -16131,7 +16158,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     private static func integrationServiceJSON(_ service: [String: Any]) -> String {
-        "{\"id\":\(integrationValueJSON(service, "id")),\"clientId\":\(integrationValueJSON(service, "clientId")),\"name\":\(integrationValueJSON(service, "name")),\"description\":\(integrationValueJSON(service, "description")),\"homepageUrl\":\(integrationValueJSON(service, "homepageUrl")),\"agentManifestUrl\":\(integrationValueJSON(service, "agentManifestUrl")),\"agentManifestUrlSource\":\(integrationValueJSON(service, "agentManifestUrlSource")),\"allowedScopes\":\(integrationValueJSON(service, "allowedScopes")),\"appType\":\(integrationValueJSON(service, "appType"))}"
+        let renderedName = (service["name"] as? String).map { jsonString(inertThirdPartyText($0)) } ?? "null"
+        return "{\"id\":\(integrationValueJSON(service, "id")),\"clientId\":\(integrationValueJSON(service, "clientId")),\"name\":\(renderedName),\"description\":\(integrationValueJSON(service, "description")),\"homepageUrl\":\(integrationValueJSON(service, "homepageUrl")),\"agentManifestUrl\":\(integrationValueJSON(service, "agentManifestUrl")),\"agentManifestUrlSource\":\(integrationValueJSON(service, "agentManifestUrlSource")),\"allowedScopes\":\(integrationValueJSON(service, "allowedScopes")),\"appType\":\(integrationValueJSON(service, "appType"))}"
     }
 
     public func agentIntegrationList(authorization: String?) -> HTTPReply {
@@ -16311,9 +16339,28 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if installedService == nil {
             let profile = oauth.serverProfile(id: agent.serverId)
             let serverSlug = profile?.slug ?? ""
+            let serverName = profile?.name ?? ""
             let marketplaceUrl = "/marketplace?marketplace_app=\(serviceId)"
             let scopesJSON = effectiveScopes.map(jsonString).joined(separator: ",")
-            return Self.json(200, "{\"status\":\"install_required\",\"nextAction\":\"install_from_marketplace\",\"service\":\(Self.integrationServiceJSON(service)),\"scopes\":[\(scopesJSON)],\"installation\":{\"serverSlug\":\(jsonString(serverSlug)),\"marketplaceUrl\":\(jsonString(marketplaceUrl)),\"actionCardMessageId\":null}}")
+            let requestedTarget = ((object["target"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            var targetJSON = "null"
+            var actionCardMessageIdJSON = "null"
+            if !requestedTarget.isEmpty {
+                guard let resolved = actionCardTarget(serverId: agent.serverId, agentId: agent.id, target: requestedTarget),
+                      let messageId = prepareMarketplaceInstallCard(
+                          serverId: agent.serverId,
+                          agent: agent,
+                          client: service,
+                          scopes: effectiveScopes,
+                          target: resolved
+                      )
+                else {
+                    return Self.json(404, "{\"error\":\"Install target not found or not visible to this agent\"}")
+                }
+                targetJSON = jsonString(requestedTarget)
+                actionCardMessageIdJSON = jsonString(messageId)
+            }
+            return Self.json(200, "{\"status\":\"install_required\",\"nextAction\":\"install_from_marketplace\",\"service\":\(Self.integrationServiceJSON(service)),\"scopes\":[\(scopesJSON)],\"installation\":{\"serverSlug\":\(jsonString(serverSlug)),\"serverName\":\(jsonString(serverName)),\"marketplaceUrl\":\(jsonString(marketplaceUrl)),\"target\":\(targetJSON),\"actionCardMessageId\":\(actionCardMessageIdJSON)}}")
         }
         let key = "\(agent.serverId)\n\(agent.id)\n\(serviceId)"
         lock.lock()
@@ -19876,6 +19923,191 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return (local, storage)
     }
 
+    /// Third-party text is rendered inert before it reaches agents: agent
+    /// markup literals are escaped and `@name` refs become plain `user:name`
+    /// labels, so a publisher name cannot fabricate a mention or a result tag.
+    private static func inertThirdPartyText(_ raw: String) -> String {
+        var text = raw
+        if text.count > 4_000 {
+            text = String(text.prefix(4_000)) + "\n[truncated]"
+        }
+        let markupPattern = try! NSRegularExpression(
+            pattern: "</?(?:result|preview|match)\\b[^>]*>|<omit\\s*/>",
+            options: [.caseInsensitive]
+        )
+        let escaped = NSMutableString(string: text)
+        let full = NSRange(location: 0, length: (text as NSString).length)
+        for match in markupPattern.matches(in: text, options: [], range: full).reversed() {
+            let tag = (text as NSString).substring(with: match.range)
+            let neutral = tag
+                .replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+            escaped.replaceCharacters(in: match.range, with: neutral)
+        }
+        text = escaped as String
+        let refPattern = try! NSRegularExpression(pattern: "(?<![A-Za-z0-9_.-])@([A-Za-z0-9][A-Za-z0-9_.-]*)")
+        let refSource = text
+        let refFull = NSRange(location: 0, length: (refSource as NSString).length)
+        let refMatches = refPattern.matches(in: refSource, options: [], range: refFull)
+        if !refMatches.isEmpty {
+            var output = ""
+            var cursor = 0
+            for match in refMatches {
+                let prefix = (refSource as NSString).substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+                let name = (refSource as NSString).substring(with: match.range(at: 1))
+                output += prefix + "user:" + name
+                cursor = match.range.location + match.range.length
+            }
+            output += (refSource as NSString).substring(from: cursor)
+            text = output
+        }
+        return text
+    }
+
+    private static func marketplaceAppNameBinding(_ raw: String) -> (name: String, sha256: String) {
+        (inertThirdPartyText(raw), sha256Hex(raw))
+    }
+
+    private func marketplaceInstallActionJSON(_ card: MarketplaceInstallCard, includeDraftHint: Bool = true) -> String {
+        let scopes = card.scopes.map(jsonString).joined(separator: ",")
+        let draftHint = includeDraftHint
+            ? ",\"draftHint\":\(jsonString("\(card.agentName) requested \(card.clientName), which is public in the Raft Marketplace but is not installed on this Server. Installing is a Server owner/admin action; the Agent cannot install it automatically."))"
+            : ""
+        return "{\"type\":\"integration:install_marketplace_app\",\"clientId\":\(jsonString(card.clientRecordId)),\"clientKey\":\(jsonString(card.clientKey)),\"clientName\":\(jsonString(card.clientName)),\"clientNameSha256\":\(jsonString(card.clientNameSha256)),\"agentId\":\(jsonString(card.agentId)),\"agentName\":\(jsonString(card.agentName)),\"scopes\":[\(scopes)]\(draftHint)}"
+    }
+
+    private func marketplaceInstallPresentationJSON(_ card: MarketplaceInstallCard) -> String {
+        var items: [String] = []
+        items.append("{\"key\":\"clientId\",\"value\":\(jsonString(card.clientRecordId))}")
+        items.append("{\"key\":\"clientKey\",\"value\":\(jsonString(card.clientKey))}")
+        items.append("{\"key\":\"clientName\",\"value\":\(jsonString(card.clientName))}")
+        items.append("{\"key\":\"agentId\",\"value\":\(jsonString(card.agentId))}")
+        items.append("{\"key\":\"agentName\",\"value\":\(jsonString(card.agentName))}")
+        if !card.scopes.isEmpty {
+            let scopes = card.scopes.map(jsonString).joined(separator: ", ")
+            items.append("{\"key\":\"scopes\",\"value\":\(jsonString(scopes))}")
+        }
+        let warning = "This installs the Marketplace app for this Server so @\(card.agentName) can request the listed scopes."
+        return "{\"title\":\(jsonString("Install \(card.clientName) on this Server")),\"confirmLabel\":\"Install App\",\"genericApprovalAllowed\":true,\"displayItems\":[\(items.joined(separator: ","))],\"warning\":\(jsonString(warning)),\"riskLevel\":\"elevated\"}"
+    }
+
+    private func marketplaceInstallMetadataJSON(_ card: MarketplaceInstallCard) -> String {
+        let executedAt = card.state == "executed" ? jsonString(ISO8601DateFormatter().string(from: Date())) : "null"
+        let executedBy = card.executedByUserId.map(jsonString) ?? "null"
+        let result = card.resultJSON ?? "null"
+        return "{\"kind\":\"action-card\",\"sourceServerId\":\(jsonString(card.serverId)),\"targetServerName\":\(jsonString(actionCardServerName(card.serverId))),\"action\":\(marketplaceInstallActionJSON(card)),\"presentation\":\(marketplaceInstallPresentationJSON(card)),\"state\":\(jsonString(card.state)),\"executedAt\":\(executedAt),\"executedByUserId\":\(executedBy),\"result\":\(result)}"
+    }
+
+    /// The message projection of every prepared card, keyed by message id.
+    private func actionCardMetadataLocked(messageId: String) -> String? {
+        guard let card = marketplaceInstallCards[messageId] else { return nil }
+        return marketplaceInstallMetadataJSON(card)
+    }
+
+    private func prepareMarketplaceInstallCard(
+        serverId: String,
+        agent: OAuthLedger.AgentRuntimeInfo,
+        client: [String: Any],
+        scopes: [String],
+        target: (local: String, storage: String)
+    ) -> String? {
+        guard let recordId = client["id"] as? String,
+              let clientKey = client["clientId"] as? String,
+              let rawName = client["name"] as? String
+        else { return nil }
+        let binding = Self.marketplaceAppNameBinding(rawName)
+        let agentName = agent.displayName.isEmpty ? agent.name : agent.displayName
+        let messageId = UUID().uuidString.lowercased()
+        let card = MarketplaceInstallCard(
+            messageId: messageId,
+            serverId: serverId,
+            clientRecordId: recordId,
+            clientKey: clientKey,
+            clientName: binding.name,
+            clientNameSha256: binding.sha256,
+            agentId: agent.id,
+            agentName: agentName,
+            scopes: scopes,
+            storageChannelId: target.storage,
+            localCarrierChannelId: target.local,
+            state: "prepared",
+            executedByUserId: nil,
+            resultJSON: nil
+        )
+        let content = "Operation: install Marketplace app \(binding.name) (\(clientKey)) on this Server"
+        lock.lock()
+        humanMessageRows.append(StoredHumanMessage(
+            id: messageId,
+            channelId: target.storage,
+            senderId: agent.id,
+            content: content,
+            randomId: nil,
+            messageType: "chat",
+            senderType: "agent",
+            actionKind: "action-card"
+        ))
+        marketplaceInstallCards[messageId] = card
+        lock.unlock()
+        return messageId
+    }
+
+    private func executeMarketplaceInstallCard(
+        _ card: MarketplaceInstallCard,
+        userId: String,
+        serverId: String,
+        body: String
+    ) -> HTTPReply {
+        guard card.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Action card not found\",\"code\":\"NOT_FOUND\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Only Server owners and admins can install Marketplace apps\",\"errorCode\":\"FORBIDDEN\"}")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        let expectedState = object?["expectedState"] as? String
+        if let expectedState, expectedState != card.state {
+            return Self.json(409, "{\"error\":\"The action card state changed\",\"code\":\"STATE_MISMATCH\"}")
+        }
+        if card.state == "executed" {
+            return Self.json(200, "{\"messageId\":\(jsonString(card.messageId)),\"metadata\":\(marketplaceInstallMetadataJSON(card))}")
+        }
+        guard let client = oauth.marketplaceInstallableClient(recordId: card.clientRecordId),
+              let clientKey = client["clientId"] as? String,
+              clientKey == card.clientKey,
+              let rawName = client["name"] as? String
+        else {
+            return Self.json(409, "{\"error\":\"Marketplace app is no longer installable with this card; prepare a fresh login request\",\"errorCode\":\"MARKETPLACE_APP_CHANGED\"}")
+        }
+        let binding = Self.marketplaceAppNameBinding(rawName)
+        guard binding.sha256 == card.clientNameSha256, binding.name == card.clientName else {
+            return Self.json(409, "{\"error\":\"Marketplace app identity changed; prepare a fresh login request\",\"errorCode\":\"MARKETPLACE_APP_CHANGED\"}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: card.agentId), !agent.deleted else {
+            return Self.json(409, "{\"error\":\"Requesting agent identity changed; prepare a fresh login request\",\"errorCode\":\"AGENT_BINDING_CHANGED\"}")
+        }
+        let agentName = agent.displayName.isEmpty ? agent.name : agent.displayName
+        guard agentName == card.agentName else {
+            return Self.json(409, "{\"error\":\"Requesting agent identity changed; prepare a fresh login request\",\"errorCode\":\"AGENT_BINDING_CHANGED\"}")
+        }
+        if !oauth.isClientInstalled(serverId: serverId, clientRecordId: card.clientRecordId) {
+            _ = oauth.installClient(serverId: serverId, clientRecordId: card.clientRecordId, installedByUserId: userId, groups: [])
+        }
+        let scopes = card.scopes.map(jsonString).joined(separator: ",")
+        let result = "{\"kind\":\"marketplace-app-installation\",\"clientId\":\(jsonString(card.clientRecordId)),\"clientKey\":\(jsonString(card.clientKey)),\"clientName\":\(jsonString(card.clientName)),\"serverId\":\(jsonString(serverId)),\"agentId\":\(jsonString(card.agentId)),\"agentName\":\(jsonString(card.agentName)),\"scopes\":[\(scopes)]}"
+        var updated = card
+        updated.state = "executed"
+        updated.executedByUserId = userId
+        updated.resultJSON = result
+        lock.lock()
+        marketplaceInstallCards[card.messageId] = updated
+        lock.unlock()
+        return Self.json(200, "{\"messageId\":\(jsonString(card.messageId)),\"metadata\":\(marketplaceInstallMetadataJSON(updated))}")
+    }
+
     public func prepareActionCard(authorization: String?, body: String) -> HTTPReply {
         let identity: (agentId: String, serverId: String)
         switch feedbackLocatorIdentity(authorization: authorization, capability: "send") {
@@ -20071,6 +20303,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public func executeActionCard(authorization: String?, serverId: String, messageId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        let installCard = marketplaceInstallCards[messageId]
+        lock.unlock()
+        if let installCard {
+            return executeMarketplaceInstallCard(installCard, userId: userId, serverId: serverId, body: body)
         }
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")

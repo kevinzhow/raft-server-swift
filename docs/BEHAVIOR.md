@@ -646,3 +646,12 @@ RFC 074 personal assistant：
 - 同路由对 guest 只回公开投影：恰好 `avatarUrl/id/name/slug` 四个键，`avatarUrl` 为 null，不含 ownerId/plan/translationEnabled/publiclyVisible/publicGuestJoinEnabled 等管理字段。
 - `GET /api/servers/:id/settings` 仅 owner/admin 200，member/guest 403；同一 member/guest 仍可读 `GET /api/servers/:id/notification-settings`，member 仍可读 `GET /api/servers/:id/onboarding-settings`（exact-self 状态与 Server 设置分离）。
 - `GET /api/servers/:id/machines` 对 owner/admin/member 200，对 guest 403；guest 作为 Machine registrant 仍可 `PATCH /api/servers/:id/machines/:machineId` 改自己的 Machine（200 + description 回显），对他人 Machine 403。
+
+### internalAgentApi.auth：Marketplace 安装卡组
+
+- 第三方 App 文本按 inert 规则渲染：`</result>`/`</preview>`/`</match>`/`<omit/>` 之类标签转义为 HTML 实体，`@name` 变 `user:name`，超过 4000 字符截断；`/internal/agent-api/integrations/login` 的 `service.name` 与卡片标题/正文都用该渲染结果。
+- 未安装的已发布 Marketplace App：`POST /internal/agent-api/integrations/login` 回 200 `{status:"install_required",nextAction:"install_from_marketplace",service,scopes,installation:{serverSlug,serverName,marketplaceUrl,target,actionCardMessageId}}`，`marketplaceUrl` 含 `marketplace_app=<clientRecordId>`，未给 `target` 时 `actionCardMessageId:null` 且不写安装行。
+- 带 `target:"#channel"` 时在目标频道写一张 `integration:install_marketplace_app` 动作卡：消息 `actionMetadata.action` 含 `clientId`(record id)、`clientKey`、`clientName`(inert)、`clientNameSha256`(原始名 SHA-256)、`agentId`、`agentName`、`scopes`；`presentation.title` 为 `Install <inert name> on this Server`，`displayItems` 不含 `clientNameSha256`；响应 `installation.target` 回显原始 target 并给出 `actionCardMessageId`。
+- `target` 不可见或不存在 → 404 `Install target not found or not visible to this agent`；非 openid 的 scope → 400 `INVALID_SCOPE`；未发布的 private App 仍 404 `Registered service not found`。
+- `POST /api/actions/:messageId/execute`：仅该 Server 的 owner/admin 可执行（member 403，其他 Server 的 header 404）；`expectedState` 与卡片状态不符 → 409；执行前重新校验 App（enabled、`third_party_global`、published、human-visible、clientKey、名字 sha 与 agent 名），变更 → 409 `MARKETPLACE_APP_CHANGED`/`AGENT_BINDING_CHANGED` 且不写安装。
+- 执行成功 200，`metadata.state:"executed"`、`result.kind:"marketplace-app-installation"` 含 `clientId`(record id)/`clientKey`/`clientName`/`serverId`/`agentId`/`agentName`/`scopes`，只写一行 installation；再次 `expectedState:"executed"` 幂等返回，不再写安装；之后同一 login 请求回 `status:"logged_in"`。

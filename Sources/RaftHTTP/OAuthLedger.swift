@@ -1429,6 +1429,34 @@ public final class OAuthLedger: @unchecked Sendable {
         ]
     }
 
+    /// The live Marketplace row an install card must still bind to at
+    /// execution time: same record id, enabled, published, human-visible.
+    public func marketplaceInstallableClient(recordId: String) -> [String: Any]? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let client = clients.first(where: { $0.id == recordId }),
+              client.appType == "third_party_global",
+              client.enabled,
+              isUserManaged(client),
+              client.humanMarketplaceVisible,
+              client.publishStatus == "published" || client.publishStatus == "unpublish_requested"
+        else { return nil }
+        return [
+            "id": client.id,
+            "clientId": client.clientId,
+            "name": client.name,
+            "allowedScopes": client.allowedScopes as Any,
+        ]
+    }
+
+    public func isClientInstalled(serverId: String, clientRecordId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return installations.contains {
+            $0.clientId == clientRecordId && $0.serverId == serverId && $0.status == "active"
+        }
+    }
+
     public func integrationLoginClient(serverId: String, clientId: String) -> [String: Any]? {
         integrationServices(serverId: serverId).first {
             ($0["clientId"] as? String) == clientId || ($0["id"] as? String) == clientId
