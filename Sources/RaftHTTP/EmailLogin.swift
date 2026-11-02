@@ -19304,6 +19304,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 return Self.json(403, "{\"code\":\"assistant_channel_forbidden\",\"error\":\"An assistant can only post in its DM with its owner\"}")
             }
         }
+        func threadTargetError(_ detail: String) -> HTTPReply {
+            Self.json(404, "{\"error\":\"Thread target not found or not replyable: \(detail)\"}")
+        }
         let channelId: String
         if trimmed.hasPrefix("#") {
             var raw = String(trimmed.dropFirst())
@@ -19325,15 +19328,49 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                     break
                 }
             }
-            var resolved = parentId
-            if let parentId, let suffix, !suffix.isEmpty {
-                resolved = agentHistoryThread(parentId: parentId, anchorMessageId: oauth.historyMessages(channelId: parentId).first { $0.id.hasPrefix(suffix) }?.id ?? "")
-                    ?? agentHistoryThreadById(parentId: parentId, suffix: suffix)
-                    ?? agentHistoryThreadByAnchorPrefix(parentId: parentId, suffix: suffix)
+            var resolved: String?
+            var pendingAnchorId: String?
+            if let parentId {
+                if let suffix, !suffix.isEmpty {
+                    let isMember = postableChannels[parentId]?.memberIds.contains(identity.agentId) == true
+                        || oauth.channelAgentIds(channelId: parentId).contains(identity.agentId)
+                    guard isMember else {
+                        let privateParent = postableChannels[parentId]?.kind == "private"
+                        lock.unlock()
+                        return privateParent
+                            ? threadTargetError("the parent message must exist in a channel you can read")
+                            : Self.json(403, "{\"error\":\"Agent is not a member of the parent channel\"}")
+                    }
+                    let anchorId = oauth.historyMessages(channelId: parentId).first { $0.id.hasPrefix(suffix) }?.id
+                        ?? humanMessageRows.first { $0.channelId == parentId && $0.id.hasPrefix(suffix) }?.id
+                    resolved = agentHistoryThread(parentId: parentId, anchorMessageId: anchorId ?? "")
+                        ?? agentHistoryThreadById(parentId: parentId, suffix: suffix)
+                        ?? agentHistoryThreadByAnchorPrefix(parentId: parentId, suffix: suffix)
+                    if resolved == nil, let anchorId {
+                        pendingAnchorId = anchorId
+                    }
+                } else {
+                    resolved = parentId
+                }
             }
             lock.unlock()
+            if let parentId, let pendingAnchorId {
+                let threadId = oauth.createThreadChannel(parentChannelId: parentId, parentMessageId: pendingAnchorId)
+                addPostableChannel(
+                    serverId: identity.serverId,
+                    channelId: threadId,
+                    memberId: identity.agentId,
+                    kind: "thread",
+                    parentChannelId: parentId,
+                    parentMessageId: pendingAnchorId,
+                    name: "thread"
+                )
+                resolved = threadId
+            }
             guard let resolved else {
-                return Self.json(404, "{\"error\":\"Channel not found\"}")
+                return suffix == nil
+                    ? Self.json(404, "{\"error\":\"Channel not found\"}")
+                    : threadTargetError("the parent message must exist in #\(raw)")
             }
             channelId = resolved
         } else if trimmed.hasPrefix("dm:@") {
@@ -19342,9 +19379,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             if let colon = raw.lastIndex(of: ":") {
                 suffix = String(raw[raw.index(after: colon)...])
                 raw = String(raw[..<colon])
-            }
-            if suffix != nil {
-                return Self.json(404, "{\"error\":\"Channel not found\"}")
             }
             var kind: String?
             if let tilde = raw.firstIndex(of: "~") {
@@ -19361,13 +19395,43 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.lock()
             let existing = dmChannelIdLocked(serverId: identity.serverId, agentId: identity.agentId, peerId: peerId)
             lock.unlock()
+            let dmChannelId: String
             if let existing {
-                channelId = existing
+                dmChannelId = existing
             } else {
-                channelId = oauth.createDirectChannel(serverId: identity.serverId, firstUserId: identity.agentId, secondUserId: peerId)
-                addPostableChannel(serverId: identity.serverId, channelId: channelId, memberId: identity.agentId, kind: "dm", name: "dm")
-                addPostableChannel(serverId: identity.serverId, channelId: channelId, memberId: peerId, kind: "dm", name: "dm")
-                oauth.addChannelHuman(channelId: channelId, userId: peerId)
+                dmChannelId = oauth.createDirectChannel(serverId: identity.serverId, firstUserId: identity.agentId, secondUserId: peerId)
+                addPostableChannel(serverId: identity.serverId, channelId: dmChannelId, memberId: identity.agentId, kind: "dm", name: "dm")
+                addPostableChannel(serverId: identity.serverId, channelId: dmChannelId, memberId: peerId, kind: "dm", name: "dm")
+                oauth.addChannelHuman(channelId: dmChannelId, userId: peerId)
+            }
+            if let suffix, !suffix.isEmpty {
+                lock.lock()
+                let anchorId = oauth.historyMessages(channelId: dmChannelId).first { $0.id.hasPrefix(suffix) }?.id
+                    ?? humanMessageRows.first { $0.channelId == dmChannelId && $0.id.hasPrefix(suffix) }?.id
+                var resolved = agentHistoryThread(parentId: dmChannelId, anchorMessageId: anchorId ?? "")
+                    ?? agentHistoryThreadById(parentId: dmChannelId, suffix: suffix)
+                    ?? agentHistoryThreadByAnchorPrefix(parentId: dmChannelId, suffix: suffix)
+                lock.unlock()
+                if resolved == nil, let anchorId {
+                    let threadId = oauth.createThreadChannel(parentChannelId: dmChannelId, parentMessageId: anchorId)
+                    addPostableChannel(
+                        serverId: identity.serverId,
+                        channelId: threadId,
+                        memberId: identity.agentId,
+                        kind: "thread",
+                        parentChannelId: dmChannelId,
+                        parentMessageId: anchorId,
+                        name: "thread"
+                    )
+                    addPostableChannel(serverId: identity.serverId, channelId: threadId, memberId: peerId, kind: "thread", parentChannelId: dmChannelId, parentMessageId: anchorId, name: "thread")
+                    resolved = threadId
+                }
+                guard let resolved else {
+                    return threadTargetError("the parent message must exist in this DM")
+                }
+                channelId = resolved
+            } else {
+                channelId = dmChannelId
             }
         } else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
@@ -19401,7 +19465,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         lock.unlock()
         let message = "{\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(content)),\"seq\":\(ownSeq)}"
-        return v2 ? Self.json(200, "{\"message\":\(message)}") : Self.json(200, message)
+        let sent = "{\"ok\":true,\"state\":\"sent\",\"messageId\":\(jsonString(messageId)),\"messageSeq\":\(ownSeq),\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(content)),\"seq\":\(ownSeq)}"
+        return v2 ? Self.json(200, "{\"message\":\(message)}") : Self.json(200, sent)
     }
 
     private enum AgentTaskAuthResult {

@@ -684,3 +684,11 @@ RFC 074 personal assistant：
 
 - App 未显式声明 `agentManifestUrl` 且 `homepageUrl` 是 https 时，`/internal/agent-api/integrations` 的 `services[]`、`integrations/login` 的 `service`、`activeLogins[]` 以及 Marketplace 公共行都投影 `https://<homepage host>/.well-known/raft-agent-manifest.json`，`agentManifestUrlSource:"well_known"`。
 - 显式登记 manifest 时保持原 URL 与 `agentManifestUrlSource:"explicit"`；无 homepage 或非 https 时两者为 null。
+
+### internalAgentApi.send：线程回复目标组
+
+- `POST /internal/agent-api/send` 成功回 `{ok:true,state:"sent",messageId,messageSeq}`（同时保留旧 `id/channelId/content/seq` 字段供既有客户端）。
+- `#channel:<suffix>`：suffix 命中已有 thread 的父消息前缀或 thread channel id 前缀时投到该 thread；只命中父频道消息时自动建立 thread（`kind:"thread"`、`parentChannelId`/`parentMessageId`）并投递首条回复；没有任何命中 → 404，错误文本含 `Thread target not found or not replyable` 与 `parent message must exist`。
+- 线程目标要求 agent 是父频道成员：公开频道非成员 → 403 `Agent is not a member of the parent channel`；不可见的 private 父频道 → 404（cloak，不泄漏存在性）。
+- `dm:@<peer>:<suffix>`：DM 内命中父消息前缀时自动创建 DM thread 并投递；已有空 thread 复用；找不到 → 404 同上错误文本。
+- 已存在的空 thread（由父消息 OPEN THREAD 建立）在首条 agent 回复时复用，不新建第二个 thread。
