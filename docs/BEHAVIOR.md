@@ -408,3 +408,5 @@ Agent credential 管理：`POST/GET/DELETE /api/agents/:id/credentials` 不需�
 
 Timezone observation：`POST /api/auth/me/timezone-observation` 需要认证，非法/空/超长/带额外字段的 body 400；首次写入建立 first 与 last，后续只更新 first 保持 + last 更新。`US/Pacific` 等别名按 canonical IANA zone 存储（`America/Los_Angeles`）。`GET /api/auth/me` 对只有 first 的 legacy 行回退 last=first（不伪造持久化 last）；下一次 observation 更新 last 后 /me 反映新值。
 
+`GET /api/servers/unread-summary` 的 `activityUnreadCount` 与 `GET /api/channels/inbox?filter=all` 的 `totalUnreadCount` 在同一 server 上相等，且不随 inbox `limit` 改变；caught-up server 返回存在的 0，非成员不返回 entry；mute 不改变计数。Service 级 computeActivityUnreadCounts 与 canonical fixture 不是 HTTP 可达断言，列为排除项。
+

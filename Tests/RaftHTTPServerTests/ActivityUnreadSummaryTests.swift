@@ -32,8 +32,11 @@ import VaporTesting
     }
     let joined = accounts.oauth.createChannel(serverId: serverA, name: "joined-room", creatorUserId: ownerId)
     accounts.oauth.addChannelHuman(channelId: joined, userId: memberId)
-    accounts.oauth.createChannelMessage(channelId: joined, content: "unread one", senderId: ownerId)
-    accounts.oauth.createChannelMessage(channelId: joined, content: "unread two", senderId: ownerId)
+    accounts.addPostableChannel(serverId: serverA, channelId: joined, memberId: memberId, name: "joined-room")
+    let unreadOne = accounts.oauth.createMessageRecord(channelId: joined, content: "unread one", senderId: ownerId)
+    let unreadTwo = accounts.oauth.createMessageRecord(channelId: joined, content: "unread two", senderId: ownerId)
+    accounts.addInboxFactForTesting(receiverId: memberId, serverId: serverA, channelId: joined, messageId: unreadOne.id)
+    accounts.addInboxFactForTesting(receiverId: memberId, serverId: serverA, channelId: joined, messageId: unreadTwo.id)
     let mentionOnly = accounts.oauth.createChannel(serverId: serverA, name: "mention-room", creatorUserId: ownerId)
     accounts.oauth.createChannelMessage(channelId: mentionOnly, content: "@act-member ping", senderId: ownerId)
     _ = accounts.oauth.createChannel(serverId: serverB, name: "quiet-room", creatorUserId: ownerId)
@@ -85,6 +88,22 @@ import VaporTesting
 
             let outsiderSummary = try await summary(outsiderToken)
             #expect(outsiderSummary.isEmpty)
+
+            func inboxTotal(_ limit: Int) async throws -> Int {
+                var inboxHeaders = headers(memberToken)
+                inboxHeaders[HTTPField.Name("X-Server-Id")!] = serverA
+                let response = try await client.send(
+                    .get,
+                    headers: inboxHeaders,
+                    to: URI(string: "/api/channels/inbox?filter=all&limit=\(limit)")
+                )
+                #expect(response.status == .ok)
+                return (try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any])?["totalUnreadCount"] as? Int ?? -1
+            }
+            let totals100 = try await inboxTotal(100)
+            let totals1 = try await inboxTotal(1)
+            #expect(totals100 == entryA?["activityUnreadCount"] as? Int)
+            #expect(totals1 == totals100)
         }
     }
 }
