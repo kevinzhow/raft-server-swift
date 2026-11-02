@@ -392,3 +392,93 @@ private func forwardObject(_ response: ClientResponse) throws -> [String: Any] {
         }
     }
 }
+
+@Test func forwardSupportsJointDestinationsAndJointSources() async throws {
+    let accounts = EmailLoginDirectory()
+    let hostId = "33333333-3333-4333-8333-000000991001"
+    let guestId = "33333333-3333-4333-8333-000000991002"
+    let hostOwner = "11111111-1111-4111-8111-000000991003"
+    let guestOwner = "11111111-1111-4111-8111-000000991004"
+    let dmPeer = "11111111-1111-4111-8111-000000991005"
+    let hostEmail = "forward-joint-host-991@slock.test"
+    let guestEmail = "forward-joint-guest-991@slock.test"
+    for (id, email) in [(hostOwner, hostEmail), (guestOwner, guestEmail), (dmPeer, "forward-joint-dm-991@slock.test")] {
+        accounts.addAccount(id: id, email: email, password: "password123")
+        accounts.markEmailVerified(userId: id)
+    }
+    accounts.oauth.addOwnedServer(id: hostId, slug: "forward-joint-host-991", name: "Host", ownerId: hostOwner)
+    accounts.oauth.addOwnedServer(id: guestId, slug: "forward-joint-guest-991", name: "Guest", ownerId: guestOwner)
+    accounts.oauth.addMember(serverId: hostId, userId: dmPeer, role: "member")
+    accounts.oauth.addMember(serverId: guestId, userId: hostOwner, role: "member")
+    let source = accounts.oauth.createChannel(serverId: hostId, name: "forward-joint-source-991", creatorUserId: hostOwner)
+    let destination = accounts.oauth.createChannel(serverId: hostId, name: "forward-joint-regular-991", creatorUserId: hostOwner)
+    let guestDestination = accounts.oauth.createChannel(serverId: guestId, name: "forward-joint-guest-dest-991", creatorUserId: guestOwner)
+    for (channel, server, member) in [(source, hostId, hostOwner), (destination, hostId, hostOwner), (guestDestination, guestId, guestOwner)] {
+        accounts.addPostableChannel(serverId: server, channelId: channel, memberId: member, name: "forward-991")
+        accounts.oauth.addChannelHuman(channelId: channel, userId: member)
+    }
+    let canonical = accounts.oauth.createChannel(serverId: hostId, name: "forward-joint-storage-991", creatorUserId: hostOwner)
+    accounts.addPostableChannel(serverId: hostId, channelId: canonical, memberId: hostOwner, name: "forward-joint-storage-991")
+    let hostProjection = accounts.oauth.createChannel(serverId: hostId, name: "forward-joint-room-991", creatorUserId: hostOwner, type: "joint")
+    let guestProjection = accounts.oauth.createChannel(serverId: guestId, name: "forward-joint-room-991", creatorUserId: guestOwner, type: "joint")
+    for (channel, server, member) in [(hostProjection, hostId, hostOwner), (guestProjection, guestId, guestOwner), (guestProjection, guestId, hostOwner)] {
+        accounts.addPostableChannel(serverId: server, channelId: channel, memberId: member, kind: "joint", name: "forward-joint-room-991")
+    }
+    accounts.addJointChannelProjection(localChannelId: hostProjection, canonicalChannelId: canonical, serverId: hostId)
+    accounts.addJointChannelProjection(localChannelId: guestProjection, canonicalChannelId: canonical, serverId: guestId)
+    let publicMessage = accounts.addChannelMessageForTesting(channelId: source, content: "public source into joint", senderId: hostOwner)
+    let jointMessage = accounts.addChannelMessageForTesting(channelId: canonical, content: "joint source stays restricted", senderId: hostOwner)
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            let host = try await forwardLogin(client, email: hostEmail)
+            let guest = try await forwardLogin(client, email: guestEmail)
+            func forward(_ token: String, _ server: String, destination: String, source: String) async throws -> ClientResponse {
+                try await client.send(.post, headers: forwardHeaders(token, server), to: "/api/messages/forward") { request in
+                    request.body = .init(string: "{\"destinationChannelId\":\"\(destination)\",\"sourceMessageIds\":[\"\(source)\"]}")
+                }
+            }
+            let toJoint = try await forward(host, hostId, destination: hostProjection, source: publicMessage)
+            #expect(toJoint.status == .ok)
+            let toJointBody = try forwardObject(toJoint)
+            #expect(toJointBody["channelId"] as? String == hostProjection)
+            #expect((toJointBody["actionMetadata"] as? [String: Any])?["destinationTargetId"] as? String == hostProjection)
+            let toJointItem = try #require(((toJointBody["actionMetadata"] as? [String: Any])?["forwardedItems"] as? [[String: Any]])?.first)
+            #expect(toJointItem["sourceMessageId"] as? String == publicMessage)
+            #expect((toJointItem["sourceTargetSnapshot"] as? [String: Any])?["label"] as? String == "#forward-991")
+
+            let guestList = try await client.get("/api/messages/channel/\(guestProjection)", headers: forwardHeaders(guest, guestId))
+            #expect(guestList.status == .ok)
+            let guestRows = try forwardObject(guestList)["messages"] as? [[String: Any]] ?? []
+            let guestForward = try #require(guestRows.first { $0["id"] as? String == toJointBody["id"] as? String })
+            let guestItem = try #require(((guestForward["actionMetadata"] as? [String: Any])?["forwardedItems"] as? [[String: Any]])?.first)
+            #expect(guestItem["sourceTargetId"] is NSNull)
+            #expect((guestItem["sourceTargetSnapshot"] as? [String: Any])?["label"] as? String == "")
+            #expect((guestItem["sourceTargetSnapshot"] as? [String: Any])?["labelVisibility"] as? String == "restricted")
+            #expect(guestItem["provenanceState"] as? String == "original_unavailable")
+
+            let fromJoint = try await forward(host, hostId, destination: destination, source: jointMessage)
+            #expect(fromJoint.status == .ok)
+            let fromJointBody = try forwardObject(fromJoint)
+            #expect(fromJointBody["channelId"] as? String == destination)
+            let jointItem = try #require(((fromJointBody["actionMetadata"] as? [String: Any])?["forwardedItems"] as? [[String: Any]])?.first)
+            #expect(jointItem["contentSnapshot"] as? String == "joint source stays restricted")
+            #expect(jointItem["sourceMessageId"] is NSNull)
+            #expect(jointItem["sourceTargetId"] is NSNull)
+            #expect((jointItem["sourceTargetSnapshot"] as? [String: Any])?["type"] as? String == "joint")
+            #expect((jointItem["sourceTargetSnapshot"] as? [String: Any])?["label"] as? String == "")
+            #expect((jointItem["sourceTargetSnapshot"] as? [String: Any])?["labelVisibility"] as? String == "restricted")
+            #expect(jointItem["provenanceState"] as? String == "available")
+
+            let guestFromJoint = try await forward(guest, guestId, destination: guestDestination, source: jointMessage)
+            #expect(guestFromJoint.status == .ok)
+            #expect(try forwardObject(guestFromJoint)["channelId"] as? String == guestDestination)
+        }
+    }
+}

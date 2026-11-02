@@ -372,3 +372,5 @@ Message forward：`POST /api/messages/forward` 单目标时回 200 + `X-Raft-For
 
 Forward provenance：私有 thread/私有频道来源即使在创建者响应中也只给 `sourceTargetId:null`、无 thread/parent 字段、`label:""`、`labelVisibility:"restricted"`；无源频道权限的 destination viewer 在冷读中拿到全部源指针为 null、附件仍可读、`provenanceState:"original_unavailable"`。短 id 源在 server-wide 解析前 400；system/非普通消息 400 `unsupported_source_message`；再次转发已转发消息 400 `forwarded_source_not_supported`。
 
+Forward joint：向 joint 目标转发时响应 `channelId`/`destinationTargetId` 是调用者本地 projection，消息存 canonical；host 本地列表保留 public 源 provenance，guest 本地列表（含同一 owner 通过 guest Server 读取）把源指针全部 scrub 为 null、label 空、`restricted`、`original_unavailable`，context/sync 同规则。以 joint canonical 消息为源转发时 item 的 `sourceTargetSnapshot.type:"joint"`、指针 null、label 空、`restricted`，`provenanceState:"available"`；host 与 guest 都可转发到各自本地普通目标。
+
