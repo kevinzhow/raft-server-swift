@@ -216,7 +216,7 @@ tasks.realtimeProjection.api	route	partial	-	canonical claim emits task:updated 
 tasks.serverPagination.api	route	partial	-	auto-seed
 tasks.shapeSurfaces.api	route	pending	-	auto-seed
 tasks.snapshotMetrics.api	route	locked	e1fa956	covered by the existing metric/scope tests
-timezoneObservation.api	route	partial	-	auto-seed
+timezoneObservation.api	route	locked	595ec75	auth/validation, first+last preservation, canonical IANA alias, legacy first-pair fallback; excluded DB clock and concurrent observers
 version.api	route	locked	5247150	build identity and explicit 503 covered
 accessRevocation.redis	socket	pending	-	auto-seed
 desktopAttention.api	socket	pending	-	auto-seed
