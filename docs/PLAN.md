@@ -15,7 +15,7 @@
 ### 相对最初提议的三点修正
 
 1. **实时面不是大解锁。** 上游只有 15 个测试文件、约 120 条断言涉及 socket，且多数只断言「能否收到某个事件」；inbox/unread/thread/read-state 的断言几乎都走 HTTP。WS 仍先做，因为它建立唯一的事件出口，并能删掉现有的 `recorded*` spy 侧通道。
-2. **`/health` 真实 200 只值 1 条断言。** 上游 `/health` 是 `SELECT 1`（测试里用 PGlite），真 200 需要真 Postgres。先做存储缝与聚合查询，引擎选择留成 Phase 3 的显式决策门，默认不做。
+2. **`/health` 真实 200。** B2 已批准：`DATABASE_URL` 存在时用 PostgresNIO 执行 `SELECT 1`，`/health` 回 200；无 URL 或连接失败仍回 503。
 3. **上游测试不能直接跑在我们的二进制上。** 它们 import `getDb()`、drizzle schema 和 service 私有函数，不是黑盒 HTTP 客户端，所以「用上游 Node 测试做差分验收」不成立；验收仍是「读 Node 断言 → Swift 测试」，只是以功能为单位。
 
 ## 2. 基线与度量
@@ -24,7 +24,7 @@
 
 | 事实 | 数值 / 证据 |
 | --- | --- |
-| 当前测试 | `make test` 绿，871 个 `@Test`；`make test-e2e` 2 条 |
+| 当前测试 | `make test` 绿，876 个 `@Test`；`make test-e2e` 2 条；`make test-pg` 真实 Postgres 通过 |
 | 粒度问题 | 已改为功能纵向切片；每个切片一个 commit |
 | 上游 server 路由 | 219 个 `*.test.ts`，2000 条 `test(...)` |
 | 上游 daemon | 180 个测试模块，2616 条 `test(...)` |
@@ -110,11 +110,12 @@
 
 **B1 领域存储缝**
 - `Sources/RaftHTTP/DomainStore.swift`：channel/thread/message/readCursor/mention/membership 的查询形状；先内存实现，handlers 改为一次查询。
-- `channels.inbox.api` 已 locked（serving rows、`firstUnreadMessageId`、`totalUnreadCount`、`filter`、`no-store`、read receipts、residue/security、DM/private 投影）。`DomainStore` 仍以内存实现承载；B2 决策前不引入真 SQL 语义。
+- `channels.inbox.api` 已 locked（serving rows、`firstUnreadMessageId`、`totalUnreadCount`、`filter`、`no-store`、read receipts、residue/security、DM/private 投影）。`DomainStore` 仍以内存实现承载；B2 只接通 `/health` 的 `SELECT 1`，未把领域存储迁到 SQL。
 - unread summary / thread summary 的同源计算收进 store。
 
-**B2（决策门，默认不做）：`/health` 真 200**
-- 只有 B1 证明需要真 SQL 语义（并发、唯一约束、大聚合）才做：`PostgresNIO` + `DATABASE_URL` + `make pg-up`（docker），`/health` 走 `SELECT 1`；无 `DATABASE_URL` 仍是 503。前置检查：resolve 后 Vapor revision 不变、`make test` 绿；否则退回并记为已知差距。
+**B2（已批准并落地）：`/health` 真 200**
+- `PostgresNIO` + `DATABASE_URL` + `make pg-up`（docker）；`/health` 走 `SELECT 1`，无 `DATABASE_URL`/连接失败仍是 503。领域存储保持内存实现。
+- `postgres-nio` 固定在 `1025d0a10ea9f5dd110f13e9b62aa42dc4358841`（1.33.x 在 Swift 6.4 下 `elementsEqual` 歧义，该提交改为 `zip/allSatisfy`）；Vapor revision 不变。`make test-pg` 覆盖真实 Postgres；`/health` 200/503 均用真实进程验证。
 
 ### Phase 4（进行中）：纵向功能队列 + 收尾
 
@@ -132,7 +133,7 @@
 2. **`locked` 定义**：模块的可移植用例全部有验收断言才标记 `locked`；不可移植用例在 commit 正文与 `docs/PARITY.tsv` 的 notes 中逐项注明，不静默计入。
 3. **小模块机会主义**：只有在可完整覆盖时才顺手锁；不再为模块数锁半套行为。
 4. **daemon 独立工作流**：daemon 180 模块/2616 例是整体覆盖率的单点瓶颈，作为并行队列，用真实 socket 驱动 reconnect/watchdog/outbound replay，而不是只做 route。
-5. **B2 保持决策门**：`/health` 200 需要 PostgresNIO + `DATABASE_URL` + `pg-up`，默认不做；未获确认前继续 503。
+5. **B2 已完成**：`DATABASE_URL` 存在时 `/health` 走 `SELECT 1`，否则保持 503；不改领域存储。
 
 实际执行顺序（按依赖与上下文，而非纯用例数）：
 
@@ -166,7 +167,7 @@
 ## 5. 风险与回退
 
 - **socket.io 协议偏差**：只做 WS transport（上游测试也只用 websocket），用原始包文本断言收敛；不做 polling/ack/Redis adapter。
-- **新依赖动 `Package.resolved`**：B2 是唯一引入依赖的点，按门控检查；不动就保持内存实现，`/health` 继续 503。
+- **新依赖动 `Package.resolved`**：B2 唯一新增 `postgres-nio`（固定 revision），Vapor revision 未变；领域存储不动。
 - **e2e 与并行测试冲突**：环境变量门控 + 临时端口 + 超时清理，避免触发已知的 signal 6/11 偶发。
 - **大切片回退成本**：每切片独立 commit；契约变更必须在 `docs/PARITY.tsv` 注明。
 - **度量自欺**：`parity.py` 只认 manifest 里带 commit 的 `locked`，`partial` 不计入加权。

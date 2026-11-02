@@ -14,6 +14,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "5.0.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
+        .package(url: "https://github.com/vapor/postgres-nio.git", revision: "1025d0a10ea9f5dd110f13e9b62aa42dc4358841"),
         // No tagged Vapor 5 release builds here. This main snapshot pins swift-collections to 1.6.0.
         .package(url: "https://github.com/vapor/vapor.git", revision: "0f2a8ee9f38b2589c066b604de3e3168ed54c82d"),
     ],
@@ -54,6 +55,7 @@ let package = Package(
             name: "RaftHTTP",
             dependencies: [
                 .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "PostgresNIO", package: "postgres-nio"),
             ]
         ),
         .target(

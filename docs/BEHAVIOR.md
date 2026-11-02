@@ -582,3 +582,11 @@ RFC 074 personal assistant：
 - 频道已删的 orphan task：`PATCH /api/tasks/:id/status` 只接受 `done/closed/cancelled`，其他状态 → 409 `{code:"channel_deleted_terminal_only"}`；`PATCH /api/tasks/:id/claim` → 409。
 - orphan task 可被 admin/owner `DELETE /api/tasks/:id`；非 creator 的普通 member → 403。
 
+
+### B2：`/health` 真实 200
+
+- 无 `DATABASE_URL`：`GET /health` → 503 `{"status":"error","detail":"database unreachable"}`，与内存存储模式一致。
+- 有 `DATABASE_URL` 且 Postgres 可达：执行 `SELECT 1`，`GET /health` → 200 `{"status":"ok"}`，带 `X-Robots-Tag: noindex, nofollow` 与 JSON content-type。
+- URL 非法、`sslmode` 非 `disable`、连接失败或查询失败：仍 503，错误文本不外泄。
+- `DATABASE_URL` 由 `make pg-url` 生成；`make pg-up` 起本地 Postgres，`make test-pg` 跑真实 `SELECT 1`。
+- 领域存储仍是内存实现；B2 只接通健康探针。

@@ -58,6 +58,18 @@ private func services(nodeEnv: String, ping: @escaping @Sendable () async throws
     }
 }
 
+@Test func vaporHealthSuccessIsOkWhenTheDatabasePingSucceeds() async throws {
+    try await withApp { app in
+        configure(app, services: services(nodeEnv: "test", ping: {}))
+        try await app.testing { client in
+            let res = try await client.get("/health")
+            #expect(res.status == .ok)
+            #expect(bodyText(res) == "{\"status\":\"ok\"}")
+            #expect(res.headers[HTTPField.Name("X-Robots-Tag")!] == "noindex, nofollow")
+        }
+    }
+}
+
 @Test func vaporHealthFailureStaysDatabaseUnreachable() async throws {
     try await withApp { app in
         configure(app, services: services(nodeEnv: "test", ping: { throw CancellationError() }))

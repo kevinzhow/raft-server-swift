@@ -104,7 +104,11 @@ enum Entrypoint {
         if let appURL = nonEmpty(processEnvironment["APP_URL"]) {
             emailAccounts.appURL = appURL.hasSuffix("/") ? String(appURL.dropLast()) : appURL
         }
-        let ping: @Sendable () async throws -> Void = { throw DatabaseNotConnected() }
+        let database = DatabaseHealth(environment: processEnvironment)
+        let ping: @Sendable () async throws -> Void = {
+            guard database.isConfigured else { throw DatabaseNotConnected() }
+            try await database.ping()
+        }
         let tracker = DbLivenessTracker(ping: ping)
         let httpPort = Int(processEnvironment["PORT"] ?? "") ?? 8080
         if httpPort > 0 {

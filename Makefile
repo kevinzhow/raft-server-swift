@@ -1,7 +1,7 @@
 SWIFT := /mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift
 PYTHON ?= python3
 
-.PHONY: test test-e2e parity parity-check
+.PHONY: test test-e2e test-pg pg-up pg-down pg-url parity parity-check
 test:
 	$(SWIFT) test
 
@@ -14,3 +14,15 @@ parity:
 
 parity-check:
 	$(PYTHON) scripts/parity.py --check
+
+pg-up:
+	docker compose -f docker-compose.pg.yml up -d --wait
+
+pg-down:
+	docker compose -f docker-compose.pg.yml down -v
+
+pg-url:
+	@echo postgres://raft:raft@127.0.0.1:54329/raft?sslmode=disable
+
+test-pg: pg-up
+	DATABASE_URL=$$($(MAKE) -s pg-url) RAFT_PG_INTEGRATION=1 $(SWIFT) test --filter DatabaseHealthTests
