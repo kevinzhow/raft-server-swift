@@ -50,7 +50,7 @@ channelFiles.api	route	locked	3afd934	channel/thread file union, source metadata
 channels.api	route	partial	-	auto-seed
 channels.archive.api	route	partial	-	auto-seed
 channels.getJoined.api	route	partial	-	auto-seed
-channels.inbox.api	route	partial	c5452e0	serving/filters/mentions/Done/read receipts/thread-Done oracle/read-all residue covered; remaining channel-probe oracles and diagnostics pending
+channels.inbox.api	route	partial	52a18f2	serving/filters/mentions/Done/read receipts/read-all residue/channel-probe oracles covered; DM row kinds and remaining serving variants pending
 channels.inbox.dmScope.api	route	locked	8a4d500	scope=dms and DM-done suppression
 channels.joinCapability.api	route	partial	-	auto-seed
 channels.joint.api	route	pending	-	auto-seed
