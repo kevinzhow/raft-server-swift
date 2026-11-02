@@ -679,3 +679,8 @@ RFC 074 personal assistant：
 - 执行时创建 `server_local` App：clientKey 为请求值或 `"<slug>-<6 hex>"`（如 `generated-demo-abcdef`），returnUrl/homepageUrl/appType 按卡片写入，请求 agent 成为 App owner 维护者；同一卡片重放（`expectedState:"executed"`）返回既有结果且不重复建 App。
 - 目标频道不可见 → 404 `Target channel not found`；缺 name/returnUrl/mode 非 register → 400 `INVALID_APP_METADATA`；clientKey 冲突由创建期校验拒绝（409 `APP_REGISTRATION_REJECTED`）。
 - 初始 secret 的一次性 owner 私有 wake 未移植（无 orchestrator 投递通道）；卡片、历史与执行 metadata 一律 secret-free。
+
+### internalAgentApi.auth：manifest 发现回退
+
+- App 未显式声明 `agentManifestUrl` 且 `homepageUrl` 是 https 时，`/internal/agent-api/integrations` 的 `services[]`、`integrations/login` 的 `service`、`activeLogins[]` 以及 Marketplace 公共行都投影 `https://<homepage host>/.well-known/raft-agent-manifest.json`，`agentManifestUrlSource:"well_known"`。
+- 显式登记 manifest 时保持原 URL 与 `agentManifestUrlSource:"explicit"`；无 homepage 或非 https 时两者为 null。

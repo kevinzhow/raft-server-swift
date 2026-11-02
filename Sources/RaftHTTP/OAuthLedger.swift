@@ -1400,14 +1400,15 @@ public final class OAuthLedger: @unchecked Sendable {
         return clients.filter {
             $0.serverId == serverId && $0.appType != "slock_builtin" && $0.enabled
         }.map { client in
-            [
+            let manifest = manifestFields(client)
+            return [
                 "id": client.id,
                 "clientId": client.clientId,
                 "name": client.name,
                 "description": client.descriptionText.map { $0 as Any } ?? NSNull(),
                 "homepageUrl": client.homepageUrl.map { $0 as Any } ?? NSNull(),
-                "agentManifestUrl": client.agentManifestUrl as Any,
-                "agentManifestUrlSource": client.agentManifestUrlSource as Any,
+                "agentManifestUrl": manifest.url,
+                "agentManifestUrlSource": manifest.source,
                 "allowedScopes": client.allowedScopes as Any,
                 "appType": client.appType,
                 "whenToUse": client.whenToUse as Any,
@@ -1437,14 +1438,15 @@ public final class OAuthLedger: @unchecked Sendable {
         guard let client = clients.first(where: { candidate in
             (candidate.clientId == clientId || candidate.id == clientId) && isMarketplaceVisible(candidate)
         }) else { return nil }
+        let manifest = manifestFields(client)
         return [
             "id": client.id,
             "clientId": client.clientId,
             "name": client.name,
             "description": client.descriptionText as Any,
             "homepageUrl": client.homepageUrl as Any,
-            "agentManifestUrl": client.agentManifestUrl as Any,
-            "agentManifestUrlSource": client.agentManifestUrlSource as Any,
+            "agentManifestUrl": manifest.url,
+            "agentManifestUrlSource": manifest.source,
             "allowedScopes": client.allowedScopes as Any,
             "appType": client.appType,
         ]
@@ -1491,14 +1493,15 @@ public final class OAuthLedger: @unchecked Sendable {
                         $0.clientId == candidate.id && $0.serverId == serverId && $0.status == "active"
                     }
             }) else { return nil }
+            let manifest = manifestFields(client)
             return [
                 "id": client.id,
                 "clientId": client.clientId,
                 "name": client.name,
                 "description": client.descriptionText as Any,
                 "homepageUrl": client.homepageUrl as Any,
-                "agentManifestUrl": client.agentManifestUrl as Any,
-                "agentManifestUrlSource": client.agentManifestUrlSource as Any,
+                "agentManifestUrl": manifest.url,
+                "agentManifestUrlSource": manifest.source,
                 "allowedScopes": client.allowedScopes as Any,
                 "appType": client.appType,
             ]
@@ -3293,6 +3296,27 @@ public final class OAuthLedger: @unchecked Sendable {
             "authority": admin ? "admin" : "owner",
             "recoveryCommand": "raft integration app rotate-secret --client \(client.clientId) --output <new-private-path>",
         ]
+    }
+
+    /// An App that declares no manifest still points agents at its own
+    /// well-known document, derived from the homepage origin.
+    private static func wellKnownAgentManifestUrl(homepageUrl: String?) -> String? {
+        guard let homepageUrl,
+              let components = URLComponents(string: homepageUrl),
+              components.scheme?.lowercased() == "https",
+              let host = components.host, !host.isEmpty
+        else { return nil }
+        return "https://\(host)/.well-known/raft-agent-manifest.json"
+    }
+
+    private func manifestFields(_ client: Client) -> (url: Any, source: Any) {
+        if let url = client.agentManifestUrl, !url.isEmpty {
+            return (url, client.agentManifestUrlSource ?? "explicit")
+        }
+        if let derived = Self.wellKnownAgentManifestUrl(homepageUrl: client.homepageUrl) {
+            return (derived, "well_known")
+        }
+        return (NSNull(), NSNull())
     }
 
     /// Mirrors `oauthClientIsUserManagedPredicate`: the tombstone class and
