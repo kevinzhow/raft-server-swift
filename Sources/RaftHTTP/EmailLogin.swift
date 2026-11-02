@@ -3150,6 +3150,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 return channel.memberIds.contains(userId)
             case .agent(let agentId):
                 return channelAgentMembers[id]?.contains(agentId) == true
+                    || oauth.channelAgentIds(channelId: id).contains(agentId)
             }
         }
         guard let channel = postableChannels[messageChannelId],
@@ -3255,6 +3256,82 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// `GET /api/messages/search`. Relevance ranks by how often `q` appears. `sort=recent` uses `createdAt`.
+    public func agentApiSearch(
+        authorization: String?,
+        query: String?,
+        channelRef: String?,
+        senderRef: String?,
+        sort: String?,
+        limit: String?
+    ) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard credential.scopes.contains("read") else {
+            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
+        }
+        let pageLimit = min(max(Int(limit ?? "") ?? 20, 1), 100)
+        let tokens = Self.searchTokens((query ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+        let sortMode = sort == "recent" ? "recent" : "relevance"
+        lock.lock()
+        let channelFilter: String? = {
+            guard let channelRef, !channelRef.isEmpty else { return nil }
+            let name = channelRef.hasPrefix("#") ? String(channelRef.dropFirst()) : channelRef
+            return postableChannels.first { _, channel in
+                channel.serverId == agent.serverId && channel.name == name
+            }?.key
+        }()
+        var hits: [(message: StoredHumanMessage, score: Int)] = []
+        for message in humanMessageRows where messageSearchVisibleLocked(
+            messageChannelId: message.channelId,
+            serverId: agent.serverId,
+            viewer: .agent(agent.id)
+        ) {
+            if let channelFilter, message.channelId != channelFilter { continue }
+            if let senderRef, !senderRef.isEmpty {
+                let handle = senderRef.hasPrefix("@") ? String(senderRef.dropFirst()) : senderRef
+                let found: String? = {
+                    if message.senderType == "agent" {
+                        return oauth.agentRuntimeInfo(id: message.senderId)?.name
+                    }
+                    return accounts.values.first { $0.id == message.senderId }?.name
+                }()
+                guard found?.lowercased() == handle.lowercased() else { continue }
+            }
+            let counts = Self.tokenCounts(message.content)
+            if tokens.isEmpty {
+                hits.append((message, 0))
+            } else if let score = Self.matchScore(counts, tokens, requireAll: true) {
+                hits.append((message, score))
+            } else if tokens.count > 1, let score = Self.matchScore(counts, tokens, requireAll: false) {
+                hits.append((message, score))
+            }
+        }
+        hits.sort { lhs, rhs in
+            if sortMode == "recent" { return lhs.message.createdAt > rhs.message.createdAt }
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.message.createdAt > rhs.message.createdAt
+        }
+        let hasMore = hits.count > pageLimit
+        let page = hits.prefix(pageLimit)
+        let rows = page.map { hit -> String in
+            let message = hit.message
+            let channel = postableChannels[message.channelId]
+            let parentId = (channel?.kind == "thread" ? channel?.parentChannelId : nil) ?? message.channelId
+            let senderName = message.senderType == "agent"
+                ? (oauth.agentRuntimeInfo(id: message.senderId)?.name ?? "")
+                : (accounts.values.first { $0.id == message.senderId }?.name ?? "")
+            let senderType = message.senderType == "agent" ? "agent" : "human"
+            let channelName = channel?.name ?? ""
+            let snippet = Self.searchSnippet(message.content)
+            return "{\"id\":\(jsonString(message.id)),\"content\":\(jsonString(message.content)),\"senderName\":\(jsonString(senderName)),\"senderType\":\(jsonString(senderType)),\"senderId\":\(jsonString(message.senderId)),\"channelId\":\(jsonString(message.channelId)),\"channelName\":\(jsonString(channelName)),\"parentChannelId\":\(jsonString(parentId)),\"snippet\":\(jsonString(snippet))}"
+        }.joined(separator: ",")
+        lock.unlock()
+        return Self.json(200, "{\"results\":[\(rows)],\"hasMore\":\(hasMore ? "true" : "false")}")
+    }
+
     public func searchHumanMessages(query: String?, sort: String?, limit: String?, authorization: String?, serverId: String?, channelId: String? = nil, senderId: String? = nil, senderType: String? = nil, mentionTarget: String? = nil) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)
@@ -15115,6 +15192,57 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func agentProfileShow(authorization: String?, target: String?) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        func agentJSON(_ row: (id: String, name: String, displayName: String, description: String, avatarUrl: String?)) -> [String: Any] {
+            [
+                "agentId": row.id,
+                "name": row.name,
+                "displayName": row.displayName,
+                "description": row.description,
+                "avatarUrl": row.avatarUrl as Any,
+            ]
+        }
+        guard let target, !target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            let json = "{\"agentId\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"description\":\(jsonString(agent.description ?? "")),\"avatarUrl\":\(agent.avatarUrl.map(jsonString) ?? "null")}"
+            return Self.json(200, json)
+        }
+        guard credential.scopes.contains("read") else {
+            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
+        }
+        let handle = target.hasPrefix("@") ? String(target.dropFirst()) : target
+        let lowered = handle.lowercased()
+        lock.lock()
+        let agentMatch = oauth.serverAgents(serverId: agent.serverId).first {
+            !$0.deleted && ($0.name.lowercased() == lowered || $0.displayName.lowercased() == lowered)
+        }
+        let accountMatch = accounts.values.first {
+            $0.name.lowercased() == lowered && oauth.memberRole(serverId: agent.serverId, userId: $0.id) != nil
+        }
+        let hiddenDirectory = hideHumansFromMembers[agent.serverId] == true
+        lock.unlock()
+        if let agentMatch {
+            return Self.json(200, "{\"agentId\":\(jsonString(agentMatch.id)),\"name\":\(jsonString(agentMatch.name)),\"displayName\":\(jsonString(agentMatch.displayName)),\"description\":\(jsonString(agentMatch.description ?? "")),\"avatarUrl\":\(agentMatch.avatarUrl.map(jsonString) ?? "null")}")
+        }
+        guard let accountMatch else {
+            return Self.json(404, "{\"error\":\"Profile not found\"}")
+        }
+        if hiddenDirectory {
+            let shared = oauth.channelsForServer(serverId: agent.serverId, userId: accountMatch.id).contains { channel in
+                oauth.channelAgentIds(channelId: channel.id).contains(agent.id)
+            }
+            guard shared else {
+                return Self.json(404, "{\"error\":\"Profile not found\"}")
+            }
+        }
+        let json = "{\"userId\":\(jsonString(accountMatch.id)),\"name\":\(jsonString(accountMatch.name)),\"displayName\":\(accountMatch.displayName.map(jsonString) ?? jsonString(accountMatch.name)),\"avatarUrl\":\(accountMatch.avatarUrl.map(jsonString) ?? "null")}"
+        return Self.json(200, json)
+    }
+
     public func updateAgentProfile(authorization: String?, body: String) -> HTTPReply {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
             return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
@@ -15142,7 +15270,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
            !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             oauth.updateAgentDisplayName(id: agent.id, displayName: displayName.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        return Self.json(200, "{\"ok\":true}")
+        let latest = oauth.agentRuntimeInfo(id: agent.id)
+        let displayJSON = latest.map { jsonString($0.displayName) } ?? "null"
+        let descriptionJSON = latest?.description.map(jsonString) ?? "null"
+        emitRealtime("server:\(agent.serverId)", "agent:updated", "{\"agentId\":\(jsonString(agent.id)),\"displayName\":\(displayJSON)}")
+        return Self.json(200, "{\"ok\":true,\"agentId\":\(jsonString(agent.id)),\"displayName\":\(displayJSON),\"description\":\(descriptionJSON)}")
     }
 
     public func setServerSeats(serverId: String, seats: Int) {

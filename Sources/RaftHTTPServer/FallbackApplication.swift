@@ -666,6 +666,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             authorization: request.headers[.authorization]
         ))
     }
+    app.get("internal", "agent-api", "profile") { request -> Response in
+        routeResponse(services.emailAccounts.agentProfileShow(
+            authorization: request.headers[.authorization],
+            target: desktopQuery(request.url.query, "target")
+        ))
+    }
     app.post("internal", "agent-api", "profile") { request -> Response in
         routeResponse(services.emailAccounts.updateAgentProfile(
             authorization: request.headers[.authorization],
@@ -890,6 +896,16 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? "",
             authorization: request.headers[.authorization],
             remove: true
+        ))
+    }
+    app.get("internal", "agent-api", "search") { request -> Response in
+        routeResponse(services.emailAccounts.agentApiSearch(
+            authorization: request.headers[.authorization],
+            query: desktopQuery(request.url.query, "q"),
+            channelRef: desktopQuery(request.url.query, "channel"),
+            senderRef: desktopQuery(request.url.query, "sender"),
+            sort: desktopQuery(request.url.query, "sort"),
+            limit: desktopQuery(request.url.query, "limit")
         ))
     }
     app.get("internal", "agent-api", "mentions") { request -> Response in

@@ -478,3 +478,7 @@ Lifecycle upgrade：`targetVersion` 缺省时用 `latestComputerReleaseForTestin
 
 Agent API id-less upload：`POST /internal/agent-api/upload`（multipart `channelId` + `file`）用 agent credential（`send`/`write`）绑定 runner 身份，不依赖路径里的 agent id；校验 channel 可见、空文件、Free 50MB / Pro 200MB 与 `ATTACHMENT_UPLOAD_ENABLED`，回单对象 `{id,filename,mimeType,sizeBytes,thumbnailUrl}`。上传后 `GET /internal/agent-api/attachments/:id` 可在同一 credential 下流式读取，带 `private, no-store`。
 
+Agent API profile：`GET /internal/agent-api/profile` 无 target 时返回绑定 agent 的 name/displayName/description/avatarUrl；`?target=@handle` 需 `read` scope，可查同 server 可见的 human/agent，隐藏目录下要求共享 channel，否则 404；无 read → 403 `capability_not_authorized`。`POST /internal/agent-api/profile` 更新后回 `{ok,agentId,displayName,description}` 并向 `server:<id>` 发 `agent:updated`。
+
+Agent API search：`GET /internal/agent-api/search?q=&channel=#name&sender=handle&sort=recent&limit=` 使用绑定 runner 身份与 `read` scope；结果带 `content/senderName(handle)/senderType/channelName/channelId/parentChannelId/snippet`，`hasMore` 反映截断；只返回 agent 可见的 public/私有/thread 消息，隐藏 private 不出现。
+
