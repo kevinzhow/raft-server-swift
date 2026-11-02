@@ -24,7 +24,7 @@
 
 | 事实 | 数值 / 证据 |
 | --- | --- |
-| 当前测试 | `make test` 绿，837 个 `@Test`；`make test-e2e` 2 条 |
+| 当前测试 | `make test` 绿，838 个 `@Test`；`make test-e2e` 2 条 |
 | 粒度问题 | 已改为功能纵向切片；每个切片一个 commit |
 | 上游 server 路由 | 219 个 `*.test.ts`，2000 条 `test(...)` |
 | 上游 daemon | 180 个测试模块，2616 条 `test(...)` |
@@ -137,8 +137,8 @@
 实际执行顺序（按依赖与上下文，而非纯用例数）：
 
 1. `agents.api`（87，partial）：agent 创建/列表/PATCH、runtime/reset/archive、migration chunk-digest/control manifest 传输。
-2. `internalAgentApi.auth`（93，partial）与 `auth.api`（45）：agent 绑定身份、任务/历史/集成、Apple/OIDC、会话撤销。
-3. `internalAgentApi.send`（65，partial）。
+2. `internalAgentApi.auth` 已覆盖 task/assign/claim/status/delete/convert、history/search/resolve/threads、upload/download/profile、integrations discovery+login；剩余 marketplace、joint resolve、attachment comments。
+3. `internalAgentApi.send`（65，partial）与 `auth.api`（45）：发送/认证、Apple/OIDC、会话撤销。
 4. `internal.channelMembership.api`（43，partial）。
 5. `channels.membership.api`（28，partial）：creator local admin、senderMembershipStatus、private soft-delete、系统消息与 join/leave 广播。
 6. daemon 真实 socket 队列（180 模块 / 2616 例）：reconnect/watchdog/outbound replay，作为并行队列。
