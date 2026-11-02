@@ -472,3 +472,7 @@ Email invite：`POST /api/servers/:id/invites` 持久化 pending invite；`GET /
 
 升级门：server gate 关闭时 machine list 的 `computerBroadcastPolicy` 为 `no_broadcast/broadcast_disabled` 且 targetVersion null；`POST .../computer/upgrade` 403 `remote_upgrade_disabled`；`POST .../computer-lifecycle-operations` upgrade 409 带 no_broadcast policy。
 
+Builtin runtime form：v1 `runtime-form-definitions/builtin?schemaVersion=builtin-pi.create.v3` 逐字返回 released fixture（providerId/apiKey/model required，apiKey writeOnly，capabilities/optionSources 固定）。v2 `/runtime-forms/v2/builtin` 返回 providerId(select)/apiKey(password)/model(dependent_select)/supportsImageInput(boolean) 字段，`Accept-Language: zh-CN` 时 providerId label 为 `提供方` 并带 `Content-Language`/`Vary`。v2 provider source 与 v1 相同；v1 model source 仍是 dependent_select。
+
+Lifecycle upgrade：`targetVersion` 缺省时用 `latestComputerReleaseForTesting` 解析最新版本并回 201；无可用 release 仍 409 `computer_upgrade_unavailable`。`/computer/upgrade` 通过 sender seam 投递，投递失败回 409 `computer_offline`。
+

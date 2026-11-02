@@ -321,3 +321,53 @@ private final class RuntimeProbeCounter: @unchecked Sendable {
         }
     }
 }
+
+@Test func serverUpgradeWithoutTargetResolvesTheLatestReleaseAndRequiresDelivery() async throws {
+    let accounts = EmailLoginDirectory()
+    let serverId = "33333333-3333-4333-8333-000001020012"
+    let ownerId = "11111111-1111-4111-8111-000001020012"
+    let ownerEmail = "upgrade-send-owner@slock.test"
+    accounts.addAccount(id: ownerId, email: ownerEmail, password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "upgrade-send", name: "Upgrade Send", ownerId: ownerId)
+    let machine = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "send-computer")
+    accounts.linkComputerForTesting(serverId: serverId, machineId: machine, online: true, version: "1.0.23", attachedByUserId: ownerId)
+    accounts.setLatestComputerReleaseForTesting(version: "1.0.31", releaseNotesJSON: "{\"version\":\"1.0.31\"}")
+    let sent = ServerEventCollector()
+    accounts.computerUpgradeSender = { machineId, target, requestId in
+        sent.append(machineId, target, requestId)
+        return true
+    }
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            let owner = try await serverApiLogin(client, email: ownerEmail)
+            let headers = serverApiHeaders(owner, serverId)
+            let lifecycle = try await client.send(.post, headers: headers, to: URI(string: "/api/servers/\(serverId)/machines/\(machine)/computer-lifecycle-operations")) { request in
+                request.body = .init(string: "{\"action\":\"upgrade\",\"operationId\":\"11111111-1111-4111-8111-000001020013\",\"parentOperationId\":\"11111111-1111-4111-8111-000001020014\",\"channel\":\"main\"}")
+            }
+            #expect(lifecycle.status.code == 201)
+            #expect(try serverApiObject(lifecycle)["targetVersion"] as? String == "1.0.31")
+
+            let upgrade = try await client.send(.post, headers: headers, to: URI(string: "/api/servers/\(serverId)/machines/\(machine)/computer/upgrade")) { request in
+                request.body = .init(string: "{\"targetVersion\":\"1.0.31\"}")
+            }
+            #expect(upgrade.status == .ok)
+            #expect(sent.values.count == 1)
+            #expect(sent.values.first?.event == "1.0.31")
+
+            accounts.computerUpgradeSender = { _, _, _ in false }
+            let undelivered = try await client.send(.post, headers: headers, to: URI(string: "/api/servers/\(serverId)/machines/\(machine)/computer/upgrade")) { request in
+                request.body = .init(string: "{\"targetVersion\":\"1.0.31\"}")
+            }
+            #expect(undelivered.status == .conflict)
+            #expect(try serverApiObject(undelivered)["code"] as? String == "computer_offline")
+        }
+    }
+}

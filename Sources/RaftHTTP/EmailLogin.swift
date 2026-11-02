@@ -12722,11 +12722,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let zh = Self.prefersChinese(language)
         if protocolVersion == 2 {
+            if runtimeId == "builtin" {
+                let providerLabel = zh ? "提供方" : "Provider"
+                let modelLabel = zh ? "模型" : "Model"
+                let apiKeyLabel = zh ? "API 密钥" : "API Key"
+                let imageLabel = zh ? "图片输入" : "Image input"
+                return Self.json(200, "{\"protocolVersion\":2,\"runtimeId\":\"builtin\",\"schemaVersion\":\(jsonString(expected)),\"requiredClientCapabilities\":[\"option_source.status\"],\"fields\":[{\"key\":\"providerId\",\"kind\":\"select\",\"label\":\(jsonString(providerLabel)),\"required\":true},{\"key\":\"apiKey\",\"kind\":\"password\",\"label\":\(jsonString(apiKeyLabel)),\"required\":true,\"writeOnly\":true},{\"key\":\"model\",\"kind\":\"dependent_select\",\"label\":\(jsonString(modelLabel)),\"required\":true,\"dependsOn\":\"providerId\"},{\"key\":\"supportsImageInput\",\"kind\":\"boolean\",\"label\":\(jsonString(imageLabel)),\"required\":false}],\"capabilities\":{\"providerKinds\":[\"preset\"],\"writeOnlyPointers\":[\"/apiKey\"],\"forbiddenPointers\":[\"/hostUserState\"]},\"optionSources\":{\"provider\":{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"provider\"},\"model\":{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\"}}}")
+            }
             if let form = RuntimeFormCatalog.v2Forms[runtimeId] {
                 return Self.json(200, form)
             }
             let label = zh ? "模型" : "Model"
             return Self.json(200, "{\"protocolVersion\":2,\"runtimeId\":\(jsonString(runtimeId)),\"schemaVersion\":\(jsonString(expected)),\"requiredClientCapabilities\":[\"option_source.status\"],\"fields\":[{\"key\":\"model\",\"kind\":\"select\",\"label\":\(jsonString(label)),\"required\":true}],\"capabilities\":{\"providerKinds\":[\"preset\"],\"writeOnlyPointers\":[\"/apiKey\"],\"forbiddenPointers\":[\"/hostUserState\"]}}")
+        }
+        if runtimeId == "builtin" {
+            return Self.json(200, RuntimeFormCatalog.builtinV1Definition)
         }
         if runtimeId == "kimi-sdk", let definition = RuntimeFormCatalog.optionSources["kimi-sdk/edit"] {
             return Self.json(200, definition)
@@ -13858,7 +13868,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let version = computer.version, !version.isEmpty else {
             return Self.json(409, "{\"error\":\"Raft couldn't verify the Computer version. Reconnect the Computer, then try again.\",\"code\":\"computer_control_unsupported\"}")
         }
-        return Self.json(200, "{\"ok\":true,\"action\":\(jsonString(action)),\"requestId\":\(jsonString(UUID().uuidString.lowercased())),\"operationId\":\(jsonString(UUID().uuidString.lowercased())),\"computerVersion\":\(jsonString(version))}")
+        let requestId = UUID().uuidString.lowercased()
+        if action == "upgrade" {
+            let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+            let target = (object?["targetVersion"] as? String) ?? ""
+            if let sender = computerUpgradeSender, !sender(machineId, target, requestId) {
+                return Self.json(409, "{\"error\":\"Computer is offline\",\"code\":\"computer_offline\"}")
+            }
+        }
+        return Self.json(200, "{\"ok\":true,\"action\":\(jsonString(action)),\"requestId\":\(jsonString(requestId)),\"operationId\":\(jsonString(UUID().uuidString.lowercased())),\"computerVersion\":\(jsonString(version))}")
     }
 
     public func machineRuntimeRescan(authorization: String?, serverId: String, machineId: String) -> HTTPReply {
@@ -14079,13 +14097,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if action != "start", !online {
             return Self.json(409, "{\"error\":\"Computer is not online\",\"code\":\"computer_offline\"}")
         }
-        if action == "upgrade", targetVersion == nil {
-            return Self.json(409, "{\"error\":\"Hands could not select a newer alpha release for this Computer.\",\"code\":\"computer_upgrade_unavailable\"}")
+        var resolvedTarget = targetVersion
+        if action == "upgrade", resolvedTarget == nil {
+            lock.lock()
+            let latest = latestComputerReleaseForTesting?.version
+            lock.unlock()
+            guard let latest else {
+                return Self.json(409, "{\"error\":\"Hands could not select a newer alpha release for this Computer.\",\"code\":\"computer_upgrade_unavailable\"}")
+            }
+            resolvedTarget = latest
         }
         if object["completionMode"] != nil {
             return Self.json(409, "{\"error\":\"The live Computer ready attestation is not visible yet.\",\"code\":\"computer_lifecycle_completion_ready_pending\"}")
         }
-        let versionJSON = targetVersion.map(jsonString) ?? "null"
+        let versionJSON = resolvedTarget.map(jsonString) ?? "null"
         return Self.json(201, "{\"operationId\":\(jsonString(operationId)),\"parentOperationId\":\(jsonString(parentOperationId)),\"serverId\":\(jsonString(serverId)),\"machineId\":\(jsonString(machineId)),\"actorUserId\":\(jsonString(userId)),\"action\":\(jsonString(action)),\"dispatchMode\":\"local\",\"connectionEpochBefore\":null,\"targetVersion\":\(versionJSON)}")
     }
 
@@ -14626,6 +14651,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         lock.unlock()
     }
+
+    public var computerUpgradeSender: (@Sendable (_ machineId: String, _ targetVersion: String, _ requestId: String) -> Bool)?
 
     public func setRemoteUpgradeGateForTesting(serverId: String, enabled: Bool) {
         lock.lock()
