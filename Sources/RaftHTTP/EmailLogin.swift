@@ -224,6 +224,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Lease dispatch to the source (upload) and target (download) Computers.
     public var machineMigrationLeaseDispatch: (@Sendable (_ machineId: String, _ role: String, _ migrationRef: String) -> Void)?
     private var hostedRuntimes: [String: (provider: String, model: String?, state: String, retryNeedsModel: Bool, createdAt: Date)] = [:]
+    private var grokRuntimeServers: Set<String> = []
+    private var remoteUpgradeDisabledServers: Set<String> = []
     private var hostedUsage: [String: String] = [:]
     private var hostedModelPickerServers: Set<String> = []
     private var hostedModels: [String: HostedModelState] = [:]
@@ -306,7 +308,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var shareArtifacts: Set<String> = []
     private var timezoneObservations: [String: TimezoneObservation] = [:]
     private var serverLabsState: [String: ServerLabsState] = [:]
-    private var serverInvites: [(id: String, serverId: String, email: String, role: String)] = []
+    private var serverInvites: [(id: String, serverId: String, email: String, role: String, tokenHash: String?)] = []
     private var serverSwitcherOrders: [String: (ids: [String], version: Int)] = [:]
     private var serverOnboardingSettings: [String: (agentId: String?, greeting: Bool)] = [:]
     private var userOnboardingSettings: [String: UserOnboarding] = [:]
@@ -12933,7 +12935,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 : .live(models: models.map { RuntimeModelProbeModel(id: $0.id, label: $0.label) }, default: models.first?.id)
         }
         switch outcome {
-        case .live(let models, let defaultModel):
+        case .live(let models, let defaultModel), .models(let models, let defaultModel):
             return models.isEmpty ? .notLive(reason: "no_models") : .live(models: models, default: defaultModel)
         case .missingConfig:
             return .notLive(reason: "missing_config")
@@ -13199,6 +13201,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Computer not found\"}")
         }
         let installed = Set(machine.runtimes)
+        let grokEnabled = grokRuntimeServers.contains(serverId)
         lock.unlock()
         guard role == "owner" || role == "admin" || machine.userId == userId else {
             return Self.json(403, "{\"error\":\"The `editMachines` capability or machine creator authority is required to inspect runtime options\"}")
@@ -13211,8 +13214,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             ("cursor", "cursor-agent"),
             ("opencode", "opencode"),
             ("pi", "pi"),
+            ("grok", "grok"),
         ]
-        let options = catalog.map { runtime -> String in
+        let options = catalog.filter { entry in
+            entry.id != "grok" || grokEnabled
+        }.map { runtime -> String in
             let capability = installed.contains(runtime.id)
                 ? "available"
                 : (runtime.binary.isEmpty ? "update_required" : "not_installed")
@@ -13240,17 +13246,49 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Machine not found in this server\"}")
         }
-        let models = machineRuntimeModels[machineId]?[runtime]?.models ?? []
+        let cached = machineRuntimeModels[machineId]?[runtime]?.models ?? []
+        let probe = machineRuntimeModelProbe
+        let routed = machineRoutedLocally?(machineId) ?? true
         lock.unlock()
         guard role == "owner" || role == "admin" || machine.userId == userId else {
             return Self.json(403, "{\"error\":\"The `editMachines` capability or machine creator authority is required to inspect runtime models\"}")
         }
-        let modelJSON = models.map {
-            "{\"id\":\(jsonString($0.id)),\"label\":\(jsonString($0.label))}"
-        }.joined(separator: ",")
-        let defaultModel = models.first?.id
-        let defaultJSON = defaultModel.map(jsonString) ?? "null"
-        return Self.json(200, "{\"kind\":\"live\",\"value\":{\"models\":[\(modelJSON)],\"default\":\(defaultJSON)},\"models\":[\(modelJSON)],\"default\":\(defaultJSON)}")
+        func modelList(_ models: [RuntimeModelProbeModel]) -> String {
+            models.map {
+                "{\"id\":\(jsonString($0.id)),\"label\":\(jsonString($0.label))}"
+            }.joined(separator: ",")
+        }
+        guard routed else {
+            return Self.json(200, "{\"kind\":\"error\",\"retryable\":true,\"code\":\"computer_offline\"}")
+        }
+        if let probe {
+            switch probe(machineId, runtime, true) {
+            case .live(let models, let defaultModel):
+                let list = modelList(models)
+                let defaultJSON = defaultModel.map(jsonString) ?? "null"
+                return Self.json(200, "{\"kind\":\"live\",\"value\":{\"models\":[\(list)],\"default\":\(defaultJSON)},\"models\":[\(list)],\"default\":\(defaultJSON)}")
+            case .models(let models, let defaultModel):
+                let list = modelList(models)
+                let defaultJSON = defaultModel.map(jsonString) ?? "null"
+                return Self.json(200, "{\"models\":[\(list)],\"default\":\(defaultJSON)}")
+            case .missingConfig:
+                return Self.json(200, "{\"kind\":\"missing_config\",\"recovery\":\"kimi_login\"}")
+            case .noModels:
+                return Self.json(200, "{\"kind\":\"no_models\"}")
+            case .unsupported:
+                return Self.json(200, "{\"kind\":\"unsupported\"}")
+            case .error(let code, _):
+                if code.isEmpty {
+                    return Self.json(200, "{\"kind\":\"error\",\"retryable\":true}")
+                }
+                return Self.json(200, "{\"kind\":\"error\",\"retryable\":true,\"code\":\(jsonString(code))}")
+            case .failed:
+                return Self.json(200, "{\"kind\":\"error\",\"retryable\":true}")
+            }
+        }
+        let list = modelList(cached.map { RuntimeModelProbeModel(id: $0.id, label: $0.label) })
+        let defaultJSON = cached.first.map { jsonString($0.id) } ?? "null"
+        return Self.json(200, "{\"kind\":\"live\",\"value\":{\"models\":[\(list)],\"default\":\(defaultJSON)},\"models\":[\(list)],\"default\":\(defaultJSON)}")
     }
 
     public func machineWorkspaces(authorization: String?, serverId: String, machineId: String) -> HTTPReply {
@@ -13529,14 +13567,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         lock.lock()
         let rows = machines.filter { $0.serverId == serverId }
-        lock.unlock()
-        lock.lock()
         let latest = latestComputerReleaseForTesting
         let policies = machineBroadcastPoliciesForTesting
+        let attachers = computerAttachers
         let computerVersions = computers.reduce(into: [String: String?]()) { result, computer in
             if let machineId = computer.machineId { result[machineId] = computer.version }
         }
+        let assignments = agentMachineIds
+        let accountsSnapshot = accounts
+        let remoteUpgradeDisabled = remoteUpgradeDisabledServers.contains(serverId)
         lock.unlock()
+        let memberIds = Set(oauth.memberIdsWithRoles(serverId: serverId).map(\.id))
         let json = rows.map { machine -> String in
             let policy = policies[machine.id]
             let linked = computerVersions.keys.contains(machine.id)
@@ -13545,11 +13586,26 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             if !linked {
                 upgrade = "null"
                 policyJSON = "null"
+            } else if remoteUpgradeDisabled {
+                upgrade = "false"
+                policyJSON = "{\"eligibility\":\"no_broadcast\",\"targetVersion\":null,\"policyRevision\":null,\"reasonCode\":\"broadcast_disabled\"}"
             } else {
                 upgrade = (policy != nil && latest != nil) ? "true" : "false"
                 policyJSON = policy ?? "{\"eligibility\":\"ineligible\",\"targetVersion\":null,\"policyRevision\":null,\"reasonCode\":\"policy_row_missing\"}"
             }
-            return "{\"id\":\(jsonString(machine.id)),\"name\":\(jsonString(machine.name)),\"userId\":\(jsonString(machine.userId)),\"description\":\(machine.description.map { jsonString($0) } ?? "null"),\"computerUpgradeAvailable\":\(upgrade),\"computerBroadcastPolicy\":\(policyJSON)}"
+            let agentCount = assignments.filter { agentId, machineId in
+                machineId == machine.id && oauth.agentRuntimeInfo(id: agentId).map { !$0.deleted } == true
+            }.count
+            let account = accountsSnapshot.values.first { $0.id == machine.userId }
+            let creatorJSON: String
+            if memberIds.contains(machine.userId), let account {
+                let gravatar = Self.sha256(account.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+                creatorJSON = "{\"type\":\"human\",\"id\":\(jsonString(account.id)),\"name\":\(jsonString(account.name)),\"displayName\":\(account.displayName.map(jsonString) ?? "null"),\"avatarUrl\":\(account.avatarUrl.map(jsonString) ?? "null"),\"gravatarHash\":\(jsonString(gravatar))}"
+            } else {
+                creatorJSON = "null"
+            }
+            let runtimes = machine.runtimes.map(jsonString).joined(separator: ",")
+            return "{\"id\":\(jsonString(machine.id)),\"name\":\(jsonString(machine.name)),\"userId\":\(jsonString(machine.userId)),\"description\":\(machine.description.map { jsonString($0) } ?? "null"),\"isComputer\":\(linked ? "true" : "false"),\"computerAttachedByCurrentUser\":\((attachers[machine.id] == userId) ? "true" : "false"),\"agentCount\":\(agentCount),\"creator\":\(creatorJSON),\"runtimes\":[\(runtimes)],\"computerUpgradeAvailable\":\(upgrade),\"computerBroadcastPolicy\":\(policyJSON)}"
         }.joined(separator: ",")
         let latestVersionJSON = latest.map { jsonString($0.version) } ?? "null"
         let notesJSON = latest.map { $0.notesJSON } ?? "null"
@@ -13769,6 +13825,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"Unknown computer action\",\"code\":\"unknown_action\"}")
         }
         if action == "upgrade" {
+            lock.lock()
+            let disabled = remoteUpgradeDisabledServers.contains(serverId)
+            lock.unlock()
+            guard !disabled else {
+                return Self.json(403, "{\"error\":\"Remote upgrade is disabled for this server\",\"code\":\"remote_upgrade_disabled\"}")
+            }
             let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
             let target = (object?["targetVersion"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !target.isEmpty else {
@@ -13974,6 +14036,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let targetVersion = object["targetVersion"] as? String
         if action == "upgrade" {
+            lock.lock()
+            let disabled = remoteUpgradeDisabledServers.contains(serverId)
+            lock.unlock()
+            guard !disabled else {
+                return Self.json(409, "{\"error\":\"Hands could not select a newer alpha release for this Computer.\",\"code\":\"broadcast_disabled\",\"policy\":{\"eligibility\":\"no_broadcast\",\"reasonCode\":\"broadcast_disabled\"}}")
+            }
             if let targetVersion, targetVersion.wholeMatch(of: /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/) == nil {
                 return Self.json(400, "{\"error\":\"A valid targetVersion is required only for upgrade\",\"code\":\"invalid_target_version\"}")
             }
@@ -14559,6 +14627,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func setRemoteUpgradeGateForTesting(serverId: String, enabled: Bool) {
+        lock.lock()
+        if enabled { remoteUpgradeDisabledServers.remove(serverId) } else { remoteUpgradeDisabledServers.insert(serverId) }
+        lock.unlock()
+    }
+
+    public func enableGrokRuntimeForTesting(serverId: String, enabled: Bool = true) {
+        lock.lock()
+        if enabled { grokRuntimeServers.insert(serverId) } else { grokRuntimeServers.remove(serverId) }
+        lock.unlock()
+    }
+
     public func serverApps(authorization: String?, serverId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)
@@ -15088,20 +15168,37 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func inviteInfo(token: String?) -> HTTPReply {
-        guard let token, let link = joinLinks[token.lowercased()] else {
+        guard let token, !token.isEmpty else {
             return Self.json(404, "{\"error\":\"Invite not found\"}")
         }
-        guard link.revokedAt == nil, !Self.joinLinkExpired(link, now: Date()), !Self.joinLinkExhausted(link) else {
-            return Self.json(404, "{\"error\":\"Invite not found\"}")
+        if let link = joinLinks[token.lowercased()] {
+            guard link.revokedAt == nil, !Self.joinLinkExpired(link, now: Date()), !Self.joinLinkExhausted(link) else {
+                return Self.json(404, "{\"error\":\"Invite not found\"}")
+            }
+            guard let profile = oauth.serverProfile(id: link.serverId) else {
+                return Self.json(404, "{\"error\":\"Invite not found\"}")
+            }
+            lock.lock()
+            let message = seatLimitMessageLocked(serverId: link.serverId)
+            lock.unlock()
+            return Self.inviteInfoJSON(profile: profile, message: message)
         }
-        guard let profile = oauth.serverProfile(id: link.serverId) else {
+        let hash = Self.sha256(token)
+        lock.lock()
+        let invite = serverInvites.first { $0.tokenHash == hash }
+        lock.unlock()
+        guard let invite, let profile = oauth.serverProfile(id: invite.serverId) else {
             return Self.json(404, "{\"error\":\"Invite not found\"}")
         }
         lock.lock()
-        let message = seatLimitMessageLocked(serverId: link.serverId)
+        let message = seatLimitMessageLocked(serverId: invite.serverId)
         lock.unlock()
-        let messageJSON = message.map { jsonString($0) } ?? "null"
-        return Self.json(200, "{\"serverId\":\(jsonString(profile.id)),\"serverName\":\(jsonString(profile.name)),\"serverSlug\":\(jsonString(profile.slug)),\"humanSeatLimitReached\":\(message != nil),\"humanSeatLimitMessage\":\(messageJSON)}")
+        return Self.inviteInfoJSON(profile: profile, message: message)
+    }
+
+    private static func inviteInfoJSON(profile: OAuthLedger.ServerProfile, message: String?) -> HTTPReply {
+        let messageJSON = message.map(jsonString) ?? "null"
+        return json(200, "{\"serverId\":\(jsonString(profile.id)),\"serverName\":\(jsonString(profile.name)),\"serverSlug\":\(jsonString(profile.slug)),\"humanSeatLimitReached\":\(message != nil),\"humanSeatLimitMessage\":\(messageJSON)}")
     }
 
     public func acceptInvite(authorization: String?, body: String) -> HTTPReply {
@@ -15109,25 +15206,58 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return PublicVisits.authRequired(authorization: authorization)
         }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let rawToken = object["token"] as? String,
-              let existing = joinLinks[rawToken.lowercased()],
-              existing.revokedAt == nil,
-              !Self.joinLinkExpired(existing, now: Date()),
-              !Self.joinLinkExhausted(existing)
+              let rawToken = object["token"] as? String
         else {
             return Self.json(400, "{\"error\":\"Invalid invite\"}")
         }
+        if let existing = joinLinks[rawToken.lowercased()] {
+            guard existing.revokedAt == nil,
+                  !Self.joinLinkExpired(existing, now: Date()),
+                  !Self.joinLinkExhausted(existing)
+            else {
+                return Self.json(400, "{\"error\":\"Invalid invite\"}")
+            }
+            lock.lock()
+            let message = seatLimitMessageLocked(serverId: existing.serverId)
+            if let message {
+                lock.unlock()
+                return Self.json(400, "{\"error\":\(jsonString(message))}")
+            }
+            let oldCount = joinLinks[rawToken.lowercased()]?.useCount ?? 0
+            joinLinks[rawToken.lowercased()]?.useCount = oldCount + 1
+            lock.unlock()
+            oauth.addMember(serverId: existing.serverId, userId: userId, role: existing.role)
+            return Self.json(200, "{\"ok\":true,\"serverId\":\(jsonString(existing.serverId))}")
+        }
+        let hash = Self.sha256(rawToken)
         lock.lock()
-        let message = seatLimitMessageLocked(serverId: existing.serverId)
+        guard let index = serverInvites.firstIndex(where: { $0.tokenHash == hash }) else {
+            lock.unlock()
+            return Self.json(400, "{\"error\":\"Invalid invite\"}")
+        }
+        let invite = serverInvites[index]
+        let email = accounts.values.first(where: { $0.id == userId })?.email.lowercased()
+        guard email == invite.email.lowercased() else {
+            lock.unlock()
+            return Self.json(400, "{\"error\":\"Invalid invite\"}")
+        }
+        let message = seatLimitMessageLocked(serverId: invite.serverId)
         if let message {
             lock.unlock()
             return Self.json(400, "{\"error\":\(jsonString(message))}")
         }
-        let oldCount = joinLinks[rawToken.lowercased()]?.useCount ?? 0
-        joinLinks[rawToken.lowercased()]?.useCount = oldCount + 1
+        serverInvites.remove(at: index)
         lock.unlock()
-        oauth.addMember(serverId: existing.serverId, userId: userId, role: existing.role)
-        return Self.json(200, "{\"ok\":true,\"serverId\":\(jsonString(existing.serverId))}")
+        oauth.addMember(serverId: invite.serverId, userId: userId, role: invite.role)
+        return Self.json(200, "{\"ok\":true,\"serverId\":\(jsonString(invite.serverId))}")
+    }
+
+    public func setServerInviteTokenForTesting(inviteId: String, token: String) {
+        lock.lock()
+        if let index = serverInvites.firstIndex(where: { $0.id == inviteId }) {
+            serverInvites[index].tokenHash = Self.sha256(token)
+        }
+        lock.unlock()
     }
 
     private func joinLinkJSON(_ link: JoinLinkRecord) -> String {
@@ -15236,7 +15366,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let id = UUID().uuidString.lowercased()
         lock.lock()
-        serverInvites.append((id: id, serverId: serverId, email: email, role: inviteRole))
+        serverInvites.append((id: id, serverId: serverId, email: email, role: inviteRole, tokenHash: nil))
         lock.unlock()
         return Self.json(200, "{\"id\":\(jsonString(id)),\"invitedEmail\":\(jsonString(email)),\"email\":\(jsonString(email)),\"role\":\(jsonString(inviteRole)),\"invite\":{\"id\":\(jsonString(id)),\"email\":\(jsonString(email)),\"role\":\(jsonString(inviteRole)),\"status\":\"pending\"}}")
     }
@@ -15464,7 +15594,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard role == "owner" else {
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
+        let memberIds = oauth.memberIdsWithRoles(serverId: serverId).map(\.id)
         oauth.deleteServer(id: serverId)
+        emitRealtime("server:\(serverId)", "server:deleted", "{\"serverId\":\(jsonString(serverId))}")
+        for memberId in memberIds {
+            emitRealtime("user:\(memberId)", "server:membership-removed", "{\"serverId\":\(jsonString(serverId))}")
+        }
         return Self.json(200, "{\"ok\":true}")
     }
 
@@ -22245,6 +22380,7 @@ public struct RuntimeModelProbeModel: Sendable, Equatable {
 /// The Computer's answer to a runtime model probe.
 public enum RuntimeModelProbeOutcome: Sendable, Equatable {
     case live(models: [RuntimeModelProbeModel], default: String?)
+    case models(models: [RuntimeModelProbeModel], default: String?)
     case missingConfig
     case noModels
     case unsupported

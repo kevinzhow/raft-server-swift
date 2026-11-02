@@ -460,3 +460,15 @@ Attachment agent upload：`POST /internal/agent/:agentId/upload`（multipart `ch
 
 Attachment auth：`/api/attachments/:id` 与 `/url` 对 revoked access token（bearer 或 query token）与 retired user 均回 401，且不会到达 storage/presign。URL 的原文件 presign 不受 `CDN_BASE_URL` 影响。
 
+`GET /api/servers/:id/machines` 现在每行带 `isComputer`、`computerAttachedByCurrentUser`、`agentCount`、`creator`（仍在 server 的创建者：type/id/name/displayName/avatarUrl/gravatarHash）与原始 `runtimes`；不暴露 `computerAttachedByUserId`。creator 已离开 server 时为 null。
+
+Grok runtime 门：`grok_runtime_v0` 关闭时 `runtime-options` 不返回 grok 行；开启后返回，且 `runtime-models/grok` 仍可探测。machine capability 本身不被过滤。
+
+`GET .../runtime-models/:runtime` 用 Computer probe 返回 `{kind:"live",value,models,default}` 或 `missing_config`（带 recovery）、`no_models`、`unsupported`、`error`（retryable，可选 code）；平铺 models 结果也支持。
+
+Email invite：`POST /api/servers/:id/invites` 持久化 pending invite；`GET /api/auth/invite-info?token=` 与 `POST /api/auth/accept-invite` 同时支持 join link 与 email invite token。Pro seat 满时 member invite 400，guest invite 仍可创建，join link 仍可创建；接受后按 invite role 加入。
+
+`DELETE /api/servers/:id` 向 `server:<id>` 发 `server:deleted`，并向每个成员 `user:<id>` 发 `server:membership-removed`（payload 均含 serverId）。
+
+升级门：server gate 关闭时 machine list 的 `computerBroadcastPolicy` 为 `no_broadcast/broadcast_disabled` 且 targetVersion null；`POST .../computer/upgrade` 403 `remote_upgrade_disabled`；`POST .../computer-lifecycle-operations` upgrade 409 带 no_broadcast policy。
+
