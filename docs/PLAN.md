@@ -1,6 +1,6 @@
 # 复刻推进计划：功能纵向切片
 
-**状态**：已批准，2026-11-01。
+**状态**：已批准，2026-11-01；最近更新 2026-11-02。
 **目标**：等价复刻 `raft-source` tag `v1.21.23-source.1` 的 server 与 daemon。
 **规格**：上游 Node 测试里对外可见的状态码、JSON、响应头与套接字帧。
 
@@ -20,18 +20,18 @@
 
 ## 2. 基线与度量
 
-2026-11-01 实测：
+2026-11-02 实测：
 
 | 事实 | 数值 / 证据 |
 | --- | --- |
-| 当前测试 | `make test` 绿，575 个 `@Test` |
-| 粒度问题 | 289 commits / 两天（10-30: 10，10-31: 279）；近 10 个提交多为 5–97 行 |
+| 当前测试 | `make test` 绿，820 个 `@Test`；`make test-e2e` 2 条 |
+| 粒度问题 | 已改为功能纵向切片；每个切片一个 commit |
 | 上游 server 路由 | 219 个 `*.test.ts`，2000 条 `test(...)` |
 | 上游 daemon | 180 个测试模块，2616 条 `test(...)` |
-| 当前覆盖 | 约 12%（575 / 4616），与「~15%」判断一致 |
-| 进程现状 | `RaftServer` 未链接 `RaftMachineSocket`/`RaftDaemonClient`；`main.swift` 注入的 ping 直接 throw，`/health` 恒 503 |
-| WebSocket 现状 | pinned Vapor 快照把 WS API 整体注释（`#if WebSockets` + 全注释、`Response.upgrader` 注释），socket.io 必须像 `/daemon/connect` 一样走独立 NIO 监听端口 |
-| 现有 spy | `EmailLoginDirectory.messageUpdatedBroadcasts()` 被 2 个测试使用，属 AGENTS 禁止的侧通道 |
+| 当前覆盖 | route 79/219 模块 locked，401/2000 用例（20.1%）；socket 2/7；daemon 3/180 |
+| 进程现状 | `RaftServer` 三端口 + NIO daemon/socket.io 已接线；无数据库时 `/health` 仍 503 |
+| WebSocket 现状 | socket.io 走独立 NIO 端口；pinned Vapor 快照无 WS upgrade |
+| 现有 spy | `recorded*`/spy 侧通道仅在既有测试缝中存在；新切片不新增 |
 
 度量落地（Phase 0）：
 
@@ -39,6 +39,19 @@
 - `scripts/parity.py` 扫描上游 checkout（`RAFT_SOURCE_DIR`，默认 `/mnt/data/tmp/grok/raft-source-v1.21.23`），读 manifest，输出锁定模块数与用例加权覆盖；`partial` 不计入加权。
 - 基线（`--seed` 自动生成）：406 个模块；route 148 partial / 71 pending / 0 locked，加权覆盖 0.0%。`partial` 只是「存在相关 Swift 测试」的启发式标记，不代表完成；`locked` 必须带一个真实 commit。
 - 里程碑：锁定模块 ≥ 60%，用例加权覆盖 ≥ 40%。
+
+### 2026-11-02 当前快照
+
+| 指标 | 当前 | 里程碑 | 剩余 |
+| --- | --- | --- | --- |
+| route 模块 locked | 79 / 219（36.1%） | 132 / 219（60%） | 53 个模块 |
+| route 用例 locked | 401 / 2000（20.1%） | 800 / 2000（40%） | 399 条用例 |
+| socket 模块 | 2 / 7 | 按 frame 组推进 | 5 个模块 |
+| daemon 模块 | 3 / 180 | 按真实 socket 队列推进 | 177 个模块 |
+| 整体模块 | 84 / 406（20.7%） | 244 / 406（60%） | 160 个模块 |
+| 整体用例 | 471 / 4632（10.2%） | 1853 / 4632（40%） | 1382 条用例 |
+
+最近锁定的四个大模块：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api`。剩余用例高度集中在 `servers.api`（103）、`internalAgentApi.auth`（93）、`agents.api`（87）、`internalAgentApi.send`（65）、`auth.api`（45）、`internal.channelMembership.api`（43）。
 
 ## 3. 工作契约
 
@@ -59,14 +72,14 @@
 
 ## 4. 阶段
 
-### Phase 0（1 轮）：度量与契约
+### Phase 0（1 轮，已完成）：度量与契约
 
 - 新增 `scripts/parity.py`、`docs/PARITY.tsv` 初版（把现有 231 个 Swift 测试文件映射到上游模块，标 `partial`）。
 - `Makefile` 增加 `parity`、`test-e2e`。
 - 改写 `AGENTS.md` 的工作契约；README 去掉重复流程，改为指向本文档。
 - 验收：`make parity` 出真实基线。
 
-### Phase 1（1–2 轮）：让进程真跑起来
+### Phase 1（1–2 轮，已完成）：让进程真跑起来
 
 - `Package.swift`：`RaftServer` 依赖加 `RaftMachineSocket` + `RaftConnectAuth`；新增 executable `RaftDaemon`（依赖 `RaftDaemonClient`）；新增测试 target `RaftServerStartupTests`。不新增第三方依赖。
 - `Sources/RaftServer/main.swift`：读 `DAEMON_CONNECT_PORT`（默认 8081，`0` 关闭），用 ledger 实现 `MachineCredentialLooking` 适配器（需补 key→machine 查询），启动 NIO listener，`app.lifecycle.use` 负责关闭；打印一行 `raft-server ready http=... daemon-connect=...`。
@@ -74,7 +87,7 @@
 - `Tests/RaftServerStartupTests/`（`RAFT_E2E=1` 门控，`make test-e2e` 跑）：真进程 smoke——`/health` 503、`/livez` 200、`/daemon/connect` 无 key 401、有 key 101 + `machine:context` 帧；再起 `RaftDaemon` 进程连接成功。
 - 验收：`make test` 与 `make test-e2e` 全绿；README 不再写「未接线」。
 
-### Phase 2（3 轮）：实时面
+### Phase 2（3 轮，部分完成；socket 2/7）：实时面
 
 新增 target `Sources/RaftRealtime/`（NIO，独立端口 `SOCKET_PORT`）。
 
@@ -93,25 +106,25 @@
 - `scope_read:updated`；成员移除 → `server:membership-removed` + 断连；`/api/push/family-revoke` 后 socket 关闭且不再收事件。
 - 同一 commit 删除 `messageUpdatedBroadcasts()`，把 `Tests/RaftHTTPServerTests/HumanMessageTests.swift` 两处改为真实 socket 断言。
 
-### Phase 3（2–3 轮）：存储缝与聚合
+### Phase 3（2–3 轮，B1 进行中；B2 决策门）：存储缝与聚合
 
 **B1 领域存储缝**
 - `Sources/RaftHTTP/DomainStore.swift`：channel/thread/message/readCursor/mention/membership 的查询形状；先内存实现，handlers 改为一次查询。
-- 按上游 `channels.inbox.api.test.ts`（40 例）锁 `GET /api/channels/inbox` 剩余断言：serving rows、`firstUnreadMessageId`、`totalUnreadCount`、`filter`、`no-store`。
+- `channels.inbox.api` 已 locked（serving rows、`firstUnreadMessageId`、`totalUnreadCount`、`filter`、`no-store`、read receipts、residue/security、DM/private 投影）。`DomainStore` 仍以内存实现承载；B2 决策前不引入真 SQL 语义。
 - unread summary / thread summary 的同源计算收进 store。
 
 **B2（决策门，默认不做）：`/health` 真 200**
 - 只有 B1 证明需要真 SQL 语义（并发、唯一约束、大聚合）才做：`PostgresNIO` + `DATABASE_URL` + `make pg-up`（docker），`/health` 走 `SELECT 1`；无 `DATABASE_URL` 仍是 503。前置检查：resolve 后 Vapor revision 不变、`make test` 绿；否则退回并记为已知差距。
 
-### Phase 4：纵向功能队列 + 收尾
+### Phase 4（进行中）：纵向功能队列 + 收尾
 
 #### 执行策略（2026-11 修订）
 
-实测：route 65/219 模块 locked（141/2000 用例），socket 2/7，daemon 3/180；整体 70/406 模块、211/4632 用例。按“每轮锁一个小模块”的节奏无法达到里程碑，原因是用例高度集中：
+实测：route 79/219 模块 locked（401/2000 用例），socket 2/7，daemon 3/180；整体 84/406 模块、471/4632 用例。按“每轮锁一个小模块”的节奏无法达到里程碑，原因是用例高度集中：
 
-- 剩余 ≤5 例的小模块共 68 个、仅 185 例；全部锁掉模块约 60%，但用例只有约 16%。
-- 前 10 大模块共 641 例；`141 + 641 = 782`，仍差 18 例到 40%。
-- 因此 40% 用例门槛**要求前 10 大模块几乎全部完成**，再补少量小模块；60% 模块门槛也要求小模块几乎无余量（`realPg`/tracer/spy/failpoint/source-scan 类不可移植用例会造成缺口）。
+- 剩余 ≤5 例的小模块共 68 个、仅 185 例；全部锁掉后 route 模块 147/219（67%），但用例只有 586/2000（29.3%）。
+- 剩余 6 个最大 partial 模块共 436 例：`servers.api` 103、`internalAgentApi.auth` 93、`agents.api` 87、`internalAgentApi.send` 65、`auth.api` 45、`internal.channelMembership.api` 43。全部锁掉后 `401 + 436 = 837`，越过 40% 用例门槛（800）。
+- 因此 40% 用例门槛**要求这 6 个大模块基本完成**，再补少量小模块；60% 模块门槛还需额外 53 个模块，小模块要机会主义补齐（`realPg`/tracer/spy/failpoint/source-scan 类不可移植用例会造成缺口）。
 
 执行规则：
 
@@ -123,33 +136,33 @@
 
 实际执行顺序（按依赖与上下文，而非纯用例数）：
 
-1. `messages.api`（74，randomId 组已完成）
-2. `servers.api`（103）
-3. `channels.threads.api`（50，复用 thread/read 模型）
-4. `auth.api`（48）与 `internalAgentApi.auth`（93）
-5. `agents.api`（87）
-6. `attachments.api`（41）
-7. `channels.inbox.api`（40）
-8. `internalAgentApi.send`（65）
-9. `internal.channelMembership.api`（43）
-10. daemon 真实 socket 队列
+1. `servers.api`（103，partial）：invite/seat 全流程、machine creator profile、grok 运行时门、upgrade 广播门、builtin v1 released fixture；完成后评估 locked。
+2. `agents.api`（87，partial）：migration chunk-digest/control manifest 传输、剩余 agent 创建/列表/运行时组。
+3. `internalAgentApi.auth`（93，partial）与 `auth.api`（45）：认证、Apple/OIDC、邀请接受、会话撤销。
+4. `internalAgentApi.send`（65，partial）。
+5. `internal.channelMembership.api`（43，partial）。
+6. `channels.membership.api`（28，partial）：creator local admin、senderMembershipStatus、private soft-delete、系统消息与 join/leave 广播。
+7. daemon 真实 socket 队列（180 模块 / 2616 例）：reconnect/watchdog/outbound replay，作为并行队列。
+8. 收尾：双 `RaftServer` 启动 + 完成门槛日志。
+
+已锁定、不再重复：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api` 及其余 75 个小模块。
 
 原按用例数排序的模块清单：
 
-| 模块 | 用例 |
-| --- | --- |
-| `servers.api.test.ts` | 104 |
-| `internalAgentApi.auth.test.ts` | 93 |
-| `agents.api.test.ts` | 88 |
-| `messages.api.test.ts` | 75 |
-| `internalAgentApi.send.test.ts` | 65 |
-| `channels.threads.api.test.ts` | 50 |
-| `auth.api.test.ts` | 48 |
-| `internal.channelMembership.api.test.ts` | 43 |
-| `attachments.api.test.ts` | 41 |
-| `channels.inbox.api.test.ts` | 40 |
+| 模块 | 用例 | 状态 |
+| --- | --- | --- |
+| `servers.api.test.ts` | 103 | partial（下一优先） |
+| `internalAgentApi.auth.test.ts` | 93 | partial |
+| `agents.api.test.ts` | 87 | partial |
+| `internalAgentApi.send.test.ts` | 65 | partial |
+| `channels.threads.api.test.ts` | 50 | locked |
+| `auth.api.test.ts` | 45 | partial |
+| `internal.channelMembership.api.test.ts` | 43 | partial |
+| `attachments.api.test.ts` | 41 | locked |
+| `channels.inbox.api.test.ts` | 40 | locked |
+| `messages.api.test.ts` | 74 | locked |
 
-之后：assistant、agent migration 状态机、external diagnostics、RBAC/guest 投影、notifications/tasks/attachments。收尾：双 `RaftServer` 启动 + 完成门槛日志。
+之后：assistant、external diagnostics、RBAC/guest 投影、notifications/tasks、`channels.api`、`channels.membership.api`。收尾：双 `RaftServer` 启动 + 完成门槛日志。
 
 ## 5. 风险与回退
 
@@ -158,6 +171,7 @@
 - **e2e 与并行测试冲突**：环境变量门控 + 临时端口 + 超时清理，避免触发已知的 signal 6/11 偶发。
 - **大切片回退成本**：每切片独立 commit；契约变更必须在 `docs/PARITY.tsv` 注明。
 - **度量自欺**：`parity.py` 只认 manifest 里带 commit 的 `locked`，`partial` 不计入加权。
+- **managed MCP 占位**：成功调用仍返回 502，需要真实 MCP transport 才能解锁；暂列后续切片，不用假 transport 充数。
 
 ## 6. 假设与非目标
 
