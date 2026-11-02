@@ -194,7 +194,7 @@ serverLabs.api	route	locked	8700cda	labs role parity, version CAS, audit, readba
 serverMemberEvents.api	route	partial	-	auto-seed
 serverSetupGate.daemonReady	route	partial	-	auto-seed
 servers.activityUnreadSummary.api	route	partial	-	auto-seed
-servers.api	route	partial	e91c733	apps/member-graph/settings/roles/machines/runtime options+usage/delete profile cleanup covered; forms/migration state machine/policy pending
+servers.api	route	partial	757b5ef	machines/runtime options+usage/forms v2-only/profile+migration delete covered; policy/full forms/history pending
 servers.joinCommunity.api	route	partial	-	auto-seed
 servers.mentionRedriveAuthz.api	route	locked	6ea6dda	NOT_ACCESSIBLE/NOT_JOINABLE auth and version body
 servers.scopeAttestation.api	route	locked	b00f30b	HS256 claims and member/owner capability scopes
