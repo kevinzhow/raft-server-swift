@@ -129,7 +129,7 @@ internalAgentApi.raftbench	route	partial	-	auto-seed
 internalAgentApi.readPosition	route	locked	b955555	5-row conversation cap, has_more, send cursor guard, human cursor
 internalAgentApi.registryParity	route	partial	-	auto-seed
 internalAgentApi.selfCausedNoticeFreshness.api	route	partial	-	auto-seed
-internalAgentApi.send	route	partial	-	auto-seed
+internalAgentApi.send	route	partial	283673e	thread reply target group covered (fresh channel thread creation, thread-id prefix resolution, empty-thread reuse, parent-channel membership 403, private-parent cloak 404, unresolved-target 404 text, fresh DM thread, sent/state/messageSeq response); idempotency, mention actions, freshness holds, wake/events and task-event groups pending; trace/query/failpoint/realPg diagnostics excluded
 internalAgentApi.senderMentionDeliveries	route	locked	6f9656f	author-only delivery rows, authored handle, missing/malformed/stranger NOT_JOINABLE covered
 internalAgentApi.systemThread.realPg	route	partial	-	auto-seed
 internalAgentApi.taskWriteFreshness.api	route	partial	-	auto-seed
