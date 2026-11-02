@@ -229,6 +229,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var agentStatusAdopted: Set<String> = []
     private var agentStatusOccurredAt: [String: Date] = [:]
     private var agentActivityEventIds: [String: Set<String>] = [:]
+    private var agentThreadFollows: [String: AgentThreadFollowRecord] = [:]
     private var hostedUsage: [String: String] = [:]
     private var hostedModelPickerServers: Set<String> = []
     private var hostedModels: [String: HostedModelState] = [:]
@@ -6345,6 +6346,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     @discardableResult
     public func addChannelMessageForTesting(
+        id explicitId: String? = nil,
         channelId: String,
         content: String,
         senderId: String,
@@ -6352,7 +6354,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         senderType: String = "user",
         messageType: String = "chat"
     ) -> String {
-        let id = UUID().uuidString.lowercased()
+        let id = explicitId ?? UUID().uuidString.lowercased()
         lock.lock()
         humanMessageRows.append(StoredHumanMessage(
             id: id,
@@ -15279,6 +15281,168 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return agentStatusAdopted.contains(agentId)
     }
 
+    public func followThreadForAgentTesting(
+        serverId: String,
+        agentId: String,
+        threadChannelId: String,
+        parentMessageId: String,
+        reason: String = "manual",
+        followedAt: Date = Date(),
+        unfollowedAt: Date? = nil
+    ) {
+        lock.lock()
+        agentThreadFollows["\(serverId)\n\(agentId)\n\(threadChannelId)"] = AgentThreadFollowRecord(
+            serverId: serverId,
+            agentId: agentId,
+            threadChannelId: threadChannelId,
+            parentMessageId: parentMessageId,
+            followedAt: followedAt,
+            reason: reason,
+            doneAt: nil,
+            unfollowedAt: unfollowedAt
+        )
+        lock.unlock()
+    }
+
+    public func agentThreadList(authorization: String?) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard credential.scopes.contains("read") else {
+            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        lock.lock()
+        let rows = agentThreadFollows.values
+            .filter { $0.serverId == agent.serverId && $0.agentId == agent.id && $0.unfollowedAt == nil }
+            .filter { messageSearchVisibleLocked(messageChannelId: $0.threadChannelId, serverId: agent.serverId, viewer: .agent(agent.id)) }
+            .sorted { $0.followedAt > $1.followedAt }
+            .compactMap { follow -> String? in
+                guard let thread = postableChannels[follow.threadChannelId],
+                      let parentChannelId = thread.parentChannelId,
+                      let parent = postableChannels[parentChannelId]
+                else { return nil }
+                let short = String(follow.parentMessageId.prefix(8))
+                let doneJSON = follow.doneAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+                return "{\"target\":\(jsonString("#\(parent.name):\(short)")),\"threadChannelId\":\(jsonString(follow.threadChannelId)),\"parentChannelRef\":\(jsonString("#\(parent.name)")),\"parentMessageId\":\(jsonString(follow.parentMessageId)),\"parentMessageShortId\":\(jsonString(short)),\"followedAt\":\(jsonString(formatter.string(from: follow.followedAt))),\"reason\":\(jsonString(follow.reason)),\"doneAt\":\(doneJSON)}"
+            }
+        lock.unlock()
+        return Self.json(200, "{\"threads\":[\(rows.joined(separator: ","))]}")
+    }
+
+    public func agentThreadUnfollow(authorization: String?, body: String) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard credential.scopes.contains("read") else {
+            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let threadRef = object["thread"] as? String, !threadRef.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"Invalid thread unfollow request\"}")
+        }
+        lock.lock()
+        var threadId: String?
+        if threadRef.hasPrefix("#"), let colon = threadRef.firstIndex(of: ":") {
+            let channelName = String(threadRef[threadRef.index(after: threadRef.startIndex)..<colon])
+            let short = String(threadRef[threadRef.index(after: colon)...])
+            if let parent = postableChannels.first(where: { $0.value.serverId == agent.serverId && $0.value.name == channelName })?.key {
+                threadId = postableChannels.first { _, candidate in
+                    candidate.kind == "thread"
+                        && candidate.parentChannelId == parent
+                        && (candidate.parentMessageId?.hasPrefix(short) ?? false)
+                }?.key
+            }
+        } else {
+            threadId = threadRef
+        }
+        guard let resolved = threadId,
+              let thread = postableChannels[resolved],
+              thread.serverId == agent.serverId,
+              thread.kind == "thread",
+              thread.deletedAt == nil,
+              messageSearchVisibleLocked(messageChannelId: resolved, serverId: agent.serverId, viewer: .agent(agent.id))
+        else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Thread not found\"}")
+        }
+        let key = "\(agent.serverId)\n\(agent.id)\n\(resolved)"
+        if var record = agentThreadFollows[key] {
+            record.unfollowedAt = Date()
+            agentThreadFollows[key] = record
+        }
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    public func agentMessageResolve(authorization: String?, messageRef: String) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard credential.scopes.contains("read") else {
+            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\",\"requiredCapability\":\"read\"}")
+        }
+        lock.lock()
+        let matches = humanMessageRows.filter { message in
+            message.id == messageRef || message.id.hasPrefix(messageRef.lowercased())
+        }.filter { message in
+            messageSearchVisibleLocked(messageChannelId: message.channelId, serverId: agent.serverId, viewer: .agent(agent.id))
+        }
+        guard !matches.isEmpty else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Message not found: \(messageRef)\",\"errorCode\":\"NOT_FOUND\"}")
+        }
+        guard matches.count == 1, let message = matches.first else {
+            lock.unlock()
+            return Self.json(400, "{\"error\":\"Ambiguous message id: \(messageRef)\",\"errorCode\":\"AMBIGUOUS_ID\",\"suggestedNextAction\":\"Retry with the full message UUID.\"}")
+        }
+        let channel = postableChannels[message.channelId]
+        let kind = channel?.kind ?? "channel"
+        let channelType = kind == "dm" ? "dm" : (kind == "thread" ? "thread" : "channel")
+        let channelName: String
+        if kind == "dm" {
+            let humans = oauth.channelHumanIds(channelId: message.channelId).filter { $0 != agent.id }
+            let agents = oauth.channelAgentIds(channelId: message.channelId).filter { $0 != agent.id }
+            if let humanId = humans.first, let account = accounts.values.first(where: { $0.id == humanId }) {
+                channelName = account.name
+            } else if let peerAgentId = agents.first, let peer = oauth.agentRuntimeInfo(id: peerAgentId) {
+                channelName = peer.name
+            } else {
+                channelName = channel?.name ?? ""
+            }
+        } else if kind == "thread", let parentId = channel?.parentChannelId, let parent = postableChannels[parentId] {
+            channelName = parent.name
+        } else {
+            channelName = channel?.name ?? ""
+        }
+        let senderType: String
+        let senderName: String
+        if message.senderType == "system" || message.senderId == "system" {
+            senderType = "system"
+            senderName = "system"
+        } else if message.senderType == "agent" || oauth.agentRuntimeInfo(id: message.senderId) != nil {
+            senderType = "agent"
+            senderName = oauth.agentRuntimeInfo(id: message.senderId)?.name ?? ""
+        } else {
+            senderType = "human"
+            senderName = accounts.values.first(where: { $0.id == message.senderId })?.name ?? ""
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let createdAt = formatter.string(from: message.createdAt)
+        let json = "{\"message_id\":\(jsonString(message.id)),\"channel_id\":\(jsonString(message.channelId)),\"channel_name\":\(jsonString(channelName)),\"channel_type\":\(jsonString(channelType)),\"sender_type\":\(jsonString(senderType)),\"sender_name\":\(jsonString(senderName)),\"content\":\(jsonString(message.content)),\"created_at\":\(jsonString(createdAt))}"
+        lock.unlock()
+        return Self.json(200, "{\"message\":\(json)}")
+    }
+
     public func agentProfileShow(authorization: String?, target: String?) -> HTTPReply {
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
@@ -22864,4 +23028,36 @@ public enum RuntimeModelProbeOutcome: Sendable, Equatable {
     case unsupported
     case error(code: String, retryable: Bool)
     case failed
+}
+
+/// One agent (runner) thread follow row.
+public struct AgentThreadFollowRecord: Sendable, Equatable {
+    public var serverId: String
+    public var agentId: String
+    public var threadChannelId: String
+    public var parentMessageId: String
+    public var followedAt: Date
+    public var reason: String
+    public var doneAt: Date?
+    public var unfollowedAt: Date?
+
+    public init(
+        serverId: String,
+        agentId: String,
+        threadChannelId: String,
+        parentMessageId: String,
+        followedAt: Date,
+        reason: String,
+        doneAt: Date? = nil,
+        unfollowedAt: Date? = nil
+    ) {
+        self.serverId = serverId
+        self.agentId = agentId
+        self.threadChannelId = threadChannelId
+        self.parentMessageId = parentMessageId
+        self.followedAt = followedAt
+        self.reason = reason
+        self.doneAt = doneAt
+        self.unfollowedAt = unfollowedAt
+    }
 }

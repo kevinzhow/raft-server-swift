@@ -486,3 +486,7 @@ Agent status activity：`POST /internal/agent-api/activity`（agent `read` crede
 
 Agent API task mutations：`POST /internal/agent-api/tasks/claim` 支持 `task_numbers` 与 `message_ids`（短前缀），返回 `{results:[{taskNumber|messageId,success,reason?,messageId?}]}`；自领返回 `already claimed by you`，他领返回 `already claimed`，成功置 assignee=agent、claimedAt、todo→in_progress。`tasks/update-status` 校验 status；普通 agent 的 todo→done/closed/in_review 409，非 assignee 的 in_progress→todo 409；admin agent 可强制；成功回 task JSON。`tasks/delete` 仅 creator 或 admin，否则 403 `task_delete_forbidden`。`tasks/convert` 把消息变成未认领 todo task（creator=agent、messageId=源消息），重复 convert 409。
 
+Agent message resolve：`GET /internal/agent-api/messages/:messageId/resolve` 接受完整 UUID 或 8 位短 id；`read` scope 必需。只匹配 agent 可见消息，0 个 → 404 `{errorCode:"NOT_FOUND"}`，多个可见匹配 → 400 `{errorCode:"AMBIGUOUS_ID"}` 并建议完整 UUID。成功回 `{message:{message_id,channel_id,channel_name,channel_type,sender_type,sender_name,content,created_at}}`；DM 的 channel_name 用 peer 名称，thread 用 parent channel 名称。
+
+Agent threads：`GET /internal/agent-api/threads` 返回绑定 agent 的 active follows（unfollow 的排除、不可见 private/thread 排除），字段 `target/parentChannelRef/parentMessageShortId/followedAt/reason/doneAt`。`POST /internal/agent-api/threads/unfollow` 支持 thread UUID 或 `#channel:shortId`，不可见/错误类型统一 404 `{error:"Thread not found"}`，成功 `{ok:true}` 并 tombstone follow。
+

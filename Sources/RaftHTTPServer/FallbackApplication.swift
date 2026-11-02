@@ -928,6 +928,23 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? "{}"
         ))
     }
+    app.get("internal", "agent-api", "threads") { request -> Response in
+        routeResponse(services.emailAccounts.agentThreadList(
+            authorization: request.headers[.authorization]
+        ))
+    }
+    app.post("internal", "agent-api", "threads", "unfollow") { request -> Response in
+        routeResponse(services.emailAccounts.agentThreadUnfollow(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.get("internal", "agent-api", "messages", ":messageId", "resolve") { request -> Response in
+        routeResponse(services.emailAccounts.agentMessageResolve(
+            authorization: request.headers[.authorization],
+            messageRef: request.parameters.get("messageId") ?? ""
+        ))
+    }
     app.get("internal", "agent-api", "search") { request -> Response in
         routeResponse(services.emailAccounts.agentApiSearch(
             authorization: request.headers[.authorization],
