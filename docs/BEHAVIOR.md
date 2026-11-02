@@ -598,3 +598,10 @@ RFC 074 personal assistant：
 - Agent creator 在创建时写入；member 尝试 `PATCH /api/agents/:id/creator` → 404，creator 不变；`GET /api/servers/:id/members/:memberId/profile` 返回 `createdAgents`。
 - member 的 viewAgents authority 可读取 `GET /api/agents/:id/runtime-options`（200）。
 
+### agents.api：runtime 校验组
+
+- `POST /api/agents`：`runtimeConfig.provider` 为 custom 且 runtime 为 cursor → 400 `runtimeConfig.provider is not supported for runtime: cursor`。
+- 结构化 config 校验：custom model 缺 `name` → 400 `runtimeConfig.model.name is required`；custom provider 缺 `apiKey` → 400 `runtimeConfig.provider.apiKey is required`。
+- 已废弃 runtime（kimi/gemini/antigravity/copilot）不能新建：legacy `runtime` 或结构化 `runtimeConfig.runtime` → 400 `Runtime is deprecated and cannot be selected: <runtime>`。
+- `PATCH /api/agents/:id` 禁止切换到废弃 runtime；若当前 agent 本身就是该 legacy runtime，则允许继续编辑并保留 runtime/model。
+

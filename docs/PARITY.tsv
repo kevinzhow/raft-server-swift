@@ -20,7 +20,7 @@ agentMigrationFence.realPg	route	partial	-	auto-seed
 agentMigrationReceiptDm.api	route	partial	-	auto-seed
 agentProfileWriteBroadcastContract	route	partial	-	auto-seed
 agentRuntimeProviders.api	route	partial	-	auto-seed
-agents.api	route	partial	f9609bf	all agents.ts routes mounted; hosted/machine migration status+cancel dispatch, transport admission/leases/failure covered; identity group (handle uniqueness/reserved, agent channels projection, creator profile, member runtime-options) covered; chunk-digest transport and remaining agent groups pending
+agents.api	route	partial	f9609bf	all agents.ts routes mounted; hosted/machine migration status+cancel dispatch, transport admission/leases/failure covered; identity group (handle uniqueness/reserved, agent channels projection, creator profile, member runtime-options) and runtime validation group (cursor provider, malformed config, deprecated create/patch) covered; chunk-digest transport and remaining agent groups pending
 agents.credentials.gate	route	locked	378727c	unauthenticated credential routes answer 401, not 404
 agents.mobileV1120SaveRequests.api	route	partial	-	auto-seed
 announcementImages.api	route	locked	bdcd624	anonymous published-image gate, cache and storage 503

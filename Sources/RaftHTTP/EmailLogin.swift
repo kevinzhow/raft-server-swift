@@ -9755,6 +9755,31 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return .denied(Self.json(403, "{\"error\":\"Forbidden\"}"))
     }
 
+    private static let deprecatedAgentRuntimes: Set<String> = ["kimi", "gemini", "antigravity", "copilot"]
+
+    private static func deprecatedRuntimeReply(_ runtime: String) -> HTTPReply {
+        Self.json(400, "{\"error\":\"Runtime is deprecated and cannot be selected: \(runtime)\"}")
+    }
+
+    private static func runtimeConfigStructureError(_ config: [String: Any]) -> HTTPReply? {
+        if let model = config["model"] as? [String: Any],
+           model["kind"] as? String == "custom",
+           (model["name"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return Self.json(400, "{\"error\":\"runtimeConfig.model.name is required\"}")
+        }
+        guard let provider = config["provider"] as? [String: Any],
+              provider["kind"] as? String == "custom"
+        else { return nil }
+        let runtime = config["runtime"] as? String ?? ""
+        if runtime == "cursor" {
+            return Self.json(400, "{\"error\":\"runtimeConfig.provider is not supported for runtime: cursor\"}")
+        }
+        if (provider["apiKey"] as? String ?? "").isEmpty {
+            return Self.json(400, "{\"error\":\"runtimeConfig.provider.apiKey is required\"}")
+        }
+        return nil
+    }
+
     public func createAgentRoute(authorization: String?, serverId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -9789,6 +9814,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"External agents cannot be assigned to a Computer\"}")
         }
         let rawConfig = object["runtimeConfig"] as? [String: Any] ?? [:]
+        if let legacyRuntime = object["runtime"] as? String,
+           Self.deprecatedAgentRuntimes.contains(legacyRuntime) {
+            return Self.deprecatedRuntimeReply(legacyRuntime)
+        }
+        if let configRuntime = rawConfig["runtime"] as? String,
+           Self.deprecatedAgentRuntimes.contains(configRuntime) {
+            return Self.deprecatedRuntimeReply(configRuntime)
+        }
+        if let reply = Self.runtimeConfigStructureError(rawConfig) { return reply }
         var config = Self.normalizeRuntimeConfig(rawConfig)
         var envVars: [String: String] = [:]
         if external {
@@ -10267,7 +10301,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             var runtimeConfigJSON = info.runtimeConfigJSON
             var envVarsJSON = info.envVarsJSON
             var replacedRuntime: String?
+            if let legacyRuntime = object["runtime"] as? String,
+               Self.deprecatedAgentRuntimes.contains(legacyRuntime), legacyRuntime != info.runtime {
+                return Self.deprecatedRuntimeReply(legacyRuntime)
+            }
             if let rawConfig = object["runtimeConfig"] as? [String: Any] {
+                if let configRuntime = rawConfig["runtime"] as? String,
+                   Self.deprecatedAgentRuntimes.contains(configRuntime), configRuntime != info.runtime {
+                    return Self.deprecatedRuntimeReply(configRuntime)
+                }
+                if let reply = Self.runtimeConfigStructureError(rawConfig) { return reply }
                 let config = Self.normalizeRuntimeConfig(rawConfig)
                 if let command = config["command"] as? String, !command.isEmpty,
                    let configRuntime = config["runtime"] as? String, configRuntime != "claude" {
