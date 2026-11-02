@@ -20,7 +20,7 @@ agentMigrationFence.realPg	route	partial	-	auto-seed
 agentMigrationReceiptDm.api	route	partial	-	auto-seed
 agentProfileWriteBroadcastContract	route	partial	-	auto-seed
 agentRuntimeProviders.api	route	partial	-	auto-seed
-agents.api	route	partial	25cd293	all agents.ts routes mounted; hosted migration status/cancel covered; machine-to-machine dispatch and remaining agent groups pending
+agents.api	route	partial	67a1243	all agents.ts routes mounted; hosted/machine migration status+cancel dispatch covered; transport lease/manifest and remaining agent groups pending
 agents.credentials.gate	route	locked	378727c	unauthenticated credential routes answer 401, not 404
 agents.mobileV1120SaveRequests.api	route	partial	-	auto-seed
 announcementImages.api	route	locked	bdcd624	anonymous published-image gate, cache and storage 503
