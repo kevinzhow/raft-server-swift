@@ -185,6 +185,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var sourceMachineId: String
         var targetMachineId: String
         var transportGeneration: String
+        var transportProvider: String = "object_store"
+        var transportSessionId: String = ""
+        var sourceTokenHash: String = ""
+        var targetTokenHash: String = ""
+        var manifestJSON: String?
+        var failureReason: String?
+        var transportErrorCode: String?
+        var transportErrorMessage: String?
+        var transportLostAt: Date?
+        var transportTeardownAt: Date?
         var canceledAt: Date?
         var cancelReason: String?
         var cancelDispatchAttempts: Int = 0
@@ -194,6 +204,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var machineMigrations: [String: MachineMigrationRecord] = [:]
     /// Test seam for the frozen-generation cancel dispatch to a Computer.
     public var agentMigrationCancelDispatch: (@Sendable (_ machineId: String, _ role: String, _ migrationRef: String, _ transportGeneration: String, _ stopAgent: Bool) -> Void)?
+    /// Capabilities reported by each Computer for migration admission.
+    public var machineMigrationCapabilities: [String: Set<String>] = [:]
+    /// Runtime-detection progress reported by each Computer.
+    public var machineRuntimeDetections: [String: (status: String, unfinished: Set<String>)] = [:]
+    /// Server plan override; missing means Pro.
+    public var serverPlans: [String: String] = [:]
+    /// Returns an object-store session id, or nil when provisioning fails.
+    public var machineMigrationProvisioner: (@Sendable (_ sourceMachineId: String, _ targetMachineId: String) -> String?)?
+    /// Lease dispatch to the source (upload) and target (download) Computers.
+    public var machineMigrationLeaseDispatch: (@Sendable (_ machineId: String, _ role: String, _ migrationRef: String) -> Void)?
     private var hostedRuntimes: [String: (provider: String, model: String?, state: String, retryNeedsModel: Bool, createdAt: Date)] = [:]
     private var hostedUsage: [String: String] = [:]
     private var hostedModelPickerServers: Set<String> = []
@@ -9570,7 +9590,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let cancelReason = migration.cancelReason.map(jsonString) ?? "null"
         let cancelLastDispatchAt = migration.cancelLastDispatchAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
         let cancelErrorCode = migration.cancelErrorCode.map(jsonString) ?? "null"
-        return "{\"migrationRef\":\(jsonString(migration.supportRef)),\"agentId\":\(jsonString(migration.agentId)),\"state\":\(jsonString(migration.state)),\"revision\":\(migration.revision),\"sourceMachineId\":\(jsonString(migration.sourceMachineId)),\"targetKind\":\"computer\",\"targetMachineId\":\(jsonString(migration.targetMachineId)),\"provider\":null,\"failureReason\":null,\"abortReason\":null,\"transportErrorCode\":null,\"transportErrorMessage\":null,\"readyAt\":null,\"flippedAt\":null,\"arrivedAt\":null,\"completedAt\":null,\"abortedAt\":null,\"canceledAt\":\(canceledAt),\"cancelReason\":\(cancelReason),\"cancelNeedsAttention\":false,\"cancelDispatchAttempts\":\(migration.cancelDispatchAttempts),\"cancelLastDispatchAt\":\(cancelLastDispatchAt),\"cancelErrorCode\":\(cancelErrorCode),\"cancelErrorMessage\":null}"
+        let failureReason = migration.failureReason.map(jsonString) ?? "null"
+        let transportErrorCode = migration.transportErrorCode.map(jsonString) ?? "null"
+        let transportErrorMessage = migration.transportErrorMessage.map(jsonString) ?? "null"
+        let transportLostAt = migration.transportLostAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+        let transportTeardownAt = migration.transportTeardownAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+        return "{\"migrationRef\":\(jsonString(migration.supportRef)),\"agentId\":\(jsonString(migration.agentId)),\"state\":\(jsonString(migration.state)),\"revision\":\(migration.revision),\"sourceMachineId\":\(jsonString(migration.sourceMachineId)),\"targetKind\":\"computer\",\"targetMachineId\":\(jsonString(migration.targetMachineId)),\"provider\":\(jsonString(migration.transportProvider)),\"failureReason\":\(failureReason),\"abortReason\":null,\"transportErrorCode\":\(transportErrorCode),\"transportErrorMessage\":\(transportErrorMessage),\"transportLostAt\":\(transportLostAt),\"transportTeardownAt\":\(transportTeardownAt),\"readyAt\":null,\"flippedAt\":null,\"arrivedAt\":null,\"completedAt\":null,\"abortedAt\":null,\"canceledAt\":\(canceledAt),\"cancelReason\":\(cancelReason),\"cancelNeedsAttention\":false,\"cancelDispatchAttempts\":\(migration.cancelDispatchAttempts),\"cancelLastDispatchAt\":\(cancelLastDispatchAt),\"cancelErrorCode\":\(cancelErrorCode),\"cancelErrorMessage\":null}"
     }
 
     public func agentMigrationCancel(authorization: String?, serverId: String, agentId: String, body: String = "") -> HTTPReply {
@@ -10045,6 +10070,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             if let target = object?["target"] as? [String: Any], target["kind"] as? String == "hosted" {
                 return startHostedMigration(info: info, userId: userId, serverId: info.serverId, target: target)
             }
+            if let targetComputer = object?["targetComputer"] as? String {
+                return startMachineMigration(info: info, userId: userId, serverId: info.serverId, targetMachineId: targetComputer)
+            }
             return Self.json(202, "{\"ok\":true,\"status\":\"accepted\"}")
         }
         let mode = ((try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any])?["mode"] as? String ?? "session"
@@ -10055,6 +10083,119 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"resetAgentWorkspace requires creator or server admin authority\"}")
         }
         return Self.json(202, "{\"ok\":true,\"status\":\"accepted\"}")
+    }
+
+    private func startMachineMigration(
+        info: OAuthLedger.AgentManagementInfo,
+        userId: String,
+        serverId: String,
+        targetMachineId: String
+    ) -> HTTPReply {
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId),
+              role == "owner" || role == "admin" || info.creatorUserId == userId
+        else {
+            return Self.json(403, "{\"code\":\"not_supported\",\"error\":\"Agent migration requires creator or server admin authority\"}")
+        }
+        lock.lock()
+        let sourceMachineId = agentMachineIds[info.id]
+        let active = machineMigrations.values.contains {
+            $0.agentId == info.id && !["canceled_pre_flip", "completed", "aborted", "failed"].contains($0.state)
+        } || hostedMigrations[info.id] != nil
+        let sourceMachine = machines.first { $0.id == sourceMachineId }
+        let targetMachine = machines.first { $0.id == targetMachineId && $0.serverId == serverId }
+        let targetOnline = machineOnline[targetMachineId] == true
+        let sourceCapabilities = machineMigrationCapabilities[sourceMachineId ?? ""]
+        let targetCapabilities = machineMigrationCapabilities[targetMachineId]
+        let detection = machineRuntimeDetections[targetMachineId]
+        let plan = serverPlans[serverId] ?? "pro"
+        let provisioner = machineMigrationProvisioner
+        lock.unlock()
+        guard let sourceMachineId else {
+            return Self.json(409, "{\"code\":\"AGENT_HAS_NO_SOURCE_MACHINE\",\"error\":\"Agent has no source computer\"}")
+        }
+        guard !active else {
+            return Self.json(409, "{\"code\":\"MIGRATION_ALREADY_IN_PROGRESS\",\"error\":\"Agent already has an active migration\"}")
+        }
+        guard let targetMachine else {
+            return Self.json(404, "{\"code\":\"TARGET_COMPUTER_NOT_FOUND\",\"error\":\"Target computer not found\"}")
+        }
+        let sourceCapable = sourceCapabilities?.contains("migration/v3") ?? true
+        let targetCapable = targetCapabilities?.contains("migration/v3") ?? true
+        if !sourceCapable || !targetCapable {
+            let side = !sourceCapable && !targetCapable ? "both" : (!sourceCapable ? "source" : "target")
+            return Self.json(422, "{\"error\":\"Both source and target computers must run a Raft Computer that supports migration/v3; upgrade the \(side == "both" ? "source and target" : side) computer\",\"code\":\"MIGRATION_RESUMABLE_CAPABILITY_REQUIRED\",\"details\":{\"side\":\"\(side)\",\"reason\":\"capability_missing\",\"failureReason\":\"MIGRATION_RESUMABLE_CAPABILITY_REQUIRED\"}}")
+        }
+        var failures: [String] = []
+        if !(sourceMachine?.runtimes.contains(info.runtime) ?? false) {
+            failures.append("{\"side\":\"source\",\"reason\":\"\(sourceMachine?.runtimes.isEmpty == true ? "runtime_unconfirmed" : "runtime_missing")\",\"runtime\":\(jsonString(info.runtime))}")
+        }
+        if !targetMachine.runtimes.contains(info.runtime) {
+            failures.append("{\"side\":\"target\",\"reason\":\"\(targetMachine.runtimes.isEmpty ? "runtime_unconfirmed" : "runtime_missing")\",\"runtime\":\(jsonString(info.runtime))}")
+        }
+        if !failures.isEmpty {
+            return Self.json(422, "{\"error\":\"Both source and target computers must support the agent's runtime\",\"code\":\"COMPUTER_CAPABILITY_INSUFFICIENT\",\"details\":{\"failureReason\":\"COMPUTER_CAPABILITY_INSUFFICIENT\",\"failures\":[\(failures.joined(separator: ","))]}}")
+        }
+        guard targetOnline else {
+            return Self.json(409, "{\"error\":\"Target computer is not online\",\"code\":\"TARGET_COMPUTER_OFFLINE\",\"details\":{\"failureReason\":\"TARGET_COMPUTER_OFFLINE\"}}")
+        }
+        if let detection,
+           detection.status == "pending" || (detection.status == "incomplete" && detection.unfinished.contains(info.runtime)) {
+            return Self.json(409, "{\"error\":\"The target computer is still detecting its runtimes; try again in a moment\",\"code\":\"TARGET_RUNTIME_DETECTION_PENDING\",\"details\":{\"failureReason\":\"TARGET_RUNTIME_DETECTION_PENDING\",\"side\":\"target\",\"runtime\":\(jsonString(info.runtime)),\"detectionStatus\":\(jsonString(detection.status)),\"retryable\":true}}")
+        }
+        guard plan != "free" else {
+            return Self.json(403, "{\"error\":\"Agent migration requires the Pro plan.\",\"code\":\"MIGRATION_PRO_PLAN_REQUIRED\",\"details\":{\"failureReason\":\"MIGRATION_PRO_PLAN_REQUIRED\"}}")
+        }
+        let sessionId: String
+        if let provisioner {
+            guard let provided = provisioner(sourceMachineId, targetMachineId) else {
+                return Self.json(422, "{\"code\":\"MIGRATION_TRANSPORT_PROVISION_FAILED\",\"error\":\"Migration transport provisioning failed\"}")
+            }
+            sessionId = provided
+        } else {
+            sessionId = "session-" + UUID().uuidString.lowercased()
+        }
+        let supportRef = "mig_" + String(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(22))
+        var record = MachineMigrationRecord(
+            agentId: info.id,
+            serverId: serverId,
+            supportRef: supportRef,
+            revision: 1,
+            state: "provisioning",
+            sourceMachineId: sourceMachineId,
+            targetMachineId: targetMachineId,
+            transportGeneration: "generation-" + UUID().uuidString.lowercased()
+        )
+        record.transportSessionId = sessionId
+        record.sourceTokenHash = "sha256:" + UUID().uuidString.lowercased()
+        record.targetTokenHash = "sha256:" + UUID().uuidString.lowercased()
+        record.manifestJSON = "{\"schemaVersion\":1,\"identity\":{\"migrationRef\":\(jsonString(supportRef)),\"agentId\":\(jsonString(info.id))}}"
+        lock.lock()
+        machineMigrations[supportRef] = record
+        lock.unlock()
+        machineMigrationLeaseDispatch?(sourceMachineId, "source", supportRef)
+        machineMigrationLeaseDispatch?(targetMachineId, "target", supportRef)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let deadline = jsonString(formatter.string(from: Date().addingTimeInterval(3600)))
+        return Self.json(200, "{\"migrationRef\":\(jsonString(supportRef)),\"state\":\"provisioning\",\"sourceMachineId\":\(jsonString(sourceMachineId)),\"targetMachineId\":\(jsonString(targetMachineId)),\"targetKind\":\"computer\",\"prepDeadlineAt\":\(deadline),\"transferDeadlineAt\":\(deadline),\"arrivalDeadlineAt\":\(deadline)}")
+    }
+
+    public func markMachineMigrationTransportLostForTesting(supportRef: String, message: String) {
+        lock.lock()
+        guard var migration = machineMigrations[supportRef] else {
+            lock.unlock()
+            return
+        }
+        let now = Date()
+        migration.state = "failed"
+        migration.revision += 1
+        migration.failureReason = "MIGRATION_TRANSPORT_LOST"
+        migration.transportErrorCode = "MIGRATION_TRANSPORT_LOST"
+        migration.transportErrorMessage = message
+        migration.transportLostAt = now
+        migration.transportTeardownAt = now
+        machineMigrations[supportRef] = migration
+        lock.unlock()
     }
 
     private func startHostedMigration(
