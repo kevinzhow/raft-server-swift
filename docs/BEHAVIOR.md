@@ -452,3 +452,5 @@ Attachment URL TTL：`GET /api/attachments/:id/url` 默认 300 秒；`dispositio
 
 HTML preview token：`GET /api/attachments/:id/html-preview-url` 返回带 `previewToken`（HMAC-SHA256，绑定 attachmentId/serverId/actor、audience/type=`attachment-html-preview`、300s exp）与 `serverId` 的 URL，不携带用户 bearer。`GET /api/attachments/:id/html-preview` 校验 token 的 scope/expiry/audience/type，跨附件复用或过期/错 audience/type → 401；`token=` 用户 bearer query → 403；成功返回 `text/html`、`Content-Security-Policy: frame-ancestors 'self' <APP_URL>`、无 `X-Frame-Options`、`Cache-Control: private, no-store`。预览 token 不能授权普通 metadata/url/html-preview-url（401）。
 
+Attachment query-token 两跳：`GET /api/attachments/:id/url?serverId=&token=` 无 Authorization 时用 query token 认证并返回携带同一 `token` 与 `serverId` 的流式 URL，`expiresAt:null`；hop2 `GET /api/attachments/:id?token=&serverId=` 认证后对缺失存储对象回 404（不是 401/400/403）。无效 token 401。`GET /api/attachments/:id` 也接受 `sk_computer_*` 凭据：按其 linked machine 的 server 鉴权；未指定 X-Server-Id 时使用该 server，指定其他 server 403；同 server 返回 attachment metadata，缺失/跨 server 404。
+

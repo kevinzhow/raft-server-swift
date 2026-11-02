@@ -477,12 +477,15 @@ public func configure(_ app: Application, services: FallbackServices) {
         if desktopQuery(request.url.query, "previewToken") != nil {
             return routeResponse(HTTPReply(status: 401, headers: [:], body: "{\"error\":\"Unauthorized\"}"))
         }
+        let queryToken = desktopQuery(request.url.query, "token")
+        let authorization = request.headers[.authorization] ?? queryToken.map { "Bearer \($0)" }
         return routeResponse(services.emailAccounts.attachmentDownloadURL(
             attachmentId: request.parameters.get("id") ?? "",
-            authorization: request.headers[.authorization],
-            serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+            authorization: authorization,
+            serverId: desktopQuery(request.url.query, "serverId") ?? request.headers[HTTPField.Name("X-Server-Id")!],
             disposition: desktopQuery(request.url.query, "disposition"),
-            download: desktopQuery(request.url.query, "download")
+            download: desktopQuery(request.url.query, "download"),
+            propagateQueryToken: queryToken
         ))
     }
     app.post("api", "messages", "forward") { request -> Response in
@@ -1853,6 +1856,13 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("api", "attachments", ":id") { request -> Response in
         if desktopQuery(request.url.query, "previewToken") != nil {
             return routeResponse(HTTPReply(status: 401, headers: [:], body: "{\"error\":\"Unauthorized\"}"))
+        }
+        if request.headers[.authorization] == nil, desktopQuery(request.url.query, "token") != nil {
+            return routeResponse(services.emailAccounts.attachmentQueryTokenStream(
+                attachmentId: request.parameters.get("id") ?? "",
+                token: desktopQuery(request.url.query, "token") ?? "",
+                serverId: desktopQuery(request.url.query, "serverId")
+            ))
         }
         return routeResponse(services.emailAccounts.readAttachment(
             authorization: request.headers[.authorization],

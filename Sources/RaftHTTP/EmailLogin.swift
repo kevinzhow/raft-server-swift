@@ -4910,7 +4910,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         authorization: String?,
         serverId: String?,
         disposition: String? = nil,
-        download: String? = nil
+        download: String? = nil,
+        propagateQueryToken: String? = nil
     ) -> HTTPReply {
         let userId: String
         switch authorize(authorization) {
@@ -4960,11 +4961,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let isMedia = mimeType?.hasPrefix("video/") == true || mimeType?.hasPrefix("audio/") == true
         let inline = disposition == "inline" && download != "1"
         let ttl = inline && isMedia ? 3600 : 300
-        let url = attachmentPresign?(attachmentId, mimeType, ttl) ?? "/api/attachments/\(attachmentId)"
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let expiresAt = formatter.string(from: Date().addingTimeInterval(Double(ttl)))
-        return Self.json(200, "{\"url\":\(jsonString(url)),\"expiresAt\":\(jsonString(expiresAt))}")
+        var url = attachmentPresign?(attachmentId, mimeType, ttl) ?? "/api/attachments/\(attachmentId)"
+        let expiresAtJSON: String
+        if let queryToken = propagateQueryToken {
+            let encoded = queryToken.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? queryToken
+            let separator = url.contains("?") ? "&" : "?"
+            url += "\(separator)token=\(encoded)&serverId=\(serverId)"
+            expiresAtJSON = "null"
+        } else {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            expiresAtJSON = jsonString(formatter.string(from: Date().addingTimeInterval(Double(ttl))))
+        }
+        return Self.json(200, "{\"url\":\(jsonString(url)),\"expiresAt\":\(expiresAtJSON)}")
     }
 
     /// `GET /api/messages/sync`. `since_seq=0` returns the channel page, including a joint canonical store.
@@ -8792,6 +8801,32 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"files\":[\(rows.joined(separator: ","))],\"nextCursor\":\(nextJSON)}")
     }
 
+    public func attachmentQueryTokenStream(attachmentId: String, token: String, serverId: String?) -> HTTPReply {
+        guard ServerScope.isUUID(attachmentId) else {
+            return Self.json(400, "{\"code\":\"invalid_attachment_id\",\"error\":\"Invalid attachment id\"}")
+        }
+        guard let userId = sessionUserId(authorization: "Bearer \(token)") else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let serverId, !serverId.isEmpty else {
+            return Self.json(400, "{\"error\":\"X-Server-Id header is required\"}")
+        }
+        if !oauth.memberIds(serverId: serverId).isEmpty,
+           oauth.memberRole(serverId: serverId, userId: userId) == nil {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        lock.lock()
+        let attachment = channelAttachments[attachmentId]
+        lock.unlock()
+        guard let attachment, visibleAttachment(userId: userId, serverId: serverId, attachment: attachment) else {
+            return Self.json(404, "{\"error\":\"Attachment not found\"}")
+        }
+        if let body = attachmentPreviewBody?(attachmentId) {
+            return HTTPReply(status: 200, headers: ["Content-Type": "application/octet-stream"], body: body)
+        }
+        return Self.json(404, "{\"error\":\"Attachment not found\"}")
+    }
+
     public func attachmentHTMLPreview(
         attachmentId: String,
         serverId: String,
@@ -8822,6 +8857,25 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public func readAttachment(authorization: String?, serverId: String?, attachmentId: String, kind: String) -> HTTPReply {
         guard ServerScope.isUUID(attachmentId) else {
             return Self.json(400, "{\"code\":\"invalid_attachment_id\",\"error\":\"Invalid attachment id\"}")
+        }
+        if let authorization, authorization.hasPrefix("Bearer sk_computer_") {
+            let key = String(authorization.dropFirst("Bearer ".count))
+            lock.lock()
+            let computerServer = computers.first { $0.apiKey == key && $0.revokedAt == nil }?.serverId
+            let attachment = channelAttachments[attachmentId]
+            let channelServer = attachment.flatMap { channelAttachments[$0.id] }.flatMap { postableChannels[$0.channelId]?.serverId }
+            lock.unlock()
+            guard let computerServer else {
+                return Self.json(401, "{\"error\":\"Unauthorized\"}")
+            }
+            let requested = serverId ?? computerServer
+            guard requested == computerServer else {
+                return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            }
+            guard attachment != nil, channelServer == requested else {
+                return Self.json(404, "{\"error\":\"Attachment not found\"}")
+            }
+            return Self.json(200, "{\"id\":\(jsonString(attachment!.id)),\"filename\":\(jsonString(attachment!.filename)),\"mimeType\":\(attachment!.mimeType.map { jsonString($0) } ?? "null")}")
         }
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
