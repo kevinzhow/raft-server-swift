@@ -858,6 +858,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("internal", "agent-api", "tasks", "assign") { request -> Response in
+        routeResponse(services.emailAccounts.agentTaskAssign(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}"
+        ))
+    }
     app.post("internal", "agent-api", "tasks", "claim") { request -> Response in
         routeResponse(services.emailAccounts.agentTaskClaim(
             authorization: request.headers[.authorization],
@@ -937,6 +943,12 @@ public func configure(_ app: Application, services: FallbackServices) {
         routeResponse(services.emailAccounts.agentThreadUnfollow(
             authorization: request.headers[.authorization],
             body: request.body.string ?? "{}"
+        ))
+    }
+    app.get("internal", "agent-api", "messages", ":messageId", "mention-deliveries") { request -> Response in
+        routeResponse(services.emailAccounts.agentMentionDeliveries(
+            authorization: request.headers[.authorization],
+            messageRef: request.parameters.get("messageId") ?? ""
         ))
     }
     app.get("internal", "agent-api", "messages", ":messageId", "resolve") { request -> Response in

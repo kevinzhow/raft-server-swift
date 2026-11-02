@@ -490,3 +490,7 @@ Agent message resolve：`GET /internal/agent-api/messages/:messageId/resolve` �
 
 Agent threads：`GET /internal/agent-api/threads` 返回绑定 agent 的 active follows（unfollow 的排除、不可见 private/thread 排除），字段 `target/parentChannelRef/parentMessageShortId/followedAt/reason/doneAt`。`POST /internal/agent-api/threads/unfollow` 支持 thread UUID 或 `#channel:shortId`，不可见/错误类型统一 404 `{error:"Thread not found"}`，成功 `{ok:true}` 并 tombstone follow。
 
+Agent task assign：`POST /internal/agent-api/tasks/assign` 用 `@handle` 只在当前 channel 的 agent/human 成员中解析；server 成员但不在 public channel 的人类、缺失/歧义 handle 全部 404 `{code:"assignee_not_assignable"}`，且不改 assignee/revision。成功只设置 assignee/type、清 claimedAt、status 保持 todo。
+
+Agent mention deliveries：`GET /internal/agent-api/messages/:messageId/mention-deliveries` 仅允许该消息的 agent 作者读取；其他 agent、缺失/非法 id 统一 404 `{status:"NOT_JOINABLE"}`。成功回 `{messageId,deliveries:[{targetId,targetHandle,...}]}`，targetHandle 保留发送时作者写的 handle。
+

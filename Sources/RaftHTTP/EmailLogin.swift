@@ -15381,6 +15381,33 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
+    public func agentMentionDeliveries(authorization: String?, messageRef: String) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard credential.scopes.contains("read") else {
+            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\",\"requiredCapability\":\"read\"}")
+        }
+        lock.lock()
+        guard let message = humanMessageRows.first(where: { $0.id == messageRef }),
+              message.senderType == "agent",
+              message.senderId == agent.id,
+              messageSearchVisibleLocked(messageChannelId: message.channelId, serverId: agent.serverId, viewer: .agent(agent.id))
+        else {
+            lock.unlock()
+            return Self.json(404, "{\"status\":\"NOT_JOINABLE\"}")
+        }
+        let deliveries = storedMentions.filter {
+            $0.messageId == message.id && $0.targetType == "agent" && $0.notifiableAtSend
+        }.map { mention in
+            "{\"targetId\":\(jsonString(mention.targetId)),\(Self.mentionDeliveryFields(handle: mention.handle, terminalCode: mention.terminalCode))}"
+        }.joined(separator: ",")
+        lock.unlock()
+        return Self.json(200, "{\"messageId\":\(jsonString(message.id)),\"deliveries\":[\(deliveries)]}")
+    }
+
     public func agentMessageResolve(authorization: String?, messageRef: String) -> HTTPReply {
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
@@ -18443,7 +18470,55 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let ids = addTasks(channelId: channelId, titles: titles)
         let idsJSON = ids.map { jsonString($0) }.joined(separator: ",")
-        return Self.json(200, "{\"taskIds\":[\(idsJSON)]}")
+        lock.lock()
+        let taskJSONs = ids.compactMap { id in taskRecords.first { $0.id == id }.map(taskJSON) }
+        lock.unlock()
+        return Self.json(200, "{\"taskIds\":[\(idsJSON)],\"tasks\":[\(taskJSONs.joined(separator: ","))]}")
+    }
+
+    public func agentTaskAssign(authorization: String?, body: String) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        if let reply = agentGrantDenial(agentId: agent.id, scope: "task:write") { return reply }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let channelRef = object["channel"] as? String,
+              let channelId = agentTaskChannel(serverId: agent.serverId, agentId: agent.id, reference: channelRef),
+              let taskNumber = object["task_number"] as? Int,
+              let rawAssignee = object["assignee"] as? String, !rawAssignee.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"Invalid task assign request\"}")
+        }
+        let handle = rawAssignee.hasPrefix("@") ? String(rawAssignee.dropFirst()) : rawAssignee
+        let lowered = handle.lowercased()
+        let agentMatch = oauth.channelAgentIds(channelId: channelId).compactMap { oauth.agentRuntimeInfo(id: $0) }.first {
+            $0.name.lowercased() == lowered || $0.displayName.lowercased() == lowered
+        }
+        let humanMatch = oauth.channelHumanIds(channelId: channelId).compactMap { userId in
+            accounts.values.first { $0.id == userId }
+        }.first { $0.name.lowercased() == lowered }
+        guard (agentMatch == nil) != (humanMatch == nil) else {
+            return Self.json(404, "{\"error\":\"Assignee is not assignable\",\"code\":\"assignee_not_assignable\"}")
+        }
+        lock.lock()
+        guard let index = taskRecords.firstIndex(where: { $0.channelId == channelId && $0.taskNumber == taskNumber }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Task not found\",\"code\":\"assignee_not_assignable\"}")
+        }
+        if let agentMatch {
+            taskRecords[index].assigneeId = agentMatch.id
+            taskRecords[index].assigneeType = "agent"
+        } else if let humanMatch {
+            taskRecords[index].assigneeId = humanMatch.id
+            taskRecords[index].assigneeType = "user"
+        }
+        taskRecords[index].claimedAt = nil
+        taskRecords[index].revision += 1
+        let task = taskRecords[index]
+        lock.unlock()
+        return Self.json(200, taskJSON(task))
     }
 
     private var agentInboxAvailableForTesting: Bool?
