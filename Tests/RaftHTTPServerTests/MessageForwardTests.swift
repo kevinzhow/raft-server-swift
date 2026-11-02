@@ -291,3 +291,104 @@ private func forwardObject(_ response: ClientResponse) throws -> [String: Any] {
         }
     }
 }
+
+@Test func forwardScrubsPrivateProvenanceForDeniedViewers() async throws {
+    let fixture = makeForwardFixture(suffix: "998")
+    let viewerId = "11111111-1111-4111-8111-000000990998"
+    let viewerEmail = "forward-viewer-998@slock.test"
+    fixture.accounts.addAccount(id: viewerId, email: viewerEmail, password: "password123")
+    fixture.accounts.markEmailVerified(userId: viewerId)
+    fixture.accounts.oauth.addMember(serverId: fixture.serverId, userId: viewerId, role: "member")
+    fixture.accounts.addPostableChannel(serverId: fixture.serverId, channelId: fixture.destinationId, memberId: viewerId, name: "forward-destination-998")
+    fixture.accounts.oauth.addChannelHuman(channelId: fixture.destinationId, userId: viewerId)
+    let privateParent = fixture.accounts.oauth.createChannel(serverId: fixture.serverId, name: "forward-private-parent-998", creatorUserId: fixture.ownerId, type: "private")
+    fixture.accounts.addPostableChannel(serverId: fixture.serverId, channelId: privateParent, memberId: fixture.ownerId, kind: "private", name: "forward-private-parent-998")
+    fixture.accounts.oauth.addChannelHuman(channelId: privateParent, userId: fixture.ownerId)
+    let parent = fixture.accounts.addChannelMessageForTesting(channelId: privateParent, content: "private thread parent", senderId: fixture.ownerId)
+    let thread = fixture.accounts.oauth.createThreadChannel(parentChannelId: privateParent, parentMessageId: parent)
+    fixture.accounts.addPostableChannel(serverId: fixture.serverId, channelId: thread, memberId: fixture.ownerId, kind: "thread", parentChannelId: privateParent, parentMessageId: parent, name: "thread")
+    let reply = fixture.accounts.addChannelMessageForTesting(channelId: thread, content: "private thread body", senderId: fixture.ownerId)
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: fixture.accounts
+        ))
+        try await app.testing { client in
+            let owner = try await forwardLogin(client, email: fixture.ownerEmail)
+            let viewer = try await forwardLogin(client, email: viewerEmail)
+            let created = try await client.send(.post, headers: forwardHeaders(owner, fixture.serverId), to: "/api/messages/forward") { request in
+                request.body = .init(string: "{\"destinationChannelId\":\"\(fixture.destinationId)\",\"sourceMessageIds\":[\"\(reply)\"]}")
+            }
+            #expect(created.status == .ok)
+            let createdBody = try forwardObject(created)
+            let ownerItem = try #require(((createdBody["actionMetadata"] as? [String: Any])?["forwardedItems"] as? [[String: Any]])?.first)
+            #expect(ownerItem["sourceTargetId"] is NSNull)
+            #expect(ownerItem["sourceThreadId"] == nil)
+            #expect(ownerItem["parentChannelId"] == nil)
+            #expect((ownerItem["sourceTargetSnapshot"] as? [String: Any])?["label"] as? String == "")
+            #expect((ownerItem["sourceTargetSnapshot"] as? [String: Any])?["labelVisibility"] as? String == "restricted")
+
+            let viewerList = try await client.get("/api/messages/channel/\(fixture.destinationId)", headers: forwardHeaders(viewer, fixture.serverId))
+            #expect(viewerList.status == .ok)
+            let forwardId = try #require(createdBody["id"] as? String)
+            let rows = (try forwardObject(viewerList)["messages"] as? [[String: Any]] ?? [])
+            let row = try #require(rows.first { $0["id"] as? String == forwardId })
+            let viewerItem = try #require(((row["actionMetadata"] as? [String: Any])?["forwardedItems"] as? [[String: Any]])?.first)
+            #expect(viewerItem["sourceServerId"] is NSNull)
+            #expect(viewerItem["sourceTargetId"] is NSNull)
+            #expect(viewerItem["sourceThreadId"] is NSNull)
+            #expect(viewerItem["parentChannelId"] is NSNull)
+            #expect(viewerItem["sourceMessageId"] is NSNull)
+            #expect((viewerItem["sourceTargetSnapshot"] as? [String: Any])?["id"] is NSNull)
+            #expect((viewerItem["sourceTargetSnapshot"] as? [String: Any])?["label"] as? String == "")
+            #expect((viewerItem["sourceTargetSnapshot"] as? [String: Any])?["labelVisibility"] as? String == "restricted")
+            #expect(viewerItem["provenanceState"] as? String == "original_unavailable")
+        }
+    }
+}
+
+@Test func forwardRejectsShortIDsNonOrdinaryAndForwardedSources() async throws {
+    let fixture = makeForwardFixture(suffix: "999")
+    let systemMessage = fixture.accounts.addChannelMessageForTesting(
+        channelId: fixture.sourceId,
+        content: "system event",
+        senderId: "system",
+        senderType: "system",
+        messageType: "system"
+    )
+    let ordinary = fixture.accounts.addChannelMessageForTesting(channelId: fixture.sourceId, content: "ordinary source", senderId: fixture.ownerId)
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: fixture.accounts
+        ))
+        try await app.testing { client in
+            let token = try await forwardLogin(client, email: fixture.ownerEmail)
+            let headers = forwardHeaders(token, fixture.serverId)
+            func forward(_ ids: [String], note: String = "") async throws -> ClientResponse {
+                let list = ids.map { "\"\($0)\"" }.joined(separator: ",")
+                return try await client.send(.post, headers: headers, to: "/api/messages/forward") { request in
+                    request.body = .init(string: "{\"destinationChannelId\":\"\(fixture.destinationId)\",\"sourceMessageIds\":[\(list)],\"note\":\"\(note)\"}")
+                }
+            }
+            let short = try await forward([String(ordinary.prefix(8))])
+            #expect(short.status == .badRequest)
+
+            let system = try await forward([systemMessage])
+            #expect(system.status == .badRequest)
+            #expect(try forwardObject(system)["code"] as? String == "unsupported_source_message")
+
+            let firstForward = try await forward([ordinary])
+            #expect(firstForward.status == .ok)
+            let forwardedMessageId = try #require(try forwardObject(firstForward)["id"] as? String)
+            let nested = try await forward([forwardedMessageId], note: "nested")
+            #expect(nested.status == .badRequest)
+            #expect(try forwardObject(nested)["code"] as? String == "forwarded_source_not_supported")
+        }
+    }
+}
