@@ -57,7 +57,7 @@ channels.joint.api	route	pending	-	auto-seed
 channels.jointChannelAdmin.api	route	partial	-	auto-seed
 channels.membersBatch.api	route	locked	2251a67	dedupe/validate batch, exact projection, per-new-member notices, idempotent retry
 channels.membership.api	route	partial	-	auto-seed
-channels.threads.api	route	partial	-	auto-seed
+channels.threads.api	route	partial	2e7ce9e	summaries incl cap/scope/previews/unread/followed + create/follow/authority/roster covered; conversion pruning, follower lifecycle, done/unread folding pending
 channels.unread.rwFailures.api	route	partial	-	auto-seed
 computerAdopt.api	route	pending	-	auto-seed
 computerAttach.api	route	pending	-	auto-seed
