@@ -176,6 +176,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var cancelLastDispatchAt: Date?
         var cancelErrorCode: String?
     }
+    private struct MachineMigrationRecord {
+        var agentId: String
+        var serverId: String
+        var supportRef: String
+        var revision: Int
+        var state: String
+        var sourceMachineId: String
+        var targetMachineId: String
+        var transportGeneration: String
+        var canceledAt: Date?
+        var cancelReason: String?
+        var cancelDispatchAttempts: Int = 0
+        var cancelLastDispatchAt: Date?
+        var cancelErrorCode: String?
+    }
+    private var machineMigrations: [String: MachineMigrationRecord] = [:]
+    /// Test seam for the frozen-generation cancel dispatch to a Computer.
+    public var agentMigrationCancelDispatch: (@Sendable (_ machineId: String, _ role: String, _ migrationRef: String, _ transportGeneration: String, _ stopAgent: Bool) -> Void)?
     private var hostedRuntimes: [String: (provider: String, model: String?, state: String, retryNeedsModel: Bool, createdAt: Date)] = [:]
     private var hostedUsage: [String: String] = [:]
     private var hostedModelPickerServers: Set<String> = []
@@ -9533,12 +9551,26 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"code\":\"not_supported\",\"error\":\"Agent migration status requires creator or server admin authority\"}")
         }
         lock.lock()
-        let migration = hostedMigrations[agentId]
+        let hosted = hostedMigrations[agentId]
+        let machine = machineMigrations.values.first { $0.agentId == agentId && $0.serverId == serverId }
         lock.unlock()
-        guard let migration else {
-            return Self.json(200, "{\"migration\":null}")
+        if let hosted {
+            return Self.json(200, "{\"migration\":\(migrationStatusJSON(hosted))}")
         }
-        return Self.json(200, "{\"migration\":\(migrationStatusJSON(migration))}")
+        if let machine {
+            return Self.json(200, "{\"migration\":\(machineMigrationStatusJSON(machine))}")
+        }
+        return Self.json(200, "{\"migration\":null}")
+    }
+
+    private func machineMigrationStatusJSON(_ migration: MachineMigrationRecord) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let canceledAt = migration.canceledAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+        let cancelReason = migration.cancelReason.map(jsonString) ?? "null"
+        let cancelLastDispatchAt = migration.cancelLastDispatchAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+        let cancelErrorCode = migration.cancelErrorCode.map(jsonString) ?? "null"
+        return "{\"migrationRef\":\(jsonString(migration.supportRef)),\"agentId\":\(jsonString(migration.agentId)),\"state\":\(jsonString(migration.state)),\"revision\":\(migration.revision),\"sourceMachineId\":\(jsonString(migration.sourceMachineId)),\"targetKind\":\"computer\",\"targetMachineId\":\(jsonString(migration.targetMachineId)),\"provider\":null,\"failureReason\":null,\"abortReason\":null,\"transportErrorCode\":null,\"transportErrorMessage\":null,\"readyAt\":null,\"flippedAt\":null,\"arrivedAt\":null,\"completedAt\":null,\"abortedAt\":null,\"canceledAt\":\(canceledAt),\"cancelReason\":\(cancelReason),\"cancelNeedsAttention\":false,\"cancelDispatchAttempts\":\(migration.cancelDispatchAttempts),\"cancelLastDispatchAt\":\(cancelLastDispatchAt),\"cancelErrorCode\":\(cancelErrorCode),\"cancelErrorMessage\":null}"
     }
 
     public func agentMigrationCancel(authorization: String?, serverId: String, agentId: String, body: String = "") -> HTTPReply {
@@ -9570,35 +9602,59 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let expectedRevision = rawRevision.intValue
         lock.lock()
-        guard var migration = hostedMigrations[agentId],
-              migration.supportRef == migrationRef,
-              migration.serverId == serverId
-        else {
+        let hosted = hostedMigrations[agentId].flatMap { candidate in
+            candidate.supportRef == migrationRef && candidate.serverId == serverId ? candidate : nil
+        }
+        let machine = machineMigrations[migrationRef].flatMap { candidate in
+            candidate.agentId == agentId && candidate.serverId == serverId ? candidate : nil
+        }
+        guard hosted != nil || machine != nil else {
             lock.unlock()
             return Self.json(404, "{\"code\":\"MIGRATION_NOT_FOUND\",\"error\":\"Migration not found\"}")
         }
-        guard migration.revision == expectedRevision else {
+        let revision = hosted?.revision ?? machine!.revision
+        guard revision == expectedRevision else {
             lock.unlock()
             return Self.json(409, "{\"code\":\"MIGRATION_REVISION_STALE\",\"error\":\"The migration changed since this action was shown\"}")
         }
-        guard !["canceled_pre_flip", "arrived", "completed", "aborted", "failed"].contains(migration.state) else {
+        let state = hosted?.state ?? machine!.state
+        guard !["canceled_pre_flip", "arrived", "completed", "aborted", "failed"].contains(state) else {
             lock.unlock()
             return Self.json(409, "{\"code\":\"MIGRATION_NOT_CANCELABLE\",\"error\":\"This migration can no longer be canceled\"}")
         }
         let now = Date()
+        let reason = (object["reason"] as? String) ?? "user_canceled"
+        if var migration = hosted {
+            migration.state = "canceled_pre_flip"
+            migration.revision += 1
+            migration.canceledAt = now
+            migration.cancelReason = reason
+            migration.cancelDispatchAttempts = 1
+            migration.cancelLastDispatchAt = now
+            migration.cancelErrorCode = nil
+            hostedMigrations[agentId] = migration
+            lock.unlock()
+            for member in oauth.memberIdsWithRoles(serverId: serverId) where member.role == "owner" || member.role == "admin" {
+                emitRealtime("user:\(member.id)", "agent:migration-updated", migrationUpdatedJSON(migration))
+            }
+            return Self.json(200, "{\"migration\":\(migrationStatusJSON(migration))}")
+        }
+        var migration = machine!
         migration.state = "canceled_pre_flip"
         migration.revision += 1
         migration.canceledAt = now
-        migration.cancelReason = (object["reason"] as? String) ?? "user_canceled"
+        migration.cancelReason = reason
         migration.cancelDispatchAttempts = 1
         migration.cancelLastDispatchAt = now
         migration.cancelErrorCode = nil
-        hostedMigrations[agentId] = migration
+        machineMigrations[migrationRef] = migration
         lock.unlock()
+        agentMigrationCancelDispatch?(migration.sourceMachineId, "source", migration.supportRef, migration.transportGeneration, false)
+        agentMigrationCancelDispatch?(migration.targetMachineId, "target", migration.supportRef, migration.transportGeneration, false)
         for member in oauth.memberIdsWithRoles(serverId: serverId) where member.role == "owner" || member.role == "admin" {
             emitRealtime("user:\(member.id)", "agent:migration-updated", migrationUpdatedJSON(migration))
         }
-        return Self.json(200, "{\"migration\":\(migrationStatusJSON(migration))}")
+        return Self.json(200, "{\"migration\":\(machineMigrationStatusJSON(migration))}")
     }
 
     public func enableAgentMigrationForTesting(serverId: String) {
@@ -9639,6 +9695,30 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func seedMachineMigrationForTesting(
+        agentId: String,
+        serverId: String,
+        supportRef: String,
+        revision: Int,
+        state: String,
+        sourceMachineId: String,
+        targetMachineId: String,
+        transportGeneration: String
+    ) {
+        lock.lock()
+        machineMigrations[supportRef] = MachineMigrationRecord(
+            agentId: agentId,
+            serverId: serverId,
+            supportRef: supportRef,
+            revision: revision,
+            state: state,
+            sourceMachineId: sourceMachineId,
+            targetMachineId: targetMachineId,
+            transportGeneration: transportGeneration
+        )
+        lock.unlock()
+    }
+
     private func migrationError(_ status: Int, _ code: String, _ message: String) -> HTTPReply {
         Self.json(status, "{\"error\":\(jsonString(message)),\"code\":\(jsonString(code)),\"details\":{\"failureReason\":\(jsonString(code))}}")
     }
@@ -9655,6 +9735,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     private func migrationUpdatedJSON(_ migration: HostedMigrationRecord) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let now = jsonString(formatter.string(from: Date()))
+        return "{\"agentId\":\(jsonString(migration.agentId)),\"migrationRef\":\(jsonString(migration.supportRef)),\"state\":\(jsonString(migration.state)),\"revision\":\(migration.revision),\"authority\":\"source\",\"disposition\":null,\"needsAttention\":false,\"dispatchAttempts\":0,\"attentionDeadlineAt\":null,\"sourceAcknowledgedAt\":null,\"targetAcknowledgedAt\":null,\"targetOutcome\":null,\"canceledAt\":null,\"updatedAt\":\(now)}"
+    }
+
+    private func migrationUpdatedJSON(_ migration: MachineMigrationRecord) -> String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let now = jsonString(formatter.string(from: Date()))
