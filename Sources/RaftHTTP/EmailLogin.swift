@@ -6297,10 +6297,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let lastMessageId = fact.messageId
             let detail = detailMap[lastMessageId]
             let isFollowing = follows["\(serverId ?? "")\n\(userId)\n\(scopeId)"] != nil
+            let parentType = parentChannelId.flatMap { postable[$0]?.kind ?? oauth.channelType(id: $0) }
             rows.append(InboxRow(
                 scopeId: scopeId,
-                kind: isThread ? "thread" : "channel",
+                kind: type == "dm" ? "dm" : (isThread ? "thread" : "channel"),
+                channelType: type,
                 parentChannelId: parentChannelId,
+                parentChannelType: isThread ? parentType : nil,
                 lastMessageId: lastMessageId,
                 lastActivityAt: detail?.createdAt ?? Date(timeIntervalSince1970: 0),
                 searchText: [
@@ -6329,10 +6332,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let lastContent = record.frozenMessages.last?.content ?? ""
             if let search, !search.isEmpty, !lastContent.lowercased().contains(search) { continue }
             let lastAt = humanRows.first { $0.id == record.latestMessageId }?.createdAt ?? record.unfollowedAt
+            let parentType = parentId.flatMap { postable[$0]?.kind ?? oauth.channelType(id: $0) }
             rows.append(InboxRow(
                 scopeId: record.threadChannelId,
                 kind: "thread",
+                channelType: "thread",
                 parentChannelId: parentId,
+                parentChannelType: parentType,
                 lastMessageId: record.latestMessageId,
                 lastActivityAt: lastAt,
                 searchText: lastContent.lowercased(),
@@ -6372,10 +6378,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         for (scopeId, mention) in mentionOnly {
             guard let channel = postable[scopeId] else { continue }
             let lastAt = humanRows.first { $0.id == mention.messageId }?.createdAt ?? Date(timeIntervalSince1970: 0)
+            let parentType = channel.kind == "thread" ? channel.parentChannelId.flatMap { postable[$0]?.kind ?? oauth.channelType(id: $0) } : nil
             rows.append(InboxRow(
                 scopeId: scopeId,
-                kind: channel.kind == "thread" ? "thread" : "channel",
+                kind: channel.kind == "dm" ? "dm" : (channel.kind == "thread" ? "thread" : "channel"),
+                channelType: channel.kind,
                 parentChannelId: channel.kind == "thread" ? channel.parentChannelId : nil,
+                parentChannelType: parentType,
                 lastMessageId: mention.messageId,
                 lastActivityAt: lastAt,
                 searchText: "",
@@ -6424,9 +6433,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let firstMention = row.firstMentionMessageId.map(jsonString) ?? "null"
             if row.kind == "thread" {
                 let parent = row.parentChannelId.map(jsonString) ?? "null"
-                return "{\"kind\":\"thread\",\"threadChannelId\":\(jsonString(row.scopeId)),\"parentChannelId\":\(parent),\"latestActivityMessageId\":\(jsonString(row.lastMessageId)),\"firstUnreadMessageId\":\(firstUnread),\"firstMentionMessageId\":\(firstMention),\"unreadCount\":\(row.unreadCount),\"hasMention\":\(row.hasMention),\"isFollowing\":\(row.isFollowing)}"
+                let parentType = row.parentChannelType.map(jsonString) ?? "null"
+                return "{\"kind\":\"thread\",\"threadChannelId\":\(jsonString(row.scopeId)),\"parentChannelId\":\(parent),\"parentChannelType\":\(parentType),\"latestActivityMessageId\":\(jsonString(row.lastMessageId)),\"firstUnreadMessageId\":\(firstUnread),\"firstMentionMessageId\":\(firstMention),\"unreadCount\":\(row.unreadCount),\"hasMention\":\(row.hasMention),\"isFollowing\":\(row.isFollowing)}"
             }
-            return "{\"kind\":\"channel\",\"channelId\":\(jsonString(row.scopeId)),\"lastMessageId\":\(jsonString(row.lastMessageId)),\"firstUnreadMessageId\":\(firstUnread),\"firstMentionMessageId\":\(firstMention),\"unreadCount\":\(row.unreadCount),\"hasMention\":\(row.hasMention)}"
+            let kind = row.kind == "dm" ? "dm" : "channel"
+            return "{\"kind\":\"\(kind)\",\"channelId\":\(jsonString(row.scopeId)),\"channelType\":\(jsonString(row.channelType)),\"lastMessageId\":\(jsonString(row.lastMessageId)),\"firstUnreadMessageId\":\(firstUnread),\"firstMentionMessageId\":\(firstMention),\"unreadCount\":\(row.unreadCount),\"hasMention\":\(row.hasMention)}"
         }.joined(separator: ",")
 
         // Facets keep the query filter but ignore channelId, pagination, and the sort direction.
@@ -6464,7 +6475,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private struct InboxRow {
         var scopeId: String
         var kind: String
+        var channelType: String
         var parentChannelId: String?
+        var parentChannelType: String?
         var lastMessageId: String
         var lastActivityAt: Date
         var searchText: String

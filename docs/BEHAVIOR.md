@@ -442,3 +442,5 @@ threads/done 拒绝语义：不存在、跨 server、无访问的 thread/channel
 
 Channel 存在性 probe：`GET /channels/:id/files`、`GET/POST /channels/:id/threads`、`GET /channels/:id/threads/:msg`、`GET /messages/channel/:id`、`GET /messages/sync?channel_id=` 对无访问的 private channel 与不存在的 id 统一 404 且 body 字节一致；对拥有 receiver-owned residue（inbox fact、read cursor 或显式 residue 标记）但已失去访问的调用者统一 403 `{"error":"Forbidden"}`，不泄露 live frontier。thread follow 视为 thread 访问权。
 
+Inbox row 投影：DM scope 的 `kind` 为 `"dm"`，channel/private 为 `"channel"` 且带 `channelType`；thread 行带 `parentChannelId` 与 `parentChannelType`；private channel/DM/private-parent thread 在 `filter=all` 与 `filter=mentions` 中正常出现。follow/done/undone/unfollow 只读写 thread_follows；parent membership 本身不会让 thread 出现在 followed list，unfollow 也不移除 parent membership。
+
