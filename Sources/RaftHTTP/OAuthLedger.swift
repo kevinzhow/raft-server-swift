@@ -1399,6 +1399,7 @@ public final class OAuthLedger: @unchecked Sendable {
                 "agentManifestUrl": client.agentManifestUrl as Any,
                 "agentManifestUrlSource": client.agentManifestUrlSource as Any,
                 "allowedScopes": client.allowedScopes as Any,
+                "appType": client.appType,
             ]
         }
     }

@@ -502,3 +502,5 @@ Joint message resolve：`GET /internal/agent-api/messages/:id/resolve` 对 joint
 
 Attachment comments：`POST /api/attachments/:id/comments` 为 human 唯一创建入口，保存 content/anchor（lines）并回 `{message:{id,content,senderType,createdAt,anchor}}`。`GET /internal/agent-api/attachments/:id/comments` 需 read scope，返回 comments 与 viewer：agent 永远 `canComment:false,reason:"agent_descoped"`；`canResolve` 仅在 agent 是 parent-message 作者时为 true，并带 `resolveAction:{type:"reaction",emoji:"✅"}`。parent 作者的 ✅ reaction 使 comment `resolved:true` 并给出 resolvedBy/resolvedAt。`POST` agent 创建恒 403 `agent_comment_create_disabled`；缺失/非法 attachment 404。
 
+Integration login 的 service-aware defaults：client 有显式 allowedScopes 时默认 scopes 为 `["openid"]`；无显式 catalog 时默认 `["identity","openid","profile"]`。显式 `scopes` 必须是默认集合子集，否则 400 `{errorCode:"INVALID_SCOPE"}`；成功只回实际使用/请求的 scopes。
+

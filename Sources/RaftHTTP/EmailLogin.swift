@@ -15391,7 +15391,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     private static func integrationServiceJSON(_ service: [String: Any]) -> String {
-        "{\"id\":\(integrationValueJSON(service, "id")),\"clientId\":\(integrationValueJSON(service, "clientId")),\"name\":\(integrationValueJSON(service, "name")),\"description\":\(integrationValueJSON(service, "description")),\"homepageUrl\":\(integrationValueJSON(service, "homepageUrl")),\"agentManifestUrl\":\(integrationValueJSON(service, "agentManifestUrl")),\"agentManifestUrlSource\":\(integrationValueJSON(service, "agentManifestUrlSource")),\"allowedScopes\":\(integrationValueJSON(service, "allowedScopes"))}"
+        "{\"id\":\(integrationValueJSON(service, "id")),\"clientId\":\(integrationValueJSON(service, "clientId")),\"name\":\(integrationValueJSON(service, "name")),\"description\":\(integrationValueJSON(service, "description")),\"homepageUrl\":\(integrationValueJSON(service, "homepageUrl")),\"agentManifestUrl\":\(integrationValueJSON(service, "agentManifestUrl")),\"agentManifestUrlSource\":\(integrationValueJSON(service, "agentManifestUrlSource")),\"allowedScopes\":\(integrationValueJSON(service, "allowedScopes")),\"appType\":\(integrationValueJSON(service, "appType"))}"
     }
 
     public func agentIntegrationList(authorization: String?) -> HTTPReply {
@@ -15559,6 +15559,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(404, "{\"error\":\"Integration service not found\",\"code\":\"integration_not_found\"}")
         }
+        let defaultScopes: [String] = (service["allowedScopes"] as? [String]) == nil ? ["identity", "openid", "profile"] : ["openid"]
+        let requestedScopes = (object["scopes"] as? [Any])?.compactMap { $0 as? String } ?? []
+        if !requestedScopes.isEmpty, !Set(requestedScopes).isSubset(of: Set(defaultScopes)) {
+            return Self.json(400, "{\"error\":\"Scope is not allowed for this service\",\"errorCode\":\"INVALID_SCOPE\"}")
+        }
+        let effectiveScopes = requestedScopes.isEmpty ? defaultScopes : requestedScopes
         let key = "\(agent.serverId)\n\(agent.id)\n\(serviceId)"
         lock.lock()
         let existing = agentIntegrationLogins[key]
@@ -15567,14 +15573,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 serverId: agent.serverId,
                 agentId: agent.id,
                 clientId: serviceId,
-                scopes: ["identity", "openid", "profile"],
+                scopes: effectiveScopes,
                 loggedInAt: Date()
             )
         }
         lock.unlock()
         let status = existing == nil ? "logged_in" : "already_logged_in"
-        let scopes = "[\"identity\",\"openid\",\"profile\"]"
-        return Self.json(200, "{\"status\":\(jsonString(status)),\"service\":\(Self.integrationServiceJSON(service)),\"scopes\":\(scopes)}")
+        let scopesJSON = effectiveScopes.map(jsonString).joined(separator: ",")
+        return Self.json(200, "{\"status\":\(jsonString(status)),\"service\":\(Self.integrationServiceJSON(service)),\"scopes\":[\(scopesJSON)]}")
     }
 
     public func agentMentionDeliveries(authorization: String?, messageRef: String) -> HTTPReply {

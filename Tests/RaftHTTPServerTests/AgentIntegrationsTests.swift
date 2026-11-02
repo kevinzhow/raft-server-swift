@@ -75,3 +75,54 @@ import VaporTesting
         }
     }
 }
+
+@Test func agentIntegrationLoginUsesServiceAwareDefaultScopes() async throws {
+    let accounts = EmailLoginDirectory()
+    let serverId = "33333333-3333-4333-8333-000001031002"
+    let ownerId = "11111111-1111-4111-8111-000001031002"
+    accounts.addAccount(id: ownerId, email: "integration-scope-owner@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "integration-scope", name: "Integration Scope", ownerId: ownerId)
+    _ = try accounts.oauth.createClient(
+        serverId: serverId,
+        createdByUserId: ownerId,
+        name: "Scoped App",
+        clientId: "scoped-app",
+        appType: "server_local",
+        allowedScopes: ["openid", "profile", "identity"]
+    )
+    let agent = accounts.oauth.createAgent(serverId: serverId, name: "ScopeBot", runtime: "external")
+    let key = accounts.mintAgentCredential(agentId: agent, scopes: ["read"], name: "scope")
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(key)"
+            headers[.contentType] = "application/json"
+            func login(_ body: String) async throws -> ClientResponse {
+                try await client.send(.post, headers: headers, to: "/internal/agent-api/integrations/login") { request in
+                    request.body = .init(string: body)
+                }
+            }
+            let defaultLogin = try await login("{\"service\":\"scoped-app\"}")
+            #expect(defaultLogin.status == .ok)
+            let defaultBody = (try JSONSerialization.jsonObject(with: Data((defaultLogin.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            #expect(defaultBody["scopes"] as? [String] == ["openid"])
+
+            let invalid = try await login("{\"service\":\"scoped-app\",\"scopes\":[\"profile\"]}")
+            #expect(invalid.status == .badRequest)
+            let invalidBody = (try JSONSerialization.jsonObject(with: Data((invalid.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            #expect(invalidBody["errorCode"] as? String == "INVALID_SCOPE")
+
+            let explicit = try await login("{\"service\":\"scoped-app\",\"scopes\":[\"openid\"]}")
+            #expect(explicit.status == .ok)
+            #expect(((try JSONSerialization.jsonObject(with: Data((explicit.body.string ?? "").utf8))) as? [String: Any])?["scopes"] as? [String] == ["openid"])
+        }
+    }
+}
