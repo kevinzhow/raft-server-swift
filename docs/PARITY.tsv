@@ -155,7 +155,7 @@ mobileDownload	route	partial	-	auto-seed
 notifications.api	route	partial	-	auto-seed
 oauth.api	route	partial	-	auto-seed
 oauthAgentDirectory.api	route	locked	87f8e28	minimal server-bound directory; expiry/revocation/scope guards
-oauthOfflineSource.api	route	locked	PENDING	offline private App settings listing, publish-request no-op, republish install restore, human login exchange, revoked token retention, private re-install
+oauthOfflineSource.api	route	locked	0262dfe	offline private App settings listing, publish-request no-op, republish install restore, human login exchange, revoked token retention, private re-install
 oauthPkceDowngrade.api	route	locked	8a6e0ca	unsolicited verifier rejected without consuming code on all grants/mounts
 oauthRedirectSecurity.api	route	locked	aa98001	unsafe/unregistered callback 400, valid callback 200, create/update URL guard
 oauthServerinfo.contract	route	partial	-	auto-seed
