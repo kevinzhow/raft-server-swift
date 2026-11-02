@@ -357,6 +357,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var announcementDismissals: Set<String> = []
     private var inboxDoneScopes: Set<String> = []
     private var inboxDoneAt: [String: Date] = [:]
+    private var inboxResiduesForTesting: Set<String> = []
     private var guestVisibleChannels: [String: Bool] = [:]
     private var readReceiptsServers: Set<String> = []
     private var channelHumanRoles: [String: String] = [:]
@@ -5291,6 +5292,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
+        lock.lock()
+        let probeAccess = channelProbeAccessLocked(channelId: channelId, serverId: serverId, userId: userId)
+        lock.unlock()
+        if probeAccess == .residue {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
         guard let channel = postableChannels[channelId],
               channel.serverId == serverId,
               channelActorCanSee(channelId: channelId, userId: userId)
@@ -5331,6 +5338,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         let visible = channel.kind == "channel" || channel.memberIds.contains(userId)
+        if !visible, channelProbeAccessLocked(channelId: channelId, serverId: serverId ?? "", userId: userId) == .residue {
+            lock.unlock()
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
         guard visible else {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Channel not found\"}")
@@ -5467,6 +5478,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"Invalid channel id\"}")
         }
         lock.lock()
+        if let serverId, channelProbeAccessLocked(channelId: channelId, serverId: serverId, userId: userId) == .residue {
+            lock.unlock()
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
         let visible: Bool = {
             guard let channel = postableChannels[channelId], channel.serverId == serverId else { return false }
             if channel.kind == "channel" { return true }
@@ -5576,6 +5591,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             userId = nil
         }
         lock.lock()
+        if let userId, let serverId,
+           channelProbeAccessLocked(channelId: channelId, serverId: serverId, userId: userId) == .residue {
+            lock.unlock()
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
         let visible: Bool = {
             guard let channel = postableChannels[channelId], channel.serverId == serverId, let userId else { return false }
             if channel.kind == "channel" { return true }
@@ -6103,6 +6123,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         lock.unlock()
         return Self.json(200, "{\"ok\":true,\"markedCount\":\(scopeIds.count),\"scopes\":[\(scopeRows.joined(separator: ","))]}")
+    }
+
+    public func markInboxResidueForTesting(userId: String, channelId: String) {
+        lock.lock()
+        inboxResiduesForTesting.insert("\(userId)\n\(channelId)")
+        lock.unlock()
     }
 
     public func addInboxFactForTesting(receiverId: String, serverId: String, channelId: String, messageId: String) {
@@ -8461,6 +8487,32 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
+    private enum ChannelProbeAccess {
+        case allowed
+        case residue
+        case hidden
+    }
+
+    /// A probe on a channel the caller cannot currently read. Missing and
+    /// hidden answer the same way; receiver-owned residue is acknowledged
+    /// with a distinct 403 so the caller can clear Activity.
+    private func channelProbeAccessLocked(channelId: String, serverId: String, userId: String) -> ChannelProbeAccess {
+        guard let channel = postableChannels[channelId], channel.serverId == serverId else { return .hidden }
+        if channel.kind == "channel"
+            || channel.memberIds.contains(userId)
+            || oauth.channelType(id: channelId) == "channel"
+            || oauth.isChannelParticipant(channelId: channelId, userId: userId)
+            || (channel.kind == "thread" && threadFollows["\(serverId)\n\(userId)\n\(channelId)"] != nil) {
+            return .allowed
+        }
+        let residue = inboxResiduesForTesting.contains("\(userId)\n\(channelId)")
+            || storedInboxFacts.contains {
+                $0.receiverType == "user" && $0.receiverId == userId && $0.channelId == channelId
+            }
+            || oauth.channelUnreadInfo(channelId: channelId, userId: userId).maxReadSeq > 0
+        return residue ? .residue : .hidden
+    }
+
     public func channelFiles(
         authorization: String?,
         serverId: String,
@@ -8474,10 +8526,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
-        guard let channel = postableChannels[channelId] ?? nil,
-              channel.serverId == serverId,
-              channel.deletedAt == nil
-        else {
+        lock.lock()
+        let access = channelProbeAccessLocked(channelId: channelId, serverId: serverId, userId: userId)
+        let channel = postableChannels[channelId]
+        lock.unlock()
+        if access == .residue {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard access == .allowed, let channel, channel.deletedAt == nil else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         let kind = channel.kind
@@ -18504,6 +18560,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        lock.lock()
+        let probeAccess = channelProbeAccessLocked(channelId: channelId, serverId: serverId, userId: userId)
+        lock.unlock()
+        if probeAccess == .residue {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard probeAccess == .allowed else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         if let reply = archivedChannelReply(channelId) { return reply }

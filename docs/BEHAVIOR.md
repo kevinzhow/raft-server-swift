@@ -440,3 +440,5 @@ read_receipts_v0：server gate 开启后，channel detail 只暴露 agent peers 
 
 threads/done 拒绝语义：不存在、跨 server、无访问的 thread/channel、非法 id 全部 404 `{"error":"Inbox scope not found"}` 且 body 字节一致；一旦 caller 能看到该 channel 但不是 thread，回 400 `{code:"NOT_A_THREAD"}`。deleted thread 的 caller-owned evidence（inbox fact、follow 或 read cursor）仍可 200。task #48 read-all：ex-member/cursor 或 inbox fact residue 可 200 退休，cursor 只推进到 receiver-owned fact seq（不读 live frontier）；无 residue 的 stranger、缺失 id、跨 server channel 统一 404 `{"error":"Channel not found"}`；replay 幂等 200，receipt 仅含 ok/seq/readStateVersion。
 
+Channel 存在性 probe：`GET /channels/:id/files`、`GET/POST /channels/:id/threads`、`GET /channels/:id/threads/:msg`、`GET /messages/channel/:id`、`GET /messages/sync?channel_id=` 对无访问的 private channel 与不存在的 id 统一 404 且 body 字节一致；对拥有 receiver-owned residue（inbox fact、read cursor 或显式 residue 标记）但已失去访问的调用者统一 403 `{"error":"Forbidden"}`，不泄露 live frontier。thread follow 视为 thread 访问权。
+
