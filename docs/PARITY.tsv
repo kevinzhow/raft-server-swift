@@ -193,7 +193,7 @@ serverAgreements.api	route	partial	-	auto-seed
 serverLabs.api	route	locked	8700cda	labs role parity, version CAS, audit, readback
 serverMemberEvents.api	route	partial	-	auto-seed
 serverSetupGate.daemonReady	route	partial	-	auto-seed
-servers.activityUnreadSummary.api	route	partial	-	auto-seed
+servers.activityUnreadSummary.api	route	locked	843bffd	wire activityUnreadCount/inbox invariant, known zero, member-only, mute orthogonality; excluded service compute tests and canonical fixture
 servers.api	route	partial	1d23778	machines/runtime forms pi+opencode+codex+grok+claude+cursor+kimi-sdk + kimi/builtin statuses + usage/policy/migration delete covered; builtin v1 released fixtures + history API + invites pending
 servers.joinCommunity.api	route	locked	bde33f8	locked: community/community-cn join, unknown slug, already-member, not seeded, unauth
 servers.mentionRedriveAuthz.api	route	locked	6ea6dda	NOT_ACCESSIBLE/NOT_JOINABLE auth and version body
