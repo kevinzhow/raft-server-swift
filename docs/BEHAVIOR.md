@@ -418,3 +418,7 @@ Thread info 404 分支：channel 不存在、`X-Server-Id` 与 channel 不符、
 
 Thread unfollow 投递：unfollow 后 thread 仍在 Activity All 中作为 residue 行出现（`isFollowing:false`、`unreadCount:0`、`hasMention:false`、`firstUnreadMessageId:null`）；后续普通回复不恢复 follow，后续直接 mention 也不会让非 parent 成员在 `filter=mentions` 看到该 thread。
 
+Deleted-thread Done 兼容：`POST /api/channels/threads/done` 若携带 `throughActivitySeq` 但值为 null/空 → 400 `DONE_FRONTIER_REQUIRED`；thread 已删除时，只有拥有该 thread 的 inbox fact 或 follow 的调用者才 200 `{ok:true}`（并把 read cursor 停在自有 evidence），其他成员 404；不存在的 id 404；显式合法 frontier 也 200 且不改变自有边界。
+
+`channels.threads.api` 锁定说明：HTTP/frame 可移植用例已覆盖 thread create/summary/canonical dedup/info 404/follow/unfollow/done/undone/roster/follower undo/mention scope/conversion prune/member removal/inbox Done/unread fold/pagination/unfollow residue/deleted-thread Done。排除项：tracer/query-shape/RW 诊断（3–10、16 的 history trace、17、42 trace、48）、DB 并发 open（19）、stale socket delivery（40、43）、durable Agent Activity 行与 service delivery helper（1）、deleted-thread residue 的 DB cursor/counter/service 断言（46）。
+

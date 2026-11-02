@@ -5979,10 +5979,35 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(400, "{\"error\":\"Invalid inbox done request\"}")
         }
+        if object.keys.contains("throughActivitySeq") {
+            let raw = object["throughActivitySeq"]
+            if raw is NSNull || (raw as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+                return Self.json(400, "{\"code\":\"DONE_FRONTIER_REQUIRED\",\"error\":\"throughActivitySeq is required when supplied\"}")
+            }
+        }
         lock.lock()
-        guard postableChannels[threadId]?.kind == "thread",
-              threadParentVisibleLocked(threadId: threadId, userId: userId)
-        else {
+        guard let thread = postableChannels[threadId], thread.kind == "thread" else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Inbox scope not found\"}")
+        }
+        if thread.deletedAt != nil {
+            let ownedFacts = storedInboxFacts.filter {
+                $0.receiverType == "user" && $0.receiverId == userId && $0.channelId == threadId
+            }
+            let followed = threadFollows["\(serverId ?? "")\n\(userId)\n\(threadId)"] != nil
+            guard !ownedFacts.isEmpty || followed else {
+                lock.unlock()
+                return Self.json(404, "{\"error\":\"Inbox scope not found\"}")
+            }
+            if let latestOwned = ownedFacts.last,
+               let index = humanMessageRows.firstIndex(where: { $0.id == latestOwned.messageId }) {
+                oauth.setChannelReadCursor(channelId: threadId, userId: userId, seq: index + 1)
+            }
+            lock.unlock()
+            _ = serverId
+            return Self.json(200, "{\"ok\":true}")
+        }
+        guard threadParentVisibleLocked(threadId: threadId, userId: userId) else {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Inbox scope not found\"}")
         }
