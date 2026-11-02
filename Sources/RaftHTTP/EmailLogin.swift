@@ -5544,6 +5544,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func setChannelMessageCreatedAtForTesting(id: String, createdAt: Date) {
+        lock.lock()
+        if let index = humanMessageRows.firstIndex(where: { $0.id == id }) {
+            humanMessageRows[index].createdAt = createdAt
+        }
+        lock.unlock()
+    }
+
     public func humanMessageRandomIds(channelId: String) -> [String] {
         lock.lock()
         defer { lock.unlock() }
