@@ -2243,6 +2243,39 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("internal", "computer", "runners") { request -> Response in
         routeResponse(services.emailAccounts.computerRunners(authorization: request.headers[.authorization]))
     }
+    app.post("internal", "computer", "agent-migrations", "by-id", ":migrationId", "resumable", "control") { request -> Response in
+        routeResponse(services.emailAccounts.putMigrationControlManifest(
+            authorization: request.headers[.authorization],
+            migrationRef: request.parameters.get("migrationId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.get("internal", "computer", "agent-migrations", "by-id", ":migrationId", "resumable", "control") { request -> Response in
+        routeResponse(services.emailAccounts.getMigrationControlManifest(
+            authorization: request.headers[.authorization],
+            migrationRef: request.parameters.get("migrationId") ?? ""
+        ))
+    }
+    app.post("internal", "computer", "agent-migrations", "by-id", ":migrationId", "resumable", "chunks", ":chunkIndex", "receipt") { request -> Response in
+        routeResponse(services.emailAccounts.putMigrationChunkReceipt(
+            authorization: request.headers[.authorization],
+            migrationRef: request.parameters.get("migrationId") ?? "",
+            chunkIndex: Int(request.parameters.get("chunkIndex") ?? "") ?? -1,
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.get("internal", "computer", "agent-migrations", "by-id", ":migrationId", "resumable", "chunks") { request -> Response in
+        routeResponse(services.emailAccounts.migrationChunkStatus(
+            authorization: request.headers[.authorization],
+            migrationRef: request.parameters.get("migrationId") ?? ""
+        ))
+    }
+    app.post("internal", "computer", "agent-migrations", "by-id", ":migrationId", "resumable", "upload-complete") { request -> Response in
+        routeResponse(services.emailAccounts.completeMigrationUpload(
+            authorization: request.headers[.authorization],
+            migrationRef: request.parameters.get("migrationId") ?? ""
+        ))
+    }
     app.get("api", "servers", ":id", "usage") { request -> Response in
         routeResponse(services.emailAccounts.serverUsage(
             authorization: request.headers[.authorization],

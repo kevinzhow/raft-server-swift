@@ -190,6 +190,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var sourceTokenHash: String = ""
         var targetTokenHash: String = ""
         var manifestJSON: String?
+        var manifestChunks: [Int: (sha256: String, sizeBytes: Int)] = [:]
+        var chunkReceipts: [Int: String] = [:]
         var failureReason: String?
         var transportErrorCode: String?
         var transportErrorMessage: String?
@@ -10198,6 +10200,141 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func putMigrationControlManifest(authorization: String?, migrationRef: String, body: String) -> HTTPReply {
+        guard computerCredentialValid(authorization) else {
+            return Self.json(401, "{\"code\":\"migration_transport_token_invalid\",\"error\":\"Migration transport token is invalid\"}")
+        }
+        guard body.utf8.count <= 16_384 else {
+            return Self.json(413, "{\"code\":\"migration_control_manifest_too_large\",\"error\":\"Migration control manifest exceeds its fixed budget\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let bundle = object["bundle"] as? [String: Any],
+              let chunks = bundle["chunks"] as? [[String: Any]]
+        else {
+            return Self.json(400, "{\"code\":\"migration_control_manifest_invalid\",\"error\":\"Migration control manifest is invalid\"}")
+        }
+        var parsed: [Int: (sha256: String, sizeBytes: Int)] = [:]
+        for chunk in chunks {
+            guard let index = chunk["index"] as? Int, index >= 0,
+                  let size = chunk["sizeBytes"] as? Int, size > 0,
+                  let sha = chunk["sha256"] as? String,
+                  sha.range(of: "^[a-fA-F0-9]{64}$", options: .regularExpression) != nil,
+                  parsed[index] == nil
+            else {
+                return Self.json(400, "{\"code\":\"migration_control_manifest_invalid\",\"error\":\"Migration control manifest is invalid\"}")
+            }
+            parsed[index] = (sha.lowercased(), size)
+        }
+        lock.lock()
+        guard var record = machineMigrations[migrationRef] else {
+            lock.unlock()
+            return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
+        }
+        if let existing = record.manifestJSON, existing != body {
+            lock.unlock()
+            return Self.json(409, "{\"code\":\"migration_control_manifest_conflict\",\"error\":\"Migration control manifest conflicts with the active generation\"}")
+        }
+        record.manifestJSON = body
+        record.manifestChunks = parsed
+        if record.chunkReceipts.isEmpty { record.chunkReceipts = [:] }
+        machineMigrations[migrationRef] = record
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true,\"manifest\":\(body)}")
+    }
+
+    public func getMigrationControlManifest(authorization: String?, migrationRef: String) -> HTTPReply {
+        guard computerCredentialValid(authorization) else {
+            return Self.json(401, "{\"code\":\"migration_transport_token_invalid\",\"error\":\"Migration transport token is invalid\"}")
+        }
+        lock.lock()
+        let record = machineMigrations[migrationRef]
+        lock.unlock()
+        guard let record else {
+            return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
+        }
+        guard let manifest = record.manifestJSON else {
+            return Self.json(409, "{\"code\":\"migration_control_manifest_missing\",\"error\":\"Migration control manifest is not registered\"}")
+        }
+        return Self.json(200, "{\"manifest\":\(manifest)}")
+    }
+
+    public func putMigrationChunkReceipt(authorization: String?, migrationRef: String, chunkIndex: Int, body: String) -> HTTPReply {
+        guard computerCredentialValid(authorization) else {
+            return Self.json(401, "{\"code\":\"migration_transport_token_invalid\",\"error\":\"Migration transport token is invalid\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let sha = object["sha256"] as? String
+        else {
+            return Self.json(400, "{\"code\":\"migration_streamed_chunk_invalid\",\"error\":\"Streamed chunk is invalid\"}")
+        }
+        lock.lock()
+        guard var record = machineMigrations[migrationRef] else {
+            lock.unlock()
+            return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
+        }
+        guard let manifest = record.manifestJSON, !record.manifestChunks.isEmpty else {
+            lock.unlock()
+            return Self.json(409, "{\"code\":\"migration_control_manifest_missing\",\"error\":\"Migration control manifest is not registered\"}")
+        }
+        _ = manifest
+        guard let expected = record.manifestChunks[chunkIndex] else {
+            lock.unlock()
+            return Self.json(400, "{\"code\":\"migration_streamed_chunk_invalid\",\"error\":\"Streamed chunk is invalid\"}")
+        }
+        guard expected.sha256 == sha.lowercased() else {
+            lock.unlock()
+            return Self.json(409, "{\"code\":\"migration_chunk_receipt_mismatch\",\"error\":\"Migration chunk receipt does not match the active control manifest\"}")
+        }
+        record.chunkReceipts[chunkIndex] = sha.lowercased()
+        machineMigrations[migrationRef] = record
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true,\"chunkIndex\":\(chunkIndex),\"sha256\":\(jsonString(sha.lowercased()))}")
+    }
+
+    public func migrationChunkStatus(authorization: String?, migrationRef: String) -> HTTPReply {
+        guard computerCredentialValid(authorization) else {
+            return Self.json(401, "{\"code\":\"migration_transport_token_invalid\",\"error\":\"Migration transport token is invalid\"}")
+        }
+        lock.lock()
+        let record = machineMigrations[migrationRef]
+        lock.unlock()
+        guard let record else {
+            return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
+        }
+        guard !record.manifestChunks.isEmpty else {
+            return Self.json(409, "{\"code\":\"migration_control_manifest_missing\",\"error\":\"Migration control manifest is not registered\"}")
+        }
+        let all = record.manifestChunks.keys.sorted()
+        let received = all.filter { record.chunkReceipts[$0] != nil }
+        let missing = all.filter { record.chunkReceipts[$0] == nil }
+        return Self.json(200, "{\"chunks\":[\("\(all.map(String.init).joined(separator: ","))")],\"received\":[\("\(received.map(String.init).joined(separator: ","))")],\"missing\":[\("\(missing.map(String.init).joined(separator: ","))")]}")
+    }
+
+    public func completeMigrationUpload(authorization: String?, migrationRef: String) -> HTTPReply {
+        guard computerCredentialValid(authorization) else {
+            return Self.json(401, "{\"code\":\"migration_transport_token_invalid\",\"error\":\"Migration transport token is invalid\"}")
+        }
+        lock.lock()
+        guard var record = machineMigrations[migrationRef] else {
+            lock.unlock()
+            return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
+        }
+        guard !record.manifestChunks.isEmpty else {
+            lock.unlock()
+            return Self.json(409, "{\"code\":\"migration_control_manifest_missing\",\"error\":\"Migration control manifest is not registered\"}")
+        }
+        let missing = record.manifestChunks.keys.filter { record.chunkReceipts[$0] == nil }.sorted()
+        guard missing.isEmpty else {
+            lock.unlock()
+            return Self.json(409, "{\"code\":\"migration_chunks_missing\",\"error\":\"Migration chunks are still missing\",\"missing\":[\("\(missing.map(String.init).joined(separator: ","))")]}")
+        }
+        record.state = "transfer_complete"
+        record.revision += 1
+        machineMigrations[migrationRef] = record
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true,\"state\":\"transfer_complete\"}")
+    }
+
     private func startHostedMigration(
         info: OAuthLedger.AgentManagementInfo,
         userId: String,
@@ -12855,6 +12992,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             computers[index].machineId = nil
         }
         lock.unlock()
+    }
+
+    public func computerAPIKeyForTesting(machineId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return computers.first { $0.machineId == machineId && $0.revokedAt == nil }?.apiKey
+    }
+
+    private func computerCredentialValid(_ authorization: String?) -> Bool {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return false }
+        let key = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        defer { lock.unlock() }
+        return computers.contains { $0.apiKey == key && $0.revokedAt == nil }
     }
 
     public func computerRunners(authorization: String?) -> HTTPReply {
