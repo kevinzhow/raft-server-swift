@@ -7026,6 +7026,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             channelAttachments[id]?.messagePosition = position
         }
         humanMessageRows.append(stored)
+        if postableChannels[channelId]?.kind == "thread" {
+            inboxDoneScopes = inboxDoneScopes.filter { !$0.hasSuffix("\n\(channelId)") }
+        }
         let sequence = humanMessageRows.count
         let cursorKey = "\(channelId)\n\(senderId)"
         userChannelReadCursors[cursorKey] = max(userChannelReadCursors[cursorKey] ?? 0, sequence)
@@ -17458,9 +17461,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
               let parentMessageId = object["parentMessageId"] as? String
         else {
-            return Self.json(400, "{\"error\":\"Invalid thread request\"}")
+            return Self.json(400, "{\"error\":\"parentMessageId is required\"}")
         }
         lock.lock()
+        guard humanMessageRows.contains(where: { $0.id == parentMessageId && $0.channelId == channelId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Parent message not found\"}")
+        }
         if let existing = postableChannels.first(where: { _, candidate in
             candidate.serverId == serverId && candidate.kind == "thread"
                 && candidate.parentChannelId == channelId && candidate.parentMessageId == parentMessageId
@@ -17494,9 +17501,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             ))
             messageId = id
         }
+        let parentAuthorId = humanMessageRows.first(where: { $0.id == parentMessageId })?.senderId
         lock.unlock()
         if messageId != nil {
             threadFollows["\(serverId)\n\(userId)\n\(threadId)"] = (serverId, userId, threadId, parentMessageId)
+            if let parentAuthorId, parentAuthorId != userId,
+               parentAuthorId != "system",
+               accounts.values.contains(where: { $0.id == parentAuthorId }),
+               oauth.memberRole(serverId: serverId, userId: parentAuthorId) != nil {
+                threadFollows["\(serverId)\n\(parentAuthorId)\n\(threadId)"] = (serverId, parentAuthorId, threadId, parentMessageId)
+            }
         }
         let messageJSON = messageId.map { jsonString($0) } ?? "null"
         return Self.json(200, "{\"threadChannelId\":\(jsonString(threadId)),\"messageId\":\(messageJSON),\"replyCount\":0,\"lastReplyAt\":null,\"participantIds\":[]}")

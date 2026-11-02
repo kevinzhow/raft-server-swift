@@ -400,3 +400,5 @@ Locked module groups（此前已实现，本轮按可移植用例完成审计并
 - `releaseNotes.api`：公开列表匿名为 `{items,nextCursor}` 且校验 limit/cursor；published/retracted/draft 投影；entries 只取 currentRevision 且按 ordinal；detail 对非法 id 400、未知 404、retracted stub 隐藏 entries。DB trigger 不可变性为不可移植排除项。
 - `push.api`：APNs/FCM 注册 tuple 校验与按 installation/provider upsert；delivery status 按 server 报告 FCM 可用性；family revoke 无认证、30 天内幂等、过期后 terminal；在线 logout 标记 family 为 logout；web push 仅接受公开 HTTPS endpoint。
 
+Thread 打开路径：`POST /api/channels/:id/threads` 缺 body 或 `parentMessageId` 时 400 `{"error":"parentMessageId is required"}`；parent 消息不属于该频道时 404 `{"error":"Parent message not found"}`。只带 parent 创建空 thread 不自动 follow 调用者（响应 `replyCount:0`、`lastReplyAt:null`、`participantIds:[]`）。带第一条回复时 follow 发送者与 parent 作者（如作者仍是该 server 成员且不是 system）。thread 新消息会清除所有 follower 的 done 状态，使 `/api/channels/threads/followed` 重新出现该 thread。
+
