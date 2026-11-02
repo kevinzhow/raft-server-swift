@@ -155,6 +155,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var agentCredentials: [String: AgentCredential] = [:]
     private var agentMachineIds: [String: String] = [:]
     private var agentRuntimeProfiles: [String: (machineId: String, staleAfterMigration: Bool)] = [:]
+    private var activeAgentMigrations: [String: (sourceMachineId: String, targetMachineId: String, state: String)] = [:]
     private var agentMigrationServers: Set<String> = []
     private var hostedMigrationServers: Set<String> = []
     private var hostedRuntimeServers: Set<String> = []
@@ -10861,6 +10862,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"protocolVersion\":2,\"runtimeId\":\(jsonString(agent.runtime)),\"schemaVersion\":\(jsonString(schemaVersion)),\"fields\":\(fields),\"values\":\(valueJSON),\"capabilities\":\(capabilities)}")
     }
 
+    public func addAgentMigrationForTesting(id: String, sourceMachineId: String, targetMachineId: String, state: String) {
+        lock.lock()
+        activeAgentMigrations[id] = (sourceMachineId, targetMachineId, state)
+        lock.unlock()
+    }
+
+    public func setAgentMigrationStateForTesting(id: String, state: String) {
+        lock.lock()
+        if var migration = activeAgentMigrations[id] {
+            migration.state = state
+            activeAgentMigrations[id] = migration
+        }
+        lock.unlock()
+    }
+
     public func setAgentRuntimeProfileForTesting(agentId: String, machineId: String, staleAfterMigration: Bool = false) {
         lock.lock()
         agentRuntimeProfiles[agentId] = (machineId, staleAfterMigration)
@@ -11163,6 +11179,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         "gemini": "gemini.create.v1",
         "kimi": "kimi.create.v1",
         "antigravity": "antigravity.create.v1",
+        "grok": "grok.create.v1",
+    ]
+
+    /// Runtimes whose released form only exists at protocol v2; v1 clients
+    /// must see them as having no form at all.
+    private static let runtimeFormV2Only: Set<String> = [
+        "pi", "opencode", "gemini", "codex", "grok", "antigravity",
     ]
 
     public func runtimeFormDefinition(
@@ -11190,6 +11213,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"The `editMachines` capability or machine creator authority is required to inspect runtime forms\"}")
         }
         guard let expected = Self.runtimeFormSchemas[runtimeId] else {
+            return Self.json(404, "{\"error\":\"Runtime form not found\",\"issues\":[{\"code\":\"unknown_form_runtime\",\"pointer\":\"/runtimeId\"}]}")
+        }
+        if protocolVersion == 1, Self.runtimeFormV2Only.contains(runtimeId) {
             return Self.json(404, "{\"error\":\"Runtime form not found\",\"issues\":[{\"code\":\"unknown_form_runtime\",\"pointer\":\"/runtimeId\"}]}")
         }
         if protocolVersion == 1, let schemaVersion, schemaVersion != expected {
@@ -11244,11 +11270,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let expected = Self.runtimeFormSchemas[runtimeId] else {
             return Self.json(404, "{\"error\":\"Runtime form option source not found\",\"issues\":[{\"code\":\"unknown_form_runtime\",\"pointer\":\"/runtimeId\"}]}")
         }
+        if protocolVersion == 1, Self.runtimeFormV2Only.contains(runtimeId) {
+            return Self.json(404, "{\"error\":\"Runtime form option source not found\",\"issues\":[{\"code\":\"unknown_form_runtime\",\"pointer\":\"/runtimeId\"}]}")
+        }
         if protocolVersion == 1, let schemaVersion, schemaVersion != expected {
             return Self.json(409, "{\"error\":\"Runtime form schema is stale or unknown\",\"issues\":[{\"code\":\"stale_form_schema\",\"pointer\":\"/schemaVersion\"}]}")
         }
         let zh = Self.prefersChinese(language)
         switch sourceId {
+        case "provider" where runtimeId == "pi" && protocolVersion == 2:
+            return Self.json(200, "{\"sourceId\":\"provider\",\"schemaVersion\":\(jsonString(expected)),\"kind\":\"select\",\"options\":[],\"defaultValue\":\"configured\"}")
         case "provider" where runtimeId == "builtin":
             let options = "{\"value\":\"deepseek\",\"label\":\(jsonString(zh ? "DeepSeek" : "DeepSeek")),\"providerKind\":\"preset\"},{\"value\":\"moonshotai\",\"label\":\(jsonString(zh ? "月之暗面" : "Moonshot AI")),\"providerKind\":\"preset\"}"
             return Self.json(200, "{\"sourceId\":\"provider\",\"schemaVersion\":\(jsonString(expected)),\"kind\":\"select\",\"options\":[\(options)]}")
@@ -11259,6 +11290,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 return Self.json(200, "{\"sourceId\":\"model\",\"schemaVersion\":\(jsonString(expected)),\"kind\":\"dependent_select\",\"optionsByValue\":{\"deepseek\":[\(deepseek)],\"moonshotai\":[\(moonshot)]}}")
             }
             let options = cachedModels.map { "{\"value\":\(jsonString($0.id)),\"label\":\(jsonString($0.label))}" }.joined(separator: ",")
+            if protocolVersion == 2, ["codex", "grok"].contains(runtimeId) {
+                let status = cachedModels.isEmpty ? "unavailable" : "ready"
+                return Self.json(200, "{\"sourceId\":\"model\",\"schemaVersion\":\(jsonString(expected)),\"kind\":\"select\",\"options\":[\(options)],\"optionSource\":{\"status\":\(jsonString(status))}}")
+            }
             return Self.json(200, "{\"sourceId\":\"model\",\"schemaVersion\":\(jsonString(expected)),\"kind\":\"select\",\"options\":[\(options)]}")
         default:
             return Self.json(404, "{\"error\":\"Runtime form option source not found\",\"issues\":[{\"code\":\"unknown_option_source\",\"pointer\":\"/sourceId\"}]}")
@@ -12034,6 +12069,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if role != "owner", role != "admin", machines[index].userId != userId {
             lock.unlock()
             return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        let activeMigration = activeAgentMigrations.values.contains { migration in
+            migration.sourceMachineId == machineId
+                && !["completed", "failed", "aborted", "cancelled"].contains(migration.state)
+        }
+        if activeMigration {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"Cannot delete computer while an agent migration is in progress. Wait for it to finish or abort it first.\",\"code\":\"MACHINE_HAS_ACTIVE_MIGRATION\"}")
         }
         let blockingProfile = agentRuntimeProfiles.contains { agentId, profile in
             profile.machineId == machineId

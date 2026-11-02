@@ -234,3 +234,83 @@ private func runtimeObject(_ response: ClientResponse) throws -> [String: Any] {
         }
     }
 }
+
+@Test func runtimeFormsServeV2OnlyRuntimesAndRejectV1() async throws {
+    let fixture = makeRuntimeFixture(suffix: "999")
+    fixture.accounts.setMachineRuntimeModels(machineId: fixture.machineId, runtime: "codex", models: [("gpt-5.4", "GPT 5.4")])
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: fixture.accounts
+        ))
+        try await app.testing { client in
+            let owner = try await runtimeLogin(client, email: fixture.ownerEmail)
+            let headers = runtimeHeaders(owner, fixture.serverId)
+            let base = "/api/servers/\(fixture.serverId)/machines/\(fixture.machineId)"
+
+            let piV2 = try await client.get(URI(string: "\(base)/runtime-forms/v2/pi"), headers: headers)
+            #expect(piV2.status == .ok)
+            #expect(try runtimeObject(piV2)["protocolVersion"] as? Int == 2)
+            let piV1 = try await client.get(URI(string: "\(base)/runtime-form-definitions/pi?schemaVersion=pi.create.v1"), headers: headers)
+            #expect(piV1.status == .notFound)
+            #expect(try runtimeObject(piV1)["issues"] as? NSArray == [[
+                "code": "unknown_form_runtime", "pointer": "/runtimeId",
+            ]] as NSArray)
+            let piSource = try await client.get(URI(string: "\(base)/runtime-forms/v2/pi/option-sources/provider"), headers: headers)
+            #expect(piSource.status == .ok)
+            #expect(try runtimeObject(piSource)["defaultValue"] as? String == "configured")
+
+            for runtime in ["codex", "grok"] {
+                let v2 = try await client.get(URI(string: "\(base)/runtime-forms/v2/\(runtime)"), headers: headers)
+                #expect(v2.status == .ok)
+                #expect(try runtimeObject(v2)["protocolVersion"] as? Int == 2)
+                let v1 = try await client.get(URI(string: "\(base)/runtime-form-definitions/\(runtime)?schemaVersion=\(runtime).create.v1"), headers: headers)
+                #expect(v1.status == .notFound)
+            }
+            let codexModels = try await client.get(URI(string: "\(base)/runtime-forms/v2/codex/option-sources/model"), headers: headers)
+            #expect(codexModels.status == .ok)
+            #expect(try runtimeObject(codexModels)["optionSource"] as? NSDictionary == ["status": "ready"] as NSDictionary)
+            let options = try runtimeObject(codexModels)["options"] as? [[String: Any]] ?? []
+            #expect(options.first?["value"] as? String == "gpt-5.4")
+        }
+    }
+}
+
+@Test func machineDeleteRefusesActiveMigrationAndAllowsCompletedCleanup() async throws {
+    let fixture = makeRuntimeFixture(suffix: "1000")
+    let agentId = fixture.accounts.oauth.createAgent(serverId: fixture.serverId, name: "migration-agent-1000", runtime: "codex")
+    fixture.accounts.setAgentRuntimeProfileForTesting(agentId: agentId, machineId: fixture.machineId, staleAfterMigration: true)
+    let targetMachine = fixture.accounts.registerMachine(serverId: fixture.serverId, userId: fixture.ownerId, name: "migration-target-1000")
+    let migrationId = "22222222-3333-4444-8555-666666667000"
+    fixture.accounts.addAgentMigrationForTesting(
+        id: migrationId,
+        sourceMachineId: fixture.machineId,
+        targetMachineId: targetMachine,
+        state: "prep"
+    )
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: fixture.accounts
+        ))
+        try await app.testing { client in
+            let owner = try await runtimeLogin(client, email: fixture.ownerEmail)
+            let path = "/api/servers/\(fixture.serverId)/machines/\(fixture.machineId)"
+            let blocked = try await client.send(.delete, headers: runtimeHeaders(owner, fixture.serverId), to: URI(string: path))
+            #expect(blocked.status == .conflict)
+            #expect(try runtimeObject(blocked) as NSDictionary == [
+                "error": "Cannot delete computer while an agent migration is in progress. Wait for it to finish or abort it first.",
+                "code": "MACHINE_HAS_ACTIVE_MIGRATION",
+            ] as NSDictionary)
+
+            fixture.accounts.setAgentMigrationStateForTesting(id: migrationId, state: "completed")
+            let cleaned = try await client.send(.delete, headers: runtimeHeaders(owner, fixture.serverId), to: URI(string: path))
+            #expect(cleaned.status == .ok)
+            #expect(fixture.accounts.agentRuntimeProfileMachineId(agentId: agentId) == nil)
+        }
+    }
+}

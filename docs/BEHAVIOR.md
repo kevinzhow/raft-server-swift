@@ -380,3 +380,5 @@ Servers runtime 组：`GET .../runtime-options` 需要 owner/admin 或 machine �
 
 Machine delete 与 runtime profiles：存在指向该 machine 且仍关联 active（未删除）agent 的 runtime profile 时，`DELETE /api/servers/:id/machines/:machineId` 回 409 `MACHINE_HAS_ACTIVE_RUNTIME_PROFILE`，错误文本含 `runtime profiles still reference active agents` 且 machine 保留；agent 已删除或 profile 已标记 migration 完成后的 stale source 会被清理，随后删除成功。
 
+Runtime form v2-only：pi/opencode/gemini/codex/grok/antigravity 只在 v2 路由可见；v1 `runtime-form-definitions`/option-source 对它们回 404 `unknown_form_runtime`（pointer `/runtimeId`）。Pi 的 v2 provider source 回 `{defaultValue:"configured"}`；Codex/Grok 的 v2 model source 带 `optionSource.status: ready|unavailable` 与被探测模型。Machine delete 在存在 sourceMachineId=machine 且 state 非终态的 migration 时回 409 `MACHINE_HAS_ACTIVE_MIGRATION`；完成后 stale source profile 可清理并删除。
+
