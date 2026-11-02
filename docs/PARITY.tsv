@@ -180,7 +180,7 @@ raftbench.api	route	pending	-	auto-seed
 raftbench.canary.api	route	pending	-	auto-seed
 raftbench.progressive.api	route	pending	-	auto-seed
 rbacPhase2Corrections.api	route	pending	-	auto-seed
-rbacPhase3Relations.api	route	locked	PENDING	agent creator and machine registrant exact-object authority across demotion and removal/leave, leave socket eviction, S11 server-room event cutoff
+rbacPhase3Relations.api	route	locked	5357356	agent creator and machine registrant exact-object authority across demotion and removal/leave, leave socket eviction, S11 server-room event cutoff
 readMutationFence.realPg	route	partial	-	auto-seed
 readMutations.api	route	partial	-	auto-seed
 readMutationsResidueBoundary.api	route	partial	-	auto-seed
