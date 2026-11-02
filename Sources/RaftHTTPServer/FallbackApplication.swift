@@ -76,6 +76,64 @@ public struct FallbackServices: Sendable {
     }
 }
 
+private struct AttachmentUploadForm: Content {
+    var channelId: String
+    var files: [File]?
+    var file: File?
+}
+
+private func parseAttachmentMultipart(data: Data, boundary: String) -> (channelId: String, files: [(filename: String, mimeType: String?, sizeBytes: Int)])? {
+    let separator = Data("\r\n--\(boundary)".utf8)
+    var chunks: [Data] = []
+    var splitCursor = data.startIndex
+    while let range = data.range(of: separator, in: splitCursor..<data.endIndex) {
+        chunks.append(data[splitCursor..<range.lowerBound])
+        splitCursor = range.upperBound
+    }
+    chunks.append(data[splitCursor..<data.endIndex])
+    let firstPrefix = Data("--\(boundary)\r\n".utf8)
+    if var first = chunks.first, first.starts(with: firstPrefix) {
+        first = first.dropFirst(firstPrefix.count)
+        chunks[0] = first
+    }
+    var channelId: String?
+    var files: [(filename: String, mimeType: String?, sizeBytes: Int)] = []
+    for chunk in chunks {
+        var part = chunk
+        if part.starts(with: Data("\r\n".utf8)) { part = part.dropFirst(2) }
+        if part.starts(with: Data("--".utf8)) { continue }
+        guard let headerEnd = part.range(of: Data("\r\n\r\n".utf8)) else { continue }
+        let headerData = part[part.startIndex..<headerEnd.lowerBound]
+        let body = part[headerEnd.upperBound..<part.endIndex]
+        let headers = String(decoding: headerData, as: UTF8.self)
+        var name: String?
+        var filename: String?
+        var mimeType: String?
+        for line in headers.components(separatedBy: "\r\n") {
+            let lower = line.lowercased()
+            if lower.hasPrefix("content-disposition:") {
+                for component in line.components(separatedBy: ";") {
+                    let trimmed = component.trimmingCharacters(in: .whitespaces)
+                    if trimmed.hasPrefix("name=") {
+                        name = trimmed.dropFirst(5).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    } else if trimmed.hasPrefix("filename=") {
+                        filename = trimmed.dropFirst(9).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    }
+                }
+            } else if lower.hasPrefix("content-type:") {
+                mimeType = line.components(separatedBy: ":").dropFirst().joined(separator: ":").trimmingCharacters(in: .whitespaces)
+            }
+        }
+        if name == "channelId" {
+            channelId = String(decoding: body, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        } else if let filename, !filename.isEmpty {
+            files.append((filename: filename, mimeType: mimeType, sizeBytes: body.count))
+        }
+    }
+    guard let channelId, !channelId.isEmpty else { return nil }
+    return (channelId, files)
+}
+
 public func configure(_ app: Application, services: FallbackServices) {
     services.emailAccounts.onAgentReadUpdated = { serverId, channelId, agentId, maxReadSeq in
         services.emailAccounts.emitAgentScopeRead(
@@ -1736,6 +1794,25 @@ public func configure(_ app: Application, services: FallbackServices) {
             channelId: request.parameters.get("channelId") ?? "",
             limit: desktopQuery(request.url.query, "limit"),
             cursor: desktopQuery(request.url.query, "cursor")
+        ))
+    }
+    app.post("api", "attachments", "upload") { request async throws -> Response in
+        guard let contentType = request.headers[.contentType],
+              let boundary = contentType.components(separatedBy: "boundary=").dropFirst().first?
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"")),
+              !boundary.isEmpty
+        else {
+            return routeResponse(HTTPReply(status: 400, headers: [:], body: "{\"error\":\"Invalid multipart upload\"}"))
+        }
+        let buffer = try await request.body.collect(max: .specified(ByteCount(value: 300 * 1024 * 1024)))
+        guard let buffer, let parsed = parseAttachmentMultipart(data: buffer, boundary: boundary) else {
+            return routeResponse(HTTPReply(status: 400, headers: [:], body: "{\"error\":\"Invalid multipart upload\"}"))
+        }
+        return routeResponse(services.emailAccounts.uploadAttachments(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            channelId: parsed.channelId,
+            files: parsed.files
         ))
     }
     app.post("api", "attachments", "upload-sessions") { request -> Response in

@@ -446,3 +446,5 @@ Inbox row 投影：DM scope 的 `kind` 为 `"dm"`，channel/private 为 `"channe
 
 Attachment 单 id 读取矩阵：`GET /api/attachments/:id`、`/url`、`/html-preview-url` 对非 UUID 回 400 `{code:"invalid_attachment_id"}`；缺 `X-Server-Id` 400；Server 有成员表但调用者非成员 403；跨 Server 或不存在 UUID 统一 404 `{"error":"Attachment not found"}`；retired 用户 401。合成无成员表夹具保持旧的可读行为。
 
+Attachment upload：`POST /api/attachments/upload` 接受 multipart `channelId` + 多个 `files`（也接受单个 `file`）。`ATTACHMENT_UPLOAD_ENABLED=false/0/off` → 503 `{error:"File uploads are disabled on this server",errorCode:"ATTACHMENT_UPLOAD_DISABLED"}`；空文件 400 `{"error":"Empty files are not allowed"}`；Free 单文件上限 50MB、Pro 200MB，超限 413 `{error:"Max 50MB per file",errorCode:"ATTACHMENT_TOO_LARGE",maxBytes}`；最多 10 个文件；成功回 `{attachments:[{id,filename}]}`，每次上传生成独立 projection id。
+

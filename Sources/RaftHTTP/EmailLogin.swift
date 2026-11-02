@@ -8396,6 +8396,57 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"directUploadEnabled\":false,\"directUploadThresholdBytes\":null,\"maxBytes\":\(limit),\"sessionExpiresInSeconds\":null}")
     }
 
+    public func uploadAttachments(
+        authorization: String?,
+        serverId: String,
+        channelId: String,
+        files: [(filename: String, mimeType: String?, sizeBytes: Int)]
+    ) -> HTTPReply {
+        let gate = (ProcessInfo.processInfo.environment["ATTACHMENT_UPLOAD_ENABLED"] ?? "true")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if ["false", "0", "off"].contains(gate) {
+            return Self.json(503, "{\"error\":\"File uploads are disabled on this server\",\"errorCode\":\"ATTACHMENT_UPLOAD_DISABLED\"}")
+        }
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        lock.lock()
+        let channel = postableChannels[channelId]
+        lock.unlock()
+        guard let channel, channel.serverId == serverId, channel.deletedAt == nil,
+              channel.kind == "channel" || channel.memberIds.contains(userId)
+        else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        guard files.count <= 10 else {
+            return Self.json(400, "{\"error\":\"Max 10 files per message\"}")
+        }
+        for file in files where file.sizeBytes <= 0 {
+            return Self.json(400, "{\"error\":\"Empty files are not allowed\"}")
+        }
+        let plan = oauth.serverProfile(id: serverId)?.plan ?? "free"
+        let maxBytes = plan == "free" ? 50 * 1024 * 1024 : 200 * 1024 * 1024
+        if files.contains(where: { $0.sizeBytes > maxBytes }) {
+            return Self.json(413, "{\"error\":\"Max 50MB per file\",\"errorCode\":\"ATTACHMENT_TOO_LARGE\",\"maxBytes\":\(maxBytes)}")
+        }
+        var rows: [String] = []
+        for file in files {
+            let id = addChannelAttachment(
+                channelId: channelId,
+                uploaderId: userId,
+                filename: file.filename,
+                mimeType: file.mimeType,
+                sizeBytes: file.sizeBytes
+            )
+            rows.append("{\"id\":\(jsonString(id)),\"filename\":\(jsonString(file.filename))}")
+        }
+        return Self.json(200, "{\"attachments\":[\(rows.joined(separator: ","))]}")
+    }
+
     public func attachmentUploadSessionCreate(authorization: String?, serverId: String) -> HTTPReply {
         guard sessionUserId(authorization: authorization) != nil else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
