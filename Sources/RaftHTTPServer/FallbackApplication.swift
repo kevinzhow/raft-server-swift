@@ -895,6 +895,34 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("internal", "agent", ":agentId", "tasks", "claim") { request -> Response in
+        routeResponse(services.emailAccounts.agentTaskClaim(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}",
+            legacyAgentId: request.parameters.get("agentId")
+        ))
+    }
+    app.post("internal", "agent", ":agentId", "tasks", "update-status") { request -> Response in
+        routeResponse(services.emailAccounts.agentTaskUpdateStatus(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}",
+            legacyAgentId: request.parameters.get("agentId")
+        ))
+    }
+    app.post("internal", "agent", ":agentId", "tasks", "delete") { request -> Response in
+        routeResponse(services.emailAccounts.agentTaskDelete(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}",
+            legacyAgentId: request.parameters.get("agentId")
+        ))
+    }
+    app.post("internal", "agent", ":agentId", "tasks", "convert") { request -> Response in
+        routeResponse(services.emailAccounts.agentTaskConvert(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}",
+            legacyAgentId: request.parameters.get("agentId")
+        ))
+    }
     app.post("internal", "agent-api", "tasks", "assign") { request -> Response in
         routeResponse(services.emailAccounts.agentTaskAssign(
             authorization: request.headers[.authorization],

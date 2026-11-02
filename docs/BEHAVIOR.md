@@ -532,3 +532,13 @@ HarmonyOS app login handoff:
 - `POST .../deny`：pending → 200 `{redirectUrl:"...&error=access_denied"}`；之后 approve 409。
 - `POST /api/auth/app-login/complete`：code 与请求绑定；错误 verifier → 400 `pkce_mismatch` 且不消耗 code；正确 → 200 正常 session（access/refresh token，`/api/auth/me` 可用）；重放 → 410 `code_consumed`；请求过期 → 410 `code_expired`。
 
+### tasks.shapeSurfaces.api
+
+任务形状在 HTTP 表面上的删除/可达性：
+
+- `DELETE /api/tasks/:taskId` 对 v0 orphan、backfilled、v14 三种 canonical 形状都返回 200，且 `GET /api/tasks/channel/:channelId` 只少这一条，不复活。
+- backfilled 形状删除时同步清空其 message-side `task_*` 影子列；影子不会在下一次读取时复活。
+- 只有 `messages.task_*` 的消息行不是任务：不出现在频道任务列表，`DELETE /api/tasks/:messageId` 回 404。
+- agent 任务端点按编号 claim/update-status 不能触达 v0 orphan（无 host message）：claim 结果 `success:false, reason:"task not found"`，update-status 404，且不写 orphan；相邻 backfilled 任务仍可 claim。
+- 新增 legacy `/internal/agent/:agentId/tasks/{claim,update-status,delete,convert}`，接受 machine key + 路径 agent id。
+

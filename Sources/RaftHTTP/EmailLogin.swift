@@ -5933,6 +5933,61 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func addBackfilledTaskForTesting(channelId: String, title: String, taskNumber: Int, messageId: String) -> String {
+        lock.lock()
+        let id = UUID().uuidString.lowercased()
+        taskRecords.append(TaskRecord(
+            id: id,
+            channelId: channelId,
+            title: title,
+            description: nil,
+            status: "todo",
+            taskNumber: taskNumber,
+            messageId: messageId,
+            createdAt: Date()
+        ))
+        if let index = humanMessageRows.firstIndex(where: { $0.id == messageId }) {
+            humanMessageRows[index].taskStatus = "todo"
+            humanMessageRows[index].taskNumber = taskNumber
+        }
+        lock.unlock()
+        return id
+    }
+
+    public func addOrphanTaskForTesting(channelId: String, title: String, taskNumber: Int) -> String {
+        lock.lock()
+        let id = UUID().uuidString.lowercased()
+        var record = TaskRecord(
+            id: id,
+            channelId: channelId,
+            title: title,
+            description: nil,
+            status: "todo",
+            taskNumber: taskNumber,
+            messageId: UUID().uuidString.lowercased(),
+            createdAt: Date()
+        )
+        record.hasHostMessage = false
+        taskRecords.append(record)
+        lock.unlock()
+        return id
+    }
+
+    public func taskAssigneeForTesting(taskId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return taskRecords.first { $0.id == taskId }?.assigneeId
+    }
+
+    public func messageTaskShadowForTesting(messageId: String) -> (status: String, number: Int)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let row = humanMessageRows.first(where: { $0.id == messageId }),
+              let status = row.taskStatus, let number = row.taskNumber
+        else { return nil }
+        return (status, number)
+    }
+
     /// A mention row search can filter with `mentionTarget=self`. Send only stores mentions of people who are not yet members.
     /// A notifiable agent mention whose delivery ended in a terminal code. The author route projects that code.
     public func recordAgentMentionDelivery(messageId: String, agentId: String, handle: String, terminalCode: String) {
@@ -18661,6 +18716,27 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return .refused(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
     }
 
+    /// Write routes accept both an `sk_agent_*` credential and the legacy
+    /// machine key plus path agent id.
+    private func agentTaskWriter(_ authorization: String?, legacyAgentId: String?) -> (agentId: String, serverId: String)? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let credential = agentCredentials[token]
+        let machine = machines.first { $0.apiKey == token }
+        lock.unlock()
+        if let credential, credential.revokedAt == nil,
+           let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted {
+            return (agent.id, agent.serverId)
+        }
+        if let machine, let legacyAgentId,
+           let agent = oauth.agentRuntimeInfo(id: legacyAgentId), !agent.deleted,
+           agent.serverId == machine.serverId {
+            return (agent.id, agent.serverId)
+        }
+        return nil
+    }
+
     private func agentTaskChannel(serverId: String, agentId: String, reference: String) -> String? {
         let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -18702,16 +18778,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"tasks\":[\(rows)]}")
     }
 
-    public func agentTaskClaim(authorization: String?, body: String) -> HTTPReply {
-        guard let credential = agentCredentialAgent(authorization),
-              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+    public func agentTaskClaim(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
+        guard let writer = agentTaskWriter(authorization, legacyAgentId: legacyAgentId)
         else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
-        if let reply = agentGrantDenial(agentId: agent.id, scope: "task:write") { return reply }
+        if let reply = agentGrantDenial(agentId: writer.agentId, scope: "task:write") { return reply }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
               let channelRef = object["channel"] as? String,
-              let channelId = agentTaskChannel(serverId: agent.serverId, agentId: agent.id, reference: channelRef)
+              let channelId = agentTaskChannel(serverId: writer.serverId, agentId: writer.agentId, reference: channelRef)
         else {
             return Self.json(400, "{\"error\":\"Invalid task claim request\"}")
         }
@@ -18724,15 +18799,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 results.append("{\"taskNumber\":\(number),\"success\":false,\"reason\":\"not found\"}")
                 continue
             }
-            if taskRecords[index].assigneeId == agent.id {
+            if !taskRecords[index].hasHostMessage {
+                results.append("{\"taskNumber\":\(number),\"success\":false,\"reason\":\"task not found\"}")
+                continue
+            }
+            if taskRecords[index].assigneeId == writer.agentId {
                 results.append("{\"taskNumber\":\(number),\"success\":false,\"reason\":\"already claimed by you\"}")
                 continue
             }
-            if let assignee = taskRecords[index].assigneeId, assignee != agent.id {
+            if let assignee = taskRecords[index].assigneeId, assignee != writer.agentId {
                 results.append("{\"taskNumber\":\(number),\"success\":false,\"reason\":\"already claimed\"}")
                 continue
             }
-            taskRecords[index].assigneeId = agent.id
+            taskRecords[index].assigneeId = writer.agentId
             taskRecords[index].assigneeType = "agent"
             taskRecords[index].claimedAt = Date()
             if taskRecords[index].status == "todo" { taskRecords[index].status = "in_progress" }
@@ -18746,15 +18825,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 continue
             }
             let task = taskRecords[index]
-            if task.assigneeId == agent.id {
+            if task.assigneeId == writer.agentId {
                 results.append("{\"messageId\":\(jsonString(task.messageId)),\"success\":false,\"reason\":\"already claimed by you\",\"taskNumber\":\(task.taskNumber)}")
                 continue
             }
-            if let assignee = task.assigneeId, assignee != agent.id {
+            if let assignee = task.assigneeId, assignee != writer.agentId {
                 results.append("{\"messageId\":\(jsonString(task.messageId)),\"success\":false,\"reason\":\"already claimed\",\"taskNumber\":\(task.taskNumber)}")
                 continue
             }
-            taskRecords[index].assigneeId = agent.id
+            taskRecords[index].assigneeId = writer.agentId
             taskRecords[index].assigneeType = "agent"
             taskRecords[index].claimedAt = Date()
             if taskRecords[index].status == "todo" { taskRecords[index].status = "in_progress" }
@@ -18766,16 +18845,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"results\":[\(results.joined(separator: ","))]}")
     }
 
-    public func agentTaskUpdateStatus(authorization: String?, body: String) -> HTTPReply {
-        guard let credential = agentCredentialAgent(authorization),
-              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+    public func agentTaskUpdateStatus(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
+        guard let writer = agentTaskWriter(authorization, legacyAgentId: legacyAgentId)
         else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
-        if let reply = agentGrantDenial(agentId: agent.id, scope: "task:write") { return reply }
+        if let reply = agentGrantDenial(agentId: writer.agentId, scope: "task:write") { return reply }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
               let channelRef = object["channel"] as? String,
-              let channelId = agentTaskChannel(serverId: agent.serverId, agentId: agent.id, reference: channelRef),
+              let channelId = agentTaskChannel(serverId: writer.serverId, agentId: writer.agentId, reference: channelRef),
               let taskNumber = object["task_number"] as? Int,
               let status = object["status"] as? String,
               Self.validTaskStatuses.contains(status)
@@ -18783,14 +18861,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"Invalid task status request\"}")
         }
         lock.lock()
-        guard let index = taskRecords.firstIndex(where: { $0.channelId == channelId && $0.taskNumber == taskNumber }) else {
+        guard let index = taskRecords.firstIndex(where: { $0.channelId == channelId && $0.taskNumber == taskNumber }),
+              taskRecords[index].hasHostMessage
+        else {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Task not found\"}")
         }
         let current = taskRecords[index]
-        let isAdmin = oauth.agentRole(serverId: agent.serverId, agentId: agent.id) == "admin"
+        let isAdmin = oauth.agentRole(serverId: writer.serverId, agentId: writer.agentId) == "admin"
         if !isAdmin {
-            if status == "todo", current.status == "in_progress", current.assigneeId != agent.id {
+            if status == "todo", current.status == "in_progress", current.assigneeId != writer.agentId {
                 lock.unlock()
                 return Self.json(409, "{\"error\":\"Task cannot transition from in_progress to todo\"}")
             }
@@ -18809,16 +18889,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, taskJSON(task))
     }
 
-    public func agentTaskDelete(authorization: String?, body: String) -> HTTPReply {
-        guard let credential = agentCredentialAgent(authorization),
-              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+    public func agentTaskDelete(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
+        guard let writer = agentTaskWriter(authorization, legacyAgentId: legacyAgentId)
         else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
-        if let reply = agentGrantDenial(agentId: agent.id, scope: "task:write") { return reply }
+        if let reply = agentGrantDenial(agentId: writer.agentId, scope: "task:write") { return reply }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
               let channelRef = object["channel"] as? String,
-              let channelId = agentTaskChannel(serverId: agent.serverId, agentId: agent.id, reference: channelRef),
+              let channelId = agentTaskChannel(serverId: writer.serverId, agentId: writer.agentId, reference: channelRef),
               let taskNumber = object["task_number"] as? Int
         else {
             return Self.json(400, "{\"error\":\"Invalid task delete request\"}")
@@ -18829,8 +18908,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Task not found\"}")
         }
         let task = taskRecords[index]
-        let isAdmin = oauth.agentRole(serverId: agent.serverId, agentId: agent.id) == "admin"
-        guard isAdmin || task.creatorId == agent.id else {
+        let isAdmin = oauth.agentRole(serverId: writer.serverId, agentId: writer.agentId) == "admin"
+        guard isAdmin || task.creatorId == writer.agentId else {
             lock.unlock()
             return Self.json(403, "{\"error\":\"Only the task creator can delete it\",\"code\":\"task_delete_forbidden\"}")
         }
@@ -18839,16 +18918,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
-    public func agentTaskConvert(authorization: String?, body: String) -> HTTPReply {
-        guard let credential = agentCredentialAgent(authorization),
-              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+    public func agentTaskConvert(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
+        guard let writer = agentTaskWriter(authorization, legacyAgentId: legacyAgentId)
         else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
-        if let reply = agentGrantDenial(agentId: agent.id, scope: "task:write") { return reply }
+        if let reply = agentGrantDenial(agentId: writer.agentId, scope: "task:write") { return reply }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
               let channelRef = object["channel"] as? String,
-              let channelId = agentTaskChannel(serverId: agent.serverId, agentId: agent.id, reference: channelRef),
+              let channelId = agentTaskChannel(serverId: writer.serverId, agentId: writer.agentId, reference: channelRef),
               let messageRef = object["message_id"] as? String
         else {
             return Self.json(400, "{\"error\":\"Invalid task convert request\"}")
@@ -18874,7 +18952,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             messageId: message.id,
             createdAt: Date()
         )
-        record.creatorId = agent.id
+        record.creatorId = writer.agentId
         taskRecords.append(record)
         let json = taskJSON(record)
         lock.unlock()
@@ -20571,7 +20649,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Only the task creator can delete it\"}")
         }
         lock.lock()
-        taskRecords.remove(at: index)
+        let removed = taskRecords.remove(at: index)
+        if removed.hasHostMessage,
+           let shadow = humanMessageRows.firstIndex(where: { $0.id == removed.messageId }) {
+            humanMessageRows[shadow].taskStatus = nil
+            humanMessageRows[shadow].taskNumber = nil
+            humanMessageRows[shadow].taskAssigneeType = nil
+            humanMessageRows[shadow].taskAssigneeId = nil
+            humanMessageRows[shadow].taskClaimedAt = nil
+            humanMessageRows[shadow].taskCompletedAt = nil
+        }
         lock.unlock()
         return Self.json(200, "{\"ok\":true}")
     }
@@ -20864,6 +20951,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var assigneeType: String? = nil
         var claimedAt: Date? = nil
         var revision: Int = 0
+        /// False for a pre-thread v0 orphan: the row has no host message, so the
+        /// agent surface cannot address it.
+        var hasHostMessage: Bool = true
     }
 
     public func addReminder(serverId: String, ownerAgentId: String, title: String, fireAt: Date) {
