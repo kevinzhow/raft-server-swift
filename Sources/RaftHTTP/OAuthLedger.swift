@@ -1404,6 +1404,33 @@ public final class OAuthLedger: @unchecked Sendable {
         }
     }
 
+    public func integrationLoginClient(serverId: String, clientId: String) -> [String: Any]? {
+        integrationServices(serverId: serverId).first {
+            ($0["clientId"] as? String) == clientId || ($0["id"] as? String) == clientId
+        } ?? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let client = clients.first(where: { candidate in
+                (candidate.clientId == clientId || candidate.id == clientId)
+                    && candidate.appType != "slock_builtin"
+                    && installations.contains {
+                        $0.clientId == candidate.id && $0.serverId == serverId && $0.status == "active"
+                    }
+            }) else { return nil }
+            return [
+                "id": client.id,
+                "clientId": client.clientId,
+                "name": client.name,
+                "description": client.descriptionText as Any,
+                "homepageUrl": client.homepageUrl as Any,
+                "agentManifestUrl": client.agentManifestUrl as Any,
+                "agentManifestUrlSource": client.agentManifestUrlSource as Any,
+                "allowedScopes": client.allowedScopes as Any,
+                "appType": client.appType,
+            ]
+        }()
+    }
+
     public func integrationClient(serverId: String, clientId: String) -> [String: Any]? {
         integrationServices(serverId: serverId).first { ($0["clientId"] as? String) == clientId || ($0["id"] as? String) == clientId }
     }

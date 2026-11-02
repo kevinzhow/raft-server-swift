@@ -126,3 +126,65 @@ import VaporTesting
         }
     }
 }
+
+@Test func agentIntegrationLoginAcceptsInstalledGlobalAppsWithoutApproval() async throws {
+    let accounts = EmailLoginDirectory()
+    let serverId = "33333333-3333-4333-8333-000001031003"
+    let publisherId = "33333333-3333-4333-8333-000001031004"
+    let ownerId = "11111111-1111-4111-8111-000001031003"
+    accounts.addAccount(id: ownerId, email: "installed-global-owner@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "installed-global", name: "Installed Global", ownerId: ownerId)
+    accounts.oauth.addOwnedServer(id: publisherId, slug: "installed-publisher", name: "Installed Publisher", ownerId: ownerId)
+    let global = try accounts.oauth.createClient(
+        serverId: publisherId,
+        createdByUserId: ownerId,
+        name: "Global Approval Demo",
+        clientId: "global-approval-demo",
+        appType: "third_party_global",
+        homepageUrl: "https://global-approval.example.test",
+        returnUrl: "https://global-approval.example.test/login/callback"
+    )
+    _ = try accounts.oauth.createClient(
+        serverId: publisherId,
+        createdByUserId: ownerId,
+        name: "Private Demo",
+        clientId: "private-demo",
+        appType: "server_local",
+        returnUrl: "https://private.example.test/login/callback"
+    )
+    _ = accounts.oauth.installClient(serverId: serverId, clientRecordId: global.id, installedByUserId: ownerId, groups: [])
+    let agent = accounts.oauth.createAgent(serverId: serverId, name: "InstalledBot", runtime: "external")
+    let key = accounts.mintAgentCredential(agentId: agent, scopes: ["read"], name: "installed")
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(key)"
+            headers[.contentType] = "application/json"
+            func login(_ service: String) async throws -> ClientResponse {
+                try await client.send(.post, headers: headers, to: "/internal/agent-api/integrations/login") { request in
+                    request.body = .init(string: "{\"service\":\"\(service)\"}")
+                }
+            }
+            let globalLogin = try await login("global-approval-demo")
+            #expect(globalLogin.status == .ok)
+            let body = (try JSONSerialization.jsonObject(with: Data((globalLogin.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            #expect(body["status"] as? String == "logged_in")
+            #expect(body["requestId"] is String)
+            #expect(body["approval"] == nil)
+
+            let repeatLogin = try await login("global-approval-demo")
+            #expect(((try JSONSerialization.jsonObject(with: Data((repeatLogin.body.string ?? "").utf8))) as? [String: Any])?["status"] as? String == "already_logged_in")
+
+            let privateLogin = try await login("private-demo")
+            #expect(privateLogin.status == .notFound)
+        }
+    }
+}

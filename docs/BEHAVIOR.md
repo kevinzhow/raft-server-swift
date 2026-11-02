@@ -510,3 +510,5 @@ Retired built-in integration：agent integrations inventory/login 过滤 `appTyp
 
 Task realtime projection：`PATCH /api/tasks/:taskId/claim` 只向 `channel:<id>` 发 `task:updated`（payload task 含 id/status/claimedById），不重发未变化的 `message:updated`。message-only 行不是 task，claim 回 404 且不广播任何事件。
 
+Integration login 的 installed app：除本 server 的 integration service 外，也按 clientId 解析该 server 的 active installation（third-party/global/private installed app）。首次回 `status:"logged_in"` + `requestId`，不带 `approval`；重复回 `already_logged_in`。未安装的跨 server private app 仍 404。
+

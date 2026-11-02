@@ -15562,7 +15562,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
               let serviceRef = object["service"] as? String, !serviceRef.isEmpty,
-              let service = oauth.integrationClient(serverId: agent.serverId, clientId: serviceRef),
+              let service = oauth.integrationLoginClient(serverId: agent.serverId, clientId: serviceRef),
               let serviceId = service["id"] as? String
         else {
             return Self.json(404, "{\"error\":\"Integration service not found\",\"code\":\"integration_not_found\"}")
@@ -15588,7 +15588,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
         let status = existing == nil ? "logged_in" : "already_logged_in"
         let scopesJSON = effectiveScopes.map(jsonString).joined(separator: ",")
-        return Self.json(200, "{\"status\":\(jsonString(status)),\"service\":\(Self.integrationServiceJSON(service)),\"scopes\":[\(scopesJSON)]}")
+        return Self.json(200, "{\"status\":\(jsonString(status)),\"requestId\":\(jsonString(UUID().uuidString.lowercased())),\"service\":\(Self.integrationServiceJSON(service)),\"scopes\":[\(scopesJSON)]}")
     }
 
     public func agentMentionDeliveries(authorization: String?, messageRef: String) -> HTTPReply {
