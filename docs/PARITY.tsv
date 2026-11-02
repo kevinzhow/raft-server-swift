@@ -57,7 +57,7 @@ channels.joint.api	route	pending	-	auto-seed
 channels.jointChannelAdmin.api	route	partial	-	auto-seed
 channels.membersBatch.api	route	locked	2251a67	dedupe/validate batch, exact projection, per-new-member notices, idempotent retry
 channels.membership.api	route	partial	-	auto-seed
-channels.threads.api	route	partial	a1bbb84	canonical/mention scope/conversion/member removal/follower undo covered; Activity rows, Done history, delivery/socket groups pending
+channels.threads.api	route	partial	3b2de74	canonical/mention/conversion/removal/follower undo/thread-info 404/inbox Done covered; unfollow delivery suppression, Activity residue, socket/concurrency pending
 channels.unread.rwFailures.api	route	partial	-	auto-seed
 computerAdopt.api	route	pending	-	auto-seed
 computerAttach.api	route	pending	-	auto-seed
