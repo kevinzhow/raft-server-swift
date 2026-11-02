@@ -454,3 +454,9 @@ HTML preview token：`GET /api/attachments/:id/html-preview-url` 返回带 `prev
 
 Attachment query-token 两跳：`GET /api/attachments/:id/url?serverId=&token=` 无 Authorization 时用 query token 认证并返回携带同一 `token` 与 `serverId` 的流式 URL，`expiresAt:null`；hop2 `GET /api/attachments/:id?token=&serverId=` 认证后对缺失存储对象回 404（不是 401/400/403）。无效 token 401。`GET /api/attachments/:id` 也接受 `sk_computer_*` 凭据：按其 linked machine 的 server 鉴权；未指定 X-Server-Id 时使用该 server，指定其他 server 403；同 server 返回 attachment metadata，缺失/跨 server 404。
 
+Attachment joint/legacy 可见性：`GET /api/attachments/:id` 与 `/url` 对已链接消息的附件按消息所在 channel 判定可见性；附件上传 channel 不再决定访问。joint canonical channel 的附件通过调用者 server 的 sibling projection 解析，只有该 projection 的成员可见；未链接的 draft 附件继续 cloaked（404）。public channel 消息即使附件行原本属于 private channel 也可见；反向则隐藏。
+
+Attachment agent upload：`POST /internal/agent/:agentId/upload`（multipart `channelId` + `file`）使用 machine API key 鉴权，要求 agent 已分配到该 machine、agent 在 channel 内；`ATTACHMENT_UPLOAD_ENABLED=false/0/off` → 503 `ATTACHMENT_UPLOAD_DISABLED`；空文件 400 `Empty files are not allowed`；Free 50MB / Pro 200MB 上限，超限 413 `ATTACHMENT_TOO_LARGE`。
+
+Attachment auth：`/api/attachments/:id` 与 `/url` 对 revoked access token（bearer 或 query token）与 retired user 均回 401，且不会到达 storage/presign。URL 的原文件 presign 不受 `CDN_BASE_URL` 影响。
+

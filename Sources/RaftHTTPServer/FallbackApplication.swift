@@ -1823,6 +1823,30 @@ public func configure(_ app: Application, services: FallbackServices) {
             files: parsed.files
         ))
     }
+    app.post("internal", "agent", ":agentId", "upload") { request async throws -> Response in
+        guard let contentType = request.headers[.contentType],
+              let boundary = contentType.components(separatedBy: "boundary=").dropFirst().first?
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"")),
+              !boundary.isEmpty
+        else {
+            return routeResponse(HTTPReply(status: 400, headers: [:], body: "{\"error\":\"Invalid multipart upload\"}"))
+        }
+        let buffer = try await request.body.collect(max: .specified(ByteCount(value: 300 * 1024 * 1024)))
+        guard let buffer,
+              let parsed = parseAttachmentMultipart(data: buffer, boundary: boundary),
+              let file = parsed.files.first
+        else {
+            return routeResponse(HTTPReply(status: 400, headers: [:], body: "{\"error\":\"Invalid multipart upload\"}"))
+        }
+        return routeResponse(services.emailAccounts.uploadAgentAttachment(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId") ?? "",
+            channelId: parsed.channelId,
+            filename: file.filename,
+            mimeType: file.mimeType,
+            sizeBytes: file.sizeBytes
+        ))
+    }
     app.post("api", "attachments", "upload-sessions") { request -> Response in
         routeResponse(services.emailAccounts.attachmentUploadSessionCreate(
             authorization: request.headers[.authorization],

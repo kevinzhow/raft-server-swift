@@ -3837,6 +3837,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         case .user(let id):
             userId = id
         }
+        lock.lock()
+        let retired = accounts.values.first { $0.id == userId }?.retiredAt != nil
+        lock.unlock()
+        guard !retired else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
         guard isEmailVerified(userId: userId) else {
             return Self.json(403, "{\"error\":\"Email verification required\"}")
         }
@@ -4785,7 +4791,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// An uploaded file on a channel. The send route keeps the caller's `attachmentIds` order, not upload time.
-    public func addChannelAttachment(channelId: String, uploaderId: String, filename: String, mimeType: String? = nil, sizeBytes: Int? = nil) -> String {
+    public func addChannelAttachment(
+        channelId: String,
+        uploaderId: String,
+        filename: String,
+        mimeType: String? = nil,
+        sizeBytes: Int? = nil,
+        messageId: String? = nil
+    ) -> String {
         let id = UUID().uuidString.lowercased()
         lock.lock()
         channelAttachments[id] = ChannelAttachment(
@@ -4793,7 +4806,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             channelId: channelId,
             uploaderId: uploaderId,
             filename: filename,
-            messageId: nil,
+            messageId: messageId,
             messagePosition: nil,
             mimeType: mimeType,
             sizeBytes: sizeBytes
@@ -4923,6 +4936,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard isEmailVerified(userId: userId) else {
             return Self.json(403, "{\"error\":\"Email verification required\"}")
         }
+        lock.lock()
+        let retired = accounts.values.first { $0.id == userId }?.retiredAt != nil
+        lock.unlock()
+        guard !retired else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
         guard let serverId, !serverId.isEmpty else {
             return Self.json(400, "{\"error\":\"Missing X-Server-Id header\"}")
         }
@@ -4934,25 +4953,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         lock.lock()
-        let visible: Bool = {
-            guard let attachment = channelAttachments[attachmentId],
-                  let channel = postableChannels[attachment.channelId],
-                  channel.serverId == serverId,
-                  channel.deletedAt == nil
-            else { return false }
-            if channel.kind == "channel" { return true }
-            if channel.kind == "thread",
-               let parentId = channel.parentChannelId,
-               let parent = postableChannels[parentId],
-               parent.kind == "channel",
-               parent.serverId == serverId,
-               parent.deletedAt == nil {
-                return true
-            }
-            return channel.memberIds.contains(userId)
-        }()
+        let attachmentRecord = channelAttachments[attachmentId]
         lock.unlock()
-        guard visible else {
+        guard let attachmentRecord,
+              visibleAttachment(userId: userId, serverId: serverId, attachment: attachmentRecord)
+        else {
             return Self.json(404, "{\"error\":\"Attachment not found\"}")
         }
         lock.lock()
@@ -8555,6 +8560,53 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"attachments\":[\(rows.joined(separator: ","))]}")
     }
 
+    public func uploadAgentAttachment(
+        authorization: String?,
+        agentId: String,
+        channelId: String,
+        filename: String,
+        mimeType: String?,
+        sizeBytes: Int
+    ) -> HTTPReply {
+        let gate = (ProcessInfo.processInfo.environment["ATTACHMENT_UPLOAD_ENABLED"] ?? "true")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if ["false", "0", "off"].contains(gate) {
+            return Self.json(503, "{\"error\":\"File uploads are disabled on this server\",\"errorCode\":\"ATTACHMENT_UPLOAD_DISABLED\"}")
+        }
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let machine = machines.first { $0.apiKey == token }
+        let agent = oauth.agentRuntimeInfo(id: agentId)
+        let assigned = agentMachineIds[agentId]
+        let channel = postableChannels[channelId]
+        lock.unlock()
+        guard let agent, !agent.deleted else {
+            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        }
+        guard let machine, machine.serverId == agent.serverId, assigned == machine.id else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard let channel, channel.serverId == agent.serverId, channel.deletedAt == nil,
+              channel.kind == "channel" || channel.memberIds.contains(agentId) || oauth.channelAgentIds(channelId: channelId).contains(agentId)
+        else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        guard sizeBytes > 0 else {
+            return Self.json(400, "{\"error\":\"Empty files are not allowed\"}")
+        }
+        let plan = oauth.serverProfile(id: agent.serverId)?.plan ?? "free"
+        let maxBytes = plan == "free" ? 50 * 1024 * 1024 : 200 * 1024 * 1024
+        if sizeBytes > maxBytes {
+            return Self.json(413, "{\"error\":\"Max 50MB per file\",\"errorCode\":\"ATTACHMENT_TOO_LARGE\",\"maxBytes\":\(maxBytes)}")
+        }
+        let id = addChannelAttachment(channelId: channelId, uploaderId: agentId, filename: filename, mimeType: mimeType, sizeBytes: sizeBytes)
+        return Self.json(200, "{\"attachments\":[{\"id\":\(jsonString(id)),\"filename\":\(jsonString(filename))}]}")
+    }
+
     public func attachmentUploadSessionCreate(authorization: String?, serverId: String) -> HTTPReply {
         guard sessionUserId(authorization: authorization) != nil else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -8621,10 +8673,32 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private func visibleAttachment(userId: String, serverId: String?, attachment: ChannelAttachment) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard let channel = postableChannels[attachment.channelId], channel.serverId == serverId, channel.deletedAt == nil else {
-            return false
+        // A linked attachment follows its message into a joint canonical
+        // channel; an unlinked draft stays on its upload channel.
+        let effectiveChannelId = attachment.messageId.flatMap { messageId in
+            humanMessageRows.first { $0.id == messageId }?.channelId
+        } ?? attachment.channelId
+        if let channel = postableChannels[effectiveChannelId],
+           channel.serverId == serverId,
+           channel.deletedAt == nil {
+            return channel.kind == "channel" || channel.memberIds.contains(userId)
         }
-        return channel.kind == "channel" || channel.memberIds.contains(userId)
+        guard let serverId, let messageId = attachment.messageId else { return false }
+        let canonicalId: String?
+        if let link = jointProjections.first(where: { $0.localChannelId == effectiveChannelId }) {
+            canonicalId = link.canonicalChannelId
+        } else if jointProjections.contains(where: { $0.canonicalChannelId == effectiveChannelId }) {
+            canonicalId = effectiveChannelId
+        } else {
+            canonicalId = nil
+        }
+        guard let canonicalId,
+              humanMessageRows.contains(where: { $0.id == messageId && $0.channelId == canonicalId }),
+              let localId = jointLocalChannelIdLocked(canonicalChannelId: canonicalId, serverId: serverId, userId: userId),
+              let local = postableChannels[localId],
+              local.deletedAt == nil
+        else { return false }
+        return true
     }
 
     private static func channelFilesBase64URLEncode(_ value: String) -> String {
@@ -12293,6 +12367,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return agentMachineIds[agentId]
+    }
+
+    public func revokeAccessTokenForTesting(_ token: String) {
+        lock.lock()
+        accessTokens.removeValue(forKey: token)
+        lock.unlock()
+    }
+
+    public func retireUserForTesting(userId: String) {
+        lock.lock()
+        if let key = accounts.first(where: { $0.value.id == userId })?.key {
+            accounts[key]?.retiredAt = Date()
+        }
+        lock.unlock()
     }
 
     public func setAgentMachineForTesting(agentId: String, machineId: String) {

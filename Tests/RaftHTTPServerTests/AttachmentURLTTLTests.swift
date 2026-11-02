@@ -78,6 +78,13 @@ private final class PresignRecorder: @unchecked Sendable {
             #expect(try await ttl(video, "?disposition=inline&download=1") == 300)
             #expect(try await ttl(video, "") == 300)
             #expect(try await ttl(pdf, "?disposition=inline") == 300)
+
+            setenv("CDN_BASE_URL", "https://cdn.example.test", 1)
+            defer { unsetenv("CDN_BASE_URL") }
+            let cdnCheck = try await client.get(URI(string: "/api/attachments/\(pdf)/url"), headers: headers)
+            let cdnBody = (try JSONSerialization.jsonObject(with: Data((cdnCheck.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            #expect((cdnBody["url"] as? String)?.hasPrefix("https://storage.example.test/") == true)
+            #expect((cdnBody["url"] as? String)?.contains("cdn.example.test") == false)
         }
     }
 }
