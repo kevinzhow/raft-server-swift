@@ -230,6 +230,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var agentStatusOccurredAt: [String: Date] = [:]
     private var agentActivityEventIds: [String: Set<String>] = [:]
     private var agentThreadFollows: [String: AgentThreadFollowRecord] = [:]
+    private var agentIntegrationLogins: [String: AgentIntegrationLoginRecord] = [:]
     private var hostedUsage: [String: String] = [:]
     private var hostedModelPickerServers: Set<String> = []
     private var hostedModels: [String: HostedModelState] = [:]
@@ -15381,6 +15382,69 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
+    private static func integrationValueJSON(_ service: [String: Any], _ key: String) -> String {
+        guard let raw = service[key], !(raw is NSNull) else { return "null" }
+        if let string = raw as? String { return jsonString(string) }
+        if let values = raw as? [String] { return "[\(values.map(jsonString).joined(separator: ","))]" }
+        return "null"
+    }
+
+    private static func integrationServiceJSON(_ service: [String: Any]) -> String {
+        "{\"id\":\(integrationValueJSON(service, "id")),\"clientId\":\(integrationValueJSON(service, "clientId")),\"name\":\(integrationValueJSON(service, "name")),\"description\":\(integrationValueJSON(service, "description")),\"homepageUrl\":\(integrationValueJSON(service, "homepageUrl")),\"agentManifestUrl\":\(integrationValueJSON(service, "agentManifestUrl")),\"agentManifestUrlSource\":\(integrationValueJSON(service, "agentManifestUrlSource")),\"allowedScopes\":\(integrationValueJSON(service, "allowedScopes"))}"
+    }
+
+    public func agentIntegrationList(authorization: String?) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        let services = oauth.integrationServices(serverId: agent.serverId)
+        lock.lock()
+        let active = agentIntegrationLogins.values
+            .filter { $0.serverId == agent.serverId && $0.agentId == agent.id }
+            .sorted { $0.loggedInAt < $1.loggedInAt }
+            .compactMap { login -> String? in
+                guard let service = services.first(where: { ($0["id"] as? String) == login.clientId }) else { return nil }
+                let clientId = service["clientId"] as? String ?? ""
+                return "{\"clientId\":\(jsonString(clientId)),\"agentManifestUrl\":\(Self.integrationValueJSON(service, "agentManifestUrl")),\"agentManifestUrlSource\":\(Self.integrationValueJSON(service, "agentManifestUrlSource"))}"
+            }
+        lock.unlock()
+        let servicesJSON = services.map(Self.integrationServiceJSON).joined(separator: ",")
+        return Self.json(200, "{\"services\":[\(servicesJSON)],\"activeLogins\":[\(active.joined(separator: ","))]}")
+    }
+
+    public func agentIntegrationLogin(authorization: String?, body: String) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let serviceRef = object["service"] as? String, !serviceRef.isEmpty,
+              let service = oauth.integrationClient(serverId: agent.serverId, clientId: serviceRef),
+              let serviceId = service["id"] as? String
+        else {
+            return Self.json(404, "{\"error\":\"Integration service not found\",\"code\":\"integration_not_found\"}")
+        }
+        let key = "\(agent.serverId)\n\(agent.id)\n\(serviceId)"
+        lock.lock()
+        let existing = agentIntegrationLogins[key]
+        if existing == nil {
+            agentIntegrationLogins[key] = AgentIntegrationLoginRecord(
+                serverId: agent.serverId,
+                agentId: agent.id,
+                clientId: serviceId,
+                scopes: ["identity", "openid", "profile"],
+                loggedInAt: Date()
+            )
+        }
+        lock.unlock()
+        let status = existing == nil ? "logged_in" : "already_logged_in"
+        let scopes = "[\"identity\",\"openid\",\"profile\"]"
+        return Self.json(200, "{\"status\":\(jsonString(status)),\"service\":\(Self.integrationServiceJSON(service)),\"scopes\":\(scopes)}")
+    }
+
     public func agentMentionDeliveries(authorization: String?, messageRef: String) -> HTTPReply {
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
@@ -23134,5 +23198,22 @@ public struct AgentThreadFollowRecord: Sendable, Equatable {
         self.reason = reason
         self.doneAt = doneAt
         self.unfollowedAt = unfollowedAt
+    }
+}
+
+/// One agent login into a server integration service.
+public struct AgentIntegrationLoginRecord: Sendable, Equatable {
+    public var serverId: String
+    public var agentId: String
+    public var clientId: String
+    public var scopes: [String]
+    public var loggedInAt: Date
+
+    public init(serverId: String, agentId: String, clientId: String, scopes: [String], loggedInAt: Date) {
+        self.serverId = serverId
+        self.agentId = agentId
+        self.clientId = clientId
+        self.scopes = scopes
+        self.loggedInAt = loggedInAt
     }
 }

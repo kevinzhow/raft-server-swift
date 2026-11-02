@@ -1349,7 +1349,9 @@ public final class OAuthLedger: @unchecked Sendable {
         description: String? = nil,
         homepageUrl: String? = nil,
         returnUrl: String? = nil,
-        allowedScopes: [String]? = nil
+        allowedScopes: [String]? = nil,
+        agentManifestUrl: String? = nil,
+        agentManifestUrlSource: String? = nil
     ) throws -> CreatedOAuthClient {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw OAuthClientRejection(message: "name is required") }
@@ -1376,10 +1378,33 @@ public final class OAuthLedger: @unchecked Sendable {
             descriptionText: description,
             homepageUrl: homepageUrl,
             returnUrl: returnUrl,
-            allowedScopes: allowedScopes
+            allowedScopes: allowedScopes,
+            agentManifestUrl: agentManifestUrl,
+            agentManifestUrlSource: agentManifestUrlSource ?? (agentManifestUrl == nil ? nil : "explicit")
         ))
         lock.unlock()
         return CreatedOAuthClient(id: id, clientId: normalized, clientSecret: secret)
+    }
+
+    public func integrationServices(serverId: String) -> [[String: Any]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return clients.filter { $0.serverId == serverId }.map { client in
+            [
+                "id": client.id,
+                "clientId": client.clientId,
+                "name": client.name,
+                "description": client.descriptionText as Any,
+                "homepageUrl": client.homepageUrl as Any,
+                "agentManifestUrl": client.agentManifestUrl as Any,
+                "agentManifestUrlSource": client.agentManifestUrlSource as Any,
+                "allowedScopes": client.allowedScopes as Any,
+            ]
+        }
+    }
+
+    public func integrationClient(serverId: String, clientId: String) -> [String: Any]? {
+        integrationServices(serverId: serverId).first { ($0["clientId"] as? String) == clientId || ($0["id"] as? String) == clientId }
     }
 
     /// Moves a human authorization code one second past its 10-minute life. The token endpoint must not mint.
@@ -2979,6 +3004,8 @@ public final class OAuthLedger: @unchecked Sendable {
         var externalState: String? = nil
         var publishStatus: String = "draft"
         var humanMarketplaceVisible: Bool = false
+        var agentManifestUrl: String? = nil
+        var agentManifestUrlSource: String? = nil
     }
 
     /// Mirrors `oauthClientIsUserManagedPredicate`: the tombstone class and

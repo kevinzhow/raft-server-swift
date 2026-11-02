@@ -799,6 +799,17 @@ public func configure(_ app: Application, services: FallbackServices) {
             attachmentId: request.parameters.get("attachmentId") ?? ""
         ))
     }
+    app.get("internal", "agent-api", "integrations") { request -> Response in
+        routeResponse(services.emailAccounts.agentIntegrationList(
+            authorization: request.headers[.authorization]
+        ))
+    }
+    app.post("internal", "agent-api", "integrations", "login") { request -> Response in
+        routeResponse(services.emailAccounts.agentIntegrationLogin(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}"
+        ))
+    }
     app.post("internal", "agent-api", "integrations", "token") { request -> Response in
         routeResponse(services.emailAccounts.agentIntegrationToken(
             authorization: request.headers[.authorization],
