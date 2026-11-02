@@ -28,7 +28,7 @@ announcements.api	route	partial	-	auto-seed
 appAdmin.removed.api	route	locked	b2246d6	/api/app-admin/me stays 404
 appAgentReminderMessages.api	route	partial	-	auto-seed
 appAgentReminderMessages.realPg	route	partial	-	auto-seed
-appLogin.api	route	locked	PENDING	start/return-uri+S256 guard, signed-in describe, approve/deny, PKCE-bound single-use code, request+code expiry
+appLogin.api	route	locked	c856c34	start/return-uri+S256 guard, signed-in describe, approve/deny, PKCE-bound single-use code, request+code expiry
 appSetup.api	route	pending	-	auto-seed
 assistant.api	route	partial	-	auto-seed
 attachmentComments.api	route	pending	-	auto-seed
