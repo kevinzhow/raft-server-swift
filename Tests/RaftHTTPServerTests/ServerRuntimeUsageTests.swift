@@ -222,8 +222,17 @@ private func runtimeObject(_ response: ClientResponse) throws -> [String: Any] {
             #expect(fixture.accounts.agentRuntimeProfileMachineId(agentId: agentId) == nil)
 
             let staleMachine = fixture.accounts.registerMachine(serverId: fixture.serverId, userId: fixture.ownerId, name: "stale-profile-machine-998")
+            let staleTarget = fixture.accounts.registerMachine(serverId: fixture.serverId, userId: fixture.ownerId, name: "stale-profile-target-998")
             let staleAgent = fixture.accounts.oauth.createAgent(serverId: fixture.serverId, name: "stale-agent-998", runtime: "codex")
-            fixture.accounts.setAgentRuntimeProfileForTesting(agentId: staleAgent, machineId: staleMachine, staleAfterMigration: true)
+            fixture.accounts.setAgentRuntimeProfileForTesting(agentId: staleAgent, machineId: staleMachine)
+            fixture.accounts.setAgentMachineForTesting(agentId: staleAgent, machineId: staleTarget)
+            fixture.accounts.addAgentMigrationForTesting(
+                id: "22222222-3333-4444-8555-666666667998",
+                agentId: staleAgent,
+                sourceMachineId: staleMachine,
+                targetMachineId: staleTarget,
+                state: "completed"
+            )
             let staleDelete = try await client.send(
                 .delete,
                 headers: runtimeHeaders(owner, fixture.serverId),
@@ -281,11 +290,13 @@ private func runtimeObject(_ response: ClientResponse) throws -> [String: Any] {
 @Test func machineDeleteRefusesActiveMigrationAndAllowsCompletedCleanup() async throws {
     let fixture = makeRuntimeFixture(suffix: "1000")
     let agentId = fixture.accounts.oauth.createAgent(serverId: fixture.serverId, name: "migration-agent-1000", runtime: "codex")
-    fixture.accounts.setAgentRuntimeProfileForTesting(agentId: agentId, machineId: fixture.machineId, staleAfterMigration: true)
+    fixture.accounts.setAgentRuntimeProfileForTesting(agentId: agentId, machineId: fixture.machineId)
     let targetMachine = fixture.accounts.registerMachine(serverId: fixture.serverId, userId: fixture.ownerId, name: "migration-target-1000")
+    fixture.accounts.setAgentMachineForTesting(agentId: agentId, machineId: targetMachine)
     let migrationId = "22222222-3333-4444-8555-666666667000"
     fixture.accounts.addAgentMigrationForTesting(
         id: migrationId,
+        agentId: agentId,
         sourceMachineId: fixture.machineId,
         targetMachineId: targetMachine,
         state: "prep"

@@ -154,8 +154,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var storedAgentDeliveries: [(agentId: String, messageId: String, channelType: String)] = []
     private var agentCredentials: [String: AgentCredential] = [:]
     private var agentMachineIds: [String: String] = [:]
-    private var agentRuntimeProfiles: [String: (machineId: String, staleAfterMigration: Bool)] = [:]
-    private var activeAgentMigrations: [String: (sourceMachineId: String, targetMachineId: String, state: String)] = [:]
+    private var agentRuntimeProfiles: [String: AgentRuntimeProfileFact] = [:]
+    private var activeAgentMigrations: [String: AgentMigrationFact] = [:]
     private var latestComputerReleaseForTesting: (version: String, notesJSON: String)?
     private var machineBroadcastPoliciesForTesting: [String: String] = [:]
     private var agentMigrationServers: Set<String> = []
@@ -10864,9 +10864,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"protocolVersion\":2,\"runtimeId\":\(jsonString(agent.runtime)),\"schemaVersion\":\(jsonString(schemaVersion)),\"fields\":\(fields),\"values\":\(valueJSON),\"capabilities\":\(capabilities)}")
     }
 
-    public func addAgentMigrationForTesting(id: String, sourceMachineId: String, targetMachineId: String, state: String) {
+    public func addAgentMigrationForTesting(id: String, agentId: String = "", sourceMachineId: String, targetMachineId: String, state: String) {
         lock.lock()
-        activeAgentMigrations[id] = (sourceMachineId, targetMachineId, state)
+        activeAgentMigrations[id] = AgentMigrationFact(
+            agentId: agentId,
+            sourceMachineId: sourceMachineId,
+            targetMachineId: targetMachineId,
+            state: state
+        )
         lock.unlock()
     }
 
@@ -10877,6 +10882,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             activeAgentMigrations[id] = migration
         }
         lock.unlock()
+    }
+
+    public func agentMigrationStateForTesting(id: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeAgentMigrations[id]?.state
+    }
+
+    public func agentMigrationCountForTesting() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeAgentMigrations.count
     }
 
     public func setLatestComputerReleaseForTesting(version: String, releaseNotesJSON: String) {
@@ -10891,9 +10908,27 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    public func setAgentRuntimeProfileForTesting(agentId: String, machineId: String, staleAfterMigration: Bool = false) {
+    public func setAgentRuntimeProfileForTesting(
+        agentId: String,
+        machineId: String,
+        baselineMachineId: String? = nil,
+        pendingBeforeMachineId: String? = nil,
+        pendingAfterMachineId: String? = nil,
+        migrationStatus: String? = nil,
+        pendingKind: String? = nil,
+        pendingReleaseNotesUrl: String? = nil
+    ) {
         lock.lock()
-        agentRuntimeProfiles[agentId] = (machineId, staleAfterMigration)
+        agentRuntimeProfiles[agentId] = AgentRuntimeProfileFact(
+            agentId: agentId,
+            machineId: machineId,
+            baselineMachineId: baselineMachineId,
+            pendingBeforeMachineId: pendingBeforeMachineId,
+            pendingAfterMachineId: pendingAfterMachineId,
+            migrationStatus: migrationStatus,
+            pendingKind: pendingKind,
+            pendingReleaseNotesUrl: pendingReleaseNotesUrl
+        )
         lock.unlock()
     }
 
@@ -10901,6 +10936,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return agentRuntimeProfiles[agentId]?.machineId
+    }
+
+    public func agentRuntimeProfileForTesting(agentId: String) -> AgentRuntimeProfileFact? {
+        lock.lock()
+        defer { lock.unlock() }
+        return agentRuntimeProfiles[agentId]
     }
 
     public func setAgentMachineForTesting(agentId: String, machineId: String) {
@@ -12112,19 +12153,61 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(409, "{\"error\":\"Cannot delete computer while an agent migration is in progress. Wait for it to finish or abort it first.\",\"code\":\"MACHINE_HAS_ACTIVE_MIGRATION\"}")
         }
-        let blockingProfile = agentRuntimeProfiles.contains { agentId, profile in
-            profile.machineId == machineId
-                && !profile.staleAfterMigration
-                && oauth.agentRuntimeInfo(id: agentId).map { !$0.deleted } == true
+        let terminalStates: Set<String> = ["completed", "failed", "aborted", "cancelled"]
+        var profileRemovals: [String] = []
+        var profileUpdates: [String: AgentRuntimeProfileFact] = [:]
+        for (agentId, profile) in agentRuntimeProfiles {
+            let agent = oauth.agentRuntimeInfo(id: agentId)
+            let agentActive = agent != nil && agent?.deleted == false
+            if profile.machineId == machineId {
+                if !agentActive {
+                    profileRemovals.append(agentId)
+                    continue
+                }
+                let assignment = agentMachineIds[agentId]
+                let proof = assignment.map { target in
+                    activeAgentMigrations.values.contains { migration in
+                        migration.agentId == agentId
+                            && migration.sourceMachineId == machineId
+                            && migration.targetMachineId == target
+                            && terminalStates.contains(migration.state)
+                            && migration.state == "completed"
+                    }
+                } ?? false
+                if proof, profile.pendingKind == nil {
+                    profileRemovals.append(agentId)
+                } else {
+                    lock.unlock()
+                    return Self.json(409, "{\"error\":\"Cannot delete computer while runtime profiles still reference active agents. Remove or migrate related agents first.\",\"code\":\"MACHINE_HAS_ACTIVE_RUNTIME_PROFILE\"}")
+                }
+            } else if profile.pendingBeforeMachineId == machineId {
+                if !agentActive {
+                    var updated = profile
+                    updated.pendingBeforeMachineId = nil
+                    profileUpdates[agentId] = updated
+                    continue
+                }
+                let proof = activeAgentMigrations.values.contains { migration in
+                    migration.agentId == agentId
+                        && migration.sourceMachineId == machineId
+                        && migration.targetMachineId == profile.machineId
+                        && migration.state == "completed"
+                }
+                if proof {
+                    var updated = profile
+                    updated.pendingBeforeMachineId = nil
+                    profileUpdates[agentId] = updated
+                } else {
+                    lock.unlock()
+                    return Self.json(409, "{\"error\":\"Cannot delete computer while runtime profiles still reference active agents. Remove or migrate related agents first.\",\"code\":\"MACHINE_HAS_ACTIVE_RUNTIME_PROFILE\"}")
+                }
+            }
         }
-        if blockingProfile {
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"This computer cannot be deleted: runtime profiles still reference active agents. Move or delete those agents first.\",\"code\":\"MACHINE_HAS_ACTIVE_RUNTIME_PROFILE\"}")
+        for agentId in profileRemovals {
+            agentRuntimeProfiles.removeValue(forKey: agentId)
         }
-        agentRuntimeProfiles = agentRuntimeProfiles.filter { agentId, profile in
-            guard profile.machineId == machineId else { return true }
-            if profile.staleAfterMigration { return false }
-            return oauth.agentRuntimeInfo(id: agentId).map { !$0.deleted } == true
+        for (agentId, profile) in profileUpdates {
+            agentRuntimeProfiles[agentId] = profile
         }
         machines.remove(at: index)
         for computerIndex in computers.indices where computers[computerIndex].machineId?.caseInsensitiveCompare(machineId) == .orderedSame {
@@ -20243,5 +20326,55 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         ]
         if let cookie { headers["Set-Cookie"] = cookie }
         return HTTPReply(status: status, headers: headers, body: body)
+    }
+}
+
+/// One stored agent runtime profile row: the machine it runs on plus any
+/// pending migration release state. The delete-machine path treats these as
+/// the authority on which Computers may still be removed.
+public struct AgentRuntimeProfileFact: Sendable, Equatable {
+    public var agentId: String
+    public var machineId: String
+    public var baselineMachineId: String?
+    public var pendingBeforeMachineId: String?
+    public var pendingAfterMachineId: String?
+    public var migrationStatus: String?
+    public var pendingKind: String?
+    public var pendingReleaseNotesUrl: String?
+
+    public init(
+        agentId: String,
+        machineId: String,
+        baselineMachineId: String? = nil,
+        pendingBeforeMachineId: String? = nil,
+        pendingAfterMachineId: String? = nil,
+        migrationStatus: String? = nil,
+        pendingKind: String? = nil,
+        pendingReleaseNotesUrl: String? = nil
+    ) {
+        self.agentId = agentId
+        self.machineId = machineId
+        self.baselineMachineId = baselineMachineId
+        self.pendingBeforeMachineId = pendingBeforeMachineId
+        self.pendingAfterMachineId = pendingAfterMachineId
+        self.migrationStatus = migrationStatus
+        self.pendingKind = pendingKind
+        self.pendingReleaseNotesUrl = pendingReleaseNotesUrl
+    }
+}
+
+/// One agent migration row. Terminal rows stay behind as history after the
+/// source Computer is deleted.
+public struct AgentMigrationFact: Sendable, Equatable {
+    public var agentId: String
+    public var sourceMachineId: String
+    public var targetMachineId: String
+    public var state: String
+
+    public init(agentId: String, sourceMachineId: String, targetMachineId: String, state: String) {
+        self.agentId = agentId
+        self.sourceMachineId = sourceMachineId
+        self.targetMachineId = targetMachineId
+        self.state = state
     }
 }
