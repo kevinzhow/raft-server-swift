@@ -392,3 +392,11 @@ Runtime form v2 catalogs：`GET .../runtime-forms/v2/:runtime` 对 pi/opencode/c
 
 Runtime form 续：v2 form 目录新增 claude/cursor/kimi-sdk（含 optionSources 与 requiredClientCapabilities）。`GET .../runtime-options` 对 v1-capable runtime（builtin/claude/cursor/kimi-sdk）在未 opt-in v2 时带 `formDefinitionRef:{protocolVersion:1,runtimeId,schemaVersion}`；opt-in 时改为 `runtimeFormV2:{protocolVersion:2}` 且无 ref。kimi-sdk：v1 model source 在 missing_config/computer_offline 时返回 managed default `kimi-code/kimi-for-coding`（无 status），no_models/unsupported/其他错误分别 409 `runtime_model_source_no_models`/`runtime_model_source_unsupported`/`runtime_model_source_error`；v2 把前两者标为 `fallback`，其余标为 `unavailable`（`options:[]`），live 为 `status:"live"`。builtin：v2 model source 支持 live/fallback(machine_offline, bundled catalog)/unavailable(probe_timeout, `optionsByValue:{}`)，无 catalog authority 时 409 `builtin_catalog_capability_required`；v1 timeout 为 409 `builtin_catalog_unavailable`。claude/cursor model source 走同一 probe 并携带 live/fallback 状态；claude provider 为静态定义。
 
+Locked module groups（此前已实现，本轮按可移植用例完成审计并标记 locked）：
+
+- `messagesThreadSummaries.api`：`GET /api/messages/channel/:id` 与 context 在同一响应携带 `threadSummariesByParentMessageId`，只覆盖当页/当前窗口的 parent；无 thread parent 时为空对象；私有频道非成员仍被 403/404 拒绝。
+- `servers.joinCommunity.api`：`POST /api/servers/join-community` 默认 `community`、可指定 `community-cn`；未知 slug 400 unsupported，已是成员 400 already，未 seed 404 not available，未认证 401/403。
+- `deviceAuth.api`：gate 关闭返回 404，未设置默认开启；`authorize` 在 APP_URL 缺失时 503 `DEVICE_LOGIN_URL_UNAVAILABLE`；token 轮询 pending/approved/consumed/access_denied 与未知 code 的统一错误；approve 只能消费一次。
+- `releaseNotes.api`：公开列表匿名为 `{items,nextCursor}` 且校验 limit/cursor；published/retracted/draft 投影；entries 只取 currentRevision 且按 ordinal；detail 对非法 id 400、未知 404、retracted stub 隐藏 entries。DB trigger 不可变性为不可移植排除项。
+- `push.api`：APNs/FCM 注册 tuple 校验与按 installation/provider upsert；delivery status 按 server 报告 FCM 可用性；family revoke 无认证、30 天内幂等、过期后 terminal；在线 logout 标记 family 为 logout；web push 仅接受公开 HTTPS endpoint。
+
