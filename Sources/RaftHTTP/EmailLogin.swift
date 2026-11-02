@@ -4837,7 +4837,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"Missing X-Server-Id header\"}")
         }
         guard ServerScope.isUUID(attachmentId) else {
-            return Self.json(404, "{\"error\":\"Attachment not found\"}")
+            return Self.json(400, "{\"code\":\"invalid_attachment_id\",\"error\":\"Invalid attachment id\"}")
+        }
+        if !oauth.memberIds(serverId: serverId).isEmpty,
+           oauth.memberRole(serverId: serverId, userId: userId) == nil {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         lock.lock()
         let visible: Bool = {
@@ -8639,8 +8643,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func readAttachment(authorization: String?, serverId: String?, attachmentId: String, kind: String) -> HTTPReply {
+        guard ServerScope.isUUID(attachmentId) else {
+            return Self.json(400, "{\"code\":\"invalid_attachment_id\",\"error\":\"Invalid attachment id\"}")
+        }
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        let retired = accounts.values.first { $0.id == userId }?.retiredAt != nil
+        lock.unlock()
+        guard !retired else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let serverId, !serverId.isEmpty else {
+            return Self.json(400, "{\"error\":\"X-Server-Id header is required\"}")
+        }
+        if !oauth.memberIds(serverId: serverId).isEmpty,
+           oauth.memberRole(serverId: serverId, userId: userId) == nil {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         lock.lock()
         let attachment = channelAttachments[attachmentId]

@@ -444,3 +444,5 @@ Channel 存在性 probe：`GET /channels/:id/files`、`GET/POST /channels/:id/th
 
 Inbox row 投影：DM scope 的 `kind` 为 `"dm"`，channel/private 为 `"channel"` 且带 `channelType`；thread 行带 `parentChannelId` 与 `parentChannelType`；private channel/DM/private-parent thread 在 `filter=all` 与 `filter=mentions` 中正常出现。follow/done/undone/unfollow 只读写 thread_follows；parent membership 本身不会让 thread 出现在 followed list，unfollow 也不移除 parent membership。
 
+Attachment 单 id 读取矩阵：`GET /api/attachments/:id`、`/url`、`/html-preview-url` 对非 UUID 回 400 `{code:"invalid_attachment_id"}`；缺 `X-Server-Id` 400；Server 有成员表但调用者非成员 403；跨 Server 或不存在 UUID 统一 404 `{"error":"Attachment not found"}`；retired 用户 401。合成无成员表夹具保持旧的可读行为。
+
