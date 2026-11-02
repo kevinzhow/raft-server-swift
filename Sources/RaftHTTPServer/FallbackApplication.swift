@@ -2254,7 +2254,8 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("api", "servers", ":id", "machines", ":machineId", "runtime-options") { request -> Response in        routeResponse(services.emailAccounts.machineRuntimeOptions(
             authorization: request.headers[.authorization],
             serverId: request.parameters.get("id") ?? "",
-            machineId: request.parameters.get("machineId") ?? ""
+            machineId: request.parameters.get("machineId") ?? "",
+            includeRuntimeFormV2: request.headers[HTTPField.Name("X-Raft-Runtime-Form-V2")!] == "1"
         ))
     }
     app.get("api", "servers", ":id", "machines", ":machineId", "runtime-models", ":runtime") { request -> Response in
@@ -2314,7 +2315,8 @@ public func configure(_ app: Application, services: FallbackServices) {
             sourceId: request.parameters.get("sourceId") ?? "",
             protocolVersion: 2,
             schemaVersion: nil,
-            language: request.headers[HTTPField.Name("Accept-Language")!]
+            language: request.headers[HTTPField.Name("Accept-Language")!],
+            refresh: desktopQuery(request.url.query, "refresh") == "1"
         ))
         applyRuntimeFormLanguage(&response, language: request.headers[HTTPField.Name("Accept-Language")!])
         return response

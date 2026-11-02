@@ -637,6 +637,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
     /// Test seam for a manual runtime-account usage refresh. Production has no live daemon relay here.
     public var runtimeAccountUsageManualRefresh: (@Sendable (String, String) -> RuntimeAccountUsageManualResult)?
+    /// Test seam for the Computer model probe. Production has no live daemon relay here.
+    public var machineRuntimeModelProbe: (@Sendable (_ machineId: String, _ runtimeId: String, _ force: Bool) -> RuntimeModelProbeOutcome)?
+    /// Whether this server can route a probe to the Computer. Defaults to true.
+    public var machineRoutedLocally: (@Sendable (_ machineId: String) -> Bool)?
     /// Test seam called before each already-read SSE frame. Production leaves it nil.
     public var nativeNotificationLiveWriteHook: (@Sendable (_ index: Int, _ eventCount: Int) async -> Void)?
     /// `NATIVE_NOTIFICATION_ATTESTATION_MODE`. Nil means the variable is unset.
@@ -11249,7 +11253,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Runtimes whose released form only exists at protocol v2; v1 clients
     /// must see them as having no form at all.
     private static let runtimeFormV2Only: Set<String> = [
-        "pi", "opencode", "gemini", "codex", "grok", "antigravity",
+        "pi", "opencode", "gemini", "codex", "grok", "antigravity", "kimi",
     ]
 
     public func runtimeFormDefinition(
@@ -11287,6 +11291,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let zh = Self.prefersChinese(language)
         if protocolVersion == 2 {
+            if let form = RuntimeFormCatalog.v2Forms[runtimeId] {
+                return Self.json(200, form)
+            }
             let label = zh ? "模型" : "Model"
             return Self.json(200, "{\"protocolVersion\":2,\"runtimeId\":\(jsonString(runtimeId)),\"schemaVersion\":\(jsonString(expected)),\"fields\":[{\"key\":\"model\",\"kind\":\"select\",\"label\":\(jsonString(label)),\"required\":true}],\"capabilities\":{\"providerKinds\":[\"preset\"],\"writeOnlyPointers\":[\"/apiKey\"],\"forbiddenPointers\":[\"/hostUserState\"]}}")
         }
@@ -11313,7 +11320,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         sourceId: String,
         protocolVersion: Int,
         schemaVersion: String?,
-        language: String?
+        language: String?,
+        refresh: Bool = false
     ) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -11326,7 +11334,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Computer not found\"}")
         }
-        let cachedModels = machineRuntimeModels[machineId]?[runtimeId]?.models ?? []
         lock.unlock()
         guard role == "owner" || role == "admin" || machine.userId == userId else {
             return Self.json(403, "{\"error\":\"The `editMachines` capability or machine creator authority is required to inspect runtime form option sources\"}")
@@ -11341,9 +11348,81 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(409, "{\"error\":\"Runtime form schema is stale or unknown\",\"issues\":[{\"code\":\"stale_form_schema\",\"pointer\":\"/schemaVersion\"}]}")
         }
         let zh = Self.prefersChinese(language)
+
+        if protocolVersion == 2 {
+            // Static sources never probe the Computer.
+            if runtimeId == "antigravity" {
+                return Self.json(404, "{\"error\":\"Runtime form option source not found\",\"issues\":[{\"code\":\"unknown_option_source\",\"pointer\":\"/sourceId\"}]}")
+            }
+            if sourceId == "provider", runtimeId == "pi" {
+                return Self.json(200, RuntimeFormCatalog.optionSources["pi/provider"] ?? "")
+            }
+            if sourceId == "providerModel", runtimeId == "pi" {
+                return Self.json(200, RuntimeFormCatalog.optionSources["pi/providerModel"] ?? "")
+            }
+            if sourceId == "model", runtimeId == "kimi" || runtimeId == "gemini" {
+                return Self.json(200, RuntimeFormCatalog.optionSources["\(runtimeId)/model"] ?? "")
+            }
+            if sourceId == "model", ["opencode", "codex", "grok", "pi"].contains(runtimeId) {
+                switch Self.resolveRuntimeModelProbe(
+                    machineId: machineId,
+                    runtimeId: runtimeId,
+                    refresh: refresh,
+                    routedLocally: machineRoutedLocally,
+                    probe: machineRuntimeModelProbe,
+                    cached: { [weak self] in
+                        guard let self else { return [] }
+                        self.lock.lock()
+                        defer { self.lock.unlock() }
+                        return self.machineRuntimeModels[machineId]?[runtimeId]?.models ?? []
+                    }
+                ) {
+                case .live(let models, let defaultModel):
+                    let defaultValue = defaultModel ?? models.first?.id ?? ""
+                    let defaultJSON = jsonString(defaultValue)
+                    let options: String
+                    switch runtimeId {
+                    case "codex", "grok", "pi":
+                        options = models.map { Self.runtimeProbeOptionJSON($0, reasoning: true) }.joined(separator: ",")
+                    default:
+                        options = models.map { Self.runtimeProbeOptionJSON($0, reasoning: false) }.joined(separator: ",")
+                    }
+                    let custom = runtimeId == "codex" || runtimeId == "pi" ? ",\"customValueAllowed\":true" : ""
+                    let status = runtimeId == "opencode" ? "" : ",\"status\":\"live\""
+                    return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\(jsonString(runtimeId)),\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\",\"kind\":\"select\",\"pointer\":\"/model\",\"options\":[\(options)],\"defaultValue\":\(defaultJSON)\(custom)\(status)}")
+                case .notLive(let reason):
+                    let retryable = Self.runtimeReasonRetryable(reason)
+                    switch runtimeId {
+                    case "opencode":
+                        return Self.json(200, RuntimeFormCatalog.optionSources["opencode/model"] ?? "")
+                    case "codex":
+                        let raw = RuntimeFormCatalog.optionSources["codex/model"] ?? ""
+                        if reason == "missing_config" { return Self.json(200, raw) }
+                        let adjusted = raw
+                            .replacingOccurrences(of: "\"reason\": \"missing_config\"", with: "\"reason\": \"\(reason)\"")
+                            .replacingOccurrences(of: "\"retryable\": false", with: "\"retryable\": \(retryable)")
+                        return Self.json(200, adjusted)
+                    case "grok":
+                        let options = Self.grokBundledModels
+                            .map { Self.runtimeProbeOptionJSON($0, reasoning: true) }
+                            .joined(separator: ",")
+                        return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\"grok\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\",\"kind\":\"select\",\"pointer\":\"/model\",\"options\":[\(options)],\"defaultValue\":\"grok-4.5\",\"status\":\"fallback\",\"reason\":\(jsonString(reason)),\"retryable\":\(retryable)}")
+                    default:
+                        let raw = RuntimeFormCatalog.optionSources["pi/model"] ?? ""
+                        if reason == "missing_config" { return Self.json(200, raw) }
+                        let adjusted = raw
+                            .replacingOccurrences(of: "\"reason\": \"missing_config\"", with: "\"reason\": \"\(reason)\"")
+                            .replacingOccurrences(of: "\"retryable\": false", with: "\"retryable\": \(retryable)")
+                        return Self.json(200, adjusted)
+                    }
+                }
+            }
+        }
+
+        lock.lock()
+        let cachedModels = machineRuntimeModels[machineId]?[runtimeId]?.models ?? []
+        lock.unlock()
         switch sourceId {
-        case "provider" where runtimeId == "pi" && protocolVersion == 2:
-            return Self.json(200, "{\"sourceId\":\"provider\",\"schemaVersion\":\(jsonString(expected)),\"kind\":\"select\",\"options\":[],\"defaultValue\":\"configured\"}")
         case "provider" where runtimeId == "builtin":
             let options = "{\"value\":\"deepseek\",\"label\":\(jsonString(zh ? "DeepSeek" : "DeepSeek")),\"providerKind\":\"preset\"},{\"value\":\"moonshotai\",\"label\":\(jsonString(zh ? "月之暗面" : "Moonshot AI")),\"providerKind\":\"preset\"}"
             return Self.json(200, "{\"sourceId\":\"provider\",\"schemaVersion\":\(jsonString(expected)),\"kind\":\"select\",\"options\":[\(options)]}")
@@ -11354,15 +11433,78 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 return Self.json(200, "{\"sourceId\":\"model\",\"schemaVersion\":\(jsonString(expected)),\"kind\":\"dependent_select\",\"optionsByValue\":{\"deepseek\":[\(deepseek)],\"moonshotai\":[\(moonshot)]}}")
             }
             let options = cachedModels.map { "{\"value\":\(jsonString($0.id)),\"label\":\(jsonString($0.label))}" }.joined(separator: ",")
-            if protocolVersion == 2, ["codex", "grok"].contains(runtimeId) {
-                let status = cachedModels.isEmpty ? "unavailable" : "ready"
-                return Self.json(200, "{\"sourceId\":\"model\",\"schemaVersion\":\(jsonString(expected)),\"kind\":\"select\",\"options\":[\(options)],\"optionSource\":{\"status\":\(jsonString(status))}}")
-            }
             return Self.json(200, "{\"sourceId\":\"model\",\"schemaVersion\":\(jsonString(expected)),\"kind\":\"select\",\"options\":[\(options)]}")
         default:
             return Self.json(404, "{\"error\":\"Runtime form option source not found\",\"issues\":[{\"code\":\"unknown_option_source\",\"pointer\":\"/sourceId\"}]}")
         }
     }
+
+    private enum RuntimeProbeResolution {
+        case live(models: [RuntimeModelProbeModel], default: String?)
+        case notLive(reason: String)
+    }
+
+    private static func resolveRuntimeModelProbe(
+        machineId: String,
+        runtimeId: String,
+        refresh: Bool,
+        routedLocally: (@Sendable (String) -> Bool)?,
+        probe: (@Sendable (String, String, Bool) -> RuntimeModelProbeOutcome)?,
+        cached: () -> [(id: String, label: String)]
+    ) -> RuntimeProbeResolution {
+        guard routedLocally?(machineId) ?? true else { return .notLive(reason: "machine_offline") }
+        let outcome: RuntimeModelProbeOutcome
+        if let probe {
+            outcome = probe(machineId, runtimeId, refresh)
+        } else {
+            let models = cached()
+            outcome = models.isEmpty
+                ? .missingConfig
+                : .live(models: models.map { RuntimeModelProbeModel(id: $0.id, label: $0.label) }, default: models.first?.id)
+        }
+        switch outcome {
+        case .live(let models, let defaultModel):
+            return models.isEmpty ? .notLive(reason: "no_models") : .live(models: models, default: defaultModel)
+        case .missingConfig:
+            return .notLive(reason: "missing_config")
+        case .noModels:
+            return .notLive(reason: "no_models")
+        case .unsupported:
+            return .notLive(reason: "unsupported")
+        case .error(let code, _):
+            if code == "detect_timeout" { return .notLive(reason: "probe_timeout") }
+            if code == "computer_offline" { return .notLive(reason: "machine_offline") }
+            return .notLive(reason: "probe_failed")
+        case .failed:
+            return .notLive(reason: "probe_failed")
+        }
+    }
+
+    private static func runtimeReasonRetryable(_ reason: String) -> Bool {
+        ["probe_timeout", "probe_failed", "machine_offline", "no_models"].contains(reason)
+    }
+
+    private static func runtimeProbeOptionJSON(_ model: RuntimeModelProbeModel, reasoning: Bool) -> String {
+        var json = "{\"value\":\(jsonString(model.id)),\"label\":\(jsonString(model.label))"
+        if reasoning, let efforts = model.supportedReasoningEfforts, !efforts.isEmpty {
+            json += ",\"supportedReasoningEfforts\":[\(efforts.map(jsonString).joined(separator: ","))]"
+            if let defaultEffort = model.defaultReasoningEffort {
+                json += ",\"defaultReasoningEffort\":\(jsonString(defaultEffort))"
+            }
+        }
+        return json + "}"
+    }
+
+    private static let grokBundledModels: [RuntimeModelProbeModel] = [
+        RuntimeModelProbeModel(
+            id: "grok-4.5",
+            label: "Grok 4.5",
+            supportedReasoningEfforts: ["high", "medium", "low"],
+            defaultReasoningEffort: "high"
+        ),
+        RuntimeModelProbeModel(id: "grok-4.6", label: "Grok 4.6"),
+        RuntimeModelProbeModel(id: "grok-composer-2.5-fast", label: "Composer 2.5"),
+    ]
 
     private static func prefersChinese(_ language: String?) -> Bool {
         guard let language else { return false }
@@ -11490,7 +11632,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     private static let runtimeAccountUsageProviders: Set<String> = ["claude", "codex", "kimi", "grok"]
 
-    public func machineRuntimeOptions(authorization: String?, serverId: String, machineId: String) -> HTTPReply {
+    public func machineRuntimeOptions(authorization: String?, serverId: String, machineId: String, includeRuntimeFormV2: Bool = false) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
@@ -11521,7 +11663,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 ? "available"
                 : (runtime.binary.isEmpty ? "update_required" : "not_installed")
             let canSelect = capability == "available"
-            return "{\"runtimeId\":\(jsonString(runtime.id)),\"capabilityStatus\":\(jsonString(capability)),\"admissionStatus\":\"available_for_new\",\"admissionReason\":null,\"current\":false,\"availableForNew\":true,\"manageableForCurrentAgent\":false,\"canSelectInThisContext\":\(canSelect)}"
+            let v2Marker = includeRuntimeFormV2 && RuntimeFormCatalog.v2Forms[runtime.id] != nil
+                ? ",\"runtimeFormV2\":{\"protocolVersion\":2}"
+                : ""
+            return "{\"runtimeId\":\(jsonString(runtime.id)),\"capabilityStatus\":\(jsonString(capability)),\"admissionStatus\":\"available_for_new\",\"admissionReason\":null,\"current\":false,\"availableForNew\":true,\"manageableForCurrentAgent\":false,\"canSelectInThisContext\":\(canSelect)\(v2Marker)}"
         }.joined(separator: ",")
         return Self.json(200, "{\"context\":\"new_agent\",\"machineId\":\(jsonString(machine.id)),\"options\":[\(options)]}")
     }
@@ -20386,4 +20531,34 @@ public struct AgentMigrationFact: Sendable, Equatable {
         self.targetMachineId = targetMachineId
         self.state = state
     }
+}
+
+/// One probed runtime model with its optional reasoning metadata.
+public struct RuntimeModelProbeModel: Sendable, Equatable {
+    public var id: String
+    public var label: String
+    public var supportedReasoningEfforts: [String]?
+    public var defaultReasoningEffort: String?
+
+    public init(
+        id: String,
+        label: String,
+        supportedReasoningEfforts: [String]? = nil,
+        defaultReasoningEffort: String? = nil
+    ) {
+        self.id = id
+        self.label = label
+        self.supportedReasoningEfforts = supportedReasoningEfforts
+        self.defaultReasoningEffort = defaultReasoningEffort
+    }
+}
+
+/// The Computer's answer to a runtime model probe.
+public enum RuntimeModelProbeOutcome: Sendable, Equatable {
+    case live(models: [RuntimeModelProbeModel], default: String?)
+    case missingConfig
+    case noModels
+    case unsupported
+    case error(code: String, retryable: Bool)
+    case failed
 }

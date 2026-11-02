@@ -280,7 +280,8 @@ private func runtimeObject(_ response: ClientResponse) throws -> [String: Any] {
             }
             let codexModels = try await client.get(URI(string: "\(base)/runtime-forms/v2/codex/option-sources/model"), headers: headers)
             #expect(codexModels.status == .ok)
-            #expect(try runtimeObject(codexModels)["optionSource"] as? NSDictionary == ["status": "ready"] as NSDictionary)
+            #expect(try runtimeObject(codexModels)["status"] as? String == "live")
+            #expect(try runtimeObject(codexModels)["customValueAllowed"] as? Bool == true)
             let options = try runtimeObject(codexModels)["options"] as? [[String: Any]] ?? []
             #expect(options.first?["value"] as? String == "gpt-5.4")
         }
