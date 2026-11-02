@@ -898,6 +898,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             remove: true
         ))
     }
+    app.post("internal", "agent-api", "activity") { request -> Response in
+        routeResponse(services.emailAccounts.agentActivityIngest(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}"
+        ))
+    }
     app.get("internal", "agent-api", "search") { request -> Response in
         routeResponse(services.emailAccounts.agentApiSearch(
             authorization: request.headers[.authorization],

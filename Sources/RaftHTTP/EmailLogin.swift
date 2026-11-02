@@ -226,6 +226,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var hostedRuntimes: [String: (provider: String, model: String?, state: String, retryNeedsModel: Bool, createdAt: Date)] = [:]
     private var grokRuntimeServers: Set<String> = []
     private var remoteUpgradeDisabledServers: Set<String> = []
+    private var agentStatusAdopted: Set<String> = []
+    private var agentStatusOccurredAt: [String: Date] = [:]
+    private var agentActivityEventIds: [String: Set<String>] = [:]
     private var hostedUsage: [String: String] = [:]
     private var hostedModelPickerServers: Set<String> = []
     private var hostedModels: [String: HostedModelState] = [:]
@@ -15190,6 +15193,90 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         hostedAgents.insert(agentId)
         lock.unlock()
+    }
+
+    public func agentActivityIngest(authorization: String?, body: String) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted,
+              credential.scopes.contains("read")
+        else {
+            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let events = object["events"] as? [[String: Any]]
+        else {
+            return Self.json(400, "{\"error\":\"Invalid activity ingest\",\"code\":\"activity_invalid\"}")
+        }
+        let standardStatuses: Set<String> = ["working", "thinking", "online", "error", "offline"]
+        var accepted = 0
+        var rejected = 0
+        var seen = agentActivityEventIds[agent.id] ?? []
+        for event in events {
+            guard let eventId = event["eventId"] as? String, !eventId.isEmpty,
+                  let rawOccurred = event["occurredAt"] as? String,
+                  let occurred = Self.isoDate(rawOccurred)
+            else {
+                rejected += 1
+                continue
+            }
+            if seen.contains(eventId) {
+                rejected += 1
+                continue
+            }
+            let rawStatus = event["status"] as? String
+            if let rawStatus, !standardStatuses.contains(rawStatus), rawStatus != "failed" {
+                return Self.json(400, "{\"error\":\"Invalid agent status\",\"code\":\"status_invalid\"}")
+            }
+            if let detailValue = event["detail"] {
+                guard let detail = detailValue as? String else {
+                    return Self.json(400, "{\"error\":\"Invalid status detail\",\"code\":\"detail_invalid\"}")
+                }
+                if detail.count > 200 {
+                    return Self.json(400, "{\"error\":\"Status detail is too long\",\"code\":\"detail_too_long\"}")
+                }
+            }
+            let now = Date()
+            let effective = min(occurred, now)
+            seen.insert(eventId)
+            accepted += 1
+            let isStandardStatus = rawStatus.map { standardStatuses.contains($0) } ?? false
+            let hookName = event["hookEventName"] as? String
+            let detail = (event["detail"] as? String) ?? ""
+            if isStandardStatus {
+                agentStatusAdopted.insert(agent.id)
+                if effective >= (agentStatusOccurredAt[agent.id] ?? .distantPast) {
+                    agentStatusOccurredAt[agent.id] = effective
+                    let mapped = rawStatus == "working" || rawStatus == "thinking" ? rawStatus! : rawStatus!
+                    agentActivities[agent.id] = (activity: mapped, detail: detail)
+                }
+            } else if hookName != nil, !agentStatusAdopted.contains(agent.id) {
+                let hookStatus: String
+                switch hookName {
+                case "PreToolUse": hookStatus = "working"
+                case "PostToolUseFailure": hookStatus = "error"
+                case "Stop", "SessionEnd": hookStatus = "online"
+                default: hookStatus = "working"
+                }
+                if effective >= (agentStatusOccurredAt[agent.id] ?? .distantPast) {
+                    agentStatusOccurredAt[agent.id] = effective
+                    agentActivities[agent.id] = (activity: hookStatus, detail: "")
+                }
+            }
+        }
+        agentActivityEventIds[agent.id] = seen
+        return Self.json(200, "{\"ok\":true,\"acceptedCount\":\(accepted),\"rejectedCount\":\(rejected),\"droppedCount\":0}")
+    }
+
+    public func agentActivityForTesting(agentId: String) -> (activity: String, detail: String)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return agentActivities[agentId]
+    }
+
+    public func agentStatusAdoptedForTesting(agentId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return agentStatusAdopted.contains(agentId)
     }
 
     public func agentProfileShow(authorization: String?, target: String?) -> HTTPReply {

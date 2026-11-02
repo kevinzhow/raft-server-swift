@@ -482,3 +482,5 @@ Agent API profile：`GET /internal/agent-api/profile` 无 target 时返回绑定
 
 Agent API search：`GET /internal/agent-api/search?q=&channel=#name&sender=handle&sort=recent&limit=` 使用绑定 runner 身份与 `read` scope；结果带 `content/senderName(handle)/senderType/channelName/channelId/parentChannelId/snippet`，`hasMore` 反映截断；只返回 agent 可见的 public/私有/thread 消息，隐藏 private 不出现。
 
+Agent status activity：`POST /internal/agent-api/activity`（agent `read` credential）按 `{schema,events}` 接收事件。status 只允许 working/thinking/online/error/offline（非法 400 `status_invalid`）；detail 必须是字符串且 ≤200（否则 400 `detail_invalid`/`detail_too_long`）；缺 eventId/occurredAt 计入 rejectedCount。重复 eventId（跨请求或批内）计入 rejectedCount；未来 occurredAt clamp 到接收时间；latest occurredAt 胜出。标准 status 标记 agent 已 adoption；adoption 后 hook 事件只记录、不再驱动 live dot。响应 `{ok,acceptedCount,rejectedCount,droppedCount}`。
+
