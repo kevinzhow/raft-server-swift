@@ -34,7 +34,7 @@ assistant.api	route	partial	-	auto-seed
 attachmentComments.api	route	pending	-	auto-seed
 attachmentPreviewBridge.api	route	pending	-	auto-seed
 attachmentUploadSessions.api	route	partial	-	auto-seed
-attachments.api	route	partial	84452fd	access + upload limits + URL TTL + HTML preview token/framing covered; XLSX, upload-disabled, joint/sk_computer and storage groups pending
+attachments.api	route	partial	197866f	access + upload limits + URL TTL + preview token/framing + query-token two-hop + sk_computer covered; XLSX, upload-disabled, joint/storage pending
 attachments	route	partial	-	auto-seed
 auditMediumInbox.api	route	locked	a5dea45	guest visible recheck on done/followed/mention surfaces
 auth.api	route	partial	-	auto-seed
