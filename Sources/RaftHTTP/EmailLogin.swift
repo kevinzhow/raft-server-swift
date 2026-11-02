@@ -156,6 +156,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var agentMachineIds: [String: String] = [:]
     private var agentRuntimeProfiles: [String: (machineId: String, staleAfterMigration: Bool)] = [:]
     private var activeAgentMigrations: [String: (sourceMachineId: String, targetMachineId: String, state: String)] = [:]
+    private var latestComputerReleaseForTesting: (version: String, notesJSON: String)?
+    private var machineBroadcastPoliciesForTesting: [String: String] = [:]
     private var agentMigrationServers: Set<String> = []
     private var hostedMigrationServers: Set<String> = []
     private var hostedRuntimeServers: Set<String> = []
@@ -10877,6 +10879,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func setLatestComputerReleaseForTesting(version: String, releaseNotesJSON: String) {
+        lock.lock()
+        latestComputerReleaseForTesting = (version, releaseNotesJSON)
+        lock.unlock()
+    }
+
+    public func setMachineBroadcastPolicyForTesting(machineId: String, policyJSON: String) {
+        lock.lock()
+        machineBroadcastPoliciesForTesting[machineId] = policyJSON
+        lock.unlock()
+    }
+
     public func setAgentRuntimeProfileForTesting(agentId: String, machineId: String, staleAfterMigration: Bool = false) {
         lock.lock()
         agentRuntimeProfiles[agentId] = (machineId, staleAfterMigration)
@@ -11764,10 +11778,30 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         let rows = machines.filter { $0.serverId == serverId }
         lock.unlock()
-        let json = rows.map { machine in
-            "{\"id\":\(jsonString(machine.id)),\"name\":\(jsonString(machine.name)),\"userId\":\(jsonString(machine.userId)),\"description\":\(machine.description.map { jsonString($0) } ?? "null")}"
+        lock.lock()
+        let latest = latestComputerReleaseForTesting
+        let policies = machineBroadcastPoliciesForTesting
+        let computerVersions = computers.reduce(into: [String: String?]()) { result, computer in
+            if let machineId = computer.machineId { result[machineId] = computer.version }
+        }
+        lock.unlock()
+        let json = rows.map { machine -> String in
+            let policy = policies[machine.id]
+            let linked = computerVersions.keys.contains(machine.id)
+            let upgrade: String
+            let policyJSON: String
+            if !linked {
+                upgrade = "null"
+                policyJSON = "null"
+            } else {
+                upgrade = (policy != nil && latest != nil) ? "true" : "false"
+                policyJSON = policy ?? "{\"eligibility\":\"ineligible\",\"targetVersion\":null,\"policyRevision\":null,\"reasonCode\":\"policy_row_missing\"}"
+            }
+            return "{\"id\":\(jsonString(machine.id)),\"name\":\(jsonString(machine.name)),\"userId\":\(jsonString(machine.userId)),\"description\":\(machine.description.map { jsonString($0) } ?? "null"),\"computerUpgradeAvailable\":\(upgrade),\"computerBroadcastPolicy\":\(policyJSON)}"
         }.joined(separator: ",")
-        return Self.json(200, "{\"machines\":[\(json)]}")
+        let latestVersionJSON = latest.map { jsonString($0.version) } ?? "null"
+        let notesJSON = latest.map { $0.notesJSON } ?? "null"
+        return Self.json(200, "{\"machines\":[\(json)],\"latestComputerVersion\":\(latestVersionJSON),\"latestComputerReleaseNotes\":\(notesJSON)}")
     }
 
     public func patchServerMachine(authorization: String?, serverId: String, machineId: String, body: String) -> HTTPReply {

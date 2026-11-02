@@ -382,3 +382,5 @@ Machine delete 与 runtime profiles：存在指向该 machine 且仍关联 activ
 
 Runtime form v2-only：pi/opencode/gemini/codex/grok/antigravity 只在 v2 路由可见；v1 `runtime-form-definitions`/option-source 对它们回 404 `unknown_form_runtime`（pointer `/runtimeId`）。Pi 的 v2 provider source 回 `{defaultValue:"configured"}`；Codex/Grok 的 v2 model source 带 `optionSource.status: ready|unavailable` 与被探测模型。Machine delete 在存在 sourceMachineId=machine 且 state 非终态的 migration 时回 409 `MACHINE_HAS_ACTIVE_MIGRATION`；完成后 stale source profile 可清理并删除。
 
+Machine list 投影：`GET /api/servers/:id/machines` 顶层带 `latestComputerVersion`/`latestComputerReleaseNotes`；每台 machine 带 `computerUpgradeAvailable` 与 `computerBroadcastPolicy`。无 Computer 的 raw daemon 两者为 null；有 Computer 但无 policy 行时 `computerUpgradeAvailable:false` 且 policy 为 `{eligibility:"ineligible",targetVersion:null,policyRevision:null,reasonCode:"policy_row_missing"}`；有 eligible policy 时 upgrade true 并原样投影 eligibility/targetVersion/targetRole/migrationClass/policyRevision/reasonCode。
+

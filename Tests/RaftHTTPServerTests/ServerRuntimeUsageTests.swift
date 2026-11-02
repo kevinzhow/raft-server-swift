@@ -314,3 +314,51 @@ private func runtimeObject(_ response: ClientResponse) throws -> [String: Any] {
         }
     }
 }
+
+@Test func machineListProjectsUpgradeAndBroadcastPolicyPerComputer() async throws {
+    let fixture = makeRuntimeFixture(suffix: "1001")
+    let oldMachine = fixture.machineId
+    let currentMachine = fixture.accounts.registerMachine(serverId: fixture.serverId, userId: fixture.ownerId, name: "current-computer-1001")
+    fixture.accounts.linkComputerForTesting(serverId: fixture.serverId, machineId: currentMachine, online: true, version: "1.0.47", attachedByUserId: fixture.ownerId)
+    let rawMachine = fixture.accounts.registerMachine(serverId: fixture.serverId, userId: fixture.ownerId, name: "raw-daemon-1001")
+    fixture.accounts.setLatestComputerReleaseForTesting(
+        version: "9.9.9",
+        releaseNotesJSON: "{\"version\":\"9.9.9\",\"en\":\"- Faster startup\",\"zh-CN\":\"- 启动更快\"}"
+    )
+    fixture.accounts.setMachineBroadcastPolicyForTesting(
+        machineId: oldMachine,
+        policyJSON: "{\"eligibility\":\"eligible\",\"targetVersion\":\"2.0.0\",\"targetRole\":\"K\",\"migrationClass\":\"controlled_reinstall_repair\",\"policyRevision\":\"test-policy-v1\",\"reasonCode\":\"eligible\"}"
+    )
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: fixture.accounts
+        ))
+        try await app.testing { client in
+            let owner = try await runtimeLogin(client, email: fixture.ownerEmail)
+            let response = try await client.get(URI(string: "/api/servers/\(fixture.serverId)/machines"), headers: runtimeHeaders(owner, fixture.serverId))
+            #expect(response.status == .ok)
+            let body = try runtimeObject(response)
+            #expect(body["latestComputerVersion"] as? String == "9.9.9")
+            #expect(body["latestComputerReleaseNotes"] as? NSDictionary == [
+                "version": "9.9.9", "en": "- Faster startup", "zh-CN": "- 启动更快",
+            ] as NSDictionary)
+            let rows = body["machines"] as? [[String: Any]] ?? []
+            let old = try #require(rows.first { $0["id"] as? String == oldMachine })
+            #expect(old["computerUpgradeAvailable"] as? Bool == true)
+            #expect(old["computerBroadcastPolicy"] as? NSDictionary == [
+                "eligibility": "eligible", "targetVersion": "2.0.0", "targetRole": "K",
+                "migrationClass": "controlled_reinstall_repair",
+                "policyRevision": "test-policy-v1", "reasonCode": "eligible",
+            ] as NSDictionary)
+            let current = try #require(rows.first { $0["id"] as? String == currentMachine })
+            #expect(current["computerUpgradeAvailable"] as? Bool == false)
+            #expect((current["computerBroadcastPolicy"] as? [String: Any])?["reasonCode"] as? String == "policy_row_missing")
+            let raw = try #require(rows.first { $0["id"] as? String == rawMachine })
+            #expect(raw["computerUpgradeAvailable"] is NSNull)
+            #expect(raw["computerBroadcastPolicy"] is NSNull)
+        }
+    }
+}
