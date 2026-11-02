@@ -304,6 +304,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
     private var announcementDismissals: Set<String> = []
     private var inboxDoneScopes: Set<String> = []
+    private var inboxDoneAt: [String: Date] = [:]
     private var guestVisibleChannels: [String: Bool] = [:]
     private var readReceiptsServers: Set<String> = []
     private var channelHumanRoles: [String: String] = [:]
@@ -5238,21 +5239,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
-        guard channelActorCanSee(channelId: channelId, userId: userId) else {
-            return Self.json(404, "{\"error\":\"Thread not found\"}")
+        guard let channel = postableChannels[channelId],
+              channel.serverId == serverId,
+              channelActorCanSee(channelId: channelId, userId: userId)
+        else {
+            return Self.json(404, "{\"error\":\"Channel not found or not visible\"}")
         }
         lock.lock()
         let inChannel = humanMessageRows.contains { $0.id == messageId && $0.channelId == channelId }
             || oauth.messageChannelId(messageId) == channelId
         guard inChannel else {
             lock.unlock()
-            return Self.json(404, "{\"error\":\"Thread not found\"}")
+            return Self.json(404, "{\"code\":\"THREAD_NOT_FOUND\",\"error\":\"No thread found for this message\"}")
         }
         guard let thread = canonicalThreadLocked(parentChannelId: channelId, parentMessageId: messageId),
               thread.channel.serverId == serverId
         else {
             lock.unlock()
-            return Self.json(404, "{\"error\":\"Thread not found\"}")
+            return Self.json(404, "{\"code\":\"THREAD_NOT_FOUND\",\"error\":\"No thread found for this message\"}")
         }
         let replies = humanMessageRows.filter { $0.channelId == thread.id }
         var participants = Set(replies.map(\.senderId))
@@ -5844,30 +5848,81 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// `GET /api/channels/inbox`. A DM outsider mention is not an inbox item.
-    public func doneInbox(authorization: String?, serverId: String?, limit: Int) -> HTTPReply {
+    public func doneInbox(authorization: String?, serverId: String?, query: String? = nil) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
+        let params = Self.inboxQueryParameters(query)
+        let limit = min(max(Int(params["limit"] ?? "") ?? 30, 1), 100)
+        let q = (params["q"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let channelFilter = params["channelId"]
+        let ascending = params["sort"] == "asc"
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         lock.lock()
         let guest = serverId.flatMap { oauth.memberRole(serverId: $0, userId: userId) } == "guest"
-        let scopes = inboxDoneScopes
-            .filter { $0.hasPrefix("\(userId)\n") }
-            .map { String($0.dropFirst("\(userId)\n".count)) }
-            .filter { !guest || guestCanSeeScopeLocked($0) }
-            .sorted()
-            .prefix(max(0, limit))
-        let items = scopes.map { scopeId -> String in
-            let kind = postableChannels[scopeId]?.kind == "thread" ? "thread" : "channel"
-            let following = threadFollows["\(serverId ?? "")\n\(userId)\n\(scopeId)"] != nil
-            let unread = oauth.channelUnreadInfo(channelId: scopeId, userId: userId).unreadCount
-            let scopeJSON = jsonString(scopeId)
-            if kind == "thread" {
-                return "{\"kind\":\"thread\",\"threadChannelId\":\(scopeJSON),\"isFollowing\":\(following),\"unreadCount\":\(unread)}"
+        var rows: [(id: String, kind: String, channelId: String?, threadChannelId: String?, parentChannelId: String?, doneAt: Date)] = []
+        for key in inboxDoneScopes where key.hasPrefix("\(userId)\n") {
+            let scopeId = String(key.dropFirst("\(userId)\n".count))
+            if guest, !guestCanSeeScopeLocked(scopeId) { continue }
+            let type = postableChannels[scopeId]?.kind ?? oauth.channelType(id: scopeId) ?? "channel"
+            let isThread = type == "thread"
+            let parentId = postableChannels[scopeId]?.parentChannelId
+            if let channelFilter, !(isThread ? parentId == channelFilter : scopeId == channelFilter) { continue }
+            if !q.isEmpty {
+                let matches = humanMessageRows.contains { row in
+                    row.channelId == scopeId && row.content.localizedCaseInsensitiveContains(q)
+                }
+                if !matches { continue }
             }
-            return "{\"kind\":\"channel\",\"channelId\":\(scopeJSON),\"unreadCount\":\(unread)}"
+            rows.append((
+                id: scopeId,
+                kind: isThread ? "thread" : "channel",
+                channelId: isThread ? nil : scopeId,
+                threadChannelId: isThread ? scopeId : nil,
+                parentChannelId: parentId,
+                doneAt: inboxDoneAt[key] ?? Date.distantPast
+            ))
+        }
+        rows.sort { lhs, rhs in
+            if lhs.doneAt != rhs.doneAt { return ascending ? lhs.doneAt < rhs.doneAt : lhs.doneAt > rhs.doneAt }
+            return ascending ? lhs.id < rhs.id : lhs.id > rhs.id
+        }
+        let page = Array(rows.prefix(limit))
+        let items = page.map { row -> String in
+            let done = jsonString(formatter.string(from: row.doneAt))
+            if row.kind == "thread" {
+                let following = threadFollows["\(serverId ?? "")\n\(userId)\n\(row.id)"] != nil
+                let unread = oauth.channelUnreadInfo(channelId: row.id, userId: userId).unreadCount
+                let parentJSON = row.parentChannelId.map(jsonString) ?? "null"
+                return "{\"kind\":\"thread\",\"threadChannelId\":\(jsonString(row.id)),\"parentChannelId\":\(parentJSON),\"isFollowing\":\(following),\"unreadCount\":\(unread),\"doneAt\":\(done)}"
+            }
+            let unread = oauth.channelUnreadInfo(channelId: row.id, userId: userId).unreadCount
+            return "{\"kind\":\"channel\",\"channelId\":\(jsonString(row.id)),\"unreadCount\":\(unread),\"doneAt\":\(done)}"
         }.joined(separator: ",")
         lock.unlock()
-        return Self.json(200, "{\"items\":[\("\(items)")]}")
+        return Self.json(200, "{\"items\":[\(items)],\"hasMore\":\(rows.count > page.count),\"totalCount\":null}")
+    }
+
+    public func inboxUndone(authorization: String?, serverId: String?, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let channelId = object["channelId"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"Invalid inbox undone request\"}")
+        }
+        lock.lock()
+        guard postableChannels[channelId]?.kind != "thread" else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Inbox scope not found\"}")
+        }
+        inboxDoneScopes.remove("\(userId)\n\(channelId)")
+        inboxDoneAt.removeValue(forKey: "\(userId)\n\(channelId)")
+        lock.unlock()
+        _ = serverId
+        return Self.json(200, "{\"ok\":true}")
     }
 
     public func threadInboxUndone(authorization: String?, serverId: String?, body: String) -> HTTPReply {
@@ -5887,6 +5942,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Inbox scope not found\"}")
         }
         inboxDoneScopes.remove("\(userId)\n\(threadId)")
+        inboxDoneAt.removeValue(forKey: "\(userId)\n\(threadId)")
         lock.unlock()
         _ = serverId
         return Self.json(200, "{\"ok\":true}")
@@ -5908,6 +5964,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Inbox scope not found\"}")
         }
         inboxDoneScopes.insert("\(userId)\n\(channelId)")
+        inboxDoneAt["\(userId)\n\(channelId)"] = Date()
         lock.unlock()
         _ = serverId
         return Self.json(200, "{\"ok\":true}")
@@ -5930,6 +5987,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Inbox scope not found\"}")
         }
         inboxDoneScopes.insert("\(userId)\n\(threadId)")
+        inboxDoneAt["\(userId)\n\(threadId)"] = Date()
         lock.unlock()
         _ = serverId
         return Self.json(200, "{\"ok\":true}")
@@ -5948,6 +6006,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var scopeRows: [String] = []
         for scopeId in scopeIds.sorted() {
             inboxDoneScopes.insert("\(userId)\n\(scopeId)")
+            inboxDoneAt["\(userId)\n\(scopeId)"] = Date()
             let latest = oauth.channelUnreadInfo(channelId: scopeId, userId: userId).latestSeq ?? 0
             oauth.setChannelReadCursor(channelId: scopeId, userId: userId, seq: latest)
             let key = "\(scopeId)\n\(userId)"

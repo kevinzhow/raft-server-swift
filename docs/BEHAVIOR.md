@@ -414,3 +414,5 @@ Thread 作用域与去重：同一 parent 存在历史重复 thread 时，summar
 
 Thread follower 管理：`GET /api/channels/threads/followers` 对普通 viewer `canManage:false`，owner/admin 或 parent 作者 `canManage:true`。`DELETE /api/channels/threads/:threadId/followers/agents/:agentId` 仅 owner/admin/parent 作者可执行（其他 member 403）；首次删除回 `{removed:true,undoToken}` 并向 `channel:<threadId>` 发 `thread:followers-updated`，重复删除复用同一 token 且不重复发事件。`POST .../restore` 带当前 `undoToken` 回 `{ok:true,restored:true}` 并恢复 agent；旧 token 回 `{ok:true,restored:false}`，不会覆盖新删除。
 
+Thread info 404 分支：channel 不存在、`X-Server-Id` 与 channel 不符、或 private channel 非成员统一 404 `{"error":"Channel not found or not visible"}`；message 属于该 channel 但没有 thread 时 404 `{"code":"THREAD_NOT_FOUND","error":"No thread found for this message"}`。Inbox Done history：`POST /api/channels/inbox/done` 与 `POST /api/channels/threads/done` 记录 doneAt；`GET /api/channels/inbox/done` 合并 channel+thread 行，支持 `limit/sort=asc/q/channelId`，返回 `{items,hasMore,totalCount:null}`；`POST /api/channels/inbox/undone` 与 `threads/undone` 清除 done 并恢复 Active。`
+
