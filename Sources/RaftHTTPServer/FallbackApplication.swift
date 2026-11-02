@@ -1262,7 +1262,8 @@ public func configure(_ app: Application, services: FallbackServices) {
         routeResponse(services.emailAccounts.agentMigrationCancel(
             authorization: request.headers[.authorization],
             serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-            agentId: request.parameters.get("id") ?? ""
+            agentId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? "{}"
         ))
     }
     app.post("api", "agents", ":id", "migration", "confirm-hosted") { request -> Response in

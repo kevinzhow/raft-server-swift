@@ -53,9 +53,11 @@ import VaporTesting
             let memberCancel = try await client.send(.post, headers: headers(memberToken), to: "/api/agents/\(agent)/migration/cancel")
             #expect(memberCancel.status == .forbidden)
             #expect((try JSONSerialization.jsonObject(with: Data((memberCancel.body.string ?? "").utf8)) as? [String: Any])?["code"] as? String == "not_supported")
-            let ownerCancel = try await client.send(.post, headers: headers(ownerToken), to: "/api/agents/\(agent)/migration/cancel")
+            let ownerCancel = try await client.send(.post, headers: headers(ownerToken), to: "/api/agents/\(agent)/migration/cancel") { request in
+                request.body = .init(string: "{\"migrationRef\":\"mig_aaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":1}")
+            }
             #expect(ownerCancel.status == .notFound)
-            #expect((try JSONSerialization.jsonObject(with: Data((ownerCancel.body.string ?? "").utf8)) as? [String: Any])?["code"] as? String == "migration_not_found")
+            #expect((try JSONSerialization.jsonObject(with: Data((ownerCancel.body.string ?? "").utf8)) as? [String: Any])?["code"] as? String == "MIGRATION_NOT_FOUND")
         }
     }
 }

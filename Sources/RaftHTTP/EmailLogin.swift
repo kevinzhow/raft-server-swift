@@ -170,6 +170,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var revision: Int
         var state: String
         var sourceMachineId: String?
+        var canceledAt: Date?
+        var cancelReason: String?
+        var cancelDispatchAttempts: Int = 0
+        var cancelLastDispatchAt: Date?
+        var cancelErrorCode: String?
     }
     private var hostedRuntimes: [String: (provider: String, model: String?, state: String, retryNeedsModel: Bool, createdAt: Date)] = [:]
     private var hostedUsage: [String: String] = [:]
@@ -9527,10 +9532,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
             return Self.json(403, "{\"code\":\"not_supported\",\"error\":\"Agent migration status requires creator or server admin authority\"}")
         }
-        return Self.json(200, "{\"migration\":null}")
+        lock.lock()
+        let migration = hostedMigrations[agentId]
+        lock.unlock()
+        guard let migration else {
+            return Self.json(200, "{\"migration\":null}")
+        }
+        return Self.json(200, "{\"migration\":\(migrationStatusJSON(migration))}")
     }
 
-    public func agentMigrationCancel(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
+    public func agentMigrationCancel(authorization: String?, serverId: String, agentId: String, body: String = "") -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
@@ -9542,7 +9553,52 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
             return Self.json(403, "{\"code\":\"not_supported\",\"error\":\"Agent migration cancel requires creator or server admin authority\"}")
         }
-        return Self.json(404, "{\"code\":\"migration_not_found\",\"error\":\"No active migration\"}")
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+        if object["migrationId"] != nil {
+            return Self.json(400, "{\"code\":\"MIGRATION_REF_INVALID\",\"error\":\"migrationRef is required\"}")
+        }
+        guard let migrationRef = object["migrationRef"] as? String,
+              migrationRef.range(of: "^mig_[A-Za-z0-9_-]{22}$", options: .regularExpression) != nil
+        else {
+            return Self.json(400, "{\"code\":\"MIGRATION_REF_INVALID\",\"error\":\"migrationRef is required\"}")
+        }
+        guard let rawRevision = object["expectedRevision"] as? NSNumber,
+              rawRevision.doubleValue.rounded() == rawRevision.doubleValue,
+              rawRevision.intValue >= 1
+        else {
+            return Self.json(400, "{\"code\":\"MIGRATION_REVISION_INVALID\",\"error\":\"expectedRevision must be a positive integer\"}")
+        }
+        let expectedRevision = rawRevision.intValue
+        lock.lock()
+        guard var migration = hostedMigrations[agentId],
+              migration.supportRef == migrationRef,
+              migration.serverId == serverId
+        else {
+            lock.unlock()
+            return Self.json(404, "{\"code\":\"MIGRATION_NOT_FOUND\",\"error\":\"Migration not found\"}")
+        }
+        guard migration.revision == expectedRevision else {
+            lock.unlock()
+            return Self.json(409, "{\"code\":\"MIGRATION_REVISION_STALE\",\"error\":\"The migration changed since this action was shown\"}")
+        }
+        guard !["canceled_pre_flip", "arrived", "completed", "aborted", "failed"].contains(migration.state) else {
+            lock.unlock()
+            return Self.json(409, "{\"code\":\"MIGRATION_NOT_CANCELABLE\",\"error\":\"This migration can no longer be canceled\"}")
+        }
+        let now = Date()
+        migration.state = "canceled_pre_flip"
+        migration.revision += 1
+        migration.canceledAt = now
+        migration.cancelReason = (object["reason"] as? String) ?? "user_canceled"
+        migration.cancelDispatchAttempts = 1
+        migration.cancelLastDispatchAt = now
+        migration.cancelErrorCode = nil
+        hostedMigrations[agentId] = migration
+        lock.unlock()
+        for member in oauth.memberIdsWithRoles(serverId: serverId) where member.role == "owner" || member.role == "admin" {
+            emitRealtime("user:\(member.id)", "agent:migration-updated", migrationUpdatedJSON(migration))
+        }
+        return Self.json(200, "{\"migration\":\(migrationStatusJSON(migration))}")
     }
 
     public func enableAgentMigrationForTesting(serverId: String) {
@@ -9589,7 +9645,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     private func migrationStatusJSON(_ migration: HostedMigrationRecord) -> String {
         let source = migration.sourceMachineId.map(jsonString) ?? "null"
-        return "{\"migrationRef\":\(jsonString(migration.supportRef)),\"agentId\":\(jsonString(migration.agentId)),\"state\":\(jsonString(migration.state)),\"sourceMachineId\":\(source),\"targetKind\":\"hosted\",\"targetMachineId\":null,\"provider\":\"antiproton\",\"failureReason\":null,\"abortReason\":null,\"transportErrorCode\":null,\"transportErrorMessage\":null,\"readyAt\":null,\"flippedAt\":null,\"arrivedAt\":null,\"completedAt\":null,\"abortedAt\":null,\"canceledAt\":null,\"cancelReason\":null,\"cancelNeedsAttention\":false}"
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let canceledAt = migration.canceledAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+        let cancelReason = migration.cancelReason.map(jsonString) ?? "null"
+        let cancelLastDispatchAt = migration.cancelLastDispatchAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+        let cancelErrorCode = migration.cancelErrorCode.map(jsonString) ?? "null"
+        return "{\"migrationRef\":\(jsonString(migration.supportRef)),\"agentId\":\(jsonString(migration.agentId)),\"state\":\(jsonString(migration.state)),\"revision\":\(migration.revision),\"sourceMachineId\":\(source),\"targetKind\":\"hosted\",\"targetMachineId\":null,\"provider\":\"antiproton\",\"failureReason\":null,\"abortReason\":null,\"transportErrorCode\":null,\"transportErrorMessage\":null,\"readyAt\":null,\"flippedAt\":null,\"arrivedAt\":null,\"completedAt\":null,\"abortedAt\":null,\"canceledAt\":\(canceledAt),\"cancelReason\":\(cancelReason),\"cancelNeedsAttention\":false,\"cancelDispatchAttempts\":\(migration.cancelDispatchAttempts),\"cancelLastDispatchAt\":\(cancelLastDispatchAt),\"cancelErrorCode\":\(cancelErrorCode),\"cancelErrorMessage\":null}"
     }
 
     private func migrationUpdatedJSON(_ migration: HostedMigrationRecord) -> String {
