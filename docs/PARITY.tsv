@@ -30,7 +30,7 @@ appAgentReminderMessages.api	route	partial	-	auto-seed
 appAgentReminderMessages.realPg	route	partial	-	auto-seed
 appLogin.api	route	locked	c856c34	start/return-uri+S256 guard, signed-in describe, approve/deny, PKCE-bound single-use code, request+code expiry
 appSetup.api	route	pending	-	auto-seed
-assistant.api	route	locked	PENDING	owner-only creator link with flag/conflict/channel guards, context projection, owner inbox/messages excluding DMs and preserving read state, re-checks, DM-confined membership and sends
+assistant.api	route	locked	2a43e2b	owner-only creator link with flag/conflict/channel guards, context projection, owner inbox/messages excluding DMs and preserving read state, re-checks, DM-confined membership and sends
 attachmentComments.api	route	pending	-	auto-seed
 attachmentPreviewBridge.api	route	pending	-	auto-seed
 attachmentUploadSessions.api	route	partial	-	auto-seed
