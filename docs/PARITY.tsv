@@ -138,7 +138,7 @@ internalAgentApi.userChannels.realPg	route	partial	-	auto-seed
 internalAgentApi.userChannels	route	partial	-	auto-seed
 internalAgentApi.wakeHintStream	route	partial	-	auto-seed
 internalAgentKnowledge.api	route	partial	-	auto-seed
-internalComputer.agentMigration	route	partial	26d0a86	control manifest + chunk receipts/status/upload-complete covered; download/flip/arrive/cancel-ack and transport-lost variants pending
+internalComputer.agentMigration	route	partial	03b1c45	manifest/chunks/upload-complete + target view/start-transfer/flip/arrived/transport-lost covered; cancel-ack, quiesce/progress, typed lost reasons pending
 internalComputer.agentMigrationControl.bodyLimit.api	route	partial	-	auto-seed
 internalComputer.preflight	route	pending	-	auto-seed
 internalComputer.runners	route	pending	-	auto-seed
