@@ -573,3 +573,12 @@ RFC 074 personal assistant：
 - 每次读取都重新校验链接、owner 成员身份与 flag。
 - assistant 只能存在于 owner DM：加入普通频道 → 403 `assistant_channel_forbidden`；发送仅允许 `dm:@<owner>`，其他 DM/频道 → 403。
 
+### tasks.orphanCleanup.api
+
+频道/Agent 删除后的任务清理：
+
+- `DELETE /api/channels/:channelId` 软删频道时，非 `done/closed/cancelled` 的 canonical task 自动置 `closed`，写 `completedAt`、`closedAt`，并记录 system `closed` 事件；`done` 保持不变。
+- Agent 软删时释放所有以该 agent 为 assignee 的 task 归属（assignee/type/claimedAt 清空），status 不变。
+- 频道已删的 orphan task：`PATCH /api/tasks/:id/status` 只接受 `done/closed/cancelled`，其他状态 → 409 `{code:"channel_deleted_terminal_only"}`；`PATCH /api/tasks/:id/claim` → 409。
+- orphan task 可被 admin/owner `DELETE /api/tasks/:id`；非 creator 的普通 member → 403。
+

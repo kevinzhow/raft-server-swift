@@ -3210,8 +3210,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
-        channel.deletedAt = Date()
+        let now = Date()
+        channel.deletedAt = now
         postableChannels[channelId] = channel
+        closeOrphanTasksLocked(channelId: channelId, now: now)
         lock.unlock()
         return Self.json(200, "{\"ok\":true}")
     }
@@ -11070,6 +11072,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let machineName = agentMachineIds[agentId].flatMap { id in machines.first { $0.id == id }?.name } ?? ""
             let state = workspaceChoice == "delete" ? "deleted" : "on_computer"
             agentArchiveRecords[agentId] = (workspaceState: state, machineName: machineName, serverId: oauth.agentManagementInfo(id: agentId)?.serverId ?? "")
+            for index in taskRecords.indices where
+                taskRecords[index].assigneeType == "agent" && taskRecords[index].assigneeId == agentId {
+                taskRecords[index].assigneeId = nil
+                taskRecords[index].assigneeType = nil
+                taskRecords[index].claimedAt = nil
+                taskRecords[index].revision += 1
+            }
             lock.unlock()
             oauth.deleteAgent(id: agentId)
             return Self.json(200, "{\"ok\":true}")
@@ -20900,6 +20909,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         case .write: break
         }
         lock.lock()
+        guard postableChannels[channelId]?.deletedAt == nil else {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"This channel was deleted; the task can only be closed\",\"code\":\"channel_deleted_terminal_only\"}")
+        }
         taskRecords[index].assigneeId = userId
         taskRecords[index].assigneeType = "user"
         taskRecords[index].claimedAt = Date()
@@ -20959,6 +20972,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         lock.lock()
         let current = taskRecords[index]
+        if postableChannels[channelId]?.deletedAt != nil,
+           !["done", "closed", "cancelled"].contains(status) {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"This channel was deleted; only terminal task statuses are allowed\",\"code\":\"channel_deleted_terminal_only\"}")
+        }
         if status == "todo", current.status == "in_progress", current.assigneeId != userId {
             lock.unlock()
             return Self.json(409, "{\"error\":\"Only the current assignee can return this task to todo\"}")
@@ -20966,6 +20984,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         taskRecords[index].status = status
         if status == "done", taskRecords[index].completedAt == nil {
             taskRecords[index].completedAt = Date()
+        }
+        if status == "closed" || status == "cancelled" {
+            taskRecords[index].closedAt = Date()
         }
         if status == "in_progress", taskRecords[index].claimedAt == nil {
             taskRecords[index].claimedAt = Date()
@@ -21171,9 +21192,68 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var assigneeType: String? = nil
         var claimedAt: Date? = nil
         var revision: Int = 0
+        var closedAt: Date? = nil
         /// False for a pre-thread v0 orphan: the row has no host message, so the
         /// agent surface cannot address it.
         var hasHostMessage: Bool = true
+    }
+
+    private var taskEvents: [(taskId: String, eventType: String, actorType: String)] = []
+
+    public func taskStatusForTesting(taskId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return taskRecords.first { $0.id == taskId }?.status
+    }
+
+    public func taskCompletedAtForTesting(taskId: String) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return taskRecords.first { $0.id == taskId }?.completedAt
+    }
+
+    public func taskClosedAtForTesting(taskId: String) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return taskRecords.first { $0.id == taskId }?.closedAt
+    }
+
+    public func setTaskAssigneeForTesting(taskId: String, type: String, id: String) {
+        lock.lock()
+        if let index = taskRecords.firstIndex(where: { $0.id == taskId }) {
+            taskRecords[index].assigneeType = type
+            taskRecords[index].assigneeId = id
+            taskRecords[index].claimedAt = Date()
+        }
+        lock.unlock()
+    }
+
+    public func reopenTaskForTesting(taskId: String, status: String) {
+        lock.lock()
+        if let index = taskRecords.firstIndex(where: { $0.id == taskId }) {
+            taskRecords[index].status = status
+            taskRecords[index].completedAt = nil
+            taskRecords[index].closedAt = nil
+        }
+        lock.unlock()
+    }
+
+    public func taskEventTypesForTesting(taskId: String) -> [(eventType: String, actorType: String)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return taskEvents.filter { $0.taskId == taskId }.map { ($0.eventType, $0.actorType) }
+    }
+
+    private func closeOrphanTasksLocked(channelId: String, now: Date) {
+        for index in taskRecords.indices where taskRecords[index].channelId == channelId {
+            let status = taskRecords[index].status
+            guard status != "done", status != "closed", status != "cancelled" else { continue }
+            taskRecords[index].status = "closed"
+            taskRecords[index].completedAt = now
+            taskRecords[index].closedAt = now
+            taskRecords[index].revision += 1
+            taskEvents.append((taskId: taskRecords[index].id, eventType: "closed", actorType: "system"))
+        }
     }
 
     public func addReminder(serverId: String, ownerAgentId: String, title: String, fireAt: Date) {
