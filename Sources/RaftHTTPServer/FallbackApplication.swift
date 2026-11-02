@@ -2310,6 +2310,27 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? "{}"
         ))
     }
+    app.post("internal", "computer", "agent-migrations", "by-id", ":migrationId", "cancel-ack") { request -> Response in
+        routeResponse(services.emailAccounts.acknowledgeMigrationCancellation(
+            authorization: request.headers[.authorization],
+            migrationRef: request.parameters.get("migrationId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.post("internal", "computer", "agent-migrations", "by-id", ":migrationId", "resumable", "source-quiesced") { request -> Response in
+        routeResponse(services.emailAccounts.recordMigrationSourceQuiesced(
+            authorization: request.headers[.authorization],
+            migrationRef: request.parameters.get("migrationId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.post("internal", "computer", "agent-migrations", "by-id", ":migrationId", "resumable", "source-progress") { request -> Response in
+        routeResponse(services.emailAccounts.recordMigrationSourceProgress(
+            authorization: request.headers[.authorization],
+            migrationRef: request.parameters.get("migrationId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
     app.get("api", "servers", ":id", "usage") { request -> Response in
         routeResponse(services.emailAccounts.serverUsage(
             authorization: request.headers[.authorization],

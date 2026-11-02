@@ -202,6 +202,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var cancelDispatchAttempts: Int = 0
         var cancelLastDispatchAt: Date?
         var cancelErrorCode: String?
+        var cancelGeneration: String?
+        var cancelTransportGeneration: String?
+        var cancelDisposition: String?
+        var cancelSourceAck: String?
+        var cancelTargetAck: String?
+        var quiesceReceiptJSON: String?
+        var progressJSON: String?
     }
     private var machineMigrations: [String: MachineMigrationRecord] = [:]
     /// Test seam for the frozen-generation cancel dispatch to a Computer.
@@ -9674,6 +9681,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         migration.cancelDispatchAttempts = 1
         migration.cancelLastDispatchAt = now
         migration.cancelErrorCode = nil
+        migration.cancelGeneration = UUID().uuidString.lowercased()
+        migration.cancelTransportGeneration = migration.transportGeneration
+        migration.cancelDisposition = "pre_flip"
         machineMigrations[migrationRef] = migration
         lock.unlock()
         agentMigrationCancelDispatch?(migration.sourceMachineId, "source", migration.supportRef, migration.transportGeneration, false)
@@ -10449,6 +10459,112 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         machineMigrations[migrationRef] = record
         lock.unlock()
         return Self.json(200, "{\"ok\":true,\"migration\":\(migrationTargetViewJSON(record, targetMachineId: record.targetMachineId))}")
+    }
+
+    public func machineMigrationCancelGenerationsForTesting(migrationRef: String) -> (cancel: String, transport: String)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let record = machineMigrations[migrationRef],
+              let cancel = record.cancelGeneration,
+              let transport = record.cancelTransportGeneration
+        else { return nil }
+        return (cancel, transport)
+    }
+
+    public func seedMachineMigrationCancelStateForTesting(
+        migrationRef: String,
+        state: String,
+        cancelGeneration: String,
+        cancelTransportGeneration: String,
+        disposition: String
+    ) {
+        lock.lock()
+        if var record = machineMigrations[migrationRef] {
+            record.state = state
+            record.cancelGeneration = cancelGeneration
+            record.cancelTransportGeneration = cancelTransportGeneration
+            record.cancelDisposition = disposition
+            machineMigrations[migrationRef] = record
+        }
+        lock.unlock()
+    }
+
+    public func acknowledgeMigrationCancellation(authorization: String?, migrationRef: String, body: String) -> HTTPReply {
+        guard let machineId = computerMachineId(authorization) else {
+            return Self.json(401, "{\"code\":\"migration_transport_token_invalid\",\"error\":\"Migration transport token is invalid\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let ref = object["migrationRef"] as? String, !ref.isEmpty,
+              let transportGeneration = object["transportGeneration"] as? String, !transportGeneration.isEmpty,
+              let cancelGeneration = object["cancelGeneration"] as? String, !cancelGeneration.isEmpty,
+              let role = object["role"] as? String, role == "source" || role == "target",
+              let outcome = object["outcome"] as? String, ["cleaned", "stopped", "needs_attention"].contains(outcome)
+        else {
+            return Self.json(400, "{\"code\":\"migration_cancel_ack_input_required\",\"error\":\"migrationRef, transportGeneration, cancelGeneration, role, and outcome are required\"}")
+        }
+        lock.lock()
+        guard var record = machineMigrations[migrationRef],
+              record.supportRef == ref,
+              record.serverId == record.serverId,
+              (role == "source" ? record.sourceMachineId : record.targetMachineId) == machineId
+        else {
+            lock.unlock()
+            return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
+        }
+        guard record.cancelTransportGeneration == transportGeneration else {
+            lock.unlock()
+            return Self.json(409, "{\"code\":\"migration_generation_stale\",\"error\":\"Migration generation is stale\"}")
+        }
+        guard record.cancelGeneration == cancelGeneration else {
+            lock.unlock()
+            return Self.json(409, "{\"code\":\"migration_cancel_generation_stale\",\"error\":\"Migration cancel generation is stale\"}")
+        }
+        if record.state == "canceled_post_flip" && role == "target" && outcome == "cleaned" {
+            lock.unlock()
+            return Self.json(409, "{\"code\":\"migration_cancel_outcome_mismatch\",\"error\":\"Migration cancel outcome does not match the frozen disposition\"}")
+        }
+        if role == "source" { record.cancelSourceAck = outcome } else { record.cancelTargetAck = outcome }
+        machineMigrations[migrationRef] = record
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true,\"migration\":{\"migrationRef\":\(jsonString(record.supportRef)),\"state\":\(jsonString(record.state)),\"revision\":\(record.revision),\"disposition\":\(record.cancelDisposition.map(jsonString) ?? "null")}}")
+    }
+
+    public func recordMigrationSourceQuiesced(authorization: String?, migrationRef: String, body: String) -> HTTPReply {
+        guard let machineId = computerMachineId(authorization) else {
+            return Self.json(401, "{\"code\":\"migration_transport_token_invalid\",\"error\":\"Migration transport token is invalid\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let receipt = object["receipt"] as? [String: Any]
+        else {
+            return Self.json(400, "{\"code\":\"migration_source_quiesce_receipt_required\",\"error\":\"receipt is required\"}")
+        }
+        lock.lock()
+        guard var record = machineMigrations[migrationRef], record.sourceMachineId == machineId else {
+            lock.unlock()
+            return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
+        }
+        record.quiesceReceiptJSON = (try? JSONSerialization.data(withJSONObject: receipt)).flatMap { String(data: $0, encoding: .utf8) }
+        machineMigrations[migrationRef] = record
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true,\"migrationGeneration\":\(jsonString(record.transportGeneration)),\"leaseId\":\(jsonString(record.transportSessionId))}")
+    }
+
+    public func recordMigrationSourceProgress(authorization: String?, migrationRef: String, body: String) -> HTTPReply {
+        guard let machineId = computerMachineId(authorization) else {
+            return Self.json(401, "{\"code\":\"migration_transport_token_invalid\",\"error\":\"Migration transport token is invalid\"}")
+        }
+        lock.lock()
+        guard var record = machineMigrations[migrationRef], record.sourceMachineId == machineId else {
+            lock.unlock()
+            return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
+        }
+        record.progressJSON = body
+        machineMigrations[migrationRef] = record
+        lock.unlock()
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let deadline = jsonString(formatter.string(from: Date().addingTimeInterval(3600)))
+        return Self.json(200, "{\"ok\":true,\"advanced\":true,\"prepDeadlineAt\":\(deadline)}")
     }
 
     private func startHostedMigration(
