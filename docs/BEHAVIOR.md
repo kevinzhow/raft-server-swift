@@ -374,3 +374,5 @@ Forward provenance：私有 thread/私有频道来源即使在创建者响应中
 
 Forward joint：向 joint 目标转发时响应 `channelId`/`destinationTargetId` 是调用者本地 projection，消息存 canonical；host 本地列表保留 public 源 provenance，guest 本地列表（含同一 owner 通过 guest Server 读取）把源指针全部 scrub 为 null、label 空、`restricted`、`original_unavailable`，context/sync 同规则。以 joint canonical 消息为源转发时 item 的 `sourceTargetSnapshot.type:"joint"`、指针 null、label 空、`restricted`，`provenanceState:"available"`；host 与 guest 都可转发到各自本地普通目标。
 
+Forward source×destination 矩阵：channel/private/DM/joint 四种源 × channel/private/DM/joint 四种目标全部可转发；响应 `channelId`/`destinationTargetId` 为目标本地 id，item 的 `sourceTargetSnapshot.type` 对应源类型，public 源 label 为 `#name` 且 `labelVisibility:"public"`，private/DM/joint 源 label 空且 `restricted`。`POST /api/messages` 的 `channelId` 不属于当前 `X-Server-Id` 时回 404 `Channel not found`，不写消息。
+

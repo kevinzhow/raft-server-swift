@@ -131,3 +131,28 @@ private func bodyBoundarySend(
         }
     }
 }
+
+@Test func messageCreateRejectsAChannelOutsideTheActiveServer() async throws {
+    let (fixture, accounts) = try await makeBodyBoundaryFixture(suffix: "963")
+    let otherServerId = "33333333-3333-4333-8333-000000931963"
+    accounts.oauth.addOwnedServer(id: otherServerId, slug: "messages-other-963", name: "Other", ownerId: fixture.accounts === accounts ? "11111111-1111-4111-8111-000000930963" : "unused")
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            let token = try await bodyBoundaryLogin(client, email: fixture.ownerEmail)
+            let response = try await bodyBoundarySend(
+                client,
+                token: token,
+                serverId: otherServerId,
+                body: "{\"channelId\":\"\(fixture.channelId)\",\"content\":\"must not cross servers\"}"
+            )
+            #expect(response.status == .notFound)
+            #expect(accounts.humanMessageCount == 0)
+        }
+    }
+}

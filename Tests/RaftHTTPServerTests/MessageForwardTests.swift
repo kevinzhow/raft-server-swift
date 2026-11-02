@@ -482,3 +482,91 @@ private func forwardObject(_ response: ClientResponse) throws -> [String: Any] {
         }
     }
 }
+
+@Test func forwardAcceptsEverySourceAndDestinationKind() async throws {
+    let accounts = EmailLoginDirectory()
+    let serverId = "33333333-3333-4333-8333-000000992001"
+    let ownerId = "11111111-1111-4111-8111-000000992002"
+    let dmPeer = "11111111-1111-4111-8111-000000992003"
+    let ownerEmail = "forward-matrix-992@slock.test"
+    for (id, email) in [(ownerId, ownerEmail), (dmPeer, "forward-matrix-dm-992@slock.test")] {
+        accounts.addAccount(id: id, email: email, password: "password123")
+        accounts.markEmailVerified(userId: id)
+    }
+    accounts.oauth.addOwnedServer(id: serverId, slug: "forward-matrix-992", name: "Matrix", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: dmPeer, role: "member")
+
+    func channel(_ name: String, _ kind: String) -> String {
+        let id = accounts.oauth.createChannel(serverId: serverId, name: name, creatorUserId: ownerId, type: kind)
+        accounts.addPostableChannel(serverId: serverId, channelId: id, memberId: ownerId, kind: kind, name: name)
+        accounts.oauth.addChannelHuman(channelId: id, userId: ownerId)
+        return id
+    }
+    let publicSource = channel("forward-joint-source", "channel")
+    let privateSource = channel("forward-matrix-private-source", "private")
+    let publicDestination = channel("forward-matrix-public-dest", "channel")
+    let privateDestination = channel("forward-matrix-private-dest", "private")
+    let dmSource = accounts.oauth.createDirectChannel(serverId: serverId, firstUserId: ownerId, secondUserId: dmPeer)
+    for member in [ownerId, dmPeer] {
+        accounts.addPostableChannel(serverId: serverId, channelId: dmSource, memberId: member, kind: "dm", name: "dm")
+    }
+    let dmDestination = accounts.oauth.createDirectChannel(serverId: serverId, firstUserId: ownerId, secondUserId: dmPeer)
+    for member in [ownerId, dmPeer] {
+        accounts.addPostableChannel(serverId: serverId, channelId: dmDestination, memberId: member, kind: "dm", name: "dm")
+    }
+    let canonical = accounts.oauth.createChannel(serverId: serverId, name: "forward-matrix-storage", creatorUserId: ownerId)
+    accounts.addPostableChannel(serverId: serverId, channelId: canonical, memberId: ownerId, name: "forward-matrix-storage")
+    let jointDestination = accounts.oauth.createChannel(serverId: serverId, name: "forward-matrix-joint", creatorUserId: ownerId, type: "joint")
+    accounts.addPostableChannel(serverId: serverId, channelId: jointDestination, memberId: ownerId, kind: "joint", name: "forward-matrix-joint")
+    accounts.addJointChannelProjection(localChannelId: jointDestination, canonicalChannelId: canonical, serverId: serverId)
+
+    let sources: [(type: String, message: String, content: String, visibility: String)] = [
+        ("channel", accounts.addChannelMessageForTesting(channelId: publicSource, content: "public source into joint", senderId: ownerId), "public source into joint", "public"),
+        ("private", accounts.addChannelMessageForTesting(channelId: privateSource, content: "private source into joint", senderId: ownerId), "private source into joint", "restricted"),
+        ("dm", accounts.addChannelMessageForTesting(channelId: dmSource, content: "dm source stays restricted", senderId: ownerId), "dm source stays restricted", "restricted"),
+        ("joint", accounts.addChannelMessageForTesting(channelId: canonical, content: "joint source stays restricted", senderId: ownerId), "joint source stays restricted", "restricted"),
+    ]
+    let destinations: [(type: String, channel: String)] = [
+        ("channel", publicDestination),
+        ("private", privateDestination),
+        ("dm", dmDestination),
+        ("joint", jointDestination),
+    ]
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            let token = try await forwardLogin(client, email: ownerEmail)
+            var accepted: [String] = []
+            for source in sources {
+                for destination in destinations {
+                    let response = try await client.send(.post, headers: forwardHeaders(token, serverId), to: "/api/messages/forward") { request in
+                        request.body = .init(string: "{\"destinationChannelId\":\"\(destination.channel)\",\"sourceMessageIds\":[\"\(source.message)\"]}")
+                    }
+                    #expect(response.status == .ok)
+                    let body = try forwardObject(response)
+                    #expect(body["channelId"] as? String == destination.channel)
+                    #expect((body["actionMetadata"] as? [String: Any])?["destinationTargetId"] as? String == destination.channel)
+                    let item = try #require(((body["actionMetadata"] as? [String: Any])?["forwardedItems"] as? [[String: Any]])?.first)
+                    #expect(item["contentSnapshot"] as? String == source.content)
+                    let target = try #require(item["sourceTargetSnapshot"] as? [String: Any])
+                    #expect(target["type"] as? String == source.type)
+                    #expect(target["labelVisibility"] as? String == source.visibility)
+                    #expect(target["label"] as? String == (source.visibility == "public" ? "#forward-joint-source" : ""))
+                    accepted.append("\(source.type)->\(destination.type)")
+                }
+            }
+            #expect(accepted == [
+                "channel->channel", "channel->private", "channel->dm", "channel->joint",
+                "private->channel", "private->private", "private->dm", "private->joint",
+                "dm->channel", "dm->private", "dm->dm", "dm->joint",
+                "joint->channel", "joint->private", "joint->dm", "joint->joint",
+            ])
+        }
+    }
+}
