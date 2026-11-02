@@ -77,6 +77,14 @@ public struct FallbackServices: Sendable {
 }
 
 public func configure(_ app: Application, services: FallbackServices) {
+    services.emailAccounts.onAgentReadUpdated = { serverId, channelId, agentId, maxReadSeq in
+        services.emailAccounts.emitAgentScopeRead(
+            serverId: serverId,
+            channelId: channelId,
+            agentId: agentId,
+            maxReadSeq: maxReadSeq
+        )
+    }
     app.get("api", "desktop-download", "platforms") { _ async in
         routeResponse(await DesktopDownload.platformsReply(services.desktop))
     }

@@ -19305,6 +19305,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func emitAgentScopeRead(serverId: String, channelId: String, agentId: String, maxReadSeq: Int) {
+        lock.lock()
+        let enabled = readReceiptsServers.contains(serverId)
+        let peer = oauth.channelAgentIds(channelId: channelId).contains(agentId)
+        lock.unlock()
+        guard enabled, peer else { return }
+        let payload = "{\"scopeId\":\(jsonString(channelId)),\"peerKind\":\"agent\",\"peerId\":\(jsonString(agentId)),\"maxReadSeq\":\(maxReadSeq)}"
+        emitRealtime("channel:\(channelId)", "scope_read:updated", payload)
+    }
+
     public func readReceiptsEnabled(serverId: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }

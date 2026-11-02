@@ -436,3 +436,5 @@ Migration cancel-ack / quiesce：`POST .../cancel-ack` 必须带 `migrationRef/t
 
 Inbox firstMention：`firstMentionMessageId` 取该 scope 中 seq 大于当前 read cursor 的最早 notifiable/notified 用户 mention（不是 firstUnreadMessageId）；读过后推进到下一条或 null。mention-only 行（用户未加入但收到 public mention）以 mention 为 anchor，`unreadCount:0`、`hasMention:true`，即使已读也保留 `firstMentionMessageId`。
 
+read_receipts_v0：server gate 开启后，channel detail 只暴露 agent peers 的 `peerReadStates:[{peerKind:"agent",peerId,maxReadSeq}]`，永不暴露人类 read state；超过 50 个 agent peers 时改为 `peerReadSummary:{peerCount,readCountAtSeq:[{seq,count}]}`。Agent history 读取推进 cursor 时向 `channel:<id>` 发 `scope_read:updated`（`scopeId/peerKind:"agent"/peerId/maxReadSeq`），非推进读取不发；人类 read/mark-unread 不发该事件。DM 中的 agent peer 同样 hydrate。
+
