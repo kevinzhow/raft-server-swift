@@ -189,3 +189,77 @@ private func integrationAppStatus(
         }
     }
 }
+
+@Test func integrationAppWhenToUseIsValidatedStoredAndRenderedInert() async throws {
+    let f = makeIntegrationAppFixture("003")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            func update(_ body: String) async throws -> ClientResponse {
+                try await client.send(
+                    .post,
+                    headers: integrationAppHeaders(f.ownerAgentKey),
+                    to: "/internal/agent-api/integrations/app/update"
+                ) { request in
+                    request.body = .init(string: body)
+                }
+            }
+            let rejections = [
+                String(repeating: "a", count: 161),
+                "first line\nsecond line",
+                "install @acme/metrics for usage stats",
+            ]
+            for bad in rejections {
+                let body = try JSONSerialization.data(withJSONObject: [
+                    "clientKey": f.ordinaryClientKey,
+                    "whenToUse": bad,
+                ])
+                let response = try await update(String(decoding: body, as: UTF8.self))
+                #expect(response.status == .badRequest, "\(bad.prefix(20))")
+                #expect(try integrationAppJSON(response)["errorCode"] as? String == "INVALID_APP_METADATA")
+            }
+
+            let packed = try JSONSerialization.data(withJSONObject: [
+                "clientKey": f.ordinaryClientKey,
+                "whenToUse": "ping @alice via `@acme/metrics` when the queue backs up",
+            ])
+            let set = try await update(String(decoding: packed, as: UTF8.self))
+            #expect(set.status == .ok)
+            #expect(try integrationAppJSON(set)["updatedFields"] as? [String] == ["whenToUse"])
+
+            let list = try await client.get(URI(string: "/internal/agent-api/integrations"), headers: integrationAppHeaders(f.ownerAgentKey))
+            let services = (try integrationAppJSON(list)["services"] as? [[String: Any]]) ?? []
+            let service = try #require(services.first { $0["clientId"] as? String == f.ordinaryClientKey })
+            #expect(service["whenToUse"] as? String == "ping user:alice via `@acme/metrics` when the queue backs up")
+
+            let cleared = try await update("{\"clientKey\":\"\(f.ordinaryClientKey)\",\"whenToUse\":\"\"}")
+            #expect(cleared.status == .ok)
+            let afterClear = try await client.get(URI(string: "/internal/agent-api/integrations"), headers: integrationAppHeaders(f.ownerAgentKey))
+            let clearedServices = (try integrationAppJSON(afterClear)["services"] as? [[String: Any]]) ?? []
+            #expect(clearedServices.first { $0["clientId"] as? String == f.ordinaryClientKey }?["whenToUse"] is NSNull)
+        }
+    }
+}
+
+@Test func integrationServiceListHidesDisabledApps() async throws {
+    let f = makeIntegrationAppFixture("004")
+    let disabled = try! f.accounts.oauth.createClient(
+        serverId: f.serverId,
+        createdByUserId: f.ownerId,
+        name: "Disabled Local App",
+        clientId: "disabled-local-app-004",
+        returnUrl: "https://disabled.example.test/callback"
+    )
+    f.accounts.oauth.setClientEnabled(clientRecordId: disabled.id, enabled: false)
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let list = try await client.get(URI(string: "/internal/agent-api/integrations"), headers: integrationAppHeaders(f.ownerAgentKey))
+            #expect(list.status == .ok)
+            let services = (try integrationAppJSON(list)["services"] as? [[String: Any]]) ?? []
+            let keys = services.compactMap { $0["clientId"] as? String }
+            #expect(keys.contains(f.ordinaryClientKey))
+            #expect(!keys.contains(disabled.clientId), "a disabled server-local app must not appear in services")
+        }
+    }
+}

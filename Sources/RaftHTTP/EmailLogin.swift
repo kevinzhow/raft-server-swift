@@ -16159,7 +16159,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     private static func integrationServiceJSON(_ service: [String: Any]) -> String {
         let renderedName = (service["name"] as? String).map { jsonString(inertThirdPartyText($0)) } ?? "null"
-        return "{\"id\":\(integrationValueJSON(service, "id")),\"clientId\":\(integrationValueJSON(service, "clientId")),\"name\":\(renderedName),\"description\":\(integrationValueJSON(service, "description")),\"homepageUrl\":\(integrationValueJSON(service, "homepageUrl")),\"agentManifestUrl\":\(integrationValueJSON(service, "agentManifestUrl")),\"agentManifestUrlSource\":\(integrationValueJSON(service, "agentManifestUrlSource")),\"allowedScopes\":\(integrationValueJSON(service, "allowedScopes")),\"appType\":\(integrationValueJSON(service, "appType"))}"
+        return "{\"id\":\(integrationValueJSON(service, "id")),\"clientId\":\(integrationValueJSON(service, "clientId")),\"name\":\(renderedName),\"description\":\(integrationValueJSON(service, "description")),\"homepageUrl\":\(integrationValueJSON(service, "homepageUrl")),\"agentManifestUrl\":\(integrationValueJSON(service, "agentManifestUrl")),\"agentManifestUrlSource\":\(integrationValueJSON(service, "agentManifestUrlSource")),\"allowedScopes\":\(integrationValueJSON(service, "allowedScopes")),\"whenToUse\":\((service["whenToUse"] as? String).map { jsonString(inertThirdPartyText($0)) } ?? "null"),\"appType\":\(integrationValueJSON(service, "appType"))}"
     }
 
     public func agentIntegrationList(authorization: String?) -> HTTPReply {
@@ -16285,6 +16285,90 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Attachment not found\"}")
         }
         return Self.json(403, "{\"error\":\"Agents cannot create attachment comments\",\"code\":\"agent_comment_create_disabled\"}")
+    }
+
+    /// `whenToUse` is prompt material: one line, at most 160 code points, and
+    /// no bare `@scope/pkg` outside inline code.
+    static func normalizedWhenToUse(_ raw: String?) throws -> String? {
+        guard let raw else { return nil }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        guard value.unicodeScalars.count <= 160 else {
+            throw WhenToUseError.tooLong
+        }
+        guard !value.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) else {
+            throw WhenToUseError.notSingleLine
+        }
+        var outsideCode = value
+        outsideCode = outsideCode.replacingOccurrences(
+            of: "```[\\s\\S]*?```",
+            with: " ",
+            options: .regularExpression
+        )
+        outsideCode = outsideCode.replacingOccurrences(of: "`[^`]*`", with: " ", options: .regularExpression)
+        let bare = try! NSRegularExpression(pattern: "(^|[\\s(])@[a-z0-9][a-z0-9-]*/[a-z0-9._-]+", options: [.caseInsensitive])
+        let range = NSRange(location: 0, length: (outsideCode as NSString).length)
+        if bare.firstMatch(in: outsideCode, options: [], range: range) != nil {
+            throw WhenToUseError.bareScopedPackage
+        }
+        return value
+    }
+
+    enum WhenToUseError: Error {
+        case tooLong
+        case notSingleLine
+        case bareScopedPackage
+
+        var message: String {
+            switch self {
+            case .tooLong: return "whenToUse must be at most 160 characters"
+            case .notSingleLine: return "whenToUse must be a single line without control characters"
+            case .bareScopedPackage:
+                return "whenToUse must not contain a bare scoped package name like @scope/pkg; wrap it in backticks like `@scope/pkg`"
+            }
+        }
+    }
+
+    public func agentIntegrationAppUpdate(authorization: String?, body: String) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let clientKey = (object["clientKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !clientKey.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"clientKey is required\",\"errorCode\":\"INVALID_APP_METADATA\"}")
+        }
+        let admin = oauth.agentRole(serverId: agent.serverId, agentId: agent.id) == "admin"
+        guard oauth.ownedIntegrationApp(
+            serverId: agent.serverId,
+            agentId: agent.id,
+            clientKey: clientKey,
+            admin: admin
+        ) != nil else {
+            return Self.json(404, "{\"error\":\"Integration app not found\"}")
+        }
+        guard let recordId = oauth.clientRecordId(serverId: agent.serverId, clientKey: clientKey) else {
+            return Self.json(404, "{\"error\":\"Integration app not found\"}")
+        }
+        var updatedFields: [String] = []
+        if object.keys.contains("whenToUse") {
+            do {
+                let normalized = try Self.normalizedWhenToUse(object["whenToUse"] as? String)
+                oauth.setClientWhenToUse(clientRecordId: recordId, whenToUse: normalized)
+                updatedFields.append("whenToUse")
+            } catch let error as WhenToUseError {
+                return Self.json(400, "{\"error\":\(jsonString(error.message)),\"errorCode\":\"INVALID_APP_METADATA\"}")
+            } catch {
+                return Self.json(400, "{\"error\":\"Invalid app metadata\",\"errorCode\":\"INVALID_APP_METADATA\"}")
+            }
+        }
+        let app = oauth.ownedIntegrationApp(serverId: agent.serverId, agentId: agent.id, clientKey: clientKey, admin: admin)
+        let clientName = app?["name"] as? String ?? ""
+        let fields = updatedFields.map(jsonString).joined(separator: ",")
+        return Self.json(200, "{\"clientId\":\(jsonString(recordId)),\"clientKey\":\(jsonString(clientKey)),\"clientName\":\(jsonString(clientName)),\"updatedFields\":[\(fields)]}")
     }
 
     public func agentIntegrationAppList(authorization: String?) -> HTTPReply {
@@ -19997,23 +20081,49 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             escaped.replaceCharacters(in: match.range, with: neutral)
         }
         text = escaped as String
+        return neutralizeRaftRefsOutsideCode(text)
+    }
+
+    /// `@name` outside markdown code becomes the plain `user:name` label;
+    /// backticked spans are literal data and keep their shape.
+    private static func neutralizeRaftRefsOutsideCode(_ text: String) -> String {
         let refPattern = try! NSRegularExpression(pattern: "(?<![A-Za-z0-9_.-])@([A-Za-z0-9][A-Za-z0-9_.-]*)")
-        let refSource = text
-        let refFull = NSRange(location: 0, length: (refSource as NSString).length)
-        let refMatches = refPattern.matches(in: refSource, options: [], range: refFull)
-        if !refMatches.isEmpty {
-            var output = ""
-            var cursor = 0
-            for match in refMatches {
-                let prefix = (refSource as NSString).substring(with: NSRange(location: cursor, length: match.range.location - cursor))
-                let name = (refSource as NSString).substring(with: match.range(at: 1))
-                output += prefix + "user:" + name
-                cursor = match.range.location + match.range.length
+        var output = ""
+        var cursor = text.startIndex
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            if character == "`" {
+                let fence = String(text[index...].prefix(3)) == "```"
+                let marker = fence ? "```" : "`"
+                let contentStart = text.index(index, offsetBy: marker.count)
+                if let close = text.range(of: marker, range: contentStart..<text.endIndex) {
+                    output += neutralizeRaftRefs(String(text[cursor..<index]), pattern: refPattern)
+                    output += String(text[index..<close.upperBound])
+                    cursor = close.upperBound
+                    index = close.upperBound
+                    continue
+                }
             }
-            output += (refSource as NSString).substring(from: cursor)
-            text = output
+            index = text.index(after: index)
         }
-        return text
+        output += neutralizeRaftRefs(String(text[cursor...]), pattern: refPattern)
+        return output
+    }
+
+    private static func neutralizeRaftRefs(_ source: String, pattern: NSRegularExpression) -> String {
+        let full = NSRange(location: 0, length: (source as NSString).length)
+        let matches = pattern.matches(in: source, options: [], range: full)
+        guard !matches.isEmpty else { return source }
+        var output = ""
+        var cursor = 0
+        for match in matches {
+            output += (source as NSString).substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+            output += "user:" + (source as NSString).substring(with: match.range(at: 1))
+            cursor = match.range.location + match.range.length
+        }
+        output += (source as NSString).substring(from: cursor)
+        return output
     }
 
     private static func marketplaceAppNameBinding(_ raw: String) -> (name: String, sha256: String) {

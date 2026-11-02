@@ -663,3 +663,10 @@ RFC 074 personal assistant：
 - external-registration-bound App（Slack 等 platform 注册，`externalProvider` 非空）不出现在列表，也不可由 status 读取（404），对 admin 和 owner 一致。
 - `GET /internal/agent-api/integrations/app/status` 只接受 `client` 或 `card` 其一，二者同时或都缺 → 400 `Exactly one of card or client is required`；未知/无权/隐藏 → 404 `Integration app not found`；成功 `{"app":{...}}`。
 - `installationId` 严格按请求 Server 解析：未安装或只在别的 Server 安装 → null；本 Server 有 active installation → 该 installation id（列表与状态一致）。
+
+### internalAgentApi.auth：app 元数据与 services 投影
+
+- `POST /internal/agent-api/integrations/app/update` 接受 `{clientKey, whenToUse}`；只有 App owner agent 或 server-admin agent 可改（否则 404），`clientKey` 缺失 → 400 `INVALID_APP_METADATA`。
+- `whenToUse` 校验：≤160 code point、单行（无控制字符）、inline code 之外的裸 `@scope/pkg` 拒绝；拒绝统一 400 `{errorCode:"INVALID_APP_METADATA"}` 且不写库。空串表示清空（读回 null），合法值原样存储。
+- `GET /internal/agent-api/integrations` 的 `services[].whenToUse` 为 inert 渲染：裸 `@alice` → `user:alice`，反引号内 `` `@acme/metrics` `` 原样保留。
+- `services` 只列 enabled 的非 builtin App：被禁用的 server-local App 不出现（daemon prompt 与 `raft integration list` 都不再看到它）。

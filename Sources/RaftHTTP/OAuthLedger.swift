@@ -1397,7 +1397,9 @@ public final class OAuthLedger: @unchecked Sendable {
     public func integrationServices(serverId: String) -> [[String: Any]] {
         lock.lock()
         defer { lock.unlock() }
-        return clients.filter { $0.serverId == serverId && $0.appType != "slock_builtin" }.map { client in
+        return clients.filter {
+            $0.serverId == serverId && $0.appType != "slock_builtin" && $0.enabled
+        }.map { client in
             [
                 "id": client.id,
                 "clientId": client.clientId,
@@ -1408,8 +1410,25 @@ public final class OAuthLedger: @unchecked Sendable {
                 "agentManifestUrlSource": client.agentManifestUrlSource as Any,
                 "allowedScopes": client.allowedScopes as Any,
                 "appType": client.appType,
+                "whenToUse": client.whenToUse as Any,
             ]
         }
+    }
+
+    public func setClientWhenToUse(clientRecordId: String, whenToUse: String?) {
+        lock.lock()
+        if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
+            clients[index].whenToUse = whenToUse
+        }
+        lock.unlock()
+    }
+
+    public func clientRecordId(serverId: String, clientKey: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return clients.first {
+            $0.serverId == serverId && ($0.clientId == clientKey || $0.id == clientKey)
+        }?.id
     }
 
     public func publicIntegrationClient(clientId: String) -> [String: Any]? {
@@ -3192,6 +3211,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var humanMarketplaceVisible: Bool = false
         var agentManifestUrl: String? = nil
         var agentManifestUrlSource: String? = nil
+        var whenToUse: String? = nil
     }
 
     public func addClientMaintainer(clientRecordId: String, agentId: String, role: String = "owner") {

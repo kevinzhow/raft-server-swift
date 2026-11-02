@@ -846,6 +846,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             authorization: request.headers[.authorization]
         ))
     }
+    app.post("internal", "agent-api", "integrations", "app", "update") { request -> Response in
+        routeResponse(services.emailAccounts.agentIntegrationAppUpdate(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}"
+        ))
+    }
     app.get("internal", "agent-api", "integrations", "app", "status") { request -> Response in
         routeResponse(services.emailAccounts.agentIntegrationAppStatus(
             authorization: request.headers[.authorization],
