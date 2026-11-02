@@ -212,7 +212,7 @@ tasks.channelMembership.api	route	locked	bb36d22	public read-only tasks, private
 tasks.jointSurface.api	route	pending	-	auto-seed
 tasks.orphanCleanup.api	route	pending	-	auto-seed
 tasks.periodMetrics.api	route	locked	e1fa956	covered by the existing metric/scope tests
-tasks.realtimeProjection.api	route	partial	-	canonical claim emits task:updated only; refused message-only claim tested below the socket
+tasks.realtimeProjection.api	route	locked	bfb345f	message-only claim refuses with no events; canonical claim emits only task:updated with claimed task, never message:updated
 tasks.serverPagination.api	route	partial	-	auto-seed
 tasks.shapeSurfaces.api	route	pending	-	auto-seed
 tasks.snapshotMetrics.api	route	locked	e1fa956	covered by the existing metric/scope tests
