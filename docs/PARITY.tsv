@@ -194,7 +194,7 @@ serverLabs.api	route	locked	8700cda	labs role parity, version CAS, audit, readba
 serverMemberEvents.api	route	partial	-	auto-seed
 serverSetupGate.daemonReady	route	partial	-	auto-seed
 servers.activityUnreadSummary.api	route	locked	843bffd	wire activityUnreadCount/inbox invariant, known zero, member-only, mute orthogonality; excluded service compute tests and canonical fixture
-servers.api	route	partial	48088df	apps/member-graph/settings/roles/machines creator+machine list/invite+seat/runtime forms/option statuses/policy/migration delete/upgrade gate/delete broadcast covered; builtin v1 released fixture + localized v2 form pending
+servers.api	route	locked	b160223	apps/member-graph/settings/roles/machines+creator/invites+seats/runtime forms builtin v1+v2/option statuses/policy/migration delete/upgrade gates/delete broadcast covered; excluded PGlite harness, push kill-switch socket emits, DB failure/error-boundary faults, DB fence/concurrency, operation+epoch ledger/completion attestation internals, tracer/query/RW
 servers.joinCommunity.api	route	locked	bde33f8	locked: community/community-cn join, unknown slug, already-member, not seeded, unauth
 servers.mentionRedriveAuthz.api	route	locked	6ea6dda	NOT_ACCESSIBLE/NOT_JOINABLE auth and version body
 servers.scopeAttestation.api	route	locked	b00f30b	HS256 claims and member/owner capability scopes
