@@ -3407,6 +3407,26 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 threadSummariesJSON: threadSummariesJSONLocked(parentChannelId: channelId, parentIds: windowIds)
             )
         }
+        for link in jointProjections where link.serverId == serverId {
+            guard let localThread = postableChannels[link.localChannelId],
+                  localThread.kind == "thread",
+                  localThread.parentChannelId == channelId,
+                  localThread.deletedAt == nil,
+                  localThread.memberIds.contains(userId)
+            else { continue }
+            guard let reply = humanMessageRows.first(where: {
+                $0.channelId == link.canonicalChannelId && Self.messageIdMatches($0.id, messageId)
+            }) else { continue }
+            let canonicalThreadId = link.localChannelId
+            let canonical = "{\"kind\":\"thread\",\"channelId\":\(jsonString(channelId)),\"messageId\":\(jsonString(reply.id)),\"threadParentMessageId\":\(jsonString(localThread.parentMessageId ?? "")),\"threadChannelId\":\(jsonString(canonicalThreadId))}"
+            return Self.contextJSON(
+                channelId: canonicalThreadId,
+                message: reply,
+                seq: 1,
+                archived: localThread.archived,
+                canonical: canonical
+            )
+        }
         let replies = humanMessageRows.filter { row in
             guard Self.messageIdMatches(row.id, messageId),
                   let thread = postableChannels[row.channelId],

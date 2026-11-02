@@ -208,3 +208,68 @@ private func contextObject(_ response: ClientResponse) throws -> [String: Any] {
         }
     }
 }
+
+@Test func jointThreadPermalinkResolvesThroughTheGuestLocalThread() async throws {
+    let accounts = EmailLoginDirectory()
+    let hostId = "33333333-3333-4333-8333-000000970030"
+    let guestId = "33333333-3333-4333-8333-000000970031"
+    let hostOwner = "11111111-1111-4111-8111-000000970032"
+    let guestOwner = "11111111-1111-4111-8111-000000970033"
+    let hostEmail = "joint-thread-host-970@slock.test"
+    let guestEmail = "joint-thread-guest-970@slock.test"
+    for (id, email) in [(hostOwner, hostEmail), (guestOwner, guestEmail)] {
+        accounts.addAccount(id: id, email: email, password: "password123")
+        accounts.markEmailVerified(userId: id)
+    }
+    accounts.oauth.addOwnedServer(id: hostId, slug: "joint-thread-host-970", name: "Host", ownerId: hostOwner)
+    accounts.oauth.addOwnedServer(id: guestId, slug: "joint-thread-guest-970", name: "Guest", ownerId: guestOwner)
+    let hostProjection = accounts.oauth.createChannel(serverId: hostId, name: "joint-thread-room-970", creatorUserId: hostOwner, type: "joint")
+    let guestProjection = accounts.oauth.createChannel(serverId: guestId, name: "joint-thread-room-970", creatorUserId: guestOwner, type: "joint")
+    accounts.addPostableChannel(serverId: hostId, channelId: hostProjection, memberId: hostOwner, kind: "joint", name: "joint-thread-room-970")
+    accounts.addPostableChannel(serverId: guestId, channelId: guestProjection, memberId: guestOwner, kind: "joint", name: "joint-thread-room-970")
+    accounts.addJointChannelProjection(localChannelId: hostProjection, canonicalChannelId: hostProjection, serverId: hostId)
+    accounts.addJointChannelProjection(localChannelId: guestProjection, canonicalChannelId: hostProjection, serverId: guestId)
+    let parent = accounts.addChannelMessageForTesting(channelId: hostProjection, content: "joint thread parent", senderId: hostOwner)
+    let canonicalThread = accounts.oauth.createThreadChannel(parentChannelId: hostProjection, parentMessageId: parent)
+    let guestThread = accounts.oauth.createThreadChannel(parentChannelId: guestProjection, parentMessageId: parent)
+    accounts.addPostableChannel(serverId: guestId, channelId: guestThread, memberId: guestOwner, kind: "thread", parentChannelId: guestProjection, parentMessageId: parent, name: "thread")
+    accounts.addJointChannelProjection(localChannelId: guestThread, canonicalChannelId: canonicalThread, serverId: guestId)
+    let reply = accounts.addChannelMessageForTesting(channelId: canonicalThread, content: "joint thread reply target", senderId: hostOwner)
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            let guest = try await contextLogin(client, email: guestEmail)
+            let context = try await client.get(
+                URI(string: "/api/messages/context/\(reply.prefix(8))?channelId=\(guestProjection)"),
+                headers: contextHeaders(guest, guestId)
+            )
+            #expect(context.status == .ok)
+            let body = try contextObject(context)
+            #expect(body["channelId"] as? String == guestThread)
+            #expect(body["targetMessageId"] as? String == reply)
+            let canonical = try #require(body["canonicalTarget"] as? [String: Any])
+            #expect(canonical["kind"] as? String == "thread")
+            #expect(canonical["channelId"] as? String == guestProjection)
+            #expect(canonical["threadChannelId"] as? String == guestThread)
+            #expect(canonical["threadParentMessageId"] as? String == parent)
+            #expect((body["messages"] as? [[String: Any]] ?? []).contains {
+                $0["id"] as? String == reply && $0["channelId"] as? String == guestThread
+            })
+
+            let local = try await client.get(
+                URI(string: "/api/messages/context/\(reply.prefix(8))?channelId=\(guestThread)"),
+                headers: contextHeaders(guest, guestId)
+            )
+            #expect(local.status == .ok)
+            let localBody = try contextObject(local)
+            #expect(localBody["channelId"] as? String == guestThread)
+            #expect(localBody["targetMessageId"] as? String == reply)
+        }
+    }
+}

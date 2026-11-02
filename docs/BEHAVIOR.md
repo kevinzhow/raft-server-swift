@@ -366,3 +366,5 @@ Reaction actor 分页：`GET /api/messages/:id/reactions/actors?emoji=&limit=&cu
 
 Message context / permalink：`GET /api/messages/context/:id?channelId=` 支持 8 位短 id；公开频道即使调用者未加入也能解析目标消息（返回 `channelId/targetMessageId/messages`），DM 参与者可在 DM 内解析。父频道上下文里的 thread 回复会 canonicalize 为 `{kind:"thread",channelId:parent,messageId:reply,threadParentMessageId,threadChannelId}`，消息行使用 thread channel；thread channel 自身短 id 作为引用时解析回父消息上下文。Joint 频道使用调用者本地 projection 的 `channelId` 输出消息，canonical 存储对非本地 joint 成员保持 404。
 
+Joint thread permalink：调用者用本地父频道 + 回复短 id 查询 context 时，若回复存于 canonical thread、且本地 Server 有对应 local thread projection，返回的 `channelId` 是本地 thread，`canonicalTarget` 为 `{kind:"thread",channelId:本地父频道,messageId:回复,threadParentMessageId,threadChannelId:本地thread}`；直接以本地 thread 作为 `channelId` 也能解析同一回复。Message search：`sort=recent` 按 createdAt 降序，默认 relevance 按词频；未知 sort 400。CJK 查询按字符 token，严格全匹配为空时使用 relaxed 一页兜底（`hasMore:false`）。支持仅过滤（channelId/senderId/senderType/mentionTarget=self）且无 query 时按 recent；私有频道对非成员不可见（显式 channelId 也 404），已删除频道/线程被排除，归档频道仍可搜索并带 `channelArchivedAt`。
+
