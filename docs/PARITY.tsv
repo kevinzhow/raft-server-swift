@@ -107,7 +107,7 @@ internalAgentApi.attachmentComments	route	partial	-	auto-seed
 internalAgentApi.attachmentDownloadUrl	route	locked	367c453	agent download + presigned URL, uniform 404, 409 without presign
 internalAgentApi.auth	route	partial	-	auto-seed
 internalAgentApi.channelCard	route	locked	cbe47a1	channel/private/thread cards, DM card-free, dm:@ resolution
-internalAgentApi.context	route	partial	64c88ea	identity/server/capabilities/features/prompt constraints; full guide text pending
+internalAgentApi.context	route	locked	9e2e1e9	locked: external identity/capabilities/prompt, managed no-prompt, read capability gate, rollout flags
 internalAgentApi.contract	route	partial	-	auto-seed
 internalAgentApi.crossReplicaWake	route	partial	-	auto-seed
 internalAgentApi.dmPeerKind	route	locked	3ffba27	kind-pinned DM read/around/thread + send 409/400/404
@@ -150,7 +150,7 @@ messages.mentionDeliveries.api	route	locked	e45a440	author-only coarse outcomes 
 messagesContextWindow.api	route	locked	5247150	context window sizing and clean 400s
 messagesStorageColumns.api	route	locked	67b77fb	storage-only columns and sender timezone stay off human reads
 messagesThreadSummaries.api	route	locked	03e645a	locked: page/context summaries, empty map, page-window scope, access gate
-mobileAppEmailUnsubscribe.api	route	partial	-	auto-seed
+mobileAppEmailUnsubscribe.api	route	locked	9e2e1e9	locked: signed visible/one-click URL, tampered fail-closed, zh locale, RFC8058 body, scheduled email cancel
 mobileDownload	route	partial	-	auto-seed
 notifications.api	route	partial	-	auto-seed
 oauth.api	route	partial	-	auto-seed
