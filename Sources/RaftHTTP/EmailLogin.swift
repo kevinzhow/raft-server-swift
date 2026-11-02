@@ -19530,9 +19530,120 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             )
         }
         lock.unlock()
-        let sent = "{\"ok\":true,\"state\":\"sent\",\"messageId\":\(jsonString(messageId)),\"messageSeq\":\(ownSeq),\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(content)),\"seq\":\(ownSeq)}"
-        _ = v2
+        let typedMentions = (object["mentions"] as? [[String: Any]]) ?? []
+        let report = sendMentionReport(
+            content: content,
+            typedMentions: typedMentions,
+            v2: v2,
+            channelId: channelId,
+            serverId: identity.serverId,
+            senderAgentId: identity.agentId,
+            messageId: messageId
+        )
+        let sent = "{\"ok\":true,\"state\":\"sent\",\"messageId\":\(jsonString(messageId)),\"messageSeq\":\(ownSeq),\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(content)),\"seq\":\(ownSeq)\(report.pendingJSON)\(report.unresolvedJSON)}"
         return Self.json(200, sent)
+    }
+
+    /// `@handle` tokens outside markdown code, in author order.
+    private static func mentionHandlesOutsideCode(_ text: String) -> [String] {
+        let pattern = try! NSRegularExpression(pattern: "(?<![A-Za-z0-9_.-])@([A-Za-z0-9][A-Za-z0-9_.-]*)")
+        var handles: [String] = []
+        var inFence = false
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmedLine = line.trimmingCharacters(in: .whitespaces)
+            if trimmedLine.hasPrefix("```") {
+                inFence.toggle()
+                continue
+            }
+            guard !inFence else { continue }
+            var prose = String(line)
+            prose = prose.replacingOccurrences(of: "`[^`]*`", with: " ", options: .regularExpression)
+            let full = NSRange(location: 0, length: (prose as NSString).length)
+            for match in pattern.matches(in: prose, options: [], range: full) {
+                handles.append((prose as NSString).substring(with: match.range(at: 1)))
+            }
+        }
+        return handles
+    }
+
+    /// Resolution of authored handles into the sender-only mention facts the
+    /// send response reports: pending actions for a non-member agent (v1) and
+    /// unresolved authored handles (v2). Hidden humans stay cloaked.
+    private func sendMentionReport(
+        content: String,
+        typedMentions: [[String: Any]],
+        v2: Bool,
+        channelId: String,
+        serverId: String,
+        senderAgentId: String,
+        messageId: String
+    ) -> (pendingJSON: String, unresolvedJSON: String) {
+        let handles = Self.mentionHandlesOutsideCode(content)
+        guard !handles.isEmpty else { return ("", "") }
+        let typedByName: [String: (type: String, id: String)] = Dictionary(
+            uniqueKeysWithValues: typedMentions.compactMap { mention in
+                guard let name = mention["name"] as? String,
+                      let type = mention["type"] as? String,
+                      let id = mention["id"] as? String else { return nil }
+                return (name, (type, id))
+            }
+        )
+        lock.lock()
+        let hiddenHumans = hideHumansFromMembers[serverId] == true
+        lock.unlock()
+        let senderName = oauth.agentRuntimeInfo(id: senderAgentId)?.name ?? ""
+        let channelAgents = Set(oauth.channelAgentIds(channelId: channelId))
+        let serverAgents = oauth.serverAgents(serverId: serverId)
+        var pending: [String] = []
+        var unresolved: [String] = []
+        var seen = Set<String>()
+        for handle in handles where seen.insert(handle).inserted {
+            if handle == senderName { continue }
+            if let typed = typedByName[handle] {
+                if typed.type == "agent" {
+                    if !serverAgents.contains(where: { $0.id == typed.id }) {
+                        continue
+                    }
+                    if v2 { continue }
+                    if !channelAgents.contains(typed.id) {
+                        pending.append(Self.pendingMentionActionJSON(
+                            messageId: messageId,
+                            handle: handle,
+                            avatarUrl: oauth.agentRuntimeInfo(id: typed.id)?.avatarUrl
+                        ))
+                    }
+                    continue
+                }
+                // A typed human is either visible (resolved) or hidden (cloaked).
+                continue
+            }
+            if let agent = serverAgents.first(where: { $0.name == handle }) {
+                if v2 { continue }
+                if !channelAgents.contains(agent.id) {
+                    pending.append(Self.pendingMentionActionJSON(
+                        messageId: messageId,
+                        handle: handle,
+                        avatarUrl: agent.avatarUrl
+                    ))
+                }
+                continue
+            }
+            let humanExists = accounts.values.contains { $0.name == handle }
+            if v2, !humanExists || hiddenHumans {
+                unresolved.append("@" + handle)
+            }
+        }
+        let pendingJSON = pending.isEmpty ? "" : ",\"pendingMentionActions\":[" + pending.joined(separator: ",") + "]"
+        let unresolvedJSON = unresolved.isEmpty ? "" : ",\"unresolvedMentionHandles\":[" + unresolved.map(jsonString).joined(separator: ",") + "]"
+        return (pendingJSON, unresolvedJSON)
+    }
+
+    private static func pendingMentionActionJSON(messageId: String, handle: String, avatarUrl: String?) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let expiresAt = formatter.string(from: Date().addingTimeInterval(86_400))
+        let avatar = avatarUrl.map(jsonString) ?? "null"
+        return "{\"resolutionId\":\(jsonString(UUID().uuidString.lowercased())),\"messageId\":\(jsonString(messageId)),\"targetType\":\"agent\",\"targetHandle\":\(jsonString(handle)),\"targetAvatarUrl\":\(avatar),\"reason\":\"not_member\",\"availableActions\":[\"notify\"],\"expiresAt\":\(jsonString(expiresAt))}"
     }
 
     private func channelIdForReceipt(_ messageId: String) -> String? {

@@ -699,3 +699,10 @@ RFC 074 personal assistant：
 - `reconcileOnly:true`（v2）：key 未提交 → 200 `{ok:true,state:"not_found",reconciliation:true}` 且不写；已提交 → 200 `{ok:true,state:"committed",messageId,messageSeq,reconciliation:true,receiptComplete:false}`。
 - `attachmentIds` 边界：每个元素必须是单个 UUID；非数组或含空格/逗号拼接值 → 400 `{code:"attachment_id_invalid"}`，错误文本 `Not sent: attachmentIds entry <n> is not a single attachment ID. Send one ID per --attachment-id.`，不回显被拒值，也不写消息。
 - v1 与 v2 发送都返回统一的 `{ok,state:"sent",messageId,messageSeq}`（同时保留旧 `id/channelId/content/seq`）。
+
+### internalAgentApi.send：mention 解析组
+
+- v1 `POST /internal/agent-api/send`：正文中 `@handle` 命中本 Server 存在但不在目标频道的 agent 时，回 `pendingMentionActions`（sender-only）：`resolutionId` UUID、`messageId`、`targetType:"agent"`、`targetHandle`、`targetAvatarUrl`、`reason:"not_member"`、`availableActions:["notify"]`、`expiresAt` ISO。
+- v2 send：无法解析到可见目标的 `@handle` 回 `unresolvedMentionHandles`（带 `@` 前缀），且不出现 `pendingMentionActions`；markdown inline/fenced code 里的 `@` 不计入。
+- 隐藏 human directory 开启时，未类型化的 `@handle` 一律记为 unresolved（不泄漏存在性）；typed mentions（`mentions:[{type,id,name}]`）不产生 pending/unresolved。
+- 发送者自己的 handle 不计入解析结果。

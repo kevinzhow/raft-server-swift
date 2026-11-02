@@ -484,6 +484,7 @@ public final class OAuthLedger: @unchecked Sendable {
                     name: agent.name,
                     displayName: agent.displayName,
                     description: agent.description,
+                    avatarUrl: agent.avatarUrl,
                     creatorUserId: agent.creatorUserId,
                     runtime: agent.runtime,
                     runtimeConfigJSON: agent.runtimeConfigJSON,
