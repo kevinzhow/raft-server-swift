@@ -655,3 +655,11 @@ RFC 074 personal assistant：
 - `target` 不可见或不存在 → 404 `Install target not found or not visible to this agent`；非 openid 的 scope → 400 `INVALID_SCOPE`；未发布的 private App 仍 404 `Registered service not found`。
 - `POST /api/actions/:messageId/execute`：仅该 Server 的 owner/admin 可执行（member 403，其他 Server 的 header 404）；`expectedState` 与卡片状态不符 → 409；执行前重新校验 App（enabled、`third_party_global`、published、human-visible、clientKey、名字 sha 与 agent 名），变更 → 409 `MARKETPLACE_APP_CHANGED`/`AGENT_BINDING_CHANGED` 且不写安装。
 - 执行成功 200，`metadata.state:"executed"`、`result.kind:"marketplace-app-installation"` 含 `clientId`(record id)/`clientKey`/`clientName`/`serverId`/`agentId`/`agentName`/`scopes`，只写一行 installation；再次 `expectedState:"executed"` 幂等返回，不再写安装；之后同一 login 请求回 `status:"logged_in"`。
+
+### internalAgentApi.auth：integration app 列表/状态组
+
+- `GET /internal/agent-api/integrations/app`：agent credential 需 `read`；server-admin agent 看到本 Server 全部 user-managed `server_local`/`third_party_global` App，其他 agent 只看到自己是 owner 维护者的 App。
+- 行投影：`state:"committed"`、`card:null`、`installationId`、`name/clientKey/createdAt/updatedAt/description/homepageUrl/callbackUrl/agentManifestUrl/scopes/category/dataAccessSummary/logoUrl/appType/publishStatus/enabled`、`authority`(`owner`|`admin`)、`recoveryCommand`（`raft integration app rotate-secret --client <key> ...`）。
+- external-registration-bound App（Slack 等 platform 注册，`externalProvider` 非空）不出现在列表，也不可由 status 读取（404），对 admin 和 owner 一致。
+- `GET /internal/agent-api/integrations/app/status` 只接受 `client` 或 `card` 其一，二者同时或都缺 → 400 `Exactly one of card or client is required`；未知/无权/隐藏 → 404 `Integration app not found`；成功 `{"app":{...}}`。
+- `installationId` 严格按请求 Server 解析：未安装或只在别的 Server 安装 → null；本 Server 有 active installation → 该 installation id（列表与状态一致）。

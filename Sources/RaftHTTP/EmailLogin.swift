@@ -16287,6 +16287,57 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(403, "{\"error\":\"Agents cannot create attachment comments\",\"code\":\"agent_comment_create_disabled\"}")
     }
 
+    public func agentIntegrationAppList(authorization: String?) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard credential.scopes.contains("read") else {
+            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\",\"requiredCapability\":\"read\"}")
+        }
+        let admin = oauth.agentRole(serverId: agent.serverId, agentId: agent.id) == "admin"
+        let rows = oauth.ownedIntegrationApps(serverId: agent.serverId, agentId: agent.id, admin: admin)
+        guard let data = try? JSONSerialization.data(withJSONObject: ["apps": rows], options: [.sortedKeys]) else {
+            return Self.json(200, "{\"apps\":[]}")
+        }
+        return Self.json(200, String(decoding: data, as: UTF8.self))
+    }
+
+    public func agentIntegrationAppStatus(authorization: String?, client: String?, card: String?) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard credential.scopes.contains("read") else {
+            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\",\"requiredCapability\":\"read\"}")
+        }
+        let clientKey = (client ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let cardRef = (card ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard clientKey.isEmpty != cardRef.isEmpty else {
+            return Self.json(400, "{\"error\":\"Exactly one of card or client is required\"}")
+        }
+        if !cardRef.isEmpty {
+            // Registration cards are the only card-backed app state; until a
+            // prepared card exists the reference is simply unknown.
+            return Self.json(404, "{\"error\":\"Integration app not found\"}")
+        }
+        let admin = oauth.agentRole(serverId: agent.serverId, agentId: agent.id) == "admin"
+        guard let app = oauth.ownedIntegrationApp(
+            serverId: agent.serverId,
+            agentId: agent.id,
+            clientKey: clientKey,
+            admin: admin
+        ) else {
+            return Self.json(404, "{\"error\":\"Integration app not found\"}")
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: ["app": app], options: [.sortedKeys]) else {
+            return Self.json(404, "{\"error\":\"Integration app not found\"}")
+        }
+        return Self.json(200, String(decoding: data, as: UTF8.self))
+    }
+
     public func agentIntegrationMarketplace(authorization: String?, query: String?, limit: String?) -> HTTPReply {
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted

@@ -51,6 +51,8 @@ public final class OAuthLedger: @unchecked Sendable {
     private var servers: [String: Server] = [:]
     private var agents: [String: Agent] = [:]
     private var agentRoles: [String: String] = [:]
+    /// Agent owners of a server-local App (`oauth_client_maintainers`).
+    private var clientMaintainerOwners: [String: Set<String>] = [:]
     private var agentEvents: [AgentEvent] = []
     private var revokedGrantClients: Set<String> = []
     private var members: [String: String] = [:]
@@ -3190,6 +3192,87 @@ public final class OAuthLedger: @unchecked Sendable {
         var humanMarketplaceVisible: Bool = false
         var agentManifestUrl: String? = nil
         var agentManifestUrlSource: String? = nil
+    }
+
+    public func addClientMaintainer(clientRecordId: String, agentId: String, role: String = "owner") {
+        guard role == "owner" else { return }
+        lock.lock()
+        clientMaintainerOwners[clientRecordId, default: []].insert(agentId)
+        lock.unlock()
+    }
+
+    public func isClientMaintainerOwner(clientRecordId: String, agentId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return clientMaintainerOwners[clientRecordId]?.contains(agentId) == true
+    }
+
+    public func installationId(serverId: String, clientRecordId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return installations.first {
+            $0.clientId == clientRecordId && $0.serverId == serverId && $0.status == "active"
+        }?.id
+    }
+
+    /// The agent-facing projection of Apps this agent may manage: every
+    /// user-managed app of the Server for an admin agent, otherwise only the
+    /// ones this agent owns. Installation ids never cross the Server boundary.
+    public func ownedIntegrationApps(serverId: String, agentId: String, admin: Bool) -> [[String: Any]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return clients.filter { client in
+            guard client.serverId == serverId, isUserManaged(client),
+                  client.appType == "server_local" || client.appType == "third_party_global"
+            else { return false }
+            return admin || clientMaintainerOwners[client.id]?.contains(agentId) == true
+        }.map { client in
+            integrationAppProjection(client, serverId: serverId, admin: admin)
+        }
+    }
+
+    public func ownedIntegrationApp(serverId: String, agentId: String, clientKey: String, admin: Bool) -> [String: Any]? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let client = clients.first(where: { candidate in
+            candidate.serverId == serverId
+                && (candidate.clientId == clientKey || candidate.id == clientKey)
+                && isUserManaged(candidate)
+                && (candidate.appType == "server_local" || candidate.appType == "third_party_global")
+        }) else { return nil }
+        guard admin || clientMaintainerOwners[client.id]?.contains(agentId) == true else { return nil }
+        return integrationAppProjection(client, serverId: serverId, admin: admin)
+    }
+
+    private func integrationAppProjection(_ client: Client, serverId: String, admin: Bool) -> [String: Any] {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let now = formatter.string(from: Date())
+        let installation: Any = installations.first {
+            $0.clientId == client.id && $0.serverId == serverId && $0.status == "active"
+        }?.id ?? NSNull()
+        return [
+            "state": "committed",
+            "card": NSNull(),
+            "installationId": installation,
+            "name": client.name,
+            "clientKey": client.clientId,
+            "createdAt": now,
+            "updatedAt": now,
+            "description": client.descriptionText as Any,
+            "homepageUrl": client.homepageUrl as Any,
+            "callbackUrl": client.returnUrl as Any,
+            "agentManifestUrl": client.agentManifestUrl as Any,
+            "scopes": client.allowedScopes ?? [],
+            "category": "Other",
+            "dataAccessSummary": NSNull(),
+            "logoUrl": NSNull(),
+            "appType": client.appType,
+            "publishStatus": client.publishStatus,
+            "enabled": client.enabled,
+            "authority": admin ? "admin" : "owner",
+            "recoveryCommand": "raft integration app rotate-secret --client \(client.clientId) --output <new-private-path>",
+        ]
     }
 
     /// Mirrors `oauthClientIsUserManagedPredicate`: the tombstone class and

@@ -841,6 +841,18 @@ public func configure(_ app: Application, services: FallbackServices) {
             authorization: request.headers[.authorization]
         ))
     }
+    app.get("internal", "agent-api", "integrations", "app") { request -> Response in
+        routeResponse(services.emailAccounts.agentIntegrationAppList(
+            authorization: request.headers[.authorization]
+        ))
+    }
+    app.get("internal", "agent-api", "integrations", "app", "status") { request -> Response in
+        routeResponse(services.emailAccounts.agentIntegrationAppStatus(
+            authorization: request.headers[.authorization],
+            client: desktopQuery(request.url.query, "client"),
+            card: desktopQuery(request.url.query, "card")
+        ))
+    }
     app.get("internal", "agent-api", "integrations", "marketplace") { request -> Response in
         routeResponse(services.emailAccounts.agentIntegrationMarketplace(
             authorization: request.headers[.authorization],
