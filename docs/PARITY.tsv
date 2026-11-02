@@ -214,7 +214,7 @@ tasks.orphanCleanup.api	route	pending	-	auto-seed
 tasks.periodMetrics.api	route	locked	e1fa956	covered by the existing metric/scope tests
 tasks.realtimeProjection.api	route	locked	bfb345f	message-only claim refuses with no events; canonical claim emits only task:updated with claimed task, never message:updated
 tasks.serverPagination.api	route	partial	-	auto-seed
-tasks.shapeSurfaces.api	route	locked	PENDING	REST delete across v0/backfilled/v14 shapes, inert message-only rows, shadow clearing, agent orphan claim/status rejection
+tasks.shapeSurfaces.api	route	locked	29c8fa5	REST delete across v0/backfilled/v14 shapes, inert message-only rows, shadow clearing, agent orphan claim/status rejection
 tasks.snapshotMetrics.api	route	locked	e1fa956	covered by the existing metric/scope tests
 timezoneObservation.api	route	locked	595ec75	auth/validation, first+last preservation, canonical IANA alias, legacy first-pair fallback; excluded DB clock and concurrent observers
 version.api	route	locked	5247150	build identity and explicit 503 covered
