@@ -723,6 +723,12 @@ public final class OAuthLedger: @unchecked Sendable {
         return id
     }
 
+    public func channelReadCursor(channelId: String, userId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return channelReadCursors["\(channelId)\n\(userId)"] ?? 0
+    }
+
     public func setChannelReadCursor(channelId: String, userId: String, seq: Int) {
         lock.lock()
         channelReadCursors["\(channelId)\n\(userId)"] = seq

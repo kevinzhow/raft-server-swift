@@ -785,6 +785,18 @@ public func configure(_ app: Application, services: FallbackServices) {
             limit: desktopQuery(request.url.query, "limit")
         ))
     }
+    app.get("internal", "agent-api", "assistant", "owner-inbox") { request -> Response in
+        routeResponse(services.emailAccounts.agentAssistantOwnerInbox(
+            authorization: request.headers[.authorization],
+            rawQuery: request.url.query
+        ))
+    }
+    app.get("internal", "agent-api", "assistant", "owner-messages") { request -> Response in
+        routeResponse(services.emailAccounts.agentAssistantOwnerMessages(
+            authorization: request.headers[.authorization],
+            channelId: desktopQuery(request.url.query, "channelId") ?? ""
+        ))
+    }
     app.get("internal", "agent-api", "inbox", "conversations") { request -> Response in
         routeResponse(services.emailAccounts.agentInboxConversations(
             authorization: request.headers[.authorization],

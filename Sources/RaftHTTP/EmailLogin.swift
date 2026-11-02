@@ -152,6 +152,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var machineKeys: [String: (serverId: String, agentId: String)] = [:]
     private var storedInboxFacts: [StoredInboxFact] = []
     private var storedAgentDeliveries: [(agentId: String, messageId: String, channelType: String)] = []
+    /// RFC 074 assistant link: agent id -> owner user id.
+    private var assistantOwners: [String: String] = [:]
     private var agentCredentials: [String: AgentCredential] = [:]
     private var agentMachineIds: [String: String] = [:]
     private var agentRuntimeProfiles: [String: AgentRuntimeProfileFact] = [:]
@@ -2941,6 +2943,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             clientBuildTypes: clientBuildTypes,
             priority: priority
         ))
+        lock.unlock()
+    }
+
+    public func setFeatureFlagDefaultForTesting(key: String, defaultEnabled: Bool) {
+        lock.lock()
+        featureFlagRecords[key]?.defaultEnabled = defaultEnabled
         lock.unlock()
     }
 
@@ -10284,19 +10292,181 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
+    /// The assistant link is live only while the flag is on and the owner is
+    /// still a member of the agent's Server.
+    private func assistantOwnerFor(agentId: String, serverId: String) -> String? {
+        lock.lock()
+        let owner = assistantOwners[agentId]
+        lock.unlock()
+        guard let owner, oauth.memberRole(serverId: serverId, userId: owner) != nil else { return nil }
+        guard featureFlagEnabledForServer("identity_borrowing", serverId: serverId) else { return nil }
+        return owner
+    }
+
+    private func assistantOwnerRaw(_ agentId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return assistantOwners[agentId]
+    }
+
+    private func assistantIsInRegularChannel(serverId: String, agentId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        for (id, channel) in postableChannels {
+            guard channel.serverId == serverId, channel.deletedAt == nil,
+                  channel.kind == "channel" || channel.kind == "private" || channel.kind == "joint"
+            else { continue }
+            if channel.memberIds.contains(agentId)
+                || channelAgentMembers[id]?.contains(agentId) == true
+                || oauth.channelAgentIds(channelId: id).contains(agentId) {
+                return true
+            }
+        }
+        return false
+    }
+
     public func agentAssistantOwner(authorization: String?, serverId: String, agentId: String, method: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+            return Self.json(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
         }
         guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted, info.serverId == serverId,
-              let role = oauth.memberRole(serverId: serverId, userId: userId)
+              oauth.memberRole(serverId: serverId, userId: userId) != nil
         else {
             return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
         }
-        guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
+        guard info.creatorUserId == userId else {
             return Self.json(403, "{\"code\":\"assistant_requires_creator\",\"error\":\"Only the agent creator can lend assistant ownership\"}")
         }
-        return Self.json(403, "{\"code\":\"assistant_not_enabled\",\"error\":\"Assistant ownership is not enabled\"}")
+        guard featureFlagEnabledForServer("identity_borrowing", serverId: serverId) else {
+            return Self.json(403, "{\"code\":\"assistant_not_enabled\",\"error\":\"Assistant ownership is not enabled\"}")
+        }
+        if method == "DELETE" {
+            lock.lock()
+            assistantOwners.removeValue(forKey: agentId)
+            lock.unlock()
+            return Self.json(200, "{\"assistantOf\":null}")
+        }
+        if assistantOwnerRaw(agentId) == userId {
+            return Self.json(200, "{\"assistantOf\":{\"userId\":\(jsonString(userId))}}")
+        }
+        lock.lock()
+        let conflict = assistantOwners.contains { candidate, owner in
+            guard owner == userId, candidate != agentId else { return false }
+            guard let other = oauth.agentRuntimeInfo(id: candidate) else { return false }
+            return other.serverId == serverId && !other.deleted
+        }
+        lock.unlock()
+        guard !conflict else {
+            return Self.json(409, "{\"code\":\"assistant_already_set\",\"error\":\"This user already has an assistant\"}")
+        }
+        guard !assistantIsInRegularChannel(serverId: serverId, agentId: agentId) else {
+            return Self.json(409, "{\"code\":\"assistant_has_channels\",\"error\":\"An assistant can only be in its DM with its owner\"}")
+        }
+        lock.lock()
+        let existingDM = dmChannelIdLocked(serverId: serverId, agentId: agentId, peerId: userId)
+        lock.unlock()
+        let dmId = existingDM ?? oauth.createDirectChannel(serverId: serverId, firstUserId: agentId, secondUserId: userId)
+        addPostableChannel(serverId: serverId, channelId: dmId, memberId: agentId, kind: "dm", name: "dm")
+        addPostableChannel(serverId: serverId, channelId: dmId, memberId: userId, kind: "dm", name: "dm")
+        oauth.addChannelHuman(channelId: dmId, userId: userId)
+        lock.lock()
+        assistantOwners[agentId] = userId
+        lock.unlock()
+        return Self.json(200, "{\"assistantOf\":{\"userId\":\(jsonString(userId))}}")
+    }
+
+    private func assistantReadRefusal() -> HTTPReply {
+        Self.json(403, "{\"code\":\"assistant_not_enabled\",\"error\":\"Assistant ownership is not enabled for this agent\"}")
+    }
+
+    private func assistantReadOwner(_ authorization: String?) -> (agentId: String, serverId: String, ownerId: String)? {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted,
+              let owner = assistantOwnerFor(agentId: agent.id, serverId: agent.serverId)
+        else { return nil }
+        return (agent.id, agent.serverId, owner)
+    }
+
+    private func ownerCanSeeChannelLocked(ownerId: String, channel: PostableChannel) -> Bool {
+        if channel.kind == "channel" || channel.kind == "joint" { return true }
+        return channel.memberIds.contains(ownerId)
+    }
+
+    public func agentAssistantOwnerInbox(authorization: String?, rawQuery: String?) -> HTTPReply {
+        guard let context = assistantReadOwner(authorization) else { return assistantReadRefusal() }
+        var limit = 50
+        for pair in (rawQuery ?? "").split(separator: "&") {
+            let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
+            if parts.count == 2, parts[0] == "limit", let value = Int(parts[1]), value > 0 {
+                limit = min(value, 100)
+            }
+        }
+        lock.lock()
+        var items: [String] = []
+        for (id, channel) in postableChannels {
+            guard channel.serverId == context.serverId, channel.deletedAt == nil else { continue }
+            guard ownerCanSeeChannelLocked(ownerId: context.ownerId, channel: channel) else { continue }
+            var kind = "channel"
+            var parentChannelId: String?
+            if channel.kind == "thread" {
+                guard let parentId = channel.parentChannelId,
+                      let parent = postableChannels[parentId],
+                      parent.kind != "dm",
+                      ownerCanSeeChannelLocked(ownerId: context.ownerId, channel: parent)
+                else { continue }
+                kind = "thread"
+                parentChannelId = parentId
+            } else if channel.kind == "dm" {
+                continue
+            } else if channel.kind != "channel" && channel.kind != "private" && channel.kind != "joint" {
+                continue
+            }
+            let cursor = oauth.channelReadCursor(channelId: id, userId: context.ownerId)
+            let messages = humanMessageRows.enumerated().filter { index, message in
+                message.channelId == id && index + 1 > cursor
+            }
+            let unread = messages.filter { $0.element.senderId != context.ownerId }.count
+            guard unread > 0 else { continue }
+            var item = "{\"kind\":\(jsonString(kind)),\"channelId\":\(jsonString(id)),\"unreadCount\":\(unread)"
+            if let parentChannelId {
+                item += ",\"parentChannelId\":\(jsonString(parentChannelId))"
+            }
+            item += "}"
+            items.append(item)
+            if items.count >= limit { break }
+        }
+        lock.unlock()
+        return Self.json(200, "{\"owner\":{\"userId\":\(jsonString(context.ownerId))},\"items\":[\(items.joined(separator: ","))]}")
+    }
+
+    public func agentAssistantOwnerMessages(authorization: String?, channelId: String) -> HTTPReply {
+        guard let context = assistantReadOwner(authorization) else { return assistantReadRefusal() }
+        let neutral = Self.json(404, "{\"error\":\"Channel not found or not visible\",\"code\":\"channel_not_found\"}")
+        lock.lock()
+        guard let channel = postableChannels[channelId], channel.serverId == context.serverId,
+              channel.deletedAt == nil
+        else {
+            lock.unlock()
+            return neutral
+        }
+        if channel.kind == "dm" { lock.unlock(); return neutral }
+        if channel.kind == "thread" {
+            guard let parentId = channel.parentChannelId,
+                  let parent = postableChannels[parentId], parent.kind != "dm",
+                  ownerCanSeeChannelLocked(ownerId: context.ownerId, channel: parent)
+            else {
+                lock.unlock()
+                return neutral
+            }
+        } else if !ownerCanSeeChannelLocked(ownerId: context.ownerId, channel: channel) {
+            lock.unlock()
+            return neutral
+        }
+        let messages = humanMessageRows.filter { $0.channelId == channelId }.map { message in
+            "{\"id\":\(jsonString(message.id)),\"content\":\(jsonString(message.content)),\"senderId\":\(jsonString(message.senderId)),\"senderType\":\(jsonString(message.senderType))}"
+        }.joined(separator: ",")
+        lock.unlock()
+        return Self.json(200, "{\"owner\":{\"userId\":\(jsonString(context.ownerId))},\"channelId\":\(jsonString(channelId)),\"messages\":[\(messages)]}")
     }
 
     public func putAgentPushWebhook(authorization: String?, body: String) -> HTTPReply {
@@ -18449,7 +18619,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             prompt = "null"
         }
         let features = "{\"reminderApp\":\(featureFlagEnabledForServer("reminder_app", serverId: server.id)),\"vaultApp\":\(featureFlagEnabledForServer("vault_app", serverId: server.id))}"
-        let body = "{\"agent\":{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"description\":\(description),\"runtime\":\(jsonString(agent.runtime)),\"external\":\(external),\"assistantOf\":null,\"serverRole\":\(jsonString(role))},\"server\":{\"id\":\(jsonString(server.id)),\"slug\":\(jsonString(server.slug)),\"name\":\(jsonString(server.name))},\"credential\":{\"capabilities\":[\(capabilities)]},\"prompt\":\(prompt),\"features\":\(features)}"
+        let assistantJSON: String
+        if let owner = assistantOwnerFor(agentId: agent.id, serverId: agent.serverId) {
+            assistantJSON = "{\"userId\":\(jsonString(owner))}"
+        } else {
+            assistantJSON = "null"
+        }
+        let body = "{\"agent\":{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"description\":\(description),\"runtime\":\(jsonString(agent.runtime)),\"external\":\(external),\"assistantOf\":\(assistantJSON),\"serverRole\":\(jsonString(role))},\"server\":{\"id\":\(jsonString(server.id)),\"slug\":\(jsonString(server.slug)),\"name\":\(jsonString(server.name))},\"credential\":{\"capabilities\":[\(capabilities)]},\"prompt\":\(prompt),\"features\":\(features)}"
         return Self.json(200, body)
     }
 
@@ -18608,6 +18784,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"Invalid send request\"}")
         }
         let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        let assistantOwner = assistantOwnerFor(agentId: identity.agentId, serverId: identity.serverId)
+        if let assistantOwner {
+            guard trimmed.hasPrefix("dm:@") else {
+                return Self.json(403, "{\"code\":\"assistant_channel_forbidden\",\"error\":\"An assistant can only post in its DM with its owner\"}")
+            }
+            var raw = String(trimmed.dropFirst("dm:@".count))
+            if let suffixStart = raw.lastIndex(of: ":") { raw = String(raw[..<suffixStart]) }
+            if let tilde = raw.firstIndex(of: "~") { raw = String(raw[..<tilde]) }
+            lock.lock()
+            let resolution = resolveDMPeerLocked(serverId: identity.serverId, agentId: identity.agentId, name: raw, kind: nil)
+            lock.unlock()
+            guard case .resolved(let peerId, _, _) = resolution, peerId == assistantOwner else {
+                return Self.json(403, "{\"code\":\"assistant_channel_forbidden\",\"error\":\"An assistant can only post in its DM with its owner\"}")
+            }
+        }
         let channelId: String
         if trimmed.hasPrefix("#") {
             var raw = String(trimmed.dropFirst())
@@ -20302,6 +20493,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var addedAgents: [String] = []
         var alreadyUsers: [String] = []
         var alreadyAgents: [String] = []
+        for agentId in rawAgentIds where assistantOwnerRaw(agentId) != nil {
+            return Self.json(403, "{\"code\":\"assistant_channel_forbidden\",\"error\":\"An assistant can only be in its DM with its owner\"}")
+        }
         for target in uniqueUserIds {
             guard oauth.memberRole(serverId: serverId, userId: target) != nil else { continue }
             if oauth.channelHumanIds(channelId: channelId).contains(target) {
@@ -20457,6 +20651,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if let agentId = object["agentId"] as? String {
             guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
                 return Self.json(400, "{\"error\":\"Invalid agent\"}")
+            }
+            if assistantOwnerRaw(agentId) != nil {
+                return Self.json(403, "{\"code\":\"assistant_channel_forbidden\",\"error\":\"An assistant can only be in its DM with its owner\"}")
             }
             oauth.addChannelAgent(channelId: channelId, agentId: agentId)
             return Self.json(200, "{\"ok\":true}")

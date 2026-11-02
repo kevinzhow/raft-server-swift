@@ -562,3 +562,14 @@ RBAC Phase 3 精确对象权限：
 - 已撤销的 access token 仍 401，撤销行数不变。
 - 手动卸载后 reviewer 置 `unpublish_requested` 再置 `private`，会重建 owner Server 的 installation（空 groups）；本 Server lookup 200，其他 Server 404。
 
+### assistant.api
+
+RFC 074 personal assistant：
+
+- `PUT/DELETE /api/agents/:id/assistant-owner` 仅 creator 可设；`identity_borrowing` flag 关闭 → 403 `assistant_not_enabled`；同一 owner 已有其他 assistant → 409 `assistant_already_set`；agent 仍在普通频道 → 409 `assistant_has_channels`；重复设置幂等；agent credential 调用 → 401。
+- 链接同时创建 owner↔assistant DM。`/internal/agent-api/context` 的 `agent.assistantOf` 仅在链接存在、owner 仍是 server 成员、flag 开启时返回 `{userId}`，否则 null。
+- `GET /internal/agent-api/assistant/owner-inbox`：返回 owner 可见频道/线程的未读项，排除 DM 与 DM 下的线程；thread 项 `kind:"thread"` 带 `parentChannelId`；不改变 owner 的读状态。
+- `GET /internal/agent-api/assistant/owner-messages?channelId=...`：只读 owner 可见的普通频道/线程；DM、DM 线程、不可见 private、未知 id 统一 404 `channel_not_found`；不改变读状态。
+- 每次读取都重新校验链接、owner 成员身份与 flag。
+- assistant 只能存在于 owner DM：加入普通频道 → 403 `assistant_channel_forbidden`；发送仅允许 `dm:@<owner>`，其他 DM/频道 → 403。
+
