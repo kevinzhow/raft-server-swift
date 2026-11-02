@@ -101,7 +101,7 @@ internal.scopeAttestation.transcriptOutcome.api	route	partial	-	auto-seed
 internal.search.api	route	pending	-	auto-seed
 internal	route	partial	-	auto-seed
 internalAgentApi.agentEventRead	route	locked	f74bbae	owner-scoped event re-read, EXPIRED, AMBIGUOUS_ID, neutral 404
-internalAgentApi.agentStatus	route	partial	-	auto-seed
+internalAgentApi.agentStatus	route	locked	70fe115	status validation/counts, dedupe, latest-occurredAt clamp, adoption and post-adoption hook suppression covered; excluded DB trajectory rows and cross-replica DB adoption durability
 internalAgentApi.appConfig	route	locked	c70339a	credential-bound config, CAS revision 409, per-agent overrides
 internalAgentApi.attachmentComments	route	partial	-	auto-seed
 internalAgentApi.attachmentDownloadUrl	route	locked	367c453	agent download + presigned URL, uniform 404, 409 without presign
