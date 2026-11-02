@@ -105,7 +105,7 @@ internalAgentApi.agentStatus	route	locked	70fe115	status validation/counts, dedu
 internalAgentApi.appConfig	route	locked	c70339a	credential-bound config, CAS revision 409, per-agent overrides
 internalAgentApi.attachmentComments	route	partial	-	auto-seed
 internalAgentApi.attachmentDownloadUrl	route	locked	367c453	agent download + presigned URL, uniform 404, 409 without presign
-internalAgentApi.auth	route	partial	6f9656f	bound identity/server info/history/task list+create+claim+status+delete+convert+assign/reactions/mentions/upload/download/profile/search/resolve/threads covered; integrations and joint projection pending
+internalAgentApi.auth	route	partial	f2b9c6d	bound identity/server info/history/task list+create+claim+status+delete+convert+assign/reactions/mentions/upload/download/profile/search/resolve/threads/integrations discovery+login covered; marketplace, joint projection and attachment comments pending
 internalAgentApi.channelCard	route	locked	cbe47a1	channel/private/thread cards, DM card-free, dm:@ resolution
 internalAgentApi.context	route	locked	3cc0599	locked: external identity/capabilities/prompt, managed no-prompt, read capability gate, rollout flags
 internalAgentApi.contract	route	partial	-	auto-seed
