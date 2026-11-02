@@ -787,6 +787,25 @@ public func configure(_ app: Application, services: FallbackServices) {
             view: desktopQuery(request.url.query, "view")
         ))
     }
+    app.post("api", "attachments", ":id", "comments") { request -> Response in
+        routeResponse(services.emailAccounts.createAttachmentComment(
+            authorization: request.headers[.authorization],
+            attachmentId: request.parameters.get("id") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.get("internal", "agent-api", "attachments", ":attachmentId", "comments") { request -> Response in
+        routeResponse(services.emailAccounts.agentAttachmentCommentsList(
+            authorization: request.headers[.authorization],
+            attachmentId: request.parameters.get("attachmentId") ?? ""
+        ))
+    }
+    app.post("internal", "agent-api", "attachments", ":attachmentId", "comments") { request -> Response in
+        routeResponse(services.emailAccounts.agentAttachmentCommentCreate(
+            authorization: request.headers[.authorization],
+            attachmentId: request.parameters.get("attachmentId") ?? ""
+        ))
+    }
     app.get("internal", "agent-api", "attachments", ":attachmentId") { request -> Response in
         routeResponse(services.emailAccounts.agentAttachmentDownload(
             authorization: request.headers[.authorization],

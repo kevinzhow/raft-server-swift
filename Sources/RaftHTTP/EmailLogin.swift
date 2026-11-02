@@ -231,6 +231,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var agentActivityEventIds: [String: Set<String>] = [:]
     private var agentThreadFollows: [String: AgentThreadFollowRecord] = [:]
     private var agentIntegrationLogins: [String: AgentIntegrationLoginRecord] = [:]
+    private var attachmentCommentRecords: [String: [AttachmentCommentRecord]] = [:]
     private var hostedUsage: [String: String] = [:]
     private var hostedModelPickerServers: Set<String> = []
     private var hostedModels: [String: HostedModelState] = [:]
@@ -3170,7 +3171,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             else { return false }
             return parent.kind == "channel" || isMember(parentId, parent) || isMember(messageChannelId, channel)
         }
-        return channel.kind == "channel" || isMember(messageChannelId, channel)
+        return channel.kind == "channel" || channel.kind == "joint" || isMember(messageChannelId, channel)
     }
 
     /// `DELETE /api/channels/:channelId`. A member soft-deletes the channel. Search then hides it and threads under it.
@@ -15414,6 +15415,110 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"services\":[\(servicesJSON)],\"activeLogins\":[\(active.joined(separator: ","))]}")
     }
 
+    public func createAttachmentComment(authorization: String?, attachmentId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard ServerScope.isUUID(attachmentId) else {
+            return Self.json(400, "{\"code\":\"invalid_attachment_id\",\"error\":\"Invalid attachment id\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let content = object["content"] as? String, !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"content is required\"}")
+        }
+        lock.lock()
+        guard let attachment = channelAttachments[attachmentId] else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Attachment not found\"}")
+        }
+        let now = Date()
+        let id = UUID().uuidString.lowercased()
+        let anchorJSON: String? = {
+            guard let anchor = object["anchor"] as? [String: Any],
+                  let type = anchor["type"] as? String, type == "lines",
+                  let start = anchor["startLine"] as? Int, let end = anchor["endLine"] as? Int
+            else { return nil }
+            return "{\"type\":\"lines\",\"startLine\":\(start),\"endLine\":\(end)}"
+        }()
+        attachmentCommentRecords[attachmentId, default: []].append(AttachmentCommentRecord(
+            id: id,
+            attachmentId: attachmentId,
+            content: content,
+            anchorJSON: anchorJSON,
+            senderId: userId,
+            senderType: "user",
+            createdAt: now
+        ))
+        humanMessageRows.append(StoredHumanMessage(
+            id: id,
+            channelId: attachment.channelId,
+            senderId: userId,
+            content: content,
+            randomId: nil,
+            messageType: "comment",
+            senderType: "user",
+            createdAt: now
+        ))
+        lock.unlock()
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let anchorValue = anchorJSON ?? "null"
+        return Self.json(200, "{\"message\":{\"id\":\(jsonString(id)),\"content\":\(jsonString(content)),\"senderType\":\"user\",\"createdAt\":\(jsonString(formatter.string(from: now))),\"anchor\":\(anchorValue)}}")
+    }
+
+    public func agentAttachmentCommentsList(authorization: String?, attachmentId: String) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard credential.scopes.contains("read") else {
+            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
+        }
+        guard ServerScope.isUUID(attachmentId), let attachment = agentVisibleAttachment(agentId: agent.id, serverId: agent.serverId, attachmentId: attachmentId) else {
+            return Self.json(404, "{\"error\":\"Attachment not found\"}")
+        }
+        lock.lock()
+        let parentAuthor = attachment.messageId.flatMap { messageId in
+            humanMessageRows.first { $0.id == messageId }?.senderId
+        }
+        let canResolve = parentAuthor == agent.id
+        var commentRows: [String] = []
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        for comment in attachmentCommentRecords[attachmentId] ?? [] {
+            let reaction = messageReactions.first {
+                $0.messageId == comment.id && $0.emoji == "✅" && $0.reactorId == parentAuthor
+            }
+            let resolvedJSON = reaction == nil ? "false" : "true"
+            var resolvedBy = "null"
+            if let reaction {
+                resolvedBy = "{\"reactorId\":\(jsonString(reaction.reactorId)),\"reactorType\":\(jsonString(reaction.reactorType))}"
+            }
+            var resolvedAt = "null"
+            if reaction != nil {
+                resolvedAt = jsonString(formatter.string(from: comment.createdAt))
+            }
+            let anchor = comment.anchorJSON ?? "null"
+            commentRows.append("{\"id\":\(jsonString(comment.id)),\"content\":\(jsonString(comment.content)),\"senderType\":\(jsonString(comment.senderType)),\"anchor\":\(anchor),\"resolved\":\(resolvedJSON),\"resolvedBy\":\(resolvedBy),\"resolvedAt\":\(resolvedAt)}")
+        }
+        let comments = commentRows.joined(separator: ",")
+        lock.unlock()
+        let resolveAction = canResolve ? ",\"resolveAction\":{\"type\":\"reaction\",\"emoji\":\"✅\"}" : ""
+        return Self.json(200, "{\"comments\":[\(comments)],\"viewer\":{\"canComment\":false,\"reason\":\"agent_descoped\",\"canResolve\":\(canResolve ? "true" : "false")\(resolveAction)}}")
+    }
+
+    public func agentAttachmentCommentCreate(authorization: String?, attachmentId: String) -> HTTPReply {
+        guard agentCredentialAgent(authorization) != nil else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard ServerScope.isUUID(attachmentId) else {
+            return Self.json(404, "{\"error\":\"Attachment not found\"}")
+        }
+        return Self.json(403, "{\"error\":\"Agents cannot create attachment comments\",\"code\":\"agent_comment_create_disabled\"}")
+    }
+
     public func agentIntegrationMarketplace(authorization: String?, query: String?, limit: String?) -> HTTPReply {
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
@@ -15499,6 +15604,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"messageId\":\(jsonString(message.id)),\"deliveries\":[\(deliveries)]}")
     }
 
+    private func jointLocalChannelIdForAgentLocked(canonicalChannelId: String, serverId: String, agentId: String) -> String? {
+        jointProjections.first { link in
+            link.canonicalChannelId == canonicalChannelId
+                && link.serverId == serverId
+                && (postableChannels[link.localChannelId]?.kind == "joint"
+                    || postableChannels[link.localChannelId]?.kind == "channel"
+                    || postableChannels[link.localChannelId]?.memberIds.contains(agentId) == true
+                    || oauth.channelAgentIds(channelId: link.localChannelId).contains(agentId))
+        }?.localChannelId
+    }
+
     public func agentMessageResolve(authorization: String?, messageRef: String) -> HTTPReply {
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
@@ -15509,26 +15625,47 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\",\"requiredCapability\":\"read\"}")
         }
         lock.lock()
-        let matches = humanMessageRows.filter { message in
+        let candidates = humanMessageRows.filter { message in
             message.id == messageRef || message.id.hasPrefix(messageRef.lowercased())
-        }.filter { message in
-            messageSearchVisibleLocked(messageChannelId: message.channelId, serverId: agent.serverId, viewer: .agent(agent.id))
+        }
+        var matches: [(message: StoredHumanMessage, storageChannelId: String, localChannelId: String?)] = []
+        for message in candidates {
+            if messageSearchVisibleLocked(messageChannelId: message.channelId, serverId: agent.serverId, viewer: .agent(agent.id)) {
+                matches.append((message, message.channelId, nil))
+                continue
+            }
+            let storageChannelId = message.channelId
+            let canonicalId: String?
+            if let link = jointProjections.first(where: { $0.localChannelId == storageChannelId }) {
+                canonicalId = link.canonicalChannelId
+            } else if jointProjections.contains(where: { $0.canonicalChannelId == storageChannelId }) {
+                canonicalId = storageChannelId
+            } else {
+                canonicalId = nil
+            }
+            if let canonicalId,
+               let localId = jointLocalChannelIdForAgentLocked(canonicalChannelId: canonicalId, serverId: agent.serverId, agentId: agent.id),
+               messageSearchVisibleLocked(messageChannelId: localId, serverId: agent.serverId, viewer: .agent(agent.id)) {
+                matches.append((message, storageChannelId, localId))
+            }
         }
         guard !matches.isEmpty else {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Message not found: \(messageRef)\",\"errorCode\":\"NOT_FOUND\"}")
         }
-        guard matches.count == 1, let message = matches.first else {
+        guard matches.count == 1, let matched = matches.first else {
             lock.unlock()
             return Self.json(400, "{\"error\":\"Ambiguous message id: \(messageRef)\",\"errorCode\":\"AMBIGUOUS_ID\",\"suggestedNextAction\":\"Retry with the full message UUID.\"}")
         }
-        let channel = postableChannels[message.channelId]
+        let message = matched.message
+        let effectiveChannelId = matched.localChannelId ?? matched.storageChannelId
+        let channel = postableChannels[effectiveChannelId]
         let kind = channel?.kind ?? "channel"
         let channelType = kind == "dm" ? "dm" : (kind == "thread" ? "thread" : "channel")
         let channelName: String
         if kind == "dm" {
-            let humans = oauth.channelHumanIds(channelId: message.channelId).filter { $0 != agent.id }
-            let agents = oauth.channelAgentIds(channelId: message.channelId).filter { $0 != agent.id }
+            let humans = oauth.channelHumanIds(channelId: effectiveChannelId).filter { $0 != agent.id }
+            let agents = oauth.channelAgentIds(channelId: effectiveChannelId).filter { $0 != agent.id }
             if let humanId = humans.first, let account = accounts.values.first(where: { $0.id == humanId }) {
                 channelName = account.name
             } else if let peerAgentId = agents.first, let peer = oauth.agentRuntimeInfo(id: peerAgentId) {
@@ -15556,7 +15693,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let createdAt = formatter.string(from: message.createdAt)
-        let json = "{\"message_id\":\(jsonString(message.id)),\"channel_id\":\(jsonString(message.channelId)),\"channel_name\":\(jsonString(channelName)),\"channel_type\":\(jsonString(channelType)),\"sender_type\":\(jsonString(senderType)),\"sender_name\":\(jsonString(senderName)),\"content\":\(jsonString(message.content)),\"created_at\":\(jsonString(createdAt))}"
+        let json = "{\"message_id\":\(jsonString(message.id)),\"channel_id\":\(jsonString(effectiveChannelId)),\"channel_name\":\(jsonString(channelName)),\"channel_type\":\(jsonString(channelType)),\"sender_type\":\(jsonString(senderType)),\"sender_name\":\(jsonString(senderName)),\"content\":\(jsonString(message.content)),\"created_at\":\(jsonString(createdAt))}"
         lock.unlock()
         return Self.json(200, "{\"message\":\(json)}")
     }
@@ -23242,5 +23379,26 @@ public struct AgentIntegrationLoginRecord: Sendable, Equatable {
         self.clientId = clientId
         self.scopes = scopes
         self.loggedInAt = loggedInAt
+    }
+}
+
+/// One attachment comment row.
+public struct AttachmentCommentRecord: Sendable, Equatable {
+    public var id: String
+    public var attachmentId: String
+    public var content: String
+    public var anchorJSON: String?
+    public var senderId: String
+    public var senderType: String
+    public var createdAt: Date
+
+    public init(id: String, attachmentId: String, content: String, anchorJSON: String?, senderId: String, senderType: String, createdAt: Date) {
+        self.id = id
+        self.attachmentId = attachmentId
+        self.content = content
+        self.anchorJSON = anchorJSON
+        self.senderId = senderId
+        self.senderType = senderType
+        self.createdAt = createdAt
     }
 }

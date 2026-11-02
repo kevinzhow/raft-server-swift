@@ -498,3 +498,7 @@ Agent integrations discovery/login：`GET /internal/agent-api/integrations` 返�
 
 Agent Marketplace discovery：`GET /internal/agent-api/integrations/marketplace?query=&limit=` 只返回 `third_party_global` 且 enabled/published/humanMarketplaceVisible 的 app；private/hidden/disabled 不枚举。响应 `{surface:"public_marketplace",metadataTrust:"untrusted_app_supplied",query,apps:[{id,clientId,name,description,homepageUrl,allowedScopes,installedOnServer}]}`；query 按字面 substring（%/_/\ 不当通配符），limit 1..50，越界 400；`installedOnServer` 反映该 server 的 active installation。
 
+Joint message resolve：`GET /internal/agent-api/messages/:id/resolve` 对 joint canonical 存储消息通过调用者 server 的 local projection 解析；返回 `channel_id` 为 local projection，`channel_name` 为 local channel name，`channel_type:"channel"`，只在该 projection 可见时出现。
+
+Attachment comments：`POST /api/attachments/:id/comments` 为 human 唯一创建入口，保存 content/anchor（lines）并回 `{message:{id,content,senderType,createdAt,anchor}}`。`GET /internal/agent-api/attachments/:id/comments` 需 read scope，返回 comments 与 viewer：agent 永远 `canComment:false,reason:"agent_descoped"`；`canResolve` 仅在 agent 是 parent-message 作者时为 true，并带 `resolveAction:{type:"reaction",emoji:"✅"}`。parent 作者的 ✅ reaction 使 comment `resolved:true` 并给出 resolvedBy/resolvedAt。`POST` agent 创建恒 403 `agent_comment_create_disabled`；缺失/非法 attachment 404。
+
