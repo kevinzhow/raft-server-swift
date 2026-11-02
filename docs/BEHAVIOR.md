@@ -386,3 +386,5 @@ Machine list 投影：`GET /api/servers/:id/machines` 顶层带 `latestComputerV
 
 Machine delete / migration history 矩阵：`DELETE /api/servers/:id/machines/:machineId` 仅在存在该 machine 作为 source 的非终态 migration 时回 409 `MACHINE_HAS_ACTIVE_MIGRATION`。Runtime profile 仍指向该 machine 且关联 active agent 时，需要一条 `completed` migration 且其 `targetMachineId` 等于 agent 当前 assignment、且 profile 无 pending release notice，才清理 profile 并删除；否则 409 `{error:"Cannot delete computer while runtime profiles still reference active agents. Remove or migrate related agents first.",code:"MACHINE_HAS_ACTIVE_RUNTIME_PROFILE"}`。带 pending release notice 的 stale source profile 会阻止删除并完整保留 notice。profile 已迁到 target、仅 `pendingBeforeMachineId` 指向 source 时，删除 source 只清空该 pending-before 引用，保留 target/baseline/pendingAfter/pendingKind。已删除 agent 的 profile 直接清理；terminal migration（如 aborted）在删除后仍完整保留，作为历史。
 
+Thread summary 的 viewer 状态：`GET /api/channels/:id/threads` 每条 summary 带 `followed`。active follow 为 true；done（保留 follow、只标记 done）仍为 true；显式 unfollow 或从未 follow 为 false。`followed` 与 `unreadCount`/`firstUnreadMessageId` 一样按调用者计算，不影响其他 viewer。
+

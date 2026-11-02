@@ -4802,6 +4802,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func removeThreadFollowForTesting(serverId: String, userId: String, threadChannelId: String) {
+        lock.lock()
+        let key = "\(serverId)\n\(userId)\n\(threadChannelId)"
+        threadFollows.removeValue(forKey: key)
+        threadUnfollows.removeValue(forKey: key)
+        threadFollowStarts.removeValue(forKey: key)
+        lock.unlock()
+    }
+
     public func followThreadForTesting(serverId: String, userId: String, threadChannelId: String, parentMessageId: String) {
         lock.lock()
         threadFollows["\(serverId)\n\(userId)\n\(threadChannelId)"] = (serverId, userId, threadChannelId, parentMessageId)
@@ -5182,7 +5191,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 }
                 return "{\"preview\":\(jsonString(reply.content)),\"senderType\":\(jsonString(reply.senderType)),\"senderId\":\(jsonString(reply.senderId)),\"senderName\":\(jsonString(senderName)),\"senderDisplayName\":\(jsonString(senderDisplay))}"
             }.joined(separator: ",")
-            summaries.append("\(jsonString(parentMessageId)):{\"threadChannelId\":\(jsonString(threadId)),\"replyCount\":\(replies.count),\"latestReplies\":[\(latestReplies)],\"unreadCount\":\(unreadCount),\"firstUnreadMessageId\":\(firstUnreadJSON),\"participantIds\":[\(participantJSON)]}")
+            summaries.append("\(jsonString(parentMessageId)):{\"threadChannelId\":\(jsonString(threadId)),\"replyCount\":\(replies.count),\"latestReplies\":[\(latestReplies)],\"unreadCount\":\(unreadCount),\"firstUnreadMessageId\":\(firstUnreadJSON),\"participantIds\":[\(participantJSON)],\"followed\":\(following ? "true" : "false")}")
         }
         lock.unlock()
         return Self.json(200, "{\(summaries.joined(separator: ","))}")
