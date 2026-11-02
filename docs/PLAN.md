@@ -24,11 +24,11 @@
 
 | 事实 | 数值 / 证据 |
 | --- | --- |
-| 当前测试 | `make test` 绿，839 个 `@Test`；`make test-e2e` 2 条 |
+| 当前测试 | `make test` 绿，841 个 `@Test`；`make test-e2e` 2 条 |
 | 粒度问题 | 已改为功能纵向切片；每个切片一个 commit |
 | 上游 server 路由 | 219 个 `*.test.ts`，2000 条 `test(...)` |
 | 上游 daemon | 180 个测试模块，2616 条 `test(...)` |
-| 当前覆盖 | route 82/219 模块 locked，512/2000 用例（25.6%）；socket 2/7；daemon 3/180 |
+| 当前覆盖 | route 83/219 模块 locked，516/2000 用例（25.8%）；socket 2/7；daemon 3/180 |
 | 进程现状 | `RaftServer` 三端口 + NIO daemon/socket.io 已接线；无数据库时 `/health` 仍 503 |
 | WebSocket 现状 | socket.io 走独立 NIO 端口；pinned Vapor 快照无 WS upgrade |
 | 现有 spy | `recorded*`/spy 侧通道仅在既有测试缝中存在；新切片不新增 |
@@ -44,14 +44,14 @@
 
 | 指标 | 当前 | 里程碑 | 剩余 |
 | --- | --- | --- | --- |
-| route 模块 locked | 82 / 219（37.4%） | 132 / 219（60%） | 50 个模块 |
-| route 用例 locked | 512 / 2000（25.6%） | 800 / 2000（40%） | 288 条用例 |
+| route 模块 locked | 83 / 219（37.9%） | 132 / 219（60%） | 49 个模块 |
+| route 用例 locked | 516 / 2000（25.8%） | 800 / 2000（40%） | 284 条用例 |
 | socket 模块 | 2 / 7 | 按 frame 组推进 | 5 个模块 |
 | daemon 模块 | 3 / 180 | 按真实 socket 队列推进 | 177 个模块 |
-| 整体模块 | 87 / 406（21.4%） | 244 / 406（60%） | 157 个模块 |
-| 整体用例 | 582 / 4632（12.6%） | 1853 / 4632（40%） | 1271 条用例 |
+| 整体模块 | 88 / 406（21.7%） | 244 / 406（60%） | 156 个模块 |
+| 整体用例 | 586 / 4632（12.6%） | 1853 / 4632（40%） | 1267 条用例 |
 
-最近锁定的模块：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api`、`servers.api`、`internalAgentApi.agentStatus`、`internalAgentApi.senderMentionDeliveries`。剩余用例高度集中在 `internalAgentApi.auth`（93）、`agents.api`（87）、`internalAgentApi.send`（65）、`auth.api`（45）、`internal.channelMembership.api`（43）。
+最近锁定的模块：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api`、`servers.api`、`internalAgentApi.agentStatus`、`internalAgentApi.senderMentionDeliveries`、`internalAgentApi.attachmentComments`。剩余用例高度集中在 `internalAgentApi.auth`（93）、`agents.api`（87）、`internalAgentApi.send`（65）、`auth.api`（45）、`internal.channelMembership.api`（43）。
 
 ## 3. 工作契约
 
@@ -120,11 +120,11 @@
 
 #### 执行策略（2026-11 修订）
 
-实测：route 82/219 模块 locked（512/2000 用例），socket 2/7，daemon 3/180；整体 87/406 模块、582/4632 用例。按“每轮锁一个小模块”的节奏无法达到里程碑，原因是用例高度集中：
+实测：route 83/219 模块 locked（516/2000 用例），socket 2/7，daemon 3/180；整体 88/406 模块、586/4632 用例。按“每轮锁一个小模块”的节奏无法达到里程碑，原因是用例高度集中：
 
 - 剩余 ≤5 例的小模块共 68 个、仅 185 例；全部锁掉后 route 模块 148/219（67.6%），但用例只有 689/2000（34.5%）。
-- 剩余 5 个最大 partial 模块共 333 例：`internalAgentApi.auth` 93、`agents.api` 87、`internalAgentApi.send` 65、`auth.api` 45、`internal.channelMembership.api` 43。全部锁掉后 `512 + 333 = 845`，越过 40% 用例门槛（800）。
-- 因此 40% 用例门槛**要求这 5 个大模块基本完成**，再补少量小模块；60% 模块门槛还需额外 50 个模块，小模块要机会主义补齐（`realPg`/tracer/spy/failpoint/source-scan 类不可移植用例会造成缺口）。
+- 剩余 5 个最大 partial 模块共 333 例：`internalAgentApi.auth` 93、`agents.api` 87、`internalAgentApi.send` 65、`auth.api` 45、`internal.channelMembership.api` 43。全部锁掉后 `516 + 333 = 849`，越过 40% 用例门槛（800）。
+- 因此 40% 用例门槛**要求这 5 个大模块基本完成**，再补少量小模块；60% 模块门槛还需额外 49 个模块，小模块要机会主义补齐（`realPg`/tracer/spy/failpoint/source-scan 类不可移植用例会造成缺口）。
 
 执行规则：
 
@@ -144,7 +144,7 @@
 6. daemon 真实 socket 队列（180 模块 / 2616 例）：reconnect/watchdog/outbound replay，作为并行队列。
 7. 收尾：双 `RaftServer` 启动 + 完成门槛日志。
 
-已锁定、不再重复：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api`、`servers.api`、`internalAgentApi.agentStatus`、`internalAgentApi.senderMentionDeliveries` 及其余 75 个小模块。
+已锁定、不再重复：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api`、`servers.api`、`internalAgentApi.agentStatus`、`internalAgentApi.senderMentionDeliveries`、`internalAgentApi.attachmentComments` 及其余 75 个小模块。
 
 原按用例数排序的模块清单：
 
