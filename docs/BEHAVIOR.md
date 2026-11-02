@@ -434,3 +434,5 @@ Migration target import：`GET /internal/computer/agent-migrations/by-id/:ref` �
 
 Migration cancel-ack / quiesce：`POST .../cancel-ack` 必须带 `migrationRef/transportGeneration/cancelGeneration/role/outcome`，缺失 400 `migration_cancel_ack_input_required`；Computer 必须匹配 role 对应 machine（否则 404）；transport generation 过期 409 `migration_generation_stale`，cancel generation 过期 409 `migration_cancel_generation_stale`；`canceled_post_flip` 的 target `cleaned` ack 409 `migration_cancel_outcome_mismatch`；成功回 `{ok:true,migration:{migrationRef,state,revision,disposition}}`。`resumable/source-quiesced` 需 `receipt` 对象（否则 400 `migration_source_quiesce_receipt_required`），成功回 migrationGeneration/leaseId；`resumable/source-progress` 回 `{ok:true,advanced:true,prepDeadlineAt}`。
 
+Inbox firstMention：`firstMentionMessageId` 取该 scope 中 seq 大于当前 read cursor 的最早 notifiable/notified 用户 mention（不是 firstUnreadMessageId）；读过后推进到下一条或 null。mention-only 行（用户未加入但收到 public mention）以 mention 为 anchor，`unreadCount:0`、`hasMention:true`，即使已读也保留 `firstMentionMessageId`。
+

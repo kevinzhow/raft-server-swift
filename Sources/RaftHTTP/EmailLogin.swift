@@ -6250,10 +6250,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                     && $0.targetId == userId
                     && ($0.notifiableAtSend || $0.notifiedAt != nil)
             }
-            let unread = oauth.channelUnreadInfo(channelId: scopeId, userId: userId).unreadCount
+            let unreadInfo = oauth.channelUnreadInfo(channelId: scopeId, userId: userId)
+            let unread = unreadInfo.unreadCount
             let firstUnread = oauth.firstUnreadMessageId(channelId: scopeId, userId: userId)
             let firstMention = scopeMentions
                 .map { (messageId: $0.messageId, seq: detailMap[$0.messageId]?.seq ?? 0) }
+                .filter { $0.seq > unreadInfo.maxReadSeq }
                 .min { $0.seq < $1.seq }?.messageId
             let lastMessageId = fact.messageId
             let detail = detailMap[lastMessageId]
@@ -6303,6 +6305,49 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 hasMention: false,
                 isFollowing: false,
                 isDM: parentId.map { postable[$0]?.kind == "dm" } ?? false
+            ))
+        }
+
+        // A mention-only row exists only because of a notifiable @mention in a
+        // scope the receiver has no inbox fact for. It anchors firstMention even
+        // after the mention was read.
+        var mentionOnly: [String: StoredMention] = [:]
+        for mention in mentions
+        where mention.targetType == "user" && mention.targetId == userId
+            && (mention.notifiableAtSend || mention.notifiedAt != nil)
+            && !rows.contains(where: { $0.scopeId == mention.channelId })
+            && !doneScopes.contains("\(userId)\n\(mention.channelId)") {
+            let scopeId = mention.channelId
+            guard let channel = postable[scopeId] else { continue }
+            if let serverId, channel.serverId != serverId { continue }
+            let type = channel.kind
+            if type == "private" || type == "dm", !visibleScopes.contains(scopeId) { continue }
+            if let serverId, oauth.memberRole(serverId: serverId, userId: userId) == "guest",
+               !guestCanSeeScopeLocked(scopeId) { continue }
+            if let existing = mentionOnly[scopeId],
+               let existingRow = humanRows.first(where: { $0.id == existing.messageId }),
+               let candidateRow = humanRows.first(where: { $0.id == mention.messageId }),
+               existingRow.createdAt <= candidateRow.createdAt {
+                continue
+            }
+            mentionOnly[scopeId] = mention
+        }
+        for (scopeId, mention) in mentionOnly {
+            guard let channel = postable[scopeId] else { continue }
+            let lastAt = humanRows.first { $0.id == mention.messageId }?.createdAt ?? Date(timeIntervalSince1970: 0)
+            rows.append(InboxRow(
+                scopeId: scopeId,
+                kind: channel.kind == "thread" ? "thread" : "channel",
+                parentChannelId: channel.kind == "thread" ? channel.parentChannelId : nil,
+                lastMessageId: mention.messageId,
+                lastActivityAt: lastAt,
+                searchText: "",
+                unreadCount: 0,
+                firstUnreadMessageId: nil,
+                firstMentionMessageId: mention.messageId,
+                hasMention: true,
+                isFollowing: false,
+                isDM: channel.kind == "dm"
             ))
         }
 
