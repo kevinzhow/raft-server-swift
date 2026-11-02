@@ -448,3 +448,5 @@ Attachment 单 id 读取矩阵：`GET /api/attachments/:id`、`/url`、`/html-pr
 
 Attachment upload：`POST /api/attachments/upload` 接受 multipart `channelId` + 多个 `files`（也接受单个 `file`）。`ATTACHMENT_UPLOAD_ENABLED=false/0/off` → 503 `{error:"File uploads are disabled on this server",errorCode:"ATTACHMENT_UPLOAD_DISABLED"}`；空文件 400 `{"error":"Empty files are not allowed"}`；Free 单文件上限 50MB、Pro 200MB，超限 413 `{error:"Max 50MB per file",errorCode:"ATTACHMENT_TOO_LARGE",maxBytes}`；最多 10 个文件；成功回 `{attachments:[{id,filename}]}`，每次上传生成独立 projection id。
 
+Attachment URL TTL：`GET /api/attachments/:id/url` 默认 300 秒；`disposition=inline` 且附件 mime 为 video/* 或 audio/*、且无 `download=1` 时为 3600 秒；其余（含 PDF、`disposition=attachment`、`download=1`）保持 300 秒。响应 `expiresAt` 与签名 TTL 一致；CDN 不用于原文件下载（presign 由附件存储路由决定）。
+

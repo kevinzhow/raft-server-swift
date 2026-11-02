@@ -477,7 +477,9 @@ public func configure(_ app: Application, services: FallbackServices) {
         routeResponse(services.emailAccounts.attachmentDownloadURL(
             attachmentId: request.parameters.get("id") ?? "",
             authorization: request.headers[.authorization],
-            serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+            disposition: desktopQuery(request.url.query, "disposition"),
+            download: desktopQuery(request.url.query, "download")
         ))
     }
     app.post("api", "messages", "forward") { request -> Response in

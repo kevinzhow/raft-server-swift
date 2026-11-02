@@ -4822,7 +4822,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// `GET /api/attachments/:id/url`. A private source stays hidden. A copy on a visible channel does not.
-    public func attachmentDownloadURL(attachmentId: String, authorization: String?, serverId: String?) -> HTTPReply {
+    /// Test seam for presigning a stored attachment object.
+    public var attachmentPresign: (@Sendable (_ attachmentId: String, _ mimeType: String?, _ ttlSeconds: Int) -> String)?
+
+    public func attachmentDownloadURL(
+        attachmentId: String,
+        authorization: String?,
+        serverId: String?,
+        disposition: String? = nil,
+        download: String? = nil
+    ) -> HTTPReply {
         let userId: String
         switch authorize(authorization) {
         case .rejected(let reply):
@@ -4865,7 +4874,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard visible else {
             return Self.json(404, "{\"error\":\"Attachment not found\"}")
         }
-        return Self.json(200, "{\"url\":\(jsonString("/api/attachments/\(attachmentId)")),\"expiresAt\":null}")
+        lock.lock()
+        let mimeType = channelAttachments[attachmentId]?.mimeType
+        lock.unlock()
+        let isMedia = mimeType?.hasPrefix("video/") == true || mimeType?.hasPrefix("audio/") == true
+        let inline = disposition == "inline" && download != "1"
+        let ttl = inline && isMedia ? 3600 : 300
+        let url = attachmentPresign?(attachmentId, mimeType, ttl) ?? "/api/attachments/\(attachmentId)"
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let expiresAt = formatter.string(from: Date().addingTimeInterval(Double(ttl)))
+        return Self.json(200, "{\"url\":\(jsonString(url)),\"expiresAt\":\(jsonString(expiresAt))}")
     }
 
     /// `GET /api/messages/sync`. `since_seq=0` returns the channel page, including a joint canonical store.
