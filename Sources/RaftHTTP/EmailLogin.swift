@@ -15414,6 +15414,33 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"services\":[\(servicesJSON)],\"activeLogins\":[\(active.joined(separator: ","))]}")
     }
 
+    public func agentIntegrationMarketplace(authorization: String?, query: String?, limit: String?) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        var pageLimit = 20
+        if let limit, !limit.isEmpty {
+            guard let parsed = Int(limit), parsed >= 1, parsed <= 50 else {
+                return Self.json(400, "{\"error\":\"limit must be between 1 and 50\"}")
+            }
+            pageLimit = parsed
+        }
+        let trimmedQuery = (query ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let apps = oauth.marketplaceClients(serverId: agent.serverId, query: trimmedQuery).prefix(pageLimit)
+        let appsJSON = apps.map { app -> String in
+            func text(_ key: String) -> String {
+                guard let raw = app[key], !(raw is NSNull) else { return "null" }
+                return (raw as? String).map(jsonString) ?? "null"
+            }
+            let scopes = (app["allowedScopes"] as? [String] ?? []).map(jsonString).joined(separator: ",")
+            return "{\"id\":\(text("id")),\"clientId\":\(text("clientId")),\"name\":\(text("name")),\"description\":\(text("description")),\"homepageUrl\":\(text("homepageUrl")),\"allowedScopes\":[\(scopes)],\"installedOnServer\":\((app["installedOnServer"] as? Bool == true) ? "true" : "false")}"
+        }.joined(separator: ",")
+        let queryJSON = trimmedQuery.isEmpty ? "null" : jsonString(trimmedQuery)
+        return Self.json(200, "{\"surface\":\"public_marketplace\",\"metadataTrust\":\"untrusted_app_supplied\",\"query\":\(queryJSON),\"apps\":[\(appsJSON)]}")
+    }
+
     public func agentIntegrationLogin(authorization: String?, body: String) -> HTTPReply {
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted

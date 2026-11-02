@@ -804,6 +804,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             authorization: request.headers[.authorization]
         ))
     }
+    app.get("internal", "agent-api", "integrations", "marketplace") { request -> Response in
+        routeResponse(services.emailAccounts.agentIntegrationMarketplace(
+            authorization: request.headers[.authorization],
+            query: desktopQuery(request.url.query, "query"),
+            limit: desktopQuery(request.url.query, "limit")
+        ))
+    }
     app.post("internal", "agent-api", "integrations", "login") { request -> Response in
         routeResponse(services.emailAccounts.agentIntegrationLogin(
             authorization: request.headers[.authorization],

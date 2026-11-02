@@ -3036,6 +3036,31 @@ public final class OAuthLedger: @unchecked Sendable {
             && client.humanMarketplaceVisible
     }
 
+    public func marketplaceClients(serverId: String, query: String?) -> [[String: Any]] {
+        lock.lock()
+        defer { lock.unlock() }
+        let needle = (query ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return clients.filter { client in
+            guard isMarketplaceVisible(client) else { return false }
+            guard !needle.isEmpty else { return true }
+            return client.name.lowercased().contains(needle)
+                || (client.descriptionText ?? "").lowercased().contains(needle)
+                || client.clientId.lowercased().contains(needle)
+        }.map { client in
+            [
+                "id": client.id,
+                "clientId": client.clientId,
+                "name": client.name,
+                "description": client.descriptionText as Any,
+                "homepageUrl": client.homepageUrl as Any,
+                "allowedScopes": client.allowedScopes ?? ["openid", "profile", "identity"],
+                "installedOnServer": installations.contains {
+                    $0.clientId == client.id && $0.serverId == serverId && $0.status == "active"
+                },
+            ]
+        }
+    }
+
     private struct InstallationToken {
         var tokenHash: String
         var installationId: String

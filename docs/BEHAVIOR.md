@@ -496,3 +496,5 @@ Agent mention deliveries：`GET /internal/agent-api/messages/:messageId/mention-
 
 Agent integrations discovery/login：`GET /internal/agent-api/integrations` 返回该 server 的 OAuth client 服务（id/clientId/name/description/homepageUrl/agentManifestUrl/agentManifestUrlSource/allowedScopes）与绑定 agent 的 activeLogins。`POST /internal/agent-api/integrations/login` body `{service}` 按 clientId 登录，首次 `status:"logged_in"`，重复 `already_logged_in`；返回 service 投影与 `scopes:["identity","openid","profile"]`，并记录 agent/server/client active login。OAuth client 可携带显式 `agentManifestUrl`，其 source 为 `explicit`。
 
+Agent Marketplace discovery：`GET /internal/agent-api/integrations/marketplace?query=&limit=` 只返回 `third_party_global` 且 enabled/published/humanMarketplaceVisible 的 app；private/hidden/disabled 不枚举。响应 `{surface:"public_marketplace",metadataTrust:"untrusted_app_supplied",query,apps:[{id,clientId,name,description,homepageUrl,allowedScopes,installedOnServer}]}`；query 按字面 substring（%/_/\ 不当通配符），limit 1..50，越界 400；`installedOnServer` 反映该 server 的 active installation。
+
