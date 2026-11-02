@@ -406,3 +406,5 @@ Followed thread 分页：`GET /api/channels/threads/followed` 默认返回全部
 
 Agent credential 管理：`POST/GET/DELETE /api/agents/:id/credentials` 不需要 `X-Server-Id`。owner/admin 或 agent 的人类 creator 可 mint/list/revoke；普通 member 403 `{code:"insufficient_role",error:"issueAgentCredentials requires human creator authority"}`；非成员、未知 agent、软删除 agent 统一 404 `{code:"agent_missing",error:"Agent not found"}`。mint 回 201 `{credentialId,apiKey,agentId,serverId,scopes}` 且 `Cache-Control: no-store`，apiKey 立即可用于 `/internal/agent-api/`；list 同样 no-store，只回 `id/maskedToken/name/scopes/createdAt/lastUsedAt/revokedAt`；revoke 幂等 204，撤销后 token 立即 401。
 
+Timezone observation：`POST /api/auth/me/timezone-observation` 需要认证，非法/空/超长/带额外字段的 body 400；首次写入建立 first 与 last，后续只更新 first 保持 + last 更新。`US/Pacific` 等别名按 canonical IANA zone 存储（`America/Los_Angeles`）。`GET /api/auth/me` 对只有 first 的 legacy 行回退 last=first（不伪造持久化 last）；下一次 observation 更新 last 后 /me 反映新值。
+

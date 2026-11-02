@@ -12915,6 +12915,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.privateJSON("[\(entries)]")
     }
 
+    private static let timezoneAliases: [String: String] = [
+        "US/Pacific": "America/Los_Angeles",
+        "US/Eastern": "America/New_York",
+        "US/Central": "America/Chicago",
+        "US/Mountain": "America/Denver",
+        "US/Alaska": "America/Anchorage",
+        "US/Hawaii": "Pacific/Honolulu",
+    ]
+
     public struct TimezoneObservation: Sendable {
         public var firstTimezone: String
         public var firstAt: Date
@@ -12935,20 +12944,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let timezone = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !timezone.isEmpty, timezone.count <= 128,
               timezone == "UTC" || timezone.contains("/"),
-              TimeZone(identifier: timezone) != nil
+              let zone = TimeZone(identifier: timezone)
         else {
             return Self.json(400, "{\"error\":\"Invalid timezone observation\"}")
         }
+        let canonicalTimezone = Self.timezoneAliases[timezone] ?? zone.identifier
         lock.lock()
         var observation = timezoneObservations[userId]
         let now = Date()
         if observation == nil {
-            observation = TimezoneObservation(firstTimezone: timezone, firstAt: now, lastTimezone: timezone, lastAt: now)
+            observation = TimezoneObservation(firstTimezone: canonicalTimezone, firstAt: now, lastTimezone: canonicalTimezone, lastAt: now)
         } else if let existing = observation {
             observation = TimezoneObservation(
                 firstTimezone: existing.firstTimezone,
                 firstAt: existing.firstAt,
-                lastTimezone: timezone,
+                lastTimezone: canonicalTimezone,
                 lastAt: now
             )
         }
@@ -12958,6 +12968,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(500, "{\"error\":\"Timezone observation not stored\"}")
         }
         return Self.json(200, Self.timezoneJSON(stored))
+    }
+
+    public func setLegacyTimezoneObservationForTesting(userId: String, timezone: String, at: Date) {
+        lock.lock()
+        timezoneObservations[userId] = TimezoneObservation(
+            firstTimezone: timezone,
+            firstAt: at,
+            lastTimezone: timezone,
+            lastAt: at
+        )
+        lock.unlock()
     }
 
     public func timezoneObservation(userId: String) -> TimezoneObservation? {
