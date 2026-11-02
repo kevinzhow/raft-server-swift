@@ -639,3 +639,10 @@ RFC 074 personal assistant：
 - `POST /api/agents` 为 creator 建立与 agent 的 DM（空会话，重复调用复用同一 id），只对该 creator 的 `GET /api/channels/dm` 可见；同时向 `channel:<dmId>` 与 `user:<creatorId>` 广播 `dm:new` `{channelId}`，并向 `server:<id>` 广播 `agent:created`（不含 `envVars`）。
 - `GET /api/channels/dm` 行新增 `peerId`/`peerType`(`agent`|`user`|`self`)/`lastMessageAt`；`POST /api/channels/dm` 接受 `{agentId}`，agent 不在本 server → 404 `Agent not found in this server`，成功复用 canonical DM。
 - `PATCH /api/agents/:id` 支持顶层 `displayName`/`model`/`reasoningEffort`/`runtime`：`model` 写成 preset、`reasoningEffort` 写回 config，`runtime` 切换同时更新 runtime id 与 config；非法 `restartMode` → 400 `Invalid restart mode: <value>`；响应回显 `name/displayName/model/runtime/reasoningEffort/runtimeConfig/envVars`。
+
+### rbacPhase2Corrections.api
+
+- `GET /api/servers/:id`：owner/admin/member 得到 member profile（`id/ownerId/name/slug/avatarUrl/plan/translationEnabled/publiclyVisible/publicGuestJoinEnabled`），`plan:"founder"` 与第三方 avatar URL 原样返回。
+- 同路由对 guest 只回公开投影：恰好 `avatarUrl/id/name/slug` 四个键，`avatarUrl` 为 null，不含 ownerId/plan/translationEnabled/publiclyVisible/publicGuestJoinEnabled 等管理字段。
+- `GET /api/servers/:id/settings` 仅 owner/admin 200，member/guest 403；同一 member/guest 仍可读 `GET /api/servers/:id/notification-settings`，member 仍可读 `GET /api/servers/:id/onboarding-settings`（exact-self 状态与 Server 设置分离）。
+- `GET /api/servers/:id/machines` 对 owner/admin/member 200，对 guest 403；guest 作为 Machine registrant 仍可 `PATCH /api/servers/:id/machines/:machineId` 改自己的 Machine（200 + description 回显），对他人 Machine 403。
