@@ -416,3 +416,5 @@ Thread follower 管理：`GET /api/channels/threads/followers` 对普通 viewer 
 
 Thread info 404 分支：channel 不存在、`X-Server-Id` 与 channel 不符、或 private channel 非成员统一 404 `{"error":"Channel not found or not visible"}`；message 属于该 channel 但没有 thread 时 404 `{"code":"THREAD_NOT_FOUND","error":"No thread found for this message"}`。Inbox Done history：`POST /api/channels/inbox/done` 与 `POST /api/channels/threads/done` 记录 doneAt；`GET /api/channels/inbox/done` 合并 channel+thread 行，支持 `limit/sort=asc/q/channelId`，返回 `{items,hasMore,totalCount:null}`；`POST /api/channels/inbox/undone` 与 `threads/undone` 清除 done 并恢复 Active。`
 
+Thread unfollow 投递：unfollow 后 thread 仍在 Activity All 中作为 residue 行出现（`isFollowing:false`、`unreadCount:0`、`hasMention:false`、`firstUnreadMessageId:null`）；后续普通回复不恢复 follow，后续直接 mention 也不会让非 parent 成员在 `filter=mentions` 看到该 thread。
+

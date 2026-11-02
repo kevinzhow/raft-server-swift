@@ -6125,6 +6125,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let doneScopes = inboxDoneScopes
         let mentions = storedMentions
         let follows = threadFollows
+        let unfollows = threadUnfollows
         let humanRows = humanMessageRows
         let postable = postableChannels
         lock.unlock()
@@ -6196,6 +6197,35 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 hasMention: !scopeMentions.isEmpty,
                 isFollowing: isFollowing,
                 isDM: type == "dm" || (isThread && postable[parentChannelId ?? ""]?.kind == "dm")
+            ))
+        }
+
+        for record in unfollows.values
+        where record.serverId == serverId && record.userId == userId
+            && !doneScopes.contains("\(userId)\n\(record.threadChannelId)")
+            && !rows.contains(where: { $0.scopeId == record.threadChannelId }) {
+            if oauth.memberRole(serverId: record.serverId, userId: userId) == "guest",
+               !guestCanSeeScopeLocked(record.threadChannelId) {
+                continue
+            }
+            let parentId = postable[record.threadChannelId]?.parentChannelId
+            if let channelFilter, parentId != channelFilter { continue }
+            let lastContent = record.frozenMessages.last?.content ?? ""
+            if let search, !search.isEmpty, !lastContent.lowercased().contains(search) { continue }
+            let lastAt = humanRows.first { $0.id == record.latestMessageId }?.createdAt ?? record.unfollowedAt
+            rows.append(InboxRow(
+                scopeId: record.threadChannelId,
+                kind: "thread",
+                parentChannelId: parentId,
+                lastMessageId: record.latestMessageId,
+                lastActivityAt: lastAt,
+                searchText: lastContent.lowercased(),
+                unreadCount: 0,
+                firstUnreadMessageId: nil,
+                firstMentionMessageId: nil,
+                hasMention: false,
+                isFollowing: false,
+                isDM: parentId.map { postable[$0]?.kind == "dm" } ?? false
             ))
         }
 
