@@ -9939,6 +9939,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             agentMachineIds[agentId] = machineId
             lock.unlock()
         }
+        let creatorDm = oauth.createDirectChannel(serverId: serverId, firstUserId: userId, secondUserId: agentId)
+        oauth.addChannelAgent(channelId: creatorDm, agentId: agentId)
+        emitRealtime("channel:\(creatorDm)", "dm:new", "{\"channelId\":\(jsonString(creatorDm))}")
+        emitRealtime("user:\(userId)", "dm:new", "{\"channelId\":\(jsonString(creatorDm))}")
         let creator = "{\"type\":\"human\",\"id\":\(jsonString(userId))}"
         let runtimeJSON = Self.agentRuntimeJSON(
             id: agentId,
@@ -9948,6 +9952,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             envVarsJSON: envJSON,
             external: external
         )
+        let broadcastJSON = Self.agentRuntimeJSON(
+            id: agentId,
+            name: name,
+            runtime: runtime,
+            runtimeConfigJSON: configJSON,
+            envVarsJSON: envJSON,
+            external: external,
+            includeEnvVars: false
+        )
+        emitRealtime("server:\(serverId)", "agent:created", "{\"agent\":\(broadcastJSON)}")
         return Self.json(200, String(runtimeJSON.dropLast()) + ",\"creator\":\(creator)}")
     }
 
@@ -10184,7 +10198,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         runtime: String,
         runtimeConfigJSON: String,
         envVarsJSON: String,
-        external: Bool
+        external: Bool,
+        includeEnvVars: Bool = true
     ) -> String {
         let config = (try? JSONSerialization.jsonObject(with: Data(runtimeConfigJSON.utf8))) as? [String: Any] ?? [:]
         let model: String
@@ -10195,7 +10210,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 ?? (config["model"] as? [String: Any])?["id"] as? String
                 ?? ""
         }
-        let env = envVarsJSON.isEmpty ? "{}" : envVarsJSON
+        let env = includeEnvVars ? (envVarsJSON.isEmpty ? "{}" : envVarsJSON) : "null"
         return "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"runtime\":\(jsonString(runtime)),\"model\":\(jsonString(model)),\"external\":\(external),\"machineId\":null,\"reasoningEffort\":null,\"envVars\":\(env),\"runtimeConfig\":\(runtimeConfigJSON.isEmpty ? "{}" : runtimeConfigJSON)}"
     }
 
@@ -10367,10 +10382,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
                 return Self.json(400, "{\"error\":\"Invalid Agent update\"}")
             }
+            if let restartMode = object["restartMode"] as? String,
+               restartMode != "restart", restartMode != "session" {
+                return Self.json(400, "{\"error\":\"Invalid restart mode: \(restartMode)\"}")
+            }
             var description: String?
             if let value = object["description"] as? String {
                 oauth.updateAgentDescription(id: agentId, description: value)
                 description = value
+            }
+            var displayName: String?
+            if let value = object["displayName"] as? String {
+                oauth.updateAgentDisplayName(id: agentId, displayName: value)
+                displayName = value
             }
             var avatarUrl: String?
             if let value = object["avatarUrl"] as? String {
@@ -10380,28 +10404,39 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             var runtimeConfigJSON = info.runtimeConfigJSON
             var envVarsJSON = info.envVarsJSON
             var replacedRuntime: String?
-            if let legacyRuntime = object["runtime"] as? String,
-               Self.deprecatedAgentRuntimes.contains(legacyRuntime), legacyRuntime != info.runtime {
-                return Self.deprecatedRuntimeReply(legacyRuntime)
+            if let legacyRuntime = object["runtime"] as? String {
+                if Self.deprecatedAgentRuntimes.contains(legacyRuntime), legacyRuntime != info.runtime {
+                    return Self.deprecatedRuntimeReply(legacyRuntime)
+                }
+                replacedRuntime = legacyRuntime
             }
+            var configChanged = false
+            var config = runtimeConfigJSON.flatMap {
+                try? JSONSerialization.jsonObject(with: Data($0.utf8))
+            } as? [String: Any] ?? [:]
             if let rawConfig = object["runtimeConfig"] as? [String: Any] {
                 if let configRuntime = rawConfig["runtime"] as? String,
                    Self.deprecatedAgentRuntimes.contains(configRuntime), configRuntime != info.runtime {
                     return Self.deprecatedRuntimeReply(configRuntime)
                 }
                 if let reply = Self.runtimeConfigStructureError(rawConfig) { return reply }
-                let config = Self.normalizeRuntimeConfig(rawConfig)
-                if let command = config["command"] as? String, !command.isEmpty,
-                   let configRuntime = config["runtime"] as? String, configRuntime != "claude" {
+                let normalized = Self.normalizeRuntimeConfig(rawConfig)
+                if let command = normalized["command"] as? String, !command.isEmpty,
+                   let configRuntime = normalized["runtime"] as? String, configRuntime != "claude" {
                     return Self.json(400, "{\"error\":\"runtimeConfig.command is not supported for runtime: \(configRuntime)\"}")
                 }
-                let userEnv = (config["envVars"] as? [String: String]) ?? [:]
-                let env = Self.derivedAgentEnvVars(config, userEnv: userEnv)
-                runtimeConfigJSON = Self.serializeJSON(config)
-                envVarsJSON = Self.serializeJSON(env)
-                replacedRuntime = config["runtime"] as? String
-                oauth.updateAgentRuntime(id: agentId, runtimeConfigJSON: runtimeConfigJSON, envVarsJSON: envVarsJSON)
-                if let replacedRuntime { oauth.updateAgentRuntimeId(id: agentId, runtime: replacedRuntime) }
+                config = normalized
+                configChanged = true
+                replacedRuntime = normalized["runtime"] as? String
+            } else {
+                if let model = object["model"] as? String {
+                    config["model"] = ["kind": "preset", "id": model]
+                    configChanged = true
+                }
+                if let effort = object["reasoningEffort"] {
+                    config["reasoningEffort"] = effort is NSNull ? NSNull() : (effort as? String ?? NSNull())
+                    configChanged = true
+                }
             }
             if object["envVars"] != nil {
                 let validation = Self.validatedEnvVars(object["envVars"])
@@ -10413,12 +10448,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                     if key.hasPrefix("ANTHROPIC_") { continue }
                     userEnv[key] = value
                 }
-                var config = (info.runtimeConfigJSON.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) } as? [String: Any]) ?? [:]
                 config["envVars"] = userEnv
+                configChanged = true
+            }
+            if let replacedRuntime {
+                config["runtime"] = replacedRuntime
+                configChanged = true
+            }
+            if configChanged {
+                if config["version"] == nil { config["version"] = 1 }
+                if config["mode"] == nil { config["mode"] = ["kind": "default"] }
+                if config["reasoningEffort"] == nil { config["reasoningEffort"] = NSNull() }
+                if config["envVars"] == nil { config["envVars"] = [String: String]() }
+                let userEnv = (config["envVars"] as? [String: String]) ?? [:]
                 let env = Self.derivedAgentEnvVars(config, userEnv: userEnv)
                 runtimeConfigJSON = Self.serializeJSON(config)
                 envVarsJSON = Self.serializeJSON(env)
                 oauth.updateAgentRuntime(id: agentId, runtimeConfigJSON: runtimeConfigJSON, envVarsJSON: envVarsJSON)
+                if let replacedRuntime { oauth.updateAgentRuntimeId(id: agentId, runtime: replacedRuntime) }
             }
             let descriptionJSON = description.map { jsonString($0) } ?? "null"
             let latest = oauth.agentRuntimeInfo(id: agentId)
@@ -10426,7 +10473,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let configForModel = runtimeConfigJSON ?? latest?.runtimeConfigJSON ?? info.runtimeConfigJSON
             let model = Self.agentModel(from: configForModel, external: runtimeForResponse == "external")
             let avatarJSON = avatarUrl.map { jsonString($0) } ?? "null"
-            return Self.json(200, "{\"id\":\(jsonString(info.id)),\"model\":\(jsonString(model)),\"runtime\":\(jsonString(runtimeForResponse)),\"description\":\(descriptionJSON),\"avatarUrl\":\(avatarJSON),\"runtimeConfig\":\(runtimeConfigJSON ?? "null"),\"envVars\":\(envVarsJSON ?? "null")}")
+            let displayNameJSON = displayName.map { jsonString($0) } ?? "null"
+            let effortValue = config["reasoningEffort"]
+            let effortJSON = effortValue is NSNull || effortValue == nil ? "null" : jsonString(effortValue as? String ?? "")
+            return Self.json(200, "{\"id\":\(jsonString(info.id)),\"name\":\(jsonString(info.name)),\"displayName\":\(displayNameJSON),\"model\":\(jsonString(model)),\"runtime\":\(jsonString(runtimeForResponse)),\"reasoningEffort\":\(effortJSON),\"description\":\(descriptionJSON),\"avatarUrl\":\(avatarJSON),\"runtimeConfig\":\(runtimeConfigJSON ?? "null"),\"envVars\":\(envVarsJSON ?? "null")}")
         }
     }
 
@@ -21681,14 +21731,26 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let peerId = object["userId"] as? String,
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid DM peer\"}")
+        }
+        if let agentId = object["agentId"] as? String {
+            guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == serverId else {
+                return Self.json(404, "{\"error\":\"Agent not found in this server\"}")
+            }
+            let channelId = oauth.createDirectChannel(serverId: serverId, firstUserId: userId, secondUserId: agentId)
+            oauth.addChannelAgent(channelId: channelId, agentId: agentId)
+            emitRealtime("channel:\(channelId)", "dm:new", "{\"channelId\":\(jsonString(channelId))}")
+            emitRealtime("user:\(userId)", "dm:new", "{\"channelId\":\(jsonString(channelId))}")
+            return Self.json(200, "{\"id\":\(jsonString(channelId)),\"type\":\"dm\",\"activityMuteSupported\":false,\"peerId\":\(jsonString(agentId)),\"peerType\":\"agent\"}")
+        }
+        guard let peerId = object["userId"] as? String,
               oauth.memberRole(serverId: serverId, userId: peerId) != nil
         else {
             return Self.json(400, "{\"error\":\"Invalid DM peer\"}")
         }
         let channelId = oauth.createDirectChannel(serverId: serverId, firstUserId: userId, secondUserId: peerId)
-        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"type\":\"dm\",\"activityMuteSupported\":false}")
+        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"type\":\"dm\",\"activityMuteSupported\":false,\"peerId\":\(jsonString(peerId)),\"peerType\":\"user\"}")
     }
 
     public func listDirectChannels(authorization: String?, serverId: String) -> HTTPReply {
@@ -21698,10 +21760,27 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let rows = oauth.channelsForServer(serverId: serverId, userId: userId)
             .filter { $0.type == "dm" }
-            .map { channel in
-                "{\"id\":\(jsonString(channel.id)),\"type\":\"dm\",\"joined\":\(channel.joined),\"activityMuteSupported\":false}"
+            .map { channel -> String in
+                let agentIds = oauth.channelAgentIds(channelId: channel.id)
+                let humanIds = oauth.channelHumanIds(channelId: channel.id)
+                let peerId: String
+                let peerType: String
+                if let agent = agentIds.first(where: { $0 != userId }) {
+                    peerId = agent
+                    peerType = "agent"
+                } else if let human = humanIds.first(where: { $0 != userId }) {
+                    peerId = human
+                    peerType = "user"
+                } else {
+                    peerId = userId
+                    peerType = "self"
+                }
+                let last = channel.lastMessageAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+                return "{\"id\":\(jsonString(channel.id)),\"type\":\"dm\",\"joined\":\(channel.joined),\"activityMuteSupported\":false,\"peerId\":\(jsonString(peerId)),\"peerType\":\(jsonString(peerType)),\"lastMessageAt\":\(last)}"
             }
             .joined(separator: ",")
         return Self.json(200, "[\(rows)]")

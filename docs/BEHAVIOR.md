@@ -629,3 +629,13 @@ RFC 074 personal assistant：
 - `GET /api/agents/archived`：member/admin/owner 200，每行 `agentId/machineName/workspaceState`；guest 403。
 - 迁移进行中的 agent 不能归档 → 409 `{"code":"archive_migration_active"}`，agent 未删除且没有 archive 行。
 - 归档路由（archive 视图、workspace-files、workspace-files/read、archive/workspace）对非 creator 的 member 一律 403，对 guest 403/404，对指向其他 server 的请求 404。
+
+### agents.api：create 投影与 creator DM 组
+
+- `POST /api/agents` 接受结构化 `runtimeConfig`：补齐 `version:1`、`mode:{kind:"default"}`、`reasoningEffort:null`，保留 `provider`/`model`/`command`；`envVars` 只保留非 `ANTHROPIC_` 键。
+- Claude custom provider 派生环境变量：`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY` 取 provider，custom model 的 `ANTHROPIC_CUSTOM_MODEL_OPTION` 取 model name；`PATCH` 只改 `envVars` 时丢弃客户端送来的 `ANTHROPIC_*`，保留存储 provider 派生的值。
+- `GET /api/agents` 对非 admin 的普通 member 不返回 `envVars`/`runtimeConfig`（creator 本人可见）；`serverRole` 为 `member`，`GET /api/agents/:id` 同。
+- 顶层 `envVars` 在边界解析：非对象 → 400 `envVars must be an object`；非字符串值 → `envVars keys and values must be strings`；非法键 → `Invalid env var key "<key>": must match [A-Za-z_][A-Za-z0-9_]*`；含 NUL → `envVars keys and values must not contain null bytes`；`null`/缺省为无操作，非法值不写入且不改变已存值。
+- `POST /api/agents` 为 creator 建立与 agent 的 DM（空会话，重复调用复用同一 id），只对该 creator 的 `GET /api/channels/dm` 可见；同时向 `channel:<dmId>` 与 `user:<creatorId>` 广播 `dm:new` `{channelId}`，并向 `server:<id>` 广播 `agent:created`（不含 `envVars`）。
+- `GET /api/channels/dm` 行新增 `peerId`/`peerType`(`agent`|`user`|`self`)/`lastMessageAt`；`POST /api/channels/dm` 接受 `{agentId}`，agent 不在本 server → 404 `Agent not found in this server`，成功复用 canonical DM。
+- `PATCH /api/agents/:id` 支持顶层 `displayName`/`model`/`reasoningEffort`/`runtime`：`model` 写成 preset、`reasoningEffort` 写回 config，`runtime` 切换同时更新 runtime id 与 config；非法 `restartMode` → 400 `Invalid restart mode: <value>`；响应回显 `name/displayName/model/runtime/reasoningEffort/runtimeConfig/envVars`。

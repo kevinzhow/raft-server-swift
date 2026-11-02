@@ -5,7 +5,7 @@ activityContractHeader.api	route	locked	09c0eb0	contract header on rejected acti
 agentApiErrorTrace	route	pending	-	auto-seed
 agentApiIdempotentWrites.realPg	route	pending	-	auto-seed
 agentAppAccess.api	route	pending	-	auto-seed
-agentArchive.api	route	partial	-	auto-seed
+agentArchive.api	route	partial	dfc4cab	keep/delete choices, archive view fields, pending delete op and waitingForComputer, creator/admin inspect, agent_not_archived, archive_op_pending, archive_workspace_unavailable, archive:updated/deleted broadcast, member-vs-guest archived list, active-migration refusal covered; excluded in-process dispatch retries/timeouts/exhaustion, daemon workspace file tree, bootstrap-token and credential revocation DB rows
 agentAudienceJwt.api	route	locked	8d61ce1	built-in ES256 audience JWT, live grant gates, scoped issuer claims
 agentAudienceJwt.grafana	route	pending	-	auto-seed
 agentAudienceJwtBuiltIn.api	route	locked	adf3ae2	ignored legacy columns, installation-gated issuance, compat GET/410 PUT
@@ -20,7 +20,7 @@ agentMigrationFence.realPg	route	partial	-	auto-seed
 agentMigrationReceiptDm.api	route	partial	-	auto-seed
 agentProfileWriteBroadcastContract	route	partial	-	auto-seed
 agentRuntimeProviders.api	route	partial	-	auto-seed
-agents.api	route	partial	f9609bf	all agents.ts routes mounted; hosted/machine migration status+cancel dispatch, transport admission/leases/failure covered; identity group (handle uniqueness/reserved, agent channels projection, creator profile, member runtime-options) and runtime validation group (cursor provider, malformed config, deprecated create/patch) covered; chunk-digest transport and remaining agent groups pending
+agents.api	route	partial	358439f	all agents.ts routes mounted; hosted/machine migration status+cancel dispatch, transport admission/leases/failure covered; identity group (handle uniqueness/reserved, agent channels projection, creator profile, member runtime-options), runtime validation group (cursor provider, malformed config, deprecated create/patch) and lifecycle group (malformed/foreign id 404, start authority + machine_unassigned/machine_offline/200 ok, stop/reset authority and mode fallback, delete authority + workspace/migration refusals + agent:deleted) covered; orchestrator-spy reset/restart assertions, runtime-session DB columns, chunk-digest transport and remaining agent groups pending
 agents.credentials.gate	route	locked	378727c	unauthenticated credential routes answer 401, not 404
 agents.mobileV1120SaveRequests.api	route	partial	-	auto-seed
 announcementImages.api	route	locked	bdcd624	anonymous published-image gate, cache and storage 503
