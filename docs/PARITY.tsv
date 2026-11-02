@@ -34,7 +34,7 @@ assistant.api	route	partial	-	auto-seed
 attachmentComments.api	route	pending	-	auto-seed
 attachmentPreviewBridge.api	route	pending	-	auto-seed
 attachmentUploadSessions.api	route	partial	-	auto-seed
-attachments.api	route	partial	-	auto-seed
+attachments.api	route	partial	b259e3c	single-id access matrix (400/401/403/404) covered; upload limits, previews, presign TTL and preview tokens pending
 attachments	route	partial	-	auto-seed
 auditMediumInbox.api	route	locked	a5dea45	guest visible recheck on done/followed/mention surfaces
 auth.api	route	partial	-	auto-seed
