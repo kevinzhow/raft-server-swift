@@ -9802,7 +9802,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
         }
         guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            return Self.json(403, "{\"code\":\"insufficient_role\",\"error\":\"issueAgentCredentials requires human creator authority\"}")
         }
         guard info.runtime == "external" else {
             return Self.json(400, "{\"code\":\"agent_not_external\",\"error\":\"Only external Agents get credentials\"}")
@@ -9816,7 +9816,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         let credentialId = agentCredentials[key]?.id ?? ""
         lock.unlock()
-        return Self.json(201, "{\"credentialId\":\(jsonString(credentialId)),\"apiKey\":\(jsonString(key)),\"agentId\":\(jsonString(agentId)),\"serverId\":\(jsonString(info.serverId)),\"scopes\":[\(capabilities.map { jsonString($0) }.joined(separator: ","))]}")
+        var reply = Self.json(201, "{\"credentialId\":\(jsonString(credentialId)),\"apiKey\":\(jsonString(key)),\"agentId\":\(jsonString(agentId)),\"serverId\":\(jsonString(info.serverId)),\"scopes\":[\(capabilities.map { jsonString($0) }.joined(separator: ","))]}")
+        reply.headers["Cache-Control"] = "no-store"
+        return reply
     }
 
     public func listAgentCredentials(authorization: String?, agentId: String) -> HTTPReply {
@@ -9829,7 +9831,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
         }
         guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            return Self.json(403, "{\"code\":\"insufficient_role\",\"error\":\"issueAgentCredentials requires human creator authority\"}")
         }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -9845,7 +9847,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 return "{\"id\":\(jsonString(credential.id)),\"maskedToken\":\(jsonString(masked)),\"name\":\(jsonString(credential.name)),\"scopes\":[\(scopes)],\"createdAt\":\(created),\"lastUsedAt\":\(used),\"revokedAt\":\(revoked)}"
             }
         lock.unlock()
-        return Self.json(200, "{\"credentials\":[\(rows.joined(separator: ","))]}")
+        var reply = Self.json(200, "{\"credentials\":[\(rows.joined(separator: ","))]}")
+        reply.headers["Cache-Control"] = "no-store"
+        return reply
     }
 
     public func revokeAgentCredential(authorization: String?, agentId: String, credentialId: String) -> HTTPReply {
@@ -9858,7 +9862,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
         }
         guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            return Self.json(403, "{\"code\":\"insufficient_role\",\"error\":\"issueAgentCredentials requires human creator authority\"}")
         }
         lock.lock()
         guard let token = agentCredentials.first(where: { $0.value.id == credentialId })?.key,
