@@ -450,3 +450,5 @@ Attachment upload：`POST /api/attachments/upload` 接受 multipart `channelId` 
 
 Attachment URL TTL：`GET /api/attachments/:id/url` 默认 300 秒；`disposition=inline` 且附件 mime 为 video/* 或 audio/*、且无 `download=1` 时为 3600 秒；其余（含 PDF、`disposition=attachment`、`download=1`）保持 300 秒。响应 `expiresAt` 与签名 TTL 一致；CDN 不用于原文件下载（presign 由附件存储路由决定）。
 
+HTML preview token：`GET /api/attachments/:id/html-preview-url` 返回带 `previewToken`（HMAC-SHA256，绑定 attachmentId/serverId/actor、audience/type=`attachment-html-preview`、300s exp）与 `serverId` 的 URL，不携带用户 bearer。`GET /api/attachments/:id/html-preview` 校验 token 的 scope/expiry/audience/type，跨附件复用或过期/错 audience/type → 401；`token=` 用户 bearer query → 403；成功返回 `text/html`、`Content-Security-Policy: frame-ancestors 'self' <APP_URL>`、无 `X-Frame-Options`、`Cache-Control: private, no-store`。预览 token 不能授权普通 metadata/url/html-preview-url（401）。
+

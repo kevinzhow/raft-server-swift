@@ -4822,6 +4822,86 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// `GET /api/attachments/:id/url`. A private source stays hidden. A copy on a visible channel does not.
+    /// Test seam for the HTML preview body. Nil means the object is missing.
+    public var attachmentPreviewBody: (@Sendable (_ attachmentId: String) -> String?)?
+
+    private func attachmentPreviewSecret() -> SymmetricKey {
+        let raw = ProcessInfo.processInfo.environment["JWT_SECRET"] ?? "raft-test-preview-secret"
+        return SymmetricKey(data: Data(raw.utf8))
+    }
+
+    private static func previewBase64URL(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private static func previewBase64URLDecode(_ value: String) -> Data? {
+        var base64 = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while base64.count % 4 != 0 { base64 += "=" }
+        return Data(base64Encoded: base64)
+    }
+
+    public func mintAttachmentPreviewToken(
+        attachmentId: String,
+        serverId: String,
+        actorId: String,
+        audience: String = "attachment-html-preview",
+        type: String = "attachment-html-preview",
+        expiresIn: Int = 300
+    ) -> String {
+        let payload: [String: Any] = [
+            "attachmentId": attachmentId,
+            "serverId": serverId,
+            "actorId": actorId,
+            "audience": audience,
+            "aud": audience,
+            "type": type,
+            "exp": Int(Date().timeIntervalSince1970) + expiresIn,
+        ]
+        let payloadData = (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])) ?? Data("{}".utf8)
+        let payloadPart = Self.previewBase64URL(payloadData)
+        let signature = HMAC<SHA256>.authenticationCode(for: Data(payloadPart.utf8), using: attachmentPreviewSecret())
+        return payloadPart + "." + Self.previewBase64URL(Data(signature))
+    }
+
+    private func validateAttachmentPreviewToken(
+        _ token: String,
+        attachmentId: String,
+        serverId: String
+    ) -> [String: Any]? {
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        let payloadPart: String
+        let signaturePart: String
+        let signedPart: String
+        if parts.count == 3 {
+            payloadPart = parts[1]
+            signaturePart = parts[2]
+            signedPart = parts[0] + "." + parts[1]
+        } else if parts.count == 2 {
+            payloadPart = parts[0]
+            signaturePart = parts[1]
+            signedPart = parts[0]
+        } else {
+            return nil
+        }
+        guard let signature = Self.previewBase64URLDecode(signaturePart),
+              let payloadData = Self.previewBase64URLDecode(payloadPart),
+              HMAC<SHA256>.isValidAuthenticationCode(signature, authenticating: Data(signedPart.utf8), using: attachmentPreviewSecret()),
+              let object = (try? JSONSerialization.jsonObject(with: payloadData)) as? [String: Any]
+        else { return nil }
+        let audience = object["audience"] as? String ?? object["aud"] as? String
+        guard audience == "attachment-html-preview",
+              object["type"] as? String == "attachment-html-preview",
+              object["attachmentId"] as? String == attachmentId,
+              object["serverId"] as? String == serverId,
+              let exp = object["exp"] as? Int,
+              exp > Int(Date().timeIntervalSince1970)
+        else { return nil }
+        return object
+    }
+
     /// Test seam for presigning a stored attachment object.
     public var attachmentPresign: (@Sendable (_ attachmentId: String, _ mimeType: String?, _ ttlSeconds: Int) -> String)?
 
@@ -8712,6 +8792,33 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"files\":[\(rows.joined(separator: ","))],\"nextCursor\":\(nextJSON)}")
     }
 
+    public func attachmentHTMLPreview(
+        attachmentId: String,
+        serverId: String,
+        previewToken: String?,
+        bearerQuery: String?
+    ) -> HTTPReply {
+        if bearerQuery != nil {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard let previewToken,
+              validateAttachmentPreviewToken(previewToken, attachmentId: attachmentId, serverId: serverId) != nil
+        else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let body = attachmentPreviewBody?(attachmentId) else {
+            return Self.json(404, "{\"error\":\"Attachment not found\"}")
+        }
+        let origin = ProcessInfo.processInfo.environment["APP_URL"] ?? "http://127.0.0.1:4173"
+        var reply = HTTPReply(status: 200, headers: [
+            "Content-Type": "text/html; charset=utf-8",
+            "Content-Security-Policy": "frame-ancestors 'self' \(origin)",
+            "Cache-Control": "private, no-store",
+        ], body: body)
+        reply.headers.removeValue(forKey: "X-Frame-Options")
+        return reply
+    }
+
     public func readAttachment(authorization: String?, serverId: String?, attachmentId: String, kind: String) -> HTTPReply {
         guard ServerScope.isUUID(attachmentId) else {
             return Self.json(400, "{\"code\":\"invalid_attachment_id\",\"error\":\"Invalid attachment id\"}")
@@ -8742,7 +8849,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         case "url":
             return Self.json(200, "{\"url\":\"\(jsonString("/api/attachments/\(attachmentId)"))\"}")
         case "html-preview-url":
-            return Self.json(200, "{\"url\":\"\(jsonString("/api/attachments/\(attachmentId)/html-preview"))\"}")
+            let previewToken = mintAttachmentPreviewToken(attachmentId: attachmentId, serverId: serverId, actorId: userId)
+            let url = "/api/attachments/\(attachmentId)/html-preview?serverId=\(serverId)&previewToken=\(previewToken)"
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let expiresAt = formatter.string(from: Date().addingTimeInterval(300))
+            return Self.json(200, "{\"url\":\(jsonString(url)),\"expiresAt\":\(jsonString(expiresAt))}")
         default:
             return Self.json(200, "{\"id\":\(jsonString(attachment.id)),\"filename\":\(jsonString(attachment.filename)),\"mimeType\":\(attachment.mimeType.map { jsonString($0) } ?? "null")}")
         }

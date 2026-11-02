@@ -474,7 +474,10 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.get("api", "attachments", ":id", "url") { request -> Response in
-        routeResponse(services.emailAccounts.attachmentDownloadURL(
+        if desktopQuery(request.url.query, "previewToken") != nil {
+            return routeResponse(HTTPReply(status: 401, headers: [:], body: "{\"error\":\"Unauthorized\"}"))
+        }
+        return routeResponse(services.emailAccounts.attachmentDownloadURL(
             attachmentId: request.parameters.get("id") ?? "",
             authorization: request.headers[.authorization],
             serverId: request.headers[HTTPField.Name("X-Server-Id")!],
@@ -1848,15 +1851,29 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.get("api", "attachments", ":id") { request -> Response in
-        routeResponse(services.emailAccounts.readAttachment(
+        if desktopQuery(request.url.query, "previewToken") != nil {
+            return routeResponse(HTTPReply(status: 401, headers: [:], body: "{\"error\":\"Unauthorized\"}"))
+        }
+        return routeResponse(services.emailAccounts.readAttachment(
             authorization: request.headers[.authorization],
             serverId: request.headers[HTTPField.Name("X-Server-Id")!],
             attachmentId: request.parameters.get("id") ?? "",
             kind: "metadata"
         ))
     }
+    app.get("api", "attachments", ":id", "html-preview") { request -> Response in
+        routeResponse(services.emailAccounts.attachmentHTMLPreview(
+            attachmentId: request.parameters.get("id") ?? "",
+            serverId: desktopQuery(request.url.query, "serverId") ?? request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            previewToken: desktopQuery(request.url.query, "previewToken"),
+            bearerQuery: desktopQuery(request.url.query, "token")
+        ))
+    }
     app.get("api", "attachments", ":id", "html-preview-url") { request -> Response in
-        routeResponse(services.emailAccounts.readAttachment(
+        if desktopQuery(request.url.query, "previewToken") != nil {
+            return routeResponse(HTTPReply(status: 401, headers: [:], body: "{\"error\":\"Unauthorized\"}"))
+        }
+        return routeResponse(services.emailAccounts.readAttachment(
             authorization: request.headers[.authorization],
             serverId: request.headers[HTTPField.Name("X-Server-Id")!],
             attachmentId: request.parameters.get("id") ?? "",
