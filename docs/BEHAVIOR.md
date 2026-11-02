@@ -692,3 +692,10 @@ RFC 074 personal assistant：
 - 线程目标要求 agent 是父频道成员：公开频道非成员 → 403 `Agent is not a member of the parent channel`；不可见的 private 父频道 → 404（cloak，不泄漏存在性）。
 - `dm:@<peer>:<suffix>`：DM 内命中父消息前缀时自动创建 DM thread 并投递；已有空 thread 复用；找不到 → 404 同上错误文本。
 - 已存在的空 thread（由父消息 OPEN THREAD 建立）在首条 agent 回复时复用，不新建第二个 thread。
+
+### internalAgentApi.send：幂等与附件校验组
+
+- `idempotencyKey`：同 key 重复发送且 target/content/attachmentIds 全同 → 200 返回原 `messageId`/`messageSeq`，不再写新消息；任一不同 → 409 `{code:"idempotency_key_reused",mismatch:"target"|"content"|"attachments",suggestedNextAction:"...new idempotencyKey..."}`，不回原消息 id。
+- `reconcileOnly:true`（v2）：key 未提交 → 200 `{ok:true,state:"not_found",reconciliation:true}` 且不写；已提交 → 200 `{ok:true,state:"committed",messageId,messageSeq,reconciliation:true,receiptComplete:false}`。
+- `attachmentIds` 边界：每个元素必须是单个 UUID；非数组或含空格/逗号拼接值 → 400 `{code:"attachment_id_invalid"}`，错误文本 `Not sent: attachmentIds entry <n> is not a single attachment ID. Send one ID per --attachment-id.`，不回显被拒值，也不写消息。
+- v1 与 v2 发送都返回统一的 `{ok,state:"sent",messageId,messageSeq}`（同时保留旧 `id/channelId/content/seq`）。

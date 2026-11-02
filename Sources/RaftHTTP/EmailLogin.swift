@@ -418,6 +418,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var actionCardRecords: [String: ActionCardRecord] = [:]
     private var marketplaceInstallCards: [String: MarketplaceInstallCard] = [:]
     private var integrationRegisterCards: [String: IntegrationRegisterCard] = [:]
+    private var agentApiSendReceipts: [String: AgentApiSendReceipt] = [:]
     private var pendingActionMessageEvents: [(agentId: String, messageId: String, content: String)] = []
     private var agentGrantSets: [String: Set<String>] = [:]
     private var appConfigOverrides: [String: [String: [String: Any]]] = [:]
@@ -701,6 +702,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var state: String
         var executedByUserId: String?
         var resultJSON: String?
+    }
+
+    /// One committed agent-api send per (server, agent, idempotencyKey).
+    private struct AgentApiSendReceipt {
+        var messageId: String
+        var messageSeq: Int
+        var target: String
+        var content: String
+        var attachmentIds: [String]
     }
 
     private struct ManagedMCPServerRecord {
@@ -19282,12 +19292,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         case .success(let agentId, let serverId): identity = (agentId, serverId)
         }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let target = object["target"] as? String,
-              let content = object["content"] as? String,
-              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+              let target = object["target"] as? String
         else {
             return Self.json(400, "{\"error\":\"Invalid send request\"}")
         }
+        let content = (object["content"] as? String) ?? ""
         let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
         let assistantOwner = assistantOwnerFor(agentId: identity.agentId, serverId: identity.serverId)
         if let assistantOwner {
@@ -19306,6 +19315,54 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         func threadTargetError(_ detail: String) -> HTTPReply {
             Self.json(404, "{\"error\":\"Thread target not found or not replyable: \(detail)\"}")
+        }
+        let reconcileOnly = object["reconcileOnly"] as? Bool == true
+        guard reconcileOnly || !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return Self.json(400, "{\"error\":\"Invalid send request\"}")
+        }
+        var attachmentIds: [String] = []
+        if let rawAttachments = object["attachmentIds"], !(rawAttachments is NSNull) {
+            guard let list = rawAttachments as? [Any] else {
+                return Self.json(400, "{\"error\":\"Not sent: attachmentIds entry 1 is not a single attachment ID. Send one ID per --attachment-id.\",\"code\":\"attachment_id_invalid\"}")
+            }
+            for (index, value) in list.enumerated() {
+                guard let id = value as? String, ServerScope.isUUID(id) else {
+                    let entry = index + 1
+                    return Self.json(400, "{\"error\":\"Not sent: attachmentIds entry \(entry) is not a single attachment ID. Send one ID per --attachment-id.\",\"code\":\"attachment_id_invalid\"}")
+                }
+                attachmentIds.append(id)
+            }
+        }
+        let idempotencyKey = (object["idempotencyKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var sendReceiptKey: String?
+        if !idempotencyKey.isEmpty {
+            let key = "\(identity.serverId)\n\(identity.agentId)\n\(idempotencyKey)"
+            sendReceiptKey = key
+            lock.lock()
+            let receipt = agentApiSendReceipts[key]
+            lock.unlock()
+            if reconcileOnly {
+                guard let receipt else {
+                    return Self.json(200, "{\"ok\":true,\"state\":\"not_found\",\"reconciliation\":true}")
+                }
+                return Self.json(200, "{\"ok\":true,\"state\":\"committed\",\"messageId\":\(jsonString(receipt.messageId)),\"messageSeq\":\(receipt.messageSeq),\"reconciliation\":true,\"receiptComplete\":false}")
+            }
+            if let receipt {
+                let mismatch: String?
+                if receipt.target != trimmed {
+                    mismatch = "target"
+                } else if receipt.content != content {
+                    mismatch = "content"
+                } else if receipt.attachmentIds != attachmentIds {
+                    mismatch = "attachments"
+                } else {
+                    mismatch = nil
+                }
+                if let mismatch {
+                    return Self.json(409, "{\"error\":\"This idempotencyKey was already used for a different send\",\"code\":\"idempotency_key_reused\",\"mismatch\":\(jsonString(mismatch)),\"suggestedNextAction\":\"Retry with a new idempotencyKey.\"}")
+                }
+                return Self.json(200, "{\"ok\":true,\"state\":\"sent\",\"messageId\":\(jsonString(receipt.messageId)),\"messageSeq\":\(receipt.messageSeq),\"id\":\(jsonString(receipt.messageId)),\"channelId\":\(jsonString(channelIdForReceipt(receipt.messageId) ?? "")),\"content\":\(jsonString(receipt.content)),\"seq\":\(receipt.messageSeq)}")
+            }
         }
         let channelId: String
         if trimmed.hasPrefix("#") {
@@ -19463,10 +19520,25 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let previous = agentChannelReadCursors[cursorKey] ?? (seq: 0, version: 0)
             agentChannelReadCursors[cursorKey] = (ownSeq, previous.version + 1)
         }
+        if let sendReceiptKey {
+            agentApiSendReceipts[sendReceiptKey] = AgentApiSendReceipt(
+                messageId: messageId,
+                messageSeq: ownSeq,
+                target: trimmed,
+                content: content,
+                attachmentIds: attachmentIds
+            )
+        }
         lock.unlock()
-        let message = "{\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(content)),\"seq\":\(ownSeq)}"
         let sent = "{\"ok\":true,\"state\":\"sent\",\"messageId\":\(jsonString(messageId)),\"messageSeq\":\(ownSeq),\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(content)),\"seq\":\(ownSeq)}"
-        return v2 ? Self.json(200, "{\"message\":\(message)}") : Self.json(200, sent)
+        _ = v2
+        return Self.json(200, sent)
+    }
+
+    private func channelIdForReceipt(_ messageId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return humanMessageRows.first { $0.id == messageId }?.channelId
     }
 
     private enum AgentTaskAuthResult {
