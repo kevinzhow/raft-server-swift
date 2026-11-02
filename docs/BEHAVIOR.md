@@ -508,3 +508,5 @@ Agent task create 的 `assignee`：在 channel 内解析 agent/human，创建任
 
 Retired built-in integration：agent integrations inventory/login 过滤 `appType == "slock_builtin"` 行；built-in app 即使 published/visible 也不出现在 services，login 404，且不产生 activeLogin。
 
+Task realtime projection：`PATCH /api/tasks/:taskId/claim` 只向 `channel:<id>` 发 `task:updated`（payload task 含 id/status/claimedById），不重发未变化的 `message:updated`。message-only 行不是 task，claim 回 404 且不广播任何事件。
+
