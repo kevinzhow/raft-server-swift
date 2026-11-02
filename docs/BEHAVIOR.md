@@ -476,3 +476,5 @@ Builtin runtime form：v1 `runtime-form-definitions/builtin?schemaVersion=builti
 
 Lifecycle upgrade：`targetVersion` 缺省时用 `latestComputerReleaseForTesting` 解析最新版本并回 201；无可用 release 仍 409 `computer_upgrade_unavailable`。`/computer/upgrade` 通过 sender seam 投递，投递失败回 409 `computer_offline`。
 
+Agent API id-less upload：`POST /internal/agent-api/upload`（multipart `channelId` + `file`）用 agent credential（`send`/`write`）绑定 runner 身份，不依赖路径里的 agent id；校验 channel 可见、空文件、Free 50MB / Pro 200MB 与 `ATTACHMENT_UPLOAD_ENABLED`，回单对象 `{id,filename,mimeType,sizeBytes,thumbnailUrl}`。上传后 `GET /internal/agent-api/attachments/:id` 可在同一 credential 下流式读取，带 `private, no-store`。
+

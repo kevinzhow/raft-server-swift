@@ -8500,6 +8500,59 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"agentId\":\(jsonString(agentId)),\"credentialId\":\(jsonString(credentialId)),\"serverId\":\(jsonString(agent.serverId)),\"scopes\":[\(scopesJSON)]}")
     }
 
+    public func uploadAgentAttachmentIdless(
+        authorization: String?,
+        channelId: String,
+        filename: String,
+        mimeType: String?,
+        sizeBytes: Int,
+        bytes: Data
+    ) -> HTTPReply {
+        let gate = (ProcessInfo.processInfo.environment["ATTACHMENT_UPLOAD_ENABLED"] ?? "true")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if ["false", "0", "off"].contains(gate) {
+            return Self.json(503, "{\"error\":\"File uploads are disabled on this server\",\"errorCode\":\"ATTACHMENT_UPLOAD_DISABLED\"}")
+        }
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted,
+              credential.scopes.contains("send") || credential.scopes.contains("write")
+        else {
+            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
+        }
+        lock.lock()
+        let channel = postableChannels[channelId]
+        lock.unlock()
+        guard let channel, channel.serverId == agent.serverId, channel.deletedAt == nil,
+              channel.kind == "channel"
+                || channel.memberIds.contains(agent.id)
+                || oauth.channelAgentIds(channelId: channelId).contains(agent.id)
+        else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        guard sizeBytes > 0 else {
+            return Self.json(400, "{\"error\":\"Empty files are not allowed\"}")
+        }
+        let plan = oauth.serverProfile(id: agent.serverId)?.plan ?? "free"
+        let maxBytes = plan == "free" ? 50 * 1024 * 1024 : 200 * 1024 * 1024
+        if sizeBytes > maxBytes {
+            return Self.json(413, "{\"error\":\"Max 50MB per file\",\"errorCode\":\"ATTACHMENT_TOO_LARGE\",\"maxBytes\":\(maxBytes)}")
+        }
+        let id = addChannelAttachment(
+            channelId: channelId,
+            uploaderId: agent.id,
+            filename: filename,
+            mimeType: mimeType,
+            sizeBytes: sizeBytes
+        )
+        lock.lock()
+        channelAttachments[id]?.uploaderType = "agent"
+        agentAttachmentBytes[id] = bytes
+        lock.unlock()
+        let mimeJSON = mimeType.map(jsonString) ?? "null"
+        return Self.json(200, "{\"id\":\(jsonString(id)),\"filename\":\(jsonString(filename)),\"mimeType\":\(mimeJSON),\"sizeBytes\":\(sizeBytes),\"thumbnailUrl\":null}")
+    }
+
     public func agentAttachmentUploadCapabilities(authorization: String?) -> HTTPReply {
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted,
