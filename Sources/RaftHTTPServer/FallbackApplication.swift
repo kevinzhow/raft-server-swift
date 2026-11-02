@@ -2276,6 +2276,40 @@ public func configure(_ app: Application, services: FallbackServices) {
             migrationRef: request.parameters.get("migrationId") ?? ""
         ))
     }
+    app.get("internal", "computer", "agent-migrations", "by-id", ":migrationId") { request -> Response in
+        routeResponse(services.emailAccounts.getMigrationTargetView(
+            authorization: request.headers[.authorization],
+            migrationRef: request.parameters.get("migrationId") ?? ""
+        ))
+    }
+    app.post("internal", "computer", "agent-migrations", "by-id", ":migrationId", "start-transfer") { request -> Response in
+        routeResponse(services.emailAccounts.startMigrationTransfer(
+            authorization: request.headers[.authorization],
+            migrationRef: request.parameters.get("migrationId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.post("internal", "computer", "agent-migrations", "by-id", ":migrationId", "flip-machine") { request -> Response in
+        routeResponse(services.emailAccounts.flipMigrationMachine(
+            authorization: request.headers[.authorization],
+            migrationRef: request.parameters.get("migrationId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.post("internal", "computer", "agent-migrations", "by-id", ":migrationId", "arrived") { request -> Response in
+        routeResponse(services.emailAccounts.completeMigrationArrival(
+            authorization: request.headers[.authorization],
+            migrationRef: request.parameters.get("migrationId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.post("internal", "computer", "agent-migrations", "by-id", ":migrationId", "transport-lost") { request -> Response in
+        routeResponse(services.emailAccounts.markMigrationTransportLostFromComputer(
+            authorization: request.headers[.authorization],
+            migrationRef: request.parameters.get("migrationId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
     app.get("api", "servers", ":id", "usage") { request -> Response in
         routeResponse(services.emailAccounts.serverUsage(
             authorization: request.headers[.authorization],

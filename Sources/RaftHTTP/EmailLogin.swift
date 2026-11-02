@@ -10335,6 +10335,122 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true,\"state\":\"transfer_complete\"}")
     }
 
+    private func computerMachineId(_ authorization: String?) -> String? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        let key = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        defer { lock.unlock() }
+        return computers.first { $0.apiKey == key && $0.revokedAt == nil }?.machineId
+    }
+
+    private func migrationTargetViewJSON(_ record: MachineMigrationRecord, targetMachineId: String) -> String {
+        let canDrive = record.state == "ready" || record.state == "in_transit" || record.state == "arriving"
+        return "{\"migrationRef\":\(jsonString(record.supportRef)),\"agentId\":\(jsonString(record.agentId)),\"state\":\(jsonString(record.state)),\"migrationGeneration\":\(jsonString(record.transportGeneration)),\"sourceMachineId\":\(jsonString(record.sourceMachineId)),\"targetMachineId\":\(jsonString(targetMachineId)),\"canDriveTargetImport\":\(canDrive ? "true" : "false")}"
+    }
+
+    public func getMigrationTargetView(authorization: String?, migrationRef: String) -> HTTPReply {
+        guard let machineId = computerMachineId(authorization) else {
+            return Self.json(401, "{\"code\":\"migration_transport_token_invalid\",\"error\":\"Migration transport token is invalid\"}")
+        }
+        lock.lock()
+        let record = machineMigrations[migrationRef]
+        lock.unlock()
+        guard let record else {
+            return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
+        }
+        guard record.targetMachineId == machineId else {
+            return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
+        }
+        return Self.json(200, "{\"ok\":true,\"migration\":\(migrationTargetViewJSON(record, targetMachineId: machineId))}")
+    }
+
+    private func migrationStep(
+        authorization: String?,
+        migrationRef: String,
+        body: String,
+        expectedState: String,
+        nextState: String
+    ) -> (HTTPReply, MachineMigrationRecord?) {
+        guard let machineId = computerMachineId(authorization) else {
+            return (Self.json(401, "{\"code\":\"migration_transport_token_invalid\",\"error\":\"Migration transport token is invalid\"}"), nil)
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let generation = object["migrationGeneration"] as? String, !generation.isEmpty
+        else {
+            return (Self.json(400, "{\"code\":\"migration_generation_required\",\"error\":\"migrationGeneration is required\"}"), nil)
+        }
+        lock.lock()
+        guard var record = machineMigrations[migrationRef], record.targetMachineId == machineId else {
+            lock.unlock()
+            return (Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}"), nil)
+        }
+        guard record.transportGeneration == generation else {
+            lock.unlock()
+            return (Self.json(409, "{\"code\":\"migration_generation_stale\",\"error\":\"Migration generation is stale\"}"), nil)
+        }
+        guard record.state == expectedState else {
+            lock.unlock()
+            return (Self.json(409, "{\"code\":\"migration_not_ready\",\"error\":\"Migration is not ready for this step\"}"), nil)
+        }
+        record.state = nextState
+        record.transportGeneration = "generation-" + UUID().uuidString.lowercased()
+        if nextState == "arriving" {
+            agentMachineIds[record.agentId] = record.targetMachineId
+        }
+        machineMigrations[migrationRef] = record
+        lock.unlock()
+        return (Self.json(200, "{\"ok\":true,\"migration\":\(migrationTargetViewJSON(record, targetMachineId: machineId))}"), record)
+    }
+
+    public func startMigrationTransfer(authorization: String?, migrationRef: String, body: String) -> HTTPReply {
+        migrationStep(authorization: authorization, migrationRef: migrationRef, body: body, expectedState: "ready", nextState: "in_transit").0
+    }
+
+    public func flipMigrationMachine(authorization: String?, migrationRef: String, body: String) -> HTTPReply {
+        migrationStep(authorization: authorization, migrationRef: migrationRef, body: body, expectedState: "in_transit", nextState: "arriving").0
+    }
+
+    public func completeMigrationArrival(authorization: String?, migrationRef: String, body: String) -> HTTPReply {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"code\":\"migration_generation_required\",\"error\":\"migrationGeneration is required\"}")
+        }
+        if let path = object["reportPath"], !(path is NSNull) {
+            guard let value = path as? String, !value.isEmpty else {
+                return Self.json(400, "{\"code\":\"report_path_invalid\",\"error\":\"reportPath must be a non-empty string\"}")
+            }
+        }
+        if let sha = object["reportSha256"], !(sha is NSNull) {
+            guard let value = sha as? String, !value.isEmpty else {
+                return Self.json(400, "{\"code\":\"report_sha256_invalid\",\"error\":\"reportSha256 must be a non-empty string\"}")
+            }
+        }
+        let (reply, _) = migrationStep(authorization: authorization, migrationRef: migrationRef, body: body, expectedState: "arriving", nextState: "completed")
+        return reply
+    }
+
+    public func markMigrationTransportLostFromComputer(authorization: String?, migrationRef: String, body: String) -> HTTPReply {
+        guard let machineId = computerMachineId(authorization) else {
+            return Self.json(401, "{\"code\":\"migration_transport_token_invalid\",\"error\":\"Migration transport token is invalid\"}")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+        lock.lock()
+        guard var record = machineMigrations[migrationRef], record.sourceMachineId == machineId || record.targetMachineId == machineId else {
+            lock.unlock()
+            return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
+        }
+        let now = Date()
+        record.state = "failed"
+        record.revision += 1
+        record.failureReason = (object["errorCode"] as? String) ?? "MIGRATION_TRANSPORT_LOST"
+        record.transportErrorCode = record.failureReason
+        record.transportErrorMessage = object["message"] as? String
+        record.transportLostAt = now
+        record.transportTeardownAt = now
+        machineMigrations[migrationRef] = record
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true,\"migration\":\(migrationTargetViewJSON(record, targetMachineId: record.targetMachineId))}")
+    }
+
     private func startHostedMigration(
         info: OAuthLedger.AgentManagementInfo,
         userId: String,
@@ -11674,6 +11790,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return agentRuntimeProfiles[agentId]
+    }
+
+    public func agentMachineIdForTesting(agentId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return agentMachineIds[agentId]
     }
 
     public func setAgentMachineForTesting(agentId: String, machineId: String) {
