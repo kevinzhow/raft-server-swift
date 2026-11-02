@@ -376,3 +376,5 @@ Forward joint：向 joint 目标转发时响应 `channelId`/`destinationTargetId
 
 Forward source×destination 矩阵：channel/private/DM/joint 四种源 × channel/private/DM/joint 四种目标全部可转发；响应 `channelId`/`destinationTargetId` 为目标本地 id，item 的 `sourceTargetSnapshot.type` 对应源类型，public 源 label 为 `#name` 且 `labelVisibility:"public"`，private/DM/joint 源 label 空且 `restricted`。`POST /api/messages` 的 `channelId` 不属于当前 `X-Server-Id` 时回 404 `Channel not found`，不写消息。
 
+Servers runtime 组：`GET .../runtime-options` 需要 owner/admin 或 machine 创建者；member/attacher 不因 Computer attach 获得该权限。`GET .../runtime-models/:runtime` 返回 `{kind:"live",value:{models,default},models,default}`，权限同上。`POST .../runtimes/rescan` 离线 409 `Computer is offline`，在线且授权 200 `{requested:true}`。`GET .../runtime-account-usage/:provider` 仅 owner/admin 或 Computer 的 attaching human；未知 provider 404；响应 `Cache-Control: private, no-store`，`state: missing|fresh|stale`。`POST .../refresh`：非 manual 202 `requested`，60s 内重复 202 `cooldown`；manual 在线且拿到快照 200 `fresh`，超时 200 `timeout`，离线 202 `computer_offline`。
+

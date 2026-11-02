@@ -11293,10 +11293,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         _ = machine
         guard let record else {
-            return Self.json(200, "{\"state\":\"missing\",\"snapshot\":null}")
+            var reply = Self.json(200, "{\"state\":\"missing\",\"snapshot\":null}")
+            reply.headers["Cache-Control"] = "private, no-store"
+            return reply
         }
         let state = record.staleAfter <= Date() ? "stale" : "fresh"
-        return Self.json(200, "{\"state\":\(jsonString(state)),\"snapshot\":\(record.json)}")
+        var reply = Self.json(200, "{\"state\":\(jsonString(state)),\"snapshot\":\(record.json)}")
+        reply.headers["Cache-Control"] = "private, no-store"
+        return reply
     }
 
     public func refreshMachineRuntimeAccountUsage(
