@@ -9757,6 +9757,65 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     private static let deprecatedAgentRuntimes: Set<String> = ["kimi", "gemini", "antigravity", "copilot"]
 
+    /// The upstream server capability matrix for the two lifecycle verbs this
+    /// file answers: members hold `controlAgentRuntime`, only owner/admin hold
+    /// `deleteAgents`; the human creator always holds the acting authority.
+    private enum AgentLifecycleCapability {
+        case controlRuntime
+        case deleteAgent
+
+        var denialMessage: String {
+            switch self {
+            case .controlRuntime:
+                return "The `controlAgentRuntime` capability or human creator authority is required to control agents"
+            case .deleteAgent:
+                return "The `deleteAgents` capability or human creator authority is required to delete agents"
+            }
+        }
+
+        func granted(role: String, isCreator: Bool) -> Bool {
+            switch self {
+            case .controlRuntime:
+                return role != "guest" || isCreator
+            case .deleteAgent:
+                return role == "owner" || role == "admin" || isCreator
+            }
+        }
+    }
+
+    private struct AgentLifecycleActor {
+        var userId: String
+        var role: String
+        var info: OAuthLedger.AgentManagementInfo
+    }
+
+    /// Resolve the caller against a live agent of `serverId`, or the exact
+    /// refusal the upstream route answers before it touches runtime state.
+    private func agentLifecycleActor(
+        _ authorization: String?,
+        agentId: String,
+        serverId: String,
+        capability: AgentLifecycleCapability
+    ) -> (actor: AgentLifecycleActor?, reply: HTTPReply?) {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return (nil, Self.json(401, "{\"error\":\"Unauthorized\"}"))
+        }
+        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted else {
+            return (nil, Self.json(404, "{\"error\":\"Agent not found\"}"))
+        }
+        guard serverId.isEmpty || info.serverId == serverId else {
+            return (nil, Self.json(404, "{\"error\":\"Agent not found\"}"))
+        }
+        guard let role = oauth.memberRole(serverId: info.serverId, userId: userId) else {
+            return (nil, Self.json(403, "{\"error\":\"Not a member of this server\"}"))
+        }
+        let isCreator = info.creatorUserId == userId
+        guard capability.granted(role: role, isCreator: isCreator) else {
+            return (nil, Self.json(403, "{\"error\":\(jsonString(capability.denialMessage))}"))
+        }
+        return (AgentLifecycleActor(userId: userId, role: role, info: info), nil)
+    }
+
     private static func deprecatedRuntimeReply(_ runtime: String) -> HTTPReply {
         Self.json(400, "{\"error\":\"Runtime is deprecated and cannot be selected: \(runtime)\"}")
     }
@@ -9996,14 +10055,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"creator\":{\"type\":\"human\",\"id\":\(jsonString(creatorId))}}")
     }
 
-    public func getAgentRoute(authorization: String?, agentId: String) -> HTTPReply {
+    public func getAgentRoute(authorization: String?, agentId: String, serverId: String = "") -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
         guard agentId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
             return Self.json(404, "{\"error\":\"Agent not found\"}")
         }
-        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted else {
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted,
+              serverId.isEmpty || agent.serverId == serverId
+        else {
             return Self.json(404, "{\"error\":\"Agent not found\"}")
         }
         guard let role = oauth.memberRole(serverId: agent.serverId, userId: userId) else {
@@ -10280,7 +10341,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true,\"data\":{\"agents\":[\("\(rows)")],\"reason\":\(jsonString(reason)),\"manageable_server_count\":\(result.serverCount)}}")
     }
 
-    public func patchAgent(authorization: String?, agentId: String, body: String) -> HTTPReply {
+    public func patchAgent(authorization: String?, agentId: String, body: String, serverId: String = "") -> HTTPReply {
+        if !serverId.isEmpty,
+           let info = oauth.agentManagementInfo(id: agentId),
+           info.serverId != serverId || info.deleted {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
         switch agentAuthority(authorization, agentId: agentId) {
         case .denied(let reply):
             return reply
@@ -11111,59 +11177,73 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"archive\":{\"workspaceState\":\(jsonString(record.workspaceState)),\"machineName\":\(jsonString(record.machineName))}}")
     }
 
-    public func deleteAgentRoute(authorization: String?, agentId: String, body: String = "") -> HTTPReply {
-        switch agentAuthority(authorization, agentId: agentId) {
-        case .denied(let reply):
-            return reply
-        case .allowed:
-            var workspaceChoice = "keep"
-            if !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-               let workspace = object["workspace"] as? String {
-                guard workspace == "keep" || workspace == "delete" else {
-                    return Self.json(400, "{\"code\":\"archive_workspace_choice_invalid\",\"error\":\"workspace must be keep or delete\"}")
-                }
-                workspaceChoice = workspace
-            }
-            lock.lock()
-            let machineName = agentMachineIds[agentId].flatMap { id in machines.first { $0.id == id }?.name } ?? ""
-            let state = workspaceChoice == "delete" ? "deleted" : "on_computer"
-            agentArchiveRecords[agentId] = (workspaceState: state, machineName: machineName, serverId: oauth.agentManagementInfo(id: agentId)?.serverId ?? "")
-            for index in taskRecords.indices where
-                taskRecords[index].assigneeType == "agent" && taskRecords[index].assigneeId == agentId {
-                taskRecords[index].assigneeId = nil
-                taskRecords[index].assigneeType = nil
-                taskRecords[index].claimedAt = nil
-                taskRecords[index].revision += 1
-            }
-            lock.unlock()
-            oauth.deleteAgent(id: agentId)
-            return Self.json(200, "{\"ok\":true}")
-        }
-    }
-
-    public func agentRuntimeAction(authorization: String?, agentId: String, action: String, body: String = "") -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted else {
+    public func deleteAgentRoute(authorization: String?, agentId: String, body: String = "", serverId: String = "") -> HTTPReply {
+        let resolved = agentLifecycleActor(
+            authorization,
+            agentId: agentId,
+            serverId: serverId,
+            capability: .deleteAgent
+        )
+        if let reply = resolved.reply { return reply }
+        guard let actor = resolved.actor else {
             return Self.json(404, "{\"error\":\"Agent not found\"}")
         }
-        guard let role = oauth.memberRole(serverId: info.serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        var workspaceChoice = "keep"
+        if !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+           let workspace = object["workspace"] as? String {
+            guard workspace == "keep" || workspace == "delete" else {
+                return Self.json(400, "{\"error\":\"workspace must be keep or delete\",\"code\":\"archive_workspace_choice_invalid\"}")
+            }
+            workspaceChoice = workspace
         }
-        if info.runtime == "external" {
-            return Self.json(400, "{\"error\":\"External agents do not use Raft-managed runtime lifecycle\"}")
+        lock.lock()
+        let machineId = agentMachineIds[agentId]
+        let machineName = machineId.flatMap { id in machines.first { $0.id == id }?.name } ?? ""
+        let hosted = hostedRuntimes[agentId] != nil
+        let terminalMigrationStates: Set<String> = ["canceled_pre_flip", "canceled", "completed", "arrived", "aborted", "failed"]
+        let hasActiveMigration = machineMigrations.values.contains {
+            $0.agentId == agentId && !terminalMigrationStates.contains($0.state)
+        } || (hostedMigrations[agentId].map { !terminalMigrationStates.contains($0.state) } ?? false)
+        lock.unlock()
+        if workspaceChoice == "delete", machineId == nil || actor.info.runtime == "external" || hosted {
+            return Self.json(409, "{\"error\":\"This agent has no workspace on a Computer.\",\"code\":\"archive_workspace_unavailable\"}")
         }
-        let privileged = role == "owner" || role == "admin" || info.creatorUserId == userId
-        if action == "start" {
-            guard privileged else { return Self.json(403, "{\"error\":\"Forbidden\"}") }
-            return Self.json(202, "{\"ok\":true,\"status\":\"accepted\"}")
+        guard !hasActiveMigration else {
+            return Self.json(409, "{\"error\":\"This agent is being migrated. Wait for the migration to finish or cancel it first.\",\"code\":\"archive_migration_active\"}")
         }
-        if action == "stop" {
-            return Self.json(200, "{\"ok\":true}")
+        lock.lock()
+        let state = workspaceChoice == "delete" ? "deleted" : "on_computer"
+        agentArchiveRecords[agentId] = (workspaceState: state, machineName: machineName, serverId: actor.info.serverId)
+        for index in taskRecords.indices where
+            taskRecords[index].assigneeType == "agent" && taskRecords[index].assigneeId == agentId {
+            taskRecords[index].assigneeId = nil
+            taskRecords[index].assigneeType = nil
+            taskRecords[index].claimedAt = nil
+            taskRecords[index].revision += 1
         }
+        lock.unlock()
+        oauth.deleteAgent(id: agentId)
+        emitRealtime("server:\(actor.info.serverId)", "agent:deleted", "{\"agentId\":\(jsonString(agentId))}")
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    public func agentRuntimeAction(authorization: String?, agentId: String, action: String, body: String = "", serverId: String = "") -> HTTPReply {
         if action == "migrate" {
+            guard let userId = sessionUserId(authorization: authorization) else {
+                return Self.json(401, "{\"error\":\"Unauthorized\"}")
+            }
+            guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted,
+                  serverId.isEmpty || info.serverId == serverId
+            else {
+                return Self.json(404, "{\"error\":\"Agent not found\"}")
+            }
+            guard oauth.memberRole(serverId: info.serverId, userId: userId) != nil else {
+                return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            }
+            if info.runtime == "external" {
+                return Self.json(400, "{\"error\":\"External agents do not use Raft-managed runtime lifecycle\"}")
+            }
             let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
             if let target = object?["target"] as? [String: Any], target["kind"] as? String == "hosted" {
                 return startHostedMigration(info: info, userId: userId, serverId: info.serverId, target: target)
@@ -11173,12 +11253,57 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
             return Self.json(202, "{\"ok\":true,\"status\":\"accepted\"}")
         }
-        let mode = ((try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any])?["mode"] as? String ?? "session"
-        guard mode == "restart" || mode == "session" || mode == "full" else {
-            return Self.json(400, "{\"error\":\"mode must be restart, session, or full\"}")
+        let resolved = agentLifecycleActor(
+            authorization,
+            agentId: agentId,
+            serverId: serverId,
+            capability: .controlRuntime
+        )
+        if let reply = resolved.reply { return reply }
+        guard let actor = resolved.actor else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
         }
-        if mode == "full", !privileged {
-            return Self.json(403, "{\"error\":\"resetAgentWorkspace requires creator or server admin authority\"}")
+        let info = actor.info
+        if action == "start" {
+            if info.runtime == "external" {
+                return Self.json(400, "{\"error\":\"External agents do not use Raft-managed runtime lifecycle\"}")
+            }
+            lock.lock()
+            let machineId = agentMachineIds[agentId]
+            let online = machineId.map { machineOnline[$0] == true } ?? false
+            lock.unlock()
+            guard let machineId else {
+                return Self.json(409, "{\"error\":\"No machine assigned. Please assign a machine to this agent first.\",\"code\":\"machine_unassigned\"}")
+            }
+            guard online else {
+                return Self.json(409, "{\"error\":\"Machine is offline\",\"code\":\"machine_offline\",\"machineAffinityRoute\":\"owner_missing\"}")
+            }
+            return Self.json(200, "{\"ok\":true}")
+        }
+        if action == "stop" {
+            if info.runtime == "external" {
+                return Self.json(400, "{\"error\":\"External agents do not use Raft-managed runtime lifecycle\"}")
+            }
+            return Self.json(200, "{\"ok\":true}")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        let requestedMode = object?["mode"] as? String
+        var mode: String
+        if let requestedMode, ["restart", "session", "full"].contains(requestedMode) {
+            mode = requestedMode
+        } else if object?["clearWorkspace"] as? Bool == true {
+            mode = "full"
+        } else {
+            mode = "session"
+        }
+        if mode == "full" {
+            let mayResetWorkspace = actor.role == "owner" || actor.role == "admin" || info.creatorUserId == actor.userId
+            guard mayResetWorkspace else {
+                return Self.json(403, "{\"error\":\"The `resetAgentWorkspace` capability or human creator authority is required to reset agent workspaces\"}")
+            }
+        }
+        if info.runtime == "external" {
+            return Self.json(400, "{\"error\":\"External agents do not use Raft-managed runtime lifecycle\"}")
         }
         return Self.json(202, "{\"ok\":true,\"status\":\"accepted\"}")
     }

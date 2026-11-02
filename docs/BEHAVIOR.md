@@ -605,3 +605,14 @@ RFC 074 personal assistant：
 - 已废弃 runtime（kimi/gemini/antigravity/copilot）不能新建：legacy `runtime` 或结构化 `runtimeConfig.runtime` → 400 `Runtime is deprecated and cannot be selected: <runtime>`。
 - `PATCH /api/agents/:id` 禁止切换到废弃 runtime；若当前 agent 本身就是该 legacy runtime，则允许继续编辑并保留 runtime/model。
 
+
+### agents.api：runtime 生命周期组
+
+- `GET /api/agents/:id` 对非 UUID 回 404 `{"error":"Agent not found"}`（不进入查询）；agent 不属于请求头 `X-Server-Id` 指定的 Server 时同样 404，指定正确 Server 时 200。
+- `POST /api/agents/:id/start` 的权限是 `controlAgentRuntime`（member/admin/owner）或 human creator：guest → 403 `The `controlAgentRuntime` capability or human creator authority is required to control agents`，未认证 → 401，跨 Server → 404 `Agent not found`。
+- `POST /api/agents/:id/start` 未分配 Computer → 409 `{"error":"No machine assigned. Please assign a machine to this agent first.","code":"machine_unassigned"}`；Computer 离线 → 409 `{"error":"Machine is offline","code":"machine_offline","machineAffinityRoute":"owner_missing"}`；在线 → 200 `{"ok":true}`（不再回 202 accepted）。
+- `POST /api/agents/:id/stop` 与 `/reset` 对 member 开放；external runtime 的 start/stop/reset 仍 400 `External agents do not use Raft-managed runtime lifecycle`。
+- `POST /api/agents/:id/reset`：`mode` 只认 restart/session/full；未知 mode 回落到 session，无 mode 且 `clearWorkspace:true` 等价 full；full 需要 `resetAgentWorkspace`（owner/admin 或 creator），否则 403 且错误文本含 `resetAgentWorkspace`；成功 202 `{"ok":true,"status":"accepted"}`。
+- `DELETE /api/agents/:id` 需要 `deleteAgents`（owner/admin）或 human creator，否则 403 `The `deleteAgents` capability or human creator authority is required to delete agents`；`workspace` 只接受 keep/delete，其他值 → 400 `{"error":"workspace must be keep or delete","code":"archive_workspace_choice_invalid"}` 且 agent 不变；`workspace:"delete"` 但 agent 无 Computer、是 external、或已是 hosted → 409 `{"error":"This agent has no workspace on a Computer.","code":"archive_workspace_unavailable"}`；迁移进行中 → 409 `archive_migration_active`。
+- `DELETE /api/agents/:id` 成功回 200 `{"ok":true}`，软删 agent、释放其 task 归属、写 archive 行，并向 `server:<id>` 房间广播 `agent:deleted` `{"agentId":...}`；随后 `GET /api/agents/:id` 404。
+- `GET /api/agents/archived` 行含 `agentId/machineName/workspaceState`；keep 归档为 `on_computer`，未分配 Computer 时 `machineName` 为 null。

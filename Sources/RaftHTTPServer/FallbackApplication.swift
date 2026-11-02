@@ -1416,7 +1416,8 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("api", "agents", ":id") { request -> Response in
         routeResponse(services.emailAccounts.getAgentRoute(
             authorization: request.headers[.authorization],
-            agentId: request.parameters.get("id") ?? ""
+            agentId: request.parameters.get("id") ?? "",
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
         ))
     }
     app.post("api", "agents", ":id", "avatar") { request -> Response in
@@ -1441,7 +1442,8 @@ public func configure(_ app: Application, services: FallbackServices) {
         routeResponse(services.emailAccounts.patchAgent(
             authorization: request.headers[.authorization],
             agentId: request.parameters.get("id") ?? "",
-            body: request.body.string ?? ""
+            body: request.body.string ?? "",
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
         ))
     }
     app.get("api", "agents", ":id", "workspace-files") { request -> Response in
@@ -1598,7 +1600,8 @@ public func configure(_ app: Application, services: FallbackServices) {
         routeResponse(services.emailAccounts.deleteAgentRoute(
             authorization: request.headers[.authorization],
             agentId: request.parameters.get("id") ?? "",
-            body: request.body.string ?? ""
+            body: request.body.string ?? "",
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
         ))
     }
     app.post("api", "agents", ":id", "assign-machine") { request -> Response in
@@ -1613,7 +1616,8 @@ public func configure(_ app: Application, services: FallbackServices) {
             authorization: request.headers[.authorization],
             agentId: request.parameters.get("id") ?? "",
             action: "start",
-            body: request.body.string ?? ""
+            body: request.body.string ?? "",
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
         ))
     }
     app.post("api", "agents", ":id", "stop") { request -> Response in
@@ -1621,7 +1625,8 @@ public func configure(_ app: Application, services: FallbackServices) {
             authorization: request.headers[.authorization],
             agentId: request.parameters.get("id") ?? "",
             action: "stop",
-            body: request.body.string ?? ""
+            body: request.body.string ?? "",
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
         ))
     }
     app.post("api", "agents", ":id", "reset") { request -> Response in
@@ -1629,7 +1634,8 @@ public func configure(_ app: Application, services: FallbackServices) {
             authorization: request.headers[.authorization],
             agentId: request.parameters.get("id") ?? "",
             action: "reset",
-            body: request.body.string ?? ""
+            body: request.body.string ?? "",
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
         ))
     }
     app.post("api", "agents", ":id", "migrate") { request -> Response in
@@ -1637,7 +1643,8 @@ public func configure(_ app: Application, services: FallbackServices) {
             authorization: request.headers[.authorization],
             agentId: request.parameters.get("id") ?? "",
             action: "migrate",
-            body: request.body.string ?? ""
+            body: request.body.string ?? "",
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
         ))
     }
     app.get("api", "agents", ":id", "hosted-runtime") { request -> Response in
