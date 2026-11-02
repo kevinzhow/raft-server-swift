@@ -7877,6 +7877,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return accounts.values.first { $0.id == userId }?.passwordCredentialEstablishedAt != nil
     }
 
+    public func integrationSettingsClients(authorization: String?, serverId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let data = try? JSONSerialization.data(withJSONObject: oauth.integrationSettingsClients(serverId: serverId))
+        return Self.json(200, String(decoding: data ?? Data("[]".utf8), as: UTF8.self))
+    }
+
     public func login(body: String) -> HTTPReply {
         switch Self.parse(body) {
         case .invalid(let issues):

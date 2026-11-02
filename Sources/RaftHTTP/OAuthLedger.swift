@@ -1394,8 +1394,8 @@ public final class OAuthLedger: @unchecked Sendable {
                 "id": client.id,
                 "clientId": client.clientId,
                 "name": client.name,
-                "description": client.descriptionText as Any,
-                "homepageUrl": client.homepageUrl as Any,
+                "description": client.descriptionText.map { $0 as Any } ?? NSNull(),
+                "homepageUrl": client.homepageUrl.map { $0 as Any } ?? NSNull(),
                 "agentManifestUrl": client.agentManifestUrl as Any,
                 "agentManifestUrlSource": client.agentManifestUrlSource as Any,
                 "allowedScopes": client.allowedScopes as Any,
@@ -1497,6 +1497,109 @@ public final class OAuthLedger: @unchecked Sendable {
             clients[index].appType = appType
         }
         lock.unlock()
+    }
+
+    /// Reviewer transition used by the publish/moderation flow. Publishing or
+    /// returning the App to private restores the owning Server's installation;
+    /// the in-between requested states touch only the declaration.
+    @discardableResult
+    public func reviewClientPublish(clientRecordId: String, status: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = clients.firstIndex(where: { $0.id == clientRecordId }) else { return false }
+        clients[index].publishStatus = status
+        if status == "published" {
+            clients[index].humanMarketplaceVisible = true
+        }
+        guard status == "published" || status == "private" else { return true }
+        let client = clients[index]
+        let hasInstall = installations.contains {
+            $0.clientId == client.id && $0.serverId == client.serverId && $0.status == "active"
+        }
+        if !hasInstall {
+            installations.append(Installation(
+                id: UUID().uuidString.lowercased(),
+                serverId: client.serverId,
+                clientId: client.id,
+                installedByUserId: client.createdByUserId,
+                approvedGroups: [],
+                grantRevision: 1,
+                status: "active"
+            ))
+        }
+        return true
+    }
+
+    public func setClientPublishStatusForTesting(clientRecordId: String, status: String) {
+        lock.lock()
+        if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
+            clients[index].publishStatus = status
+        }
+        lock.unlock()
+    }
+
+    public func removeInstallationsForTesting(clientRecordId: String) {
+        lock.lock()
+        installations.removeAll { $0.clientId == clientRecordId }
+        lock.unlock()
+    }
+
+    public func installationGroupsForTesting(clientRecordId: String, serverId: String) -> [String]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return installations.first {
+            $0.clientId == clientRecordId && $0.serverId == serverId && $0.status == "active"
+        }?.approvedGroups
+    }
+
+    public func seedRevokedOAuthAccessTokenForTesting(
+        serverId: String,
+        clientRecordId: String,
+        userId: String,
+        rawToken: String
+    ) {
+        lock.lock()
+        tokens.append(AccessToken(
+            serverId: serverId,
+            userId: userId,
+            clientId: clientRecordId,
+            requestId: UUID().uuidString.lowercased(),
+            tokenHash: sha256(rawToken),
+            scopes: ["openid"],
+            expiresAt: Date().addingTimeInterval(3600),
+            revokedAt: Date()
+        ))
+        lock.unlock()
+    }
+
+    public func revokedOAuthTokenCountForTesting(clientRecordId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return tokens.filter { $0.clientId == clientRecordId && $0.revokedAt != nil }.count
+    }
+
+    /// Settings list: every App this Server owns or has installed. A published
+    /// marketplace App without a local installation is not listed.
+    public func integrationSettingsClients(serverId: String) -> [[String: Any]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return clients.filter { client in
+            guard client.enabled, isUserManaged(client) else { return false }
+            if client.serverId == serverId { return true }
+            return installations.contains {
+                $0.clientId == client.id && $0.serverId == serverId && $0.status == "active"
+            }
+        }.map { client in
+            [
+                "id": client.id,
+                "clientId": client.clientId,
+                "name": client.name,
+                "appType": client.appType,
+                "description": client.descriptionText as Any,
+                "homepageUrl": client.homepageUrl as Any,
+                "publishStatus": client.publishStatus,
+            ]
+        }
     }
 
     public func publishClient(clientRecordId: String, humanMarketplaceVisible: Bool = true) {

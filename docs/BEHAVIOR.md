@@ -552,3 +552,13 @@ RBAC Phase 3 精确对象权限：
 - S11：离站 creator/registrant 的在线 socket 不再收到 `agent:session`/`machine:status` 服务器房间事件；同一 server 的授权成员仍收到。
 - `GET /api/servers/:id/machines/:machineId/workspaces` 对非成员回 403 `Not a member of this server`（此前 404）。
 
+### oauthOfflineSource.api
+
+离线 App 重新发布后的 human login：
+
+- `GET /api/integrations/clients` 返回本 Server 拥有或已安装的 App（含 offline private App），行含 `id/clientId/name/appType/publishStatus`。
+- 离线 private third-party App 在无 active installation 时 lookup 404；仅设置 `publish_requested` 仍 404。
+- reviewer 置为 `published` 时恢复 owner Server 的 active installation（空 groups），lookup 200；`authorize/human` → code → `oauth/token` → `userinfo` 正常。
+- 已撤销的 access token 仍 401，撤销行数不变。
+- 手动卸载后 reviewer 置 `unpublish_requested` 再置 `private`，会重建 owner Server 的 installation（空 groups）；本 Server lookup 200，其他 Server 404。
+
