@@ -188,3 +188,77 @@ import VaporTesting
         }
     }
 }
+
+@Test func agentIntegrationLoginGuidesUninstalledPublicApps() async throws {
+    let accounts = EmailLoginDirectory()
+    let serverId = "33333333-3333-4333-8333-000001031005"
+    let publisherId = "33333333-3333-4333-8333-000001031006"
+    let ownerId = "11111111-1111-4111-8111-000001031005"
+    accounts.addAccount(id: ownerId, email: "guidance-owner@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "guidance-server", name: "Guidance Server", ownerId: ownerId)
+    accounts.oauth.addOwnedServer(id: publisherId, slug: "guidance-publisher", name: "Guidance Publisher", ownerId: ownerId)
+    let publicClient = try accounts.oauth.createClient(
+        serverId: publisherId,
+        createdByUserId: ownerId,
+        name: "Public Guidance App",
+        clientId: "public-guidance-demo",
+        appType: "third_party_global",
+        homepageUrl: "https://public-guidance.example.test",
+        returnUrl: "https://public-guidance.example.test/callback",
+        allowedScopes: ["openid", "profile", "identity"]
+    )
+    accounts.oauth.publishClient(clientRecordId: publicClient.id, humanMarketplaceVisible: true)
+    _ = try accounts.oauth.createClient(
+        serverId: publisherId,
+        createdByUserId: ownerId,
+        name: "Private Guidance App",
+        clientId: "private-guidance-demo",
+        appType: "server_local",
+        returnUrl: "https://private-guidance.example.test/callback"
+    )
+    let agent = accounts.oauth.createAgent(serverId: serverId, name: "GuidanceBot", runtime: "external")
+    let key = accounts.mintAgentCredential(agentId: agent, scopes: ["read"], name: "guidance")
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(key)"
+            headers[.contentType] = "application/json"
+            func login(_ body: String) async throws -> ClientResponse {
+                try await client.send(.post, headers: headers, to: "/internal/agent-api/integrations/login") { request in
+                    request.body = .init(string: body)
+                }
+            }
+            let guided = try await login("{\"service\":\"public-guidance-demo\",\"scopes\":[\"openid\"]}")
+            #expect(guided.status == .ok)
+            let guidedBody = (try JSONSerialization.jsonObject(with: Data((guided.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            #expect(guidedBody["status"] as? String == "install_required")
+            #expect(guidedBody["nextAction"] as? String == "install_from_marketplace")
+            #expect((guidedBody["service"] as? [String: Any])?["clientId"] as? String == "public-guidance-demo")
+            #expect(guidedBody["scopes"] as? [String] == ["openid"])
+            let installation = try #require(guidedBody["installation"] as? [String: Any])
+            #expect(installation["serverSlug"] as? String == "guidance-server")
+            #expect((installation["marketplaceUrl"] as? String ?? "").contains("marketplace_app=\(publicClient.id)"))
+            #expect(installation["actionCardMessageId"] is NSNull)
+
+            let invalid = try await login("{\"service\":\"public-guidance-demo\",\"scopes\":[\"app_admin\"]}")
+            #expect(invalid.status == .badRequest)
+            #expect(((try JSONSerialization.jsonObject(with: Data((invalid.body.string ?? "").utf8))) as? [String: Any])?["errorCode"] as? String == "INVALID_SCOPE")
+
+            let privateLookup = try await login("{\"service\":\"private-guidance-demo\"}")
+            #expect(privateLookup.status == .notFound)
+            #expect(((try JSONSerialization.jsonObject(with: Data((privateLookup.body.string ?? "").utf8))) as? [String: Any])?["error"] as? String == "Registered service not found")
+
+            _ = accounts.oauth.installClient(serverId: serverId, clientRecordId: publicClient.id, installedByUserId: ownerId, groups: [])
+            let installed = try await login("{\"service\":\"public-guidance-demo\",\"scopes\":[\"openid\"]}")
+            #expect(((try JSONSerialization.jsonObject(with: Data((installed.body.string ?? "").utf8))) as? [String: Any])?["status"] as? String == "logged_in")
+        }
+    }
+}

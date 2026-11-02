@@ -512,3 +512,5 @@ Task realtime projection：`PATCH /api/tasks/:taskId/claim` 只向 `channel:<id>
 
 Integration login 的 installed app：除本 server 的 integration service 外，也按 clientId 解析该 server 的 active installation（third-party/global/private installed app）。首次回 `status:"logged_in"` + `requestId`，不带 `approval`；重复回 `already_logged_in`。未安装的跨 server private app 仍 404。
 
+Integration login 的 uninstalled public app：已发布可见的 third-party global app 在未安装时回 200 `{status:"install_required",nextAction:"install_from_marketplace",service,scopes,installation:{serverSlug,marketplaceUrl,actionCardMessageId:null}}`；marketplaceUrl 含 `marketplace_app=<client record id>`。非法 scope → 400 `INVALID_SCOPE`；未安装的跨 server private app → 404 `Registered service not found`；安装后再次 login → `logged_in`。
+

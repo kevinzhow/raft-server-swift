@@ -15561,11 +15561,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let serviceRef = object["service"] as? String, !serviceRef.isEmpty,
-              let service = oauth.integrationLoginClient(serverId: agent.serverId, clientId: serviceRef),
-              let serviceId = service["id"] as? String
+              let serviceRef = object["service"] as? String, !serviceRef.isEmpty
         else {
-            return Self.json(404, "{\"error\":\"Integration service not found\",\"code\":\"integration_not_found\"}")
+            return Self.json(404, "{\"error\":\"Registered service not found\",\"code\":\"integration_not_found\"}")
+        }
+        let installedService = oauth.integrationLoginClient(serverId: agent.serverId, clientId: serviceRef)
+        let publicService = installedService == nil ? oauth.publicIntegrationClient(clientId: serviceRef) : nil
+        guard let service = installedService ?? publicService, let serviceId = service["id"] as? String else {
+            return Self.json(404, "{\"error\":\"Registered service not found\",\"code\":\"integration_not_found\"}")
         }
         let defaultScopes: [String] = (service["allowedScopes"] as? [String]) == nil ? ["identity", "openid", "profile"] : ["openid"]
         let requestedScopes = (object["scopes"] as? [Any])?.compactMap { $0 as? String } ?? []
@@ -15573,6 +15576,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"Scope is not allowed for this service\",\"errorCode\":\"INVALID_SCOPE\"}")
         }
         let effectiveScopes = requestedScopes.isEmpty ? defaultScopes : requestedScopes
+        if installedService == nil {
+            let profile = oauth.serverProfile(id: agent.serverId)
+            let serverSlug = profile?.slug ?? ""
+            let marketplaceUrl = "/marketplace?marketplace_app=\(serviceId)"
+            let scopesJSON = effectiveScopes.map(jsonString).joined(separator: ",")
+            return Self.json(200, "{\"status\":\"install_required\",\"nextAction\":\"install_from_marketplace\",\"service\":\(Self.integrationServiceJSON(service)),\"scopes\":[\(scopesJSON)],\"installation\":{\"serverSlug\":\(jsonString(serverSlug)),\"marketplaceUrl\":\(jsonString(marketplaceUrl)),\"actionCardMessageId\":null}}")
+        }
         let key = "\(agent.serverId)\n\(agent.id)\n\(serviceId)"
         lock.lock()
         let existing = agentIntegrationLogins[key]
