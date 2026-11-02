@@ -5,7 +5,7 @@ activityContractHeader.api	route	locked	09c0eb0	contract header on rejected acti
 agentApiErrorTrace	route	pending	-	auto-seed
 agentApiIdempotentWrites.realPg	route	pending	-	auto-seed
 agentAppAccess.api	route	pending	-	auto-seed
-agentArchive.api	route	partial	dfc4cab	keep/delete choices, archive view fields, pending delete op and waitingForComputer, creator/admin inspect, agent_not_archived, archive_op_pending, archive_workspace_unavailable, archive:updated/deleted broadcast, member-vs-guest archived list, active-migration refusal covered; excluded in-process dispatch retries/timeouts/exhaustion, daemon workspace file tree, bootstrap-token and credential revocation DB rows
+agentArchive.api	route	locked	dfc4cab	keep/delete choices, archive view fields, pending delete op and waitingForComputer, creator/admin inspect, agent_not_archived, archive_op_pending, archive_workspace_unavailable, archive:updated/deleted broadcast, member-vs-guest archived list, active-migration refusal, reminder cancellation covered; excluded as non-portable: in-process dispatch retries/timeouts/attempt-exhaustion, stuck-Computer lease, ready-frame sweep, daemon workspace file tree, bootstrap-token and credential revocation DB rows, workspaceState deleted transition (requires the Computer dispatch port)
 agentAudienceJwt.api	route	locked	8d61ce1	built-in ES256 audience JWT, live grant gates, scoped issuer claims
 agentAudienceJwt.grafana	route	pending	-	auto-seed
 agentAudienceJwtBuiltIn.api	route	locked	adf3ae2	ignored legacy columns, installation-gated issuance, compat GET/410 PUT
