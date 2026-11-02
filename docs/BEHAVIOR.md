@@ -590,3 +590,11 @@ RFC 074 personal assistant：
 - URL 非法、`sslmode` 非 `disable`、连接失败或查询失败：仍 503，错误文本不外泄。
 - `DATABASE_URL` 由 `make pg-url` 生成；`make pg-up` 起本地 Postgres，`make test-pg` 跑真实 `SELECT 1`。
 - 领域存储仍是内存实现；B2 只接通健康探针。
+
+### agents.api：identity 组
+
+- `GET /api/agents/:id/channels`：只返回 viewer 可见的 channel/private/joint 成员关系；隐藏 private/joint 不出现；DM 不出现；`activityMuted`/`muteFromSeq` 取该 agent 的偏好，viewer 的 mute 不泄漏；`archivedAt` 为 null。
+- `POST /api/agents`：同 server 已有 active agent 使用同名 handle → 409 `Agent name is already taken`；保留 handle（all/human(s)/agent(s)/here/idle/busy/system/reminders，大小写不敏感）→ 400 `This username is reserved. Choose another name.`。
+- Agent creator 在创建时写入；member 尝试 `PATCH /api/agents/:id/creator` → 404，creator 不变；`GET /api/servers/:id/members/:memberId/profile` 返回 `createdAgents`。
+- member 的 viewAgents authority 可读取 `GET /api/agents/:id/runtime-options`（200）。
+

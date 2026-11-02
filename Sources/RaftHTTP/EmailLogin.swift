@@ -9770,6 +9770,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(400, "{\"error\":\"Invalid Agent\"}")
         }
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reservedHandles: Set<String> = [
+            "all", "human", "humans", "agent", "agents", "here",
+            "idle", "busy", "system", "reminders",
+        ]
+        guard !reservedHandles.contains(trimmedName.lowercased()) else {
+            return Self.json(400, "{\"error\":\"This username is reserved. Choose another name.\"}")
+        }
+        let duplicate = oauth.serverAgents(serverId: serverId).contains {
+            !$0.deleted && $0.name.caseInsensitiveCompare(trimmedName) == .orderedSame
+        }
+        guard !duplicate else {
+            return Self.json(409, "{\"error\":\"Agent name is already taken\"}")
+        }
         let external = object["external"] as? Bool ?? false
         if external, object["machineId"] != nil {
             return Self.json(400, "{\"error\":\"External agents cannot be assigned to a Computer\"}")
@@ -15438,7 +15452,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let name = jsonString(targetAccount?.name ?? "")
         let avatar = targetAccount?.avatarUrl.map { jsonString($0) } ?? "null"
-        return Self.json(200, "{\"userId\":\(jsonString(memberId)),\"name\":\(name),\"displayName\":\(name),\"email\":\(email),\"avatarUrl\":\(avatar)}")
+        let createdAgents = oauth.serverAgents(serverId: serverId)
+            .filter { !$0.deleted && $0.creatorUserId == memberId }
+            .map { agent in
+                "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName))}"
+            }
+            .joined(separator: ",")
+        return Self.json(200, "{\"userId\":\(jsonString(memberId)),\"name\":\(name),\"displayName\":\(name),\"email\":\(email),\"avatarUrl\":\(avatar),\"createdAgents\":[\(createdAgents)]}")
     }
 
     public func serverMembersList(authorization: String?, serverId: String) -> HTTPReply {
