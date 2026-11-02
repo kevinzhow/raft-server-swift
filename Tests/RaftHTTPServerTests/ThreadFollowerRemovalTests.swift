@@ -67,7 +67,10 @@ import VaporTesting
             #expect((removalBody?["undoToken"] as? String)?.isEmpty == false)
             #expect(!accounts.oauth.channelAgentIds(channelId: threadId).contains(agentId))
 
-            let restore = try await client.send(.post, headers: headers(ownerToken), to: "/api/channels/threads/\(threadId)/followers/agents/\(agentId)/restore")
+            let token = removalBody?["undoToken"] as? String ?? ""
+            let restore = try await client.send(.post, headers: headers(ownerToken), to: "/api/channels/threads/\(threadId)/followers/agents/\(agentId)/restore") { request in
+                request.body = .init(string: "{\"undoToken\":\"\(token)\"}")
+            }
             #expect(restore.status == .ok)
             #expect(accounts.oauth.channelAgentIds(channelId: threadId).contains(agentId))
         }

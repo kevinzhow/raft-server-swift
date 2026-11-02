@@ -412,3 +412,5 @@ Timezone observation：`POST /api/auth/me/timezone-observation` 需要认证，�
 
 Thread 作用域与去重：同一 parent 存在历史重复 thread 时，summary 与 `GET /channels/:id/threads/:messageId` 选 canonical（最新回复时间优先，其次回复数，再创建顺序/id）。Thread mention auto-follow 受 parent 当前可见性约束：DM/private parent 外的用户与 agent 不会被拉入 follow，public parent 仍按 server 成员。手动 follow/unfollow/done/undone 对 private parent 的非成员统一 404，且不写 follow。public parent 成员被移出时保留其 thread follow；server 成员被移出时仅 prune 其 private/DM parent 的 thread follow。public→private conversion 后，历史 follower 不再看到 thread 的 followed/inbox/unread/sync 内容，且非成员冷读 thread 历史 404；private→public 恢复 channel details、thread info 与历史读取。
 
+Thread follower 管理：`GET /api/channels/threads/followers` 对普通 viewer `canManage:false`，owner/admin 或 parent 作者 `canManage:true`。`DELETE /api/channels/threads/:threadId/followers/agents/:agentId` 仅 owner/admin/parent 作者可执行（其他 member 403）；首次删除回 `{removed:true,undoToken}` 并向 `channel:<threadId>` 发 `thread:followers-updated`，重复删除复用同一 token 且不重复发事件。`POST .../restore` 带当前 `undoToken` 回 `{ok:true,restored:true}` 并恢复 agent；旧 token 回 `{ok:true,restored:false}`，不会覆盖新删除。
+

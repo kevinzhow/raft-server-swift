@@ -287,6 +287,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var threadUnfollows: [String: ThreadUnfollowRecord] = [:]
     private var threadFollowStarts: [String: Date] = [:]
     private var threadFollowerRemovals: [String: (serverId: String, threadChannelId: String, agentId: String)] = [:]
+    private var staleThreadFollowerUndoTokens: Set<String> = []
     private var channelReadVersions: [String: Int] = [:]
     private var agentChannelReadCursors: [String: (seq: Int, version: Int)] = [:]
     private var userChannelReadCursors: [String: Int] = [:]
@@ -4879,14 +4880,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
+        if let existing = threadFollowerRemovals.first(where: {
+            $0.value.threadChannelId == threadId && $0.value.agentId == agentId
+        }) {
+            lock.unlock()
+            return Self.json(200, "{\"ok\":true,\"removed\":true,\"undoToken\":\(jsonString(existing.key))}")
+        }
         let undoToken = UUID().uuidString.lowercased()
         threadFollowerRemovals[undoToken] = (serverId, threadId, agentId)
         lock.unlock()
         oauth.removeChannelAgent(channelId: threadId, agentId: agentId)
+        emitRealtime("channel:\(threadId)", "thread:followers-updated", "{\"threadChannelId\":\(jsonString(threadId))}")
         return Self.json(200, "{\"removed\":true,\"undoToken\":\(jsonString(undoToken))}")
     }
 
-    public func restoreThreadFollower(authorization: String?, serverId: String, threadId: String, agentId: String) -> HTTPReply {
+    public func restoreThreadFollower(authorization: String?, serverId: String, threadId: String, agentId: String, body: String = "{}") -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
@@ -4902,10 +4910,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
-        threadFollowerRemovals = threadFollowerRemovals.filter { $0.value.threadChannelId != threadId || $0.value.agentId != agentId }
+        let token = ((try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any])?["undoToken"] as? String ?? ""
+        guard let record = threadFollowerRemovals[token],
+              record.threadChannelId == threadId,
+              record.agentId == agentId
+        else {
+            let stale = staleThreadFollowerUndoTokens.contains(token)
+            lock.unlock()
+            if stale {
+                return Self.json(200, "{\"ok\":true,\"restored\":false}")
+            }
+            return Self.json(200, "{\"ok\":true,\"restored\":false}")
+        }
+        threadFollowerRemovals.removeValue(forKey: token)
+        staleThreadFollowerUndoTokens.insert(token)
         lock.unlock()
         oauth.addChannelAgent(channelId: threadId, agentId: agentId)
-        return Self.json(200, "{\"restored\":true}")
+        emitRealtime("channel:\(threadId)", "thread:followers-updated", "{\"threadChannelId\":\(jsonString(threadId))}")
+        return Self.json(200, "{\"ok\":true,\"restored\":true}")
     }
 
     public func threadFollowerRoster(authorization: String?, serverId: String, threadChannelIds: String?) -> HTTPReply {
