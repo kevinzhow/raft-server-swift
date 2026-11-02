@@ -975,7 +975,10 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("api", "channels", "threads", "followed") { request -> Response in
         routeResponse(services.emailAccounts.followedThreads(
             authorization: request.headers[.authorization],
-            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            limit: desktopQuery(request.url.query, "limit"),
+            cursor: desktopQuery(request.url.query, "cursor"),
+            unreadOnly: desktopQuery(request.url.query, "unreadOnly")
         ))
     }
     app.get("api", "channels", ":channelId", "threads", ":messageId") { request -> Response in

@@ -402,3 +402,5 @@ Locked module groups（此前已实现，本轮按可移植用例完成审计并
 
 Thread 打开路径：`POST /api/channels/:id/threads` 缺 body 或 `parentMessageId` 时 400 `{"error":"parentMessageId is required"}`；parent 消息不属于该频道时 404 `{"error":"Parent message not found"}`。只带 parent 创建空 thread 不自动 follow 调用者（响应 `replyCount:0`、`lastReplyAt:null`、`participantIds:[]`）。带第一条回复时 follow 发送者与 parent 作者（如作者仍是该 server 成员且不是 system）。thread 新消息会清除所有 follower 的 done 状态，使 `/api/channels/threads/followed` 重新出现该 thread。
 
+Followed thread 分页：`GET /api/channels/threads/followed` 默认返回全部 follow 且无 `next`；`limit=1..200` 时按 parent message createdAt 降序分页，带 `next`（末页 `null`），cursor 形如 `v1:<offset>`，非法 cursor 或 cursor 无 limit、limit 越界均 400。行新增 `parentChannelId`、`parentMessageCreatedAt`、`firstUnreadMessageId`、`hasMention`；`unreadOnly=1/true` 只返回未读 thread。Unread summary：`GET /api/channels/unread?summary=1` 的 `channels` 只含未读 scope，thread entry 带 `parentChannelId/parentMessageId`；`threadUnread` 按 parent channel 折叠未读 thread 数（count 为未读 thread 数，不是消息数）与 `hasMention`；done/unfollowed/zero-unread thread 不出现。
+

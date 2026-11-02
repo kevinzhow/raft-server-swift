@@ -5033,20 +5033,48 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             .sorted()
     }
 
-    public func followedThreads(authorization: String?, serverId: String) -> HTTPReply {
+    public func followedThreads(
+        authorization: String?,
+        serverId: String,
+        limit rawLimit: String? = nil,
+        cursor rawCursor: String? = nil,
+        unreadOnly rawUnreadOnly: String? = nil
+    ) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
+        let pageLimit: Int?
+        if let rawLimit {
+            guard let parsed = Int(rawLimit), parsed >= 1, parsed <= 200, String(parsed) == rawLimit else {
+                return Self.json(400, "{\"error\":\"limit must be an integer between 1 and 200\"}")
+            }
+            pageLimit = parsed
+        } else {
+            pageLimit = nil
+        }
+        var cursorOffset = 0
+        if let rawCursor {
+            guard pageLimit != nil else {
+                return Self.json(400, "{\"error\":\"cursor requires limit\"}")
+            }
+            guard rawCursor.hasPrefix("v1:"), let parsed = Int(rawCursor.dropFirst(3)), parsed >= 0 else {
+                return Self.json(400, "{\"error\":\"invalid cursor\"}")
+            }
+            cursorOffset = parsed
+        }
+        let unreadOnly = rawUnreadOnly == "1" || rawUnreadOnly == "true"
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         lock.lock()
         let follows = threadFollows.values.filter {
             $0.serverId == serverId
                 && $0.userId == userId
                 && !inboxDoneScopes.contains("\(userId)\n\($0.threadChannelId)")
         }
-        var rows: [String] = []
+        var entries: [(threadId: String, parentChannelId: String, parentCreatedAt: Date, unreadCount: Int, firstUnread: String?, hasMention: Bool, follow: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String))] = []
         for follow in follows {
             guard let thread = postableChannels[follow.threadChannelId], thread.deletedAt == nil else { continue }
             if let parentId = thread.parentChannelId, let parent = postableChannels[parentId], parent.deletedAt != nil {
@@ -5058,12 +5086,54 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let info = oauth.channelUnreadInfo(channelId: follow.threadChannelId, userId: userId)
             let threadReplies = humanMessageRows.filter { $0.channelId == follow.threadChannelId }
             var unreadCount = info.unreadCount
+            var firstUnread: String?
             if !threadReplies.isEmpty {
-                unreadCount = threadReplies.enumerated().filter { index, reply in
-                    index + 1 > info.maxReadSeq && reply.senderId != userId
-                }.count
+                unreadCount = 0
+                for (index, reply) in threadReplies.enumerated() where index + 1 > info.maxReadSeq && reply.senderId != userId {
+                    unreadCount += 1
+                    if firstUnread == nil { firstUnread = reply.id }
+                }
             }
-            let task = taskRecords.first { $0.messageId == follow.parentMessageId }
+            if unreadOnly, unreadCount == 0 { continue }
+            let unreadIDs = Set(threadReplies.enumerated().filter { index, reply in
+                index + 1 > info.maxReadSeq && reply.senderId != userId
+            }.map { $0.element.id })
+            let hasMention = storedMentions.contains { row in
+                row.targetType == "user"
+                    && row.targetId == userId
+                    && row.notifiableAtSend
+                    && unreadIDs.contains(row.messageId)
+            }
+            let parentCreatedAt = humanMessageRows.first(where: { $0.id == follow.parentMessageId })?.createdAt
+                ?? Date.distantPast
+            entries.append((
+                threadId: follow.threadChannelId,
+                parentChannelId: thread.parentChannelId ?? "",
+                parentCreatedAt: parentCreatedAt,
+                unreadCount: unreadCount,
+                firstUnread: firstUnread,
+                hasMention: hasMention,
+                follow: follow
+            ))
+        }
+        entries.sort { lhs, rhs in
+            if lhs.parentCreatedAt != rhs.parentCreatedAt { return lhs.parentCreatedAt > rhs.parentCreatedAt }
+            return lhs.threadId > rhs.threadId
+        }
+        let page: ArraySlice<(threadId: String, parentChannelId: String, parentCreatedAt: Date, unreadCount: Int, firstUnread: String?, hasMention: Bool, follow: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String))>
+        let next: String?
+        if let pageLimit {
+            let start = min(cursorOffset, entries.count)
+            let end = min(start + pageLimit, entries.count)
+            page = entries[start..<end]
+            next = end < entries.count ? "v1:\(end)" : nil
+        } else {
+            page = entries[...]
+            next = nil
+        }
+        var rows: [String] = []
+        for entry in page {
+            let task = taskRecords.first { $0.messageId == entry.follow.parentMessageId }
             let taskJSON = task.map { jsonString($0.id) } ?? "null"
             let claimedType = task?.assigneeType.map { jsonString($0) } ?? "null"
             let claimedId = task?.assigneeId.map { jsonString($0) } ?? "null"
@@ -5077,10 +5147,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                     claimedName = jsonString(name)
                 }
             }
-            rows.append("{\"threadChannelId\":\(jsonString(follow.threadChannelId)),\"unreadCount\":\(unreadCount),\"taskId\":\(taskJSON),\"taskClaimedByType\":\(claimedType),\"taskClaimedById\":\(claimedId),\"taskClaimedByName\":\(claimedName)}")
+            let firstUnreadJSON = entry.firstUnread.map(jsonString) ?? "null"
+            rows.append("{\"threadChannelId\":\(jsonString(entry.threadId)),\"parentChannelId\":\(jsonString(entry.parentChannelId)),\"parentMessageCreatedAt\":\(jsonString(formatter.string(from: entry.parentCreatedAt))),\"unreadCount\":\(entry.unreadCount),\"firstUnreadMessageId\":\(firstUnreadJSON),\"hasMention\":\(entry.hasMention ? "true" : "false"),\"taskId\":\(taskJSON),\"taskClaimedByType\":\(claimedType),\"taskClaimedById\":\(claimedId),\"taskClaimedByName\":\(claimedName)}")
         }
         lock.unlock()
-        return Self.json(200, "{\"threads\":[\("\(rows.joined(separator: ","))")]}")
+        if pageLimit != nil {
+            let nextJSON = next.map(jsonString) ?? "null"
+            return Self.json(200, "{\"threads\":[\(rows.joined(separator: ","))],\"next\":\(nextJSON)}")
+        }
+        return Self.json(200, "{\"threads\":[\(rows.joined(separator: ","))]}")
     }
 
     public func threadInfo(authorization: String?, serverId: String, channelId: String, messageId: String) -> HTTPReply {
@@ -18785,19 +18860,57 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }.joined(separator: ",")
             return Self.privateJSON("{\(pairs)}")
         }
-        let entries = channels.map { channel -> String in
+        var entries: [String] = []
+        var threadUnread: [String: (count: Int, hasMention: Bool)] = [:]
+        for channel in channels {
             let info = oauth.channelUnreadInfo(channelId: channel.id, userId: userId)
+            let thread = postableChannels[channel.id].flatMap { $0.kind == "thread" ? $0 : nil }
+            if thread != nil {
+                guard threadFollows["\(serverId)\n\(userId)\n\(channel.id)"] != nil,
+                      !inboxDoneScopes.contains("\(userId)\n\(channel.id)")
+                else { continue }
+            }
+            let threadReplies = thread == nil ? [] : humanMessageRows.filter { $0.channelId == channel.id }
+            var unreadCount = info.unreadCount
+            var latestMessageId = info.latestMessageId
+            var latestSeq = info.latestSeq
+            if !threadReplies.isEmpty {
+                unreadCount = threadReplies.enumerated().filter { index, reply in
+                    index + 1 > info.maxReadSeq && reply.senderId != userId
+                }.count
+                latestMessageId = threadReplies.last?.id
+                latestSeq = threadReplies.count
+            }
+            let mentions = storedMentions.filter { $0.channelId == channel.id && $0.targetType == "user" && $0.targetId == userId }
+            let hasAny = !mentions.isEmpty
+            if let thread, unreadCount > 0, let parentId = thread.parentChannelId {
+                var aggregate = threadUnread[parentId] ?? (count: 0, hasMention: false)
+                aggregate.count += 1
+                aggregate.hasMention = aggregate.hasMention || hasAny
+                threadUnread[parentId] = aggregate
+            }
+            guard unreadCount > 0 else { continue }
             let latest: String
-            if let messageId = info.latestMessageId, let seq = info.latestSeq {
+            if let messageId = latestMessageId, let seq = latestSeq {
                 latest = "{\"messageId\":\(jsonString(messageId)),\"seq\":\"\(seq)\"}"
             } else {
                 latest = "null"
             }
-            let mentions = storedMentions.filter { $0.channelId == channel.id && $0.targetType == "user" && $0.targetId == userId }
-            let hasAny = !mentions.isEmpty
-            return "\(jsonString(channel.id)):{\"unreadCount\":\(info.unreadCount),\"hasMention\":\(hasAny),\"hasAnyMention\":\(hasAny),\"readState\":{\"kind\":\"present\",\"readStateVersion\":0,\"maxReadSeq\":\"\(info.maxReadSeq)\",\"latestActivity\":\(latest)}}"
+            var entry = "{\"unreadCount\":\(unreadCount),\"hasMention\":\(hasAny),\"hasAnyMention\":\(hasAny),\"readState\":{\"kind\":\"present\",\"readStateVersion\":0,\"maxReadSeq\":\"\(info.maxReadSeq)\",\"latestActivity\":\(latest)}"
+            if let thread, let parentId = thread.parentChannelId {
+                entry += ",\"parentChannelId\":\(jsonString(parentId))"
+                if let parentMessageId = thread.parentMessageId {
+                    entry += ",\"parentMessageId\":\(jsonString(parentMessageId))"
+                }
+            }
+            entry += "}"
+            entries.append("\(jsonString(channel.id)):\(entry)")
+        }
+        let threadJSON = threadUnread.keys.sorted().map { parentId -> String in
+            let value = threadUnread[parentId] ?? (count: 0, hasMention: false)
+            return "\(jsonString(parentId)):{\"count\":\(value.count),\"hasMention\":\(value.hasMention)}"
         }.joined(separator: ",")
-        return Self.privateJSON("{\"channels\":{\(entries)}}")
+        return Self.privateJSON("{\"channels\":{\(entries.joined(separator: ","))},\"threadUnread\":{\(threadJSON)}}")
     }
 
     public func channelNotificationSettings(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
