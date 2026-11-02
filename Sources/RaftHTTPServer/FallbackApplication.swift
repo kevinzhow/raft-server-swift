@@ -3322,6 +3322,30 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.post("api", "auth", "login") { request -> Response in
         return routeResponse(services.emailAccounts.login(body: request.body.string ?? ""))
     }
+    app.post("api", "auth", "app-login", "start") { request -> Response in
+        routeResponse(services.emailAccounts.appLoginStart(body: request.body.string ?? "{}"))
+    }
+    app.get("api", "auth", "app-login", "requests", ":requestId") { request -> Response in
+        routeResponse(services.emailAccounts.appLoginDescribe(
+            authorization: request.headers[.authorization],
+            requestId: request.parameters.get("requestId") ?? ""
+        ))
+    }
+    app.post("api", "auth", "app-login", "requests", ":requestId", "approve") { request -> Response in
+        routeResponse(services.emailAccounts.appLoginApprove(
+            authorization: request.headers[.authorization],
+            requestId: request.parameters.get("requestId") ?? ""
+        ))
+    }
+    app.post("api", "auth", "app-login", "requests", ":requestId", "deny") { request -> Response in
+        routeResponse(services.emailAccounts.appLoginDeny(
+            authorization: request.headers[.authorization],
+            requestId: request.parameters.get("requestId") ?? ""
+        ))
+    }
+    app.post("api", "auth", "app-login", "complete") { request -> Response in
+        routeResponse(services.emailAccounts.appLoginComplete(body: request.body.string ?? "{}"))
+    }
     app.get("api", "auth", "providers") { request in
         routeResponse(services.emailAccounts.authProviders(platform: desktopQuery(request.url.query, "platform")))
     }

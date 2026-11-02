@@ -8,7 +8,7 @@ The specification is observable behavior: HTTP status codes, JSON bodies, respon
 
 This is an active behavioral port, not a production deployment.
 
-- **848 Swift tests pass** across seven test targets.
+- **852 Swift tests pass** across seven test targets.
 - The HTTP router currently registers **286 routes** covering auth, servers, channels/threads/DMs, messages, tasks, notifications, attachments, public pages, release notes, OAuth/OIDC, agents, push, and provider connections. Route-by-route completion is still in progress.
 - **There is no database connection yet.** The process injects an always-throwing database ping, so `/health` stays at `503 {"status":"error","detail":"database unreachable"}`.
 - The executable starts the Vapor HTTP app, the SwiftNIO `/daemon/connect` listener on `DAEMON_CONNECT_PORT` (default `8081`; `0` disables it), and the socket.io listener on `SOCKET_PORT` (default `8082`; `0` disables it). `RaftDaemon` performs the daemon-side handshake against that listener.
@@ -63,13 +63,13 @@ make parity                                                  # upstream coverage
 
 `make parity` reads `docs/PARITY.tsv` and prints how many upstream route/frame modules are `locked` and the weighted case coverage. Only a `locked` row with an existing commit counts, so the number cannot move without a landed slice.
 
-The full suite occasionally aborts with signal 6 or 11 under parallel execution; rerun it once before treating it as a failure. All 848 tests pass in a clean run.
+The full suite occasionally aborts with signal 6 or 11 under parallel execution; rerun it once before treating it as a failure. All 852 tests pass in a clean run.
 
 ### Test suites
 
 | Target | Tests | Covers |
 | --- | --- | --- |
-| `RaftHTTPServerTests` | 690 | Route contracts through Vapor in-memory testing. |
+| `RaftHTTPServerTests` | 694 | Route contracts through Vapor in-memory testing. |
 | `RaftDaemonClientTests` | 82 | Connect loop, daemon client, proxy selection, fetch timeouts, failure projection. |
 | `RaftHTTPTests` | 39 | Fallback/router, liveness, version identity, CORS. |
 | `RaftConnectAuthTests` | 17 | Upgrade auth, rejection reasons, RFC 6455 handshake. |

@@ -522,3 +522,13 @@ Integration login 的 uninstalled public app：已发布可见的 third-party gl
 - agent credential `POST /internal/agent-api/channels/:channelId/join`：无 server role 且非成员 → 403 同上；已是成员 → 200 `{"ok":true}`，不要求 server role。
 - legacy machine `POST /internal/agent/:agentId/channels/:channelId/join`：machine key 与 `machineKeys` 均可认证；同样的 already-member 200 与无 role 403。
 
+### appLogin.api
+
+HarmonyOS app login handoff:
+
+- `POST /api/auth/app-login/start` 接受 `returnUri` 仅限 `raft://login/callback`、`raft-debug://login/callback`，否则 400 `return_uri_not_allowed`；`codeChallengeMethod` 仅 S256；challenge 必须是 43 字符 base64url，否则 400 `code_challenge_invalid`；成功 201 `{requestId,loginUrl,expiresAt}`，`loginUrl = <APP_URL>/login/app?request=<id>`。
+- `GET /api/auth/app-login/requests/:requestId` 需登录，匿名 401。
+- `POST .../approve`：pending → 200 `{redirectUrl:"<returnUri>?requestId=<id>&code=<one-time>"}`；重复/已拒绝 409；过期 410 `{code:"request_expired",redirectUrl:"...&error=expired"}`；未知 404。
+- `POST .../deny`：pending → 200 `{redirectUrl:"...&error=access_denied"}`；之后 approve 409。
+- `POST /api/auth/app-login/complete`：code 与请求绑定；错误 verifier → 400 `pkce_mismatch` 且不消耗 code；正确 → 200 正常 session（access/refresh token，`/api/auth/me` 可用）；重放 → 410 `code_consumed`；请求过期 → 410 `code_expired`。
+

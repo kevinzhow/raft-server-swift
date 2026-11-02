@@ -162,6 +162,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var hostedMigrationServers: Set<String> = []
     private var hostedRuntimeServers: Set<String> = []
     private var hostedMigrations: [String: HostedMigrationRecord] = [:]
+    private var appLoginRequests: [String: AppLoginRequest] = [:]
+
+    private struct AppLoginRequest {
+        var id: String
+        var returnUri: String
+        var codeChallenge: String
+        var status: String
+        var code: String?
+        var userId: String?
+        var expiresAt: Date
+        var consumedAt: Date?
+    }
 
     private struct HostedMigrationRecord {
         var agentId: String
@@ -1181,12 +1193,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
               let key = try? Curve25519.Signing.PublicKey(rawRepresentation: spki.dropFirst(prefix.count))
         else { return false }
         return key.isValidSignature(signature, for: transcript)
-    }
-
-    private static func iso8601(_ date: Date) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.string(from: date)
     }
 
     private struct StoredEnrollmentGrant {
@@ -7823,6 +7829,182 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         case .request(let request):
             return authenticate(request)
         }
+    }
+
+    private static let appLoginReturnUris: Set<String> = [
+        "raft://login/callback",
+        "raft-debug://login/callback",
+    ]
+
+    private static func appLoginExpiresAt(_ now: Date = Date()) -> Date {
+        now.addingTimeInterval(600)
+    }
+
+    private static func appLoginRedirect(_ returnUri: String, requestId: String, query: String) -> String {
+        let separator = returnUri.contains("?") ? "&" : "?"
+        return "\(returnUri)\(separator)requestId=\(requestId)&\(query)"
+    }
+
+    private static func iso8601(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+
+    /// `POST /api/auth/app-login/start`. The handoff accepts only the shipped
+    /// HarmonyOS return URIs and an S256 PKCE challenge.
+    public func appLoginStart(body: String) -> HTTPReply {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let returnUri = object["returnUri"] as? String, !returnUri.isEmpty,
+              let codeChallenge = object["codeChallenge"] as? String, !codeChallenge.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"Invalid app login request\",\"code\":\"invalid_request\"}")
+        }
+        guard Self.appLoginReturnUris.contains(returnUri) else {
+            return Self.json(400, "{\"error\":\"Return URI is not allowed\",\"code\":\"return_uri_not_allowed\"}")
+        }
+        if let method = object["codeChallengeMethod"] as? String, method != "S256" {
+            return Self.json(400, "{\"error\":\"PKCE challenge method must be S256\",\"code\":\"code_challenge_method_invalid\"}")
+        }
+        guard codeChallenge.wholeMatch(of: /^[A-Za-z0-9_-]{43}$/) != nil else {
+            return Self.json(400, "{\"error\":\"PKCE challenge is invalid\",\"code\":\"code_challenge_invalid\"}")
+        }
+        let requestId = UUID().uuidString.lowercased()
+        let expiresAt = Self.appLoginExpiresAt()
+        lock.lock()
+        appLoginRequests[requestId] = AppLoginRequest(
+            id: requestId,
+            returnUri: returnUri,
+            codeChallenge: codeChallenge,
+            status: "pending",
+            code: nil,
+            userId: nil,
+            expiresAt: expiresAt,
+            consumedAt: nil
+        )
+        lock.unlock()
+        let loginUrl = "\(appURL)/login/app?request=\(requestId)"
+        return Self.json(201, "{\"requestId\":\(jsonString(requestId)),\"loginUrl\":\(jsonString(loginUrl)),\"expiresAt\":\(jsonString(Self.iso8601(expiresAt)))}")
+    }
+
+    private func appLoginActor(_ authorization: String?) -> String? {
+        if case .user(let id) = authorize(authorization) { return id }
+        return nil
+    }
+
+    private func appLoginRequestLocked(_ requestId: String) -> AppLoginRequest? {
+        appLoginRequests[requestId]
+    }
+
+    /// `GET /api/auth/app-login/requests/:requestId`. Only a signed-in user may read the request.
+    public func appLoginDescribe(authorization: String?, requestId: String) -> HTTPReply {
+        guard appLoginActor(authorization) != nil else { return Self.invalidToken }
+        lock.lock()
+        let request = appLoginRequestLocked(requestId)
+        lock.unlock()
+        guard let request else { return Self.json(404, "{\"error\":\"App login request not found\",\"code\":\"request_not_found\"}") }
+        return Self.json(200, "{\"requestId\":\(jsonString(request.id)),\"status\":\(jsonString(request.status)),\"returnUri\":\(jsonString(request.returnUri)),\"expiresAt\":\(jsonString(Self.iso8601(request.expiresAt)))}")
+    }
+
+    /// `POST /api/auth/app-login/requests/:requestId/approve`.
+    public func appLoginApprove(authorization: String?, requestId: String) -> HTTPReply {
+        guard let userId = appLoginActor(authorization) else { return Self.invalidToken }
+        let now = Date()
+        lock.lock()
+        guard var request = appLoginRequestLocked(requestId) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"App login request not found\",\"code\":\"request_not_found\"}")
+        }
+        if request.expiresAt <= now {
+            lock.unlock()
+            return Self.json(410, "{\"error\":\"App login request expired\",\"code\":\"request_expired\",\"redirectUrl\":\(jsonString(Self.appLoginRedirect(request.returnUri, requestId: request.id, query: "error=expired")))}")
+        }
+        guard request.status == "pending" else {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"App login request is not pending\",\"code\":\"request_not_pending\"}")
+        }
+        let code = Self.token()
+        request.status = "approved"
+        request.code = code
+        request.userId = userId
+        appLoginRequests[requestId] = request
+        lock.unlock()
+        let redirectUrl = Self.appLoginRedirect(request.returnUri, requestId: request.id, query: "code=\(code)")
+        return Self.json(200, "{\"redirectUrl\":\(jsonString(redirectUrl))}")
+    }
+
+    /// `POST /api/auth/app-login/requests/:requestId/deny`.
+    public func appLoginDeny(authorization: String?, requestId: String) -> HTTPReply {
+        guard appLoginActor(authorization) != nil else { return Self.invalidToken }
+        let now = Date()
+        lock.lock()
+        guard var request = appLoginRequestLocked(requestId) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"App login request not found\",\"code\":\"request_not_found\"}")
+        }
+        if request.expiresAt <= now {
+            lock.unlock()
+            return Self.json(410, "{\"error\":\"App login request expired\",\"code\":\"request_expired\",\"redirectUrl\":\(jsonString(Self.appLoginRedirect(request.returnUri, requestId: request.id, query: "error=expired")))}")
+        }
+        guard request.status == "pending" else {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"App login request is not pending\",\"code\":\"request_not_pending\"}")
+        }
+        request.status = "denied"
+        appLoginRequests[requestId] = request
+        lock.unlock()
+        let redirectUrl = Self.appLoginRedirect(request.returnUri, requestId: request.id, query: "error=access_denied")
+        return Self.json(200, "{\"redirectUrl\":\(jsonString(redirectUrl))}")
+    }
+
+    /// `POST /api/auth/app-login/complete`. The one-time code is bound to the
+    /// request's S256 challenge and request expiry; a wrong verifier does not burn it.
+    public func appLoginComplete(body: String) -> HTTPReply {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let code = object["code"] as? String, !code.isEmpty,
+              let verifier = object["codeVerifier"] as? String, !verifier.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"Invalid app login completion\",\"code\":\"invalid_request\"}")
+        }
+        let now = Date()
+        lock.lock()
+        guard let request = appLoginRequests.values.first(where: { $0.code == code }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"App login code not found\",\"code\":\"code_not_found\"}")
+        }
+        if request.consumedAt != nil {
+            lock.unlock()
+            return Self.json(410, "{\"error\":\"App login code was already used\",\"code\":\"code_consumed\"}")
+        }
+        if request.expiresAt <= now {
+            lock.unlock()
+            return Self.json(410, "{\"error\":\"App login code expired\",\"code\":\"code_expired\"}")
+        }
+        guard Self.pkceS256(verifier) == request.codeChallenge else {
+            lock.unlock()
+            return Self.json(400, "{\"error\":\"PKCE verifier does not match\",\"code\":\"pkce_mismatch\"}")
+        }
+        guard let userId = request.userId else {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"App login request is not approved\",\"code\":\"request_not_approved\"}")
+        }
+        var approved = request
+        approved.consumedAt = now
+        appLoginRequests[approved.id] = approved
+        guard let account = accounts.values.first(where: { $0.id == userId }) else {
+            lock.unlock()
+            return Self.invalidToken
+        }
+        let issued = openSessionLocked(userId: userId)
+        let user = Self.userJSON(account)
+        lock.unlock()
+        return Self.json(200, "{\"user\":\(user),\"accessToken\":\(jsonString(issued.accessToken)),\"refreshToken\":\(jsonString(issued.refreshToken))}")
+    }
+
+    public func expireAppLoginRequestForTesting(requestId: String) {
+        lock.lock()
+        appLoginRequests[requestId]?.expiresAt = Date().addingTimeInterval(-1)
+        lock.unlock()
     }
 
     private func authenticate(_ request: Request) -> HTTPReply {
