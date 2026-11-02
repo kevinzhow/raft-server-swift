@@ -504,3 +504,7 @@ Attachment comments：`POST /api/attachments/:id/comments` 为 human 唯一创�
 
 Integration login 的 service-aware defaults：client 有显式 allowedScopes 时默认 scopes 为 `["openid"]`；无显式 catalog 时默认 `["identity","openid","profile"]`。显式 `scopes` 必须是默认集合子集，否则 400 `{errorCode:"INVALID_SCOPE"}`；成功只回实际使用/请求的 scopes。
 
+Agent task create 的 `assignee`：在 channel 内解析 agent/human，创建任务后置 claimedById/Type，并回 `assignmentReceipt:{messageId,content,assignee,state:"assigned"}`；receipt 内容包含 `@handle`，并为该 assignee 写一条 `personalMention:true,unreadEligible:true` 的 inbox fact（其他 assignee 不受影响）。
+
+Retired built-in integration：agent integrations inventory/login 过滤 `appType == "slock_builtin"` 行；built-in app 即使 published/visible 也不出现在 services，login 404，且不产生 activeLogin。
+

@@ -6327,6 +6327,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true,\"markedCount\":\(scopeIds.count),\"scopes\":[\(scopeRows.joined(separator: ","))]}")
     }
 
+    public func inboxFactsForTesting(messageId: String) -> [(receiverType: String, receiverId: String, personalMention: Bool, unreadEligible: Bool)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedInboxFacts.filter { $0.messageId == messageId }.map {
+            ($0.receiverType, $0.receiverId, $0.personalMention, $0.unreadEligible)
+        }
+    }
+
     public func markInboxResidueForTesting(userId: String, channelId: String) {
         lock.lock()
         inboxResiduesForTesting.insert("\(userId)\n\(channelId)")
@@ -18702,12 +18710,61 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard !titles.isEmpty, titles.count == rawTasks.count else {
             return Self.json(400, "{\"error\":\"Invalid task request\"}")
         }
+        var assignee: (id: String, type: String, name: String)?
+        if let rawAssignee = object["assignee"] as? String, !rawAssignee.isEmpty {
+            let handle = rawAssignee.hasPrefix("@") ? String(rawAssignee.dropFirst()) : rawAssignee
+            let lowered = handle.lowercased()
+            let agentMatch = oauth.channelAgentIds(channelId: channelId).compactMap { oauth.agentRuntimeInfo(id: $0) }.first {
+                $0.name.lowercased() == lowered || $0.displayName.lowercased() == lowered
+            }
+            let humanMatch = oauth.channelHumanIds(channelId: channelId).compactMap { userId in
+                accounts.values.first { $0.id == userId }
+            }.first { $0.name.lowercased() == lowered }
+            guard (agentMatch == nil) != (humanMatch == nil) else {
+                return Self.json(404, "{\"error\":\"Assignee is not assignable\",\"code\":\"assignee_not_assignable\"}")
+            }
+            if let agentMatch {
+                assignee = (agentMatch.id, "agent", agentMatch.name)
+            } else if let humanMatch {
+                assignee = (humanMatch.id, "user", humanMatch.name)
+            }
+        }
         let ids = addTasks(channelId: channelId, titles: titles)
         let idsJSON = ids.map { jsonString($0) }.joined(separator: ",")
+        var receiptJSON = "null"
         lock.lock()
+        if let assignee {
+            for id in ids {
+                guard let index = taskRecords.firstIndex(where: { $0.id == id }) else { continue }
+                taskRecords[index].assigneeId = assignee.id
+                taskRecords[index].assigneeType = assignee.type
+                taskRecords[index].revision += 1
+            }
+            let receiptId = UUID().uuidString.lowercased()
+            let receiptContent = "@\(assignee.name) assigned you: \(titles.first ?? "task")"
+            humanMessageRows.append(StoredHumanMessage(
+                id: receiptId,
+                channelId: channelId,
+                senderId: auth.agentId,
+                content: receiptContent,
+                randomId: nil,
+                messageType: "task_assignment",
+                senderType: "agent"
+            ))
+            storedInboxFacts.append(StoredInboxFact(
+                messageId: receiptId,
+                receiverType: assignee.type,
+                receiverId: assignee.id,
+                channelId: channelId,
+                serverId: auth.serverId,
+                personalMention: true,
+                unreadEligible: true
+            ))
+            receiptJSON = "{\"messageId\":\(jsonString(receiptId)),\"content\":\(jsonString(receiptContent)),\"assignee\":\(jsonString("@\(assignee.name)")),\"state\":\"assigned\"}"
+        }
         let taskJSONs = ids.compactMap { id in taskRecords.first { $0.id == id }.map(taskJSON) }
         lock.unlock()
-        return Self.json(200, "{\"taskIds\":[\(idsJSON)],\"tasks\":[\(taskJSONs.joined(separator: ","))]}")
+        return Self.json(200, "{\"taskIds\":[\(idsJSON)],\"tasks\":[\(taskJSONs.joined(separator: ","))],\"assignmentReceipt\":\(receiptJSON)}")
     }
 
     public func agentTaskAssign(authorization: String?, body: String) -> HTTPReply {

@@ -1389,7 +1389,7 @@ public final class OAuthLedger: @unchecked Sendable {
     public func integrationServices(serverId: String) -> [[String: Any]] {
         lock.lock()
         defer { lock.unlock() }
-        return clients.filter { $0.serverId == serverId }.map { client in
+        return clients.filter { $0.serverId == serverId && $0.appType != "slock_builtin" }.map { client in
             [
                 "id": client.id,
                 "clientId": client.clientId,
