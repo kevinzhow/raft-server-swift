@@ -19,6 +19,7 @@ import VaporTesting
     accounts.oauth.addMember(serverId: serverId, userId: followerId, role: "member")
     let parent = accounts.oauth.createChannel(serverId: serverId, name: "prune-parent", creatorUserId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: parent, memberId: ownerId, name: "prune-parent")
+    let agentFollowerId = accounts.oauth.createAgent(serverId: serverId, name: "prune-agent", runtime: "codex")
     let thread = accounts.oauth.createThreadChannel(parentChannelId: parent, parentMessageId: UUID().uuidString.lowercased())
     accounts.addPostableChannel(serverId: serverId, channelId: thread, memberId: ownerId, kind: "thread", parentChannelId: parent, name: "thread")
 
@@ -52,6 +53,12 @@ import VaporTesting
                     request.body = .init(string: "{\"threadChannelId\":\"\(thread)\"}")
                 }.status == .ok)
             }
+            accounts.followThreadForTesting(
+                serverId: serverId,
+                userId: agentFollowerId,
+                threadChannelId: thread,
+                parentMessageId: "parent"
+            )
             #expect(try await client.send(.patch, headers: headers(ownerToken), to: "/api/channels/\(parent)") { request in
                 request.body = .init(string: "{\"visibility\":\"private\"}")
             }.status == .ok)
@@ -59,6 +66,33 @@ import VaporTesting
             #expect(((try JSONSerialization.jsonObject(with: Data((followerFollowed.body.string ?? "").utf8)) as? [String: Any])?["threads"] as? [[String: Any]] ?? []).isEmpty)
             let ownerFollowed = try await client.send(.get, headers: headers(ownerToken), to: "/api/channels/threads/followed")
             #expect(((try JSONSerialization.jsonObject(with: Data((ownerFollowed.body.string ?? "").utf8)) as? [String: Any])?["threads"] as? [[String: Any]] ?? []).contains { $0["threadChannelId"] as? String == thread })
+            #expect(accounts.threadFollowerIdsForTesting(threadChannelId: thread) == [ownerId])
+
+            let reply = try await client.send(.post, headers: headers(ownerToken), to: "/api/messages") { request in
+                request.body = .init(string: "{\"channelId\":\"\(thread)\",\"content\":\"private reply\"}")
+            }
+            #expect(reply.status == .ok)
+            let replyId = try #require((try JSONSerialization.jsonObject(with: Data((reply.body.string ?? "").utf8)) as? [String: Any])?["id"] as? String)
+
+            let hidden = try await client.send(.get, headers: headers(followerToken), to: "/api/messages/channel/\(thread)")
+            #expect(hidden.status == .notFound)
+
+            let inbox = try await client.send(.get, headers: headers(followerToken), to: "/api/channels/inbox")
+            #expect(inbox.status == .ok)
+            let inboxItems = (try JSONSerialization.jsonObject(with: Data((inbox.body.string ?? "").utf8)) as? [String: Any])?["items"] as? [[String: Any]] ?? []
+            #expect(!inboxItems.contains { item in
+                item["threadChannelId"] as? String == thread || item["parentChannelId"] as? String == parent
+            })
+
+            let unread = try await client.send(.get, headers: headers(followerToken), to: "/api/channels/unread")
+            #expect(unread.status == .ok)
+            let unreadBody = try JSONSerialization.jsonObject(with: Data((unread.body.string ?? "").utf8)) as? [String: Any]
+            #expect(unreadBody?[thread] == nil)
+
+            let sync = try await client.send(.get, headers: headers(followerToken), to: "/api/messages/sync?since_seq=0")
+            #expect(sync.status == .ok)
+            let syncRows = try JSONSerialization.jsonObject(with: Data((sync.body.string ?? "").utf8)) as? [[String: Any]] ?? []
+            #expect(!syncRows.contains { $0["id"] as? String == replyId })
         }
     }
 }

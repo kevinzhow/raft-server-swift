@@ -3726,12 +3726,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             )
             for mention in mentions where mention.type == "user" || mention.type == "agent" {
                 guard ServerScope.isUUID(mention.id), mention.id != userId else { continue }
+                let parent = channel.parentChannelId.flatMap { postableChannels[$0] }
+                let parentAllowsHuman = parent?.kind == "channel" || parent?.memberIds.contains(mention.id) == true
+                let parentAllowsAgent = parent?.kind == "channel"
+                    || parent?.agentId == mention.id
+                    || channel.parentChannelId.flatMap { channelAgentMembers[$0]?.contains(mention.id) } == true
                 let valid: Bool
                 if mention.type == "user" {
-                    valid = accounts.values.contains { $0.id == mention.id }
+                    valid = parentAllowsHuman
+                        && accounts.values.contains { $0.id == mention.id }
                         && oauth.memberRole(serverId: serverId ?? "", userId: mention.id) != nil
                 } else {
-                    valid = oauth.agentRuntimeInfo(id: mention.id)?.serverId == serverId
+                    valid = parentAllowsAgent
+                        && oauth.agentRuntimeInfo(id: mention.id)?.serverId == serverId
                 }
                 if valid {
                     threadFollows["\(serverId ?? "")\n\(mention.id)\n\(channelId)"] = (
@@ -4927,6 +4934,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"threads\":[\("\(threads.joined(separator: ","))")]}")
     }
 
+    /// A thread is readable only through its parent's current visibility.
+    private func threadParentVisibleLocked(threadId: String, userId: String) -> Bool {
+        guard let thread = postableChannels[threadId], thread.kind == "thread" else { return false }
+        guard let parentId = thread.parentChannelId else { return true }
+        guard let parent = postableChannels[parentId] else { return false }
+        return parent.kind == "channel" || parent.memberIds.contains(userId)
+    }
+
     public func setThreadFollow(authorization: String?, serverId: String, body: String, follow: Bool) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -4954,6 +4969,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Thread not found\"}")
         }
         lock.lock()
+        guard threadParentVisibleLocked(threadId: threadId, userId: userId) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Thread not found\"}")
+        }
         let key = "\(serverId)\n\(userId)\n\(threadId)"
         let parentMessageId = postableChannels[threadId]?.parentMessageId ?? (object["parentMessageId"] as? String) ?? ""
         if follow {
@@ -5158,6 +5177,38 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"threads\":[\(rows.joined(separator: ","))]}")
     }
 
+    /// One canonical thread per parent message: newest reply, then reply count,
+    /// then creation order and id. Historical duplicates must not split reads.
+    private func canonicalThreadLocked(parentChannelId: String, parentMessageId: String) -> (id: String, channel: PostableChannel)? {
+        let orderIndex = Dictionary(uniqueKeysWithValues: threadOrder.enumerated().map { ($1, $0) })
+        let candidates = postableChannels.filter { _, candidate in
+            candidate.kind == "thread"
+                && candidate.parentChannelId == parentChannelId
+                && candidate.parentMessageId == parentMessageId
+                && candidate.deletedAt == nil
+        }
+        guard !candidates.isEmpty else { return nil }
+        func lastReplyAt(_ threadId: String) -> Date {
+            humanMessageRows.filter { $0.channelId == threadId }.map(\.createdAt).max() ?? .distantPast
+        }
+        func replyCount(_ threadId: String) -> Int {
+            humanMessageRows.filter { $0.channelId == threadId }.count
+        }
+        let sorted = candidates.sorted { lhs, rhs in
+            let lhsLast = lastReplyAt(lhs.key)
+            let rhsLast = lastReplyAt(rhs.key)
+            if lhsLast != rhsLast { return lhsLast > rhsLast }
+            let lhsCount = replyCount(lhs.key)
+            let rhsCount = replyCount(rhs.key)
+            if lhsCount != rhsCount { return lhsCount > rhsCount }
+            let lhsOrder = orderIndex[lhs.key] ?? Int.max
+            let rhsOrder = orderIndex[rhs.key] ?? Int.max
+            if lhsOrder != rhsOrder { return lhsOrder < rhsOrder }
+            return lhs.key < rhs.key
+        }
+        return sorted.first.map { ($0.key, $0.value) }
+    }
+
     public func threadInfo(authorization: String?, serverId: String, channelId: String, messageId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -5175,15 +5226,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Thread not found\"}")
         }
-        guard let thread = postableChannels.first(where: { _, candidate in
-            candidate.serverId == serverId && candidate.kind == "thread"
-                && candidate.parentChannelId == channelId && candidate.parentMessageId == messageId
-                && candidate.deletedAt == nil
-        }) else {
+        guard let thread = canonicalThreadLocked(parentChannelId: channelId, parentMessageId: messageId),
+              thread.channel.serverId == serverId
+        else {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Thread not found\"}")
         }
-        let replies = humanMessageRows.filter { $0.channelId == thread.key }
+        let replies = humanMessageRows.filter { $0.channelId == thread.id }
         var participants = Set(replies.map(\.senderId))
         if let parent = humanMessageRows.first(where: { $0.id == messageId }) {
             participants.insert(parent.senderId)
@@ -5191,7 +5240,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let participantJSON = participants.sorted().map { jsonString($0) }.joined(separator: ",")
         let lastReply = replies.last.map { jsonString(ISO8601DateFormatter().string(from: $0.createdAt)) } ?? "null"
         lock.unlock()
-        return Self.json(200, "{\"threadChannelId\":\(jsonString(thread.key)),\"replyCount\":\(replies.count),\"lastReplyAt\":\(lastReply),\"participantIds\":[\("\(participantJSON)")]}")
+        return Self.json(200, "{\"threadChannelId\":\(jsonString(thread.id)),\"replyCount\":\(replies.count),\"lastReplyAt\":\(lastReply),\"participantIds\":[\("\(participantJSON)")]}")
     }
 
     public func channelThreadSummaries(authorization: String?, serverId: String?, channelId: String, parentMessageIds rawParentIds: String? = nil) -> HTTPReply {
@@ -5231,9 +5280,27 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             orderedThreads = Array(orderedThreads.suffix(100))
         }
         threads = Dictionary(uniqueKeysWithValues: orderedThreads.map { ($0.id, $0.channel) })
-        var summaries: [String] = []
+        var canonicalByParent: [String: (id: String, channel: PostableChannel)] = [:]
         for (threadId, thread) in threads {
             guard let parentMessageId = thread.parentMessageId else { continue }
+            if let existing = canonicalByParent[parentMessageId] {
+                let existingLast = humanMessageRows.filter { $0.channelId == existing.id }.map(\.createdAt).max() ?? .distantPast
+                let candidateLast = humanMessageRows.filter { $0.channelId == threadId }.map(\.createdAt).max() ?? .distantPast
+                let existingCount = humanMessageRows.filter { $0.channelId == existing.id }.count
+                let candidateCount = humanMessageRows.filter { $0.channelId == threadId }.count
+                if candidateLast > existingLast
+                    || (candidateLast == existingLast && candidateCount > existingCount)
+                    || (candidateLast == existingLast && candidateCount == existingCount && threadId < existing.id) {
+                    canonicalByParent[parentMessageId] = (threadId, thread)
+                }
+            } else {
+                canonicalByParent[parentMessageId] = (threadId, thread)
+            }
+        }
+        var summaries: [String] = []
+        for (parentMessageId, canonical) in canonicalByParent {
+            let threadId = canonical.id
+            let thread = canonical.channel
             let replies = humanMessageRows.filter { $0.channelId == threadId }
             var participantSet = Set(replies.map(\.senderId))
             if let parent = humanMessageRows.first(where: { $0.id == parentMessageId }) {
@@ -5791,7 +5858,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"Invalid inbox undone request\"}")
         }
         lock.lock()
-        guard postableChannels[threadId]?.kind == "thread" else {
+        guard postableChannels[threadId]?.kind == "thread",
+              threadParentVisibleLocked(threadId: threadId, userId: userId)
+        else {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Inbox scope not found\"}")
         }
@@ -5832,7 +5901,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"Invalid inbox done request\"}")
         }
         lock.lock()
-        guard postableChannels[threadId]?.kind == "thread" else {
+        guard postableChannels[threadId]?.kind == "thread",
+              threadParentVisibleLocked(threadId: threadId, userId: userId)
+        else {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Inbox scope not found\"}")
         }
@@ -14085,6 +14156,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         oauth.removeMember(serverId: serverId, userId: memberId)
         lock.lock()
+        for (threadId, thread) in postableChannels where thread.kind == "thread" && thread.serverId == serverId {
+            guard let parentId = thread.parentChannelId,
+                  let parent = postableChannels[parentId],
+                  parent.kind == "private" || parent.kind == "dm"
+            else { continue }
+            threadFollows.removeValue(forKey: "\(serverId)\n\(memberId)\n\(threadId)")
+        }
         removedServerMembers.insert("\(serverId)\n\(memberId)")
         lock.unlock()
         emitRealtime("server:\(serverId)", "server:member-removed", "{\"serverId\":\(jsonString(serverId)),\"userId\":\(jsonString(memberId))}")
