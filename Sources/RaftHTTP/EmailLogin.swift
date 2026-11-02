@@ -6038,8 +6038,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
         }
         lock.lock()
-        guard let thread = postableChannels[threadId], thread.kind == "thread" else {
+        guard let thread = postableChannels[threadId],
+              serverId == nil || thread.serverId == serverId
+        else {
             lock.unlock()
+            return Self.json(404, "{\"error\":\"Inbox scope not found\"}")
+        }
+        if thread.kind != "thread" {
+            let visible = thread.kind == "channel" || thread.memberIds.contains(userId)
+            lock.unlock()
+            if visible {
+                return Self.json(400, "{\"code\":\"NOT_A_THREAD\",\"error\":\"Inbox scope is not a thread\"}")
+            }
             return Self.json(404, "{\"error\":\"Inbox scope not found\"}")
         }
         if thread.deletedAt != nil {
@@ -6047,7 +6057,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 $0.receiverType == "user" && $0.receiverId == userId && $0.channelId == threadId
             }
             let followed = threadFollows["\(serverId ?? "")\n\(userId)\n\(threadId)"] != nil
-            guard !ownedFacts.isEmpty || followed else {
+            let hasReadCursor = oauth.channelUnreadInfo(channelId: threadId, userId: userId).maxReadSeq > 0
+            guard !ownedFacts.isEmpty || followed || hasReadCursor else {
                 lock.unlock()
                 return Self.json(404, "{\"error\":\"Inbox scope not found\"}")
             }
@@ -19533,7 +19544,29 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             ?? (oauth.channelType(id: channelId) == "channel" || oauth.isChannelParticipant(channelId: channelId, userId: userId))
         lock.unlock()
         guard readableAll else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+            lock.lock()
+            let facts = storedInboxFacts.filter {
+                $0.receiverType == "user" && $0.receiverId == userId
+                    && $0.channelId == channelId && $0.serverId == serverId
+            }
+            lock.unlock()
+            var ownedSeq = oauth.channelUnreadInfo(channelId: channelId, userId: userId).maxReadSeq
+            if let lastFact = facts.last,
+               let owned = oauth.historyMessages(channelId: channelId).first(where: { $0.id == lastFact.messageId }) {
+                ownedSeq = max(ownedSeq, owned.seq)
+            }
+            guard ownedSeq > 0 else {
+                return Self.json(404, "{\"error\":\"Channel not found\"}")
+            }
+            oauth.setChannelReadCursor(channelId: channelId, userId: userId, seq: ownedSeq)
+            let key = "\(channelId)\n\(userId)"
+            lock.lock()
+            inboxDoneScopes.insert("\(userId)\n\(channelId)")
+            inboxDoneAt["\(userId)\n\(channelId)"] = Date()
+            channelReadVersions[key] = (channelReadVersions[key] ?? 0) + 1
+            let version = channelReadVersions[key] ?? 1
+            lock.unlock()
+            return Self.json(200, "{\"ok\":true,\"seq\":\(ownedSeq),\"readStateVersion\":\(version)}")
         }
         if let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
            let receiver = object["receiver"] as? [String: Any],

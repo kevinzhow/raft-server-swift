@@ -438,3 +438,5 @@ Inbox firstMention：`firstMentionMessageId` 取该 scope 中 seq 大于当前 r
 
 read_receipts_v0：server gate 开启后，channel detail 只暴露 agent peers 的 `peerReadStates:[{peerKind:"agent",peerId,maxReadSeq}]`，永不暴露人类 read state；超过 50 个 agent peers 时改为 `peerReadSummary:{peerCount,readCountAtSeq:[{seq,count}]}`。Agent history 读取推进 cursor 时向 `channel:<id>` 发 `scope_read:updated`（`scopeId/peerKind:"agent"/peerId/maxReadSeq`），非推进读取不发；人类 read/mark-unread 不发该事件。DM 中的 agent peer 同样 hydrate。
 
+threads/done 拒绝语义：不存在、跨 server、无访问的 thread/channel、非法 id 全部 404 `{"error":"Inbox scope not found"}` 且 body 字节一致；一旦 caller 能看到该 channel 但不是 thread，回 400 `{code:"NOT_A_THREAD"}`。deleted thread 的 caller-owned evidence（inbox fact、follow 或 read cursor）仍可 200。task #48 read-all：ex-member/cursor 或 inbox fact residue 可 200 退休，cursor 只推进到 receiver-owned fact seq（不读 live frontier）；无 residue 的 stranger、缺失 id、跨 server channel 统一 404 `{"error":"Channel not found"}`；replay 幂等 200，receipt 仅含 ok/seq/readStateVersion。
+

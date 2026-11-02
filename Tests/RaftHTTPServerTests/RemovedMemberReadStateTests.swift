@@ -66,7 +66,9 @@ import VaporTesting
                 request.body = .init(string: "{\"seq\":\(message.seq + 1)}")
             }
             #expect(read.status == .notFound)
-            #expect(try await client.send(.post, headers: headers(memberToken), to: "/api/channels/\(channelId)/read-all").status == .notFound)
+            // A former member may retire receiver-owned residue (task #48 U1),
+            // but cannot advance the cursor or mark unread again.
+            #expect(try await client.send(.post, headers: headers(memberToken), to: "/api/channels/\(channelId)/read-all").status == .ok)
             #expect(try await client.send(.post, headers: headers(memberToken), to: "/api/channels/\(channelId)/unread").status == .notFound)
         }
     }
