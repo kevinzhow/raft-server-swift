@@ -2396,10 +2396,17 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.post("api", "servers", ":id", "leave") { request -> Response in
-        routeResponse(services.emailAccounts.leaveServer(
-            authorization: request.headers[.authorization],
-            serverId: request.parameters.get("id") ?? ""
-        ))
+        let serverId = request.parameters.get("id") ?? ""
+        let authorization = request.headers[.authorization]
+        let userId = services.emailAccounts.sessionUserId(authorization: authorization)
+        let reply = services.emailAccounts.leaveServer(
+            authorization: authorization,
+            serverId: serverId
+        )
+        if reply.status == 200, let userId {
+            services.realtime?.removeServerMembership(serverId: serverId, userId: userId)
+        }
+        return routeResponse(reply)
     }
     app.get("api", "servers", ":id", "setup-projection") { request -> Response in
         routeResponse(services.emailAccounts.serverSetupProjection(

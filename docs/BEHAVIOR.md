@@ -542,3 +542,13 @@ HarmonyOS app login handoff:
 - agent 任务端点按编号 claim/update-status 不能触达 v0 orphan（无 host message）：claim 结果 `success:false, reason:"task not found"`，update-status 404，且不写 orphan；相邻 backfilled 任务仍可 claim。
 - 新增 legacy `/internal/agent/:agentId/tasks/{claim,update-status,delete,convert}`，接受 machine key + 路径 agent id。
 
+### rbacPhase3Relations.api
+
+RBAC Phase 3 精确对象权限：
+
+- Agent creator：admin→member 降级后仍可 patch/stop/reset/credentials/delete 自己创建的 Agent，不能操作他人 Agent；离站（remove 或 leave）后所有精确权限失效（403 `Not a member of this server`，credentials 走 404 `agent_missing`）。
+- Machine registrant：降级后仍可 patch/rotate-key/delete 自己的 Machine，不能操作他人 Machine；离站后 PATCH、rotate-key、computer/restart、workspaces、DELETE 全部 403 `Not a member of this server`，行与 description 不变，owner 仍可操作。
+- `POST /api/servers/:id/leave` 现在和移除成员一样，对离开者调用 `removeServerMembership`，先发 `server:membership-removed` 再关闭连接。
+- S11：离站 creator/registrant 的在线 socket 不再收到 `agent:session`/`machine:status` 服务器房间事件；同一 server 的授权成员仍收到。
+- `GET /api/servers/:id/machines/:machineId/workspaces` 对非成员回 403 `Not a member of this server`（此前 404）。
+

@@ -90,7 +90,10 @@ let package = Package(
             dependencies: [
                 "RaftHTTP",
                 "RaftHTTPServer",
+                "RaftRealtime",
                 .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "Vapor", package: "vapor"),
                 .product(name: "VaporTesting", package: "vapor"),
             ]

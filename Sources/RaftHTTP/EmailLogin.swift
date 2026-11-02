@@ -11596,6 +11596,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return id
     }
 
+    public func machineRegistrantForTesting(machineId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return machines.first { $0.id == machineId }?.userId
+    }
+
+    public func machineDescriptionForTesting(machineId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return machines.first { $0.id == machineId }?.description
+    }
+
     public func machineAPIKey(machineId: String) -> String? {
         lock.lock()
         defer { lock.unlock() }
@@ -13688,7 +13700,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         lock.lock()
         guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
