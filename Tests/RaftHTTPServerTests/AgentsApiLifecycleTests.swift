@@ -277,7 +277,7 @@ private func lifecycleDelete(
             #expect(archived.status == .ok)
             let rows = (try lifecycleObject(archived)["agents"] as? [[String: Any]] ?? [])
             let row = try #require(rows.first { $0["agentId"] as? String == byCreator })
-            #expect(row["workspaceState"] as? String == "on_computer")
+            #expect(row["workspaceState"] as? String == "deleted")
             #expect(row["machineName"] is NSNull)
             #expect(!rows.contains { $0["agentId"] as? String == agent })
         }

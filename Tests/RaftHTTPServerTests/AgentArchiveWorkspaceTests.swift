@@ -81,7 +81,8 @@ import VaporTesting
             #expect(workspaceAction.status == .ok)
             let afterAction = try await client.send(.get, headers: headers, to: "/api/agents/\(agent)/archive")
             let afterSnapshot = (try JSONSerialization.jsonObject(with: Data((afterAction.body.string ?? "").utf8)) as? [String: Any])?["archive"] as? [String: Any]
-            #expect(afterSnapshot?["workspaceState"] as? String == "deleted")
+            #expect(afterSnapshot?["workspaceState"] as? String == "on_computer")
+            #expect(afterSnapshot?["pendingOp"] as? String == "delete")
 
             let second = try await client.send(.post, headers: headers, to: "/api/agents") { request in
                 request.body = .init(string: "{\"name\":\"DeleteBot\",\"machineId\":\"\(machine)\"}")
@@ -92,7 +93,8 @@ import VaporTesting
             }.status == .ok)
             let deletedView = try await client.send(.get, headers: headers, to: "/api/agents/\(secondId)/archive")
             let deletedSnapshot = (try JSONSerialization.jsonObject(with: Data((deletedView.body.string ?? "").utf8)) as? [String: Any])?["archive"] as? [String: Any]
-            #expect(deletedSnapshot?["workspaceState"] as? String == "deleted")
+            #expect(deletedSnapshot?["workspaceState"] as? String == "on_computer")
+            #expect(deletedSnapshot?["pendingOp"] as? String == "delete")
         }
     }
 }

@@ -616,3 +616,16 @@ RFC 074 personal assistant：
 - `DELETE /api/agents/:id` 需要 `deleteAgents`（owner/admin）或 human creator，否则 403 `The `deleteAgents` capability or human creator authority is required to delete agents`；`workspace` 只接受 keep/delete，其他值 → 400 `{"error":"workspace must be keep or delete","code":"archive_workspace_choice_invalid"}` 且 agent 不变；`workspace:"delete"` 但 agent 无 Computer、是 external、或已是 hosted → 409 `{"error":"This agent has no workspace on a Computer.","code":"archive_workspace_unavailable"}`；迁移进行中 → 409 `archive_migration_active`。
 - `DELETE /api/agents/:id` 成功回 200 `{"ok":true}`，软删 agent、释放其 task 归属、写 archive 行，并向 `server:<id>` 房间广播 `agent:deleted` `{"agentId":...}`；随后 `GET /api/agents/:id` 404。
 - `GET /api/agents/archived` 行含 `agentId/machineName/workspaceState`；keep 归档为 `on_computer`，未分配 Computer 时 `machineName` 为 null。
+
+### agentArchive.api
+
+- 归档保留 workspace（`DELETE /api/agents/:id` 无 body 或 `{"workspace":"keep"}`）：archive 行 `workspaceState:"on_computer"`、`machineId`、`machineName` 快照、`pendingOp:null`、`waitingForComputer:false`、`archivedAt`/`archivedByUserId`，并取消该 agent 的 reminders（`GET /api/reminders` 不再列出）；agent 软删后 `GET /api/agents/:id` 404。
+- workspace 选择只接受 keep/delete，其他值 → 400 `{"error":"workspace must be keep or delete","code":"archive_workspace_choice_invalid"}`，agent 与 archive 行都不变。
+- `{"workspace":"delete"}` 归档：archive 行保持 `workspaceState:"on_computer"`、`pendingOp:"delete"`、`waitingForComputer:true`（Computer 未连接时等待它执行删除）。
+- 没有 Computer workspace 的 agent（未分配 machine / external / hosted）：归档 keep 时 `workspaceState:"deleted"`、`machineId:null`、`machineName:null`。
+- `GET /api/agents/:id/archive`：editAgents（owner/admin）或 human creator 可读；其他 member / guest → 403 `You cannot manage this archived agent's workspace`；跨 server 或未归档 → 404 `{"error":"Archived agent not found","code":"agent_not_archived"}`。视图字段：`agentId/archivedAt/archivedByUserId/machineId/machineName/workspaceState/pendingOp/waitingForComputer/lastErrorCode/lastErrorAt`。
+- `POST /api/agents/:id/archive/workspace`：只接受 `action:"delete"`，否则 400 `{"error":"action must be delete","code":"archive_workspace_action_invalid"}`；workspace 不在 Computer（`workspaceState` 非 `on_computer` 或无 `machineId`）→ 409 `{"error":"The workspace is not on a Computer.","code":"archive_workspace_unavailable"}`；已有待执行 op → 409 `{"error":"Another workspace operation is still running.","code":"archive_op_pending"}`；成功 200 `{"archive":...}` 且 `pendingOp:"delete"`。
+- 归档与 workspace op 都向 `server:<id>` 房间广播 `agent:archive:updated` `{agentId}`；归档同时广播 `agent:deleted`。
+- `GET /api/agents/archived`：member/admin/owner 200，每行 `agentId/machineName/workspaceState`；guest 403。
+- 迁移进行中的 agent 不能归档 → 409 `{"code":"archive_migration_active"}`，agent 未删除且没有 archive 行。
+- 归档路由（archive 视图、workspace-files、workspace-files/read、archive/workspace）对非 creator 的 member 一律 403，对 guest 403/404，对指向其他 server 的请求 404。

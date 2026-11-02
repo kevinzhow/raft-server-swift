@@ -1593,7 +1593,8 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("api", "agents", ":id", "archive") { request -> Response in
         routeResponse(services.emailAccounts.agentArchiveView(
             authorization: request.headers[.authorization],
-            agentId: request.parameters.get("id") ?? ""
+            agentId: request.parameters.get("id") ?? "",
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
         ))
     }
     app.delete("api", "agents", ":id") { request -> Response in

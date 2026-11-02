@@ -280,7 +280,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// Raft's own default for hosted agents; naming it always follows the provider default.
     private static let hostedDefaultModel = "deepseek-flash"
-    private var agentArchiveRecords: [String: (workspaceState: String, machineName: String, serverId: String)] = [:]
+    private struct AgentArchiveRecord {
+        var serverId: String
+        var machineId: String?
+        var machineName: String
+        var archivedAt: Date
+        var archivedByUserId: String
+        /// `on_computer`, `deleted`, or `unknown` when the agent cannot own a Computer workspace.
+        var workspaceState: String
+        var pendingOp: String?
+        var lastErrorCode: String?
+        var lastErrorAt: Date?
+    }
+
+    private var agentArchiveRecords: [String: AgentArchiveRecord] = [:]
     private var postableChannels: [String: PostableChannel] = [:]
     private var threadOrder: [String] = []
     private var serverMemberRoles: [String: String] = [:]
@@ -11111,25 +11124,48 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         let record = agentArchiveRecords[agentId]
         lock.unlock()
-        guard let record, record.serverId == serverId,
-              let role = oauth.memberRole(serverId: serverId, userId: userId)
-        else {
-            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        guard let record, record.serverId == serverId, oauth.agentManagementInfo(id: agentId)?.deleted == true else {
+            return Self.json(404, "{\"error\":\"Archived agent not found\",\"code\":\"agent_not_archived\"}")
         }
-        guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        let role = oauth.memberRole(serverId: serverId, userId: userId)
+        let archivedCreator = oauth.agentManagementInfo(id: agentId)?.creatorUserId == userId
+        guard role != nil, role == "owner" || role == "admin" || archivedCreator else {
+            return Self.json(403, "{\"error\":\"You cannot manage this archived agent's workspace\"}")
         }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
               let action = object["action"] as? String,
-              action == "keep" || action == "delete"
+              action == "delete"
         else {
-            return Self.json(400, "{\"code\":\"archive_workspace_choice_invalid\",\"error\":\"action must be keep or delete\"}")
+            return Self.json(400, "{\"error\":\"action must be delete\",\"code\":\"archive_workspace_action_invalid\"}")
         }
-        let state = action == "delete" ? "deleted" : "on_computer"
         lock.lock()
-        agentArchiveRecords[agentId] = (workspaceState: state, machineName: record.machineName, serverId: record.serverId)
+        guard record.workspaceState == "on_computer", record.machineId != nil else {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"The workspace is not on a Computer.\",\"code\":\"archive_workspace_unavailable\"}")
+        }
+        guard record.pendingOp == nil else {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"Another workspace operation is still running.\",\"code\":\"archive_op_pending\"}")
+        }
+        var updated = record
+        updated.pendingOp = "delete"
+        updated.lastErrorCode = nil
+        updated.lastErrorAt = nil
+        agentArchiveRecords[agentId] = updated
         lock.unlock()
-        return Self.json(200, "{\"ok\":true,\"archive\":{\"workspaceState\":\(jsonString(state)),\"machineName\":\(jsonString(record.machineName))}}")
+        emitRealtime("server:\(record.serverId)", "agent:archive:updated", "{\"agentId\":\(jsonString(agentId))}")
+        return Self.json(200, "{\"archive\":\(archiveViewJSON(updated, agentId: agentId))}")
+    }
+
+    private func archiveViewJSON(_ record: AgentArchiveRecord, agentId: String) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        lock.lock()
+        let machineOnline = record.machineId.map { self.machineOnline[$0] == true } ?? false
+        lock.unlock()
+        let waiting = record.pendingOp != nil && !machineOnline
+        let lastErrorAt = record.lastErrorAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+        return "{\"agentId\":\(jsonString(agentId)),\"archivedAt\":\(jsonString(formatter.string(from: record.archivedAt))),\"archivedByUserId\":\(jsonString(record.archivedByUserId)),\"machineId\":\(record.machineId.map(jsonString) ?? "null"),\"machineName\":\(record.machineName.isEmpty ? "null" : jsonString(record.machineName)),\"workspaceState\":\(jsonString(record.workspaceState)),\"pendingOp\":\(record.pendingOp.map(jsonString) ?? "null"),\"waitingForComputer\":\(waiting),\"lastErrorCode\":\(record.lastErrorCode.map(jsonString) ?? "null"),\"lastErrorAt\":\(lastErrorAt)}"
     }
 
     public func agentChannels(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
@@ -11161,20 +11197,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "[\(rows.joined(separator: ","))]")
     }
 
-    public func agentArchiveView(authorization: String?, agentId: String) -> HTTPReply {
+    public func agentArchiveView(authorization: String?, agentId: String, serverId: String = "") -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
         lock.lock()
         let record = agentArchiveRecords[agentId]
         lock.unlock()
-        guard let record, let role = oauth.memberRole(serverId: record.serverId, userId: userId) else {
-            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        guard let record, serverId.isEmpty || record.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Archived agent not found\",\"code\":\"agent_not_archived\"}")
         }
-        guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        guard let role = oauth.memberRole(serverId: record.serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"You cannot manage this archived agent's workspace\"}")
         }
-        return Self.json(200, "{\"archive\":{\"workspaceState\":\(jsonString(record.workspaceState)),\"machineName\":\(jsonString(record.machineName))}}")
+        let isCreator = oauth.agentManagementInfo(id: agentId)?.creatorUserId == userId
+        guard role == "owner" || role == "admin" || isCreator else {
+            return Self.json(403, "{\"error\":\"You cannot manage this archived agent's workspace\"}")
+        }
+        return Self.json(200, "{\"archive\":\(archiveViewJSON(record, agentId: agentId))}")
     }
 
     public func deleteAgentRoute(authorization: String?, agentId: String, body: String = "", serverId: String = "") -> HTTPReply {
@@ -11202,7 +11242,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let machineName = machineId.flatMap { id in machines.first { $0.id == id }?.name } ?? ""
         let hosted = hostedRuntimes[agentId] != nil
         let terminalMigrationStates: Set<String> = ["canceled_pre_flip", "canceled", "completed", "arrived", "aborted", "failed"]
-        let hasActiveMigration = machineMigrations.values.contains {
+        let hasActiveMigration = activeAgentMigrations.values.contains {
+            $0.agentId == agentId && !terminalMigrationStates.contains($0.state)
+        } || machineMigrations.values.contains {
             $0.agentId == agentId && !terminalMigrationStates.contains($0.state)
         } || (hostedMigrations[agentId].map { !terminalMigrationStates.contains($0.state) } ?? false)
         lock.unlock()
@@ -11213,8 +11255,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(409, "{\"error\":\"This agent is being migrated. Wait for the migration to finish or cancel it first.\",\"code\":\"archive_migration_active\"}")
         }
         lock.lock()
-        let state = workspaceChoice == "delete" ? "deleted" : "on_computer"
-        agentArchiveRecords[agentId] = (workspaceState: state, machineName: machineName, serverId: actor.info.serverId)
+        let onComputer = machineId != nil && actor.info.runtime != "external" && !hosted
+        let record = AgentArchiveRecord(
+            serverId: actor.info.serverId,
+            machineId: onComputer ? machineId : nil,
+            machineName: onComputer ? machineName : "",
+            archivedAt: Date(),
+            archivedByUserId: actor.userId,
+            workspaceState: onComputer ? "on_computer" : (machineId == nil ? "deleted" : "unknown"),
+            pendingOp: workspaceChoice == "delete" ? "delete" : nil,
+            lastErrorCode: nil,
+            lastErrorAt: nil
+        )
+        agentArchiveRecords[agentId] = record
+        reminderRecords.removeAll { $0.ownerAgentId == agentId }
         for index in taskRecords.indices where
             taskRecords[index].assigneeType == "agent" && taskRecords[index].assigneeId == agentId {
             taskRecords[index].assigneeId = nil
@@ -11224,6 +11278,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         lock.unlock()
         oauth.deleteAgent(id: agentId)
+        emitRealtime("server:\(actor.info.serverId)", "agent:archive:updated", "{\"agentId\":\(jsonString(agentId))}")
         emitRealtime("server:\(actor.info.serverId)", "agent:deleted", "{\"agentId\":\(jsonString(agentId))}")
         return Self.json(200, "{\"ok\":true}")
     }
