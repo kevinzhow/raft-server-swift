@@ -66,7 +66,7 @@ computerRevocation.api	route	locked	905d885	runner mint gate, machine delete rev
 corsPreflight.api	route	locked	43565c1	two-hour preflight cache
 daemon.wsAuth	route	locked	e8b381d	wire paths locked by process e2e; trace/argon2-only halves excluded
 desktopDownload	route	partial	-	auto-seed
-deviceAuth.api	route	partial	-	auto-seed
+deviceAuth.api	route	locked	03e645a	locked: kill switch/default-on, lifecycle, APP_URL fail-closed, denial, uniform unknown codes
 errorHygieneBlackbox.api	route	locked	fb1b26e	typed 4xx for malformed ids/headers, no raw DB leak, short context id
 errorResponse.dmTarget	route	pending	-	auto-seed
 errorResponse	route	pending	-	auto-seed
@@ -149,7 +149,7 @@ messages.api	route	locked	3e81d9e	portable coverage complete (mentions/reactions
 messages.mentionDeliveries.api	route	locked	e45a440	author-only coarse outcomes and NOT_JOINABLE cloak
 messagesContextWindow.api	route	locked	5247150	context window sizing and clean 400s
 messagesStorageColumns.api	route	locked	67b77fb	storage-only columns and sender timezone stay off human reads
-messagesThreadSummaries.api	route	partial	-	auto-seed
+messagesThreadSummaries.api	route	locked	03e645a	locked: page/context summaries, empty map, page-window scope, access gate
 mobileAppEmailUnsubscribe.api	route	partial	-	auto-seed
 mobileDownload	route	partial	-	auto-seed
 notifications.api	route	partial	-	auto-seed
@@ -175,7 +175,7 @@ publicSearchServiceAccess.api	route	partial	-	auto-seed
 publicSearchSettingsFence.realPg	route	partial	-	auto-seed
 publicServer.api	route	partial	-	auto-seed
 publicVisits.api	route	partial	-	auto-seed
-push.api	route	partial	-	auto-seed
+push.api	route	locked	03e645a	locked: APNs/FCM tuples, delivery status, family revoke, logout, web push
 raftbench.api	route	pending	-	auto-seed
 raftbench.canary.api	route	pending	-	auto-seed
 raftbench.progressive.api	route	pending	-	auto-seed
@@ -184,7 +184,7 @@ rbacPhase3Relations.api	route	pending	-	auto-seed
 readMutationFence.realPg	route	partial	-	auto-seed
 readMutations.api	route	partial	-	auto-seed
 readMutationsResidueBoundary.api	route	partial	-	auto-seed
-releaseNotes.api	route	partial	-	auto-seed
+releaseNotes.api	route	locked	03e645a	locked: anonymous list/pagination, published/retracted/draft, current revision order, detail; excluded DB trigger immutability
 releaseNotesConcurrency.realPg	route	partial	-	auto-seed
 reminders.api	route	locked	576e45b	read-only listing, scope by agent creator, writes 404
 rwStaleRead	route	pending	-	auto-seed
@@ -195,7 +195,7 @@ serverMemberEvents.api	route	partial	-	auto-seed
 serverSetupGate.daemonReady	route	partial	-	auto-seed
 servers.activityUnreadSummary.api	route	partial	-	auto-seed
 servers.api	route	partial	1d23778	machines/runtime forms pi+opencode+codex+grok+claude+cursor+kimi-sdk + kimi/builtin statuses + usage/policy/migration delete covered; builtin v1 released fixtures + history API + invites pending
-servers.joinCommunity.api	route	partial	-	auto-seed
+servers.joinCommunity.api	route	locked	03e645a	locked: community/community-cn join, unknown slug, already-member, not seeded, unauth
 servers.mentionRedriveAuthz.api	route	locked	6ea6dda	NOT_ACCESSIBLE/NOT_JOINABLE auth and version body
 servers.scopeAttestation.api	route	locked	b00f30b	HS256 claims and member/owner capability scopes
 servers.transcriptFeedback.api	route	locked	b00f30b	202/400/403/404 transcript feedback gates
