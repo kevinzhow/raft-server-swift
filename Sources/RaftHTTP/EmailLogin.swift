@@ -6223,6 +6223,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let windowJSON = "{\"schemaVersion\":1,\"domain\":\"receiver_visible_messages_v1\",\"serverId\":\(jsonString(serverId ?? "")),\"receiverKind\":\"user\",\"receiverId\":\(jsonString(userId ?? "")),\"scopeId\":\(jsonString(channelId)),\"coveredFromSeq\":\(coveredFrom),\"coveredAfterSeq\":\(coveredAfter),\"coveredThroughSeq\":\(coveredThrough),\"remoteHighWaterSeq\":\(highWater),\"hasGap\":\(pageHasGap),\"hasNewer\":\(pageHasNewer),\"completeThroughLatest\":\(completeThroughLatest)}"
         let listed = pageRows.map { message in
             var row = "{\"id\":\(jsonString(message.id)),\"content\":\(jsonString(message.content)),\"attachments\":[\(Self.attachmentJSON(message.attachmentIds))],\"reactions\":[\(reactionJSONLocked(messageId: message.id))],\"mentions\":[\(visibleMentionJSONLocked(messageId: message.id))]"
+            if let commentRef = commentRefJSONLocked(messageId: message.id),
+               attachmentCommentsEnabled(serverId: serverId ?? "", userId: userId) {
+                row += ",\"commentRef\":\(commentRef)"
+            }
             var metadata = actionCardMetadataLocked(messageId: message.id)
             if let userId {
                 metadata = forwardMetadataJSONLocked(messageId: message.id, userId: userId, serverId: serverId) ?? metadata
@@ -17619,10 +17623,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// Feature flag gate shared by the attachment-comment routes. It answers
     /// before body validation so a disabled server sees one uniform 403.
-    public func attachmentCommentsEnabled(serverId: String) -> Bool {
+    public func attachmentCommentsEnabled(serverId: String, userId: String? = nil) -> Bool {
         evaluateFeatureFlagKey(
             key: "attachment_comments_v0",
-            userId: "",
+            userId: userId ?? "",
             serverId: serverId,
             platform: nil,
             client: FeatureFlagClientFacts(os: nil, buildNumber: nil, buildType: nil)
@@ -17637,7 +17641,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
-        guard attachmentCommentsEnabled(serverId: serverId) else { return Self.attachmentCommentsDisabledReply }
+        guard attachmentCommentsEnabled(serverId: serverId, userId: userId) else { return Self.attachmentCommentsDisabledReply }
         let requested = (ids ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         guard !requested.isEmpty, requested.count <= 100 else {
             return Self.json(400, "{\"error\":\"ids must contain 1-100 attachment ids\"}")
@@ -17663,7 +17667,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
-        guard attachmentCommentsEnabled(serverId: serverId) else { return Self.attachmentCommentsDisabledReply }
+        guard attachmentCommentsEnabled(serverId: serverId, userId: userId) else { return Self.attachmentCommentsDisabledReply }
         guard ServerScope.isUUID(attachmentId) else {
             return Self.json(400, "{\"error\":\"A valid attachment id is required\",\"code\":\"invalid_attachment_id\"}")
         }
@@ -17788,13 +17792,28 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return result
     }
 
+    /// Scoped commentRef projection. Callers hold the directory lock. The chip
+    /// payload carries the host coordinates the client routes with; it is only
+    /// emitted to viewers who may see the scoped comment.
+    private func commentRefJSONLocked(messageId: String) -> String? {
+        for (attachmentId, records) in attachmentCommentRecords {
+            guard let record = records.first(where: { $0.id == messageId }),
+                  let hostMessageId = record.hostMessageId,
+                  let hostChannelId = record.hostChannelId
+            else { continue }
+            let threadJSON = record.threadChannelId.map(jsonString) ?? "null"
+            return "{\"attachmentId\":\(jsonString(attachmentId)),\"hostMessageId\":\(jsonString(hostMessageId)),\"hostSource\":{\"type\":\"channel\",\"routeKind\":\"channel\",\"channelId\":\(jsonString(hostChannelId)),\"rootThreadChannelId\":\(threadJSON)}}"
+        }
+        return nil
+    }
+
     public func createAttachmentComment(authorization: String?, attachmentId: String, body: String, serverId: String? = nil) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
         // The feature gate answers before ANY body validation: a disabled
         // server must see one uniform 403 for every payload.
-        if let serverId, !attachmentCommentsEnabled(serverId: serverId) {
+        if let serverId, !attachmentCommentsEnabled(serverId: serverId, userId: userId) {
             return Self.attachmentCommentsDisabledReply
         }
         guard ServerScope.isUUID(attachmentId) else {
@@ -17892,7 +17911,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             senderId: userId,
             senderType: "user",
             createdAt: now,
-            threadChannelId: threadChannelId
+            threadChannelId: threadChannelId,
+            hostMessageId: hostMessageId,
+            hostChannelId: hostChannelId
         ))
         appendHumanMessageLocked(StoredHumanMessage(
             id: id,
@@ -17911,7 +17932,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let anchorValue = anchorJSON ?? "null"
-        return Self.json(200, "{\"message\":{\"id\":\(jsonString(id)),\"channelId\":\(jsonString(threadChannelId)),\"content\":\(jsonString(content)),\"senderType\":\"user\",\"createdAt\":\(jsonString(formatter.string(from: now))),\"anchor\":\(anchorValue)},\"threadChannelId\":\(jsonString(threadChannelId))}")
+        return Self.json(200, "{\"message\":{\"id\":\(jsonString(id)),\"channelId\":\(jsonString(threadChannelId)),\"content\":\(jsonString(content)),\"senderType\":\"user\",\"createdAt\":\(jsonString(formatter.string(from: now))),\"anchor\":\(anchorValue),\"commentRef\":{\"attachmentId\":\(jsonString(attachmentId)),\"hostMessageId\":\(jsonString(hostMessageId)),\"hostSource\":{\"type\":\"channel\",\"routeKind\":\"channel\",\"channelId\":\(jsonString(hostChannelId)),\"rootThreadChannelId\":\(jsonString(threadChannelId))}}},\"threadChannelId\":\(jsonString(threadChannelId))}")
     }
 
     public func agentAttachmentCommentsList(authorization: String?, attachmentId: String) -> HTTPReply {
@@ -27696,6 +27717,8 @@ public struct AttachmentCommentRecord: Sendable, Equatable {
     public var senderType: String
     public var createdAt: Date
     public var threadChannelId: String?
+    public var hostMessageId: String?
+    public var hostChannelId: String?
 
     public init(
         id: String,
@@ -27705,7 +27728,9 @@ public struct AttachmentCommentRecord: Sendable, Equatable {
         senderId: String,
         senderType: String,
         createdAt: Date,
-        threadChannelId: String? = nil
+        threadChannelId: String? = nil,
+        hostMessageId: String? = nil,
+        hostChannelId: String? = nil
     ) {
         self.id = id
         self.attachmentId = attachmentId
@@ -27715,5 +27740,7 @@ public struct AttachmentCommentRecord: Sendable, Equatable {
         self.senderType = senderType
         self.createdAt = createdAt
         self.threadChannelId = threadChannelId
+        self.hostMessageId = hostMessageId
+        self.hostChannelId = hostChannelId
     }
 }

@@ -315,3 +315,43 @@ private func commentsRequest(
         }
     }
 }
+
+@Test func attachmentCommentRefRidesTheCreateAndListingOnlyForEnabledViewers() async throws {
+    let f = makeAttachmentCommentsFixture()
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let created = try await commentsRequest(
+                client, f, method: .post, path: "/api/attachments/\(f.linked)/comments", body: "{\"content\":\"chip probe\"}"
+            )
+            let message = try #require(created.body["message"] as? [String: Any])
+            let threadChannelId = try #require(created.body["threadChannelId"] as? String)
+            let commentId = try #require(message["id"] as? String)
+            let commentRef = try #require(message["commentRef"] as? [String: Any])
+            #expect(commentRef["attachmentId"] as? String == f.linked)
+            #expect((commentRef["hostSource"] as? [String: Any])?["rootThreadChannelId"] as? String == threadChannelId)
+
+            // The thread listing carries the same chip coordinates.
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(f.reviewerToken)"
+            headers[HTTPField.Name("X-Server-Id")!] = f.serverId
+            let listing = try await client.get(URI(string: "/api/messages/channel/\(threadChannelId)?limit=50"), headers: headers)
+            let body = (try JSONSerialization.jsonObject(with: Data((listing.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            let rows = (body["messages"] as? [[String: Any]]) ?? []
+            let row = rows.first { ($0["id"] as? String) == commentId }
+            #expect(row != nil, "thread listing has the comment message; rows=\(rows.map { $0["id"] as? String ?? "?" })")
+            #expect(row?["commentRef"] != nil)
+
+            // A user-stage deny hides the scoped chip and gates the comment routes.
+            f.accounts.addFeatureFlagRuleForTesting(key: "attachment_comments_v0", stage: "user", decision: "deny", values: [f.reviewerId])
+            let deniedList = try await commentsRequest(client, f, method: .get, path: "/api/attachments/\(f.linked)/comments")
+            #expect(deniedList.status == .forbidden)
+            let deniedCounts = try await commentsRequest(client, f, method: .get, path: "/api/attachments/comments/counts?ids=\(f.linked)")
+            #expect(deniedCounts.status == .forbidden)
+            let deniedListing = try await client.get(URI(string: "/api/messages/channel/\(threadChannelId)?limit=50"), headers: headers)
+            let deniedBody = (try JSONSerialization.jsonObject(with: Data((deniedListing.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            let deniedRow = ((deniedBody["messages"] as? [[String: Any]]) ?? []).first { ($0["id"] as? String) == commentId }
+            #expect(deniedRow?["commentRef"] is NSNull || deniedRow?["commentRef"] == nil, "a denied viewer must not observe the scoped chip")
+        }
+    }
+}

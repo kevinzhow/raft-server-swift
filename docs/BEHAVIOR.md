@@ -1098,3 +1098,9 @@ RFC 074 personal assistant：
 - anchor 是封闭词表 `lines` / `csv-rows` / `md-section` / `html-region`，客户端 payload 必须是 `{type,data}`；未知 type → 400 `anchor_type_invalid`，`data` 非对象或形状错误 → 400 `anchor_invalid`，整个 payload > 4 KB → 400 `anchor_too_large`（先于逐类型校验）。
 - 存储时按已知字段规范重建：extras 丢弃；`lines`/`csv-rows` 要求整数 `start≥1` 且 `end≥start`；`md-section` 要求非空 `headingId` 与 `headingTitle`；`html-region` 要求有限数字、x/y/w/h≥0、viewport/document 尺寸>0，浮点四舍五入为整数；可选短 `quote` 原样保留。list 原样回读规范后的 anchor，无 anchor 的行返回 `null`，被拒绝的 anchor 不产生消息或 ref。
 - `mentions` 走共享消息管线：`[{type,id,name}]` 严格校验（type 只能是 user/agent、id 必须是 UUID、name 非空），非法批次 400 `mentions_invalid` 且不写入；合法批次在评论消息上写入 mention 行。
+
+### attachmentComments.api：commentRef 与 user-stage deny 组
+
+- 评论消息带 scoped `commentRef`：`{attachmentId, hostMessageId, hostSource:{type:"channel",routeKind:"channel",channelId,rootThreadChannelId}}`；创建响应里直接可见（供本地立即渲染），thread 消息列表（`GET /api/messages/channel/:id`）对同一行富化同一份 chip。
+- flag 评估加入 user stage：user-stage deny 的用户在 list/counts/create 得到 403 `attachment_comments_disabled`，thread 消息列表仍 200 但该行的 `commentRef` 被隐藏（不泄漏 scoped 元数据）。
+- 仍待补：`message:updated` live 事件、context/permalink 与 sync 的 commentRef/commentCount 富化、history scoped metadata、agent scope quotation。
