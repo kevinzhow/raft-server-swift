@@ -955,3 +955,13 @@ RFC 074 personal assistant：
 - 错误 principal（例如 `sk_agent_*` Bearer）→ 401 `{"code":"invalid_principal"}`；无 Bearer → 401 `{"code":"auth_required"}`。
 - 未注册的 `/internal/computer/*` 兄弟路径（GET/POST/PUT/PATCH/DELETE 任一）带有效 Computer 凭据 → 401 `{"code":"auth_policy_unregistered_path"}`，而不是路由 404；已注册路径不受 catch-all 影响。
 - 明确排除：上游把 preflight 与 Express `routeAuthPolicy` 注册表逐项 `deepEqual` 的断言（等价验收改为：清单从 live router 派生、稳定、自述、principal 前缀一致）；DB 行/凭据计数断言改为 inventory 计数 seam。
+
+### internalComputer.runners：Computer runner 控制面组
+
+- `GET /internal/computer/runners`（`sk_computer_*`，且 Computer 已链接 machine）→ 200 `{whitelist:["agentId","name","status","model","runtime"], runners:[...]}`；每行 key 恰为白名单五项，白名单在 server 端投影里强制，agent 记录中的 session/envVars/runtimeConfig 绝不进入响应。
+- 默认 scope 是本 Computer 的 machine（`agentMachineIds[agentId] == computer.machineId`）；`?scope=server` 返回该 Computer 所属 Server 的全部 runner（含其他 machine）；跨 Server 始终隔离。
+- `model` 从 runtimeConfig 投影（结构化 `model.id` 或字符串），`status` 取 agent 记录状态（默认 `inactive`）。
+- `POST /internal/computer/runners/:agentId/stop`：仅本 machine 绑定的 agent → 200 `{agentId}`；其他 machine 或跨 Server 的 agent → 404 `{"code":"agent_missing"}`（与其他 machine 的 mint/revoke 同一拒绝面，不泄露存在性）。
+- `DELETE /internal/computer/runners/:agentId/credentials/:credentialId`：同样的 machine 绑定；凭据不属于该 agent → 404 `{"code":"credential_missing"}`；成功 → 200 `{agentId,credentialId,revoked:true}` 并写 `revokedAt`。
+- 非 Computer principal（`sk_agent_*`）→ 401/403（registry 前置拒绝，handler 不运行）。
+- 明确排除：provider materialization 组（provider connection 密钥材料化/加密、launch config reference-only 语义依赖尚未移植的 provider connection 传输面）。

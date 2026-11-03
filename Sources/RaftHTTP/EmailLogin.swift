@@ -13837,6 +13837,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func setAgentStatusForTesting(agentId: String, status: String) {
+        oauth.setAgentStatus(id: agentId, status: status)
         lock.lock()
         serverAgents[agentId]?.status = status
         lock.unlock()
@@ -15501,22 +15502,110 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return computers.contains { $0.apiKey == key && $0.revokedAt == nil }
     }
 
-    public func computerRunners(authorization: String?) -> HTTPReply {
-        guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return Self.json(401, "{\"error\":\"Invalid computer credential\"}")
-        }
+    /// Resolves the Computer behind a `sk_computer_*` bearer to its attached
+    /// machine. A revoked, unknown or machine-unlinked credential yields nil.
+    private func computerRunnerContext(_ authorization: String?) -> (computerId: String, serverId: String, machineId: String)? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
         let apiKey = String(authorization.dropFirst("Bearer ".count))
         lock.lock()
-        let valid = computers.contains { computer in
-            computer.apiKey == apiKey
-                && computer.revokedAt == nil
-                && computer.machineId.map { machineId in machines.contains { $0.id == machineId } } == true
-        }
-        lock.unlock()
-        guard valid else {
+        defer { lock.unlock() }
+        guard let computer = computers.first(where: { $0.apiKey == apiKey && $0.revokedAt == nil }),
+              let machineId = computer.machineId,
+              machines.contains(where: { $0.id == machineId })
+        else { return nil }
+        return (computer.id, computer.serverId, machineId)
+    }
+
+    /// `GET /internal/computer/runners`. The §12 control-plane whitelist is
+    /// enforced here, in the projection, so no agent record field (session ids,
+    /// env vars, runtime config) can ever reach the wire — a client-side filter
+    /// would not protect against a server dump bug. Default scope is this
+    /// Computer's machine; `?scope=server` keeps the legacy server-wide view.
+    public func computerRunners(authorization: String?, scope: String? = nil) -> HTTPReply {
+        guard let context = computerRunnerContext(authorization) else {
             return Self.json(401, "{\"error\":\"Invalid computer credential\"}")
         }
-        return Self.json(200, "{\"runners\":[]}")
+        let serverWide = scope == "server"
+        lock.lock()
+        let machineByAgent = agentMachineIds
+        lock.unlock()
+        let agents = oauth.serverAgents(serverId: context.serverId)
+            .filter { !$0.deleted }
+            .sorted { $0.name < $1.name }
+        var rows: [String] = []
+        for agent in agents {
+            if !serverWide, machineByAgent[agent.id] != context.machineId { continue }
+            let status = agent.status
+            let model = Self.runnerModel(from: agent.runtimeConfigJSON)
+            rows.append("{\"agentId\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"status\":\(jsonString(status)),\"model\":\(jsonString(model)),\"runtime\":\(jsonString(agent.runtime))}")
+        }
+        return Self.json(200, "{\"whitelist\":[\"agentId\",\"name\",\"status\",\"model\",\"runtime\"],\"runners\":[\(rows.joined(separator: ","))]}")
+    }
+
+    private static func runnerModel(from runtimeConfigJSON: String?) -> String {
+        guard let runtimeConfigJSON,
+              let object = (try? JSONSerialization.jsonObject(with: Data(runtimeConfigJSON.utf8))) as? [String: Any],
+              let model = object["model"]
+        else { return "" }
+        if let text = model as? String { return text }
+        if let structured = model as? [String: Any], let id = structured["id"] as? String { return id }
+        return ""
+    }
+
+    /// `POST /internal/computer/runners/:agentId/stop`. A Computer stops only a
+    /// runner bound to its own machine on its own Server; anything else answers
+    /// the uniform missing-agent 404 so other machines' and servers' agents
+    /// cannot be probed.
+    public func computerStopRunner(authorization: String?, agentId: String) -> HTTPReply {
+        guard let context = computerRunnerContext(authorization) else {
+            return Self.json(401, "{\"error\":\"Invalid computer credential\"}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId),
+              !agent.deleted,
+              agent.serverId == context.serverId
+        else {
+            return Self.json(404, "{\"error\":\"Agent not found\",\"code\":\"agent_missing\"}")
+        }
+        lock.lock()
+        let bound = agentMachineIds[agentId] == context.machineId
+        lock.unlock()
+        guard bound else {
+            return Self.json(404, "{\"error\":\"Agent not found\",\"code\":\"agent_missing\"}")
+        }
+        lock.lock()
+        if serverAgents[agentId] != nil { serverAgents[agentId]?.status = "inactive" }
+        lock.unlock()
+        return Self.json(200, "{\"agentId\":\(jsonString(agentId))}")
+    }
+
+    /// `DELETE /internal/computer/runners/:agentId/credentials/:credentialId`.
+    /// Same machine binding as the stop surface: another machine's runner is a
+    /// uniform missing-agent 404, never a credential oracle.
+    public func computerRevokeRunnerCredential(authorization: String?, agentId: String, credentialId: String) -> HTTPReply {
+        guard let context = computerRunnerContext(authorization) else {
+            return Self.json(401, "{\"error\":\"Invalid computer credential\"}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId),
+              !agent.deleted,
+              agent.serverId == context.serverId
+        else {
+            return Self.json(404, "{\"error\":\"Agent not found\",\"code\":\"agent_missing\"}")
+        }
+        lock.lock()
+        let bound = agentMachineIds[agentId] == context.machineId
+        var revokedCredentialId: String?
+        if bound, let entry = agentCredentials.first(where: { $0.value.id == credentialId && $0.value.agentId == agentId }) {
+            agentCredentials[entry.key]?.revokedAt = entry.value.revokedAt ?? Date()
+            revokedCredentialId = entry.value.id
+        }
+        lock.unlock()
+        guard bound else {
+            return Self.json(404, "{\"error\":\"Agent not found\",\"code\":\"agent_missing\"}")
+        }
+        guard let revokedCredentialId else {
+            return Self.json(404, "{\"error\":\"Credential not found\",\"code\":\"credential_missing\"}")
+        }
+        return Self.json(200, "{\"agentId\":\(jsonString(agentId)),\"credentialId\":\(jsonString(revokedCredentialId)),\"revoked\":true}")
     }
 
     public func setMachineRuntimeModels(machineId: String, runtime: String, models: [(id: String, label: String)]) {

@@ -450,6 +450,7 @@ public final class OAuthLedger: @unchecked Sendable {
         public var runtime: String
         public var runtimeConfigJSON: String?
         public var envVarsJSON: String?
+        public var status: String
         public var deleted: Bool
     }
 
@@ -468,6 +469,7 @@ public final class OAuthLedger: @unchecked Sendable {
             runtime: agent.runtime,
             runtimeConfigJSON: agent.runtimeConfigJSON,
             envVarsJSON: agent.envVarsJSON,
+            status: agent.status,
             deleted: agent.deleted
         )
     }
@@ -489,9 +491,16 @@ public final class OAuthLedger: @unchecked Sendable {
                     runtime: agent.runtime,
                     runtimeConfigJSON: agent.runtimeConfigJSON,
                     envVarsJSON: agent.envVarsJSON,
+                    status: agent.status,
                     deleted: agent.deleted
                 )
             }
+    }
+
+    public func setAgentStatus(id: String, status: String) {
+        lock.lock()
+        agents[id]?.status = status
+        lock.unlock()
     }
 
     public func updateAgentRuntimeId(id: String, runtime: String) {
@@ -3239,6 +3248,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var runtime: String = "managed"
         var runtimeConfigJSON: String? = nil
         var envVarsJSON: String? = nil
+        var status: String = "inactive"
         var deleted = false
     }
 

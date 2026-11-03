@@ -2723,8 +2723,24 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.delete("internal", "computer", "runners", ":agentId", "credentials", ":credentialId") { request -> Response in
+        routeResponse(services.emailAccounts.computerRevokeRunnerCredential(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId") ?? "",
+            credentialId: request.parameters.get("credentialId") ?? ""
+        ))
+    }
+    app.post("internal", "computer", "runners", ":agentId", "stop") { request -> Response in
+        routeResponse(services.emailAccounts.computerStopRunner(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId") ?? ""
+        ))
+    }
     app.get("internal", "computer", "runners") { request -> Response in
-        routeResponse(services.emailAccounts.computerRunners(authorization: request.headers[.authorization]))
+        routeResponse(services.emailAccounts.computerRunners(
+            authorization: request.headers[.authorization],
+            scope: desktopQuery(request.url.query, "scope")
+        ))
     }
     app.post("internal", "computer", "agent-migrations", "by-id", ":migrationId", "resumable", "control") { request -> Response in
         routeResponse(services.emailAccounts.putMigrationControlManifest(
