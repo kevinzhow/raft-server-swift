@@ -23804,6 +23804,22 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 return Self.json(403, "{\"code\":\"assistant_channel_forbidden\",\"error\":\"An assistant can only be in its DM with its owner\"}")
             }
             oauth.addChannelAgent(channelId: channelId, agentId: agentId)
+            // A human adding an agent is shared channel activity: announce it,
+            // and keep it born-read for the acting human only. The added agent
+            // stays unread on every transport (its own actions are the only
+            // ones born-read for it).
+            lock.lock()
+            let noticeSeq = appendHumanMessageLocked(StoredHumanMessage(
+                id: UUID().uuidString.lowercased(),
+                channelId: channelId,
+                senderId: "system",
+                content: "@\(agent.name) was added to this channel.",
+                randomId: nil,
+                messageType: "system",
+                senderType: "system"
+            ))
+            oauth.setChannelReadCursor(channelId: channelId, userId: userId, seq: noticeSeq)
+            lock.unlock()
             return Self.json(200, "{\"ok\":true}")
         }
         if let targetUserId = object["userId"] as? String {

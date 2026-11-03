@@ -1042,3 +1042,10 @@ RFC 074 personal assistant：
 - 该响应不带 `Content-Length`（存储大小会截断追加的桥），CSP 头保留 `frame-ancestors 'self'` 并新增 `connect-src 'none'`、`form-action 'none'`、`object-src 'none'`。
 - 桥脚本在缺少 `acBridgeNonce` 查询参数时完全惰性，因此普通预览行为不变；脚本只出现在预览响应里，下载/存储对象保持逐字节一致。
 - 明确排除：上游对存储流式传输中断（真实对象存储 socket 生命周期）的处理，依赖未移植的存储传输层。
+
+### internalAgentApi.inboxEligibility：单条未读规则组
+
+- 规则：agent 自己造成的系统消息（如它自己 join 产生的 "was added to this channel"）对它 born-read —— wake hints 与 `/events` 拉取都不返回、也不通知；别人的动作造成的同一条系统消息对它保持未读，三个 transport（notice/wake、`/events` 拉取、入站投递）给出一致答案。
+- 人类通过 `POST /api/channels/:id/members` 把 agent 加入频道时，会写入一条 `@<agent> was added to this channel.` 系统消息：对执行操作的人类 born-read（推进其读游标），对被加入的 agent 保持未读（wake hints 与 `/events` 都返回）。
+- agent 自行 join（内部 agent-api join）产生的通知只对该 agent born-read；其后的普通消息恢复正常的 announce + pull。
+- 明确排除：上游最后一条纯单元断言（`isMessageUnreadEligibleForReceiver` 的 noise-subtype 列表与 mention 穿透矩阵）不移植；其行为由上述 HTTP transport 断言覆盖。
