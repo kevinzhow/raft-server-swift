@@ -169,6 +169,15 @@ private func attachPost(
                     && (row["hasFingerprint"] as? Bool) == false
             }, "the attached Computer appears in the adoption roster")
 
+            // Without includeAll the fingerprint-less attached rows stay hidden.
+            let defaultRoster = try await client.get(
+                URI(string: "/api/computer/legacy-machines?serverSlug=\(f.serverSlug)"),
+                headers: { var h = HTTPFields(); h[.authorization] = "Bearer \(f.ownerToken)"; return h }()
+            )
+            let defaultBody = (try? JSONSerialization.jsonObject(with: Data((defaultRoster.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            let defaultRows = defaultBody["entries"] as? [[String: Any]] ?? []
+            #expect(!defaultRows.contains { ($0["machineName"] as? String) == "raft-computer" })
+
             // A UUID-shaped value is a slug, never a serverId compatibility alias.
             let byId = try await attachPost(client, token: f.ownerToken, body: #"{"serverSlug":"\#(f.serverId)","name":"uuid-shaped"}"#)
             #expect(byId.status == .forbidden)

@@ -915,3 +915,7 @@ RFC 074 personal assistant：
 
 - `DELETE /api/servers/:id/machines/:machineId`（owner/admin 或 machine 所有者；活跃 migration → 409）在删除 machine 前先写撤销回执：关联 computers 的 `revokedAt` 置为当前时间且 `machineId` 清空。
 - 被撤销的 `sk_computer_*` 之后的 `/internal/computer/runners` → 401，不能为新 agent mint 凭据；`computerRecordForTesting` 可见 `revokedAt != nil`、`machineId == nil`。
+
+### computerAttach.api：默认 roster 排除未握手 Computer
+
+- 刚 attach 的 Computer（`hasFingerprint:false`）在默认 `GET /api/computer/legacy-machines?serverSlug=` 中不出现；只有 `includeAll=1` 才展示该行。这样 default roster 始终只给 daemon 可迁移的、已有指纹的历史 machine。
