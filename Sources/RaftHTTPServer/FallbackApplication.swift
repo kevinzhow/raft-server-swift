@@ -1318,6 +1318,17 @@ public func configure(_ app: Application, services: FallbackServices) {
             return response
         }
     }
+    app.get("internal", "agent-api", "mention-actions", "pending") { request -> Response in
+        routeResponse(services.emailAccounts.agentMentionActionsPending(
+            authorization: request.headers[.authorization]
+        ))
+    }
+    app.post("internal", "agent-api", "mention-actions", "execute") { request -> Response in
+        routeResponse(services.emailAccounts.agentMentionActionsExecute(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}"
+        ))
+    }
     app.get("internal", "agent-api", "events") { request -> Response in
         routeResponse(services.emailAccounts.agentThirdPartyEvents(authorization: request.headers[.authorization]))
     }

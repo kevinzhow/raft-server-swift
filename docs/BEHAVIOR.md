@@ -1024,3 +1024,12 @@ RFC 074 personal assistant：
 - 该路由先做 computer 凭据校验再解析超大 body：无 Bearer 或非法 key → 401（secret 不进入 parser），合法凭据的超大 body 才是 413。
 - 其余 JSON 路由保持 100 KB 全局限制；形如 control 的 "-other" 兄弟路径不享受提升。
 - manifest 预算按 trim 后字节计（transport 空白 padding 不计入 512 KB），对齐上游 576 KB request envelope。
+
+### internalAgentApi.mentionActions：agent 发送者侧组
+
+- `GET /internal/agent-api/mention-actions/pending`：只列出发送者是本 agent、尚未通知、`notifiableAtSend=false`、创建时间在 7 天内、宿主消息与频道仍存在的 mention 行；按 createdAt 倒序，payload `{resolutionId,messageId,channelId,channelName,targetType,targetId,targetHandle,availableActions:["notify"]}`，`limit+1` 探测 `has_more`。
+- `POST /internal/agent-api/mention-actions/execute`：`action` 只接受 `notify`/`add`；`resolutionIds`（或 `ids`）去重、trim、最多 100 条；逐 id 返回 typed 结果而不是整批失败。
+- `notify`：目标无读权限 → `no_permission/target_lacks_read_access`；成功时写 notified 字段（byType=agent、byId=绑定 agent、action=notify_only），并对同一 message+target 的所有未决行一起标记、返回 `dedupedResolutionIds`；不添加任何成员关系。
+- `add`：agent 发送者永远得到 `no_permission/add_requires_human_member_authority` 且不写任何状态；若发送者已不在频道参与者中，先返回 `no_permission/sender_lacks_channel_access`。
+- 未知 id、频道不属于该 agent 的 Server、宿主消息已删除 → `not_found`；已删除消息也会从 pending 中消失（级联）。
+- 明确排除：orchestrator 投递 spy（notify 的 queued/handoff 失败语义）、DB 行断言、notify 对私有 thread 内容的 cloak 断言（待补）。

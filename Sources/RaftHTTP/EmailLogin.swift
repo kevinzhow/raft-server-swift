@@ -3846,6 +3846,166 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Fixture seam: an unresolved outsider mention authored by an agent.
+    public func addPendingAgentMentionForTesting(
+        messageId: String,
+        channelId: String,
+        senderAgentId: String,
+        targetType: String,
+        targetId: String,
+        handle: String,
+        createdAt: Date = Date()
+    ) -> String {
+        lock.lock()
+        let id = UUID().uuidString.lowercased()
+        storedMentions.append(StoredMention(
+            id: id,
+            messageId: messageId,
+            channelId: channelId,
+            senderId: senderAgentId,
+            targetType: targetType,
+            targetId: targetId,
+            handle: handle,
+            notifiableAtSend: false,
+            createdAt: createdAt,
+            notifiedAt: nil,
+            notifiedByType: nil,
+            notifiedById: nil,
+            notifiedAction: nil
+        ))
+        lock.unlock()
+        return id
+    }
+
+    /// Whether a stored mention is still a pending sender-side action.
+    private func pendingAgentMentionLocked(_ mention: StoredMention, agentId: String) -> Bool {
+        guard mention.senderId == agentId,
+              mention.notifiedAt == nil,
+              !mention.notifiableAtSend,
+              Date().timeIntervalSince(mention.createdAt) < 7 * 24 * 60 * 60,
+              let channel = postableChannels[mention.channelId],
+              channel.serverId == pendingAgentMentionServer(agentId: agentId),
+              humanMessageRows.contains(where: { $0.id == mention.messageId })
+        else { return false }
+        return true
+    }
+
+    private func pendingAgentMentionServer(agentId: String) -> String? {
+        oauth.agentRuntimeInfo(id: agentId)?.serverId
+    }
+
+    /// `GET /internal/agent-api/mention-actions/pending`. Sender-side outsider
+    /// mentions authored by the bound agent whose delivery was withheld.
+    public func agentMentionActionsPending(authorization: String?) -> HTTPReply {
+        switch agentReadCredential(authorization) {
+        case .failure(let reply):
+            return reply
+        case .success(let agentId):
+            guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted else {
+                return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            }
+            lock.lock()
+            var rows = storedMentions.filter { pendingAgentMentionLocked($0, agentId: agentId) }
+            rows.sort { $0.createdAt > $1.createdAt }
+            let limit = 50
+            let hasMore = rows.count > limit
+            let page = rows.prefix(limit).map { mention -> String in
+                let channelName = postableChannels[mention.channelId]?.name ?? ""
+                return "{\"resolutionId\":\(jsonString(mention.id)),\"messageId\":\(jsonString(mention.messageId)),\"channelId\":\(jsonString(mention.channelId)),\"channelName\":\(jsonString(channelName)),\"targetType\":\(jsonString(mention.targetType)),\"targetId\":\(jsonString(mention.targetId)),\"targetHandle\":\(jsonString(mention.handle)),\"availableActions\":[\"notify\"]}"
+            }
+            lock.unlock()
+            return Self.json(200, "{\"pendingMentionActions\":[\(page.joined(separator: ","))],\"has_more\":\(hasMore)}")
+        }
+    }
+
+    /// `POST /internal/agent-api/mention-actions/execute`. Every id is
+    /// revalidated at action time and returns a typed per-id status.
+    public func agentMentionActionsExecute(authorization: String?, body: String) -> HTTPReply {
+        switch agentReadCredential(authorization) {
+        case .failure(let reply):
+            return reply
+        case .success(let agentId):
+            guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted else {
+                return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            }
+            let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+            guard let action = object["action"] as? String, action == "notify" || action == "add" else {
+                return Self.json(400, "{\"error\":\"action must be notify or add\"}")
+            }
+            var seen = Set<String>()
+            var ids: [String] = []
+            let rawIds = (object["resolutionIds"] as? [Any]) ?? (object["ids"] as? [Any]) ?? []
+            for raw in rawIds {
+                guard let text = raw as? String else { continue }
+                let id = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !id.isEmpty, !seen.contains(id) else { continue }
+                seen.insert(id)
+                ids.append(id)
+                if ids.count == 100 { break }
+            }
+            guard !ids.isEmpty else {
+                return Self.json(400, "{\"error\":\"resolutionIds must include at least one id\"}")
+            }
+            lock.lock()
+            defer { lock.unlock() }
+            var results: [String] = []
+            for id in ids {
+                guard let index = storedMentions.firstIndex(where: { $0.id == id }),
+                      storedMentions[index].senderId == agentId,
+                      postableChannels[storedMentions[index].channelId]?.serverId == agent.serverId,
+                      humanMessageRows.contains(where: { $0.id == storedMentions[index].messageId })
+                else {
+                    results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\(jsonString(action)),\"status\":\"not_found\"}")
+                    continue
+                }
+                if action == "notify" {
+                    guard mentionTargetCanReadLocked(
+                        channelId: storedMentions[index].channelId,
+                        targetType: storedMentions[index].targetType,
+                        targetId: storedMentions[index].targetId
+                    ) else {
+                        results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\"notify\",\"status\":\"no_permission\",\"reason\":\"target_lacks_read_access\"}")
+                        continue
+                    }
+                    let messageId = storedMentions[index].messageId
+                    let targetType = storedMentions[index].targetType
+                    let targetId = storedMentions[index].targetId
+                    var deduped = [id]
+                    for other in storedMentions.indices where storedMentions[other].messageId == messageId
+                        && storedMentions[other].targetType == targetType
+                        && storedMentions[other].targetId == targetId
+                        && storedMentions[other].notifiedAt == nil {
+                        storedMentions[other].notifiedAt = Date()
+                        storedMentions[other].notifiedByType = "agent"
+                        storedMentions[other].notifiedById = agentId
+                        storedMentions[other].notifiedAction = "notify_only"
+                        if storedMentions[other].id != id { deduped.append(storedMentions[other].id) }
+                    }
+                    let dedupedJSON = deduped.map(jsonString).joined(separator: ",")
+                    results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\"notify\",\"status\":\"queued\",\"dedupedResolutionIds\":[\(dedupedJSON)]}")
+                } else {
+                    let senderStillVisible = mentionSenderStillInChannelLocked(
+                        channelId: storedMentions[index].channelId,
+                        agentId: agentId
+                    )
+                    guard senderStillVisible else {
+                        results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\"add\",\"status\":\"no_permission\",\"reason\":\"sender_lacks_channel_access\"}")
+                        continue
+                    }
+                    results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\"add\",\"status\":\"no_permission\",\"reason\":\"add_requires_human_member_authority\"}")
+                }
+            }
+            return Self.json(200, "{\"ok\":true,\"action\":\(jsonString(action)),\"results\":[\(results.joined(separator: ","))]}")
+        }
+    }
+
+    /// `add` authority is participant-scoped: an agent that only has read
+    /// access to a public channel is not a channel member for this action.
+    private func mentionSenderStillInChannelLocked(channelId: String, agentId: String) -> Bool {
+        guard let channel = postableChannels[channelId] else { return false }
+        return channel.memberIds.contains(agentId) || oauth.channelAgentIds(channelId: channelId).contains(agentId)
+    }
+
     /// `POST /api/messages/mention-actions/execute`. A resolution id belongs to the sender who wrote the mention.
     public func executeMentionActions(body: String, authorization: String?, serverId: String?) -> HTTPReply {
         let userId: String
@@ -6147,6 +6307,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         lock.unlock()
         return id
+    }
+
+    public func mentionNotifiedActionForTesting(id: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedMentions.first { $0.id == id }?.notifiedAction
+    }
+
+    public func removeMessageForTesting(messageId: String) {
+        lock.lock()
+        humanMessageRows.removeAll { $0.id == messageId }
+        lock.unlock()
     }
 
     public func addOrphanTaskForTesting(channelId: String, title: String, taskNumber: Int) -> String {
@@ -8998,6 +9170,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var targetId: String
         var handle: String
         var notifiableAtSend: Bool
+        var createdAt: Date = Date()
         var notifiedAt: Date?
         var notifiedByType: String?
         var notifiedById: String?
