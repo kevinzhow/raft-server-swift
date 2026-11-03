@@ -919,3 +919,7 @@ RFC 074 personal assistant：
 ### computerAttach.api：默认 roster 排除未握手 Computer
 
 - 刚 attach 的 Computer（`hasFingerprint:false`）在默认 `GET /api/computer/legacy-machines?serverSlug=` 中不出现；只有 `includeAll=1` 才展示该行。这样 default roster 始终只给 daemon 可迁移的、已有指纹的历史 machine。
+
+### computerRevocation.api：machine 删除的鉴权前置
+
+- `DELETE /api/servers/:id/machines/:machineId` 未认证 → 401；未知/machine 不属于该 Server → 404；两者都在任何撤销动作之前失败（computer 凭据的 `revokedAt` 保持 null）。

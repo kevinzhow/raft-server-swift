@@ -35,6 +35,13 @@ import VaporTesting
             let before = try await client.get(URI(string: "/internal/computer/runners"), headers: computerHeaders)
             #expect(before.status == .ok)
 
+            // Unauthenticated and unknown-machine deletes are refused before any revocation.
+            let anonymous = try await client.send(.delete, to: "/api/servers/\(serverId)/machines/\(machineId)")
+            #expect(anonymous.status == .unauthorized)
+            let unknown = try await client.send(.delete, headers: headers, to: "/api/servers/\(serverId)/machines/\(UUID().uuidString)")
+            #expect(unknown.status == .notFound)
+            #expect(accounts.computerRecordForTesting(apiKey: apiKey)?.revokedAt == nil)
+
             let removed = try await client.send(.delete, headers: headers, to: "/api/servers/\(serverId)/machines/\(machineId)")
             #expect(removed.status == .ok)
 
