@@ -44,14 +44,14 @@
 
 | 指标 | 当前 | 里程碑 | 剩余 |
 | --- | --- | --- | --- |
-| route 模块 locked | 111 / 219（50.7%） | 132 / 219（60%） | 21 个模块 |
-| route 用例 locked | 698 / 2000（34.9%） | 800 / 2000（40%） | 102 条用例 |
+| route 模块 locked | 112 / 219（51.1%） | 132 / 219（60%） | 20 个模块 |
+| route 用例 locked | 700 / 2000（35.0%） | 800 / 2000（40%） | 100 条用例 |
 | socket 模块 | 2 / 7 | 按 frame 组推进 | 5 个模块 |
 | daemon 模块 | 3 / 180 | 按真实 socket 队列推进 | 177 个模块 |
-| 整体模块 | 116 / 406（28.6%） | 244 / 406（60%） | 128 个模块 |
-| 整体用例 | 768 / 4632（16.6%） | 1853 / 4632（40%） | 1085 条用例 |
+| 整体模块 | 117 / 406（28.8%） | 244 / 406（60%） | 127 个模块 |
+| 整体用例 | 770 / 4632（16.6%） | 1853 / 4632（40%） | 1083 条用例 |
 
-最近锁定的模块：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api`、`servers.api`、`internalAgentApi.agentStatus`、`internalAgentApi.senderMentionDeliveries`、`internalAgentApi.attachmentComments`、`tasks.realtimeProjection.api`、`computerAdopt.api`、`internalComputer.preflight`、`internalComputer.runners`、`mobileDownload`、`desktopDownload`、`publicVisits.api`、`notifications.api`、`productEvents.api`、`shareArtifacts.api`、`internalAgentApi.registryParity`、`errorResponse.dmTarget`、`internalAgentApi.wakeHintStream`、`internalComputer.agentMigrationControl.bodyLimit.api`、`internalAgentApi.mentionActions`、`attachmentPreviewBridge.api`、`internalAgentApi.inboxEligibility`、`providerConnections.api`。剩余用例高度集中在 `internalAgentApi.auth`（93）、`agents.api`（87）、`internalAgentApi.send`（65）、`auth.api`（45）、`internal.channelMembership.api`（43）；下一片按第 4 节执行顺序 2–5 推进（`internalAgentApi.auth` 剩余组或下一个 pending 小模块）。
+最近锁定的模块：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api`、`servers.api`、`internalAgentApi.agentStatus`、`internalAgentApi.senderMentionDeliveries`、`internalAgentApi.attachmentComments`、`tasks.realtimeProjection.api`、`computerAdopt.api`、`internalComputer.preflight`、`internalComputer.runners`、`mobileDownload`、`desktopDownload`、`publicVisits.api`、`notifications.api`、`productEvents.api`、`shareArtifacts.api`、`internalAgentApi.registryParity`、`errorResponse.dmTarget`、`internalAgentApi.wakeHintStream`、`internalComputer.agentMigrationControl.bodyLimit.api`、`internalAgentApi.mentionActions`、`attachmentPreviewBridge.api`、`internalAgentApi.inboxEligibility`、`providerConnections.api`、`agentMigrationReceiptDm.api`。剩余用例高度集中在 `internalAgentApi.auth`（93）、`agents.api`（87）、`internalAgentApi.send`（65）、`auth.api`（45）、`internal.channelMembership.api`（43）；下一片按第 4 节执行顺序 2–5 推进（`internalAgentApi.auth` 剩余组或下一个 pending 小模块）。
 
 ### 切片边界即检查点
 
@@ -211,11 +211,11 @@
 
 `attachmentComments.api` 实现清单（下次切片直接照做）：`GET /api/attachments/comments/counts?ids=`（1-100 个 id、仅可读附件、403 先于参数校验）、`GET /api/attachments/:id/comments`（403 先于 malformed-id 400、404 cloak、`viewer {canComment,reason}` 五态 archived/unlinked/read_only/not_member/ok、comment 是父消息 thread 里的普通消息 + ref 行）、`POST /api/attachments/:id/comments`（403 先于一切 body 校验、malformed-id 400、未链接 422、非成员 403、归档 409、anchor 词表/上限、mentions 走共享消息管线）、cross-server 附件 404 与同一 thread 复用。
 
-### 下一片候选设计：`agentMigrationReceiptDm.api`（2 条）
+### `agentMigrationReceiptDm.api`（2 条）— 已锁定（d759914）
 
 - 上游语义：迁移完成时创建"收据 DM"（唯一成员是被迁移 agent，频道名 `migration-receipt-<supportRef>`）；agent 侧看到的名字是 `dm:@migration-receipt-<supportRef>`，并能用该名字读历史；其他 agent 得到中性 404；向该 DM 发消息 → 409 `code=MIGRATION_RECEIPT_READ_ONLY` 且不落库。
 - 端口缺口：完成钩子（`migrationStep` 的 `completed` 转移）未创建收据频道；`resolveDMPeerLocked` 只按真实对端名解析；agent 侧 DM 目标名由 peer 名推导，未处理"无名 peer"的收据频道；发送路径没有 409 只读拒绝。
-- 实现顺序：① 完成钩子创建 kind=dm、memberIds=[agentId]、name=`migration-receipt-<ref>` 的频道并写一条收据消息；② DM ref 解析/展示加收据频道特例（仅 owning agent，其他 server/agent 一律 404）；③ 发送到收据频道返回 409 `MIGRATION_RECEIPT_READ_ONLY`；④ 验收测试用测试 seam 直接建收据频道（迁移全流程已有独立测试覆盖，不重复），断言读/写/他 agent 三条行为。
+- 已按此实现：完成钩子建频道并写回执、DM ref 特例（仅 owning agent）、发送 409、测试 seam 建频道；`AgentInboxListTests` 里旧的"隐藏回执"fixture 已按上游"列出且可读"更新。
 
 ### `attachmentComments.api` 待办（12 条，端口已有 POST 与 agent 面）
 
