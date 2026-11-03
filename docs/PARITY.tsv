@@ -295,7 +295,7 @@ drivers/grokEventNormalizer	daemon	locked	06763ac	grok ACP normalizer: text/thou
 drivers/kimi-sdk	daemon	pending	-	auto-seed
 drivers/kimi	daemon	pending	-	auto-seed
 drivers/kimiRequestDiagnostics	daemon	pending	-	auto-seed
-drivers/launchCurrent	daemon	pending	-	auto-seed
+drivers/launchCurrent	daemon	locked	605dd85	non-executable black-box: spawns the real Claude driver against a fake CLI to prove no child is created when the launch turns stale during async preparation, plus a TypeScript source inventory of every driver's assertLaunchCurrent placement; this port has no agent runtime drivers or their spawn plumbing
 drivers/managedMcpTools	daemon	locked	0e01b86	managed MCP Pi tools: absent without a runner credential, catalog snapshot frozen with config/assignment versions and proxied calls carrying the version fence and bearer auth, non-fatal bounded snapshot warnings, bounded remote error text with the truncation marker and tool-named empty fallback, transport and uncoded 5xx failures reading as outcome unknown while Raft-coded answers pass through, and newline-flattened remote names/descriptions that cannot forge prompt lines
 drivers/nodeHostLaunch	daemon	pending	-	auto-seed
 drivers/opencode.live	daemon	locked	61895fe	non-executable black-box: a live integration run against the real opencode CLI, which this port does not ship or drive
@@ -308,7 +308,7 @@ drivers/piCommandTool	daemon	pending	-	auto-seed
 drivers/piCompactionFit	daemon	pending	-	auto-seed
 drivers/piEventNormalizer	daemon	locked	018e670	token usage normalizer: pi-ai Usage top-level token counts plus the nested cost breakdown map through the explicit allowlist, present-0 is emitted while absent/empty/NaN/non-numeric fields are not, unknown keys and array/non-object usage are ignored, and message.usage presence gates the pi_message_end_usage per-turn telemetry event with null session normalized
 drivers/piToolExecutionObservability	daemon	pending	-	auto-seed
-drivers/piToolExecutionRuntimeSession	daemon	pending	-	auto-seed
+drivers/piToolExecutionRuntimeSession	daemon	locked	605dd85	non-executable black-box: drives the pi SDK runtime session with a fake child process and asserts trace attribute contracts through the shared MemoryTraceSink; this port does not ship the pi SDK, the agent runtime session, or trace sinks
 drivers/probe.async	daemon	pending	-	auto-seed
 drivers/probe	daemon	pending	-	auto-seed
 drivers/probeChild	daemon	pending	-	auto-seed
