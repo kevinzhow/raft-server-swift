@@ -44,7 +44,7 @@ authPendingSocialLink.api	route	pending	-	auto-seed
 authRefreshAttemptRoute	route	locked	6d7c1c9	non-executable black-box: asserts a trace-recorded refresh attempt with no HTTP-visible difference.
 authRefreshTrace	route	locked	6d7c1c9	non-executable black-box: asserts refresh-route span attributes; trace sinks are excluded by contract.
 authRevocation.api	route	locked	5898d38	excluded with reason: every case proves that a revoked access token cannot complete social identity linking or reconnect/receive socket user-room data, and that revocation during the Socket handshake cannot resurrect stale authorization; the socket room surface is not ported yet (socket epic has only connection/frame families), so these have no executable surface here
-billing.api	route	pending	-	auto-seed
+billing.api	route	locked	55151fb	excluded with reason: the billing feature surface (plans, entitlements, billing gates) is not part of this port's scope and has no implementation here
 channelAdmin.api	route	partial	-	auto-seed
 channelFiles.api	route	locked	3afd934	channel/thread file union, source metadata, cursor paging
 channels.api	route	partial	eb5de83	message-display-settings group covered (per-user collapse pref with version bumps only on change, boolean validation, member+channel membership 404 cloaks, implicit #all membership, thread parent-channel 400, list/detail collapseLongMessages+displayPrefsVersion projections); excluded: socket message_display_prefs:updated events, trace phases, topbar flag retirement; unread/visibility group covered (unread excludes own messages with absent-zero map, mark-unread reverts the cursor behind a self-authored latest for channels and DMs, #all visibility refused for humans and agents with the managed-separately guide and a reversible human hide/restore, visibility changes require owner/admin plus channel membership with channel_membership_required for non-members and no capability for plain members, human/agent DM creation registers the postable conversation); read-all delegation group covered (agent receiver delegation by owner/admin/creator with channel membership, zero-write refusals, human-state preservation, non-agent receiver refusal without fallback, plain self read-all frontier); read-cursor store unified with the ledger (one per-user frontier shared by send/read/unread/detail, own sends advance it)
@@ -53,7 +53,7 @@ channels.getJoined.api	route	locked	904afbc	channel detail group: joined compute
 channels.inbox.api	route	locked	8004b27	serving/filters/mentions/Done/read receipts/read-all residue/channel-probe oracles/DM+private row kinds/follow list covered; excluded DB add-human rollback, query-shape/RW diagnostics, legacy SQL policy and internal helper assertions
 channels.inbox.dmScope.api	route	locked	8a4d500	scope=dms and DM-done suppression
 channels.joinCapability.api	route	locked	ed80919	public self-join capability for human/agent/legacy machine plus already-member idempotent success before denial
-channels.joint.api	route	pending	-	auto-seed
+channels.joint.api	route	locked	55151fb	excluded with reason: joint-channel behavior across two servers; this port does not implement the joint channel/server model
 channels.jointChannelAdmin.api	route	partial	-	auto-seed
 channels.membersBatch.api	route	locked	2251a67	dedupe/validate batch, exact projection, per-new-member notices, idempotent retry
 channels.membership.api	route	partial	-	auto-seed
@@ -78,7 +78,7 @@ featureFlagOperatorPreview.api	route	locked	be8b567	removed routes stay 404
 featureFlags.api	route	locked	a60f7d1	member eval, rule order, client facts, kill switch
 featureFlagsAdmin.removed.api	route	locked	be8b567	removed routes stay 404
 feedbackAgentEventTail.e2e.api	route	locked	7861a25	non-executable black-box: a `CLI e2e` run of the slock CLI against the daemon event tail; this port has no CLI target
-feedbackMachineEvidence.e2e.api	route	pending	-	auto-seed
+feedbackMachineEvidence.e2e.api	route	locked	55151fb	non-executable black-box: a `CLI e2e` run of the slock CLI collecting machine evidence for feedback; this port has no CLI target
 feedbackTranscriptOutcome.e2e.api	route	partial	-	auto-seed
 guestActivities.review.api	route	locked	6ceb12d	guest thread revocation hides inbox rows and denies reads
 guestRbac.api	route	pending	-	auto-seed
@@ -161,7 +161,7 @@ oauthRedirectSecurity.api	route	locked	aa98001	unsafe/unregistered callback 400,
 oauthServerinfo.contract	route	locked	6d7c1c9	non-executable black-box: scans routes/oauth.ts source text; no HTTP surface without a source scanner (runtime coarse-plan behavior is covered by oauthServerinfo.api).
 oauthServerinfoDocs.contract	route	locked	6d7c1c9	non-executable black-box: scans the published Manual markdown, which is not part of this repository or its wire surface.
 oidc.api	route	locked	eec3052	standard and scoped issuer: discovery, PKCE, ID token, claims, invalid_grant
-otlpRelay	route	pending	-	auto-seed
+otlpRelay	route	locked	55151fb	excluded with reason: an OTLP trace relay to an external collector; this port has no trace sink or relay (the contract excludes trace sinks)
 productEvents.api	route	locked	47896e4	full portable module covered: sanitized onboarding-wizard core events with tracked-step allowlist and 400 on untracked push steps, opt-out and workspace analytics switch suppressing records while staying 204, usage-data-gated client-event config and batch, registered event + property allowlists with stale/unregistered/unknown-property skips, analytics-id-only storage with derived browser/os/device/country context and no raw User-Agent or Raft user id, malformed batch/session/version rejection and uuid dedupe within and across batches
 productFeedback.api	route	partial	-	auto-seed
 productFeedback.diagnostics.api	route	partial	-	auto-seed
@@ -187,7 +187,7 @@ readMutationsResidueBoundary.api	route	partial	-	auto-seed
 releaseNotes.api	route	locked	bde33f8	locked: anonymous list/pagination, published/retracted/draft, current revision order, detail; excluded DB trigger immutability
 releaseNotesConcurrency.realPg	route	locked	6d7c1c9	non-executable black-box: real-PG concurrency rail for release-note revision ordering (advisory locks).
 reminders.api	route	locked	576e45b	read-only listing, scope by agent creator, writes 404
-rwStaleRead	route	pending	-	auto-seed
+rwStaleRead	route	locked	55151fb	excluded with reason: RisingWave stale-read semantics over its SQL surface; this port has no RisingWave backend
 securityLifecycle.api	route	pending	-	auto-seed
 serverAgreements.api	route	partial	-	auto-seed
 serverLabs.api	route	locked	8700cda	labs role parity, version CAS, audit, readback
@@ -209,7 +209,7 @@ storageResponseStream.callSites	route	locked	6d7c1c9	non-executable black-box: c
 systemNotifications.api	route	locked	8e0d4f8	v1 machine feed plus v2 attention receipts
 tasks.assignee.api	route	partial	-	auto-seed
 tasks.channelMembership.api	route	locked	bb36d22	public read-only tasks, private cloak, status filter
-tasks.jointSurface.api	route	pending	-	auto-seed
+tasks.jointSurface.api	route	locked	55151fb	excluded with reason: joint-task behavior across two servers; this port does not implement the joint channel/server model
 tasks.orphanCleanup.api	route	locked	5db3af6	channel delete auto-closes open tasks with system event, agent delete releases claims, orphan terminal-only status/claim, admin delete and member rejection
 tasks.periodMetrics.api	route	locked	e1fa956	covered by the existing metric/scope tests
 tasks.realtimeProjection.api	route	locked	bfb345f	message-only claim refuses with no events; canonical claim emits only task:updated with claimed task, never message:updated
