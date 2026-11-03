@@ -6358,6 +6358,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public func removeMessageForTesting(messageId: String) {
         lock.lock()
         humanMessageRows.removeAll { $0.id == messageId }
+        for key in attachmentCommentRecords.keys {
+            attachmentCommentRecords[key]?.removeAll { $0.id == messageId }
+        }
         lock.unlock()
     }
 
@@ -17746,6 +17749,45 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(400, "{\"error\":\"content is required\"}")
         }
+        // A comment is a normal message in the attachment host message's thread;
+        // siblings under the same host share that thread. The directory lock is
+        // not held across thread creation because those helpers take it.
+        lock.lock()
+        let hostChannelId = attachment.channelId
+        let hostMessageId = attachment.messageId ?? ""
+        let hostServerId = postableChannels[hostChannelId]?.serverId ?? ""
+        let hostMembers = Array(postableChannels[hostChannelId]?.memberIds ?? [])
+        lock.unlock()
+        let threadChannelId: String = {
+            guard !hostMessageId.isEmpty else { return hostChannelId }
+            lock.lock()
+            let existing = agentHistoryThread(parentId: hostChannelId, anchorMessageId: hostMessageId)
+            lock.unlock()
+            if let existing { return existing }
+            let created = oauth.createThreadChannel(parentChannelId: hostChannelId, parentMessageId: hostMessageId)
+            for member in hostMembers {
+                addPostableChannel(
+                    serverId: hostServerId,
+                    channelId: created,
+                    memberId: member,
+                    kind: "thread",
+                    parentChannelId: hostChannelId,
+                    parentMessageId: hostMessageId,
+                    name: "thread"
+                )
+            }
+            addPostableChannel(
+                serverId: hostServerId,
+                channelId: created,
+                memberId: userId,
+                kind: "thread",
+                parentChannelId: hostChannelId,
+                parentMessageId: hostMessageId,
+                name: "thread"
+            )
+            oauth.addChannelHuman(channelId: created, userId: userId)
+            return created
+        }()
         lock.lock()
         let now = Date()
         let id = UUID().uuidString.lowercased()
@@ -17763,11 +17805,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             anchorJSON: anchorJSON,
             senderId: userId,
             senderType: "user",
-            createdAt: now
+            createdAt: now,
+            threadChannelId: threadChannelId
         ))
         appendHumanMessageLocked(StoredHumanMessage(
             id: id,
-            channelId: attachment.channelId,
+            channelId: threadChannelId,
             senderId: userId,
             content: content,
             randomId: nil,
@@ -17779,7 +17822,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let anchorValue = anchorJSON ?? "null"
-        return Self.json(200, "{\"message\":{\"id\":\(jsonString(id)),\"content\":\(jsonString(content)),\"senderType\":\"user\",\"createdAt\":\(jsonString(formatter.string(from: now))),\"anchor\":\(anchorValue)}}")
+        return Self.json(200, "{\"message\":{\"id\":\(jsonString(id)),\"channelId\":\(jsonString(threadChannelId)),\"content\":\(jsonString(content)),\"senderType\":\"user\",\"createdAt\":\(jsonString(formatter.string(from: now))),\"anchor\":\(anchorValue)},\"threadChannelId\":\(jsonString(threadChannelId))}")
     }
 
     public func agentAttachmentCommentsList(authorization: String?, attachmentId: String) -> HTTPReply {
@@ -27563,8 +27606,18 @@ public struct AttachmentCommentRecord: Sendable, Equatable {
     public var senderId: String
     public var senderType: String
     public var createdAt: Date
+    public var threadChannelId: String?
 
-    public init(id: String, attachmentId: String, content: String, anchorJSON: String?, senderId: String, senderType: String, createdAt: Date) {
+    public init(
+        id: String,
+        attachmentId: String,
+        content: String,
+        anchorJSON: String?,
+        senderId: String,
+        senderType: String,
+        createdAt: Date,
+        threadChannelId: String? = nil
+    ) {
         self.id = id
         self.attachmentId = attachmentId
         self.content = content
@@ -27572,5 +27625,6 @@ public struct AttachmentCommentRecord: Sendable, Equatable {
         self.senderId = senderId
         self.senderType = senderType
         self.createdAt = createdAt
+        self.threadChannelId = threadChannelId
     }
 }

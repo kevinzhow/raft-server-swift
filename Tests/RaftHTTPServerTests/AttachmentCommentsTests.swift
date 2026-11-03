@@ -174,3 +174,44 @@ private func commentsRequest(
         }
     }
 }
+
+@Test func attachmentCommentsLiveInTheHostMessageThreadAndCascadeWithIt() async throws {
+    let f = makeAttachmentCommentsFixture()
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let first = try await commentsRequest(
+                client, f, method: .post, path: "/api/attachments/\(f.linked)/comments", body: "{\"content\":\"first\"}"
+            )
+            #expect(first.status == .ok)
+            let message = try #require(first.body["message"] as? [String: Any])
+            let threadChannelId = try #require(first.body["threadChannelId"] as? String)
+            #expect(threadChannelId != f.channelId, "a comment lives in the host message thread, not the parent channel")
+            #expect(message["channelId"] as? String == threadChannelId)
+
+            // A sibling attachment under the same host message shares the thread.
+            let sibling = try await commentsRequest(
+                client, f, method: .post, path: "/api/attachments/\(f.sibling)/comments", body: "{\"content\":\"sibling\"}"
+            )
+            #expect(sibling.body["threadChannelId"] as? String == threadChannelId)
+
+            // The scoped list only carries this attachment's comment.
+            let list = try await commentsRequest(client, f, method: .get, path: "/api/attachments/\(f.linked)/comments")
+            let comments = (list.body["comments"] as? [[String: Any]]) ?? []
+            #expect(comments.count == 1)
+            #expect(comments.first?["content"] as? String == "first")
+            let counts = try await commentsRequest(
+                client, f, method: .get, path: "/api/attachments/comments/counts?ids=\(f.linked),\(f.sibling)"
+            )
+            let values = (counts.body["counts"] as? [String: Any]) ?? [:]
+            #expect((values[f.linked] as? NSNumber)?.intValue == 1)
+            #expect((values[f.sibling] as? NSNumber)?.intValue == 1)
+
+            // Hard-deleting the comment message cascades its ref row.
+            let commentId = try #require(message["id"] as? String)
+            f.accounts.removeMessageForTesting(messageId: commentId)
+            let after = try await commentsRequest(client, f, method: .get, path: "/api/attachments/\(f.linked)/comments")
+            #expect(((after.body["comments"] as? [[String: Any]]) ?? []).isEmpty, "the ref row cascades with the message")
+        }
+    }
+}

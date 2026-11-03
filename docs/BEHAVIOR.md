@@ -1085,3 +1085,10 @@ RFC 074 personal assistant：
 - targeted 公告只在 `server_id` 命中且调用者是该 Server 成员时可见（冒名成员得到空列表；dismiss 得到 404），payload 不包含 `audience` 字段。`X-Server-Id` 头作为 `server_id` 的等价来源。
 - 每用户 dismissal 独立；重新发布的新公告行会再次出现。发布/admin 路由未挂载：`POST /api/announcements` 与 `/api/admin/announcements*` 一律 404。
 - 明确排除：failed-write frontier 的游标推进（DB 写失败前缀，非 HTTP 可观察）、scheduled 内容/时间可编辑的 service 级断言（窗口排队的可观察行为已由过期回落覆盖）、onboarding login family gate（本端口无该 gate，行为恒为放行）。
+
+### attachmentComments.api：thread 宿主与级联组
+
+- 评论是"附件宿主消息 thread"里的普通消息：`POST /api/attachments/:id/comments` 返回 `{message, threadChannelId}`，`message.channelId == threadChannelId != 父频道`；同一宿主消息下的兄弟附件共享同一 thread（复用而非 thread-in-thread）。
+- scoped list/counts 仍按附件过滤：同一 thread 里的普通回复不出现在某附件的 comments 里，兄弟附件各自 count。
+- 删除评论消息时其 scoped ref 行级联消失（list/counts 同步），对应上游 schema FK 的构造性属性。
+- 仍待补：`commentRef`（创建响应/消息列表 enrichment）、`message:updated` live 事件、user-stage flag deny 的 403 行为、anchors 词表/上限、mentions 管线、history scoped metadata、agent scope quotation。
