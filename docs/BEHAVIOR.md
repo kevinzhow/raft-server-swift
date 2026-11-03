@@ -1049,3 +1049,11 @@ RFC 074 personal assistant：
 - 人类通过 `POST /api/channels/:id/members` 把 agent 加入频道时，会写入一条 `@<agent> was added to this channel.` 系统消息：对执行操作的人类 born-read（推进其读游标），对被加入的 agent 保持未读（wake hints 与 `/events` 都返回）。
 - agent 自行 join（内部 agent-api join）产生的通知只对该 agent born-read；其后的普通消息恢复正常的 announce + pull。
 - 明确排除：上游最后一条纯单元断言（`isMessageUnreadEligibleForReceiver` 的 noise-subtype 列表与 mention 穿透矩阵）不移植；其行为由上述 HTTP transport 断言覆盖。
+
+### providerConnections.api：连接管理组
+
+- 管理面 gated：server-stage `provider_connections` 规则未开启时，所有 `/api/provider-connections*` 读/写都返回 404 `provider_connections_disabled`（write-only 的 secret 不出现在任何错误体里）；开启后仅 owner/admin 可管理（member 403），且 list/create/rotate/patch 响应永不回显 credential。
+- create 只接受 write-only `apiKey`；任何额外 alias（如 `clientSecret`）、把 `apiKey`/`providerId` 放进 metadata-only PATCH 都 400 且不回显 secret；rotate/patch-key 递增 `credentialVersion` 并回到 `unchecked`，只改 name 不变版本。
+- 分配面：`GET /:id/agents` 返回 `{agents:[{id,name,displayName,runtime,status,computerName,deleted}]}`，member 403、跨 Server 或未知连接 404、无 secret 泄漏；DELETE `/:id/agents/:agentId` 对 malformed id 400、对仍活跃 Agent 409 `provider_connection_assignment_active`（Agent 编辑器是唯一改 provider 的入口）、已删除 Agent 可 detach。
+- 删除连接：仍有活跃分配时 409；软删除的 Agent 不再阻塞，删除连接会一并清掉其分配行。
+- 明确排除：case 1 的迁移默认值/launch-server 白名单纯单元断言，以及 case 3 的 `liftWakeBlockForConfigChange` orchestrator 调用 spy（契约排除进程内投递/编排注入）；其可观察结果（rename 不触发、rotate/patch-key 触发 runtime 值变化）依赖该 spy，无 HTTP 面。
