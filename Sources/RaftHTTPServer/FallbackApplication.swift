@@ -1282,35 +1282,35 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.get("internal", "agent-api", "wake-hints", "stream") { request -> Response in
-        let heartbeatEnv = services.emailAccounts.wakeStreamHeartbeatMs
-        if services.nodeEnv == "test", heartbeatEnv == nil {
-            return routeResponse(services.emailAccounts.agentWakeHintsStream(
-                authorization: request.headers[.authorization],
-                since: desktopQuery(request.url.query, "since")
-            ))
-        }
         switch services.emailAccounts.beginAgentWakeHintsStream(
             authorization: request.headers[.authorization],
-            since: desktopQuery(request.url.query, "since")
+            since: request.headers[HTTPField.Name("Last-Event-ID")!] ?? desktopQuery(request.url.query, "since")
         ) {
         case .refused(let reply):
             return routeResponse(reply)
-        case .start(let token, let firstFrame):
-            let rawHeartbeat = heartbeatEnv
-            let heartbeatMs = min(60_000, max(50, rawHeartbeat ?? 15_000))
-            let boundedTicks = services.nodeEnv == "test" ? 3 : Int.max
+        case .start(let token, let cursorSeq, let firstFrame):
             var headers = HTTPFields()
             headers[.contentType] = "text/event-stream"
             headers[.cacheControl] = "no-cache, no-transform"
             headers[HTTPField.Name("X-Accel-Buffering")!] = "no"
+            let pollMs = services.nodeEnv == "test" ? 50 : 1_000
+            // Tests bound the loop so a streaming task cannot outlive the suite.
+            let boundedTicks = services.nodeEnv == "test" ? 200 : Int.max
             var response = Response(status: .ok, headers: headers)
             response.body = Response.Body { writer in
                 try await writer.write(firstFrame)
+                var cursor = cursorSeq
                 var ticks = 0
                 while !Task.isCancelled {
-                    try await Task.sleep(nanoseconds: UInt64(heartbeatMs) * 1_000_000)
+                    try await Task.sleep(nanoseconds: UInt64(pollMs) * 1_000_000)
                     services.emailAccounts.refreshAgentWakeStreamCredential(token: token)
-                    try await writer.write(": heartbeat\n\n")
+                    guard let batch = services.emailAccounts.agentWakeStreamBatch(token: token, after: cursor) else { return }
+                    if batch.frames.isEmpty {
+                        try await writer.write(": heartbeat\n\n")
+                    } else {
+                        try await writer.write(batch.frames)
+                        cursor = batch.cursorSeq
+                    }
                     ticks += 1
                     if ticks >= boundedTicks { return }
                 }

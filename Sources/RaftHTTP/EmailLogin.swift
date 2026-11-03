@@ -7057,6 +7057,72 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// messages: it repeats until `/events` drains them, never advances a
     /// cursor, and never returns message bodies. `since` is a numeric seq or
     /// `latest`; `limit` bounds the batch.
+    /// Pending, content-free wake hints for one agent, ordered by server seq.
+    /// Callers hold the directory lock. The peek route and the SSE stream share
+    /// this projection so both surfaces agree on the hint set and ordering.
+    private func pendingWakeHintRowsLocked(
+        agentId: String,
+        agent: OAuthLedger.AgentRuntimeInfo,
+        sinceSeq: Int?,
+        limit: Int
+    ) -> (rows: [(seq: Int, json: String)], hasMore: Bool) {
+        var conversations: [(id: String, storage: String, name: String, kind: String, parentName: String?, parentShort: String?)] = []
+        for (id, channel) in postableChannels.sorted(by: { $0.key < $1.key }) {
+            guard channel.serverId == agent.serverId, channel.deletedAt == nil else { continue }
+            let visible: Bool
+            if channel.kind == "dm" || channel.kind == "thread" || channel.kind == "private" {
+                visible = channel.memberIds.contains(agentId)
+                    || oauth.channelAgentIds(channelId: id).contains(agentId)
+            } else {
+                visible = true
+            }
+            guard visible else { continue }
+            let storage = jointProjections.first { $0.localChannelId == id }?.canonicalChannelId ?? id
+            var parentName: String?
+            var parentShort: String?
+            if channel.kind == "thread", let parentId = channel.parentChannelId {
+                parentName = postableChannels[parentId]?.name
+                parentShort = channel.parentMessageId.map { String($0.prefix(8)) }
+            }
+            conversations.append((id, storage, channel.name, channel.kind, parentName, parentShort))
+        }
+        func hintTarget(_ conversation: (id: String, storage: String, name: String, kind: String, parentName: String?, parentShort: String?)) -> String {
+            switch conversation.kind {
+            case "dm":
+                let peer = postableChannels[conversation.id]?.memberIds.first { $0 != agentId }
+                    .flatMap { peerId in accounts.values.first { $0.id == peerId }?.name }
+                return "dm:@\(peer ?? conversation.name)"
+            case "thread":
+                if let parentName = conversation.parentName {
+                    return "#\(parentName):\(conversation.parentShort ?? "")"
+                }
+                return "#\(conversation.name)"
+            default:
+                return "#\(conversation.name)"
+            }
+        }
+        var pending: [(seq: Int, message: StoredHumanMessage, target: String)] = []
+        for conversation in conversations {
+            let key = "\(conversation.id)\n\(agentId)"
+            let cursor = agentChannelReadCursors[key]?.seq ?? 0
+            let target = hintTarget(conversation)
+            for message in humanMessageRows
+            where message.channelId == conversation.storage
+                && message.seq > cursor
+                && message.senderId != agentId
+                && (sinceSeq.map { message.seq > $0 } ?? true)
+                && !agentMessageSuppressedLocked(message, agentId: agentId) {
+                pending.append((message.seq, message, target))
+            }
+        }
+        pending.sort { $0.seq < $1.seq }
+        let hasMore = pending.count > limit
+        let rows = pending.prefix(limit).map { entry -> (seq: Int, json: String) in
+            (entry.seq, "{\"event_id\":\(jsonString("wake-hint:\(entry.message.id)")),\"seq\":\(entry.seq),\"message_id\":\(jsonString(entry.message.id)),\"target\":\(jsonString(entry.target)),\"wake_reason\":\"message_pending\"}")
+        }
+        return (rows, hasMore)
+    }
+
     public func agentWakeHints(authorization: String?, since: String?, limit: String? = nil) -> HTTPReply {
         switch agentReadCredential(authorization) {
         case .failure(let reply):
@@ -7075,68 +7141,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
             let hintLimit = min(max(Int(limit ?? "") ?? 100, 1), 500)
             lock.lock()
-            var conversations: [(id: String, storage: String, name: String, kind: String, parentName: String?, parentShort: String?)] = []
-            for (id, channel) in postableChannels.sorted(by: { $0.key < $1.key }) {
-                guard channel.serverId == agent.serverId, channel.deletedAt == nil else { continue }
-                let visible: Bool
-                if channel.kind == "dm" || channel.kind == "thread" || channel.kind == "private" {
-                    visible = channel.memberIds.contains(agentId)
-                        || oauth.channelAgentIds(channelId: id).contains(agentId)
-                } else {
-                    visible = true
-                }
-                guard visible else { continue }
-                let storage = jointProjections.first { $0.localChannelId == id }?.canonicalChannelId ?? id
-                var parentName: String?
-                var parentShort: String?
-                if channel.kind == "thread", let parentId = channel.parentChannelId {
-                    parentName = postableChannels[parentId]?.name
-                    parentShort = channel.parentMessageId.map { String($0.prefix(8)) }
-                }
-                conversations.append((id, storage, channel.name, channel.kind, parentName, parentShort))
-            }
-            func hintTarget(_ conversation: (id: String, storage: String, name: String, kind: String, parentName: String?, parentShort: String?)) -> String {
-                switch conversation.kind {
-                case "dm":
-                    let peer = postableChannels[conversation.id]?.memberIds.first { $0 != agentId }
-                        .flatMap { peerId in accounts.values.first { $0.id == peerId }?.name }
-                    return "dm:@\(peer ?? conversation.name)"
-                case "thread":
-                    if let parentName = conversation.parentName {
-                        return "#\(parentName):\(conversation.parentShort ?? "")"
-                    }
-                    return "#\(conversation.name)"
-                default:
-                    return "#\(conversation.name)"
-                }
-            }
-            var pending: [(seq: Int, message: StoredHumanMessage, target: String)] = []
-            for conversation in conversations {
-                let key = "\(conversation.id)\n\(agentId)"
-                let cursor = agentChannelReadCursors[key]?.seq ?? 0
-                let target = hintTarget(conversation)
-                for message in humanMessageRows
-                where message.channelId == conversation.storage
-                    && message.seq > cursor
-                    && message.senderId != agentId
-                    && (sinceSeq.map { message.seq > $0 } ?? true)
-                    && !agentMessageSuppressedLocked(message, agentId: agentId) {
-                    pending.append((message.seq, message, target))
-                }
-            }
+            let pending = pendingWakeHintRowsLocked(agentId: agentId, agent: agent, sinceSeq: sinceSeq, limit: hintLimit)
             let thirdParty = oauth.pendingThirdPartyEventMessages(agentId: agentId)
             lock.unlock()
-            pending.sort { $0.seq < $1.seq }
-            let hasMore = pending.count > hintLimit
-            let shown = pending.prefix(hintLimit)
-            var hints = shown.map { entry -> String in
-                "{\"event_id\":\(jsonString("wake-hint:\(entry.message.id)")),\"seq\":\(entry.seq),\"message_id\":\(jsonString(entry.message.id)),\"target\":\(jsonString(entry.target)),\"wake_reason\":\"message_pending\"}"
-            }
+            var hints = pending.rows.map(\.json)
             for event in thirdParty {
                 hints.append("{\"event_id\":\(jsonString("wake-hint:\(event.id)")),\"seq\":null,\"message_id\":\(jsonString(event.id)),\"target\":null,\"wake_reason\":\"message_pending\"}")
             }
-            let lastHintSeq = shown.last.map { "\($0.seq)" } ?? "null"
-            return Self.json(200, "{\"wake_hints\":[\(hints.joined(separator: ","))],\"last_hint_seq\":\(lastHintSeq),\"has_more\":\(hasMore)}")
+            let lastHintSeq = pending.rows.last.map { "\($0.seq)" } ?? "null"
+            return Self.json(200, "{\"wake_hints\":[\(hints.joined(separator: ","))],\"last_hint_seq\":\(lastHintSeq),\"has_more\":\(pending.hasMore)}")
         }
     }
 
@@ -7256,36 +7269,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// `GET /internal/agent-api/wake-hints/stream`. The SSE projection opens
     /// with the same pending hints; reading it does not drain the inbox.
-    public func agentWakeHintsStream(authorization: String?, since: String?) -> HTTPReply {
-        switch agentReadCredential(authorization) {
-        case .failure(let reply):
-            return reply
-        case .success(let agentId):
-            let raw = (since ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            if !raw.isEmpty, raw != "latest" {
-                guard let value = Int(raw), value >= 0 else {
-                    return Self.json(400, "{\"error\":\"since / Last-Event-ID must be a non-negative integer (messageSeq) or 'latest'\",\"code\":\"since_invalid\"}")
-                }
-            }
-            let frames = oauth.pendingThirdPartyEventMessages(agentId: agentId).map { message in
-                let data = "{\"seq\":null,\"message_id\":\(jsonString(message.id)),\"wake_reason\":\"message_pending\"}"
-                return "event: wake-hint\nid: null\ndata: \(data)\n\n"
-            }.joined()
-            let body = ": connected\n\n" + frames
-            return HTTPReply(
-                status: 200,
-                headers: [
-                    "X-Robots-Tag": AppFallback.robotsTag,
-                    "Content-Type": "text/event-stream",
-                    "Cache-Control": "no-cache, no-transform",
-                    "X-Accel-Buffering": "no",
-                    "Content-Length": String(Data(body.utf8).count),
-                ],
-                body: body
-            )
-        }
-    }
-
     /// `POST /internal/agent-api/third-party-events/delivered`. A managed
     /// daemon reports the events it served locally so they stop replaying.
     public func reportThirdPartyEventsDelivered(authorization: String?, body: String) -> HTTPReply {
@@ -10763,10 +10746,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public enum AgentWakeStreamStart {
-        case start(token: String, firstFrame: String)
+        /// `cursorSeq` is the last hint seq already replayed; the stream then
+        /// only pushes hints newer than it.
+        case start(token: String, cursorSeq: Int?, firstFrame: String)
         case refused(HTTPReply)
     }
 
+    /// Opens `GET /internal/agent-api/wake-hints/stream`. The stream is the SSE
+    /// projection of the same content-free peek: pending hints replay first,
+    /// later hints arrive on the next tick, and nothing drains the inbox.
     public func beginAgentWakeHintsStream(authorization: String?, since: String?) -> AgentWakeStreamStart {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
             return .refused(Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}"))
@@ -10778,18 +10766,60 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let credential, credential.revokedAt == nil, credential.scopes.contains("read") else {
             return .refused(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
         }
+        guard let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else {
+            return .refused(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
+        }
         let raw = (since ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !raw.isEmpty, raw != "latest" {
-            guard let value = Int(raw), value >= 0 else {
-                return .refused(Self.json(400, "{\"error\":\"since / Last-Event-ID must be a non-negative integer (messageSeq) or 'latest'\",\"code\":\"since_invalid\"}"))
+        var cursorSeq: Int?
+        var latestOnly = false
+        if !raw.isEmpty {
+            if raw == "latest" {
+                latestOnly = true
+            } else {
+                guard let value = Int(raw), value >= 0 else {
+                    return .refused(Self.json(400, "{\"error\":\"since / Last-Event-ID must be a non-negative integer (messageSeq) or 'latest'\",\"code\":\"since_invalid\"}"))
+                }
+                cursorSeq = value
             }
         }
         recordAgentCredentialUse(token: token)
-        let frames = oauth.pendingThirdPartyEventMessages(agentId: credential.agentId).map { message in
-            let data = "{\"seq\":null,\"message_id\":\(jsonString(message.id)),\"wake_reason\":\"message_pending\"}"
-            return "event: wake-hint\nid: null\ndata: \(data)\n\n"
-        }.joined()
-        return .start(token: token, firstFrame: ": connected\n\n" + frames)
+        lock.lock()
+        let pending = pendingWakeHintRowsLocked(agentId: credential.agentId, agent: agent, sinceSeq: cursorSeq, limit: 500)
+        let thirdParty = oauth.pendingThirdPartyEventMessages(agentId: credential.agentId)
+        lock.unlock()
+        var frames = ": connected\n\n"
+        if latestOnly {
+            cursorSeq = pending.rows.last?.seq
+        } else {
+            for row in pending.rows {
+                frames += Self.sseWakeHintFrame(id: "\(row.seq)", json: row.json)
+                cursorSeq = row.seq
+            }
+            for event in thirdParty {
+                let data = "{\"event_id\":\(jsonString("wake-hint:\(event.id)")),\"seq\":null,\"message_id\":\(jsonString(event.id)),\"target\":null,\"wake_reason\":\"message_pending\"}"
+                frames += Self.sseWakeHintFrame(id: "null", json: data)
+            }
+        }
+        return .start(token: token, cursorSeq: cursorSeq, firstFrame: frames)
+    }
+
+    /// `nil` means the credential or agent is gone: the stream must close.
+    public func agentWakeStreamBatch(token: String, after: Int?) -> (frames: String, cursorSeq: Int?)? {
+        lock.lock()
+        let credential = agentCredentials[token]
+        lock.unlock()
+        guard let credential, credential.revokedAt == nil, credential.scopes.contains("read") else { return nil }
+        guard let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else { return nil }
+        lock.lock()
+        let pending = pendingWakeHintRowsLocked(agentId: credential.agentId, agent: agent, sinceSeq: after, limit: 500)
+        lock.unlock()
+        guard let last = pending.rows.last else { return ("", after) }
+        let frames = pending.rows.map { Self.sseWakeHintFrame(id: "\($0.seq)", json: $0.json) }.joined()
+        return (frames, last.seq)
+    }
+
+    static func sseWakeHintFrame(id: String, json: String) -> String {
+        "event: wake-hint\nid: \(id)\ndata: \(json)\n\n"
     }
 
     public func markAgentCredentialUsed(agentId: String) {

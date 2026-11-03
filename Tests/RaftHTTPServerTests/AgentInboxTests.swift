@@ -76,7 +76,17 @@ private func inboxObject(_ response: ClientResponse) throws -> [String: Any] {
             let stream = try await client.send(.get, headers: agentHeaders, to: "/internal/agent-api/wake-hints/stream?since=0")
             #expect(stream.status == .ok)
             #expect((stream.headers[HTTPField.Name("Content-Type")!] ?? "").hasPrefix("text/event-stream"))
-            let streamText = stream.body.string ?? ""
+            let collector = InboxStreamText()
+            let reader = Task {
+                try await stream.body.withStreamingBytes { span in
+                    var bytes: [UInt8] = []
+                    bytes.reserveCapacity(span.count)
+                    for index in span.indices { bytes.append(span[index]) }
+                    collector.append(String(decoding: bytes, as: UTF8.self))
+                }
+            }
+            let streamText = await collector.wait(until: { $0.contains("\"message_id\":\"\(eventId)\"") }, timeoutMs: 3_000)
+            reader.cancel()
             #expect(streamText.contains(": connected"))
             #expect(streamText.contains("event: wake-hint"))
             #expect(streamText.contains("\"message_id\":\"\(eventId)\""))
@@ -309,5 +319,28 @@ private func inboxObject(_ response: ClientResponse) throws -> [String: Any] {
             #expect(oneBody["id"] as? String == twoBody["id"] as? String)
             #expect([oneBody["deduped"] as? Bool, twoBody["deduped"] as? Bool].compactMap { $0 }.filter { $0 }.count == 1)
         }
+    }
+}
+
+private final class InboxStreamText: @unchecked Sendable {
+    private let lock = NSLock()
+    private var text = ""
+
+    private func snapshot() -> String {
+        lock.withLock { text }
+    }
+
+    func append(_ chunk: String) {
+        lock.withLock { text += chunk }
+    }
+
+    func wait(until predicate: (String) -> Bool, timeoutMs: Int) async -> String {
+        let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
+        while Date() < deadline {
+            let value = snapshot()
+            if predicate(value) { return value }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return snapshot()
     }
 }

@@ -1006,3 +1006,12 @@ RFC 074 personal assistant：
 - 未知 peer kind（如 `dm:@<name>~bot`）→ 400 `{"code":"DM_TARGET_INVALID_PEER_KIND"}`，`suggestedNextAction` 指示改用 `dm:@<name>~human` 或 `dm:@<name>~agent`。
 - 显式 `~agent` / `~human` 目标仍正常解析并发送——上述错误只针对歧义与非法 kind，而不是"找不到"。
 - 明确排除：上游 helper 级单元（直接调用 `respondToDmTargetResolutionError`）不作为移植对象；其等价可观测面已由 agent send 路径锁定。
+
+### internalAgentApi.wakeHintStream：SSE 投影组
+
+- `GET /internal/agent-api/wake-hints/stream` 是 peek 的 SSE 投影：先写 `: connected`，随后按 seq 升序回放当前 pending hints（`event: wake-hint`、`id: <seq>`、data 与 peek 行同构：`event_id`/`seq`/`message_id`/`target`/`wake_reason`），再按 tick（测试 50ms / 生产 1s）拉取新 hint；空闲 tick 写 `: heartbeat`。
+- 帧里永远没有消息正文（content-free），读取流不推进任何读游标（peek 结果保持不变）——不是 drain。
+- `Last-Event-ID`（或 `?since=`）：数字只回放 `seq >` 该值的 hint；`latest` 表示从当前最新开始；非法值在开流前 400 `since_invalid`。
+- 错误在开流前以 JSON 返回：无 Bearer 401 `auth_required`、machine 凭据 401（非 agent principal）、凭据/agent 被撤销时流关闭。
+- 心跳 tick 自行发现"durable pending 但没有实时唤醒信号"的 hint（本移植没有进程内 emitter，tick 轮询即该兜底路径）。
+- 明确排除：外部 agent durable pull 编排的 follow-up pull（outrunning inbox chain 场景）与 trace/span 断言。
