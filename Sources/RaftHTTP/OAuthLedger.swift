@@ -691,19 +691,28 @@ public final class OAuthLedger: @unchecked Sendable {
         return createdAt
     }
 
-    public func createMessageRecord(channelId: String, content: String, senderId: String) -> (id: String, seq: Int) {
+    public func createMessageRecord(
+        channelId: String,
+        content: String,
+        senderId: String,
+        id explicitId: String? = nil,
+        seq explicitSeq: Int? = nil,
+        createdAt: Date = Date(),
+        senderTimezone: String? = nil
+    ) -> (id: String, seq: Int) {
         lock.lock()
         defer { lock.unlock() }
-        let seq = channelMessages.filter { $0.channelId == channelId }.count
-            + channelSystemMessages.filter { $0.channelId == channelId }.count + 1
-        let id = UUID().uuidString.lowercased()
+        let seq = explicitSeq ?? (channelMessages.filter { $0.channelId == channelId }.count
+            + channelSystemMessages.filter { $0.channelId == channelId }.count + 1)
+        let id = explicitId ?? UUID().uuidString.lowercased()
         channelMessages.append(ChannelMessageRecord(
             id: id,
             channelId: channelId,
             content: content,
-            createdAt: Date(),
+            createdAt: createdAt,
             senderId: senderId,
-            seq: seq
+            seq: seq,
+            senderTimezone: senderTimezone
         ))
         return (id, seq)
     }
@@ -954,6 +963,7 @@ public final class OAuthLedger: @unchecked Sendable {
         public var senderId: String
         public var seq: Int
         public var createdAt: Date
+        public var senderTimezone: String?
     }
 
     public func historyMessages(channelId: String) -> [HistoryMessage] {
@@ -962,7 +972,7 @@ public final class OAuthLedger: @unchecked Sendable {
         return channelMessages
             .filter { $0.channelId == channelId }
             .sorted { $0.seq < $1.seq }
-            .map { HistoryMessage(id: $0.id, content: $0.content, senderId: $0.senderId, seq: $0.seq, createdAt: $0.createdAt) }
+            .map { HistoryMessage(id: $0.id, content: $0.content, senderId: $0.senderId, seq: $0.seq, createdAt: $0.createdAt, senderTimezone: $0.senderTimezone) }
     }
 
     public func messageContent(id: String) -> (channelId: String, content: String)? {
@@ -1229,6 +1239,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var createdAt: Date
         var senderId: String
         var seq: Int
+        var senderTimezone: String? = nil
     }
 
     public func memberRole(serverId: String, userId: String) -> String? {

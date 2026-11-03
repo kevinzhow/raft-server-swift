@@ -21664,7 +21664,57 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    public func agentHistory(authorization: String?, agentId: String? = nil, channelRef: String?, before: String?, after: String?, around: String? = nil, limit: String?) -> HTTPReply {
+    /// History anchors accept a sequence number, a full message UUID, or the
+    /// 8-character short id. `pagination` keeps decimal values as seqs even at
+    /// short-id width; `around` is a locator and prefers the short id first.
+    private func resolveHistoryAnchor(
+        channelId: String,
+        anchor: String,
+        channelRef: String,
+        purpose: String
+    ) -> (seq: Int, failure: HTTPReply?) {
+        let trimmed = anchor.trimmingCharacters(in: .whitespacesAndNewlines)
+        let digitsOnly = !trimmed.isEmpty && trimmed.allSatisfy { $0.isASCII && $0.isNumber }
+        let shortIdShape = trimmed.count == 8 && trimmed.allSatisfy { $0.isHexDigit }
+        let uuidShape = ServerScope.isUUID(trimmed)
+        let messages = oauth.historyMessages(channelId: channelId)
+
+        func notFound() -> (seq: Int, failure: HTTPReply?) {
+            let message = "Message not found in \(channelRef): \(trimmed)"
+            return (0, Self.json(404, "{\"error\":\(jsonString(message)),\"errorCode\":\"NOT_FOUND\"}"))
+        }
+
+        if purpose == "pagination", digitsOnly, let value = Int(trimmed) {
+            return (value, nil)
+        }
+        if shortIdShape {
+            let matches = messages.filter { $0.id.lowercased().hasPrefix(trimmed.lowercased()) }
+            if matches.count > 1 {
+                let message = "Message anchor is ambiguous in \(channelRef): \(trimmed)"
+                let body = "{\"error\":\(jsonString(message)),\"errorCode\":\"AMBIGUOUS_ID\",\"suggestedNextAction\":\"Use the full message UUID instead of the 8-character short id.\"}"
+                return (0, Self.json(400, body))
+            }
+            if let match = matches.first { return (match.seq, nil) }
+            return notFound()
+        }
+        if digitsOnly, let value = Int(trimmed) {
+            return (value, nil)
+        }
+        if uuidShape {
+            if let match = messages.first(where: { $0.id.lowercased() == trimmed.lowercased() }) {
+                return (match.seq, nil)
+            }
+            return notFound()
+        }
+        if purpose == "around" {
+            let message = "Message anchor must be a seq, full UUID, or 8-character short id in \(channelRef): \(trimmed)"
+            let body = "{\"error\":\(jsonString(message)),\"errorCode\":\"INVALID_ARG\"}"
+            return (0, Self.json(400, body))
+        }
+        return notFound()
+    }
+
+    public func agentHistory(authorization: String?, agentId: String? = nil, channelRef: String?, before: String?, after: String?, around: String? = nil, limit: String?, consume: String? = nil) -> HTTPReply {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
             return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
         }
@@ -21853,42 +21903,85 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }()
         let messages = oauth.historyMessages(channelId: channelId)
         let pageLimit = min(max(Int(limit ?? "") ?? 20, 1), 100)
-        let beforeSeq = Int(before ?? "")
-        let afterSeq = Int(after ?? "")
-        var filtered = messages
-        if let beforeSeq { filtered = filtered.filter { $0.seq < beforeSeq } }
-        if let afterSeq { filtered = filtered.filter { $0.seq > afterSeq } }
-        let page: [OAuthLedger.HistoryMessage]
+        // `consume=false`: return the page without marking it read, for reads
+        // whose output may never reach the model.
+        let consumeValue = (consume ?? "true").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard consumeValue == "true" || consumeValue == "false" else {
+            return Self.json(400, "{\"error\":\"consume must be true or false\",\"errorCode\":\"INVALID_ARG\"}")
+        }
+        let consumePage = consumeValue == "true"
+        var beforeSeq: Int?
+        if let before, !before.isEmpty {
+            let resolution = resolveHistoryAnchor(channelId: channelId, anchor: before, channelRef: reference, purpose: "pagination")
+            if let failure = resolution.failure { return failure }
+            beforeSeq = resolution.seq
+        }
+        var afterSeq: Int?
+        if let after, !after.isEmpty {
+            let resolution = resolveHistoryAnchor(channelId: channelId, anchor: after, channelRef: reference, purpose: "pagination")
+            if let failure = resolution.failure { return failure }
+            afterSeq = resolution.seq
+        }
+        var page: [OAuthLedger.HistoryMessage] = []
+        var hasOlder = false
+        var hasNewer = false
+        var isAroundPage = false
         if let around, !around.isEmpty {
-            if let index = filtered.firstIndex(where: { $0.id.hasPrefix(around) || $0.id == around }) {
-                let half = max(1, pageLimit / 2)
-                let start = max(0, index - half)
-                let end = min(filtered.count, start + pageLimit)
-                page = Array(filtered[start..<end])
-            } else {
-                return Self.json(404, "{\"error\":\"Message not found\"}")
+            let resolution = resolveHistoryAnchor(channelId: channelId, anchor: around, channelRef: reference, purpose: "around")
+            if let failure = resolution.failure { return failure }
+            guard let index = messages.firstIndex(where: { $0.seq == resolution.seq }) else {
+                let message = "Message not found in \(reference): \(around)"
+                return Self.json(404, "{\"error\":\(jsonString(message)),\"errorCode\":\"NOT_FOUND\"}")
             }
-        } else if afterSeq != nil {
-            page = Array(filtered.prefix(pageLimit))
+            let beforeCount = (pageLimit - 1) / 2
+            let afterCount = pageLimit - beforeCount - 1
+            let start = max(0, index - beforeCount)
+            let end = min(messages.count, index + afterCount + 1)
+            page = Array(messages[start..<end])
+            hasOlder = start > 0
+            hasNewer = end < messages.count
+            isAroundPage = true
         } else {
-            page = Array(filtered.suffix(pageLimit))
+            var filtered = messages
+            if let beforeSeq { filtered = filtered.filter { $0.seq < beforeSeq } }
+            if let afterSeq { filtered = filtered.filter { $0.seq > afterSeq } }
+            let probed = filtered.count > pageLimit
+            if afterSeq != nil {
+                page = Array(filtered.prefix(pageLimit))
+                hasOlder = false
+                hasNewer = probed
+            } else {
+                page = Array(filtered.suffix(pageLimit))
+                hasOlder = probed
+                hasNewer = false
+            }
         }
-        let firstSeq = page.first?.seq ?? 0
-        let lastSeq = page.last?.seq ?? 0
-        let hasOlder = afterSeq == nil && messages.contains { $0.seq < firstSeq }
-        let hasNewer = messages.contains { $0.seq > lastSeq }
-        let hasMore = hasOlder || (afterSeq != nil && hasNewer)
-        let latestSeq = messages.last?.seq ?? 0
-        lock.lock()
-        let previous = agentChannelReadCursors["\(channelId)\n\(agent.id)"] ?? (seq: 0, version: 0)
-        agentChannelReadCursors["\(channelId)\n\(agent.id)"] = (max(previous.seq, latestSeq), previous.version + (latestSeq > previous.seq ? 1 : 0))
-        let readSeq = max(previous.seq, latestSeq)
-        lock.unlock()
-        if latestSeq > previous.seq {
-            onAgentReadUpdated?(agent.serverId, channelId, agent.id, latestSeq)
-        }
+        let hasMore = hasOlder || hasNewer
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        lock.lock()
+        let priorSeq = agentChannelReadCursors["\(channelId)\n\(agent.id)"]?.seq ?? 0
+        lock.unlock()
+
+        // A read may advance the read position only when its window joins the
+        // prior boundary without a hidden gap: an `after` page only when its
+        // exclusive anchor is at/below the cursor, a latest/before page only
+        // when it reaches the oldest row or overlaps the cursor. Otherwise the
+        // bodies remain useful but earlier unseen rows stay unread.
+        var modelSeenSeq: Int?
+        if consumePage, !isAroundPage, let maximum = page.map(\.seq).max(), maximum > 0 {
+            let minimum = page.map(\.seq).min() ?? maximum
+            let canAdvance = afterSeq.map { $0 <= priorSeq } ?? (!hasOlder || minimum <= priorSeq)
+            if canAdvance, maximum > priorSeq {
+                lock.lock()
+                let version = agentChannelReadCursors["\(channelId)\n\(agent.id)"]?.version ?? 0
+                agentChannelReadCursors["\(channelId)\n\(agent.id)"] = (maximum, version + 1)
+                lock.unlock()
+                modelSeenSeq = maximum
+                onAgentReadUpdated?(agent.serverId, channelId, agent.id, maximum)
+            }
+        }
+
         let json = page.map { message -> String in
             let senderType = message.senderId == agent.id ? "agent" : "user"
             let senderName: String
@@ -21899,9 +21992,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 senderName = accounts.values.first { $0.id == message.senderId }?.name ?? message.senderId
                 lock.unlock()
             }
-            return "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(message.content)),\"seq\":\(message.seq),\"senderType\":\(jsonString(senderType)),\"senderId\":\(jsonString(message.senderId)),\"senderName\":\(jsonString(senderName)),\"createdAt\":\(jsonString(formatter.string(from: Date()))),\"attachments\":[]}"
+            let senderTimezone = message.senderTimezone.map(jsonString) ?? "null"
+            return "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(message.content)),\"seq\":\(message.seq),\"senderType\":\(jsonString(senderType)),\"senderId\":\(jsonString(message.senderId)),\"senderName\":\(jsonString(senderName)),\"senderTimezone\":\(senderTimezone),\"createdAt\":\(jsonString(formatter.string(from: message.createdAt))),\"attachments\":[]}"
         }.joined(separator: ",")
-        return Self.json(200, "{\"messages\":[\("\(json)")],\"has_more\":\(hasMore),\"has_older\":\(hasOlder),\"has_newer\":\(hasNewer),\"last_read_seq\":\(readSeq),\"target\":\(jsonString(canonicalTarget ?? reference))\(consumptionScope.map { ",\"consumption_scope\":\($0)" } ?? "")\(channelCard)}")
+        let modelSeenJSON = modelSeenSeq.map(String.init) ?? "null"
+        return Self.json(200, "{\"messages\":[\(json)],\"has_more\":\(hasMore),\"has_older\":\(hasOlder),\"has_newer\":\(hasNewer),\"last_read_seq\":\(priorSeq),\"model_seen_up_to_seq\":\(modelSeenJSON),\"target\":\(jsonString(canonicalTarget ?? reference))\(consumptionScope.map { ",\"consumption_scope\":\($0)" } ?? "")\(channelCard)}")
     }
 
     public func agentChannelMembershipFromMachine(authorization: String?, agentId: String, channelId: String, join: Bool) -> HTTPReply {

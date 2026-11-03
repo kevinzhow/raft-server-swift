@@ -771,7 +771,8 @@ public func configure(_ app: Application, services: FallbackServices) {
             before: desktopQuery(request.url.query, "before"),
             after: desktopQuery(request.url.query, "after"),
             around: desktopQuery(request.url.query, "around"),
-            limit: desktopQuery(request.url.query, "limit")
+            limit: desktopQuery(request.url.query, "limit"),
+            consume: desktopQuery(request.url.query, "consume")
         ))
     }
     app.get("internal", "agent", ":agentId", "history") { request -> Response in
@@ -782,7 +783,8 @@ public func configure(_ app: Application, services: FallbackServices) {
             before: desktopQuery(request.url.query, "before"),
             after: desktopQuery(request.url.query, "after"),
             around: desktopQuery(request.url.query, "around"),
-            limit: desktopQuery(request.url.query, "limit")
+            limit: desktopQuery(request.url.query, "limit"),
+            consume: desktopQuery(request.url.query, "consume")
         ))
     }
     app.get("internal", "agent-api", "assistant", "owner-inbox") { request -> Response in

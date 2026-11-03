@@ -725,3 +725,14 @@ RFC 074 personal assistant：
 - card 对象投影：`{id,name,type,description,archived}`；thread 目标用父频道 card（`channelCard.id` 是父频道 id），DM 没有 channel card。
 - card hold 与 freshness hold 合并：同一响应 `state:"held"`、`holdReasons:["unread_messages","channel_card"]`，附 `channelCard` 与未被省略的 held context；`continueAnyway:true`（配 `sendDraft`）不被 card 拦下，照常 sent 并带回 `channelCard`（`channelCardChanged` 不出现）。
 - withheld（reviewer isolation）忽略 `seenCards`，响应仍只有三个键。
+
+### internalAgentApi.auth：history 读窗口与锚点组
+
+- `GET /internal/agent-api/history` 与 `/internal/agent/<id>/history` 共用实现。`consume` 只接受 `true`/`false`，其他值 → 400 `{errorCode:"INVALID_ARG"}`；`consume=false` 返回当页但不推进读游标、`model_seen_up_to_seq:null`。
+- 响应字段：`last_read_seq` 是本次读取**之前**的读游标；`model_seen_up_to_seq` 是本次真正推进到的高水位，未推进时为 `null`；`has_more = has_older || has_newer`。
+- 推进门槛：`after` 页只在锚点 ≤ 当前游标时推进；latest/before 页只在页面触达最旧一行、或页内最小 seq ≤ 当前游标时推进（否则更早的未读消息保持未读）。`around` 页从不推进读游标。
+- 分页方向语义：`after` 页取锚点之后最早 N 条，`has_older:false`、`has_newer` 由多取一条探测；latest/before 页取锚点之前最近 N 条，`has_older` 由探测、`has_newer:false`。`limit` 默认 20，上限 100。
+- `around` 窗口：`beforeCount=(limit-1)/2`，`afterCount=limit-beforeCount-1`，`has_older`/`has_newer` 由窗口两侧是否还有消息决定。
+- 锚点解析：`before`/`after` 的纯数字一律是 seq（即使 8 位宽）；`around` 的 8 位十六进制按 short id 优先匹配（多匹配 → 400 `AMBIGUOUS_ID` 且 `suggestedNextAction` 要求用完整 UUID），纯数字是 seq，完整 UUID 精确匹配；形状非法（`around`）→ 400 `INVALID_ARG`，形状合法但不存在 → 404 `NOT_FOUND`，错误文本包含锚点。
+- history 消息行：`createdAt` 是消息自身创建时间（ISO8601 毫秒 + `Z`），不出现 `timestamp`；human 发送者带时区时行上带 `senderTimezone`（如 `Asia/Shanghai`），无时区或 agent 发送者为 `null`。human 频道页不投影他人 `senderTimezone`。
+- 明确排除：history 目前读 ledger 消息表，而 inbox/events 读另一份消息行，两套 seq 空间尚未统一（DomainStore 收口前无法覆盖「history 浏览推进 unread 但不构成 send freshness 证据」「51 条隐藏间隙」这类跨存储断言）；未移植 `unread=true` 模式、延迟推进（settle）、joint 投影与 forwarded 快照。

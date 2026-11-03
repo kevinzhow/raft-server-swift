@@ -42,12 +42,21 @@ import VaporTesting
                 (body["messages"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String }
             }
 
+            // A window that leaves older rows unseen does not consume them.
             let page = try await history("limit=2")
             #expect(messageIds(page) == [second.id, third.id])
             #expect(page["has_more"] as? Bool == true)
             #expect(page["has_older"] as? Bool == true)
             #expect(page["has_newer"] as? Bool == false)
-            #expect(page["last_read_seq"] as? Int == third.seq)
+            #expect(page["last_read_seq"] as? Int == 0)
+            #expect(page["model_seen_up_to_seq"] == nil || page["model_seen_up_to_seq"] is NSNull)
+
+            // The full window joins the prior boundary and consumes through it.
+            let all = try await history("limit=3")
+            #expect(messageIds(all) == [first.id, second.id, third.id])
+            #expect(all["has_older"] as? Bool == false)
+            #expect(all["model_seen_up_to_seq"] as? Int == third.seq)
+            #expect(all["last_read_seq"] as? Int == 0)
             let firstMessage = (page["messages"] as? [[String: Any]] ?? []).first
             #expect(firstMessage?["senderType"] as? String == "user")
             #expect((firstMessage?["senderName"] as? String)?.isEmpty == false)
