@@ -90,3 +90,36 @@ import VaporTesting
         }
     }
 }
+
+
+@Test func guestChannelListHonorsTheGuestVisibleFlag() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111670"
+    let guestId = "11111111-1111-4111-8111-111111111671"
+    let serverId = "33333333-3333-4333-8333-333333333697"
+    accounts.addAccount(id: ownerId, email: "guestlist-owner@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.addAccount(id: guestId, email: "guestlist-guest@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: guestId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "guestlist", name: "Guest List", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: guestId, role: "guest")
+    let visible = accounts.oauth.createChannel(serverId: serverId, name: "guestlist-visible", creatorUserId: ownerId)
+    accounts.addPostableChannel(serverId: serverId, channelId: visible, memberId: ownerId, name: "guestlist-visible")
+    let hidden = accounts.oauth.createChannel(serverId: serverId, name: "guestlist-hidden", creatorUserId: ownerId)
+    accounts.addPostableChannel(serverId: serverId, channelId: hidden, memberId: ownerId, name: "guestlist-hidden")
+    accounts.setChannelGuestVisibleForTesting(channelId: visible, visible: true)
+    accounts.setChannelGuestVisibleForTesting(channelId: hidden, visible: false)
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(accounts.mintAccessTokenForTesting(userId: guestId))"
+            headers[HTTPField.Name("X-Server-Id")!] = serverId
+            let response = try await client.get(URI(string: "/api/channels"), headers: headers)
+            #expect(response.status == .ok)
+            let ids = Set(((try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [[String: Any]] ?? []).compactMap { $0["id"] as? String })
+            #expect(ids.contains(visible))
+            #expect(!ids.contains(hidden), "guestVisible=false channels stay out of a guest's list")
+        }
+    }
+}

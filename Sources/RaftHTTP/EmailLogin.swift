@@ -26020,13 +26020,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
+        lock.lock()
+        let guestVisibleSnapshot = guestVisibleChannels
+        lock.unlock()
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let rows = oauth.channelsForServer(serverId: serverId, userId: userId, includeArchived: archived == "include")
             .filter { archived == "include" || oauth.channelArchivedAt(id: $0.id) == nil }
+            .filter { role != "guest" || (guestVisibleSnapshot[$0.id] ?? true) }
             .map { channel -> String in
             let last = channel.lastMessageAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
             let muteSeq = channel.muteFromSeq.map(String.init) ?? "null"
