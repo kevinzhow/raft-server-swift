@@ -339,11 +339,11 @@ machineLock	daemon	pending	-	auto-seed
 managedMcpRuntimeProxy	daemon	pending	-	auto-seed
 oarLoader	daemon	pending	-	auto-seed
 observedFailureSummary	daemon	pending	-	auto-seed
-osVariant	daemon	locked	SLICE	ported classifier: microsoft-standard/wsl2 kernels classify as wsl2, Windows-build kernels as wsl1, other Linux kernels undefined; non-linux platforms and unreadable kernel releases stay undefined
+osVariant	daemon	locked	52887c4	ported classifier: microsoft-standard/wsl2 kernels classify as wsl2, Windows-build kernels as wsl1, other Linux kernels undefined; non-linux platforms and unreadable kernel releases stay undefined
 passiveAxGate	daemon	pending	-	auto-seed
 printSeam	daemon	pending	-	auto-seed
 probeGate	daemon	pending	-	auto-seed
-processEnvPatch	daemon	locked	SLICE	ported runtime half: withProcessEnvPatch overlays the real environment across awaits, restores replaced/unset keys and hides removeFirst keys while ambient() returns the unpatched copy, with serialized overlays; excluded: three TS source-guard cases that scan node:child_process call sites and drivers for ambientProcessEnv usage (no TypeScript source exists in this port; the runtime semantics are asserted instead)
+processEnvPatch	daemon	locked	52887c4	ported runtime half: withProcessEnvPatch overlays the real environment across awaits, restores replaced/unset keys and hides removeFirst keys while ambient() returns the unpatched copy, with serialized overlays; excluded: three TS source-guard cases that scan node:child_process call sites and drivers for ambientProcessEnv usage (no TypeScript source exists in this port; the runtime semantics are asserted instead)
 processMemory	daemon	pending	-	auto-seed
 providerConnectionLaunch	daemon	pending	-	auto-seed
 providerProbe	daemon	pending	-	auto-seed
