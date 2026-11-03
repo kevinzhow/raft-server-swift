@@ -62,7 +62,8 @@ import VaporTesting
 
             #expect(try await putControl(manifest, bearer: nil).status == .unauthorized)
             #expect(try await putControl("{}", bearer: computerKey).status == .badRequest)
-            let oversized = "{\"bundle\":{\"chunks\":[]},\"pad\":\"\(String(repeating: "x", count: 17_000))\"}"
+            // The manifest budget is 512 KB of manifest, not the old 16 KB parser cap.
+            let oversized = "{\"bundle\":{\"chunks\":[]},\"pad\":\"\(String(repeating: "x", count: 513 * 1024))\"}"
             #expect(try await putControl(oversized, bearer: computerKey).status.code == 413)
 
             let accepted = try await putControl(manifest, bearer: computerKey)

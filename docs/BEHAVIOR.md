@@ -1015,3 +1015,12 @@ RFC 074 personal assistant：
 - 错误在开流前以 JSON 返回：无 Bearer 401 `auth_required`、machine 凭据 401（非 agent principal）、凭据/agent 被撤销时流关闭。
 - 心跳 tick 自行发现"durable pending 但没有实时唤醒信号"的 hint（本移植没有进程内 emitter，tick 轮询即该兜底路径）。
 - 明确排除：外部 agent durable pull 编排的 follow-up pull（outrunning inbox chain 场景）与 trace/span 断言。
+
+### internalComputer.agentMigrationControl.bodyLimit.api：route-scoped JSON body 限制组
+
+- 全局 JSON body 上限 100 KB：`Content-Length` 超过它的 `application/json` 请求在解析前得到 413 JSON `{"code":"request_body_too_large"}`；上传等非 JSON body 不受此限。
+- `POST /internal/computer/agent-migrations/by-id/:migrationId/resumable/control` 是唯一提升面：允许 512 KB manifest + 64 KB envelope（共 589,824 bytes），路由级 `maxBodySize` 同步提升，180 KB 与 589,824 bytes 的 body 都能到达 handler（未知 migration 由其自身错误回答，而不是 413）。
+- 超过 589,824 bytes → 413 JSON `{"code":"migration_control_body_too_large","limitBytes":589824}`，与 manfiest 自身预算错误（`migration_control_manifest_too_large`）区分。
+- 该路由先做 computer 凭据校验再解析超大 body：无 Bearer 或非法 key → 401（secret 不进入 parser），合法凭据的超大 body 才是 413。
+- 其余 JSON 路由保持 100 KB 全局限制；形如 control 的 "-other" 兄弟路径不享受提升。
+- manifest 预算按 trim 后字节计（transport 空白 padding 不计入 512 KB），对齐上游 576 KB request envelope。

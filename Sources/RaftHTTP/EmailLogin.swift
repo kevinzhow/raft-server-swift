@@ -12155,7 +12155,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard computerCredentialValid(authorization) else {
             return Self.json(401, "{\"code\":\"migration_transport_token_invalid\",\"error\":\"Migration transport token is invalid\"}")
         }
-        guard body.utf8.count <= 16_384 else {
+        // The manifest budget is 512 KB of manifest, not of transport padding: the
+        // request envelope allows 64 KB headroom on top of it.
+        guard body.trimmingCharacters(in: .whitespacesAndNewlines).utf8.count <= 512 * 1024 else {
             return Self.json(413, "{\"code\":\"migration_control_manifest_too_large\",\"error\":\"Migration control manifest exceeds its fixed budget\"}")
         }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
@@ -13900,6 +13902,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         serverAgents[agentId]?.status = status
         lock.unlock()
+    }
+
+    /// Whether the presented bearer is a live Computer credential (used before
+    /// parsing an oversized control-manifest body so secrets never reach a parser).
+    public func computerCredentialIsLive(authorization: String?) -> Bool {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return false }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        defer { lock.unlock() }
+        return computers.contains { $0.apiKey == token && $0.revokedAt == nil }
     }
 
     /// Keyed lookup shared by `/daemon/connect` and the legacy machine surface.

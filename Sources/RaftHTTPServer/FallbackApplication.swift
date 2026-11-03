@@ -2845,7 +2845,9 @@ public func configure(_ app: Application, services: FallbackServices) {
             scope: desktopQuery(request.url.query, "scope")
         ))
     }
-    app.post("internal", "computer", "agent-migrations", "by-id", ":migrationId", "resumable", "control") { request -> Response in
+    // The resumable control manifest is the one JSON surface allowed past the
+    // 100 KB global parser: 512 KB manifest plus envelope headroom.
+    app.on(.post, "internal", "computer", "agent-migrations", "by-id", ":migrationId", "resumable", "control", maxBodySize: "640kb") { request -> Response in
         routeResponse(services.emailAccounts.putMigrationControlManifest(
             authorization: request.headers[.authorization],
             migrationRef: request.parameters.get("migrationId") ?? "",
@@ -3776,6 +3778,7 @@ public func configure(_ app: Application, services: FallbackServices) {
     var middleware = Middlewares()
     internalSurface.set(InternalSurfacePolicy.snapshot(routes: app.routes.all))
     middleware.use(ExperimentalSurfaceGate(directory: services.emailAccounts))
+    middleware.use(RequestBodyLimitMiddleware(accounts: services.emailAccounts))
     middleware.use(BufferedRequestBodyMiddleware())
     middleware.use(CorsMiddleware(origins: services.corsOrigins))
     middleware.use(PublicSearchMiddleware(
