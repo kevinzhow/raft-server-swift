@@ -1238,3 +1238,9 @@ RFC 074 personal assistant：
 - 负责"wake 已接受、runtime 尚不能收输入"窗口内的消息缓冲：I1 每个 pending key 必须属于当前 start-state 快照（queued/starting/terminal recovery/cooldown），否则 assertInvariants 抛 "pending messages for non-starting agent"。
 - I2 exactly-once：rebindWake 把旧 wake append 进 pending（不覆盖，DROP 回归）、drainOnSpawn 返回全部并清空 owner（二次 drain 只给新缓冲，DUP 回归）、cancelStart/cancelAllStarts 清理孤儿、suppressConsumed 按谓词移除已消费消息并返回数量。
 - 只暴露 count/snapshot/transition verbs：values 返回副本，外部改动不影响内部。
+
+### daemon agentNoProcessResidency
+
+- 无进程 agent 的业务事实与不变量：I1 active cooldown 必须有 idle restart config；I2 terminal failure 与 idle restart config 互斥；I3 terminal failure 不能同时 running；I4 pending delivery 只能属于 queued/starting/terminal-recovery/cooldown-with-idle；I5 fingerprint fence 必须挂在 running/idle/terminal 证据上，不能单独路由；queued 与 starting 不得重叠。
+- `allowedStartPendingSnapshot` 输出 queued/starting/terminalRecovery/cooldown-with-idle 快照。
+- `AgentNoProcessResidencyTransitions` 发稳定 enter/close 配对行（span_name=launch_residency_transition、phase=process_residency，state_instance_id=residency_state_instance_id、transition_seq 单调递增）；同 state+launch 重复 enter 为空，切换 state 先发 advanced close 再发新 enter；缺失 launch id 以 `failure_kind`/`negative_evidence_bucket` 表达。
