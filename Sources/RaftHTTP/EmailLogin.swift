@@ -10248,7 +10248,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let rows = oauth.serverAgents(serverId: serverId).map { agent -> String in
             let canSeeConfig = role == "owner" || role == "admin" || agent.creatorUserId == userId
             let creatorJSON = agent.creatorUserId.map { "{\"type\":\"human\",\"id\":\(jsonString($0))}" } ?? "null"
-            var base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"model\":\(jsonString(Self.agentModel(from: agent.runtimeConfigJSON, external: agent.runtime == "external"))),\"external\":\(agent.runtime == "external"),\"serverRole\":\"member\",\"creator\":\(creatorJSON),\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
+            var base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"model\":\(jsonString(Self.agentModel(from: agent.runtimeConfigJSON, external: agent.runtime == "external"))),\"external\":\(agent.runtime == "external"),\"serverRole\":\(jsonString(oauth.agentRole(serverId: agent.serverId, agentId: agent.id) ?? "member")),\"creator\":\(creatorJSON),\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
             if agent.runtime == "external" {
                 let lastSeen = seen[agent.id].map { jsonString(formatter.string(from: $0)) } ?? "null"
                 base += ",\"lastSeenAt\":\(lastSeen)"
@@ -10372,7 +10372,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let canSeeConfig = role == "owner" || role == "admin" || agent.creatorUserId == userId
         let creatorJSON = agent.creatorUserId.map { "{\"type\":\"human\",\"id\":\(jsonString($0))}" } ?? "null"
-        let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"model\":\(jsonString(Self.agentModel(from: agent.runtimeConfigJSON, external: agent.runtime == "external"))),\"external\":\(agent.runtime == "external"),\"serverRole\":\"member\",\"creator\":\(creatorJSON),\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
+        let base = "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"runtime\":\(jsonString(agent.runtime)),\"model\":\(jsonString(Self.agentModel(from: agent.runtimeConfigJSON, external: agent.runtime == "external"))),\"external\":\(agent.runtime == "external"),\"serverRole\":\(jsonString(oauth.agentRole(serverId: agent.serverId, agentId: agent.id) ?? "member")),\"creator\":\(creatorJSON),\"description\":\(agent.description.map { jsonString($0) } ?? "null")"
         let body = canSeeConfig
             ? base + ",\"runtimeConfig\":\(agent.runtimeConfigJSON ?? "null"),\"envVars\":\(agent.envVarsJSON ?? "null")}"
             : base + "}"
@@ -10646,13 +10646,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         switch agentAuthority(authorization, agentId: agentId) {
         case .denied(let reply):
             return reply
-        case .allowed(_, _, let info):
+        case .allowed(let actorId, let actorRole, let info):
             guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
                 return Self.json(400, "{\"error\":\"Invalid Agent update\"}")
             }
             if let restartMode = object["restartMode"] as? String,
                restartMode != "restart", restartMode != "session" {
                 return Self.json(400, "{\"error\":\"Invalid restart mode: \(restartMode)\"}")
+            }
+            if object["serverRole"] != nil {
+                if let reply = Self.applyAgentServerRole(
+                    directory: self,
+                    actorUserId: actorId,
+                    actorRole: actorRole,
+                    info: info,
+                    object: object
+                ) {
+                    return reply
+                }
             }
             var description: String?
             if let value = object["description"] as? String {
@@ -10744,8 +10755,103 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let displayNameJSON = displayName.map { jsonString($0) } ?? "null"
             let effortValue = config["reasoningEffort"]
             let effortJSON = effortValue is NSNull || effortValue == nil ? "null" : jsonString(effortValue as? String ?? "")
-            return Self.json(200, "{\"id\":\(jsonString(info.id)),\"name\":\(jsonString(info.name)),\"displayName\":\(displayNameJSON),\"model\":\(jsonString(model)),\"runtime\":\(jsonString(runtimeForResponse)),\"reasoningEffort\":\(effortJSON),\"description\":\(descriptionJSON),\"avatarUrl\":\(avatarJSON),\"runtimeConfig\":\(runtimeConfigJSON ?? "null"),\"envVars\":\(envVarsJSON ?? "null")}")
+            let effectiveRole = oauth.agentRole(serverId: info.serverId, agentId: info.id) ?? "member"
+            return Self.json(200, "{\"id\":\(jsonString(info.id)),\"name\":\(jsonString(info.name)),\"displayName\":\(displayNameJSON),\"model\":\(jsonString(model)),\"runtime\":\(jsonString(runtimeForResponse)),\"reasoningEffort\":\(effortJSON),\"description\":\(descriptionJSON),\"avatarUrl\":\(avatarJSON),\"serverRole\":\(jsonString(effectiveRole)),\"runtimeConfig\":\(runtimeConfigJSON ?? "null"),\"envVars\":\(envVarsJSON ?? "null")}")
         }
+    }
+
+
+    /// Human role-transition policy for `serverRole` on an agent: the owner may
+    /// promote and demote, an admin may only promote an agent they created, and
+    /// `owner` itself is never assignable to an agent. A real change posts a
+    /// system notice into the actor's DM with the agent.
+    private static func applyAgentServerRole(
+        directory: EmailLoginDirectory,
+        actorUserId: String,
+        actorRole: String,
+        info: OAuthLedger.AgentManagementInfo,
+        object: [String: Any]
+    ) -> HTTPReply? {
+        guard let targetRole = object["serverRole"] as? String else {
+            return json(400, "{\"error\":\"serverRole must be a string\"}")
+        }
+        guard targetRole == "member" || targetRole == "admin" else {
+            return json(400, "{\"error\":\"Invalid server role\"}")
+        }
+        guard actorRole == "owner" || actorRole == "admin" else {
+            return json(403, "{\"error\":\"Forbidden\"}")
+        }
+        let currentRole = directory.oauth.agentRole(serverId: info.serverId, agentId: info.id) ?? "member"
+        if targetRole == currentRole { return nil }
+        if targetRole == "member", currentRole == "admin", actorRole != "owner" {
+            return json(403, "{\"error\":\"Only the owner can demote an admin agent\"}")
+        }
+        if targetRole == "admin", actorRole == "admin", info.creatorUserId != actorUserId {
+            return json(403, "{\"error\":\"Only the owner can promote this agent\"}")
+        }
+        directory.oauth.setAgentRole(serverId: info.serverId, agentId: info.id, role: targetRole)
+        directory.postAgentRoleNotice(
+            serverId: info.serverId,
+            actorUserId: actorUserId,
+            agentId: info.id,
+            agentName: info.name,
+            from: currentRole,
+            to: targetRole
+        )
+        return nil
+    }
+
+    private func postAgentRoleNotice(
+        serverId: String,
+        actorUserId: String,
+        agentId: String,
+        agentName: String,
+        from: String,
+        to: String
+    ) {
+        lock.lock()
+        let actorName = accounts.values.first { $0.id == actorUserId }?.name ?? "Someone"
+        var dmId = postableChannels.first { _, channel in
+            channel.serverId == serverId && channel.kind == "dm"
+                && channel.memberIds.contains(actorUserId) && channel.memberIds.contains(agentId)
+        }?.key
+        if dmId == nil {
+            dmId = oauth.createDirectChannel(serverId: serverId, firstUserId: actorUserId, secondUserId: agentId)
+            if let created = dmId {
+                postableChannels[created] = PostableChannel(serverId: serverId, memberIds: [actorUserId, agentId], kind: "dm", name: "dm")
+                oauth.addChannelAgent(channelId: created, agentId: agentId)
+                oauth.addChannelHuman(channelId: created, userId: actorUserId)
+            }
+        }
+        if let dmId {
+            appendHumanMessageLocked(StoredHumanMessage(
+                id: UUID().uuidString.lowercased(),
+                channelId: dmId,
+                senderId: actorUserId,
+                content: "@\(actorName) changed @\(agentName)'s server role from \(from) to \(to).",
+                messageType: "system",
+                senderType: "user",
+                actionKind: "agent.server_role_changed"
+            ))
+        }
+        lock.unlock()
+    }
+
+    public func channelSystemMessagesForTesting(channelId: String) -> [(content: String, subtype: String?)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return humanMessageRows
+            .filter { $0.channelId == channelId && $0.messageType == "system" }
+            .map { ($0.content, $0.actionKind) }
+    }
+
+    public func directChannelIdForTesting(serverId: String, firstId: String, secondId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return postableChannels.first { _, channel in
+            channel.serverId == serverId && channel.kind == "dm"
+                && channel.memberIds.contains(firstId) && channel.memberIds.contains(secondId)
+        }?.key
     }
 
     /// The assistant link is live only while the flag is on and the owner is

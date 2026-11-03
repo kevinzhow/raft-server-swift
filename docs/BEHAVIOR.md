@@ -867,3 +867,10 @@ RFC 074 personal assistant：
 - `GET /api/agents/:id/agent-dms`：只列 agent-to-agent DM（人类 DM 不出现），行 `{id,peerId,peerName,lastMessagePreview}`；preview 跳过尾部 system 消息。
 - `GET /api/agents/:id/channels`：只列该 agent 的显式频道成员（不含虚拟 #all、thread、DM）；private/joint 需要 viewer 也在该频道；行含 `{id,name,description,type,createdAt,archivedAt,activityMuted,muteFromSeq}`，mute 是 agent receiver 自身状态（viewer 的 mute 不泄漏）。
 - agent mute 状态与 human 共用 receiver-keyed notification prefs 存储（`channelId + receiverId`），mute 路由写入带订阅边界 `muteFromSeq`。
+
+### agents.api：agent server role 变更组
+
+- `PATCH /api/agents/:id` 支持 `serverRole`（`member`/`admin`）：目标 `owner` → 400（agent 永不可为 owner）；普通 member 调用 → 403；owner 可 promote/demote；admin 只能 promote 自己创建的 agent，不能 demote admin（403 → 需 owner）。
+- 合法变更立即生效并回显 `serverRole`（PATCH 响应与 `GET /api/agents/:id` 的 `serverRole` 均为真实角色，不再硬编码 member）。
+- 每次真实角色变更向「操作者与 agent 的 DM」写入系统消息：`@<actor> changed @<agent>'s server role from <old> to <new>.`，subtype `agent.server_role_changed`；非法/被拒/空操作（同角色）不写消息。DM 不存在时自动创建并挂接双方。
+- 明确排除：`resetAgent`/orchestrator 调用参数（session reset 模式、codex model switch 强制 session 等）与 DB sessionId 行断言——它们是 spy/DB 断言而非 HTTP/JSON 契约。
