@@ -270,3 +270,11 @@
 - `agentAppAccess.api`（6 例）：自动授权、撤销持久、app events 分页/过期/私有可见性、requests/agent 接受 id；需要 agent app grant/event 存储。
 - `authPendingSocialLink.api`（12 例）、`actions.privateAccess.api`（19 例）、`securityLifecycle.api`（14 例）、`internal.reminders.api`（17 例）为中大型切片，建议在完整上下文预算下逐个做。
 - `guestRbac.api` 的 archive/删除 case 需要先补：`guestVisible`/`guestJoinable` 频道字段（含 API seam）、删除频道对消息/线程/附件 URL 的 cloak、以及 storage seam 注入；这些是 `guestRbac.api` 与 `agentAppAccess.api` 的共同前置，建议作为一个 400–2000 行的数据模型切片先做。
+
+#### 该数据模型切片的执行清单
+
+1. `PostableChannel`（或 OAuth `ChannelRecord`）增加 `guestVisible`/`guestJoinable`（默认 false）；`createChannel`/`updateChannel` 接受并回显；`/api/channels` 列表按 `guestVisible` 与 guest 成员资格过滤（现有 `guestVisibleChannels` 逻辑收敛到字段）。
+2. Guest Join：`POST /api/channels/:id/join` 要求 `guestJoinable`，无上限；归档频道 join → 409；非 guest 走原逻辑。
+3. 删除 cloak：`DELETE /api/channels/:id` 置 `deletedAt` 后，消息深链 404、thread 深链 404、search 结果排除、`/api/attachments/:id/url` 404；保留搜索 marker 只在未删除频道。
+4. storage seam：`AttachmentStorage` protocol（put/get/delete/presignedURL）+ `FallbackServices.attachmentStorage` 注入，默认内存实现；测试用 fake 返回固定 URL。
+5. 验收：新增 `GuestChannelLifecycleTests`（archive 只读、删除 cloak、join 上限），先失败后实现；绿后锁 `guestRbac.api` 的对应 case。
