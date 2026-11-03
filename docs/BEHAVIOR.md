@@ -1244,3 +1244,9 @@ RFC 074 personal assistant：
 - 无进程 agent 的业务事实与不变量：I1 active cooldown 必须有 idle restart config；I2 terminal failure 与 idle restart config 互斥；I3 terminal failure 不能同时 running；I4 pending delivery 只能属于 queued/starting/terminal-recovery/cooldown-with-idle；I5 fingerprint fence 必须挂在 running/idle/terminal 证据上，不能单独路由；queued 与 starting 不得重叠。
 - `allowedStartPendingSnapshot` 输出 queued/starting/terminalRecovery/cooldown-with-idle 快照。
 - `AgentNoProcessResidencyTransitions` 发稳定 enter/close 配对行（span_name=launch_residency_transition、phase=process_residency，state_instance_id=residency_state_instance_id、transition_seq 单调递增）；同 state+launch 重复 enter 为空，切换 state 先发 advanced close 再发新 enter；缺失 launch id 以 `failure_kind`/`negative_evidence_bucket` 表达。
+
+### daemon managedMcpTools
+
+- Pi 的 managed MCP 工具：无 runner credential 时为空；否则以 Bearer 拉取 `/mcp/tools` 冻结目录（runtimeName/serverName/toolName/configVersion/assignmentVersion），每个工具经 `/mcp/call` 代理，body 带 `expectedConfigVersion`/`expectedAssignmentVersion` 作为 fence。
+- 快照失败非致命：返回空列表 + 一条 <300 字符的 warning（含 code 与 status）；调用期传输失败统一为 outcome-unknown 文案（不提示重试）；5xx 无 Raft code 同样 unknown，带 code+error 则透传 Raft 文案。
+- 远程错误文本 >4000 字符截断并加 `…[truncated]`，空错误命名为 `<runtimeName> failed`；serverName/toolName/description 中的所有换行分隔符压平为单空格，防止伪造 prompt 行。
