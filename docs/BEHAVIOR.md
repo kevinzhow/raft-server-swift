@@ -810,3 +810,11 @@ RFC 074 personal assistant：
 - 可用性 = 部署级配置（`ANTIPROTON_PROVISIONING_TOKEN` 非空）+ 本 Server 的 hosted runtime flag 同时成立；跨 Server 隔离（B 未开 flag 时即使 token 存在也不可用）。
 - `POST /api/agents` 带 `provider:"antiproton"`：仅 `external:true`（否则 400 `provider is only for external agents`）；flag 未开 → 403 `{"code":"agent_runtime_provider_disabled"}`；flag 已开但部署未配置 → 409 `{"code":"agent_runtime_provider_not_configured"}`；通过后创建 agent 并返回 `hostedRuntime:{kind:"antiproton",state:"provisioning"}`（本移植版不发 provider HTTP 请求）。
 - 明确排除：fake provider 的 provisioning/edit/delete/import/connector/spend/cindy 等需要真实 provider transport 的组，以及 rollout 降级/杀开关的 worker 行为。
+
+### channels.api：message-display-settings 组
+
+- `GET/PATCH /api/channels/:id/message-display-settings`：GET 默认 `{collapseLongMessages:true,prefsVersion:0}`；PATCH 只接受布尔 `collapseLongMessages`（非布尔 → 400 `collapseLongMessages must be a boolean`），响应 `{collapseLongMessages,prefsVersion}`。
+- 每用户偏好：同值 PATCH 不 bump `prefsVersion`；改值 bump 一次；不同用户互不影响。
+- 访问门：本 Server 成员 + 该频道成员（未加入公开频道、非成员 private 一律 404 cloak）；系统 `#all` 对 Server 人类隐式成员可用；thread 目标 → 400 `Display preferences are stored on the parent channel`（在 membership 判断之前）。
+- 投影：`GET /api/channels` 行与 `GET /api/channels/:id` 详情都带 `collapseLongMessages` 与 `displayPrefsVersion`（当前用户视角）。
+- 明确排除：`message_display_prefs:updated` socket 广播与 trace 断言、功能开关 `topbar_overflow_v0` 的退役配置行为。

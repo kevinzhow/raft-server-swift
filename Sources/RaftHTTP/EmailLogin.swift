@@ -23629,7 +23629,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 peersJSON = ",\"peerReadStates\":[\("\(peers)")]"
             }
         }
-        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"joined\":\(joined),\"maxReadSeq\":\(info.maxReadSeq),\"readStateVersion\":\(version),\"activityMuteSupported\":\(supported),\"channelRole\":\(jsonString(channelRole)),\"channelAdminBasis\":\(basis.map { jsonString($0) } ?? "null"),\"channelAuthorityRevision\":\(authorityRevision),\"channelCapabilities\":\(capsJSON)\(peersJSON)}")
+        let displayPrefs = oauth.channelDisplayPrefs(channelId: channelId, userId: userId)
+        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"joined\":\(joined),\"maxReadSeq\":\(info.maxReadSeq),\"readStateVersion\":\(version),\"activityMuteSupported\":\(supported),\"collapseLongMessages\":\(displayPrefs.collapseLongMessages),\"displayPrefsVersion\":\(displayPrefs.prefsVersion),\"channelRole\":\(jsonString(channelRole)),\"channelAdminBasis\":\(basis.map { jsonString($0) } ?? "null"),\"channelAuthorityRevision\":\(authorityRevision),\"channelCapabilities\":\(capsJSON)\(peersJSON)}")
     }
 
     public func channelDisplaySettings(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
@@ -23638,6 +23639,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        if oauth.channelType(id: channelId) == "thread" {
+            return Self.json(400, "{\"error\":\"Display preferences are stored on the parent channel\"}")
         }
         guard oauth.canAccessChannelPrefs(channelId: channelId, userId: userId, serverId: serverId) else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
@@ -23652,6 +23656,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        if oauth.channelType(id: channelId) == "thread" {
+            return Self.json(400, "{\"error\":\"Display preferences are stored on the parent channel\"}")
         }
         guard oauth.canAccessChannelPrefs(channelId: channelId, userId: userId, serverId: serverId) else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
@@ -24282,7 +24289,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let last = channel.lastMessageAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
             let muteSeq = channel.muteFromSeq.map(String.init) ?? "null"
             let archivedAt = oauth.channelArchivedAt(id: channel.id).map { jsonString(formatter.string(from: $0)) } ?? "null"
-            return "{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(channel.type)),\"joined\":\(channel.name == "all" || channel.joined),\"archivedAt\":\(archivedAt),\"lastMessageAt\":\(last),\"activityMuted\":\(channel.activityMuted),\"muteFromSeq\":\(muteSeq),\"prefsVersion\":\(channel.prefsVersion),\"activityMuteSupported\":\(channel.type == "channel")}"
+            let displayPrefs = oauth.channelDisplayPrefs(channelId: channel.id, userId: userId)
+            return "{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(channel.type)),\"joined\":\(channel.name == "all" || channel.joined),\"archivedAt\":\(archivedAt),\"lastMessageAt\":\(last),\"activityMuted\":\(channel.activityMuted),\"muteFromSeq\":\(muteSeq),\"prefsVersion\":\(channel.prefsVersion),\"activityMuteSupported\":\(channel.type == "channel"),\"collapseLongMessages\":\(displayPrefs.collapseLongMessages),\"displayPrefsVersion\":\(displayPrefs.prefsVersion)}"
         }.joined(separator: ",")
         return Self.json(200, "[\(rows)]")
     }
