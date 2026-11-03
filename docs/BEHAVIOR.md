@@ -874,3 +874,11 @@ RFC 074 personal assistant：
 - 合法变更立即生效并回显 `serverRole`（PATCH 响应与 `GET /api/agents/:id` 的 `serverRole` 均为真实角色，不再硬编码 member）。
 - 每次真实角色变更向「操作者与 agent 的 DM」写入系统消息：`@<actor> changed @<agent>'s server role from <old> to <new>.`，subtype `agent.server_role_changed`；非法/被拒/空操作（同角色）不写消息。DM 不存在时自动创建并挂接双方。
 - 明确排除：`resetAgent`/orchestrator 调用参数（session reset 模式、codex model switch 强制 session 等）与 DB sessionId 行断言——它们是 spy/DB 断言而非 HTTP/JSON 契约。
+
+### agents.api：external agent 运行时守卫组
+
+- external agent 的 profile 字段（description 等）仍可 PATCH；但 Raft 管理的 runtime 字段（`runtime`/`runtimeConfig`/`model`/`reasoningEffort`/`envVars`）→ 400 精确 `{"error":"External agent runtime fields are immutable"}`。
+- external agent 的 `POST /api/agents/:id/start|stop|reset` → 400 精确 `{"error":"External agents do not use Raft-managed runtime lifecycle"}`，不触发 orchestrator 生命周期。
+- `POST /api/agents/:id/assign-machine` → 400 精确 `{"error":"External agents cannot be assigned to a Computer"}`。
+- `DELETE /api/agents/:id` → 200 软删除；随后 `GET` 404，`GET /api/agents/archived` 的 `agents[{agentId,...}]` 包含该 agent。
+- 明确排除：orchestrator start/stop/reset 调用标志与 `evictCache` 断言、DB `deletedAt` 行断言（以 HTTP 可观察行为替代）。

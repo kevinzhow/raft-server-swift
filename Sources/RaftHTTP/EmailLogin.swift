@@ -10654,6 +10654,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                restartMode != "restart", restartMode != "session" {
                 return Self.json(400, "{\"error\":\"Invalid restart mode: \(restartMode)\"}")
             }
+            // External agents run on their own machine; Raft-managed runtime
+            // fields are immutable for them (descriptions still update).
+            if info.runtime == "external",
+               ["runtime", "runtimeConfig", "model", "reasoningEffort", "envVars"].contains(where: { object[$0] != nil }) {
+                return Self.json(400, "{\"error\":\"External agent runtime fields are immutable\"}")
+            }
             if object["serverRole"] != nil {
                 if let reply = Self.applyAgentServerRole(
                     directory: self,
