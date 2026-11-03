@@ -274,7 +274,7 @@ core.runtimeDetection	daemon	pending	-	auto-seed
 core	daemon	pending	-	auto-seed
 daemonFetch.http1	daemon	pending	-	auto-seed
 daemonFetch	daemon	pending	-	auto-seed
-deviceClass	daemon	locked	SLICE	device class detection: macOS system_profiler model names map to laptop/mini/studio/imac/desktop with VirtualMac as vm, Linux DMI chassis sets map laptop/desktop/server with hypervisor vendor or type winning as vm, unknown models/fields/bad JSON stay undefined, and WSL, Windows and unreadable inputs stay unknown without retaining model names or DMI strings
+deviceClass	daemon	locked	b5af20b	device class detection: macOS system_profiler model names map to laptop/mini/studio/imac/desktop with VirtualMac as vm, Linux DMI chassis sets map laptop/desktop/server with hypervisor vendor or type winning as vm, unknown models/fields/bad JSON stay undefined, and WSL, Windows and unreadable inputs stay unknown without retaining model names or DMI strings
 directUploadCapability	daemon	pending	-	auto-seed
 drivers/claude.integration	daemon	pending	-	auto-seed
 drivers/claude	daemon	pending	-	auto-seed
@@ -375,7 +375,7 @@ runtimeNotificationState	daemon	pending	-	auto-seed
 runtimeOutcomeOutbox	daemon	pending	-	auto-seed
 runtimeProcessBindingFence	daemon	locked	6201225	runtime process binding fence: output from a replaced process is rejected with one trace record per process x reason x source per 10s window carrying suppressed_count, the next rejection after the window records the accumulated suppressed count and restarts the burst, input rejections are recorded once per send attempt and never collapsed, and binding validation distinguishes missing/agent/process/launch/session mismatches
 runtimeProgressState	daemon	pending	-	auto-seed
-runtimeTurnState	daemon	locked	SLICE	runtime turn state: markTurnStarted/noteTurnAccepted distinguish running from accepted turns for busy steering, the tool boundary gates steering until progress, completion/reset clear the turn and gate, hasLiveTurn covers accepted and running turns, non-empty input evidence rides from a pending acceptance into the started turn, and completed turn ids stay bounded to 16
+runtimeTurnState	daemon	locked	b5af20b	runtime turn state: markTurnStarted/noteTurnAccepted distinguish running from accepted turns for busy steering, the tool boundary gates steering until progress, completion/reset clear the turn and gate, hasLiveTurn covers accepted and running turns, non-empty input evidence rides from a pending acceptance into the started turn, and completed turn ids stay bounded to 16
 runtimeTurnTokens	daemon	pending	-	auto-seed
 scopedAppStorage.sourceContract	daemon	pending	-	auto-seed
 scopedAppStorage	daemon	pending	-	auto-seed
