@@ -1171,3 +1171,7 @@ RFC 074 personal assistant：
 - `hostIdHashForServer`：`HMAC-SHA256(key=hardwareId, "raft-host-id-v1:"+serverId)` 的 hex 前 32 位——同一机器同一 server 稳定、不同 server/机器不同、绝不包含原始硬件 ID。
 - `normalizeHardwareId`：接受 machine-id / UUID / GUID 形式（大小写与横线不敏感），要求 16-64 hex；空、过短、全零、非 hex 一律 nil。
 - 平台发现：Linux 读 `/etc/machine-id`（回退 `/var/lib/dbus/machine-id`）；macOS 从 `ioreg` 的 `IOPlatformUUID` 解析；Windows 从 `reg query` 的 `MachineGuid` 解析；命令失败/未知平台返回 nil。IO 错误可注入（readFile/run），便于测试且不 spawn。
+
+### daemon toolCallOutcome
+
+- tool 调用结局由 daemon 侧计时：`noteToolCallStart` 按 callId 记录起点（重复 id 刷新位置），开放调用上限 256，超出淘汰最旧；`finishToolCall` 忘记该 id，优先用 runtime 自报的 durationMs（负数丢弃并回退 daemon 测量），无 callId 时仅带 ok/exitCode 等已有字段；没有任何信息时返回 nil。

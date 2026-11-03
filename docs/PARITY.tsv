@@ -390,7 +390,7 @@ startupMemoryBlock	daemon	pending	-	auto-seed
 task695ContinueOnErrorProbe	daemon	pending	-	auto-seed
 testing/drydock	daemon	pending	-	auto-seed
 testing/networkGuard	daemon	pending	-	auto-seed
-toolCallOutcome	daemon	pending	-	auto-seed
+toolCallOutcome	daemon	locked	SLICE	tool outcome bookkeeping: daemon-measured start/end duration by call id, finished calls forgotten, runtime-supplied duration winning over the measurement (negative dropped), an end with nothing reported yielding no outcome while an unknown id still reports its fields, and the 256-entry open-call bound dropping the oldest first
 traceBundleUpload	daemon	pending	-	auto-seed
 traceBundleUploadAttrDropWindow	daemon	pending	-	auto-seed
 traceBundleUploadFairness	daemon	pending	-	auto-seed
