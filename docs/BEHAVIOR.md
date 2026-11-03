@@ -1122,3 +1122,10 @@ RFC 074 personal assistant：
 - `GET /api/channels/:id` 的 `joined` 按请求者实时计算：regular/private 频道的参与者为 true，未加入的 server member 为 false；`#all`（name "all"）是隐式加入，恒为 true；非 UUID 的 id 返回 404 `{"error":"Channel not found"}` 而不是 500。
 - thread 详情：能看到 parent 的 server member 可 hydrate 线程（200，type thread）；私有 parent 对非成员 cloak 成同一 404，不泄漏线程元数据。
 - DM 详情：参与者本人看到 `type:"dm"`、`joined:true` 与 `peerType/peerId/peerName`；agent peer 被软删除后详情仍可 hydrate（peer 字段完整），但该 DM 不再出现在 `GET /api/channels/dm` 列表（详情水合不得复活已删除 agent 的 DM）。
+
+### channels.archive.api：freeze 收尾组
+
+- 归档的 thread 继承 parent 的冻结：向 archived parent 下的 thread 发送消息返回 409 `channel_archived`（不只是 thread 频道自身 archived 时）。
+- legacy channel-agent 写路由（`POST /channels/:id/agents`、`DELETE /channels/:id/agents/:agentId`）未挂载 → 404；替代的 member 路由仍可用（200）。
+- archived 频道的消息仍可搜索：`GET /api/messages/search` 命中行带 `channelArchivedAt`，跳转 `GET /api/messages/context/:id` 返回 200 且 `channelArchived:true`，`channelId` 过滤在 archived 频道上照常工作。
+- 明确排除：notificationEvents 的 DB 行断言（archive 幂等不发重复事件、agent archive 的 public-channel app notification 恰好一次）——纯数据库事件表，没有 HTTP/socket 可观察面。

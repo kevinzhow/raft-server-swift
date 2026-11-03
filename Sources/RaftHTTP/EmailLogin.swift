@@ -4172,7 +4172,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard channel.memberIds.contains(userId) || parentMember else {
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
-        if channel.archived {
+        // A thread inherits its parent's freeze: no writes under an archived parent.
+        let parentArchived = channel.kind == "thread"
+            && channel.parentChannelId.flatMap { oauth.channelArchivedAt(id: $0) } != nil
+        if channel.archived || parentArchived {
             return Self.json(409, "{\"error\":\"This channel is archived\",\"code\":\"channel_archived\"}")
         }
         let appIds = Self.appReferenceIds(content)
