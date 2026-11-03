@@ -408,3 +408,46 @@ private func commentsRequest(
         }
     }
 }
+
+@Test func attachmentCommentScopedReactionResponsesHideFromDeniedViewers() async throws {
+    let f = makeAttachmentCommentsFixture()
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let created = try await commentsRequest(
+                client, f, method: .post, path: "/api/attachments/\(f.linked)/comments", body: "{\"content\":\"reaction probe\"}"
+            )
+            let commentId = try #require((created.body["message"] as? [String: Any])?["id"] as? String)
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(f.reviewerToken)"
+            headers[.contentType] = "application/json"
+            headers[HTTPField.Name("X-Server-Id")!] = f.serverId
+            func react(_ messageId: String, _ emoji: String, _ method: HTTPRequest.Method) async throws -> [String: Any] {
+                let response = try await client.send(method, headers: headers, to: URI(string: "/api/messages/\(messageId)/reactions")) { request in
+                    request.body = .init(string: "{\"emoji\":\"\(emoji)\"}")
+                }
+                return (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            }
+            func parentCommentCount(_ body: [String: Any]) -> Int? {
+                let attachments = (body["attachments"] as? [[String: Any]]) ?? []
+                return ((attachments.first { ($0["id"] as? String) == f.linked }?["commentCount"]) as? NSNumber)?.intValue
+            }
+
+            let commentReaction = try await react(commentId, "eyes", .post)
+            #expect(commentReaction["commentRef"] != nil)
+            _ = try await react(commentId, "eyes", .delete)
+            let parentReaction = try await react(f.parentMessageId, "memo", .post)
+            #expect(parentCommentCount(parentReaction) == 1)
+            _ = try await react(f.parentMessageId, "memo", .delete)
+
+            // A user-denied viewer keeps the reaction ACK but loses the scoped parts.
+            f.accounts.addFeatureFlagRuleForTesting(key: "attachment_comments_v0", stage: "user", decision: "deny", values: [f.reviewerId])
+            let deniedCommentReaction = try await react(commentId, "eyes", .post)
+            #expect(deniedCommentReaction["commentRef"] is NSNull)
+            _ = try await react(commentId, "eyes", .delete)
+            let deniedParentReaction = try await react(f.parentMessageId, "memo", .post)
+            #expect(parentCommentCount(deniedParentReaction) == 0)
+            _ = try await react(f.parentMessageId, "memo", .delete)
+        }
+    }
+}

@@ -1110,3 +1110,9 @@ RFC 074 personal assistant：
 - `GET /api/messages/sync` 与 `GET /api/messages/context/:id` 的消息行现在都带 `attachments[{id,commentCount}]` 与 scoped `commentRef`：启用的查看者在父消息上看到真实 commentCount、在评论行上看到 chip；user-stage deny 的查看者两类投影分别退化为 `commentCount: 0` 与缺失/`null`，不泄漏 scoped 元数据。
 - `GET /api/messages/channel/:id` 同样使用带 commentCount 的附件投影（此前只有 id）。
 - 仍待补：`message:updated` live 事件（进程内 io spy，按契约排除）、history scoped metadata、agent scope quotation。
+
+### attachmentComments.api：reaction ACK 投影组
+
+- `POST/DELETE /api/messages/:id/reactions` 的 ACK 现在带 scoped 投影：评论消息返回 `commentRef`（无则为 `null`），父消息返回 `attachments[{id,commentCount}]`；user-stage deny 的查看者仍能 reaction，但 `commentRef` 为 `null`、`commentCount` 为 0。
+- 该模块的可移植面至此覆盖完毕：flag gate（server/user stage）、malformed 顺序、counts、viewer 状态、私有 cloak、unlinked/archived/非成员边界、host-message thread 复用与级联、anchor 词表/上限、strict mentions、create/listing/sync/context/reaction 的 commentRef 与 commentCount 投影。
+- 明确排除：`message:updated` live 事件的 io-spy 断言（契约排除进程内广播 spy）、read-only A3 的 billing 只读态（依赖未移植的 billing 功能面）、agent history/search 的 scope quotation（agent transport epic）、failed-write frontier 游标（DB 写失败前缀）。

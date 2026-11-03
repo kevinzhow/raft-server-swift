@@ -7948,7 +7948,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let senderName = accounts.values.first { $0.id == message.senderId }?.name ?? "Unknown user"
         let httpMetadata = forwardedBundleJSONLocked(messageId: message.id, userId: actorId, serverId: serverId, scrub: false)
         let socketMetadata = forwardedBundleJSONLocked(messageId: message.id, userId: actorId, serverId: serverId, scrub: true)
-        var bodyJSON = "{\"reactions\":[\(reactions)]"
+        let commentsVisible = attachmentCommentsEnabled(serverId: serverId ?? "", userId: actorId)
+        let commentRef = commentsVisible ? commentRefJSONLocked(messageId: message.id) : nil
+        var bodyJSON = "{\"reactions\":[\(reactions)],\"commentRef\":\(commentRef ?? "null"),\"attachments\":[\(messageAttachmentsJSONLocked(message.attachmentIds, commentsVisible: commentsVisible))]"
         if let httpMetadata {
             bodyJSON += ",\"actionMetadata\":\(httpMetadata)"
         }
