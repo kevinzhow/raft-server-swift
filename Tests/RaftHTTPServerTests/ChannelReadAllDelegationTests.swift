@@ -171,3 +171,44 @@ private func readAllPost(
         }
     }
 }
+
+@Test func humanReadCursorAgreesWithEveryReadStateSurface() async throws {
+    let f = makeReadAllFixture("904")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            // Sending marks your own message read: one cursor, one answer.
+            let own = try await client.send(.post, headers: readAllHeaders(f.ownerToken, f.serverId), to: "/api/messages") { request in
+                request.body = .init(string: "{\"channelId\":\"\(f.publicChannelId)\",\"content\":\"own message after unification\"}")
+            }
+            let ownBody = (try? JSONSerialization.jsonObject(with: Data((own.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            let ownId = try #require(ownBody["id"] as? String)
+            let ownSeq = try #require(f.accounts.humanMessageSequence(id: ownId))
+            #expect(f.accounts.humanReadCursor(channelId: f.publicChannelId, userId: f.ownerId) == ownSeq)
+
+            let detail = try await client.get(URI(string: "/api/channels/\(f.publicChannelId)"), headers: readAllHeaders(f.ownerToken, f.serverId))
+            let detailBody = (try? JSONSerialization.jsonObject(with: Data((detail.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            #expect(detailBody["maxReadSeq"] as? Int == ownSeq)
+
+            // A peer message is unread until the public read route advances the same cursor.
+            let peer = try await client.send(.post, headers: readAllHeaders(f.senderToken, f.serverId), to: "/api/messages") { request in
+                request.body = .init(string: "{\"channelId\":\"\(f.publicChannelId)\",\"content\":\"peer unread after unification\"}")
+            }
+            let peerBody = (try? JSONSerialization.jsonObject(with: Data((peer.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            let peerId = try #require(peerBody["id"] as? String)
+            let peerSeq = try #require(f.accounts.humanMessageSequence(id: peerId))
+            let unread = try await client.get(URI(string: "/api/channels/unread"), headers: readAllHeaders(f.ownerToken, f.serverId))
+            let unreadBody = (try? JSONSerialization.jsonObject(with: Data((unread.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            #expect(unreadBody[f.publicChannelId] as? Int == 1)
+
+            let read = try await client.send(.post, headers: readAllHeaders(f.ownerToken, f.serverId), to: "/api/channels/\(f.publicChannelId)/read") { request in
+                request.body = .init(string: "{\"seq\":\(peerSeq)}")
+            }
+            #expect(read.status == .ok)
+            #expect(f.accounts.humanReadCursor(channelId: f.publicChannelId, userId: f.ownerId) == peerSeq)
+            let after = try await client.get(URI(string: "/api/channels/unread"), headers: readAllHeaders(f.ownerToken, f.serverId))
+            let afterBody = (try? JSONSerialization.jsonObject(with: Data((after.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            #expect(afterBody[f.publicChannelId] == nil)
+        }
+    }
+}

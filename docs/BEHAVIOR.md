@@ -833,3 +833,10 @@ RFC 074 personal assistant：
 - 委派在「调用者是否频道成员」兜底之前判定：owner 即使不在 private 频道也能委派；非授权 member → 403 且零写入；`kind:"human"` 的 receiver（或任何非 agent 值）→ 403，不会回退到调用者或目标 human。
 - 不带 receiver 的 `read-all` 仍推进调用者自己的作用域（详情 `maxReadSeq` 到最新 seq）。
 - 明确排除：socket `scope_read:updated`/user-room 事件与 trace 断言、agent 读状态的持久 DB 行断言。
+
+### 读游标收口（DomainStore 第二步）
+
+- human 读游标只有一份：ledger 的 per-user 频道读前沿（`channelReadCursors`）。目录层不再维护并行游标表。
+- 发送自己的消息即视为读到它：发送方游标推进到该消息 seq（不会把自己消息算成未读）；`humanReadCursor` 查询、`/api/channels/:id` 的 `maxReadSeq`、`/api/channels/unread` 与 `/read` 路由读写的是同一份游标，因此互相一致。
+- 验收：自己的消息发送后 cursor == `maxReadSeq`；他人消息产生未读 1；`/read` 推进后 unread map 中消失。
+- 明确排除：迁移到 Postgres 的游标持久化（DomainStore 后续阶段）、按 `readStateVersion` 的乐观并发在 DB 层的语义。

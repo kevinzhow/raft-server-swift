@@ -381,7 +381,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Test-only override of `SLOCK_ATTESTED_SEND_MODE`; process environment is
     /// global state and parallel suites must not race on it.
     private var sendFreshnessModeOverride: String?
-    private var userChannelReadCursors: [String: Int] = [:]
+    // Human read frontiers live in the ledger alongside the message rows. The
+    // directory keeps no parallel cursor store.
     private var agentActivities: [String: (activity: String, detail: String)] = [:]
     private var announcements: [(id: String, title: String, pages: [String], startsAt: Date, expiresAt: Date?, status: String, publishedAt: Date?, imageId: String?)] = []
     private var announcementImageAssets: [String: AnnouncementImageAsset] = [:]
@@ -7965,8 +7966,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if postableChannels[channelId]?.kind == "thread" {
             inboxDoneScopes = inboxDoneScopes.filter { !$0.hasSuffix("\n\(channelId)") }
         }
-        let cursorKey = "\(channelId)\n\(senderId)"
-        userChannelReadCursors[cursorKey] = max(userChannelReadCursors[cursorKey] ?? 0, sequence)
+        // One read-cursor store: the ledger's per-user frontier. Sending is
+        // reading your own message, so the sender never counts it as unread.
+        let ownCursor = oauth.channelReadCursor(channelId: channelId, userId: senderId)
+        if sequence > ownCursor {
+            oauth.setChannelReadCursor(channelId: channelId, userId: senderId, seq: sequence)
+        }
         recordedChannelMessageEvents.append(ChannelMessageEvent(
             room: "channel:\(channelId)",
             name: "message:new",
@@ -23563,9 +23568,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func humanReadCursor(channelId: String, userId: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return userChannelReadCursors["\(channelId)\n\(userId)"] ?? 0
+        return oauth.channelReadCursor(channelId: channelId, userId: userId)
     }
 
     public func systemMessageContents(channelId: String) -> [String] {
