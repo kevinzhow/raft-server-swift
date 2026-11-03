@@ -780,6 +780,6 @@ RFC 074 personal assistant：
 ### internalAgentApi.send：wake-hints 与 events 消费组
 
 - `GET /internal/agent-api/wake-hints`：内容无关的待处理消息预览。每条 hint 为 `{event_id:"wake-hint:<messageId>",seq,message_id,target,wake_reason:"message_pending"}`（thread 目标为 `#parent:shortId`，DM 为 `dm:@peer`），永不包含正文；`since` 接受非负整数（只返回 seq 更大的）或 `latest`（不额外过滤，仍按读游标取 pending），非法值 → 400 `{"code":"since_invalid"}`；`limit` 限制整批条数并返回 `last_hint_seq` 与 `has_more`。
-- wake-hints 是纯 peek：重复调用结果不变、不推进读游标；随后 `GET /internal/agent-api/events` 返回同一批消息的正文与 `seq`，并把 us 读游标推进到已交付的最后一条；下一 次 events 返回空、`has_more:false`。
+- wake-hints 是纯 peek：重复调用结果不变、不推进读游标；随后 `GET /internal/agent-api/events` 返回同一批消息的正文与 `seq`，并把对应读游标推进到已交付的最后一条；下一 次 events 返回空、`has_more:false`。
 - events 只投影当前仍可见的会话：agent 被移出 private 频道后，此前排队但未交付的 private 消息不再出现（drop 而非延迟投递）。
 - 明确排除：orchestrator inbox 桩（`receiveMessages`/`peekPendingMessages`/ack 计数）、task 文本在 drain 时刷新、third-party event hint 的完整语义、mute/mention pierce、follow/父频道访问门槛、external delivery 自动唤醒。
