@@ -1070,3 +1070,11 @@ RFC 074 personal assistant：
 - 其他 agent 用同一名字读历史得到中性的 404 `Channel not found or not visible`，响应里不含回执正文；名字解析不命中任何 peer。
 - 向回执 DM 发消息是只读拒绝：`/send` 与 `/v2/send` 都返回 409 `code=MIGRATION_RECEIPT_READ_ONLY`，error 含 "one-way notice"、suggestedNextAction 指向 owner's DM，且不落任何消息；其他 agent 发送仍 404。
 - 回执 DM 不再被 inbox 隐藏（旧端口测试按"隐藏"固定，现按上游"列出且可读"更新）。
+
+### attachmentComments.api：可见性与门禁组（部分）
+
+- feature flag `attachment_comments_v0` 按 server-stage 规则生效（默认开）：关闭后用 `POST/GET /api/attachments/:id/comments` 与 `GET /api/attachments/comments/counts` 一律先得到 403 `attachment_comments_disabled`，在 malformed-id/body 校验之前；开启时 malformed `:id` 是 400 `invalid_attachment_id`（同样的 400 在关闭时仍是统一 403）。
+- `GET /api/attachments/comments/counts?ids=a,b,c`：1-100 个 id（空列表或超限 400），只统计调用者可读的附件，返回 `{counts:{id: n}}`。
+- `GET /api/attachments/:id/comments`：不可见/不存在 404（不泄漏），返回按创建时间排序的 `comments[{id,attachmentId,content,anchor,sender{type,id,name},createdAt,reactions}]` 与 `viewer{canComment,reason}`（archived / unlinked / not_member / ok）。
+- `POST /api/attachments/:id/comments`：flag → malformed-id → 私有频道 cloak 404 → 未链接 422 `attachment_not_linked` → 归档 409 `channel_archived` → 非成员 403 `not_a_member` → body 校验；成功时写 comment 记录与消息。
+- 仍待补：thread 宿主复用/级联、read-only 计费只读态、结构 anchors 词表与上限、mentions 管线、history scoped metadata 与 agent scope quotation。

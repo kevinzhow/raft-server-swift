@@ -9596,6 +9596,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Visibility projection for callers that already hold the directory lock.
+    private func visibleAttachmentUnlocked(userId: String, serverId: String?, attachment: ChannelAttachment) -> Bool {
+        let effectiveChannelId = attachment.messageId.flatMap { messageId in
+            humanMessageRows.first { $0.id == messageId }?.channelId
+        } ?? attachment.channelId
+        if let channel = postableChannels[effectiveChannelId],
+           channel.serverId == serverId,
+           channel.deletedAt == nil {
+            return channel.kind == "channel" || channel.memberIds.contains(userId)
+        }
+        guard let serverId, attachment.messageId != nil else { return false }
+        return oauth.memberRole(serverId: serverId, userId: userId) != nil
+    }
+
     private func visibleAttachment(userId: String, serverId: String?, attachment: ChannelAttachment) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -17600,23 +17614,139 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"services\":[\(servicesJSON)],\"activeLogins\":[\(active.joined(separator: ","))]}")
     }
 
-    public func createAttachmentComment(authorization: String?, attachmentId: String, body: String) -> HTTPReply {
+    /// Feature flag gate shared by the attachment-comment routes. It answers
+    /// before body validation so a disabled server sees one uniform 403.
+    public func attachmentCommentsEnabled(serverId: String) -> Bool {
+        evaluateFeatureFlagKey(
+            key: "attachment_comments_v0",
+            userId: "",
+            serverId: serverId,
+            platform: nil,
+            client: FeatureFlagClientFacts(os: nil, buildNumber: nil, buildType: nil)
+        ).enabled
+    }
+
+    private static let attachmentCommentsDisabledReply = json(403, "{\"error\":\"Attachment comments are not enabled on this server\",\"code\":\"attachment_comments_disabled\"}")
+
+    /// `GET /api/attachments/comments/counts`. Batch chip counts; only
+    /// attachments the caller can read are counted.
+    public func attachmentCommentCounts(authorization: String?, serverId: String, ids: String?) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
-        guard ServerScope.isUUID(attachmentId) else {
-            return Self.json(400, "{\"code\":\"invalid_attachment_id\",\"error\":\"Invalid attachment id\"}")
+        guard attachmentCommentsEnabled(serverId: serverId) else { return Self.attachmentCommentsDisabledReply }
+        let requested = (ids ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        guard !requested.isEmpty, requested.count <= 100 else {
+            return Self.json(400, "{\"error\":\"ids must contain 1-100 attachment ids\"}")
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let content = object["content"] as? String, !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else {
-            return Self.json(400, "{\"error\":\"content is required\"}")
+        lock.lock()
+        let candidates = requested.compactMap { id -> (String, ChannelAttachment)? in
+            guard ServerScope.isUUID(id), let attachment = channelAttachments[id] else { return nil }
+            return (id, attachment)
+        }
+        lock.unlock()
+        lock.lock()
+        var entries: [String] = []
+        for (id, attachment) in candidates where visibleAttachmentUnlocked(userId: userId, serverId: serverId, attachment: attachment) {
+            entries.append("\(jsonString(id)):\(attachmentCommentRecords[id]?.count ?? 0)")
+        }
+        lock.unlock()
+        return Self.json(200, "{\"counts\":{\(entries.joined(separator: ","))}}")
+    }
+
+    /// `GET /api/attachments/:id/comments`: the scoped comment list plus the
+    /// viewer write-state so the panel can gate affordances honestly.
+    public func attachmentCommentsList(authorization: String?, serverId: String, attachmentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard attachmentCommentsEnabled(serverId: serverId) else { return Self.attachmentCommentsDisabledReply }
+        guard ServerScope.isUUID(attachmentId) else {
+            return Self.json(400, "{\"error\":\"A valid attachment id is required\",\"code\":\"invalid_attachment_id\"}")
+        }
+        lock.lock()
+        let candidate = channelAttachments[attachmentId]
+        lock.unlock()
+        guard let attachment = candidate, visibleAttachment(userId: userId, serverId: serverId, attachment: attachment) else {
+            return Self.json(404, "{\"error\":\"Attachment not found\"}")
+        }
+        lock.lock()
+        let records = attachmentCommentRecords[attachmentId] ?? []
+        let channel = postableChannels[attachment.channelId]
+        let archived = oauth.channelArchivedAt(id: attachment.channelId) != nil
+        let canPost = channel.map { channel in
+            channel.kind == "channel"
+                ? oauth.memberRole(serverId: serverId, userId: userId) != nil
+                : channel.memberIds.contains(userId) || oauth.channelHumanIds(channelId: attachment.channelId).contains(userId)
+        } ?? false
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let comments = records.sorted { $0.createdAt < $1.createdAt }.map { record -> String in
+            let anchor = record.anchorJSON ?? "null"
+            let senderName = accounts.values.first { $0.id == record.senderId }?.name ?? record.senderId
+            return "{\"id\":\(jsonString(record.id)),\"attachmentId\":\(jsonString(record.attachmentId)),\"content\":\(jsonString(record.content)),\"anchor\":\(anchor),\"sender\":{\"type\":\(jsonString(record.senderType)),\"id\":\(jsonString(record.senderId)),\"name\":\(jsonString(senderName))},\"createdAt\":\(jsonString(formatter.string(from: record.createdAt))),\"reactions\":[]}"
+        }
+        lock.unlock()
+        let viewer: String
+        if archived {
+            viewer = "{\"canComment\":false,\"reason\":\"archived\"}"
+        } else if attachment.messageId == nil {
+            viewer = "{\"canComment\":false,\"reason\":\"unlinked\"}"
+        } else if canPost {
+            viewer = "{\"canComment\":true,\"reason\":\"ok\"}"
+        } else {
+            viewer = "{\"canComment\":false,\"reason\":\"not_member\"}"
+        }
+        return Self.json(200, "{\"comments\":[\(comments.joined(separator: ","))],\"viewer\":\(viewer)}")
+    }
+
+    public func createAttachmentComment(authorization: String?, attachmentId: String, body: String, serverId: String? = nil) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        // The feature gate answers before ANY body validation: a disabled
+        // server must see one uniform 403 for every payload.
+        if let serverId, !attachmentCommentsEnabled(serverId: serverId) {
+            return Self.attachmentCommentsDisabledReply
+        }
+        guard ServerScope.isUUID(attachmentId) else {
+            return Self.json(400, "{\"error\":\"A valid attachment id is required\",\"code\":\"invalid_attachment_id\"}")
         }
         lock.lock()
         guard let attachment = channelAttachments[attachmentId] else {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Attachment not found\"}")
         }
+        // An attachment the caller cannot see is the same neutral 404 as one
+        // that does not exist, and that cloak runs before body validation.
+        if let serverId, !visibleAttachmentUnlocked(userId: userId, serverId: serverId, attachment: attachment) {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Attachment not found\"}")
+        }
+        if attachment.messageId == nil {
+            lock.unlock()
+            return Self.json(422, "{\"error\":\"This attachment is not linked to a message\",\"code\":\"attachment_not_linked\"}")
+        }
+        if oauth.channelArchivedAt(id: attachment.channelId) != nil {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"This channel is archived\",\"code\":\"channel_archived\"}")
+        }
+        let canPost = postableChannels[attachment.channelId].map { channel in
+            channel.kind == "channel"
+                ? oauth.memberRole(serverId: channel.serverId, userId: userId) != nil
+                : channel.memberIds.contains(userId) || oauth.channelHumanIds(channelId: attachment.channelId).contains(userId)
+        } ?? false
+        if !canPost {
+            lock.unlock()
+            return Self.json(403, "{\"error\":\"You must join this channel to comment\",\"code\":\"not_a_member\"}")
+        }
+        lock.unlock()
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let content = object["content"] as? String, !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"content is required\"}")
+        }
+        lock.lock()
         let now = Date()
         let id = UUID().uuidString.lowercased()
         let anchorJSON: String? = {

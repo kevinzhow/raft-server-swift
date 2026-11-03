@@ -949,11 +949,26 @@ public func configure(_ app: Application, services: FallbackServices) {
             view: desktopQuery(request.url.query, "view")
         ))
     }
+    app.get("api", "attachments", "comments", "counts") { request -> Response in
+        routeResponse(services.emailAccounts.attachmentCommentCounts(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? desktopQuery(request.url.query, "server_id") ?? "",
+            ids: desktopQuery(request.url.query, "ids")
+        ))
+    }
+    app.get("api", "attachments", ":id", "comments") { request -> Response in
+        routeResponse(services.emailAccounts.attachmentCommentsList(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            attachmentId: request.parameters.get("id") ?? ""
+        ))
+    }
     app.post("api", "attachments", ":id", "comments") { request -> Response in
         routeResponse(services.emailAccounts.createAttachmentComment(
             authorization: request.headers[.authorization],
             attachmentId: request.parameters.get("id") ?? "",
-            body: request.body.string ?? "{}"
+            body: request.body.string ?? "{}",
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!]
         ))
     }
     app.get("internal", "agent-api", "attachments", ":attachmentId", "comments") { request -> Response in
