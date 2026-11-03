@@ -240,12 +240,12 @@ agentMigrationWorkspaceArchive.exdev	daemon	pending	-	auto-seed
 agentMigrationWorkspaceArchive	daemon	pending	-	auto-seed
 agentNoProcessResidency	daemon	locked	010e9a9	no-process residency invariants (cooldown requires restart config, terminal excludes idle restart and running, pending delivery requires queued/starting/terminal/cooldown-with-idle, fingerprint fences need running/idle/terminal evidence, queued and starting disjoint) with the allowed start-pending snapshot, plus the launch_residency_transition enter/close pairing rows (stable state instance, monotonic transition_seq, advanced close on state switch, duplicate enter suppressed, missing-launch-id negative evidence)
 agentProcessManager.appInboxTrace	daemon	locked	06b59b1	non-executable black-box: asserts trace event attributes emitted by the in-process agent process manager; this port has no agent runtime process manager and the contract excludes trace sinks
-agentProcessManager.builtin.e2e	daemon	pending	-	auto-seed
+agentProcessManager.builtin.e2e	daemon	locked	ef39171	non-executable black-box: an end-to-end run of AgentProcessManager with the built-in pi driver, a local http server and daemon fetch mocks; this port has no agent runtime process manager or built-in runtime driver
 agentProcessManager.cindy	daemon	locked	61895fe	non-executable black-box: an integration run of the in-process agent process manager with the unported cindy runtime
 agentProcessManager.claude	daemon	pending	-	auto-seed
 agentProcessManager.codex	daemon	pending	-	auto-seed
 agentProcessManager.feedbackTranscriptHonesty	daemon	pending	-	auto-seed
-agentProcessManager.grok	daemon	pending	-	auto-seed
+agentProcessManager.grok	daemon	locked	ef39171	non-executable black-box: an integration run of AgentProcessManager with the Grok driver, fake child processes and MemoryTraceSink assertions; this port has no agent runtime process manager, Grok driver or trace sink
 agentProcessManager.residency	daemon	pending	-	auto-seed
 agentProcessManager.serverWake	daemon	pending	-	auto-seed
 agentProcessManager.sessionTranscript	daemon	pending	-	auto-seed
