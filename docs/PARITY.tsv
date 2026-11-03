@@ -296,7 +296,7 @@ drivers/kimi-sdk	daemon	pending	-	auto-seed
 drivers/kimi	daemon	pending	-	auto-seed
 drivers/kimiRequestDiagnostics	daemon	pending	-	auto-seed
 drivers/launchCurrent	daemon	pending	-	auto-seed
-drivers/managedMcpTools	daemon	locked	SLICE	managed MCP Pi tools: absent without a runner credential, catalog snapshot frozen with config/assignment versions and proxied calls carrying the version fence and bearer auth, non-fatal bounded snapshot warnings, bounded remote error text with the truncation marker and tool-named empty fallback, transport and uncoded 5xx failures reading as outcome unknown while Raft-coded answers pass through, and newline-flattened remote names/descriptions that cannot forge prompt lines
+drivers/managedMcpTools	daemon	locked	0e01b86	managed MCP Pi tools: absent without a runner credential, catalog snapshot frozen with config/assignment versions and proxied calls carrying the version fence and bearer auth, non-fatal bounded snapshot warnings, bounded remote error text with the truncation marker and tool-named empty fallback, transport and uncoded 5xx failures reading as outcome unknown while Raft-coded answers pass through, and newline-flattened remote names/descriptions that cannot forge prompt lines
 drivers/nodeHostLaunch	daemon	pending	-	auto-seed
 drivers/opencode.live	daemon	locked	61895fe	non-executable black-box: a live integration run against the real opencode CLI, which this port does not ship or drive
 drivers/opencode.modelsAsync	daemon	pending	-	auto-seed
