@@ -239,7 +239,7 @@ agentMigrationResumableBundle	daemon	pending	-	auto-seed
 agentMigrationWorkspaceArchive.exdev	daemon	pending	-	auto-seed
 agentMigrationWorkspaceArchive	daemon	pending	-	auto-seed
 agentNoProcessResidency	daemon	pending	-	auto-seed
-agentProcessManager.appInboxTrace	daemon	pending	-	auto-seed
+agentProcessManager.appInboxTrace	daemon	locked	06b59b1	non-executable black-box: asserts trace event attributes emitted by the in-process agent process manager; this port has no agent runtime process manager and the contract excludes trace sinks
 agentProcessManager.builtin.e2e	daemon	pending	-	auto-seed
 agentProcessManager.cindy	daemon	pending	-	auto-seed
 agentProcessManager.claude	daemon	pending	-	auto-seed
@@ -312,14 +312,14 @@ drivers/piToolExecutionRuntimeSession	daemon	pending	-	auto-seed
 drivers/probe.async	daemon	pending	-	auto-seed
 drivers/probe	daemon	pending	-	auto-seed
 drivers/probeChild	daemon	pending	-	auto-seed
-drivers/raftCliGuideFreshness	daemon	pending	-	auto-seed
+drivers/raftCliGuideFreshness	daemon	locked	06b59b1	non-executable black-box: byte-equality between the generated manual/agent-knowledge/raft-cli-overview.md artifact and its TypeScript builder; this port has no CLI manual or generator
 drivers/raftCliGuideInstalledApps	daemon	pending	-	auto-seed
 drivers/raftCliGuideOfficialAppsHint	daemon	pending	-	auto-seed
-drivers/raftCliGuideServerInfoScope	daemon	pending	-	auto-seed
+drivers/raftCliGuideServerInfoScope	daemon	locked	06b59b1	non-executable black-box: CLI/manual text guards for `raft server info` wording across generated and hand-written docs; this port has no CLI surface
 drivers/runtimeChild	daemon	pending	-	auto-seed
 drivers/runtimeContract	daemon	pending	-	auto-seed
 drivers/runtimeSession	daemon	pending	-	auto-seed
-drivers/spawnErrorListenerOrder	daemon	pending	-	auto-seed
+drivers/spawnErrorListenerOrder	daemon	locked	06b59b1	non-executable black-box: Node child_process scheduling counterexamples proving a spawn error can arrive before RuntimeSession attaches its listener; Node-specific scheduling with no daemon-frame surface in this port
 drivers/systemPrompt.snapshot	daemon	pending	-	auto-seed
 drivers/systemPrompt	daemon	pending	-	auto-seed
 drivers/toolEnvContract	daemon	pending	-	auto-seed
@@ -337,11 +337,11 @@ legacySupervisor	daemon	pending	-	auto-seed
 logger	daemon	locked	c59d3df	ported structured log stream: subscribers receive {level,line,message} with the UTC line format and unsubscribe stops delivery; the single upstream case asserted
 machineLock	daemon	locked	f0218d9	machine lock group: one daemon per machine key (machine-<sha256 prefix16>, daemon.lock + owner.json with pid/token/hostname/startedAt/serverUrl/fingerprint/schemaVersion 2/kind), conflict errors naming the owning pid, pid-0 stale reclaim, recent incomplete lock dirs kept, SLOCK_HOME/RAFT_HOME default machines root, clean release rewriting pid to 0 to preserve the machine identity, and managed Computer provenance (kind/serverId/serverMachineId) preserved across release
 managedMcpRuntimeProxy	daemon	pending	-	auto-seed
-oarLoader	daemon	pending	-	auto-seed
+oarLoader	daemon	locked	06b59b1	non-executable black-box: both cases are TypeScript source-guard scans over @botiverse/oar imports (no root-entry import, runtime entries only through oarLoader); this port has no TS sources and no OAR runtime loader to scan
 observedFailureSummary	daemon	pending	-	auto-seed
 osVariant	daemon	locked	52887c4	ported classifier: microsoft-standard/wsl2 kernels classify as wsl2, Windows-build kernels as wsl1, other Linux kernels undefined; non-linux platforms and unreadable kernel releases stay undefined
 passiveAxGate	daemon	pending	-	auto-seed
-printSeam	daemon	pending	-	auto-seed
+printSeam	daemon	locked	06b59b1	non-executable black-box: one case composes the runtime prompt surfaces (agentRuntimeInput formatters) of the unported agent runtime CLI, the other pins the TypeScript call-site count of adoptAxSurfaceText in the daemon source; neither has an HTTP/socket/daemon-frame surface in this port
 probeGate	daemon	locked	a05ccb8	probe gate: same-key concurrent probes join one run and share its result (no second process), a settled run starts fresh, different keys respect the maxConcurrent FIFO queue (default unlimited), a failing run rejects every joined caller and frees the key and slot for reuse, and a non-positive limit is rejected at construction
 processEnvPatch	daemon	locked	52887c4	ported runtime half: withProcessEnvPatch overlays the real environment across awaits, restores replaced/unset keys and hides removeFirst keys while ambient() returns the unpatched copy, with serialized overlays; excluded: three TS source-guard cases that scan node:child_process call sites and drivers for ambientProcessEnv usage (no TypeScript source exists in this port; the runtime semantics are asserted instead)
 processMemory	daemon	pending	-	auto-seed
@@ -387,7 +387,7 @@ skillFrontmatter	daemon	pending	-	auto-seed
 spawnFailureClassification	daemon	pending	-	auto-seed
 standingPromptRefresh	daemon	pending	-	auto-seed
 startupMemoryBlock	daemon	pending	-	auto-seed
-task695ContinueOnErrorProbe	daemon	pending	-	auto-seed
+task695ContinueOnErrorProbe	daemon	locked	06b59b1	non-executable black-box: a runtime-CLI probe that spawns the unported agent runtime and inspects its continue-on-error output
 testing/drydock	daemon	pending	-	auto-seed
 testing/networkGuard	daemon	pending	-	auto-seed
 toolCallOutcome	daemon	locked	3fd1584	tool outcome bookkeeping: daemon-measured start/end duration by call id, finished calls forgotten, runtime-supplied duration winning over the measurement (negative dropped), an end with nothing reported yielding no outcome while an unknown id still reports its fields, and the 256-entry open-call bound dropping the oldest first
