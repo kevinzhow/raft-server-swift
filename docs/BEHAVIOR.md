@@ -1185,3 +1185,8 @@ RFC 074 personal assistant：
 ### daemon windowsPowerShellEnv
 
 - Windows PowerShell 子进程环境会删除所有大小写变体的 `PSModulePath`（PowerShell 7 导出的模块路径会破坏 Windows PowerShell 5.1 启动），让子进程按自己的 edition 初始化；传入 env 不被修改，未传入时从继承环境派生副本。
+
+### daemon feedbackTranscriptWindow
+
+- `assess` 以 reportGeneratedAt 与 tolerance（默认 15 分钟）计算 report window，从 transcript（JSON 或逐行 JSONL，坏行单独跳过）里深度≤12、节点≤100k 地扫描 timestamp/created_at/updated_at/started_at/ended_at 等键，只抽取时间戳、绝不导出内容。
+- coverage：report 时间不可解析 → `report_time_invalid`；无时间戳 → `timestamps_unavailable`；最后事件早于 window 起点 → `outside_report_window`；否则 `covered`，并给出 first/last 事件的 ISO 毫秒时间。
