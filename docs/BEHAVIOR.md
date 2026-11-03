@@ -1250,3 +1250,7 @@ RFC 074 personal assistant：
 - Pi 的 managed MCP 工具：无 runner credential 时为空；否则以 Bearer 拉取 `/mcp/tools` 冻结目录（runtimeName/serverName/toolName/configVersion/assignmentVersion），每个工具经 `/mcp/call` 代理，body 带 `expectedConfigVersion`/`expectedAssignmentVersion` 作为 fence。
 - 快照失败非致命：返回空列表 + 一条 <300 字符的 warning（含 code 与 status）；调用期传输失败统一为 outcome-unknown 文案（不提示重试）；5xx 无 Raft code 同样 unknown，带 code+error 则透传 Raft 文案。
 - 远程错误文本 >4000 字符截断并加 `…[truncated]`，空错误命名为 `<runtimeName> failed`；serverName/toolName/description 中的所有换行分隔符压平为单空格，防止伪造 prompt 行。
+
+### daemon agentCredentialProxy.routeFamily
+
+- 代理遥测用的内容无关 route family 分类：internal agent-api pathname → 封闭 family 标签，顺序敏感（attachments/comments 必须先于通用 attachments；threads 与 threads/unfollow 分开；tasks/claim、tasks/update 先于 tasks；inbox/send/events/tasks/attachments/messages/servers/history/search/channel-members/knowledge/profile/integrations/upload/resolve-channel/prepare-action/reminders/channels join|leave 各有 family），未知路径返回 `unknown`。

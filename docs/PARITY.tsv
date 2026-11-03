@@ -228,7 +228,7 @@ traceMetadata	socket	pending	-	auto-seed
 activity/activitySink	daemon	pending	-	auto-seed
 activity/agentActivityProducer	daemon	pending	-	auto-seed
 agentAppInbox	daemon	pending	-	auto-seed
-agentCredentialProxy.routeFamily	daemon	pending	-	auto-seed
+agentCredentialProxy.routeFamily	daemon	locked	SLICE	content-free proxy route family classifier: ordered closed mapping from internal agent-api pathnames to bounded family labels (attachment comments above generic attachments, thread list separate from unfollow, claim/update above tasks, events aliases for history/search/receive-ack, plus inbox/send/tasks/attachments/messages/server/profile/integrations/upload/resolve-channel/action/reminders/channels join|leave) with unknown as the fallback
 agentCredentialProxy	daemon	pending	-	auto-seed
 agentInboxProjection	daemon	pending	-	auto-seed
 agentInboxStateMachine	daemon	pending	-	auto-seed
