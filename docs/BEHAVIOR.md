@@ -1282,3 +1282,4 @@ RFC 074 personal assistant：
 
 - `DELETE /api/channels/:id` 后，`GET /api/messages/channel/:deletedId` 返回 404；线程深链在其 parent 被删除后同样 404（parent 仍存在且 `deletedAt` 非空时按删除处理），joint 投影线程保持原有成员可见性回退。
 - 列表/同步/搜索的删除过滤保持原行为；本切片只补历史深链的可见性判断（`visible` 闭包先检查 `deletedAt`）。
+- 已核对：删除频道的搜索命中被排除（结果不包含该 channelId），`GET /api/attachments/:id/url` 在所属频道删除后返回 404（`visibleAttachment` 的 `deletedAt` 检查），删除前仍可正常取 URL。
