@@ -768,3 +768,11 @@ RFC 074 personal assistant：
 - `POST|DELETE /internal/agent/:agentId/channels/:channelId/members` 与 v2 共用：按 handle（可带 `@`）加/移 human 或按名字加/移 agent；加入 human 时写 system 消息 `@<name> was added to this channel.`，该行对执行 agent born-read、对被加入 human 保持未读；移除响应带 `wasMember` 与 attention 说明。
 - `PATCH /internal/agent/:agentId/server` 与 v2 共用：仅 owner/admin 可改服务器名，响应 `{ok,id,name}`。
 - 明确排除：trace span/event 断言、socket `channel:updated`/`channel:members-updated` 广播、inbox notification fact 的 unreadEligible DB 行、orchestrator 回滚/重试。
+
+### internalAgentApi.auth：agent reaction 组
+
+- `POST|DELETE /internal/agent-api/messages/:messageId/reactions`（legacy machine-key 路由同实现）：消息 id 必须是完整 UUID 或 8 位十六进制 short id，否则 400 `Message id must be a full UUID or 8-character short id`。
+- short id 只在调用 agent **可见**的消息里解析：private 非成员消息、以及不可见频道的消息不参与匹配（存在性 cloak → 404 `Message not found`）；多个可见匹配 → 400 `Message short id is ambiguous`（`errorCode:"AMBIGUOUS_ID"`）。
+- 可见性：公开频道消息对所有本 Server agent 可见；private/joint 需频道成员；thread 消息在 agent 是父频道成员时可见（不必加入 thread）。
+- 响应 `{reactions:[{emoji,count,reactorIds,reactorNames}]}`；重复添加同一 emoji 幂等（count 仍为 1），删除后该 emoji 桶消失；reaction 携带 `reactorType:"agent"` 语义。
+- 明确排除：joint 频道 over-limit grace 的 403（需要 joint 计数 schema 与免费服务器额度模型）、reaction actors 游标分页（不在本组断言内）。

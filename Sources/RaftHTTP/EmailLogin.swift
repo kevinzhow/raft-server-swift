@@ -7329,13 +7329,41 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         } else {
             agentServerId = nil
         }
-        guard let agentServerId,
-              let message = humanMessageRows.first(where: { $0.id.caseInsensitiveCompare(messageId) == .orderedSame }),
-              postableChannels[message.channelId]?.serverId == agentServerId,
-              channelAgentMembers[message.channelId]?.contains(agentId) == true
-        else {
+        guard let agentServerId else {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Message not found\"}")
+        }
+        // Message ids are a full UUID or an 8-character short id; anything else
+        // is a caller error, not an invisible message.
+        let isUUID = ServerScope.isUUID(messageId)
+        let isShortId = messageId.count == 8 && messageId.allSatisfy { $0.isHexDigit }
+        guard isUUID || isShortId else {
+            lock.unlock()
+            return Self.json(400, "{\"error\":\"Message id must be a full UUID or 8-character short id\"}")
+        }
+        func visibleToAgent(_ message: StoredHumanMessage) -> Bool {
+            guard let channel = postableChannels[message.channelId], channel.serverId == agentServerId else { return false }
+            if channel.kind == "channel" { return true }
+            if channel.kind == "thread",
+               let parentId = channel.parentChannelId,
+               let parent = postableChannels[parentId],
+               parent.serverId == agentServerId {
+                if parent.kind == "channel" { return true }
+                if parent.memberIds.contains(agentId) || channelAgentMembers[parentId]?.contains(agentId) == true { return true }
+            }
+            return channel.memberIds.contains(agentId) || channelAgentMembers[message.channelId]?.contains(agentId) == true
+        }
+        let candidates = humanMessageRows.filter { message in
+            if isUUID { return message.id.caseInsensitiveCompare(messageId) == .orderedSame }
+            return message.id.lowercased().hasPrefix(messageId.lowercased())
+        }.filter { visibleToAgent($0) }
+        guard let message = candidates.first else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Message not found\"}")
+        }
+        guard candidates.count == 1 else {
+            lock.unlock()
+            return Self.json(400, "{\"error\":\"Message short id is ambiguous\",\"errorCode\":\"AMBIGUOUS_ID\"}")
         }
         let bodyJSON = writeAgentReactionLocked(message: message, agentId: agentId, emoji: emoji, serverId: agentServerId, remove: remove)
         lock.unlock()
