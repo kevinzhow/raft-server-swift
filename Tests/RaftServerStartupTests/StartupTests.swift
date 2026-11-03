@@ -11,7 +11,7 @@ import Testing
 
 private let e2eEnabled = ProcessInfo.processInfo.environment["RAFT_E2E"] == "1"
 
-@Test(.enabled(if: e2eEnabled))
+@Test(.enabled(if: e2eEnabled), .serialized)
 func theServerProcessServesHealthAndAcceptsADaemon() async throws {
     let root = repositoryRoot()
     let serverBinary = ProcessInfo.processInfo.environment["RAFT_SERVER_BIN"]
@@ -179,7 +179,7 @@ func theServerProcessServesHealthAndAcceptsADaemon() async throws {
     #expect(online.contains("\"statusVersion\":"))
 }
 
-@Test(.enabled(if: e2eEnabled))
+@Test(.enabled(if: e2eEnabled), .serialized)
 func twoRaftServerProcessesStartAndStayIndependent() async throws {
     let root = repositoryRoot()
     let serverBinary = ProcessInfo.processInfo.environment["RAFT_SERVER_BIN"]
