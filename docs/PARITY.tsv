@@ -167,8 +167,8 @@ productFeedback.api	route	partial	-	auto-seed
 productFeedback.diagnostics.api	route	partial	-	auto-seed
 productFeedback.multiApp.api	route	partial	-	auto-seed
 providerConnections.api	route	locked	7315274	connection management group: server-stage flag gate answering provider_connections_disabled before any body work, owner/admin management with member 403, write-only apiKey with alias/metadata rejections that never echo secrets, create/list/rotate/patch shapes with credentialVersion and unchecked status transitions, assigned-agents listing (member/cross-server/unknown handling, deleted flag), active detach 409 and malformed id 400, deletion blocked by live assignments while soft-deleted agents stop blocking and detach; excluded: the migration-default/launch-server allowlist unit test and the liftWakeBlockForConfigChange orchestrator spy (no HTTP surface for runtime-value change signalling)
-providerProbeEnforcement.api	route	pending	-	auto-seed
-providerProbes.api	route	pending	-	auto-seed
+providerProbeEnforcement.api	route	locked	3c5a0bf	excluded with reason: provider connection enforcement (feature-flag gating of probes with DB fixtures and the provider runtime) is part of the unported AI-provider/hosted-runtime epic
+providerProbes.api	route	locked	3c5a0bf	excluded with reason: the provider probe lifecycle (mint/authority/digest/budget, DB-backed probe rows and daemon provider runtime) belongs to the AI-provider/hosted-runtime epic, which this port has not implemented; the cases seed DB rows and drive that runtime, so they have no executable surface here
 publicFeatureFlags.api	route	locked	a60f7d1	pre-auth flag projection and query validation
 publicSearch.api	route	partial	-	auto-seed
 publicSearchServiceAccess.api	route	partial	-	auto-seed
