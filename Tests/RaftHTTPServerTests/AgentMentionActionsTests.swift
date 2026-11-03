@@ -177,6 +177,51 @@ private func mentionActionsRequest(
             #expect(f.accounts.mentionNotifiedActionForTesting(id: first) == "notify_only")
             #expect(f.accounts.mentionNotifiedActionForTesting(id: second) == "notify_only")
             #expect(!f.accounts.channelAgentIds(channelId: f.channelId).contains(f.targetAgentId), "notify never adds membership")
+
+            // A later add on the same rows stays refused and keeps the
+            // notify-only state untouched.
+            let add = try await mentionActionsRequest(
+                client, f, method: .post, path: "/internal/agent-api/mention-actions/execute",
+                body: "{\"action\":\"add\",\"resolutionIds\":[\"\(first)\"]}"
+            )
+            let addResults = (add.body["results"] as? [[String: Any]]) ?? []
+            #expect(addResults.first?["reason"] as? String == "add_requires_human_member_authority")
+            #expect(f.accounts.mentionNotifiedActionForTesting(id: first) == "notify_only")
+            #expect(f.accounts.mentionNotifiedActionForTesting(id: second) == "notify_only")
+        }
+    }
+}
+
+@Test func mentionActionsNotifyCloaksPrivateThreadContentFromNonMembers() async throws {
+    let f = makeMentionActionFixture()
+    let privateChannel = f.accounts.oauth.createChannel(
+        serverId: f.serverId, name: "mention-actions-private", creatorUserId: f.ownerId, type: "private"
+    )
+    f.accounts.addPostableChannel(serverId: f.serverId, channelId: privateChannel, memberId: f.ownerId, kind: "private", name: "mention-actions-private")
+    f.accounts.oauth.addChannelHuman(channelId: privateChannel, userId: f.ownerId)
+    f.accounts.oauth.addChannelAgent(channelId: privateChannel, agentId: f.agentId)
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let parentMessageId = try await mentionHostMessage(client, f, content: "private thread parent", channelId: privateChannel)
+            let threadId = f.accounts.oauth.createThreadChannel(parentChannelId: privateChannel, parentMessageId: parentMessageId)
+            f.accounts.addPostableChannel(
+                serverId: f.serverId, channelId: threadId, memberId: f.ownerId, kind: "thread",
+                parentChannelId: privateChannel, parentMessageId: parentMessageId, name: "thread"
+            )
+            f.accounts.oauth.addChannelAgent(channelId: threadId, agentId: f.agentId)
+            let id = f.accounts.addPendingAgentMentionForTesting(
+                messageId: parentMessageId, channelId: threadId, senderAgentId: f.agentId,
+                targetType: "agent", targetId: f.targetAgentId, handle: "MentionTarget"
+            )
+            let res = try await mentionActionsRequest(
+                client, f, method: .post, path: "/internal/agent-api/mention-actions/execute",
+                body: "{\"action\":\"notify\",\"resolutionIds\":[\"\(id)\"]}"
+            )
+            let results = (res.body["results"] as? [[String: Any]]) ?? []
+            #expect(results.first?["status"] as? String == "no_permission")
+            #expect(results.first?["reason"] as? String == "target_lacks_read_access", "private-thread notify must not hand content to a non-member")
+            #expect(f.accounts.mentionNotifiedActionForTesting(id: id) == nil, "a cloaked notify writes nothing")
         }
     }
 }

@@ -1032,4 +1032,6 @@ RFC 074 personal assistant：
 - `notify`：目标无读权限 → `no_permission/target_lacks_read_access`；成功时写 notified 字段（byType=agent、byId=绑定 agent、action=notify_only），并对同一 message+target 的所有未决行一起标记、返回 `dedupedResolutionIds`；不添加任何成员关系。
 - `add`：agent 发送者永远得到 `no_permission/add_requires_human_member_authority` 且不写任何状态；若发送者已不在频道参与者中，先返回 `no_permission/sender_lacks_channel_access`。
 - 未知 id、频道不属于该 agent 的 Server、宿主消息已删除 → `not_found`；已删除消息也会从 pending 中消失（级联）。
-- 明确排除：orchestrator 投递 spy（notify 的 queued/handoff 失败语义）、DB 行断言、notify 对私有 thread 内容的 cloak 断言（待补）。
+- notify 对私有 thread 的 cloak：目标非该私有 thread 成员 → `no_permission/target_lacks_read_access` 且不写 notified 字段（不把私有 thread 内容递给非成员）。
+- 已 notify-only 的行再次 `add`：仍返回 `no_permission/add_requires_human_member_authority`，行保持 `notify_only` 不变。
+- 明确排除：orchestrator 投递 spy（notify 的 queued/drop/handoff 重试语义属于进程内投递动作）、DB 行断言。
