@@ -238,7 +238,7 @@ agentMigrationObjectStoreBundle	daemon	pending	-	auto-seed
 agentMigrationResumableBundle	daemon	pending	-	auto-seed
 agentMigrationWorkspaceArchive.exdev	daemon	pending	-	auto-seed
 agentMigrationWorkspaceArchive	daemon	pending	-	auto-seed
-agentNoProcessResidency	daemon	locked	SLICE	no-process residency invariants (cooldown requires restart config, terminal excludes idle restart and running, pending delivery requires queued/starting/terminal/cooldown-with-idle, fingerprint fences need running/idle/terminal evidence, queued and starting disjoint) with the allowed start-pending snapshot, plus the launch_residency_transition enter/close pairing rows (stable state instance, monotonic transition_seq, advanced close on state switch, duplicate enter suppressed, missing-launch-id negative evidence)
+agentNoProcessResidency	daemon	locked	010e9a9	no-process residency invariants (cooldown requires restart config, terminal excludes idle restart and running, pending delivery requires queued/starting/terminal/cooldown-with-idle, fingerprint fences need running/idle/terminal evidence, queued and starting disjoint) with the allowed start-pending snapshot, plus the launch_residency_transition enter/close pairing rows (stable state instance, monotonic transition_seq, advanced close on state switch, duplicate enter suppressed, missing-launch-id negative evidence)
 agentProcessManager.appInboxTrace	daemon	locked	06b59b1	non-executable black-box: asserts trace event attributes emitted by the in-process agent process manager; this port has no agent runtime process manager and the contract excludes trace sinks
 agentProcessManager.builtin.e2e	daemon	pending	-	auto-seed
 agentProcessManager.cindy	daemon	pending	-	auto-seed
