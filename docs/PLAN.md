@@ -191,11 +191,10 @@
 
 ### 下一片设计（2026-11-04 源码调研结论）
 
-**`internalAgentApi.mentionActions`（10 条，agent 侧）**
+**`internalAgentApi.mentionActions`（10 条，agent 侧）— 已完成主体（b25fadc）**
 
-- 端点只有两个：`GET /internal/agent-api/mention-actions/pending` 与 `POST /internal/agent-api/mention-actions/execute`；共享上游的 `executeMentionActionId` 语义。
-- 端口已有 `storedMentions`（含 notified* 字段）与用户侧 `executeMentionActions`；agent 侧需要：给 `StoredMention` 增加 `createdAt`、pending 过滤（sender=agent、未通知、`notifiableAtSend=false`、7 天窗口、消息/频道仍可见）、payload `{resolutionId,messageId,channelId,channelName,availableActions:["notify"]}`、limit+1 的 has_more、notify 写入 + `dedupedResolutionIds`、add 对 agent 发送者返回 `add_requires_human_member_authority`、发送者失去频道访问时 `sender_lacks_channel_access`、消息删除级联。
-- 明确排除：orchestrator 投递 spy（`notify` 的 queued/handoff 失败）与 DB 行断言；用 HTTP 状态与字段断言替代。
+- 已实现 pending/execute 两个端点、createdAt/7 天窗口、limit+1、notify 写入与去重、add 的 agent 拒绝与发送者参与度复核、deleted-message 级联、typed per-id。
+- 剩余两条：notify 对私有 thread 内容的 cloak 断言（可移植，补测试即可），以及 notify handoff/drop 重试语义（orchestrator spy，按契约排除）。
 
 **`internal.search.api`（8 条）**
 
