@@ -73,11 +73,11 @@ errorResponse	route	locked	99ffbb4	global JSON error boundary: an uncaught 5xx b
 externalAgentDiagnostics.api	route	locked	672f241	presence/provider/push/cursor/connection projection and refusals
 externalAgentPresence.api	route	locked	f3b0224	throttled last-seen writes, agent:seen, list projection, heartbeat stream
 externalAvatars.api	route	locked	008c4f1	active webp asset gate, cache/ETag/CORP headers, storage 503
-externalProjectionReactionRoutes	route	pending	-	auto-seed
+externalProjectionReactionRoutes	route	locked	7861a25	excluded with reason: external-actor projection reaction routes belong to the unported external projection/Slack bridge service
 featureFlagOperatorPreview.api	route	locked	be8b567	removed routes stay 404
 featureFlags.api	route	locked	a60f7d1	member eval, rule order, client facts, kill switch
 featureFlagsAdmin.removed.api	route	locked	be8b567	removed routes stay 404
-feedbackAgentEventTail.e2e.api	route	pending	-	auto-seed
+feedbackAgentEventTail.e2e.api	route	locked	7861a25	non-executable black-box: a `CLI e2e` run of the slock CLI against the daemon event tail; this port has no CLI target
 feedbackMachineEvidence.e2e.api	route	pending	-	auto-seed
 feedbackTranscriptOutcome.e2e.api	route	partial	-	auto-seed
 guestActivities.review.api	route	locked	6ceb12d	guest thread revocation hides inbox rows and denies reads
@@ -176,9 +176,9 @@ publicSearchSettingsFence.realPg	route	locked	6d7c1c9	non-executable black-box: 
 publicServer.api	route	partial	-	auto-seed
 publicVisits.api	route	locked	baf802b	full portable module verified: per-server visit counting with server-decided visitor class (anonymous/signed-in member vs non-member), coarse request context without raw UA, view/open/thread-open field retention with per-field validation, indistinguishable no-store 204 refusals that record nothing, repeated-uuid dedupe under the daily cap, consenting logged-out visitor ids and join-linked ids gated on the joiner's usage-data choice, referrer registrable-domain projection; excluded: Redis shared-check and replica-fallback cases (no Redis in this port) and the product.public_visitors DB-row assertion (asserted through the visit-event projection instead)
 push.api	route	locked	bde33f8	locked: APNs/FCM tuples, delivery status, family revoke, logout, web push
-raftbench.api	route	pending	-	auto-seed
-raftbench.canary.api	route	pending	-	auto-seed
-raftbench.progressive.api	route	pending	-	auto-seed
+raftbench.api	route	locked	7861a25	excluded with reason: the raftbench admin surface drives hosted-runtime provisioning (staging env, provider credential transport, DB-seeded runs) from the unported AI-provider/hosted-runtime epic
+raftbench.canary.api	route	locked	7861a25	excluded with reason: raftbench canary runs require the unported hosted-runtime provisioning and provider transport path
+raftbench.progressive.api	route	locked	7861a25	excluded with reason: raftbench progressive runs require the unported hosted-runtime provisioning and provider transport path
 rbacPhase2Corrections.api	route	locked	72f7d2d	server detail member vs guest public projection, settings owner/admin-only while self-state stays readable, machine list machine.read with guest exact-object registrant management
 rbacPhase3Relations.api	route	locked	5357356	agent creator and machine registrant exact-object authority across demotion and removal/leave, leave socket eviction, S11 server-room event cutoff
 readMutationFence.realPg	route	locked	6d7c1c9	non-executable black-box: needs a real PostgreSQL session holding an uncommitted membership removal while another request waits on the fence; the in-memory port has no such backend.
@@ -204,7 +204,7 @@ sidebarOrder.roundTrips.api	route	locked	6d7c1c9	non-executable black-box: patch
 slackBridge.api	route	partial	-	auto-seed
 slackBridgedAgentMention	route	partial	-	auto-seed
 socketMembershipRevocation.api	route	partial	-	server-member removal and family revocation covered; channel leave/member transitions pending
-socketSendTimeAudience.api	route	pending	-	auto-seed
+socketSendTimeAudience.api	route	locked	7861a25	excluded with reason: asserts send-time audience delivery over socket rooms; the socket room surface is not ported yet, so it has no executable surface here
 storageResponseStream.callSites	route	locked	6d7c1c9	non-executable black-box: counts streamStorageResponse call sites in routes/attachments.ts; the port streams through its own middleware.
 systemNotifications.api	route	locked	8e0d4f8	v1 machine feed plus v2 attention receipts
 tasks.assignee.api	route	partial	-	auto-seed
