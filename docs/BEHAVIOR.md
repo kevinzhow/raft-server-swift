@@ -1035,3 +1035,10 @@ RFC 074 personal assistant：
 - notify 对私有 thread 的 cloak：目标非该私有 thread 成员 → `no_permission/target_lacks_read_access` 且不写 notified 字段（不把私有 thread 内容递给非成员）。
 - 已 notify-only 的行再次 `add`：仍返回 `no_permission/add_requires_human_member_authority`，行保持 `notify_only` 不变。
 - 明确排除：orchestrator 投递 spy（notify 的 queued/drop/handoff 重试语义属于进程内投递动作）、DB 行断言。
+
+### attachmentPreviewBridge.api：HTML 预览注入桥组
+
+- `GET /api/attachments/:id/html-preview`（previewToken）：原始文档未改写地流式输出，`AttachmentPreviewBridge.script`（与上游 `services/attachmentPreviewBridge.ts` 逐字一致）追加在其后；若文档自带 CSP meta 标签，桥插在该标签之前（meta CSP 只约束之后解析的内容）。
+- 该响应不带 `Content-Length`（存储大小会截断追加的桥），CSP 头保留 `frame-ancestors 'self'` 并新增 `connect-src 'none'`、`form-action 'none'`、`object-src 'none'`。
+- 桥脚本在缺少 `acBridgeNonce` 查询参数时完全惰性，因此普通预览行为不变；脚本只出现在预览响应里，下载/存储对象保持逐字节一致。
+- 明确排除：上游对存储流式传输中断（真实对象存储 socket 生命周期）的处理，依赖未移植的存储传输层。

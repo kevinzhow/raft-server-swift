@@ -2342,12 +2342,16 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.get("api", "attachments", ":id", "html-preview") { request -> Response in
-        routeResponse(services.emailAccounts.attachmentHTMLPreview(
+        let reply = services.emailAccounts.attachmentHTMLPreview(
             attachmentId: request.parameters.get("id") ?? "",
             serverId: desktopQuery(request.url.query, "serverId") ?? request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
             previewToken: desktopQuery(request.url.query, "previewToken"),
             bearerQuery: desktopQuery(request.url.query, "token")
-        ))
+        )
+        // The preview streams the stored document plus the appended bridge, so
+        // it must not carry the stored Content-Length.
+        if reply.status == 200 { return vaporStreamingResponse(reply) }
+        return routeResponse(reply)
     }
     app.get("api", "attachments", ":id", "html-preview-url") { request -> Response in
         if desktopQuery(request.url.query, "previewToken") != nil {
@@ -4063,6 +4067,22 @@ private func vaporResponse(_ reply: HTTPReply) -> Response {
     // empty body and the length of the GET body, so put that length back.
     if let length = reply.value(for: "Content-Length") {
         response.headers[.contentLength] = length
+    }
+    return response
+}
+
+/// A 200 HTML preview: streamed so the response carries no stored Content-Length.
+private func vaporStreamingResponse(_ reply: HTTPReply) -> Response {
+    var headers = HTTPFields()
+    for (name, value) in reply.headers {
+        guard let field = HTTPField.Name(name) else { continue }
+        if field == .contentLength { continue }
+        headers[field] = value
+    }
+    var response = Response(status: httpStatus(reply.status), headers: headers)
+    let body = reply.body
+    response.body = Response.Body { writer in
+        try await writer.write(body)
     }
     return response
 }

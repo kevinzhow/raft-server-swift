@@ -9801,17 +9801,40 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
-        guard let body = attachmentPreviewBody?(attachmentId) else {
+        guard let original = attachmentPreviewBody?(attachmentId) else {
             return Self.json(404, "{\"error\":\"Attachment not found\"}")
+        }
+        // The stored document streams unmodified with the bridge appended, and
+        // no Content-Length because the stored size would truncate it. An
+        // attachment-supplied CSP meta tag keeps governing the document: the
+        // bridge goes immediately before it, since meta CSP only applies to the
+        // content parsed after it.
+        var body = original
+        let bridge = AttachmentPreviewBridge.script
+        if let metaRange = Self.cspMetaTagRange(in: original) {
+            body = String(original[..<metaRange.lowerBound]) + bridge + String(original[metaRange.lowerBound...])
+        } else {
+            body += bridge
         }
         let origin = ProcessInfo.processInfo.environment["APP_URL"] ?? "http://127.0.0.1:4173"
         var reply = HTTPReply(status: 200, headers: [
             "Content-Type": "text/html; charset=utf-8",
-            "Content-Security-Policy": "frame-ancestors 'self' \(origin)",
+            "Content-Security-Policy": "frame-ancestors 'self' \(origin); connect-src 'none'; form-action 'none'; object-src 'none'",
             "Cache-Control": "private, no-store",
         ], body: body)
         reply.headers.removeValue(forKey: "X-Frame-Options")
+        reply.headers.removeValue(forKey: "Content-Length")
         return reply
+    }
+
+    /// Range of the attachment's own CSP meta tag, if it supplies one.
+    static func cspMetaTagRange(in html: String) -> Range<String.Index>? {
+        let lower = html.lowercased()
+        guard let metaStart = lower.range(of: "<meta"),
+              let csp = lower.range(of: "content-security-policy", range: metaStart.lowerBound..<lower.endIndex),
+              let tagEnd = lower.range(of: ">", range: csp.upperBound..<lower.endIndex)
+        else { return nil }
+        return metaStart.lowerBound..<tagEnd.upperBound
     }
 
     public func readAttachment(authorization: String?, serverId: String?, attachmentId: String, kind: String) -> HTTPReply {

@@ -61,7 +61,7 @@ import VaporTesting
             #expect(preview.headers[HTTPField.Name("X-Frame-Options")!] == nil)
             #expect((preview.headers[HTTPField.Name("Content-Security-Policy")!] ?? "").contains("frame-ancestors 'self'"))
             #expect(preview.headers[HTTPField.Name("Cache-Control")!] == "private, no-store")
-            #expect(preview.body.string == html)
+            #expect(try await collectedBody(preview) == html + AttachmentPreviewBridge.script)
 
             let crossAttachment = try await client.get(
                 URI(string: "/api/attachments/\(second)/html-preview?serverId=\(serverId)&previewToken=\(firstMint.previewToken)")
@@ -92,4 +92,19 @@ import VaporTesting
             #expect(leaked.status == .forbidden)
         }
     }
+}
+
+private func collectedBody(_ response: ClientResponse) async throws -> String {
+    final class Box: @unchecked Sendable {
+        var text = ""
+        let lock = NSLock()
+    }
+    let box = Box()
+    try await response.body.withStreamingBytes { span in
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(span.count)
+        for index in span.indices { bytes.append(span[index]) }
+        box.lock.withLock { box.text += String(decoding: bytes, as: UTF8.self) }
+    }
+    return box.lock.withLock { box.text }
 }
