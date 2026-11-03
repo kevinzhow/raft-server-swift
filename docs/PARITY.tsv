@@ -288,7 +288,7 @@ drivers/codexInstructionShape	daemon	pending	-	auto-seed
 drivers/copilot	daemon	pending	-	auto-seed
 drivers/cursor	daemon	pending	-	auto-seed
 drivers/gemini	daemon	pending	-	auto-seed
-drivers/geminiEventNormalizer	daemon	pending	-	auto-seed
+drivers/geminiEventNormalizer	daemon	locked	018e670	token usage normalizer: only the confirmed total_tokens stats field is extracted, present-0 is emitted while absent/empty/non-numeric/NaN fields are not, unknown keys and arrays are ignored, and stats presence gates the gemini_result_stats per-turn telemetry event with null session normalized
 drivers/grok.integration	daemon	pending	-	auto-seed
 drivers/grok	daemon	pending	-	auto-seed
 drivers/grokEventNormalizer	daemon	pending	-	auto-seed
@@ -306,7 +306,7 @@ drivers/pi.integration	daemon	pending	-	auto-seed
 drivers/pi	daemon	pending	-	auto-seed
 drivers/piCommandTool	daemon	pending	-	auto-seed
 drivers/piCompactionFit	daemon	pending	-	auto-seed
-drivers/piEventNormalizer	daemon	pending	-	auto-seed
+drivers/piEventNormalizer	daemon	locked	018e670	token usage normalizer: pi-ai Usage top-level token counts plus the nested cost breakdown map through the explicit allowlist, present-0 is emitted while absent/empty/NaN/non-numeric fields are not, unknown keys and array/non-object usage are ignored, and message.usage presence gates the pi_message_end_usage per-turn telemetry event with null session normalized
 drivers/piToolExecutionObservability	daemon	pending	-	auto-seed
 drivers/piToolExecutionRuntimeSession	daemon	pending	-	auto-seed
 drivers/probe.async	daemon	pending	-	auto-seed
