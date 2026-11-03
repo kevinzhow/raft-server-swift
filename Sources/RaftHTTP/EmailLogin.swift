@@ -3290,7 +3290,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// `GET /internal/agent/:agentId/search`. The machine key must belong to that agent. Public channels on its server are visible.
-    public func searchAgentMessages(agentId: String, query: String?, limit: String?, authorization: String?) -> HTTPReply {
+    /// `GET /internal/agent/:id/search`. Machine-keyed managed agents search
+    /// the Server's visible messages, with optional sender/member-handle and
+    /// absolute-instant date filters.
+    public func searchAgentMessages(
+        agentId: String,
+        query: String?,
+        limit: String?,
+        authorization: String?,
+        sender: String? = nil,
+        after: String? = nil,
+        before: String? = nil,
+        sort: String? = nil
+    ) -> HTTPReply {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
             return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
         }
@@ -3302,18 +3314,70 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             pageLimit = 20
         }
         let queryTokens = Self.searchTokens((query ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
-        guard !queryTokens.isEmpty else {
+        if queryTokens.isEmpty {
             return Self.json(200, "{\"results\":[],\"hasMore\":false}")
         }
+        func parseBoundary(_ raw: String?, label: String) -> (date: Date?, reply: HTTPReply?) {
+            guard let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return (nil, nil) }
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let hasZone = trimmed.hasSuffix("Z")
+                || trimmed.range(of: #"[+-]\d{2}:?\d{2}$"#, options: .regularExpression) != nil
+            guard hasZone else {
+                return (nil, Self.json(400, "{\"error\":\"\(label) filter is missing a timezone offset; add an explicit offset such as +08:00 (raft CLI adds it automatically)\",\"errorCode\":\"INVALID_DATE_FILTER\"}"))
+            }
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = formatter.date(from: trimmed) { return (date, nil) }
+            formatter.formatOptions = [.withInternetDateTime]
+            if let date = formatter.date(from: trimmed) { return (date, nil) }
+            return (nil, Self.json(400, "{\"error\":\"\(label) filter is not a valid ISO-8601 instant\",\"errorCode\":\"INVALID_DATE_FILTER\"}"))
+        }
+        let afterParsed = parseBoundary(after, label: "after")
+        if let reply = afterParsed.reply { return reply }
+        let beforeParsed = parseBoundary(before, label: "before")
+        if let reply = beforeParsed.reply { return reply }
+        let afterBoundary = afterParsed.date
+        let beforeBoundary = beforeParsed.date
         lock.lock()
         guard let machine = machineKeys[token], machine.agentId == agentId else {
             lock.unlock()
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
         let serverId = machine.serverId
+        var senderScope: String?
+        if let sender, !sender.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let handle = sender.hasPrefix("@") ? String(sender.dropFirst()) : sender
+            let directoryHidden = hideHumansFromMembers[serverId] == true
+                && oauth.agentRole(serverId: serverId, agentId: agentId) == "member"
+            let humans = directoryHidden ? [] : accounts.values.filter { account in
+                oauth.memberRole(serverId: serverId, userId: account.id) != nil
+                    && (account.name.caseInsensitiveCompare(handle) == .orderedSame
+                        || (account.displayName ?? "").caseInsensitiveCompare(handle) == .orderedSame)
+            }.map(\.id)
+            let agents = oauth.activeAgentIds(serverId: serverId).filter {
+                oauth.agentRuntimeInfo(id: $0)?.name.caseInsensitiveCompare(handle) == .orderedSame
+            }
+            let matches = humans + agents
+            if matches.isEmpty {
+                lock.unlock()
+                return Self.json(404, "{\"error\":\"Member not found\",\"errorCode\":\"member_not_found\"}")
+            }
+            if matches.count > 1 {
+                lock.unlock()
+                return Self.json(409, "{\"error\":\"Member handle is ambiguous\",\"errorCode\":\"ambiguous_member_ref\"}")
+            }
+            senderScope = matches[0]
+        }
         var strict: [(StoredHumanMessage, Int)] = []
         var relaxed: [(StoredHumanMessage, Int)] = []
-        for message in humanMessageRows where messageSearchVisibleLocked(messageChannelId: message.channelId, serverId: serverId, viewer: .agent(agentId)) {
+        for message in humanMessageRows where messageSearchVisibleLocked(
+            messageChannelId: message.channelId,
+            serverId: serverId,
+            viewer: .agent(agentId)
+        ) {
+            if let senderScope, message.senderId != senderScope { continue }
+            if let afterBoundary, message.createdAt <= afterBoundary { continue }
+            if let beforeBoundary, message.createdAt >= beforeBoundary { continue }
             let counts = Self.tokenCounts(message.content)
             if let score = Self.matchScore(counts, queryTokens, requireAll: true) {
                 strict.append((message, score))
@@ -3323,16 +3387,30 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let fallbackUsed = strict.isEmpty && !relaxed.isEmpty
         var hits = fallbackUsed ? relaxed : strict
-        hits.sort { lhs, rhs in
-            if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
-            return lhs.0.createdAt > rhs.0.createdAt
+        if sort == "recent" {
+            hits.sort { $0.0.createdAt > $1.0.createdAt }
+        } else {
+            hits.sort { lhs, rhs in
+                if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+                return lhs.0.createdAt > rhs.0.createdAt
+            }
         }
         let hasMore = !fallbackUsed && hits.count > pageLimit
         let page = hits.prefix(pageLimit)
-        let results = page.map { pair in
+        let results = page.map { pair -> String in
             let message = pair.0
             let channel = postableChannels[message.channelId]
-            let parentId = (channel?.kind == "thread" ? channel?.parentChannelId : nil) ?? message.channelId
+            let isThread = channel?.kind == "thread"
+            let parentId = (isThread ? channel?.parentChannelId : nil) ?? message.channelId
+            let threadParentMessageId = isThread ? channel?.parentMessageId : nil
+            let parentContent = threadParentMessageId.flatMap { parentMessageId in
+                humanMessageRows.first { $0.id == parentMessageId }?.content
+            }
+            let senderName = accounts.values.first { $0.id == message.senderId }?.name
+                ?? oauth.agentRuntimeInfo(id: message.senderId)?.name
+                ?? (message.senderId == "system" ? "system" : message.senderId)
+            let senderType = message.senderType == "agent" ? "agent" : "human"
+            let channelType = isThread ? "thread" : (channel?.kind ?? "channel")
             let snippet = Self.searchSnippet(message.content)
             let archivedJSON: String
             if let archivedAt = oauth.channelArchivedAt(id: parentId) {
@@ -3342,7 +3420,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             } else {
                 archivedJSON = "null"
             }
-            return "{\"id\":\(jsonString(message.id)),\"senderId\":\(jsonString(message.senderId)),\"senderType\":\(jsonString(message.senderType)),\"channelId\":\(jsonString(message.channelId)),\"parentChannelId\":\(jsonString(parentId)),\"content\":\(jsonString(message.content)),\"snippet\":\(jsonString(snippet)),\"channelArchivedAt\":\(archivedJSON)}"
+            let threadIdJSON = isThread ? jsonString(message.channelId) : "null"
+            let parentMessageIdJSON = threadParentMessageId.map(jsonString) ?? "null"
+            let parentContentJSON = parentContent.map(jsonString) ?? "null"
+            return "{\"id\":\(jsonString(message.id)),\"senderId\":\(jsonString(message.senderId)),\"senderName\":\(jsonString(senderName)),\"senderType\":\(jsonString(senderType)),\"channelId\":\(jsonString(message.channelId)),\"channelType\":\(jsonString(channelType)),\"channelName\":\(jsonString(channel?.name ?? "")),\"parentChannelId\":\(jsonString(parentId)),\"threadId\":\(threadIdJSON),\"parentMessageId\":\(parentMessageIdJSON),\"parentMessageContent\":\(parentContentJSON),\"content\":\(jsonString(message.content)),\"snippet\":\(jsonString(snippet)),\"channelArchivedAt\":\(archivedJSON)}"
         }.joined(separator: ",")
         lock.unlock()
         return Self.json(200, "{\"results\":[\(results)],\"hasMore\":\(hasMore ? "true" : "false")}")

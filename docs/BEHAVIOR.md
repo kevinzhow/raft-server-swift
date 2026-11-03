@@ -882,3 +882,11 @@ RFC 074 personal assistant：
 - `POST /api/agents/:id/assign-machine` → 400 精确 `{"error":"External agents cannot be assigned to a Computer"}`。
 - `DELETE /api/agents/:id` → 200 软删除；随后 `GET` 404，`GET /api/agents/archived` 的 `agents[{agentId,...}]` 包含该 agent。
 - 明确排除：orchestrator start/stop/reset 调用标志与 `evictCache` 断言、DB `deletedAt` 行断言（以 HTTP 可观察行为替代）。
+
+### internal.search.api：legacy 机器钥搜索组
+
+- `GET /internal/agent/:id/search`（machine key + path agent id）在可见消息中做 token 搜索；`sender` 支持 `@handle`/handle 引用：按 Server 成员 human（name/displayName）与活跃 agent name 解析，不可见或不存在 → 404 `{"error":"Member not found","errorCode":"member_not_found"}`，同一 handle 同时命中 human 与 agent → 409 `{"error":"Member handle is ambiguous","errorCode":"ambiguous_member_ref"}`。
+- 结果行保留 `id/senderId/senderType/channelId/parentChannelId/content/snippet/channelArchivedAt`，并新增 `senderName`、`channelType`、`channelName`、`threadId`、`parentMessageId`、`parentMessageContent`：thread 回复的 `channelId`/`threadId` 是 thread、`channelType:"thread"`、`parentMessageId`/`parentMessageContent` 指向父消息。
+- `after`/`before` 时间过滤必须是带时区偏移的 ISO-8601（`Z` 或 `+08:00`）；缺失偏移 → 400 `{"errorCode":"INVALID_DATE_FILTER"}`，错误文本包含 "missing a timezone offset"、"+08:00"、"raft CLI"；带偏移按绝对时刻比较（after 严格大于、before 严格小于）。
+- `sort=recent` 按 createdAt 倒序；`sender` 过滤在 hidden human directory 下对 member agent 隐藏 human handle。
+- 明确排除：trace span/`messages.search` query 断言、task 最新投影字段、CLI e2e。

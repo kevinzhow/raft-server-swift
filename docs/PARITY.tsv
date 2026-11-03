@@ -98,7 +98,7 @@ internal.runtimeProfile.api	route	locked	4c138e3	deprecated migration-done noop/
 internal.scopeAttestation.api	route	partial	-	auto-seed
 internal.scopeAttestation.bodyLimit.api	route	partial	-	auto-seed
 internal.scopeAttestation.transcriptOutcome.api	route	partial	-	auto-seed
-internal.search.api	route	pending	-	auto-seed
+internal.search.api	route	partial	-	legacy machine-key search group covered (sender handle resolution with member_not_found and ambiguous_member_ref, thread reply projection with thread/parent identity, offset-required date filters compared as absolute instants, senderName and channel identity projection); excluded: trace/query-name spans, task projections, CLI e2e
 internal	route	partial	-	auto-seed
 internalAgentApi.agentEventRead	route	locked	f74bbae	owner-scoped event re-read, EXPIRED, AMBIGUOUS_ID, neutral 404
 internalAgentApi.agentStatus	route	locked	70fe115	status validation/counts, dedupe, latest-occurredAt clamp, adoption and post-adoption hook suppression covered; excluded DB trajectory rows and cross-replica DB adoption durability

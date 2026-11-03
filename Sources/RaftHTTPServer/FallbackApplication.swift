@@ -1265,7 +1265,11 @@ public func configure(_ app: Application, services: FallbackServices) {
             agentId: request.parameters.get("agentId") ?? "",
             query: desktopQuery(request.url.query, "q"),
             limit: desktopQuery(request.url.query, "limit"),
-            authorization: request.headers[.authorization]
+            authorization: request.headers[.authorization],
+            sender: desktopQuery(request.url.query, "sender"),
+            after: desktopQuery(request.url.query, "after"),
+            before: desktopQuery(request.url.query, "before"),
+            sort: desktopQuery(request.url.query, "sort")
         ))
     }
     app.delete("api", "channels", "threads", ":threadId", "followers", "agents", ":agentId") { request -> Response in
