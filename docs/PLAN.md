@@ -44,12 +44,12 @@
 
 | 指标 | 当前 | 里程碑 | 剩余 |
 | --- | --- | --- | --- |
-| route 模块 locked | 135 / 219（61.6%） | 132 / 219（60%）✅ | 任务表口径见下 |
-| route 用例 locked | 772 / 2000（38.6%） | 800 / 2000（40%） | 28 条用例 |
+| route 模块 locked | 136 / 219（62.1%） | 132 / 219（60%）✅ | 任务表口径见下 |
+| route 用例 locked | 782 / 2000（39.1%） | 800 / 2000（40%） | 18 条用例 |
 | socket 模块 | 2 / 7 | 按 frame 组推进 | 5 个模块 |
 | daemon 模块 | 3 / 180 | 按真实 socket 队列推进 | 177 个模块 |
-| 整体模块 | 140 / 406（34.5%） | 244 / 406（60%） | 104 个模块 |
-| 整体用例 | 842 / 4632（18.2%） | 1853 / 4632（40%） | 1011 条用例 |
+| 整体模块 | 141 / 406（34.7%） | 244 / 406（60%） | 103 个模块 |
+| 整体用例 | 852 / 4632（18.4%） | 1853 / 4632（40%） | 1001 条用例 |
 
 最近锁定的模块：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api`、`servers.api`、`internalAgentApi.agentStatus`、`internalAgentApi.senderMentionDeliveries`、`internalAgentApi.attachmentComments`、`tasks.realtimeProjection.api`、`computerAdopt.api`、`internalComputer.preflight`、`internalComputer.runners`、`mobileDownload`、`desktopDownload`、`publicVisits.api`、`notifications.api`、`productEvents.api`、`shareArtifacts.api`、`internalAgentApi.registryParity`、`errorResponse.dmTarget`、`internalAgentApi.wakeHintStream`、`internalComputer.agentMigrationControl.bodyLimit.api`、`internalAgentApi.mentionActions`、`attachmentPreviewBridge.api`、`internalAgentApi.inboxEligibility`、`providerConnections.api`、`agentMigrationReceiptDm.api`、`announcements.api`；另有 21 个"无可执行黑盒断言"模块按 PARITY 口径 locked（见下方校准说明）；`attachmentComments.api` 已完成全组并锁定。剩余用例高度集中在 `internalAgentApi.auth`（93）、`agents.api`（87）、`internalAgentApi.send`（65）、`auth.api`（45）、`internal.channelMembership.api`（43）；下一片按第 4 节执行顺序 2–5 推进（`internalAgentApi.auth` 剩余组或下一个 pending 小模块）。
 
