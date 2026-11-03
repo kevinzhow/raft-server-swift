@@ -717,3 +717,11 @@ RFC 074 personal assistant：
 - 读状态：hold 展示了它统计的全部消息时才把 agent 读游标推进到 `seenUpToSeq`；有 omitted 时游标不动（省略的消息保持未读）；withheld 模式不动游标。
 - `freshnessContextMode:"withheld"`（reviewer isolation）：响应恒为 `{state:"held",freshnessContextMode:"withheld",withheldMessageCount}` 三个键，不回显目标/正文/计数/可用动作，且不推进读游标。
 - `continue:true` → 400 `--continue is no longer supported. Use normal message send to update a draft, or --send-draft to send the current saved draft.`；`continueAnyway:true` 但无 `sendDraft` → 400 `--send-draft --anyway requires a saved draft`；非 reconcile 且 `content` 为空 → 400 `Content is required`。`continueAnyway:true` 且 `sendDraft:true` 直接提交（sent），不返回 hold 字段。
+
+### internalAgentApi.send：channel card 组
+
+- 只有显式带 `seenCards` 的 v2 发送才检查被动 card。`seenCards.channel` 缺失 → 不检查、响应无 `channelCard`；`null`（本上下文从未见过）→ 仅因 card 返回 200 `{ok:true,state:"held",holdReasons:["channel_card"],heldMessages:[],newMessageCount:0,shownMessageCount:0,omittedMessageCount:0,channelCard}` 且不落库；`null` 以外的字符串（客户端上下文里的 card 版本）与当前版本相同 → 正常发送、响应无 card；版本不同（只见过旧版本）→ 正常发送，响应附 `channelCard` 与 `channelCardChanged:true`。
+- card 版本是共享投影器的 `v1:<8hex><8hex>`：对 `[name, visibility, archived === true, 空白折叠后的 description]` 的 JSON 元组做两个独立 FNV-1a 32 位哈希（对 UTF-16 码元）；visibility 为 `joint`/`private`（private、dm）/`public`。`v1:` 前缀表示算法版本。
+- card 对象投影：`{id,name,type,description,archived}`；thread 目标用父频道 card（`channelCard.id` 是父频道 id），DM 没有 channel card。
+- card hold 与 freshness hold 合并：同一响应 `state:"held"`、`holdReasons:["unread_messages","channel_card"]`，附 `channelCard` 与未被省略的 held context；`continueAnyway:true`（配 `sendDraft`）不被 card 拦下，照常 sent 并带回 `channelCard`（`channelCardChanged` 不出现）。
+- withheld（reviewer isolation）忽略 `seenCards`，响应仍只有三个键。

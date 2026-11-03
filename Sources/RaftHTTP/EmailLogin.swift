@@ -19291,6 +19291,79 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Which attested-send freshness interface this server/agent runs under.
     /// The upstream default is on; `off` disables the interface entirely and
     /// `allowlist` enables it only for the listed server/agent ids (or `*`).
+    /// The channel card an agent sees for a send target: a thread shows its
+    /// parent channel's card, a DM has none.
+    private struct AgentChannelCardSnapshot {
+        let id: String
+        let name: String
+        let type: String
+        let description: String?
+        let archived: Bool
+
+        var json: String {
+            let descriptionJSON = description.map(jsonString) ?? "null"
+            return "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"type\":\(jsonString(type)),\"description\":\(descriptionJSON),\"archived\":\(archived)}"
+        }
+
+        var rev: String {
+            Self.rev(name: name, type: type, archived: archived, description: description)
+        }
+
+        /// `channelCardRev` from the shared projector: `v1:` plus two FNV-1a
+        /// 32-bit hashes over the fixed-order JSON tuple of what the card
+        /// shows, with the description whitespace-collapsed.
+        static func rev(name: String, type: String?, archived: Bool, description: String?) -> String {
+            let visibility: String
+            let trimmedType = type?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if trimmedType == "joint" {
+                visibility = "joint"
+            } else if trimmedType == "private" || trimmedType == "dm" {
+                visibility = "private"
+            } else {
+                visibility = "public"
+            }
+            let displayed = (description ?? "")
+                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces)
+            let text = "[" + jsonString(name) + "," + jsonString(visibility) + ","
+                + (archived ? "true" : "false") + "," + jsonString(displayed) + "]"
+            let first = fnv1a32(text, seed: 0x811c_9dc5)
+            let second = fnv1a32(text, seed: 0x050c_5d1f)
+            return String(format: "v1:%08x%08x", first, second)
+        }
+
+        /// JS `charCodeAt` hashes UTF-16 code units, not UTF-8 bytes.
+        private static func fnv1a32(_ text: String, seed: UInt32) -> UInt32 {
+            var hash = seed
+            for unit in text.utf16 {
+                hash ^= UInt32(unit)
+                hash = hash &* 0x0100_0193
+            }
+            return hash
+        }
+    }
+
+    /// Callers hold `lock`.
+    private func channelCardSnapshotLocked(channelId: String) -> AgentChannelCardSnapshot? {
+        guard let channel = postableChannels[channelId], channel.kind != "dm" else { return nil }
+        let cardId: String
+        if channel.kind == "thread", let parentId = channel.parentChannelId {
+            cardId = parentId
+        } else {
+            cardId = channelId
+        }
+        guard let info = oauth.channelInfo(id: cardId) else { return nil }
+        let type = oauth.channelType(id: cardId) ?? "channel"
+        let archived = oauth.channelArchivedAt(id: cardId) != nil || postableChannels[cardId]?.archived == true
+        return AgentChannelCardSnapshot(
+            id: cardId,
+            name: info.name,
+            type: type,
+            description: info.description,
+            archived: archived
+        )
+    }
+
     public func setSendFreshnessModeForTesting(_ mode: String?) {
         lock.lock()
         sendFreshnessModeOverride = mode
@@ -19656,6 +19729,27 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if !freshnessEnabled && requestedSendFreshness {
             return Self.json(403, "{\"error\":\"Send freshness interface is not enabled for this agent.\"}")
         }
+        // Passive channel card (policy "once"): only a client that names the
+        // version its model context saw is checked. Never seen holds the send
+        // once; an older version sends and returns the current card.
+        var seenCardFields = ""
+        var cardHoldReasons: [String] = []
+        if let seenCards = object["seenCards"] as? [String: Any], !withheldMode {
+            lock.lock()
+            let snapshot = channelCardSnapshotLocked(channelId: channelId)
+            lock.unlock()
+            if let rawChannel = seenCards["channel"], let snapshot {
+                if let seenVersion = rawChannel as? String {
+                    if snapshot.rev != seenVersion {
+                        seenCardFields = ",\"channelCard\":\(snapshot.json),\"channelCardChanged\":true"
+                    }
+                } else {
+                    seenCardFields = ",\"channelCard\":\(snapshot.json)"
+                    cardHoldReasons.append("channel_card")
+                }
+            }
+        }
+        let holdForCards = !cardHoldReasons.isEmpty && !isContinueAnyway
         if freshnessEnabled, (requestedSendFreshness || forcedFreshness), !isContinueAnyway {
             lock.lock()
             let conversation = postableChannels[channelId]
@@ -19721,10 +19815,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 if draftReholdCount >= 3 {
                     response += ",\"continueAnywaySuggested\":true"
                 }
+                if holdForCards {
+                    let reasons = (["unread_messages"] + cardHoldReasons).map(jsonString).joined(separator: ",")
+                    response += ",\"holdReasons\":[\(reasons)]"
+                }
+                response += seenCardFields
                 response += "}"
                 return Self.json(200, response)
             }
             lock.unlock()
+        }
+        if holdForCards {
+            let reasons = cardHoldReasons.map(jsonString).joined(separator: ",")
+            return Self.json(200, "{\"ok\":true,\"state\":\"held\",\"holdReasons\":[\(reasons)],\"heldMessages\":[],\"newMessageCount\":0,\"shownMessageCount\":0,\"omittedMessageCount\":0\(seenCardFields)}")
         }
         let messageId = UUID().uuidString.lowercased()
         lock.lock()
@@ -19772,7 +19875,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             senderAgentId: identity.agentId,
             messageId: messageId
         )
-        let sent = "{\"ok\":true,\"state\":\"sent\",\"messageId\":\(jsonString(messageId)),\"messageSeq\":\(ownSeq),\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(content)),\"seq\":\(ownSeq)\(report.pendingJSON)\(report.unresolvedJSON)}"
+        let sent = "{\"ok\":true,\"state\":\"sent\",\"messageId\":\(jsonString(messageId)),\"messageSeq\":\(ownSeq),\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(content)),\"seq\":\(ownSeq)\(report.pendingJSON)\(report.unresolvedJSON)\(seenCardFields)}"
         return Self.json(200, sent)
     }
 

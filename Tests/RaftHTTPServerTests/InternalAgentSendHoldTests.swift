@@ -562,3 +562,163 @@ private func holdChannelMessages(
         }
     }
 }
+
+/// The shared projector's `channelCardRev`: `v1:` plus two FNV-1a 32-bit hashes
+/// over the fixed-order JSON tuple of what the card shows.
+private func holdChannelCardRev(_ card: [String: Any]) -> String {
+    let type = (card["type"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let visibility: String
+    if type == "joint" { visibility = "joint" } else if type == "private" || type == "dm" { visibility = "private" } else { visibility = "public" }
+    let description = (card["description"] as? String ?? "")
+        .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        .trimmingCharacters(in: .whitespaces)
+    let tuple: [Any] = [card["name"] as? String ?? "", visibility, card["archived"] as? Bool == true, description]
+    let data = try! JSONSerialization.data(withJSONObject: tuple, options: [.fragmentsAllowed])
+    let text = String(decoding: data, as: UTF8.self)
+    func fnv1a32(_ text: String, _ seed: UInt32) -> UInt32 {
+        var hash = seed
+        for unit in text.utf16 {
+            hash ^= UInt32(unit)
+            hash = hash &* 0x0100_0193
+        }
+        return hash
+    }
+    return String(format: "v1:%08x%08x", fnv1a32(text, 0x811c_9dc5), fnv1a32(text, 0x050c_5d1f))
+}
+
+private func holdCard(_ f: SendHoldFixture, description: String? = nil, archived: Bool = false) -> [String: Any] {
+    var card: [String: Any] = [
+        "id": f.channelId,
+        "name": f.channelName,
+        "type": "channel",
+        "archived": archived,
+    ]
+    card["description"] = description ?? NSNull()
+    return card
+}
+
+@Test func agentApiSendChecksTheChannelCardOnlyWhenTheClientNamesIt() async throws {
+    let f = makeSendHoldFixture("201")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let plain = try await holdSend(
+                client,
+                key: f.agentKey,
+                body: "{\"target\":\"#\(f.channelName)\",\"content\":\"no card field\"}"
+            )
+            let plainBody = try holdJSON(plain)
+            #expect(plainBody["state"] as? String == "sent")
+            #expect(plainBody["channelCard"] == nil)
+            let plainSeq = try #require(plainBody["messageSeq"] as? Int)
+
+            let unseen = try await holdSend(
+                client,
+                key: f.agentKey,
+                body: "{\"target\":\"#\(f.channelName)\",\"content\":\"first post this context\",\"seenUpToSeq\":\(plainSeq),\"seenCards\":{\"channel\":null}}"
+            )
+            let unseenBody = try holdJSON(unseen)
+            #expect(unseenBody["state"] as? String == "held")
+            #expect(unseenBody["holdReasons"] as? [String] == ["channel_card"])
+            #expect(unseenBody["newMessageCount"] as? Int == 0)
+            let unseenCard = try #require(unseenBody["channelCard"] as? [String: Any])
+            #expect(unseenCard["id"] as? String == f.channelId)
+            #expect(unseenCard["name"] as? String == f.channelName)
+            #expect(unseenCard["type"] as? String == "channel")
+            #expect(unseenCard["description"] == nil || unseenCard["description"] is NSNull)
+            #expect(unseenCard["archived"] as? Bool == false)
+            #expect(unseenBody["channelCardChanged"] == nil)
+            let rowsAfterHold = try await holdChannelMessages(client, fixture: f)
+            #expect(rowsAfterHold.count == 1, "a card-only hold must not post")
+
+            let seen = try await holdSend(
+                client,
+                key: f.agentKey,
+                body: "{\"target\":\"#\(f.channelName)\",\"content\":\"card seen\",\"seenUpToSeq\":\(plainSeq),\"seenCards\":{\"channel\":\"\(holdChannelCardRev(holdCard(f)))\"}}"
+            )
+            let seenBody = try holdJSON(seen)
+            #expect(seenBody["state"] as? String == "sent")
+            #expect(seenBody["channelCard"] == nil)
+
+            _ = f.accounts.oauth.updateChannel(id: f.channelId, name: nil, description: "Release coordination only.", systemMessage: nil)
+            let changed = try await holdSend(
+                client,
+                key: f.agentKey,
+                body: "{\"target\":\"#\(f.channelName)\",\"content\":\"card changed since\",\"seenUpToSeq\":\(plainSeq),\"seenCards\":{\"channel\":\"\(holdChannelCardRev(holdCard(f)))\"}}"
+            )
+            let changedBody = try holdJSON(changed)
+            #expect(changedBody["state"] as? String == "sent")
+            let changedCard = try #require(changedBody["channelCard"] as? [String: Any])
+            #expect(changedCard["description"] as? String == "Release coordination only.")
+            #expect(changedBody["channelCardChanged"] as? Bool == true)
+        }
+    }
+}
+
+@Test func agentApiSendUsesTheParentChannelCardForAThreadTarget() async throws {
+    let f = makeSendHoldFixture("202")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let parent = try await holdPostHuman(client, f, content: "thread root for the card")
+            let held = try await holdSend(
+                client,
+                key: f.agentKey,
+                body: "{\"target\":\"#\(f.channelName):\(parent.id.prefix(8))\",\"content\":\"thread post with unseen card\",\"seenUpToSeq\":\(parent.seq),\"seenCards\":{\"channel\":null}}"
+            )
+            let body = try holdJSON(held)
+            #expect(body["state"] as? String == "held")
+            #expect(body["holdReasons"] as? [String] == ["channel_card"])
+            let card = try #require(body["channelCard"] as? [String: Any])
+            #expect(card["id"] as? String == f.channelId, "a thread carries its parent channel's card")
+        }
+    }
+}
+
+@Test func agentApiSendHoldsUnreadMessagesAndAnUnseenChannelCardInOneHold() async throws {
+    let f = makeSendHoldFixture("203")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let first = try await holdSend(
+                client,
+                key: f.agentKey,
+                body: "{\"target\":\"#\(f.channelName)\",\"content\":\"before\"}"
+            )
+            let firstSeq = try #require(try holdJSON(first)["messageSeq"] as? Int)
+            let fresh = try await holdPostHuman(client, f, content: "news the agent has not seen")
+            let held = try await holdSend(
+                client,
+                key: f.agentKey,
+                body: "{\"target\":\"#\(f.channelName)\",\"content\":\"reply\",\"seenUpToSeq\":\(firstSeq),\"seenCards\":{\"channel\":null}}"
+            )
+            let body = try holdJSON(held)
+            #expect(body["state"] as? String == "held")
+            #expect(body["holdReasons"] as? [String] == ["unread_messages", "channel_card"])
+            #expect(body["newMessageCount"] as? Int == 1)
+            let card = try #require(body["channelCard"] as? [String: Any])
+            #expect(card["id"] as? String == f.channelId)
+            let heldMessages = try #require(body["heldMessages"] as? [[String: Any]])
+            #expect(heldMessages.first?["id"] as? String == fresh.id)
+        }
+    }
+}
+
+@Test func agentApiSendAnywayCommitsAnUnseenCardAndReturnsIt() async throws {
+    let f = makeSendHoldFixture("204")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let anyway = try await holdSend(
+                client,
+                key: f.agentKey,
+                body: "{\"target\":\"#\(f.channelName)\",\"content\":\"anyway\",\"sendDraft\":true,\"continueAnyway\":true,\"seenCards\":{\"channel\":null}}"
+            )
+            let body = try holdJSON(anyway)
+            #expect(body["state"] as? String == "sent")
+            let card = try #require(body["channelCard"] as? [String: Any])
+            #expect(card["id"] as? String == f.channelId)
+            #expect(body["channelCardChanged"] == nil)
+        }
+    }
+}
