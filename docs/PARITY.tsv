@@ -330,11 +330,11 @@ feedbackMachineEvidence	daemon	pending	-	auto-seed
 feedbackMachineLogTail	daemon	pending	-	auto-seed
 feedbackTranscriptCollector	daemon	pending	-	auto-seed
 feedbackTranscriptWindow	daemon	pending	-	auto-seed
-historyFormatting	daemon	locked	SLICE	ported pure helper: formatHistoryMessageLine header (seq/msg/UTC time, optional type/threadId/replyCount), sender handle with description, attachment suffix with the raft attachment view hint, and the task suffix; three upstream cases asserted with the same literal lines
+historyFormatting	daemon	locked	c59d3df	ported pure helper: formatHistoryMessageLine header (seq/msg/UTC time, optional type/threadId/replyCount), sender handle with description, attachment suffix with the raft attachment view hint, and the task suffix; three upstream cases asserted with the same literal lines
 hostIdentity	daemon	pending	-	auto-seed
 launchPhaseTransition	daemon	pending	-	auto-seed
 legacySupervisor	daemon	pending	-	auto-seed
-logger	daemon	locked	SLICE	ported structured log stream: subscribers receive {level,line,message} with the UTC line format and unsubscribe stops delivery; the single upstream case asserted
+logger	daemon	locked	c59d3df	ported structured log stream: subscribers receive {level,line,message} with the UTC line format and unsubscribe stops delivery; the single upstream case asserted
 machineLock	daemon	pending	-	auto-seed
 managedMcpRuntimeProxy	daemon	pending	-	auto-seed
 oarLoader	daemon	pending	-	auto-seed
@@ -352,7 +352,7 @@ proxy	daemon	locked	2ff64f5	dispatcher cache, NO_PROXY, isolated lanes, timeouts
 proxyFailureTrace	daemon	locked	2ff64f5	content-free typed projection and canned excerpts
 raftDiskJanitor	daemon	pending	-	auto-seed
 raftHome	daemon	pending	-	auto-seed
-recentDeliveryIds	daemon	locked	SLICE	ported bounded set: age expiry (maxAge boundary), max-entries eviction of the oldest, and re-remembering moves an id to the newest end; all three upstream cases asserted
+recentDeliveryIds	daemon	locked	c59d3df	ported bounded set: age expiry (maxAge boundary), max-entries eviction of the oldest, and re-remembering moves an id to the newest end; all three upstream cases asserted
 registry.manifest.appTrace	daemon	pending	-	auto-seed
 registryManifestApps	daemon	pending	-	auto-seed
 releaseRuntimeSdkPreflight	daemon	pending	-	auto-seed
