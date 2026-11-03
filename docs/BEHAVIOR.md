@@ -1254,3 +1254,8 @@ RFC 074 personal assistant：
 ### daemon agentCredentialProxy.routeFamily
 
 - 代理遥测用的内容无关 route family 分类：internal agent-api pathname → 封闭 family 标签，顺序敏感（attachments/comments 必须先于通用 attachments；threads 与 threads/unfollow 分开；tasks/claim、tasks/update 先于 tasks；inbox/send/events/tasks/attachments/messages/servers/history/search/channel-members/knowledge/profile/integrations/upload/resolve-channel/prepare-action/reminders/channels join|leave 各有 family），未知路径返回 `unknown`。
+
+### daemon agentActivityProducer
+
+- `buildDaemonActivityMessage` 只允许 fact-typed detail kind 过线：未注册/非字符串 detailKind → drop `unknown_activity_detail_kind`；none/daemon_activity/external_activity/slock_action/other 等弱结论 kind → drop `non_fact_activity_detail_kind`，drop 记录 agentId/activity/detailKind/reason/isHeartbeat。
+- 成功的 `agent:activity` 帧不携带 `activity`/`activityKind` 结论字段；status entry 会剥掉自身的 activity/activityKind，只保留 kind/detail/detailKind；辅助函数覆盖 drop trace attrs、thinking/text 投影与结束 thinking 的事件集合。
