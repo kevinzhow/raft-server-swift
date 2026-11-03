@@ -6092,7 +6092,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    public func addMessageMention(messageId: String, targetType: String, targetId: String) {
+    public func addMessageMention(
+        messageId: String,
+        targetType: String,
+        targetId: String,
+        notifiableAtSend: Bool = true,
+        notifiedAt: Date? = nil,
+        notifiedByType: String? = nil,
+        notifiedById: String? = nil,
+        notifiedAction: String? = nil
+    ) {
         lock.lock()
         let message = humanMessageRows.first { $0.id == messageId }
         storedMentions.append(StoredMention(
@@ -6103,11 +6112,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             targetType: targetType,
             targetId: targetId,
             handle: "",
-            notifiableAtSend: true,
-            notifiedAt: nil,
-            notifiedByType: nil,
-            notifiedById: nil,
-            notifiedAction: nil
+            notifiableAtSend: notifiableAtSend,
+            notifiedAt: notifiedAt,
+            notifiedByType: notifiedByType,
+            notifiedById: notifiedById,
+            notifiedAction: notifiedAction
         ))
         lock.unlock()
     }

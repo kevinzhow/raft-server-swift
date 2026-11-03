@@ -783,3 +783,8 @@ RFC 074 personal assistant：
 - wake-hints 是纯 peek：重复调用结果不变、不推进读游标；随后 `GET /internal/agent-api/events` 返回同一批消息的正文与 `seq`，并把对应读游标推进到已交付的最后一条；下一 次 events 返回空、`has_more:false`。
 - events 只投影当前仍可见的会话：agent 被移出 private 频道后，此前排队但未交付的 private 消息不再出现（drop 而非延迟投递）。
 - 明确排除：orchestrator inbox 桩（`receiveMessages`/`peekPendingMessages`/ack 计数）、task 文本在 drain 时刷新、third-party event hint 的完整语义、mute/mention pierce、follow/父频道访问门槛、external delivery 自动唤醒。
+
+### internalAgentApi.auth：mentions feed 组
+
+- `GET /internal/agent-api/mentions`（credential 需 `mentions` scope，否则 401 `auth_required`）：只返回该 agent 作为目标的 mention 行，且只包含 `notifiableAtSend == true` 或已有 `notifiedAt` 的行——发送时不可通知且从未通知的 outsider/pending 行不会出现在目标侧 feed。
+- 行投影为 `{messageId}`，按创建顺序倒序（最新在前）；`limit` 用「多取一条」判定 `has_more`：恰好等于 limit 行时 `has_more:false`，超过时 true。
