@@ -331,7 +331,7 @@ feedbackMachineLogTail	daemon	pending	-	auto-seed
 feedbackTranscriptCollector	daemon	pending	-	auto-seed
 feedbackTranscriptWindow	daemon	pending	-	auto-seed
 historyFormatting	daemon	locked	c59d3df	ported pure helper: formatHistoryMessageLine header (seq/msg/UTC time, optional type/threadId/replyCount), sender handle with description, attachment suffix with the raft attachment view hint, and the task suffix; three upstream cases asserted with the same literal lines
-hostIdentity	daemon	pending	-	auto-seed
+hostIdentity	daemon	locked	SLICE	host identity group: HMAC-SHA256 host hash per server (stable, 32 hex chars, differs per server/machine, never contains the raw hardware id), hardware-id normalization (machine-id/UUID/GUID forms, 16-64 hex, rejects empty/short/all-zero/non-hex), platform parsers for ioreg IOPlatformUUID and reg MachineGuid, Linux machine-id with dbus fallback, and unknown/failed discovery staying nil through injectable IO
 launchPhaseTransition	daemon	locked	0eaab90	launch transition contract: readiness/activation enter+close rows with the closed identity spine, wait-state fence contract (runtime_startup_timeout vs none, optional deadline), closed close_result and delivered_via, stable state_instance_id pairing (exactly one enter and one close, unique transition_seq not used for pairing, independent relaunches), missing-launch-id negative evidence on both rows, and the Q8 forbidden-attr scrub with the launch_source/span_name allow-list
 legacySupervisor	daemon	pending	-	auto-seed
 logger	daemon	locked	c59d3df	ported structured log stream: subscribers receive {level,line,message} with the UTC line format and unsubscribe stops delivery; the single upstream case asserted

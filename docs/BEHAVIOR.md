@@ -1165,3 +1165,9 @@ RFC 074 personal assistant：
 - 同 key 的并发 probe 合并为一次运行并共享结果（不会起第二个进程）；运行结束后同 key 的下一次请求重新开始。
 - 不同 key 按 `maxConcurrent` 上限 FIFO 排队（默认无限，daemon 用它避免相同 key 重叠又让不同 runtime 不互相排队）；失败运行把同一个错误抛给所有 joining 调用者，并释放 key 与槽位，之后 key 可立即复用。
 - `maxConcurrent` 必须是正整数或 nil（无限），0/负数初始化抛错。
+
+### daemon hostIdentity
+
+- `hostIdHashForServer`：`HMAC-SHA256(key=hardwareId, "raft-host-id-v1:"+serverId)` 的 hex 前 32 位——同一机器同一 server 稳定、不同 server/机器不同、绝不包含原始硬件 ID。
+- `normalizeHardwareId`：接受 machine-id / UUID / GUID 形式（大小写与横线不敏感），要求 16-64 hex；空、过短、全零、非 hex 一律 nil。
+- 平台发现：Linux 读 `/etc/machine-id`（回退 `/var/lib/dbus/machine-id`）；macOS 从 `ioreg` 的 `IOPlatformUUID` 解析；Windows 从 `reg query` 的 `MachineGuid` 解析；命令失败/未知平台返回 nil。IO 错误可注入（readFile/run），便于测试且不 spawn。
