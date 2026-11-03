@@ -189,6 +189,19 @@
 
 **C. 需要先补基础设施的切片**：server-stage feature-flag 规则引擎（guest、providerConnections、reminders 共用）；joint channel 模型；Hands 传输 seam（feedback/probes）；对象存储流式响应（HTML preview bridge、scope-attestation 机器表面）；Redis 后端（replica owner、共享去重）。
 
+### 下一片设计（2026-11-04 源码调研结论）
+
+**`internalAgentApi.mentionActions`（10 条，agent 侧）**
+
+- 端点只有两个：`GET /internal/agent-api/mention-actions/pending` 与 `POST /internal/agent-api/mention-actions/execute`；共享上游的 `executeMentionActionId` 语义。
+- 端口已有 `storedMentions`（含 notified* 字段）与用户侧 `executeMentionActions`；agent 侧需要：给 `StoredMention` 增加 `createdAt`、pending 过滤（sender=agent、未通知、`notifiableAtSend=false`、7 天窗口、消息/频道仍可见）、payload `{resolutionId,messageId,channelId,channelName,availableActions:["notify"]}`、limit+1 的 has_more、notify 写入 + `dedupedResolutionIds`、add 对 agent 发送者返回 `add_requires_human_member_authority`、发送者失去频道访问时 `sender_lacks_channel_access`、消息删除级联。
+- 明确排除：orchestrator 投递 spy（`notify` 的 queued/handoff 失败）与 DB 行断言；用 HTTP 状态与字段断言替代。
+
+**`internal.search.api`（8 条）**
+
+- 7 条可移植（发送者 handle 解析/过滤、thread reply 的 channelId 投影、member_not_found/ambiguous、时区 offset 校验与绝对边界、recent 排序）；trace 断言与 CLI e2e 排除。
+- 唯一缺口是第 2 条的 `taskNumber` + `taskCurrentProjection`：本端口尚无 task amend 模型，需要先做 `PATCH /api/tasks/:id`（title/description + revision/superseded/amendedAt/amendedBy）这一独立切片，再回填搜索投影。
+
 ## 5. 风险与回退
 
 - **socket.io 协议偏差**：只做 WS transport（上游测试也只用 websocket），用原始包文本断言收敛；不做 polling/ack/Redis adapter。
