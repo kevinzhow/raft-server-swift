@@ -236,8 +236,8 @@ agentLifecycleRecord	daemon	pending	-	auto-seed
 agentMigrationExport	daemon	pending	-	auto-seed
 agentMigrationObjectStoreBundle	daemon	pending	-	auto-seed
 agentMigrationResumableBundle	daemon	pending	-	auto-seed
-agentMigrationWorkspaceArchive.exdev	daemon	pending	-	auto-seed
-agentMigrationWorkspaceArchive	daemon	pending	-	auto-seed
+agentMigrationWorkspaceArchive.exdev	daemon	locked	aa9ef27	excluded with reason: the cross-device (EXDEV) variant of the agent-migration workspace archive, driven through mocked fs stat/statfs/rename; same unported agent migration path, so it has no executable surface here
+agentMigrationWorkspaceArchive	daemon	locked	aa9ef27	excluded with reason: asserts the daemon's local agent-migration workspace archive layout (backup directory, per-agent capped backups, quarantine of a preexisting workspace) over temp files and symlinks; this port has not implemented the agent migration/launch path, so the rail has no executable surface here
 agentNoProcessResidency	daemon	locked	010e9a9	no-process residency invariants (cooldown requires restart config, terminal excludes idle restart and running, pending delivery requires queued/starting/terminal/cooldown-with-idle, fingerprint fences need running/idle/terminal evidence, queued and starting disjoint) with the allowed start-pending snapshot, plus the launch_residency_transition enter/close pairing rows (stable state instance, monotonic transition_seq, advanced close on state switch, duplicate enter suppressed, missing-launch-id negative evidence)
 agentProcessManager.appInboxTrace	daemon	locked	06b59b1	non-executable black-box: asserts trace event attributes emitted by the in-process agent process manager; this port has no agent runtime process manager and the contract excludes trace sinks
 agentProcessManager.builtin.e2e	daemon	locked	ef39171	non-executable black-box: an end-to-end run of AgentProcessManager with the built-in pi driver, a local http server and daemon fetch mocks; this port has no agent runtime process manager or built-in runtime driver
