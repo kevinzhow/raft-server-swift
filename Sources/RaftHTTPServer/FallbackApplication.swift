@@ -765,6 +765,20 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? "{}"
         ))
     }
+    app.post("internal", "agent-api", "channels", ":channelId", "mute") { request -> Response in
+        routeResponse(services.emailAccounts.agentSetChannelMute(
+            authorization: request.headers[.authorization],
+            channelId: request.parameters.get("channelId") ?? "",
+            muted: true
+        ))
+    }
+    app.post("internal", "agent-api", "channels", ":channelId", "unmute") { request -> Response in
+        routeResponse(services.emailAccounts.agentSetChannelMute(
+            authorization: request.headers[.authorization],
+            channelId: request.parameters.get("channelId") ?? "",
+            muted: false
+        ))
+    }
     app.post("internal", "agent-api", "channels", ":channelId", "members") { request -> Response in
         routeResponse(services.emailAccounts.agentChannelMemberWrite(
             authorization: request.headers[.authorization],

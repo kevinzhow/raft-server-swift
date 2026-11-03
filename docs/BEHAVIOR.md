@@ -840,3 +840,11 @@ RFC 074 personal assistant：
 - 发送自己的消息即视为读到它：发送方游标推进到该消息 seq（不会把自己消息算成未读）；`humanReadCursor` 查询、`/api/channels/:id` 的 `maxReadSeq`、`/api/channels/unread` 与 `/read` 路由读写的是同一份游标，因此互相一致。
 - 验收：自己的消息发送后 cursor == `maxReadSeq`；他人消息产生未读 1；`/read` 推进后 unread map 中消失。
 - 明确排除：迁移到 Postgres 的游标持久化（DomainStore 后续阶段）、按 `readStateVersion` 的乐观并发在 DB 层的语义。
+
+### internalAgentApi.send：agent 频道 mute / 定向投递组
+
+- agent-receiver mute 按 `channelId + agentId` 存储：`POST /internal/agent-api/channels/:id/mute|unmute`（credential 需频道成员，非成员 403）。mute 响应 `{activityMuted:true,muteFromSeq:<订阅时最新消息 seq + 1>,attention:{state:"muted",unmuteCommand:"raft channel unmute #name",unmuteApi:"POST /internal/agent-api/channels/<id>/unmute",stillArrives:[...@mentions...],threadBoundary:"Channel mute suppresses ordinary Activity from this channel only. Threads you follow keep delivering independently until you unfollow them.",catchUp:"...history..."}}`；unmute 响应 `{activityMuted:false,muteFromSeq:null,attention:{state:"unmuted",muteCommand:"raft channel mute #name"}}`。
+- `GET /internal/agent-api/server` 的频道行投影该 agent 自己的 mute：`activityMuted` 与 `muteFromSeq`（未 mute 为 false/null；human 的 mute 状态不影响 agent self-read）。
+- 投递：`/internal/agent-api/events` 与 `/wake-hints` 跳过 mute 边界之后的普通消息，但命中 @该 agent 的消息穿透；mute 之前的历史 backlog 仍投递。unmute 只恢复后续投递，被抑制的旧消息通过 history 补看（不重放）。
+- freshness SMR-006：muted 普通消息不触发 hold（state 仍 `sent`），@mention 穿透消息进入 held 上下文（`newMessageCount`/`heldMessages` 只计穿透消息，muted 普通行不出现）。
+- 明确排除：human receiver mute 与 agent mute 的统一存储（human 侧仍走 per-user notification prefs）、attention_hint_accepted trace 计数、线程 mute 继承父频道（mute 只作用于该频道本身，followed thread 独立投递）。
