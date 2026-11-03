@@ -1208,3 +1208,10 @@ RFC 074 personal assistant：
 - 工具：`tool_call_delta_chunk` 按 tool_index/tool_call_id 累积参数并只回 internal_progress；`tool_call` 首次发出 tool_call（name 从 `_meta.x.ai/tool.name`/name/title 取，参数为 rawInput 或累积 JSON），重复只回 progress；`tool_call_update` 的 completed/failed/cancelled 首次发出 tool_output（`grokToolEndOutcome`：completed 为 ok；failed/cancelled 仅在带 exit_code 时 ok 且记录 exitCode），重复或 turn 已结束且未见过该调用则回 progress。
 - 轮次：`turn_completed` 按 prompt_id 归属 generation；已完成的 generation 去重（上限 32）；晚到/未知 prompt 不完成新轮；autonomous successor（`task-completed-call-*`）在无活动轮时自建一轮且终态只发一次，有活动 foreground 轮时抑制并保持去重；`finishPrompt` 产出 token_usage telemetry（grok_acp）、error（stop_reason=error/cancelled）与 turn_end，并清空工具状态。
 - `pending_interaction`/`interaction_resolved`/未知扩展一律 internal_progress（含 payloadBytes）。
+
+### daemon spawnFailureClassification
+
+- 启动失败只按 typed code 分类，消息文本永不参与判定：`ENOENT` 映射为 `runtime_not_found`，其余未知 code / 无 code → `runtime_spawn_failed`；message 只作为 detail。
+- 各 reason 的 userMessage：versionTooOld 原样消息；model_not_found 指名模型（renamed/removed 或 provider 无 key，不引导重装 CLI）；agent_proxy_bind_failed / runner_credential_mint_failed / provider_connection_materialization_failed（http 带状态码、invalid_payload/invalid_environment 各自文案）/ model_not_configured / session_needs_reset / session_runtime_mismatch / runtime_login_required / runtime_config_invalid 均有固定文案；`runtime_not_found` 依 lookup verdict：confirmed miss（`not_on_path`）给安装指引，其余 lookup 结果给 resolver 自己的 path-free 消息，无 verdict 给中性文案。
+- lookup verdict 支持 launch 词表与 probe 词表（not_installed→not_on_path、probe_timeout→lookup_timed_out、permission_denied→lookup_permission_denied、probe_failed→lookup_failed），可来自 cause；unsupported_version 无 verdict。
+- `startFailureActivity`：detail=userMessage，spawnFailure 仅在 model 类 reason 时携带截断 128 的 model、仅 `runtime_not_found` 时携带 lookupReason。
