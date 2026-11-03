@@ -1092,3 +1092,9 @@ RFC 074 personal assistant：
 - scoped list/counts 仍按附件过滤：同一 thread 里的普通回复不出现在某附件的 comments 里，兄弟附件各自 count。
 - 删除评论消息时其 scoped ref 行级联消失（list/counts 同步），对应上游 schema FK 的构造性属性。
 - 仍待补：`commentRef`（创建响应/消息列表 enrichment）、`message:updated` live 事件、user-stage flag deny 的 403 行为、anchors 词表/上限、mentions 管线、history scoped metadata、agent scope quotation。
+
+### attachmentComments.api：anchors 与 mentions 组
+
+- anchor 是封闭词表 `lines` / `csv-rows` / `md-section` / `html-region`，客户端 payload 必须是 `{type,data}`；未知 type → 400 `anchor_type_invalid`，`data` 非对象或形状错误 → 400 `anchor_invalid`，整个 payload > 4 KB → 400 `anchor_too_large`（先于逐类型校验）。
+- 存储时按已知字段规范重建：extras 丢弃；`lines`/`csv-rows` 要求整数 `start≥1` 且 `end≥start`；`md-section` 要求非空 `headingId` 与 `headingTitle`；`html-region` 要求有限数字、x/y/w/h≥0、viewport/document 尺寸>0，浮点四舍五入为整数；可选短 `quote` 原样保留。list 原样回读规范后的 anchor，无 anchor 的行返回 `null`，被拒绝的 anchor 不产生消息或 ref。
+- `mentions` 走共享消息管线：`[{type,id,name}]` 严格校验（type 只能是 user/agent、id 必须是 UUID、name 非空），非法批次 400 `mentions_invalid` 且不写入；合法批次在评论消息上写入 mention 行。

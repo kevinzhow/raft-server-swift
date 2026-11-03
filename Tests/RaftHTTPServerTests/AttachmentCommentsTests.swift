@@ -11,6 +11,7 @@ private struct AttachmentCommentsFixture {
     let serverId: String
     let channelId: String
     let privateChannelId: String
+    let ownerId: String
     let reviewerId: String
     let reviewerToken: String
     let linked: String
@@ -49,6 +50,7 @@ private func makeAttachmentCommentsFixture() -> AttachmentCommentsFixture {
         serverId: serverId,
         channelId: channelId,
         privateChannelId: privateChannelId,
+        ownerId: ownerId,
         reviewerId: reviewerId,
         reviewerToken: accounts.mintAccessTokenForTesting(userId: reviewerId),
         linked: linked,
@@ -212,6 +214,104 @@ private func commentsRequest(
             f.accounts.removeMessageForTesting(messageId: commentId)
             let after = try await commentsRequest(client, f, method: .get, path: "/api/attachments/\(f.linked)/comments")
             #expect(((after.body["comments"] as? [[String: Any]]) ?? []).isEmpty, "the ref row cascades with the message")
+        }
+    }
+}
+
+@Test func attachmentCommentAnchorsAreCanonicalAndMentionsRideTheSharedPipeline() async throws {
+    let f = makeAttachmentCommentsFixture()
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            // A known anchor round-trips and anchorless rows report null.
+            let anchored = try await commentsRequest(
+                client, f, method: .post, path: "/api/attachments/\(f.linked)/comments",
+                body: "{\"content\":\"anchored\",\"anchor\":{\"type\":\"md-section\",\"data\":{\"headingId\":\"activation\",\"headingTitle\":\"Activation\",\"quote\":\"D0>=35\"}}}"
+            )
+            #expect(anchored.status == .ok)
+            let anchoredId = try #require(((anchored.body["message"] as? [String: Any])?["id"]) as? String)
+            let plain = try await commentsRequest(
+                client, f, method: .post, path: "/api/attachments/\(f.linked)/comments", body: "{\"content\":\"plain\"}"
+            )
+            #expect(plain.status == .ok)
+            let plainId = try #require(((plain.body["message"] as? [String: Any])?["id"]) as? String)
+            let listed = try await commentsRequest(client, f, method: .get, path: "/api/attachments/\(f.linked)/comments")
+            let rows = (listed.body["comments"] as? [[String: Any]]) ?? []
+            let anchoredRow = rows.first { ($0["id"] as? String) == anchoredId }
+            let anchor = anchoredRow?["anchor"] as? [String: Any]
+            #expect(anchor?["type"] as? String == "md-section")
+            #expect((anchor?["data"] as? [String: Any])?["headingId"] as? String == "activation")
+            #expect(rows.first { ($0["id"] as? String) == plainId }?["anchor"] is NSNull)
+
+            // Closed vocabulary and shape errors.
+            let badType = try await commentsRequest(
+                client, f, method: .post, path: "/api/attachments/\(f.linked)/comments",
+                body: "{\"content\":\"x\",\"anchor\":{\"type\":\"dom-xpath\",\"data\":{}}}"
+            )
+            #expect(badType.body["code"] as? String == "anchor_type_invalid")
+            let badShape = try await commentsRequest(
+                client, f, method: .post, path: "/api/attachments/\(f.linked)/comments",
+                body: "{\"content\":\"x\",\"anchor\":{\"type\":\"lines\",\"data\":[1,2]}}"
+            )
+            #expect(badShape.body["code"] as? String == "anchor_invalid")
+            let tooLarge = try await commentsRequest(
+                client, f, method: .post, path: "/api/attachments/\(f.linked)/comments",
+                body: "{\"content\":\"x\",\"anchor\":{\"type\":\"lines\",\"data\":{\"quote\":\"\(String(repeating: "q", count: 5000))\"}}}"
+            )
+            #expect(tooLarge.body["code"] as? String == "anchor_too_large")
+            for anchorBody in [
+                "{\"type\":\"md-section\",\"data\":{}}",
+                "{\"type\":\"lines\",\"data\":{\"start\":0,\"end\":2}}",
+                "{\"type\":\"lines\",\"data\":{\"start\":5,\"end\":2}}",
+                "{\"type\":\"csv-rows\",\"data\":{\"start\":1.5,\"end\":2}}",
+                "{\"type\":\"html-region\",\"data\":{\"x\":-1,\"y\":0,\"w\":10,\"h\":10,\"viewportWidth\":800,\"documentWidth\":1000,\"documentHeight\":2000}}",
+            ] {
+                let invalid = try await commentsRequest(
+                    client, f, method: .post, path: "/api/attachments/\(f.linked)/comments",
+                    body: "{\"content\":\"x\",\"anchor\":\(anchorBody)}"
+                )
+                #expect(invalid.body["code"] as? String == "anchor_invalid", "\(anchorBody)")
+            }
+
+            // Extras never reach storage; html-region numbers round.
+            let padded = try await commentsRequest(
+                client, f, method: .post, path: "/api/attachments/\(f.linked)/comments",
+                body: "{\"content\":\"padded\",\"anchor\":{\"type\":\"lines\",\"data\":{\"start\":2,\"end\":4,\"quote\":\"q\",\"extra\":\"DROP ME\"}}}"
+            )
+            let paddedId = try #require(((padded.body["message"] as? [String: Any])?["id"]) as? String)
+            let region = try await commentsRequest(
+                client, f, method: .post, path: "/api/attachments/\(f.linked)/comments",
+                body: "{\"content\":\"region\",\"anchor\":{\"type\":\"html-region\",\"data\":{\"x\":10.6,\"y\":20.2,\"w\":0,\"h\":0,\"viewportWidth\":1280,\"documentWidth\":1280,\"documentHeight\":4000.9,\"spoofed\":true}}}"
+            )
+            #expect(region.status == .ok, "\(region.body)")
+            let regionId = try #require(((region.body["message"] as? [String: Any])?["id"]) as? String)
+            let finalList = try await commentsRequest(client, f, method: .get, path: "/api/attachments/\(f.linked)/comments")
+            let finalRows = (finalList.body["comments"] as? [[String: Any]]) ?? []
+            #expect(finalRows.count == 4, "rejected anchors wrote nothing")
+            let paddedData = ((finalRows.first { ($0["id"] as? String) == paddedId }?["anchor"] as? [String: Any])?["data"]) as? [String: Any]
+            #expect(paddedData?["start"] as? Int == 2)
+            #expect(paddedData?["end"] as? Int == 4)
+            #expect(paddedData?["quote"] as? String == "q")
+            #expect(paddedData?["extra"] == nil)
+            let regionData = ((finalRows.first { ($0["id"] as? String) == regionId }?["anchor"] as? [String: Any])?["data"]) as? [String: Any]
+            #expect(regionData?["x"] as? Int == 11)
+            #expect(regionData?["y"] as? Int == 20)
+            #expect(regionData?["documentHeight"] as? Int == 4001)
+
+            // Structured mentions persist through the shared pipeline.
+            let mentioned = try await commentsRequest(
+                client, f, method: .post, path: "/api/attachments/\(f.linked)/comments",
+                body: "{\"content\":\"@\(f.ownerId) look\",\"mentions\":[{\"type\":\"user\",\"id\":\"\(f.ownerId)\",\"name\":\"owner\"}]}"
+            )
+            #expect(mentioned.status == .ok)
+            let mentionedId = try #require(((mentioned.body["message"] as? [String: Any])?["id"]) as? String)
+            #expect(!f.accounts.messageMentionRows(messageId: mentionedId).isEmpty, "the mention row rides the message pipeline")
+            let badMention = try await commentsRequest(
+                client, f, method: .post, path: "/api/attachments/\(f.linked)/comments",
+                body: "{\"content\":\"x\",\"mentions\":[{\"type\":\"user\",\"id\":\"not-a-uuid\",\"name\":\"x\"}]}"
+            )
+            #expect(badMention.status == .badRequest)
+            #expect(badMention.body["code"] as? String == "mentions_invalid")
         }
     }
 }

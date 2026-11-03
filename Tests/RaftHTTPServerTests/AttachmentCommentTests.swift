@@ -58,7 +58,7 @@ import VaporTesting
             #expect(body(denied)["code"] as? String == "agent_comment_create_disabled")
 
             let human = try await client.send(.post, headers: ownerHeaders, to: URI(string: "/api/attachments/\(linked)/comments")) { request in
-                request.body = .init(string: "{\"content\":\"排序还有问题\",\"anchor\":{\"type\":\"lines\",\"startLine\":3,\"endLine\":3}}")
+                request.body = .init(string: "{\"content\":\"排序还有问题\",\"anchor\":{\"type\":\"lines\",\"data\":{\"start\":3,\"end\":3}}}")
             }
             #expect(human.status == .ok)
             let commentId = try #require((body(human)["message"] as? [String: Any])?["id"] as? String)

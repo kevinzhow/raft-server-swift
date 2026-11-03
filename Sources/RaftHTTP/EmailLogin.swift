@@ -17703,6 +17703,91 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"comments\":[\(comments.joined(separator: ","))],\"viewer\":\(viewer)}")
     }
 
+    /// Canonical anchor projection for attachment comments: a closed type
+    /// vocabulary, a payload cap measured before per-type validation, and a
+    /// rebuild from known fields only (extras never reach storage).
+    private static func canonicalCommentAnchor(_ raw: Any?) -> (json: String?, code: String?) {
+        guard let value = raw, !(value is NSNull) else { return (nil, nil) }
+        guard let object = value as? [String: Any],
+              let data = object["data"] as? [String: Any]
+        else { return (nil, "anchor_invalid") }
+        guard let type = object["type"] as? String else { return (nil, "anchor_type_invalid") }
+        // The cap measures the whole client payload: a 5 KB quote is rejected
+        // as too large instead of being reported as a shape error.
+        if let encoded = try? JSONSerialization.data(withJSONObject: object), encoded.count > 4_096 {
+            return (nil, "anchor_too_large")
+        }
+        func quoted(_ key: String = "quote") -> String? {
+            guard let quote = data[key] as? String else { return nil }
+            return jsonString(quote)
+        }
+        func integer(_ key: String) -> Int? {
+            guard let number = data[key] as? NSNumber else { return nil }
+            let double = number.doubleValue
+            guard double.isFinite, double.rounded() == double,
+                  double >= Double(Int.min), double <= Double(Int.max)
+            else { return nil }
+            return Int(double)
+        }
+        func nonNegativeInteger(_ key: String) -> Int? {
+            guard let value = integer(key), value >= 1 else { return nil }
+            return value
+        }
+        func roundedNumber(_ key: String) -> Int? {
+            guard let number = data[key] as? NSNumber else { return nil }
+            let double = number.doubleValue
+            guard double.isFinite else { return nil }
+            return Int(double.rounded())
+        }
+        switch type {
+        case "lines", "csv-rows":
+            guard let start = integer("start"), let end = integer("end"), start >= 1, end >= start else {
+                return (nil, "anchor_invalid")
+            }
+            var payload = "{\"start\":\(start),\"end\":\(end)"
+            if let quote = quoted() { payload += ",\"quote\":\(quote)" }
+            return ("{\"type\":\(jsonString(type)),\"data\":\(payload)}}", nil)
+        case "md-section":
+            guard let headingId = data["headingId"] as? String, !headingId.isEmpty,
+                  let headingTitle = data["headingTitle"] as? String
+            else { return (nil, "anchor_invalid") }
+            var payload = "{\"headingId\":\(jsonString(headingId)),\"headingTitle\":\(jsonString(headingTitle))"
+            if let quote = quoted() { payload += ",\"quote\":\(quote)" }
+            return ("{\"type\":\"md-section\",\"data\":\(payload)}}", nil)
+        case "html-region":
+            guard let x = roundedNumber("x"), let y = roundedNumber("y"),
+                  let w = roundedNumber("w"), let h = roundedNumber("h"),
+                  let viewportWidth = roundedNumber("viewportWidth"),
+                  let documentWidth = roundedNumber("documentWidth"),
+                  let documentHeight = roundedNumber("documentHeight"),
+                  x >= 0, y >= 0, w >= 0, h >= 0,
+                  viewportWidth > 0, documentWidth > 0, documentHeight > 0
+            else { return (nil, "anchor_invalid") }
+            var payload = "{\"x\":\(x),\"y\":\(y),\"w\":\(w),\"h\":\(h),\"viewportWidth\":\(viewportWidth),\"documentWidth\":\(documentWidth),\"documentHeight\":\(documentHeight)"
+            if let quote = quoted() { payload += ",\"quote\":\(quote)" }
+            return ("{\"type\":\"html-region\",\"data\":\(payload)}}", nil)
+        default:
+            return (nil, "anchor_type_invalid")
+        }
+    }
+
+    /// Strict structured-mention payload: the comment transport reuses the same
+    /// wire shape as messages and rejects a malformed batch before any write.
+    private static func strictCommentMentions(_ raw: Any?) -> [MentionInput]? {
+        guard let value = raw, !(value is NSNull) else { return [] }
+        guard let rows = value as? [Any] else { return nil }
+        var result: [MentionInput] = []
+        for row in rows {
+            guard let object = row as? [String: Any],
+                  let type = object["type"] as? String, type == "user" || type == "agent",
+                  let id = object["id"] as? String, ServerScope.isUUID(id),
+                  let name = object["name"] as? String, !name.isEmpty
+            else { return nil }
+            result.append(MentionInput(type: type, id: id, name: name))
+        }
+        return result
+    }
+
     public func createAttachmentComment(authorization: String?, attachmentId: String, body: String, serverId: String? = nil) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -17788,16 +17873,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             oauth.addChannelHuman(channelId: created, userId: userId)
             return created
         }()
+        guard let commentMentions = Self.strictCommentMentions(object["mentions"]) else {
+            return Self.json(400, "{\"error\":\"Invalid mentions payload\",\"code\":\"mentions_invalid\"}")
+        }
+        let anchorProjection = Self.canonicalCommentAnchor(object["anchor"])
+        if let code = anchorProjection.code {
+            return Self.json(400, "{\"error\":\"Invalid anchor\",\"code\":\"\(code)\"}")
+        }
+        let anchorJSON = anchorProjection.json
         lock.lock()
         let now = Date()
         let id = UUID().uuidString.lowercased()
-        let anchorJSON: String? = {
-            guard let anchor = object["anchor"] as? [String: Any],
-                  let type = anchor["type"] as? String, type == "lines",
-                  let start = anchor["startLine"] as? Int, let end = anchor["endLine"] as? Int
-            else { return nil }
-            return "{\"type\":\"lines\",\"startLine\":\(start),\"endLine\":\(end)}"
-        }()
         attachmentCommentRecords[attachmentId, default: []].append(AttachmentCommentRecord(
             id: id,
             attachmentId: attachmentId,
@@ -17819,6 +17905,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             createdAt: now
         ))
         lock.unlock()
+        if !commentMentions.isEmpty {
+            recordMemberMentionRows(messageId: id, channelId: threadChannelId, mentions: commentMentions)
+        }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let anchorValue = anchorJSON ?? "null"
