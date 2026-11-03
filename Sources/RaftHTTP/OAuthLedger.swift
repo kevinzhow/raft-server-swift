@@ -1152,6 +1152,13 @@ public final class OAuthLedger: @unchecked Sendable {
         return channelRecords.first(where: { $0.id == id })?.archivedAt
     }
 
+    /// Parent channel of a thread; nil for any other channel kind.
+    public func channelParentChannelId(id: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return channelRecords.first { $0.id == id }?.parentChannelId
+    }
+
     public func channelInfo(id: String) -> (serverId: String, name: String, description: String?)? {
         lock.lock()
         defer { lock.unlock() }

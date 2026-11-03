@@ -25008,12 +25008,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let rows = oauth.channelsForServer(serverId: serverId, userId: userId)
             .filter { $0.type == "dm" }
-            .map { channel -> String in
+            .compactMap { channel -> String? in
                 let agentIds = oauth.channelAgentIds(channelId: channel.id)
                 let humanIds = oauth.channelHumanIds(channelId: channel.id)
                 let peerId: String
                 let peerType: String
                 if let agent = agentIds.first(where: { $0 != userId }) {
+                    // A deleted agent peer stays hydratable by detail id but must
+                    // not reappear in the normal DM list.
+                    if oauth.agentRuntimeInfo(id: agent)?.deleted == true { return nil }
                     peerId = agent
                     peerType = "agent"
                 } else if let human = humanIds.first(where: { $0 != userId }) {
@@ -25152,10 +25155,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
-        guard channelActorCanSee(channelId: channelId, userId: userId) else {
+        let type = oauth.channelType(id: channelId) ?? "channel"
+        // A thread is visible to whoever can see its parent; a private parent
+        // must not leak its child thread's existence or metadata.
+        let threadParentId = type == "thread" ? oauth.channelParentChannelId(id: channelId) : nil
+        let canSee = threadParentId.map { channelActorCanSee(channelId: $0, userId: userId) }
+            ?? channelActorCanSee(channelId: channelId, userId: userId)
+        guard canSee else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
-        let type = oauth.channelType(id: channelId) ?? "channel"
         lock.lock()
         let joined = channel.name == "all"
             || postableChannels[channelId]?.memberIds.contains(userId) == true
@@ -25199,7 +25207,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
         }
         let displayPrefs = oauth.channelDisplayPrefs(channelId: channelId, userId: userId)
-        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"joined\":\(joined),\"maxReadSeq\":\(info.maxReadSeq),\"readStateVersion\":\(version),\"activityMuteSupported\":\(supported),\"collapseLongMessages\":\(displayPrefs.collapseLongMessages),\"displayPrefsVersion\":\(displayPrefs.prefsVersion),\"channelRole\":\(jsonString(channelRole)),\"channelAdminBasis\":\(basis.map { jsonString($0) } ?? "null"),\"channelAuthorityRevision\":\(authorityRevision),\"channelCapabilities\":\(capsJSON)\(peersJSON)}")
+        var dmFields = ""
+        if type == "dm" {
+            lock.lock()
+            let peerId = postableChannels[channelId]?.memberIds.first { $0 != userId }
+            lock.unlock()
+            if let peerId {
+                if let agent = oauth.agentRuntimeInfo(id: peerId) {
+                    dmFields = ",\"peerType\":\"agent\",\"peerId\":\(jsonString(peerId)),\"peerName\":\(jsonString(agent.name))"
+                } else if let account = accounts.values.first(where: { $0.id == peerId }) {
+                    dmFields = ",\"peerType\":\"human\",\"peerId\":\(jsonString(peerId)),\"peerName\":\(jsonString(account.name))"
+                }
+            }
+        }
+        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"joined\":\(joined)\(dmFields),\"maxReadSeq\":\(info.maxReadSeq),\"readStateVersion\":\(version),\"activityMuteSupported\":\(supported),\"collapseLongMessages\":\(displayPrefs.collapseLongMessages),\"displayPrefsVersion\":\(displayPrefs.prefsVersion),\"channelRole\":\(jsonString(channelRole)),\"channelAdminBasis\":\(basis.map { jsonString($0) } ?? "null"),\"channelAuthorityRevision\":\(authorityRevision),\"channelCapabilities\":\(capsJSON)\(peersJSON)}")
     }
 
     public func channelDisplaySettings(authorization: String?, serverId: String, channelId: String) -> HTTPReply {

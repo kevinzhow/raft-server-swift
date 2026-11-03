@@ -1116,3 +1116,9 @@ RFC 074 personal assistant：
 - `POST/DELETE /api/messages/:id/reactions` 的 ACK 现在带 scoped 投影：评论消息返回 `commentRef`（无则为 `null`），父消息返回 `attachments[{id,commentCount}]`；user-stage deny 的查看者仍能 reaction，但 `commentRef` 为 `null`、`commentCount` 为 0。
 - 该模块的可移植面至此覆盖完毕：flag gate（server/user stage）、malformed 顺序、counts、viewer 状态、私有 cloak、unlinked/archived/非成员边界、host-message thread 复用与级联、anchor 词表/上限、strict mentions、create/listing/sync/context/reaction 的 commentRef 与 commentCount 投影。
 - 明确排除：`message:updated` live 事件的 io-spy 断言（契约排除进程内广播 spy）、read-only A3 的 billing 只读态（依赖未移植的 billing 功能面）、agent history/search 的 scope quotation（agent transport epic）、failed-write frontier 游标（DB 写失败前缀）。
+
+### channels.getJoined.api：频道详情 joined/thread/DM 组
+
+- `GET /api/channels/:id` 的 `joined` 按请求者实时计算：regular/private 频道的参与者为 true，未加入的 server member 为 false；`#all`（name "all"）是隐式加入，恒为 true；非 UUID 的 id 返回 404 `{"error":"Channel not found"}` 而不是 500。
+- thread 详情：能看到 parent 的 server member 可 hydrate 线程（200，type thread）；私有 parent 对非成员 cloak 成同一 404，不泄漏线程元数据。
+- DM 详情：参与者本人看到 `type:"dm"`、`joined:true` 与 `peerType/peerId/peerName`；agent peer 被软删除后详情仍可 hydrate（peer 字段完整），但该 DM 不再出现在 `GET /api/channels/dm` 列表（详情水合不得复活已删除 agent 的 DM）。
