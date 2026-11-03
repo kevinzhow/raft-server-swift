@@ -946,3 +946,12 @@ RFC 074 personal assistant：
 ### computerLegacyMachines.api：fingerprint 线格式纠正
 
 - `apiKeyFingerprint` 的线上格式是 `sha256(apiKey)` 十六进制的前 16 个字符（与 daemon 本地 `owner.json` 的交集键一致），不是 `sha256:<64hex>`；roster 默认响应与 adopt-legacy 的 roster 身份使用同一值。
+
+### internalComputer.preflight：route-auth registry 自述组
+
+- `POST /internal/computer/preflight`（`sk_computer_*` Bearer）→ 200，body 含 `ok:true`、非空 `surfaceVersion`、`claimedPrefixes`、排序去重的 `registeredPrincipals`、`computerSurface`（每项 `{method,path,principal}`），以及既有的 `serverId`、`serverSlug`、`principal`。
+- `computerSurface` 由 **live router** 派生：遍历已注册路由，按声明前缀映射 principal（`/internal/computer/` → `sk_computer`，`/internal/agent/`、`/internal/agent-api/` → `sk_agent`），不是并行的常量表；通配 catch-all 不进入清单；清单按 path、method 稳定排序；preflight 自身出现在清单里（证明投影读的是真实路由表）。
+- 只读：同一凭据两次调用的 body 完全一致，且不 mint 任何 agent credential。
+- 错误 principal（例如 `sk_agent_*` Bearer）→ 401 `{"code":"invalid_principal"}`；无 Bearer → 401 `{"code":"auth_required"}`。
+- 未注册的 `/internal/computer/*` 兄弟路径（GET/POST/PUT/PATCH/DELETE 任一）带有效 Computer 凭据 → 401 `{"code":"auth_policy_unregistered_path"}`，而不是路由 404；已注册路径不受 catch-all 影响。
+- 明确排除：上游把 preflight 与 Express `routeAuthPolicy` 注册表逐项 `deepEqual` 的断言（等价验收改为：清单从 live router 派生、稳定、自述、principal 前缀一致）；DB 行/凭据计数断言改为 inventory 计数 seam。

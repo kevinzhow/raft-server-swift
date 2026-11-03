@@ -135,6 +135,7 @@ private func parseAttachmentMultipart(data: Data, boundary: String) -> (channelI
 }
 
 public func configure(_ app: Application, services: FallbackServices) {
+    let internalSurface = InternalSurfaceBox()
     services.emailAccounts.onAgentReadUpdated = { serverId, channelId, agentId, maxReadSeq in
         services.emailAccounts.emitAgentScopeRead(
             serverId: serverId,
@@ -1505,8 +1506,18 @@ public func configure(_ app: Application, services: FallbackServices) {
     }
     app.post("internal", "computer", "preflight") { request -> Response in
         routeResponse(services.emailAccounts.computerPreflight(
-            authorization: request.headers[.authorization]
+            authorization: request.headers[.authorization],
+            surface: internalSurface.value
         ))
+    }
+    // The claimed `/internal/computer/` prefix fails closed for paths the
+    // surface registry does not know, instead of leaking a routing 404.
+    for method in [HTTPRequest.Method.get, .post, .put, .patch, .delete] {
+        app.on(method, "internal", "computer", "**") { request -> Response in
+            routeResponse(services.emailAccounts.unregisteredInternalComputerSurface(
+                authorization: request.headers[.authorization]
+            ))
+        }
     }
     app.post("api", "agents") { request -> Response in
         routeResponse(services.emailAccounts.createAgentRoute(
@@ -3644,6 +3655,7 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     var middleware = Middlewares()
+    internalSurface.set(InternalSurfacePolicy.snapshot(routes: app.routes.all))
     middleware.use(ExperimentalSurfaceGate(directory: services.emailAccounts))
     middleware.use(BufferedRequestBodyMiddleware())
     middleware.use(CorsMiddleware(origins: services.corsOrigins))

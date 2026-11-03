@@ -10185,8 +10185,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// `POST /internal/computer/preflight`. Read-only principal check for an
-    /// attached Computer credential.
-    public func computerPreflight(authorization: String?) -> HTTPReply {
+    /// attached Computer credential. The published route-auth projection is
+    /// derived from the live router by the caller, so this surface describes
+    /// what is actually registered instead of a parallel list.
+    public func computerPreflight(authorization: String?, surface: InternalSurfaceSnapshot) -> HTTPReply {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
             return Self.json(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
         }
@@ -10195,9 +10197,28 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let computer = computers.first { $0.apiKey == token && $0.revokedAt == nil }
         lock.unlock()
         guard let computer, let details = oauth.serverDetailsValue(id: computer.serverId) else {
+            return Self.json(401, "{\"error\":\"Invalid principal for this surface\",\"code\":\"invalid_principal\"}")
+        }
+        let claimed = surface.claimedPrefixes.map(jsonString).joined(separator: ",")
+        let principals = surface.registeredPrincipals.map(jsonString).joined(separator: ",")
+        return Self.json(200, "{\"ok\":true,\"surfaceVersion\":\(jsonString(surface.surfaceVersion)),\"claimedPrefixes\":[\(claimed)],\"registeredPrincipals\":[\(principals)],\"computerSurface\":[\(surface.computerSurfaceJSON())],\"serverId\":\(jsonString(computer.serverId)),\"serverSlug\":\(jsonString(details.slug)),\"principal\":{\"kind\":\"computer\",\"id\":\(jsonString(computer.id)),\"name\":\(jsonString(computer.name))}}")
+    }
+
+    /// `POST /internal/computer/*` for a path the surface registry does not
+    /// claim: a live Computer principal is told the path is unregistered
+    /// instead of receiving a routing 404.
+    public func unregisteredInternalComputerSurface(authorization: String?) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
             return Self.json(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
         }
-        return Self.json(200, "{\"ok\":true,\"serverId\":\(jsonString(computer.serverId)),\"serverSlug\":\(jsonString(details.slug)),\"principal\":{\"kind\":\"computer\",\"id\":\(jsonString(computer.id)),\"name\":\(jsonString(computer.name))}}")
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let live = computers.contains { $0.apiKey == token && $0.revokedAt == nil }
+        lock.unlock()
+        guard live else {
+            return Self.json(401, "{\"error\":\"Invalid principal for this surface\",\"code\":\"invalid_principal\"}")
+        }
+        return Self.json(401, "{\"error\":\"This internal surface is not registered\",\"code\":\"auth_policy_unregistered_path\"}")
     }
 
     public func agentRuntimeProviderProbe(authorization: String?, serverId: String, kind: String) -> HTTPReply {
@@ -10677,6 +10698,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return agentCredentials[apiKey]?.lastUsedAt
+    }
+
+    /// Inventory size only — enough to prove a read-only surface minted nothing.
+    public func agentCredentialInventoryCountForTesting() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return agentCredentials.count
     }
 
     private func recordAgentCredentialUse(token: String) {
