@@ -1,12 +1,18 @@
+import Foundation
+
 /// Identity resolved from a legacy machine API key or a machine id.
 /// The NIO `/daemon/connect` listener maps this onto `MatchedMachine`.
 public struct MachineCredentialIdentity: Sendable, Equatable {
     public var machineId: String
     public var serverId: String
+    /// Set once the row was adopted into a Computer attachment; the legacy key
+    /// must then be refused with `legacy_machine_key_migrated`.
+    public var legacyKeyMigratedAt: Date?
 
-    public init(machineId: String, serverId: String) {
+    public init(machineId: String, serverId: String, legacyKeyMigratedAt: Date? = nil) {
         self.machineId = machineId
         self.serverId = serverId
+        self.legacyKeyMigratedAt = legacyKeyMigratedAt
     }
 }
 

@@ -32,7 +32,7 @@ struct LedgerMachineLookup: MachineCredentialLooking {
 
     func machine(apiKey: String) async throws -> MatchedMachine? {
         accounts.machineCredential(apiKey: apiKey).map {
-            MatchedMachine(id: $0.machineId, serverId: $0.serverId)
+            MatchedMachine(id: $0.machineId, serverId: $0.serverId, legacyKeyMigratedAt: $0.legacyKeyMigratedAt)
         }
     }
 }

@@ -931,3 +931,18 @@ RFC 074 personal assistant：
 ### computerLegacyMachines.api：includeAll 的显式默认值
 
 - `includeAll=0` 与缺省等价：仍只返回已有 fingerprint 的行（并带 `apiKeyFingerprint`）；只有 `includeAll=1` 才切换到省略指纹键的完整名册。
+
+### computerAdopt.api：legacy daemon 采用组
+
+- `POST /api/computer/adopt-legacy` 与 attach/roster 共用同一 gate：关闭 → 404；未认证 → 401 `auth_required`；缺 serverSlug 以外的身份字段时按下方规则拒绝。
+- 三种身份择一：原始 `legacyApiKey`、roster 身份（`serverSlug` + `legacyMachineId` + `apiKeyFingerprint`）、daemon 身份（`serverSlug` + `daemonId`）；三者都没有 → 400 `legacy_api_key_required`；`name` 若存在必须是非空且 ≤200 字符的字符串，否则 400 `name_invalid`。
+- 原始 key 采用：只接受 `sk_machine_*` / `sk_daemon_*` 前缀（旧 daemon 两种前缀都在野外存在），未知 key 或非 machine 前缀 → 401 `legacy_key_invalid`；调用者非该 machine Server 成员 → 403 `not_authorized`；不是行创建者的普通 member → 403 `requires_admin`（持有 key 本身不等于 manageMachines 权限）；成功 → 201 `{apiKey:"sk_computer_*", computerId, machineId, serverId, resumed:false}`，machine 行的 `legacyKeyMigratedAt` 置位；同一原始 key 重放 → 409 `legacy_machine_key_migrated`。
+- roster 身份采用：fingerprint 必须是 16 位十六进制，否则 401 `legacy_key_invalid`；身份是 user-scoped（行的 userId 必须等于调用者，选中他人行返回同一 401，不可探测 roster）；Server 缺失或非成员 → 403 `not_authorized`；已 adopted 且存在活跃 Computer → 201 `resumed:true` 并轮换 `sk_computer_*`（旧 Computer 凭据立即失效），已 adopted 但无 Computer → 409 `legacy_machine_key_migrated`。
+- daemon 身份采用：owner/admin（`registerMachines`）可采用他人在该 Server 的行；行不存在时 owner/admin 得到 404 `legacy_machine_not_found`，非管理者得到 403 `requires_admin`（不泄露行身份）；行创建者即使只是普通 member 也可采用自己的行；采用后同样支持 resume + 凭据轮换。
+- 并发同一原始 key：恰好一个 201、另一个 409 —— mark 与建/轮换在同一临界区原子完成。
+- 采用成功立即失效 legacy key：`/daemon/connect` 握手对已 adopted 的 `sk_machine_*` 回 401 + `Slock-Reason: legacy_machine_key_migrated`，无 TTL 窗口；上游该断言打在 `/internal/machine/*`，该机器 HTTP 表面尚未移植，故在 connect 握手上锁定同一拒绝语义。
+- 明确排除：`legacy_key_migrated_at` / computers 行 DB 断言、`fenceMachinePrincipalConnections` 进程内 spy、Express 未挂载时的 HTML 404 body（以 404 状态 + 统一 JSON `not_found` 约定验收）。
+
+### computerLegacyMachines.api：fingerprint 线格式纠正
+
+- `apiKeyFingerprint` 的线上格式是 `sha256(apiKey)` 十六进制的前 16 个字符（与 daemon 本地 `owner.json` 的交集键一致），不是 `sha256:<64hex>`；roster 默认响应与 adopt-legacy 的 roster 身份使用同一值。

@@ -160,6 +160,41 @@ func theServerProcessServesHealthAndAcceptsADaemon() async throws {
     #expect(acceptedText.contains("\"machineId\":\"\(machineId)\""))
     #expect(acceptedText.contains("\"serverId\":\"\(serverId)\""))
 
+    // Legacy daemon adoption: one exchange turns an sk_machine_* daemon into a
+    // Computer attachment, and the legacy key stops authenticating immediately
+    // — no TTL window — with the typed migration reason.
+    let (registerMachineStatus, registerMachineBody) = try await http(
+        port: httpPort,
+        method: "POST",
+        path: "/api/servers/\(serverId)/machines",
+        token: token,
+        serverId: serverId,
+        body: "{\"name\":\"legacy-startup-daemon\"}"
+    )
+    #expect(registerMachineStatus == 200)
+    let legacyKey = try jsonObject(registerMachineBody)["apiKey"] as? String ?? ""
+    #expect(legacyKey.hasPrefix("sk_machine_"))
+    let legacyBefore = try await probeDaemonConnect(port: daemonPort, authorization: "Bearer \(legacyKey)")
+    #expect(String(decoding: legacyBefore, as: UTF8.self).hasPrefix("HTTP/1.1 101 Switching Protocols\r\n"))
+
+    let (adoptStatus, adoptBody) = try await http(
+        port: httpPort,
+        method: "POST",
+        path: "/api/computer/adopt-legacy",
+        token: token,
+        serverId: serverId,
+        body: "{\"legacyApiKey\":\(json(legacyKey)),\"name\":\"adopted-startup-computer\"}"
+    )
+    #expect(adoptStatus == 201)
+    let adopted = try jsonObject(adoptBody)
+    #expect((adopted["apiKey"] as? String)?.hasPrefix("sk_computer_") == true)
+    #expect(adopted["resumed"] as? Bool == false)
+
+    let legacyAfter = try await probeDaemonConnect(port: daemonPort, authorization: "Bearer \(legacyKey)")
+    let legacyAfterText = String(decoding: legacyAfter, as: UTF8.self)
+    #expect(legacyAfterText.hasPrefix("HTTP/1.1 401 Unauthorized\r\n"))
+    #expect(legacyAfterText.contains("Slock-Reason: legacy_machine_key_migrated"))
+
     let daemon = try ServerProcess(
         executable: daemonBinary,
         environment: [

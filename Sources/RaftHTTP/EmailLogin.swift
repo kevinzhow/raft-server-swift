@@ -13815,10 +13815,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// Keyed lookup shared by `/daemon/connect` and the legacy machine surface.
+    /// A row that was adopted into a Computer attachment carries its migration
+    /// stamp so the connect handshake refuses the legacy key immediately, with
+    /// no TTL window.
     public func machineCredential(apiKey: String) -> MachineCredentialIdentity? {        lock.lock()
         defer { lock.unlock() }
         guard let machine = machines.first(where: { $0.apiKey == apiKey }) else { return nil }
-        return MachineCredentialIdentity(machineId: machine.id, serverId: machine.serverId)
+        return MachineCredentialIdentity(
+            machineId: machine.id,
+            serverId: machine.serverId,
+            legacyKeyMigratedAt: machine.legacyKeyMigratedAt
+        )
     }
 
     public func machineCredential(id: String) -> MachineCredentialIdentity? {
@@ -15134,6 +15141,252 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(201, "{\"apiKey\":\(jsonString(apiKey)),\"serverMachineId\":\(jsonString(machineId)),\"machineId\":\(jsonString(machineId)),\"serverId\":\(jsonString(serverId)),\"serverSlug\":\(jsonString(details.slug)),\"name\":\(jsonString(name)),\"resumed\":false}")
     }
 
+    /// `POST /api/computer/adopt-legacy`. One-time migration from a legacy
+    /// `sk_machine_*` / `sk_daemon_*` daemon to a fresh `sk_computer_*`
+    /// principal. Authority depends on the selector: possession of the raw
+    /// legacy key, a row from the caller's user-scoped legacy roster, or (with
+    /// `registerMachines`) a daemon row on a Server the caller manages. All
+    /// three mint a Computer attachment, so all three need the same
+    /// owner/admin capability as `/api/computer/attach`.
+    public func adoptLegacyComputer(authorization: String?, body: String) -> HTTPReply {
+        guard computerAttachEnabled() else {
+            return Self.json(404, "{\"error\":\"Not found\",\"code\":\"not_found\"}")
+        }
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Authentication required\",\"code\":\"auth_required\"}")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+        func text(_ key: String) -> String? {
+            guard let value = object[key] as? String, !value.isEmpty else { return nil }
+            return value
+        }
+        let hasRawLegacyKey = text("legacyApiKey") != nil
+        let hasRosterIdentity = text("serverSlug") != nil && text("legacyMachineId") != nil && text("apiKeyFingerprint") != nil
+        let hasDaemonIdentity = text("serverSlug") != nil && text("daemonId") != nil
+        guard hasRawLegacyKey || hasRosterIdentity || hasDaemonIdentity else {
+            return Self.json(400, "{\"error\":\"legacyApiKey, fingerprint roster identity, or daemonId identity is required\",\"code\":\"legacy_api_key_required\"}")
+        }
+        var requestedName: String?
+        if let rawName = object["name"], !(rawName is NSNull) {
+            guard let name = rawName as? String, !name.isEmpty, name.count <= 200 else {
+                return Self.json(400, "{\"error\":\"name must be a non-empty string up to 200 chars\",\"code\":\"name_invalid\"}")
+            }
+            requestedName = name
+        }
+        if hasRosterIdentity {
+            return adoptLegacyComputerByRoster(
+                userId: userId,
+                serverSlug: text("serverSlug") ?? "",
+                legacyMachineId: text("legacyMachineId") ?? "",
+                fingerprint: text("apiKeyFingerprint") ?? "",
+                requestedName: requestedName
+            )
+        }
+        if hasDaemonIdentity {
+            return adoptLegacyComputerByDaemonId(
+                userId: userId,
+                serverSlug: text("serverSlug") ?? "",
+                daemonId: text("daemonId") ?? "",
+                requestedName: requestedName
+            )
+        }
+        return adoptLegacyComputerByRawKey(
+            userId: userId,
+            rawKey: text("legacyApiKey") ?? "",
+            requestedName: requestedName
+        )
+    }
+
+    private func adoptLegacyComputerByRawKey(userId: String, rawKey: String, requestedName: String?) -> HTTPReply {
+        // The legacy auth middleware accepts both prefixes, so a real daemon in
+        // the wild may still be running on either one.
+        guard rawKey.hasPrefix("sk_machine_") || rawKey.hasPrefix("sk_daemon_") else {
+            return Self.json(401, "{\"error\":\"Invalid legacy machine key\",\"code\":\"legacy_key_invalid\"}")
+        }
+        lock.lock()
+        let matched = machines.first { $0.apiKey == rawKey }?.id
+        lock.unlock()
+        guard let matched else {
+            return Self.json(401, "{\"error\":\"Invalid legacy machine key\",\"code\":\"legacy_key_invalid\"}")
+        }
+        // Possession is proven by the key itself; replay stays a hard conflict.
+        return adoptMatchedLegacyMachine(
+            userId: userId,
+            machineId: matched,
+            requestedName: requestedName,
+            allowAlreadyMigratedResume: false
+        )
+    }
+
+    private func adoptLegacyComputerByRoster(
+        userId: String,
+        serverSlug: String,
+        legacyMachineId: String,
+        fingerprint: String,
+        requestedName: String?
+    ) -> HTTPReply {
+        guard fingerprint.wholeMatch(of: /^[0-9a-fA-F]{16}$/) != nil else {
+            return Self.json(401, "{\"error\":\"Invalid legacy machine key\",\"code\":\"legacy_key_invalid\"}")
+        }
+        guard let serverId = oauth.serverIdForSlug(serverSlug),
+              oauth.memberRole(serverId: serverId, userId: userId) != nil
+        else {
+            return Self.json(403, "{\"error\":\"Not authorized to adopt this machine\",\"code\":\"not_authorized\"}")
+        }
+        // The roster identity is user-scoped: selecting somebody else's row is
+        // the same 401 as an unknown key so the roster cannot be probed.
+        lock.lock()
+        let matched = machines.first { machine in
+            machine.id == legacyMachineId
+                && machine.serverId == serverId
+                && machine.userId == userId
+                && machine.apiKeyFingerprint?.lowercased() == fingerprint.lowercased()
+        }?.id
+        lock.unlock()
+        guard let matched else {
+            return Self.json(401, "{\"error\":\"Invalid legacy machine key\",\"code\":\"legacy_key_invalid\"}")
+        }
+        return adoptMatchedLegacyMachine(
+            userId: userId,
+            machineId: matched,
+            requestedName: requestedName,
+            allowAlreadyMigratedResume: true
+        )
+    }
+
+    private func adoptLegacyComputerByDaemonId(
+        userId: String,
+        serverSlug: String,
+        daemonId: String,
+        requestedName: String?
+    ) -> HTTPReply {
+        guard let serverId = oauth.serverIdForSlug(serverSlug),
+              let role = oauth.memberRole(serverId: serverId, userId: userId)
+        else {
+            return Self.json(403, "{\"error\":\"Not authorized to adopt this machine\",\"code\":\"not_authorized\"}")
+        }
+        let managesMachines = role == "owner" || role == "admin"
+        lock.lock()
+        let row = machines.first { $0.id == daemonId && $0.serverId == serverId }
+        lock.unlock()
+        guard let row else {
+            // Managers learn the row is missing; everybody else collapses into
+            // the capability refusal so the route cannot enumerate identities.
+            return managesMachines
+                ? Self.json(404, "{\"error\":\"Legacy machine was not found on this server\",\"code\":\"legacy_machine_not_found\"}")
+                : Self.json(403, "{\"error\":\"Adopting a Computer requires the admin or owner role on this server\",\"code\":\"requires_admin\"}")
+        }
+        if row.userId != userId && !managesMachines {
+            return Self.json(403, "{\"error\":\"Adopting a Computer requires the admin or owner role on this server\",\"code\":\"requires_admin\"}")
+        }
+        return adoptMatchedLegacyMachine(
+            userId: userId,
+            machineId: row.id,
+            requestedName: requestedName,
+            allowAlreadyMigratedResume: true
+        )
+    }
+
+    private func adoptMatchedLegacyMachine(
+        userId: String,
+        machineId: String,
+        requestedName: String?,
+        allowAlreadyMigratedResume: Bool
+    ) -> HTTPReply {
+        lock.lock()
+        let snapshot = machines.first { $0.id == machineId }
+        lock.unlock()
+        guard let snapshot else {
+            return Self.json(401, "{\"error\":\"Invalid legacy machine key\",\"code\":\"legacy_key_invalid\"}")
+        }
+        guard let role = oauth.memberRole(serverId: snapshot.serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not authorized to adopt this machine\",\"code\":\"not_authorized\"}")
+        }
+        let managesMachines = role == "owner" || role == "admin"
+        if snapshot.userId != userId && !managesMachines {
+            return Self.json(403, "{\"error\":\"Adopting a Computer requires the admin or owner role on this server\",\"code\":\"requires_admin\"}")
+        }
+        let name = Self.adoptedComputerName(requestedName, fallback: snapshot.name)
+        lock.lock()
+        guard let machineIndex = machines.firstIndex(where: { $0.id == machineId }) else {
+            lock.unlock()
+            return Self.json(401, "{\"error\":\"Invalid legacy machine key\",\"code\":\"legacy_key_invalid\"}")
+        }
+        let serverId = machines[machineIndex].serverId
+        let liveComputerIndex = computers.firstIndex { computer in
+            computer.machineId == machineId && computer.serverId == serverId && computer.revokedAt == nil
+        }
+        if machines[machineIndex].legacyKeyMigratedAt != nil {
+            // Roster/daemon selection may retry after the server committed: the
+            // setup did not finish locally, so resume the linked Computer with
+            // a rotated credential instead of demanding the legacy key again.
+            guard allowAlreadyMigratedResume, let liveComputerIndex else {
+                lock.unlock()
+                return Self.json(409, "{\"error\":\"This machine has already been migrated to a Computer attachment\",\"code\":\"legacy_machine_key_migrated\"}")
+            }
+            let apiKey = Self.computerAPIKeyMaterial()
+            computers[liveComputerIndex] = (
+                id: computers[liveComputerIndex].id,
+                serverId: serverId,
+                name: name,
+                apiKey: apiKey,
+                machineId: machineId,
+                revokedAt: nil,
+                online: computers[liveComputerIndex].online,
+                version: computers[liveComputerIndex].version
+            )
+            let computerId = computers[liveComputerIndex].id
+            lock.unlock()
+            return Self.adoptedComputerReply(apiKey: apiKey, computerId: computerId, machineId: machineId, serverId: serverId, resumed: true)
+        }
+        // Atomic mark: only the first caller flips the flag, so concurrent
+        // adoption requests collapse into exactly one winner.
+        machines[machineIndex].legacyKeyMigratedAt = Date()
+        let apiKey = Self.computerAPIKeyMaterial()
+        let computerId: String
+        let resumed: Bool
+        if let liveComputerIndex {
+            computers[liveComputerIndex] = (
+                id: computers[liveComputerIndex].id,
+                serverId: serverId,
+                name: name,
+                apiKey: apiKey,
+                machineId: machineId,
+                revokedAt: nil,
+                online: computers[liveComputerIndex].online,
+                version: computers[liveComputerIndex].version
+            )
+            computerId = computers[liveComputerIndex].id
+            resumed = true
+        } else {
+            computerId = UUID().uuidString.lowercased()
+            computers.append((id: computerId, serverId: serverId, name: name, apiKey: apiKey, machineId: machineId, revokedAt: nil, online: false, version: nil))
+            resumed = false
+        }
+        computerAttachers[machineId] = userId
+        lock.unlock()
+        return Self.adoptedComputerReply(apiKey: apiKey, computerId: computerId, machineId: machineId, serverId: serverId, resumed: resumed)
+    }
+
+    private static func adoptedComputerReply(
+        apiKey: String,
+        computerId: String,
+        machineId: String,
+        serverId: String,
+        resumed: Bool
+    ) -> HTTPReply {
+        Self.json(201, "{\"apiKey\":\(jsonString(apiKey)),\"computerId\":\(jsonString(computerId)),\"machineId\":\(jsonString(machineId)),\"serverId\":\(jsonString(serverId)),\"resumed\":\(resumed)}")
+    }
+
+    private static func adoptedComputerName(_ supplied: String?, fallback: String) -> String {
+        if let supplied {
+            let trimmed = supplied.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty, trimmed.count <= 200 { return trimmed }
+        }
+        if !fallback.isEmpty, fallback.count <= 200 { return fallback }
+        return "raft-computer"
+    }
+
     /// `POST /internal/computer/runners/:agentId/credentials`. A live Computer
     /// mints an agent credential for a runner of its own machine only.
     public func computerMintRunnerCredential(authorization: String?, agentId: String, body: String) -> HTTPReply {
@@ -15477,8 +15730,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var runtimes: [String] = []
     }
 
+    /// `sha256(apiKey)` hex, first 16 characters — the wire identity the legacy
+    /// daemon also writes into its local `owner.json`, so the roster picker and
+    /// adoption intersect on the same value.
     static func apiKeyFingerprint(_ apiKey: String) -> String {
-        "sha256:" + sha256Hex(apiKey)
+        String(sha256Hex(apiKey).prefix(16))
     }
 
     /// `GET /api/computer/legacy-machines`. A daemon-adoption roster scoped to
@@ -15527,9 +15783,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"serverId\":\(jsonString(serverId)),\"serverSlug\":\(jsonString(details.slug)),\"entries\":[\(entries.joined(separator: ","))]}")
     }
 
-    public func registerMachineWithKeyForTesting(serverId: String, userId: String, name: String) -> (id: String, apiKey: String, fingerprint: String) {
+    public func registerMachineWithKeyForTesting(
+        serverId: String,
+        userId: String,
+        name: String,
+        apiKey providedApiKey: String? = nil
+    ) -> (id: String, apiKey: String, fingerprint: String) {
         let id = UUID().uuidString.lowercased()
-        let apiKey = Self.machineAPIKeyMaterial()
+        let apiKey = providedApiKey ?? Self.machineAPIKeyMaterial()
+        let fingerprint = Self.apiKeyFingerprint(apiKey)
         lock.lock()
         machines.append(MachineRecord(
             id: id,
@@ -15538,10 +15800,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             name: name,
             description: nil,
             apiKey: apiKey,
-            apiKeyFingerprint: Self.apiKeyFingerprint(apiKey)
+            apiKeyFingerprint: fingerprint
         ))
         lock.unlock()
-        return (id, apiKey, Self.apiKeyFingerprint(apiKey))
+        return (id, apiKey, fingerprint)
     }
 
     public func nullMachineFingerprintForTesting(machineId: String) {

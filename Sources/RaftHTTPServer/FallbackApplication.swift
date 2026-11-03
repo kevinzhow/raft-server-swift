@@ -1497,6 +1497,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             includeAll: desktopQuery(request.url.query, "includeAll") == "1"
         ))
     }
+    app.post("api", "computer", "adopt-legacy") { request -> Response in
+        routeResponse(services.emailAccounts.adoptLegacyComputer(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}"
+        ))
+    }
     app.post("internal", "computer", "preflight") { request -> Response in
         routeResponse(services.emailAccounts.computerPreflight(
             authorization: request.headers[.authorization]
