@@ -24290,12 +24290,22 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return oauth.channelType(id: channelId) == "channel" || oauth.isChannelParticipant(channelId: channelId, userId: userId)
     }
 
+    /// Guests may only see channels they explicitly joined; a hidden public
+    /// channel must stay cloaked for the guest role.
+    private func guestDeniedHiddenChannel(channelId: String, serverId: String, userId: String) -> Bool {
+        guard oauth.memberRole(serverId: serverId, userId: userId) == "guest" else { return false }
+        return !oauth.channelHumanIds(channelId: channelId).contains(userId)
+    }
+
     public func channelAgentsRoute(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        if guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId,
               channelActorCanSee(channelId: channelId, userId: userId)
@@ -24359,6 +24369,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        if guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId,
               oauth.isChannelParticipant(channelId: channelId, userId: userId)
@@ -25168,6 +25181,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
+        if guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
@@ -25313,6 +25329,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
+        if guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
@@ -25350,6 +25369,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        if guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
@@ -25720,6 +25742,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        if guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")

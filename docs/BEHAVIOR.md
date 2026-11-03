@@ -1271,3 +1271,9 @@ RFC 074 personal assistant：
 - 撤销族（logout）后，该族 access token 不再通过 `authorize`：既不能审批 device 授权，也不能换取新 session；控制组 refresh 仍 401。
 - guest 角色的历史/同步作用域只覆盖其显式加入的频道：`GET /api/messages/sync`（省略 channel_id）不得返回 guest 未加入频道的消息；`GET /api/messages/channel/:id` 对非成员的 guest 返回 403。
 - 明确排除：legacy machine key 迁移缓存热态用例（依赖 DB 缓存夹具与迁移写路径，本移植未移植该缓存层）。
+
+### guestVisibilityBoundaries.api（HTTP 面）
+
+- guest 角色对未显式加入的 hidden public channel 完全 cloaked：`GET /api/channels/:id`、`/members`、`/agents` 一律 404。
+- guest 的 broad sync（省略 channel_id）不包含 hidden channel 的消息；guest 对 hidden channel 的 `read`、`read-all`、`unread` 写操作一律 404（`guestDeniedHiddenChannel` 统一 gate：guest 且非 `channelHumanIds` 成员）。
+- 明确排除：三个 socket room 断言（metadata-bearing server-room events、降级为 guest 时断开、撤销 guestVisible 时驱逐 channel room）——socket room 面未移植。
