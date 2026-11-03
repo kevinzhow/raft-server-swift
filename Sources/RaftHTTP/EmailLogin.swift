@@ -164,10 +164,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var hostedMigrationServers: Set<String> = []
     private var hostedRuntimeServers: Set<String> = []
     private var hostedProviderTokenOverride: String?
-    /// Agent-receiver activity mute, keyed `channelId\nagentId`: ordinary
-    /// deliveries from that channel are suppressed from its `muteFromSeq`
-    /// onward, while personal @mentions pierce the mute.
-    private var agentMuteStates: [String: (serverId: String, muteFromSeq: Int)] = [:]
     private var hostedMigrations: [String: HostedMigrationRecord] = [:]
     private var appLoginRequests: [String: AppLoginRequest] = [:]
 
@@ -11392,6 +11388,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "[\(rows.joined(separator: ","))]")
     }
 
+    public func setAgentMuteForTesting(channelId: String, agentId: String, serverId: String, muteFromSeq: Int) {
+        _ = oauth.setActivityMuted(channelId: channelId, receiverId: agentId, muted: true, muteFromSeq: muteFromSeq)
+    }
+
     @discardableResult
     public func createAgentDirectChannelForTesting(serverId: String, firstAgentId: String, secondAgentId: String) -> String {
         let id = UUID().uuidString.lowercased()
@@ -11530,16 +11530,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let createdAt = ISO8601DateFormatter().string(from: Date())
         let rows = oauth.channelsForServer(serverId: info.serverId, userId: userId).compactMap { channel -> String? in
             guard oauth.channelAgentIds(channelId: channel.id).contains(agentId) else { return nil }
+            guard channel.name != "all" else { return nil }
             lock.lock()
             let postable = postableChannels[channel.id]
             lock.unlock()
+            let agentPrefs = oauth.notificationPrefs(channelId: channel.id, userId: agentId)
+            let agentMute = agentPrefs.activityMuted ? agentPrefs.muteFromSeq : nil
             if let postable, postable.kind == "thread" || postable.kind == "dm" { return nil }
             let type = oauth.channelType(id: channel.id) ?? "channel"
             guard type == "channel" || type == "private" || type == "joint" else { return nil }
+            // Private and joint memberships are only listable to a viewer who is
+            // in that channel too; a plain channel stays listable.
             if type != "channel", !oauth.channelHumanIds(channelId: channel.id).contains(userId) { return nil }
-            let prefs = oauth.notificationPrefs(channelId: channel.id, userId: agentId)
-            let muteJSON = prefs.muteFromSeq.map(String.init) ?? "null"
-            return "{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"description\":\(oauth.channelInfo(id: channel.id)?.description.map { jsonString($0) } ?? "null"),\"type\":\(jsonString(type)),\"createdAt\":\(jsonString(createdAt)),\"archivedAt\":null,\"activityMuted\":\(prefs.activityMuted),\"muteFromSeq\":\(muteJSON)}"
+            let muteJSON = agentMute.map(String.init) ?? "null"
+            return "{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"description\":\(oauth.channelInfo(id: channel.id)?.description.map { jsonString($0) } ?? "null"),\"type\":\(jsonString(type)),\"createdAt\":\(jsonString(createdAt)),\"archivedAt\":null,\"activityMuted\":\(agentMute != nil),\"muteFromSeq\":\(muteJSON)}"
         }
         return Self.json(200, "[\(rows.joined(separator: ","))]")
     }
@@ -18876,7 +18880,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 // public channels are listed too, with their join state.
                 if !joined && (channel.kind == "private" || channel.kind == "joint") { return nil }
                 let type = channel.kind == "private" || channel.kind == "joint" ? channel.kind : "channel"
-                return (id, channel.name, type, joined, agentMuteStates["\(id)\n\(agent.id)"]?.muteFromSeq)
+                let agentMute = oauth.notificationPrefs(channelId: id, userId: agent.id)
+                return (id, channel.name, type, joined, (agentMute.activityMuted ? agentMute.muteFromSeq : nil))
             }
             .sorted { $0.0 < $1.0 }
         let agentRows = oauth.activeAgentIds(serverId: agent.serverId).map { otherId -> String in
@@ -23580,15 +23585,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func agentMuteStateForTesting(channelId: String, agentId: String) -> (serverId: String, muteFromSeq: Int)? {
-        lock.lock()
-        defer { lock.unlock() }
-        return agentMuteStates["\(channelId)\n\(agentId)"]
+        let prefs = oauth.notificationPrefs(channelId: channelId, userId: agentId)
+        guard prefs.activityMuted, let muteFromSeq = prefs.muteFromSeq else { return nil }
+        return (oauth.channelServerId(channelId) ?? "", muteFromSeq)
     }
 
     private func agentMessageSuppressedLocked(_ message: StoredHumanMessage, agentId: String) -> Bool {
-        guard let state = agentMuteStates["\(message.channelId)\n\(agentId)"],
-              message.seq >= state.muteFromSeq
-        else { return false }
+        let prefs = oauth.notificationPrefs(channelId: message.channelId, userId: agentId)
+        guard prefs.activityMuted, let from = prefs.muteFromSeq, message.seq >= from else {
+            return false
+        }
         let mentioned = storedMentions.contains {
             $0.messageId == message.id && $0.targetType == "agent" && $0.targetId == agentId
         }
@@ -23614,18 +23620,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(403, "{\"error\":\"Agent is not a member of this channel\",\"code\":\"not_channel_member\"}")
         }
-        let key = "\(channelId)\n\(agent.id)"
-        if muted {
-            let latest = humanMessageRows.filter { $0.channelId == channelId }.map(\.seq).max() ?? 0
-            agentMuteStates[key] = (agent.serverId, latest + 1)
-        } else {
-            agentMuteStates.removeValue(forKey: key)
-        }
-        let state = agentMuteStates[key]
+        let latest = humanMessageRows.filter { $0.channelId == channelId }.map(\.seq).max() ?? 0
         lock.unlock()
+        let state = oauth.setActivityMuted(
+            channelId: channelId,
+            receiverId: agent.id,
+            muted: muted,
+            muteFromSeq: muted ? latest + 1 : nil
+        )
         let name = channel.name
         if muted {
-            let muteFromSeq = state?.muteFromSeq ?? 0
+            let muteFromSeq = state.prefs.muteFromSeq ?? (latest + 1)
             let attention = "{\"state\":\"muted\",\"unmuteCommand\":\(jsonString("raft channel unmute #\(name)")),\"unmuteApi\":\(jsonString("POST /internal/agent-api/channels/\(channelId)/unmute")),\"stillArrives\":[\"Personal @mentions still arrive.\",\"Direct messages still arrive.\",\"Threads you follow deliver independently.\"],\"threadBoundary\":\(jsonString("Channel mute suppresses ordinary Activity from this channel only. Threads you follow keep delivering independently until you unfollow them.")),\"catchUp\":\(jsonString("Run `raft channel history #\(name)` or GET /internal/agent-api/history to catch up."))}"
             return Self.json(200, "{\"activityMuted\":true,\"muteFromSeq\":\(muteFromSeq),\"attention\":\(attention)}")
         }

@@ -857,3 +857,13 @@ RFC 074 personal assistant：
 - `displayLanguage`：支持 tag 归一化持久化（`zh-Hans`→`zh-cn`、`en-US`→`en`）；未发布的 UI locale（`fr-FR`、`zh-TW`）→ 400 且保留旧值；显式 `null` 清空偏好。
 - `shareUsageData`：初始 null；`true/false/null` 往返并回读一致；非布尔 → 400。
 - `GET /api/auth/me` 的 `gravatarHash` 是 email 去空白小写后的 SHA-256 hex。
+
+### agents.api：身份与发现组
+
+- `GET /api/agents/:id` 非 UUID → 404 精确 `{"error":"Agent not found"}`（无 code）。
+- `POST /api/agents`：reserved mention-like handle（all/human/agent/here/idle/busy/system/reminders，大小写不敏感）→ 400 error 含 `is reserved. Choose another name.`；同 Server 活跃 agent 重名 → 409 error 含 "already taken"。
+- creator 创建时绑定：`creator:{type:"human",id}`；`PATCH /api/agents/:id/creator` 不存在 → 404，creator 不变。
+- `GET /api/agents/:id/runtime-options` 由 member 的 viewAgents 能力满足（不要求 owner/admin），返回 200。
+- `GET /api/agents/:id/agent-dms`：只列 agent-to-agent DM（人类 DM 不出现），行 `{id,peerId,peerName,lastMessagePreview}`；preview 跳过尾部 system 消息。
+- `GET /api/agents/:id/channels`：只列该 agent 的显式频道成员（不含虚拟 #all、thread、DM）；private/joint 需要 viewer 也在该频道；行含 `{id,name,description,type,createdAt,archivedAt,activityMuted,muteFromSeq}`，mute 是 agent receiver 自身状态（viewer 的 mute 不泄漏）。
+- agent mute 状态与 human 共用 receiver-keyed notification prefs 存储（`channelId + receiverId`），mute 路由写入带订阅边界 `muteFromSeq`。

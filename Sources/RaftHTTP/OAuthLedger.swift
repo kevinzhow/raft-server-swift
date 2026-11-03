@@ -1203,6 +1203,28 @@ public final class OAuthLedger: @unchecked Sendable {
         return channelNotificationPrefs["\(channelId)\n\(userId)"] ?? ChannelNotificationPrefs()
     }
 
+    /// Receiver-keyed activity mute with an explicit subscribe boundary. Agents
+    /// and humans share this per-receiver prefs store.
+    public func setActivityMuted(
+        channelId: String,
+        receiverId: String,
+        muted: Bool,
+        muteFromSeq: Int?
+    ) -> (prefs: ChannelNotificationPrefs, changed: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = "\(channelId)\n\(receiverId)"
+        var prefs = channelNotificationPrefs[key] ?? ChannelNotificationPrefs()
+        if prefs.activityMuted == muted && prefs.muteFromSeq == muteFromSeq {
+            return (prefs, false)
+        }
+        prefs.activityMuted = muted
+        prefs.muteFromSeq = muted ? muteFromSeq : nil
+        prefs.prefsVersion += 1
+        channelNotificationPrefs[key] = prefs
+        return (prefs, true)
+    }
+
     public func setActivityMuted(channelId: String, userId: String, muted: Bool) -> (prefs: ChannelNotificationPrefs, changed: Bool) {
         lock.lock()
         defer { lock.unlock() }
