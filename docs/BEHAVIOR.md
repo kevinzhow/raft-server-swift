@@ -965,3 +965,13 @@ RFC 074 personal assistant：
 - `DELETE /internal/computer/runners/:agentId/credentials/:credentialId`：同样的 machine 绑定；凭据不属于该 agent → 404 `{"code":"credential_missing"}`；成功 → 200 `{agentId,credentialId,revoked:true}` 并写 `revokedAt`。
 - 非 Computer principal（`sk_agent_*`）→ 401/403（registry 前置拒绝，handler 不运行）。
 - 明确排除：provider materialization 组（provider connection 密钥材料化/加密、launch config reference-only 语义依赖尚未移植的 provider connection 传输面）。
+
+### mobileDownload：公开移动下载入口组
+
+- `GET /api/mobile-download` 不需要会话：无 Authorization 时仍由 handler 回答（空频道给 404 而不是 401）。
+- `?platform=android|ios` 显式指定优先于 User-Agent；无 platform 时按 UA 判定：Android → android，iPhone/iPod/legacy iPad → ios；现代 iPadOS 的 macOS 同串 UA 视为不可分类。
+- 不可分类（Mac、现代 iPad、无 UA）→ 302 到 web chooser 的**绝对** URL `${APP_URL}/download`（去尾斜杠），`Cache-Control: private, max-age=300`；不猜平台、不返回错误页。
+- iOS → 302 到 TestFlight URL（绝不指向 Hands `.ipa`），`Cache-Control: private, max-age=300`，且不调用 Hands。
+- Android → 解析 Hands `latest`：APK 优先于 store bundle（与 assets 顺序无关）；命中 → 302 到 `download_url`，`Cache-Control: private, max-age=min(expires_in,300)`（缺 `expires_in` 时为 0）。
+- 空频道 → 404 `{"error":"No build available yet","code":"no_active_release"}`；只有 store bundle → 404 `{"error":"No installable build available yet","code":"no_installable_build"}` 且无 Location；配置错误（404 但 code 非 `no_active_release`、缺 code、缺该平台 asset）→ 502 `{"error":"Mobile download is unavailable","code":"not_configured"}`；传输失败或非 2xx → 502 `code:"upstream_error"`；错误分支都不重定向。
+- 明确排除：上游对私有 helper 的单元断言（UA 分类、chooser URL 构造、`lookupLatestAsset` 直调）不作为移植对象——其行为已通过 HTTP 路由断言覆盖；viewport 宽度不参与判定一类纯单元断言没有 HTTP 观测面，按不可移植排除。
