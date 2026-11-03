@@ -1153,3 +1153,9 @@ RFC 074 personal assistant：
 - `DaemonTurnSummaryTracker` 按 agent 维护 turn：`begin` 打开新 turn（若上一个未结束则以其 `previousOutcome` 收束并返回 summary）；`observe` 折叠 `tool_start`/`tool_end`（工具分类：shell 命令表 → run_checks/version_control/read_file/search/run_command，send/read 等语义映射，`mcp__`/斜杠工具 → mcp），未匹配 callId 的 end 依序消费 unmatched；`noteSendOutcome` 记录 sent（messageId/lastReply）或 held（send_held problem）；`finish` 只产出一次。
 - summary 形状与上游一致：`v:1`、startedAt/endedAt（clamp）、outcome、trigger、按首次出现排序的 actions、toolCalls、problems（上限 20，problemCount 为全量）、messagesSent、lastReplyMessageId；`turnOutcomeForActivity` 只在 online+idle / offline+runtime_crashed|runtime_unavailable / offline+其他 detail 时结束 turn。
 - `turnTriggerFromMessages`：频道路径 `#name`，thread 路径 `#parent:channelName 的 8 位后缀`，DM 路径 `dm:@sender`，并携带 channelId/sender/messageId。
+
+### daemon launchPhaseTransition
+
+- 两族导出行为 `launch_runtime_readiness_transition` / `launch_activation_delivery_transition`：enter/close 行都带 identity spine（agent_launch_id/agent_id/server_id/machine_id/runtime/driver/launch_source）；wait enter 带 `is_wait_state:true`、封闭 `fence_kind`（readiness: runtime_startup_timeout；activation: none）与可选 `deadline_unix_ms`；close 带封闭 `close_result`，activation close 可带 `delivered_via`（spawn_prompt|stdin）。
+- 配对契约：`(agent_launch_id, state_instance_id)` 上一个 enter 恰好一个 close，`transition_seq` 只作排序/审计且不可复用；relaunch 各自独立配对；缺失 launch id 以 `negative_evidence_bucket: missing_launch_id` 表达（enter 与 close 都带）。
+- Q8 scrub：断言器拒绝任何包含 prompt/payload/stderr/text/token/secret/credential/api_key/cwd/home/path/endpoint/env 的 attr key（`launch_source`/`span_name` 白名单例外）。
