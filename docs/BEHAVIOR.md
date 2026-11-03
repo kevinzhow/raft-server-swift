@@ -826,3 +826,10 @@ RFC 074 personal assistant：
 - `PATCH /api/channels/:id` 的 `visibility`：`#all` 对 human 与 agent 都拒绝，403 `{"code":"all_channel_visibility_managed_separately"}`，错误文本指引「Only a human can do it, from channel settings or server settings」；agent 频道更新同样受此守卫。`#all` 的隐藏/恢复只走 human 的 `/api/channels/system/all/hide|restore`，且可逆。
 - 普通频道改 visibility 需要「owner/admin 能力 + 当前是该频道成员」：非成员（human 或 agent）→ 403 `{"code":"channel_membership_required"}`；普通 member 即使已加入也因缺 changeChannelVisibility 被 403；server owner 加入后可 private↔public 往返。
 - DM 创建（human 与 agent 对端）现在注册 postable 会话与双方成员身份，人类 DM 可直接收发消息。
+
+### channels.api：read-all 委派组
+
+- `POST /api/channels/:id/read-all` 支持 kinded receiver：`{"receiver":{"kind":"agent","id":...}}` 把该频道的 agent 读游标推进到频道最新 seq，返回 `{ok:true,seq,readStateVersion}`（首次推进 version 1）；授权 = 调用者 owner/admin 或该 agent 的 creator，且 agent 必须是该频道成员；human 调用者的读状态完全不改。
+- 委派在「调用者是否频道成员」兜底之前判定：owner 即使不在 private 频道也能委派；非授权 member → 403 且零写入；`kind:"human"` 的 receiver（或任何非 agent 值）→ 403，不会回退到调用者或目标 human。
+- 不带 receiver 的 `read-all` 仍推进调用者自己的作用域（详情 `maxReadSeq` 到最新 seq）。
+- 明确排除：socket `scope_read:updated`/user-room 事件与 trace 断言、agent 读状态的持久 DB 行断言。

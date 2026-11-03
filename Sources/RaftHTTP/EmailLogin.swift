@@ -23769,6 +23769,36 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
+        // A kinded receiver delegates the read to that agent. Authority is the
+        // server role or the agent's creator, never the caller's own membership:
+        // the human caller's read state must stay untouched.
+        if let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+           let receiver = object["receiver"] as? [String: Any],
+           let kind = receiver["kind"] as? String,
+           let receiverId = receiver["id"] as? String {
+            guard kind == "agent",
+                  let agent = oauth.agentRuntimeInfo(id: receiverId),
+                  agent.serverId == serverId
+            else {
+                return Self.json(403, "{\"error\":\"Forbidden\"}")
+            }
+            let canDelegate = role == "owner" || role == "admin" || agent.creatorUserId == userId
+            guard canDelegate, oauth.channelAgentIds(channelId: channelId).contains(agent.id) else {
+                return Self.json(403, "{\"error\":\"Forbidden\"}")
+            }
+            let latestSeq = oauth.channelUnreadInfo(channelId: channelId, userId: userId).latestSeq ?? 0
+            lock.lock()
+            let key = "\(channelId)\n\(receiverId)"
+            let previous = agentChannelReadCursors[key] ?? (seq: 0, version: 0)
+            let advanced = latestSeq > previous.seq
+            let version = advanced ? previous.version + 1 : previous.version
+            agentChannelReadCursors[key] = (seq: max(previous.seq, latestSeq), version: version)
+            lock.unlock()
+            if advanced {
+                onAgentReadUpdated?(serverId, channelId, receiverId, latestSeq)
+            }
+            return Self.json(200, "{\"ok\":true,\"seq\":\(max(previous.seq, latestSeq)),\"readStateVersion\":\(max(version, 1))}")
+        }
         lock.lock()
         let readableAll = postableChannels[channelId].map { $0.kind == "channel" || $0.memberIds.contains(userId) }
             ?? (oauth.channelType(id: channelId) == "channel" || oauth.isChannelParticipant(channelId: channelId, userId: userId))
@@ -23797,29 +23827,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let version = channelReadVersions[key] ?? 1
             lock.unlock()
             return Self.json(200, "{\"ok\":true,\"seq\":\(ownedSeq),\"readStateVersion\":\(version)}")
-        }
-        if let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-           let receiver = object["receiver"] as? [String: Any],
-           let kind = receiver["kind"] as? String,
-           let receiverId = receiver["id"] as? String {
-            guard kind == "agent", let agent = oauth.agentRuntimeInfo(id: receiverId), agent.serverId == serverId else {
-                return Self.json(403, "{\"error\":\"Forbidden\"}")
-            }
-            let canDelegate = role == "owner" || role == "admin" || agent.creatorUserId == userId
-            guard canDelegate, oauth.channelAgentIds(channelId: channelId).contains(agent.id) else {
-                return Self.json(403, "{\"error\":\"Forbidden\"}")
-            }
-            let latestSeq = oauth.channelUnreadInfo(channelId: channelId, userId: userId).latestSeq ?? 0
-            lock.lock()
-            let key = "\(channelId)\n\(receiverId)"
-            let previous = agentChannelReadCursors[key] ?? (seq: 0, version: 0)
-            let version = latestSeq > previous.seq ? previous.version + 1 : previous.version
-            agentChannelReadCursors[key] = (seq: max(previous.seq, latestSeq), version: version)
-            lock.unlock()
-            if latestSeq > previous.seq {
-                onAgentReadUpdated?(serverId, channelId, receiverId, latestSeq)
-            }
-            return Self.json(200, "{\"ok\":true,\"seq\":\(max(previous.seq, latestSeq)),\"readStateVersion\":\(max(version, 1))}")
         }
         let latest = oauth.channelUnreadInfo(channelId: channelId, userId: userId).latestSeq ?? 0
         let key = "\(channelId)\n\(userId)"
