@@ -168,6 +168,27 @@
 
 之后：assistant、external diagnostics、RBAC/guest 投影、notifications/tasks、`channels.api`、`channels.membership.api`。收尾：双 `RaftServer` 启动 + 完成门槛日志。
 
+### 剩余工作分类（2026-11-04 盘点）
+
+**A. 可移植、待实现（按性价比排序）**
+
+| 模块 | 用例 | 需要的实现 |
+| --- | --- | --- |
+| `internalAgentApi.mentionActions` | 10 | agent 侧 mention-actions pending/notify/add/execute/delete（复用已有 resolution store） |
+| `providerConnections.api` | 5 | server-stage flag rule + 凭据加密存储 + alias/agent-block 删除语义 |
+| `announcements.api` | 13 | draft/scheduled/expiry 语义、per-user dismissal 已有；补 publish 不暴露、管理员路由 404、targeted 校验 |
+| `productFeedback.diagnostics` | 5 | Hands 传输 deps 注入（multipart presigned 字段、错误码映射、限流） |
+| `appSetup.api` / `agentAppAccess.api` | 6 / 6 | app installation/setup 声明、OAuth app 自动授权与 revoke 粘性 |
+| guest 基础面 | 6+8 | guest 角色 + `guestVisible` 投影 + server-stage flag |
+| joint 频道 | 34+5+4 | joint channel 模型与跨 Server 管理面（最大空白） |
+| 大模块剩余组 | 93/87/65/45/43 | `internalAgentApi.auth`、`agents.api`、`internalAgentApi.send`、`auth.api`、`internal.channelMembership.api` |
+
+**B. 没有任何黑盒验收面（已在 PARITY notes 逐项注明，不再投入）**
+
+源码/文档扫描（`oauthServerinfo.contract`、`oauthServerinfoDocs.contract`、`storageResponseStream.callSites`、`agentMigrationErrors.contract`、`agentProfileWriteBroadcastContract`）、real-PG 并发栅栏（`readMutationFence.realPg` 等 3 个）、查询次数 spy（`sidebarOrder.roundTrips.api`）、RisingWave 特化（`channels.unread.rwFailures.api`）、trace/span（`agentApiErrorTrace`、`authRefreshTrace`、`authLoginTrace`、`authRefreshAttemptRoute`）、provider probe carrier / 进程内 fence spy 等。
+
+**C. 需要先补基础设施的切片**：server-stage feature-flag 规则引擎（guest、providerConnections、reminders 共用）；joint channel 模型；Hands 传输 seam（feedback/probes）；对象存储流式响应（HTML preview bridge、scope-attestation 机器表面）；Redis 后端（replica owner、共享去重）。
+
 ## 5. 风险与回退
 
 - **socket.io 协议偏差**：只做 WS transport（上游测试也只用 websocket），用原始包文本断言收敛；不做 polling/ack/Redis adapter。
