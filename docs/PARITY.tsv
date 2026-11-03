@@ -241,7 +241,7 @@ agentMigrationWorkspaceArchive	daemon	pending	-	auto-seed
 agentNoProcessResidency	daemon	locked	010e9a9	no-process residency invariants (cooldown requires restart config, terminal excludes idle restart and running, pending delivery requires queued/starting/terminal/cooldown-with-idle, fingerprint fences need running/idle/terminal evidence, queued and starting disjoint) with the allowed start-pending snapshot, plus the launch_residency_transition enter/close pairing rows (stable state instance, monotonic transition_seq, advanced close on state switch, duplicate enter suppressed, missing-launch-id negative evidence)
 agentProcessManager.appInboxTrace	daemon	locked	06b59b1	non-executable black-box: asserts trace event attributes emitted by the in-process agent process manager; this port has no agent runtime process manager and the contract excludes trace sinks
 agentProcessManager.builtin.e2e	daemon	pending	-	auto-seed
-agentProcessManager.cindy	daemon	pending	-	auto-seed
+agentProcessManager.cindy	daemon	locked	61895fe	non-executable black-box: an integration run of the in-process agent process manager with the unported cindy runtime
 agentProcessManager.claude	daemon	pending	-	auto-seed
 agentProcessManager.codex	daemon	pending	-	auto-seed
 agentProcessManager.feedbackTranscriptHonesty	daemon	pending	-	auto-seed
@@ -251,7 +251,7 @@ agentProcessManager.serverWake	daemon	pending	-	auto-seed
 agentProcessManager.sessionTranscript	daemon	pending	-	auto-seed
 agentProcessManager.spawnFailCooldown	daemon	pending	-	auto-seed
 agentProcessManager.systemPrompt	daemon	pending	-	auto-seed
-agentProcessManager.teardown	daemon	pending	-	auto-seed
+agentProcessManager.teardown	daemon	locked	61895fe	non-executable black-box: an integration run of AgentProcessManager teardown with the unported agent runtime process manager
 agentProcessManager.wakeRecycle	daemon	pending	-	auto-seed
 agentRuntimeInput.snapshot	daemon	pending	-	auto-seed
 agentRuntimeInput	daemon	pending	-	auto-seed
@@ -276,15 +276,15 @@ daemonFetch.http1	daemon	pending	-	auto-seed
 daemonFetch	daemon	pending	-	auto-seed
 deviceClass	daemon	locked	b5af20b	device class detection: macOS system_profiler model names map to laptop/mini/studio/imac/desktop with VirtualMac as vm, Linux DMI chassis sets map laptop/desktop/server with hypervisor vendor or type winning as vm, unknown models/fields/bad JSON stay undefined, and WSL, Windows and unreadable inputs stay unknown without retaining model names or DMI strings
 directUploadCapability	daemon	pending	-	auto-seed
-drivers/claude.integration	daemon	pending	-	auto-seed
+drivers/claude.integration	daemon	locked	61895fe	non-executable black-box: a live integration run against the real Claude Code CLI, which this port does not ship or drive
 drivers/claude	daemon	pending	-	auto-seed
 drivers/claudeEventNormalizer	daemon	pending	-	auto-seed
 drivers/claudeLaunch	daemon	pending	-	auto-seed
 drivers/cliTransport	daemon	pending	-	auto-seed
-drivers/codex.integration	daemon	pending	-	auto-seed
+drivers/codex.integration	daemon	locked	61895fe	non-executable black-box: a live integration run against the real Codex CLI, which this port does not ship or drive
 drivers/codex	daemon	pending	-	auto-seed
 drivers/codexBlankFinalAnswer.contract	daemon	pending	-	auto-seed
-drivers/codexInstructionShape	daemon	pending	-	auto-seed
+drivers/codexInstructionShape	daemon	locked	61895fe	non-executable black-box: pins the codex instruction/trace attribute contract through the shared BasicTracer/MemoryTraceSink and hashes of instruction text; this port has no agent runtime process manager or trace sink, and the contract excludes trace sinks
 drivers/copilot	daemon	pending	-	auto-seed
 drivers/cursor	daemon	pending	-	auto-seed
 drivers/gemini	daemon	pending	-	auto-seed
@@ -298,11 +298,11 @@ drivers/kimiRequestDiagnostics	daemon	pending	-	auto-seed
 drivers/launchCurrent	daemon	pending	-	auto-seed
 drivers/managedMcpTools	daemon	pending	-	auto-seed
 drivers/nodeHostLaunch	daemon	pending	-	auto-seed
-drivers/opencode.live	daemon	pending	-	auto-seed
+drivers/opencode.live	daemon	locked	61895fe	non-executable black-box: a live integration run against the real opencode CLI, which this port does not ship or drive
 drivers/opencode.modelsAsync	daemon	pending	-	auto-seed
 drivers/opencode	daemon	pending	-	auto-seed
 drivers/pi.compaction	daemon	pending	-	auto-seed
-drivers/pi.integration	daemon	pending	-	auto-seed
+drivers/pi.integration	daemon	locked	61895fe	non-executable black-box: a live integration run against the real pi runtime, which this port does not ship or drive
 drivers/pi	daemon	pending	-	auto-seed
 drivers/piCommandTool	daemon	pending	-	auto-seed
 drivers/piCompactionFit	daemon	pending	-	auto-seed
@@ -377,9 +377,9 @@ runtimeProcessBindingFence	daemon	locked	6201225	runtime process binding fence: 
 runtimeProgressState	daemon	pending	-	auto-seed
 runtimeTurnState	daemon	locked	b5af20b	runtime turn state: markTurnStarted/noteTurnAccepted distinguish running from accepted turns for busy steering, the tool boundary gates steering until progress, completion/reset clear the turn and gate, hasLiveTurn covers accepted and running turns, non-empty input evidence rides from a pending acceptance into the started turn, and completed turn ids stay bounded to 16
 runtimeTurnTokens	daemon	pending	-	auto-seed
-scopedAppStorage.sourceContract	daemon	pending	-	auto-seed
+scopedAppStorage.sourceContract	daemon	locked	61895fe	non-executable black-box: a TypeScript source scan over the scoped app storage call sites; this port has no TS sources to scan
 scopedAppStorage	daemon	pending	-	auto-seed
-scopedAppStorageObservability	daemon	pending	-	auto-seed
+scopedAppStorageObservability	daemon	locked	61895fe	non-executable black-box: spawns the daemon's scoped app storage harness and inspects its filesystem observability output; this port has no agent runtime process manager or that harness
 senderLedger	daemon	locked	ecb1465	non-executable black-box: a foreign writer on the CLI's SQLite agent ledger (node:sqlite DatabaseSync, WAL, meta.version and observations.context_id shape, INSERT ... ON CONFLICT claims); this port has no CLI agent ledger, no sqlite dependency and no daemon-side ledger to write, so the claim/dedupe semantics have no executable surface here
 sessionCompactionFailureLedger	daemon	pending	-	auto-seed
 sessionTranscriptReader.redaction	daemon	pending	-	auto-seed
