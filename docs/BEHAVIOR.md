@@ -1159,3 +1159,9 @@ RFC 074 personal assistant：
 - 两族导出行为 `launch_runtime_readiness_transition` / `launch_activation_delivery_transition`：enter/close 行都带 identity spine（agent_launch_id/agent_id/server_id/machine_id/runtime/driver/launch_source）；wait enter 带 `is_wait_state:true`、封闭 `fence_kind`（readiness: runtime_startup_timeout；activation: none）与可选 `deadline_unix_ms`；close 带封闭 `close_result`，activation close 可带 `delivered_via`（spawn_prompt|stdin）。
 - 配对契约：`(agent_launch_id, state_instance_id)` 上一个 enter 恰好一个 close，`transition_seq` 只作排序/审计且不可复用；relaunch 各自独立配对；缺失 launch id 以 `negative_evidence_bucket: missing_launch_id` 表达（enter 与 close 都带）。
 - Q8 scrub：断言器拒绝任何包含 prompt/payload/stderr/text/token/secret/credential/api_key/cwd/home/path/endpoint/env 的 attr key（`launch_source`/`span_name` 白名单例外）。
+
+### daemon probeGate
+
+- 同 key 的并发 probe 合并为一次运行并共享结果（不会起第二个进程）；运行结束后同 key 的下一次请求重新开始。
+- 不同 key 按 `maxConcurrent` 上限 FIFO 排队（默认无限，daemon 用它避免相同 key 重叠又让不同 runtime 不互相排队）；失败运行把同一个错误抛给所有 joining 调用者，并释放 key 与槽位，之后 key 可立即复用。
+- `maxConcurrent` 必须是正整数或 nil（无限），0/负数初始化抛错。
