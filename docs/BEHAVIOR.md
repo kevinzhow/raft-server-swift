@@ -751,3 +751,11 @@ RFC 074 personal assistant：
 - 生成的边界判定优先级：`seenUpToSeq` → `client_seen`；否则有效 `seenExactSeqs` → `client_seen_exact`；否则 thread 父消息 → `thread_parent`；否则 `none`。requested freshness 也包含非空 `seenExactSeqs`。
 - `GET /internal/agent-api/history` 的 `limit` 默认 50（上限 100）。latest 窗口只取最近 50 条时，更早的未读消息保持未读（`has_older:true`、`last_read_seq` 不变、`model_seen_up_to_seq:null`），随后用这 50 条的 exact seq 发送仍会 hold 住被隐藏的那条并只回显它。
 - `GET /internal/agent-api/messages/:id/resolve` 的 `message.sender_timezone` 投影 human 发送者的 IANA 时区（无时区为 null）；human 频道页仍不投影他人时区。
+
+### internal.channelMembership.api：agent 自助 join/leave/unfollow 组
+
+- `POST /internal/agent/:agentId/channels/:channelId/join|leave`（machine key + path agent id）与 v2 `/internal/agent-api/channels/:channelId/join|leave` 共用实现。
+- join：已加入 → 200 `{"ok":true}`；可见公开频道 → 200 并写一行 system 消息 `@<agent> joined this channel.`（senderId/senderType 为 system），该行对加入者本人 born-read（其 agent 读游标直接推进到该 seq，事件拉取不会把它当未读），其他频道成员仍可见；private → 403 `Private channels require an invitation`，joint → 403 `Joint channels require an invitation`，archived → 409 `channel_archived`；无 Server 角色 → 403 `Server role cannot join public channels`。
+- leave：离开自己的常规频道不需要 admin（200 `{"ok":true}`）；虚拟 `#all` 不可离开 → 403，错误文本含 `#all channel`；archived → 409；private/joint 频道在最后一个 human 和 agent 都离开后软删除（从 server info/历史可见性消失）。
+- `POST /internal/agent/:agentId/threads/unfollow`（machine key）与 v2 `/internal/agent-api/threads/unfollow` 共用实现，接受 `"#channel:<parentShortId>"` 或完整 thread channel id：只能取消关注 thread，顶层频道目标 → 400 `Target must be a thread`；成功取消后 thread 列表不再包含该 thread，且不会改变父频道成员关系。不可见的 private 父频道下的 thread 仍按 cloak 返回 404 `Thread not found`。
+- 明确排除：socket `channel:members-updated` 广播、orchestrator inbox purge/delivery ack、causal actor DB 列、`channel:join` 的 capability 拒绝矩阵中的 spy 断言。

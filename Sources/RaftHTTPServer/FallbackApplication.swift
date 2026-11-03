@@ -1054,6 +1054,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? "{}"
         ))
     }
+    app.post("internal", "agent", ":agentId", "threads", "unfollow") { request -> Response in
+        routeResponse(services.emailAccounts.agentThreadUnfollow(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}",
+            legacyAgentId: request.parameters.get("agentId") ?? ""
+        ))
+    }
     app.get("internal", "agent-api", "messages", ":messageId", "mention-deliveries") { request -> Response in
         routeResponse(services.emailAccounts.agentMentionDeliveries(
             authorization: request.headers[.authorization],

@@ -16154,19 +16154,22 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"threads\":[\(rows.joined(separator: ","))]}")
     }
 
-    public func agentThreadUnfollow(authorization: String?, body: String) -> HTTPReply {
-        guard let credential = agentCredentialAgent(authorization),
-              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+    public func agentThreadUnfollow(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
+        guard let writer = agentTaskWriter(authorization, legacyAgentId: legacyAgentId),
+              let agent = oauth.agentRuntimeInfo(id: writer.agentId), !agent.deleted
         else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
-        guard credential.scopes.contains("read") else {
+        if let credential = agentCredentialAgent(authorization), !credential.scopes.contains("read") {
             return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
         }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
               let threadRef = object["thread"] as? String, !threadRef.isEmpty
         else {
             return Self.json(400, "{\"error\":\"Invalid thread unfollow request\"}")
+        }
+        if threadRef.hasPrefix("#"), !threadRef.contains(":") {
+            return Self.json(400, "{\"error\":\"Target must be a thread\"}")
         }
         lock.lock()
         var threadId: String?
@@ -16187,9 +16190,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
               let thread = postableChannels[resolved],
               thread.serverId == agent.serverId,
               thread.kind == "thread",
-              thread.deletedAt == nil,
-              messageSearchVisibleLocked(messageChannelId: resolved, serverId: agent.serverId, viewer: .agent(agent.id))
+              thread.deletedAt == nil
         else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Thread not found\"}")
+        }
+        guard messageSearchVisibleLocked(messageChannelId: resolved, serverId: agent.serverId, viewer: .agent(agent.id)) else {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Thread not found\"}")
         }
@@ -18239,6 +18245,77 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"archivedAt\":null}")
     }
 
+    /// Self-service join of a visible plain channel. Private and joint channels
+    /// are invitation-only, archived channels refuse writes, and the join posts
+    /// a system notice that is born-read for the joining agent.
+    private func joinPublicChannelForAgent(agentId: String, serverId: String, channelId: String) -> HTTPReply {
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        if let reply = archivedChannelReply(channelId) { return reply }
+        if oauth.channelAgentIds(channelId: channelId).contains(agentId) {
+            return Self.json(200, "{\"ok\":true}")
+        }
+        switch oauth.channelType(id: channelId) ?? "channel" {
+        case "private":
+            return Self.json(403, "{\"error\":\"Private channels require an invitation\"}")
+        case "joint":
+            return Self.json(403, "{\"error\":\"Joint channels require an invitation\"}")
+        default:
+            break
+        }
+        if let reply = agentGrantDenial(agentId: agentId, scope: "channel:join") { return reply }
+        guard oauth.agentRole(serverId: serverId, agentId: agentId) != nil else {
+            return Self.json(403, "{\"error\":\"Server role cannot join public channels\"}")
+        }
+        oauth.addChannelAgent(channelId: channelId, agentId: agentId)
+        lock.lock()
+        let name = oauth.agentRuntimeInfo(id: agentId)?.name ?? agentId
+        let seq = appendHumanMessageLocked(StoredHumanMessage(
+            id: UUID().uuidString.lowercased(),
+            channelId: channelId,
+            senderId: "system",
+            content: "@\(name) joined this channel.",
+            randomId: nil,
+            messageType: "system",
+            senderType: "system"
+        ))
+        let key = "\(channelId)\n\(agentId)"
+        let previous = agentChannelReadCursors[key] ?? (seq: 0, version: 0)
+        agentChannelReadCursors[key] = (max(previous.seq, seq), previous.version + 1)
+        lock.unlock()
+        _ = channel
+        return Self.json(200, "{\"ok\":true}")
+    }
+
+    /// Self-service leave. The virtual #all audience cannot be left; a private
+    /// or joint channel with no humans and no agents left is soft-deleted.
+    private func leaveChannelForAgent(agentId: String, serverId: String, channelId: String) -> HTTPReply {
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        if oauth.allChannelId(serverId: serverId) == channelId {
+            return Self.json(403, "{\"error\":\"Cannot leave the #all channel\"}")
+        }
+        if let reply = archivedChannelReply(channelId) { return reply }
+        oauth.removeChannelAgent(channelId: channelId, agentId: agentId)
+        lock.lock()
+        postableChannels[channelId]?.memberIds.remove(agentId)
+        let kind = postableChannels[channelId]?.kind ?? "channel"
+        lock.unlock()
+        if kind == "private" || kind == "joint" {
+            let humans = oauth.channelHumanIds(channelId: channelId)
+            let agents = oauth.channelAgentIds(channelId: channelId)
+            if humans.isEmpty && agents.isEmpty {
+                lock.lock()
+                postableChannels[channelId]?.deletedAt = Date()
+                lock.unlock()
+            }
+        }
+        _ = channel
+        return Self.json(200, "{\"ok\":true}")
+    }
+
     public func agentJoinChannel(authorization: String?, channelId: String) -> HTTPReply {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
             return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
@@ -18252,19 +18329,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
-        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == agent.serverId else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
-        }
-        if let reply = archivedChannelReply(channelId) { return reply }
-        if oauth.channelAgentIds(channelId: channelId).contains(agent.id) {
-            return Self.json(200, "{\"ok\":true}")
-        }
-        if let reply = agentGrantDenial(agentId: agent.id, scope: "channel:join") { return reply }
-        guard oauth.agentRole(serverId: agent.serverId, agentId: agent.id) != nil else {
-            return Self.json(403, "{\"error\":\"Server role cannot join public channels\"}")
-        }
-        oauth.addChannelAgent(channelId: channelId, agentId: agent.id)
-        return Self.json(200, "{\"ok\":true}")
+        return joinPublicChannelForAgent(agentId: agent.id, serverId: agent.serverId, channelId: channelId)
     }
 
     public func joinChannel(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
@@ -22070,23 +22135,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == machineServerId else {
             return Self.json(404, "{\"error\":\"Agent not found\"}")
         }
-        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == agent.serverId else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
-        }
-        if let reply = archivedChannelReply(channelId) { return reply }
-        if join, oauth.channelAgentIds(channelId: channelId).contains(agent.id) {
-            return Self.json(200, "{\"ok\":true}")
-        }
-        if join, let reply = agentGrantDenial(agentId: agent.id, scope: "channel:join") { return reply }
         if join {
-            guard oauth.agentRole(serverId: agent.serverId, agentId: agent.id) != nil else {
-                return Self.json(403, "{\"error\":\"Server role cannot join public channels\"}")
-            }
-            oauth.addChannelAgent(channelId: channelId, agentId: agent.id)
-        } else {
-            oauth.removeChannelAgent(channelId: channelId, agentId: agent.id)
+            return joinPublicChannelForAgent(agentId: agent.id, serverId: agent.serverId, channelId: channelId)
         }
-        return Self.json(200, "{\"ok\":true}")
+        return leaveChannelForAgent(agentId: agent.id, serverId: agent.serverId, channelId: channelId)
     }
 
     public func leaveChannel(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
@@ -22119,12 +22171,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let credential, let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
-        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == agent.serverId else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
-        }
-        if let reply = archivedChannelReply(channelId) { return reply }
-        oauth.removeChannelAgent(channelId: channelId, agentId: agent.id)
-        return Self.json(200, "{\"ok\":true}")
+        return leaveChannelForAgent(agentId: agent.id, serverId: agent.serverId, channelId: channelId)
     }
 
     public func addChannelMembersBatch(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
