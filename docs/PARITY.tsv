@@ -335,7 +335,7 @@ hostIdentity	daemon	pending	-	auto-seed
 launchPhaseTransition	daemon	pending	-	auto-seed
 legacySupervisor	daemon	pending	-	auto-seed
 logger	daemon	locked	c59d3df	ported structured log stream: subscribers receive {level,line,message} with the UTC line format and unsubscribe stops delivery; the single upstream case asserted
-machineLock	daemon	pending	-	auto-seed
+machineLock	daemon	locked	SLICE	machine lock group: one daemon per machine key (machine-<sha256 prefix16>, daemon.lock + owner.json with pid/token/hostname/startedAt/serverUrl/fingerprint/schemaVersion 2/kind), conflict errors naming the owning pid, pid-0 stale reclaim, recent incomplete lock dirs kept, SLOCK_HOME/RAFT_HOME default machines root, clean release rewriting pid to 0 to preserve the machine identity, and managed Computer provenance (kind/serverId/serverMachineId) preserved across release
 managedMcpRuntimeProxy	daemon	pending	-	auto-seed
 oarLoader	daemon	pending	-	auto-seed
 observedFailureSummary	daemon	pending	-	auto-seed

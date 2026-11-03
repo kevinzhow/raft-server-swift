@@ -1141,3 +1141,9 @@ RFC 074 personal assistant：
 - `DaemonProcessEnv.withProcessEnvPatch(patch, removeFirst:)`：在真实进程环境上叠加 agent env，覆盖/删除的键在结束后恢复（原本不存在则删除），叠加期间 `ambient()` 返回未叠加的副本；多次叠加串行执行，跨 await 保持。
 - `DaemonOsVariant`：`microsoft-standard`/`wsl2` → wsl2，仅 `microsoft`（如 `4.4.0-19041-Microsoft`）→ wsl1，其余 Linux 内核为 nil；非 linux 平台或内核读取失败返回 nil。
 - 明确排除：processEnvPatch 的 3 条 TS 源码守卫用例（扫描 `node:child_process` 调用点必须显式传 env、drivers 必须使用 `ambientProcessEnv()`）——纯源码扫描，本移植没有对应 TS 源码可扫描；其行为已由 `ambient()` 的运行时语义覆盖。
+
+### daemon machineLock
+
+- 每个 machine key 只允许一个 daemon 运行：`machine-<sha256(apiKey) 前16>` 目录下的 `daemon.lock` + `owner.json`（`{pid, token, hostname, startedAt, serverUrl, apiKeyFingerprint, schemaVersion:2, kind, serverId?, serverMachineId?}`）。
+- 冲突时抛错并带 `pid/startedAt/host` 描述（`Another Slock daemon is already running ...`）；`owner.json` 已是 pid 0 的陈旧锁可被回收；无 owner 且目录新鲜（<30s）的不完整锁保留并冲突；ledger 里 `SLOCK_HOME`（或 `RAFT_HOME`）决定默认 `machines/` 根目录。
+- 干净释放不删除机器身份：把 `owner.json` 的 pid 改写为 0，保留 fingerprint/provenance；managed Computer runner 的 `kind/serverId/serverMachineId` 在释放后仍保留。

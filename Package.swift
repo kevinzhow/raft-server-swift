@@ -40,6 +40,7 @@ let package = Package(
                 "RaftConnectAuth",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "Crypto", package: "swift-crypto"),
             ]
         ),
         .target(
