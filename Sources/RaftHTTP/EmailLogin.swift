@@ -3237,7 +3237,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             case .user(let userId):
                 return channel.memberIds.contains(userId)
             case .agent(let agentId):
-                return channelAgentMembers[id]?.contains(agentId) == true
+                return channel.memberIds.contains(agentId)
+                    || channelAgentMembers[id]?.contains(agentId) == true
                     || oauth.channelAgentIds(channelId: id).contains(agentId)
             }
         }
@@ -18518,6 +18519,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let token = authorization?.hasPrefix("Bearer ") == true ? String(authorization!.dropFirst("Bearer ".count)) : ""
         let credential = agentCredentials[token]
         let machine = machines.first { $0.apiKey == token }
+        let legacyMachineKeys = machineKeys
         lock.unlock()
         if let credential, credential.revokedAt == nil {
             guard scopes.allSatisfy({ credential.scopes.contains($0) }),
@@ -18528,6 +18530,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if let machine, let legacyAgentId, !legacyAgentId.isEmpty,
            let agent = oauth.agentRuntimeInfo(id: legacyAgentId), !agent.deleted,
            agent.serverId == machine.serverId {
+            return (agent, oauth.agentRole(serverId: agent.serverId, agentId: agent.id))
+        }
+        if let legacy = legacyMachineKeys[token],
+           let agent = oauth.agentRuntimeInfo(id: legacy.agentId), !agent.deleted,
+           legacy.serverId == agent.serverId {
             return (agent, oauth.agentRole(serverId: agent.serverId, agentId: agent.id))
         }
         return nil
@@ -18685,18 +18692,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true,\"id\":\(jsonString(agent.serverId)),\"name\":\(jsonString(name))}")
     }
 
-    public func agentChannelMembers(authorization: String?, agentId: String, channelRef: String?) -> HTTPReply {
-        guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
-        }
-        let apiKey = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        let machine = machines.first { $0.apiKey == apiKey }
-        let legacy = machineKeys[apiKey]
-        lock.unlock()
-        guard let machineServerId = machine?.serverId ?? legacy?.serverId,
-              let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted,
-              agent.serverId == machineServerId
+    public func agentChannelMembers(
+        authorization: String?,
+        agentId: String?,
+        channelRef: String?,
+        legacyAgentId: String? = nil
+    ) -> HTTPReply {
+        guard let writer = agentWriterAndRole(
+            authorization: authorization,
+            legacyAgentId: legacyAgentId ?? agentId,
+            scopes: []
+        ), let agent = oauth.agentRuntimeInfo(id: writer.agent.id), !agent.deleted
         else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
@@ -18738,7 +18744,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"role\":\(jsonString(role))}"
         }.joined(separator: ",")
         let agents = agentIds.map { id -> String in
-            "{\"id\":\(jsonString(id)),\"name\":\(jsonString(oauth.agentRuntimeInfo(id: id)?.name ?? ""))}"
+            let name = oauth.agentRuntimeInfo(id: id)?.name ?? ""
+            return "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"status\":\"active\"}"
         }.joined(separator: ",")
         return Self.json(200, "{\"channel\":{\"ref\":\(jsonString(reference)),\"type\":\(jsonString(type))},\"humans\":[\(humans)],\"agents\":[\(agents)]}")
     }

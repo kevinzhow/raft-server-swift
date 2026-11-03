@@ -784,7 +784,15 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("internal", "agent", ":agentId", "channel-members") { request -> Response in
         routeResponse(services.emailAccounts.agentChannelMembers(
             authorization: request.headers[.authorization],
-            agentId: request.parameters.get("agentId") ?? "",
+            agentId: request.parameters.get("agentId"),
+            channelRef: desktopQuery(request.url.query, "channel"),
+            legacyAgentId: request.parameters.get("agentId") ?? ""
+        ))
+    }
+    app.get("internal", "agent-api", "channel-members") { request -> Response in
+        routeResponse(services.emailAccounts.agentChannelMembers(
+            authorization: request.headers[.authorization],
+            agentId: nil,
             channelRef: desktopQuery(request.url.query, "channel")
         ))
     }

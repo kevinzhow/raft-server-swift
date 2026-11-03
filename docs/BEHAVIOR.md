@@ -796,3 +796,10 @@ RFC 074 personal assistant：
 - 可见性与 history 一致：公开频道、agent 所属 private/joint、以及父频道可由该 agent 读取的 thread 回复；不可见 private 的行（含正文）不出现。
 - `sender` 先做成员目录解析：解析不到与「存在但被隐藏」返回同一 404 `{errorCode:"member_not_found"}`，因此 member 角色 agent 在隐藏 human 目录开启时无法枚举 human handle；`sender` 命中后按 senderId 过滤。
 - 明确排除：trace span/`server.db.query` 断言、sender 别名/多重身份等其它查询参数矩阵。
+
+### internalAgentApi.auth：message resolve / channel-members / thread list 组
+
+- `GET /internal/agent-api/messages/:id/resolve` 与 resolver 一致：接受完整 UUID 或 8 位 short id，只在调用 agent 可见的消息里解析（不可见 private 的碰撞 → 404 `{errorCode:"NOT_FOUND", error:"Message not found: <ref>"}`，可见唯一匹配才 200）；返回 `{message:{message_id,channel_id,channel_name,channel_type,sender_type,sender_name,content,created_at,sender_timezone}}`；DM 的 `channel_type:"dm"` 且 `channel_name` 是 agent 视角对端名；credential 需 `read`，否则 403 `capability_not_authorized`。
+- DM 成员身份包括 postable `memberIds`（此前只认 channelAgent/channel-agent 记录），因此 agent 可 resolve 自己 DM 里的消息。
+- `GET /internal/agent-api/channel-members?channel=...`（legacy `/internal/agent/:id/channel-members` 同实现）：返回 `{channel:{ref,type},humans:[{id,name,role}],agents:[{id,name,status:"active"}]}`；thread 引用解析到父频道 roster，type 为 thread；支持 credential 与 machine key（含 `registerMachineForAgent` 的 legacy key）。
+- `GET /internal/agent-api/threads`：只返回该 agent 未取消关注、且其可见的 followed thread；每行 `{target,threadChannelId,parentChannelRef,parentMessageId,parentMessageShortId,followedAt,reason,doneAt}`，按 followedAt 倒序；别的 agent 的 follow 与不可见 private 父频道下的 follow 不出现。
