@@ -380,7 +380,7 @@ runtimeTurnTokens	daemon	pending	-	auto-seed
 scopedAppStorage.sourceContract	daemon	pending	-	auto-seed
 scopedAppStorage	daemon	pending	-	auto-seed
 scopedAppStorageObservability	daemon	pending	-	auto-seed
-senderLedger	daemon	pending	-	auto-seed
+senderLedger	daemon	locked	ecb1465	non-executable black-box: a foreign writer on the CLI's SQLite agent ledger (node:sqlite DatabaseSync, WAL, meta.version and observations.context_id shape, INSERT ... ON CONFLICT claims); this port has no CLI agent ledger, no sqlite dependency and no daemon-side ledger to write, so the claim/dedupe semantics have no executable surface here
 sessionCompactionFailureLedger	daemon	pending	-	auto-seed
 sessionTranscriptReader.redaction	daemon	pending	-	auto-seed
 skillFrontmatter	daemon	pending	-	auto-seed
