@@ -269,3 +269,4 @@
 - `appSetup.api`（6 例）：installation setup 声明、owner-only 回报、卡片披露与注册审批；需要 App 安装/声明数据模型（当前 port 仅部分 App 面）。
 - `agentAppAccess.api`（6 例）：自动授权、撤销持久、app events 分页/过期/私有可见性、requests/agent 接受 id；需要 agent app grant/event 存储。
 - `authPendingSocialLink.api`（12 例）、`actions.privateAccess.api`（19 例）、`securityLifecycle.api`（14 例）、`internal.reminders.api`（17 例）为中大型切片，建议在完整上下文预算下逐个做。
+- `guestRbac.api` 的 archive/删除 case 需要先补：`guestVisible`/`guestJoinable` 频道字段（含 API seam）、删除频道对消息/线程/附件 URL 的 cloak、以及 storage seam 注入；这些是 `guestRbac.api` 与 `agentAppAccess.api` 的共同前置，建议作为一个 400–2000 行的数据模型切片先做。
