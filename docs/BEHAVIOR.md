@@ -923,3 +923,7 @@ RFC 074 personal assistant：
 ### computerRevocation.api：machine 删除的鉴权前置
 
 - `DELETE /api/servers/:id/machines/:machineId` 未认证 → 401；未知/machine 不属于该 Server → 404；两者都在任何撤销动作之前失败（computer 凭据的 `revokedAt` 保持 null）。
+
+### computerRevocation.api：runner 表面的未认证拒绝
+
+- `GET /internal/computer/runners` 未带 Bearer → 401（与已撤销/未链接电脑凭据同一拒绝面），不泄露任何 runner 信息。

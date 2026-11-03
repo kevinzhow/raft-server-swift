@@ -32,6 +32,8 @@ import VaporTesting
 
             var computerHeaders = HTTPFields()
             computerHeaders[.authorization] = "Bearer \(apiKey)"
+            let anonymousRunners = try await client.get(URI(string: "/internal/computer/runners"))
+            #expect(anonymousRunners.status == .unauthorized)
             let before = try await client.get(URI(string: "/internal/computer/runners"), headers: computerHeaders)
             #expect(before.status == .ok)
 
