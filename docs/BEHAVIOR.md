@@ -1129,3 +1129,9 @@ RFC 074 personal assistant：
 - legacy channel-agent 写路由（`POST /channels/:id/agents`、`DELETE /channels/:id/agents/:agentId`）未挂载 → 404；替代的 member 路由仍可用（200）。
 - archived 频道的消息仍可搜索：`GET /api/messages/search` 命中行带 `channelArchivedAt`，跳转 `GET /api/messages/context/:id` 返回 200 且 `channelArchived:true`，`channelId` 过滤在 archived 频道上照常工作。
 - 明确排除：notificationEvents 的 DB 行断言（archive 幂等不发重复事件、agent archive 的 public-channel app notification 恰好一次）——纯数据库事件表，没有 HTTP/socket 可观察面。
+
+### daemon helpers: historyFormatting / recentDeliveryIds / logger
+
+- `DaemonTextFormatting.formatHistoryMessageLine`：header 依序拼 `seq/msg/time`（UTC 时间戳 `yyyy-MM-dd HH:mm:ssZ`，不可解析时回显原值），可选 `type`、`threadId`、`replyCount`（>0 才出现）；sender 句柄为 `@name` 或 `@name — description`；附件后缀列出 `filename (id:att-id)` 并带 `raft attachment view --id <attachmentId> --output <path>` 提示（`mcp_tool` 风格为 `view_file`），任务后缀 `[task #N status=… assignee=type:id]`。
+- `RecentDeliveryIds`：按 age 过期（达到 maxAge 即失效）与 maxEntries 上限淘汰最旧项；重复 remember 会把 id 移到最新端。
+- `DaemonLog`：订阅者收到 `{level,line,message}`，line 形如 `yyyy-MM-dd HH:mm:ssZ [INFO] message`；unsubscribe 后不再收到。
