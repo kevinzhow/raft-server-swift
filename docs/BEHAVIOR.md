@@ -744,3 +744,10 @@ RFC 074 personal assistant：
 - 结果：`POST /api/messages` 的 human 消息、`/internal/agent-api/send` 的 agent 消息、系统消息都同时出现在 agent history 与 human 频道页；`history` 浏览推进读游标但不构成 send freshness 证据；thread 目标可以用 HTTP 发送的父消息 short id 解析。
 - `GET /api/servers/unread-summary` 的 `unreadCount`/`activityUnreadCount` 只按 ledger 未读数统计（镜像后与消息行一致），不再把两份存储相加。
 - 明确排除：ledger 测试构造的行仍按调用方给的 seq 追加，若与真实流量混在同一频道，排序以各自 seq 为准；Postgres 输出仍未接管（B 阶段后续把该收口迁到 `DomainStore`）。
+
+### internalAgentApi.send / history：exact-seq 证据与 resolve 时区
+
+- `seenExactSeqs`（v2 send）：最多 2500 个去重后的正整数，只保留「大于 attest 边界且不大于会话最新 seq」的值；这些消息视为已被模型精确看过，从 hold 计数、held context 与 mention 计数里排除。没有 `seenUpToSeq` 但有空生效 exact seq 时，边界来源是 `client_seen_exact`（等同 model-seen 证据，`reason` 为 stale boundary；producerFactId 的 `modelSeenSeq` 仍为 0）。
+- 生成的边界判定优先级：`seenUpToSeq` → `client_seen`；否则有效 `seenExactSeqs` → `client_seen_exact`；否则 thread 父消息 → `thread_parent`；否则 `none`。requested freshness 也包含非空 `seenExactSeqs`。
+- `GET /internal/agent-api/history` 的 `limit` 默认 50（上限 100）。latest 窗口只取最近 50 条时，更早的未读消息保持未读（`has_older:true`、`last_read_seq` 不变、`model_seen_up_to_seq:null`），随后用这 50 条的 exact seq 发送仍会 hold 住被隐藏的那条并只回显它。
+- `GET /internal/agent-api/messages/:id/resolve` 的 `message.sender_timezone` 投影 human 发送者的 IANA 时区（无时区为 null）；human 频道页仍不投影他人时区。

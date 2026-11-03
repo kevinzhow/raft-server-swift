@@ -16683,7 +16683,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let createdAt = formatter.string(from: message.createdAt)
-        let json = "{\"message_id\":\(jsonString(message.id)),\"channel_id\":\(jsonString(effectiveChannelId)),\"channel_name\":\(jsonString(channelName)),\"channel_type\":\(jsonString(channelType)),\"sender_type\":\(jsonString(senderType)),\"sender_name\":\(jsonString(senderName)),\"content\":\(jsonString(message.content)),\"created_at\":\(jsonString(createdAt))}"
+        let senderTimezone = message.senderTimezone.map(jsonString) ?? "null"
+        let json = "{\"message_id\":\(jsonString(message.id)),\"channel_id\":\(jsonString(effectiveChannelId)),\"channel_name\":\(jsonString(channelName)),\"channel_type\":\(jsonString(channelType)),\"sender_type\":\(jsonString(senderType)),\"sender_name\":\(jsonString(senderName)),\"content\":\(jsonString(message.content)),\"created_at\":\(jsonString(createdAt)),\"sender_timezone\":\(senderTimezone)}"
         lock.unlock()
         return Self.json(200, "{\"message\":\(json)}")
     }
@@ -19740,7 +19741,23 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let withheldMode = (object["freshnessContextMode"] as? String) == "withheld"
         let draftReholdCount = max(0, (object["draftReholdCount"] as? NSNumber)?.intValue ?? 0)
         let draftReplacedExisting = object["draftReplacedExisting"] as? Bool == true
+        // `seenExactSeqs`: sparse exact-seq observations (message check output).
+        // Only seqs above the attested boundary and up to the latest message
+        // count, deduplicated in request order.
+        let requestedSeenExactSeqs: [Int] = {
+            guard let raw = object["seenExactSeqs"] as? [Any] else { return [] }
+            var seen = Set<Int>()
+            var values: [Int] = []
+            for item in raw {
+                guard let number = item as? NSNumber, number.doubleValue.isFinite else { continue }
+                let value = Int(number.doubleValue.rounded(.down))
+                guard value > 0, seen.insert(value).inserted else { continue }
+                values.append(value)
+            }
+            return Array(values.prefix(2500))
+        }()
         let requestedSendFreshness = isSendDraft || isContinueAnyway || hasClientSeenBoundary
+            || !requestedSeenExactSeqs.isEmpty
             || (object["draftReholdCount"] is NSNumber) || draftReplacedExisting || withheldMode
         let freshnessEnabled = sendFreshnessInterfaceEnabled(serverId: identity.serverId, agentId: identity.agentId)
         let forcedFreshness = sendFreshnessModeValue() == "force"
@@ -19781,8 +19798,23 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 : 0
             let fallbackBoundarySeq = conversation?.kind == "thread" ? threadParentSeq : 0
             let boundarySeq = min(hasClientSeenBoundary ? clientSeenUpToSeq : fallbackBoundarySeq, latestFromOthers)
-            let hasModelSeenProof = hasClientSeenBoundary
-            let newer = rows.filter { $0.seq > boundarySeq && $0.message.senderId != identity.agentId }
+            let effectiveExactSeqs = Set(requestedSeenExactSeqs.filter { $0 > boundarySeq && $0 <= latestFromOthers })
+            let boundarySource: String
+            if hasClientSeenBoundary {
+                boundarySource = "client_seen"
+            } else if !effectiveExactSeqs.isEmpty {
+                boundarySource = "client_seen_exact"
+            } else if fallbackBoundarySeq > 0 {
+                boundarySource = "thread_parent"
+            } else {
+                boundarySource = "none"
+            }
+            let hasModelSeenProof = boundarySource == "client_seen" || boundarySource == "client_seen_exact"
+            let newer = rows.filter {
+                $0.seq > boundarySeq
+                    && $0.message.senderId != identity.agentId
+                    && !effectiveExactSeqs.contains($0.seq)
+            }
             let formalMentionCount = newer.reduce(0) { partial, entry in
                 partial + (storedMentions.contains {
                     $0.messageId == entry.message.id && $0.targetType == "agent" && $0.targetId == identity.agentId
@@ -19812,13 +19844,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 if withheldMode {
                     return Self.json(200, "{\"state\":\"held\",\"freshnessContextMode\":\"withheld\",\"withheldMessageCount\":\(holdCount)}")
                 }
-                let reason = hasModelSeenProof ? "server_stale_model_boundary" : "server_first_touch_context"
+                let reason = boundarySource == "none" || boundarySource == "thread_parent"
+                    ? "server_first_touch_context"
+                    : "server_stale_model_boundary"
                 let producerFactId = Self.freshnessDecisionProducerFactId(
                     agentId: identity.agentId,
                     target: trimmed,
                     reason: reason,
                     pendingMaxSeq: latestSeq,
-                    modelSeenSeq: hasModelSeenProof ? boundarySeq : 0,
+                    modelSeenSeq: boundarySource == "client_seen" ? boundarySeq : 0,
                     heldMessageCount: shownCount,
                     omittedMessageCount: omittedCount
                 )
@@ -21915,7 +21949,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return ",\"channel_card\":{\"id\":\(jsonString(cardId)),\"name\":\(jsonString(info.name)),\"type\":\(jsonString(type)),\"description\":\(description),\"archived\":\(archived)}"
         }()
         let messages = oauth.historyMessages(channelId: channelId)
-        let pageLimit = min(max(Int(limit ?? "") ?? 20, 1), 100)
+        let pageLimit = min(max(Int(limit ?? "") ?? 50, 1), 100)
         // `consume=false`: return the page without marking it read, for reads
         // whose output may never reach the model.
         let consumeValue = (consume ?? "true").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
