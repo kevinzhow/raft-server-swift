@@ -906,3 +906,7 @@ RFC 074 personal assistant：
 - 200 响应 `{serverId,serverSlug,entries:[...]}`，entries 仅限调用者在该 Server 的 machines；行含 `daemonId`、`machineName`、`hostname`、`lastSeenAt`、`hasFingerprint`、`legacyKeyMigratedAt`；默认只含已有 fingerprint 的行并带 `apiKeyFingerprint`（`sha256:<hex>`），NULL fingerprint 行默认排除。
 - `includeAll=1`：包含 NULL fingerprint 行，但整批省略 `apiKeyFingerprint` 键（不泄露任何指纹字节）；已 adopted 行（legacyKeyMigratedAt 非空）照常包含以支持中断恢复。
 - SECRET REDLINE：响应永不含 `apiKeyHash`/`apiKeyPrefix`/原始 apiKey 或 machine key。
+
+### computerAttach.api：attach ↔ adoption roster 联动
+
+- 一次成功的 `/api/computer/attach` 会注册 machine 并进入 `GET /api/computer/legacy-machines?serverSlug=...&includeAll=1` 的 entries：`daemonId` 等于 attach 返回的 `serverMachineId`，`machineName` 为请求 name，`hasFingerprint:false`（daemon 握手前无指纹）；默认（不带 includeAll）该行因无指纹而不出现。

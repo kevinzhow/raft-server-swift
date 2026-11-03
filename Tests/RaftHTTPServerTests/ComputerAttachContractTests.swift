@@ -154,6 +154,21 @@ private func attachPost(
             #expect(preflightBody["serverSlug"] as? String == f.serverSlug)
             #expect((preflightBody["principal"] as? [String: Any])?["kind"] as? String == "computer")
 
+            // The attach links the machine into the roster: includeAll exposes it
+            // without a fingerprint until the daemon handshake writes one.
+            let roster = try await client.get(
+                URI(string: "/api/computer/legacy-machines?serverSlug=\(f.serverSlug)&includeAll=1"),
+                headers: { var h = HTTPFields(); h[.authorization] = "Bearer \(f.ownerToken)"; return h }()
+            )
+            #expect(roster.status == .ok)
+            let rosterBody = (try? JSONSerialization.jsonObject(with: Data((roster.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            let rosterRows = rosterBody["entries"] as? [[String: Any]] ?? []
+            #expect(rosterRows.contains { row in
+                (row["daemonId"] as? String) == (first.body["serverMachineId"] as? String)
+                    && (row["machineName"] as? String) == "raft-computer"
+                    && (row["hasFingerprint"] as? Bool) == false
+            }, "the attached Computer appears in the adoption roster")
+
             // A UUID-shaped value is a slug, never a serverId compatibility alias.
             let byId = try await attachPost(client, token: f.ownerToken, body: #"{"serverSlug":"\#(f.serverId)","name":"uuid-shaped"}"#)
             #expect(byId.status == .forbidden)
