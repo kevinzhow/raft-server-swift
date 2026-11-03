@@ -274,7 +274,7 @@
 #### 该数据模型切片的执行清单
 
 1. `PostableChannel`（或 OAuth `ChannelRecord`）增加 `guestVisible`/`guestJoinable`（默认 false）；`createChannel`/`updateChannel` 接受并回显；`/api/channels` 列表按 `guestVisible` 与 guest 成员资格过滤（现有 `guestVisibleChannels` 逻辑收敛到字段）。
-2. Guest Join：`POST /api/channels/:id/join` 要求 `guestJoinable`，无上限；归档频道 join → 409；非 guest 走原逻辑。
+2. Guest Join：`POST /api/channels/:id/join` 要求 `guestJoinable`，无上限；归档频道 join → 409；非 guest 走原逻辑（已完成 `guestJoinable` 门禁与 `GuestJoinTests`，`guestVisible`/API 字段回显仍待做）。
 3. 删除 cloak：`DELETE /api/channels/:id` 置 `deletedAt` 后，消息深链 404、thread 深链 404（已完成，`5f3ab05`）、search 结果排除、`/api/attachments/:id/url` 404（均已由 `DeletedChannelCloakTests` 验证）；保留搜索 marker 只在未删除频道。
 4. storage seam：`AttachmentStorage` protocol（put/get/delete/presignedURL）+ `FallbackServices.attachmentStorage` 注入，默认内存实现；测试用 fake 返回固定 URL。
 5. 验收：新增 `GuestChannelLifecycleTests`（archive 只读、删除 cloak、join 上限），先失败后实现；绿后锁 `guestRbac.api` 的对应 case。

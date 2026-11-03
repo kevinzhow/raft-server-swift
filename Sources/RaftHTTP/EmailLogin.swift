@@ -410,6 +410,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var inboxDoneAt: [String: Date] = [:]
     private var inboxResiduesForTesting: Set<String> = []
     private var guestVisibleChannels: [String: Bool] = [:]
+    private var guestJoinableChannels: [String: Bool] = [:]
     private var readReceiptsServers: Set<String> = []
     private var channelHumanRoles: [String: String] = [:]
     private var channelAuthorityRevisions: [String: Int] = [:]
@@ -9380,6 +9381,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public func setChannelGuestVisibleForTesting(channelId: String, visible: Bool) {
         lock.lock()
         guestVisibleChannels[channelId] = visible
+        lock.unlock()
+    }
+
+    public func setChannelGuestJoinableForTesting(channelId: String, joinable: Bool) {
+        lock.lock()
+        guestJoinableChannels[channelId] = joinable
         lock.unlock()
     }
 
@@ -20041,6 +20048,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Server role cannot join public channels\"}")
+        }
+        if oauth.memberRole(serverId: serverId, userId: userId) == "guest" {
+            lock.lock()
+            let joinable = guestJoinableChannels[channelId] ?? false
+            lock.unlock()
+            guard joinable else {
+                return Self.json(403, "{\"error\":\"This channel does not allow guest joins\"}")
+            }
         }
         oauth.addChannelHuman(channelId: channelId, userId: userId)
         return Self.json(200, "{\"ok\":true}")

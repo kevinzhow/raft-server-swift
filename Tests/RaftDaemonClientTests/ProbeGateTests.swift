@@ -84,11 +84,17 @@ private struct ProbeCrash: Error {}
     let pa = Task { try await gate.run("a") { started.keys.append("a"); try await a.wait() } }
     let pb = Task { try await gate.run("b") { started.keys.append("b"); try await b.wait() } }
     let pc = Task { try await gate.run("c") { started.keys.append("c"); try await c.wait() } }
-    try await Task.sleep(nanoseconds: 200_000_000)
-    #expect(started.keys == ["a", "b"], "the third waits for a free slot; got \(started.keys)")
+    func waitUntil(_ condition: @escaping @Sendable () -> Bool, timeoutMs: Int = 2_000) async {
+        let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
+        while !condition() && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+    await waitUntil { started.keys.count >= 2 }
+    #expect(Set(started.keys) == ["a", "b"], "the third waits for a free slot; got \(started.keys)")
     a.resolve(())
-    try await Task.sleep(nanoseconds: 200_000_000)
-    #expect(started.keys == ["a", "b", "c"], "a freed slot starts the next waiter; got \(started.keys)")
+    await waitUntil { started.keys.count >= 3 }
+    #expect(Set(started.keys) == ["a", "b", "c"], "a freed slot starts the next waiter; got \(started.keys)")
     b.resolve(())
     c.resolve(())
     _ = try await (pa.value, pb.value, pc.value)
