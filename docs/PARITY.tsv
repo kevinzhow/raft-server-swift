@@ -86,7 +86,7 @@ guestVisibilityBoundaries.api	route	pending	-	auto-seed
 hostedAgentMigration.api	route	locked	d6b4c05	hosted start/confirm gates, model, revision and replay
 identitySetup.api	route	locked	f744692	pending registration, complete-profile CAS, server write gate
 inboxPressure.realPg	route	locked	6d7c1c9	non-executable black-box: real-PG inbox-pressure rail (queue/advisory-lock behaviour) with no in-memory equivalent.
-independentAudit.api	route	locked	SLICE	audit group: a revoked session-family access token cannot approve a device grant or mint a fresh session (control refresh stays 401), and guest-role history/sync only covers explicitly joined channels (global sync omits unjoined channels, scoped history answers 403); excluded: the legacy machine-key migration cache-warm case, which needs the unported DB cache/migration write path
+independentAudit.api	route	locked	a432d7f	audit group: a revoked session-family access token cannot approve a device grant or mint a fresh session (control refresh stays 401), and guest-role history/sync only covers explicitly joined channels (global sync omits unjoined channels, scoped history answers 403); excluded: the legacy machine-key migration cache-warm case, which needs the unported DB cache/migration write path
 integrations.api	route	partial	-	auto-seed
 integrations.appPermissionReview.api	route	locked	60e2842	revision-bound approval, 400 on bad id, 409 stale, pending projection
 internal.agentScope.api	route	locked	e1fa956	covered by the existing metric/scope tests
