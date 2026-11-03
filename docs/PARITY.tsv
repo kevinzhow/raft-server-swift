@@ -256,7 +256,7 @@ agentProcessManager.wakeRecycle	daemon	pending	-	auto-seed
 agentRuntimeInput.snapshot	daemon	pending	-	auto-seed
 agentRuntimeInput	daemon	pending	-	auto-seed
 agentStartCoordinator	daemon	pending	-	auto-seed
-agentStartPendingDeliveryBuffer	daemon	locked	SLICE	agent start pending delivery buffer: I1 membership against the queued/starting/terminal-recovery/cooldown snapshot (non-starting owners rejected), I2 exactly-once (rebindWake appends instead of dropping, drainOnSpawn returns once and clears, a second drain only sees new work), orphan cleanup by cancelStart/cancelAllStarts, immutable snapshot values, and suppressConsumed removing consumed messages with a count
+agentStartPendingDeliveryBuffer	daemon	locked	1e2a45f	agent start pending delivery buffer: I1 membership against the queued/starting/terminal-recovery/cooldown snapshot (non-starting owners rejected), I2 exactly-once (rebindWake appends instead of dropping, drainOnSpawn returns once and clears, a second drain only sees new work), orphan cleanup by cancelStart/cancelAllStarts, immutable snapshot values, and suppressConsumed removing consumed messages with a count
 agentVisibleDeliveryLedger	daemon	pending	-	auto-seed
 apmStateMachine.contract	daemon	pending	-	auto-seed
 apps/cleaner/configReceiver	daemon	pending	-	auto-seed
