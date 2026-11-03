@@ -373,7 +373,7 @@ runtimeModels/modelSourceCache	daemon	pending	-	auto-seed
 runtimeModels/oarListModels	daemon	pending	-	auto-seed
 runtimeNotificationState	daemon	pending	-	auto-seed
 runtimeOutcomeOutbox	daemon	pending	-	auto-seed
-runtimeProcessBindingFence	daemon	locked	SLICE	runtime process binding fence: output from a replaced process is rejected with one trace record per process x reason x source per 10s window carrying suppressed_count, the next rejection after the window records the accumulated suppressed count and restarts the burst, input rejections are recorded once per send attempt and never collapsed, and binding validation distinguishes missing/agent/process/launch/session mismatches
+runtimeProcessBindingFence	daemon	locked	6201225	runtime process binding fence: output from a replaced process is rejected with one trace record per process x reason x source per 10s window carrying suppressed_count, the next rejection after the window records the accumulated suppressed count and restarts the burst, input rejections are recorded once per send attempt and never collapsed, and binding validation distinguishes missing/agent/process/launch/session mismatches
 runtimeProgressState	daemon	pending	-	auto-seed
 runtimeTurnState	daemon	pending	-	auto-seed
 runtimeTurnTokens	daemon	pending	-	auto-seed
