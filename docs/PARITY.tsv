@@ -37,7 +37,7 @@ attachmentUploadSessions.api	route	partial	-	auto-seed
 attachments.api	route	locked	a7a2a6d	access/upload/TTL/preview tokens/query-token/sk_computer/joint+legacy visibility/agent upload/revoked+retired auth covered; excluded XLSX worker-pool preview, storage streaming/Range/abort, deployment stream hosts, legacy machine-key migration and internal helpers
 attachments	route	partial	-	auto-seed
 auditMediumInbox.api	route	locked	a5dea45	guest visible recheck on done/followed/mention surfaces
-auth.api	route	partial	-	auto-seed
+auth.api	route	partial	-	account/session core group covered (register reserved handle and legal acceptance gates with append-only acceptance, stale legal versions, login stable credential code and malformed-body issue paths, profile current-password code, displayLanguage normalization/clear with unsupported-locale rejection, shareUsageData round trip and rejection, gravatar hash); excluded: OAuth/Apple provider exchange flows, mobile handoff PKCE/legal retry, durable refresh replay binding, avatar upload, retirement flows
 authIdentityUnlink.api	route	locked	d2f8a6c	owner-bound unlink, final-method 409, credential provenance, reset
 authLoginTrace	route	pending	-	auto-seed
 authPendingSocialLink.api	route	pending	-	auto-seed

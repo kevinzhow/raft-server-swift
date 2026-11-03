@@ -848,3 +848,12 @@ RFC 074 personal assistant：
 - 投递：`/internal/agent-api/events` 与 `/wake-hints` 跳过 mute 边界之后的普通消息，但命中 @该 agent 的消息穿透；mute 之前的历史 backlog 仍投递。unmute 只恢复后续投递，被抑制的旧消息通过 history 补看（不重放）。
 - freshness SMR-006：muted 普通消息不触发 hold（state 仍 `sent`），@mention 穿透消息进入 held 上下文（`newMessageCount`/`heldMessages` 只计穿透消息，muted 普通行不出现）。
 - 明确排除：human receiver mute 与 agent mute 的统一存储（human 侧仍走 per-user notification prefs）、attention_hint_accepted trace 计数、线程 mute 继承父频道（mute 只作用于该频道本身，followed thread 独立投递）。
+
+### auth.api：账号与会话核心组
+
+- `POST /api/auth/register`：reserved handle（如 `Reminders`）→ 400 error 含 "reserved" 且不建账号；缺 `acceptTerms` → 422 `{"error":"LEGAL_ACCEPTANCE_REQUIRED","legal":{termsVersion,privacyVersion,termsUrl,privacyUrl}}` 且不建账号；`termsVersion`/`privacyVersion` 与当前版本不符 → 409 `{"error":"TERMS_CHANGED","legal":...}` 且不建账号；通过后建账号并记录 append-only legal acceptance（当前版本、source `signup`）。
+- `POST /api/auth/login`：错误凭据 → 401 精确 `{"code":"AUTH_INVALID_CREDENTIALS","error":"Invalid email or password"}`；`email`/`password` 不是字符串（嵌套对象）→ 400 `{"code":"email_login_body_invalid","issues":[{"path":"email"|"password",...}]}`，在创建会话之前失败。
+- `PATCH /api/auth/me`：当前密码错误 → 401 精确 `{"code":"AUTH_CURRENT_PASSWORD_INCORRECT","error":"Current password is incorrect"}`。
+- `displayLanguage`：支持 tag 归一化持久化（`zh-Hans`→`zh-cn`、`en-US`→`en`）；未发布的 UI locale（`fr-FR`、`zh-TW`）→ 400 且保留旧值；显式 `null` 清空偏好。
+- `shareUsageData`：初始 null；`true/false/null` 往返并回读一致；非布尔 → 400。
+- `GET /api/auth/me` 的 `gravatarHash` 是 email 去空白小写后的 SHA-256 hex。
