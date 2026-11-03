@@ -1465,6 +1465,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
         ))
     }
+    app.get("api", "agent-runtime-providers", ":kind") { request -> Response in
+        routeResponse(services.emailAccounts.agentRuntimeProviderProbe(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            kind: request.parameters.get("kind") ?? ""
+        ))
+    }
     app.post("api", "agents") { request -> Response in
         routeResponse(services.emailAccounts.createAgentRoute(
             authorization: request.headers[.authorization],

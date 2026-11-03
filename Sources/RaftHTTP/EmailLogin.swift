@@ -163,6 +163,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var agentMigrationServers: Set<String> = []
     private var hostedMigrationServers: Set<String> = []
     private var hostedRuntimeServers: Set<String> = []
+    private var hostedProviderTokenOverride: String?
     private var hostedMigrations: [String: HostedMigrationRecord] = [:]
     private var appLoginRequests: [String: AppLoginRequest] = [:]
 
@@ -10064,6 +10065,26 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return nil
     }
 
+    /// `GET /api/agent-runtime-providers/:kind`. Owners and admins can ask
+    /// whether a hosted provider is usable for this server; the answer never
+    /// exposes the deployment token or the provider base URL.
+    public func agentRuntimeProviderProbe(authorization: String?, serverId: String, kind: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard kind == "antiproton" else {
+            return Self.json(404, "{\"error\":\"Unknown runtime provider\"}")
+        }
+        let available = hostedProviderAvailable(serverId: serverId)
+        return Self.json(200, "{\"kind\":\"antiproton\",\"available\":\(available)}")
+    }
+
     public func createAgentRoute(authorization: String?, serverId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -10096,6 +10117,25 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let external = object["external"] as? Bool ?? false
         if external, object["machineId"] != nil {
             return Self.json(400, "{\"error\":\"External agents cannot be assigned to a Computer\"}")
+        }
+        var hostedProvider: String?
+        if let provider = object["provider"] as? String, !provider.isEmpty {
+            guard provider == "antiproton" else {
+                return Self.json(400, "{\"error\":\"Unknown runtime provider\"}")
+            }
+            guard external else {
+                return Self.json(400, "{\"error\":\"provider is only for external agents\"}")
+            }
+            lock.lock()
+            let flagged = hostedRuntimeServers.contains(serverId)
+            lock.unlock()
+            guard flagged else {
+                return Self.json(403, "{\"error\":\"The hosted runtime provider is not enabled for this server\",\"code\":\"agent_runtime_provider_disabled\"}")
+            }
+            guard hostedProviderConfigured() else {
+                return Self.json(409, "{\"error\":\"The hosted runtime provider is not configured for this deployment\",\"code\":\"agent_runtime_provider_not_configured\"}")
+            }
+            hostedProvider = provider
         }
         let rawConfig = object["runtimeConfig"] as? [String: Any] ?? [:]
         if let legacyRuntime = object["runtime"] as? String,
@@ -10151,6 +10191,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             agentMachineIds[agentId] = machineId
             lock.unlock()
         }
+        if let hostedProvider {
+            lock.lock()
+            hostedRuntimes[agentId] = (hostedProvider, nil, "provisioning", false, Date())
+            lock.unlock()
+        }
         let creatorDm = oauth.createDirectChannel(serverId: serverId, firstUserId: userId, secondUserId: agentId)
         oauth.addChannelAgent(channelId: creatorDm, agentId: agentId)
         emitRealtime("channel:\(creatorDm)", "dm:new", "{\"channelId\":\(jsonString(creatorDm))}")
@@ -10174,7 +10219,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             includeEnvVars: false
         )
         emitRealtime("server:\(serverId)", "agent:created", "{\"agent\":\(broadcastJSON)}")
-        return Self.json(200, String(runtimeJSON.dropLast()) + ",\"creator\":\(creator)}")
+        var created = String(runtimeJSON.dropLast()) + ",\"creator\":\(creator)"
+        if let hostedProvider {
+            created += ",\"hostedRuntime\":{\"kind\":\(jsonString(hostedProvider)),\"state\":\"provisioning\"}"
+        }
+        return Self.json(200, created + "}")
     }
 
     public func listServerAgents(authorization: String?, serverId: String) -> HTTPReply {
@@ -11124,6 +11173,31 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         hostedMigrationServers.insert(serverId)
         lock.unlock()
+    }
+
+    /// Test-only override of the deployment-level hosted provider token, so
+    /// parallel suites never race on process environment.
+    public func setHostedProviderTokenForTesting(_ token: String?) {
+        lock.lock()
+        hostedProviderTokenOverride = token
+        lock.unlock()
+    }
+
+    private func hostedProviderConfigured() -> Bool {
+        lock.lock()
+        let override = hostedProviderTokenOverride
+        lock.unlock()
+        let token = override
+            ?? ProcessInfo.processInfo.environment["ANTIPROTON_PROVISIONING_TOKEN"]
+            ?? ""
+        return !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func hostedProviderAvailable(serverId: String) -> Bool {
+        lock.lock()
+        let flagged = hostedRuntimeServers.contains(serverId)
+        lock.unlock()
+        return flagged && hostedProviderConfigured()
     }
 
     public func enableHostedRuntimeForTesting(serverId: String) {

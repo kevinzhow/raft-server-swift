@@ -803,3 +803,10 @@ RFC 074 personal assistant：
 - DM 成员身份包括 postable `memberIds`（此前只认 channelAgent/channel-agent 记录），因此 agent 可 resolve 自己 DM 里的消息。
 - `GET /internal/agent-api/channel-members?channel=...`（legacy `/internal/agent/:id/channel-members` 同实现）：返回 `{channel:{ref,type},humans:[{id,name,role}],agents:[{id,name,status:"active"}]}`；thread 引用解析到父频道 roster，type 为 thread；支持 credential 与 machine key（含 `registerMachineForAgent` 的 legacy key）。
 - `GET /internal/agent-api/threads`：只返回该 agent 未取消关注、且其可见的 followed thread；每行 `{target,threadChannelId,parentChannelRef,parentMessageId,parentMessageShortId,followedAt,reason,doneAt}`，按 followedAt 倒序；别的 agent 的 follow 与不可见 private 父频道下的 follow 不出现。
+
+### agentRuntimeProviders.api：hosted provider 可用性门
+
+- `GET /api/agent-runtime-providers/antiproton`：仅本 Server owner/admin（member → 403）；未知 kind → 404；响应恒为 `{kind:"antiproton",available}`，不暴露部署 token 或 provider base URL。旧的 PUT/DELETE 配置路由保持 404。
+- 可用性 = 部署级配置（`ANTIPROTON_PROVISIONING_TOKEN` 非空）+ 本 Server 的 hosted runtime flag 同时成立；跨 Server 隔离（B 未开 flag 时即使 token 存在也不可用）。
+- `POST /api/agents` 带 `provider:"antiproton"`：仅 `external:true`（否则 400 `provider is only for external agents`）；flag 未开 → 403 `{"code":"agent_runtime_provider_disabled"}`；flag 已开但部署未配置 → 409 `{"code":"agent_runtime_provider_not_configured"}`；通过后创建 agent 并返回 `hostedRuntime:{kind:"antiproton",state:"provisioning"}`（本移植版不发 provider HTTP 请求）。
+- 明确排除：fake provider 的 provisioning/edit/delete/import/connector/spend/cindy 等需要真实 provider transport 的组，以及 rollout 降级/杀开关的 worker 行为。
