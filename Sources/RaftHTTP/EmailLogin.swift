@@ -10232,6 +10232,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(401, "{\"error\":\"This internal surface is not registered\",\"code\":\"auth_policy_unregistered_path\"}")
     }
 
+    /// `/internal/agent-api/*` and `/internal/agent/*` for a path the surface
+    /// registry does not claim: a live agent credential is told the path is
+    /// unregistered instead of receiving a routing 404, so a missing policy
+    /// entry fails closed on the same envelope as `/internal/computer/*`.
+    public func unregisteredInternalAgentSurface(authorization: String?) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let liveAgent = agentCredentials[token] != nil
+        lock.unlock()
+        guard liveAgent else {
+            return Self.json(401, "{\"error\":\"Invalid principal for this surface\",\"code\":\"invalid_principal\"}")
+        }
+        return Self.json(401, "{\"error\":\"This internal surface is not registered\",\"code\":\"auth_policy_unregistered_path\"}")
+    }
+
     public func agentRuntimeProviderProbe(authorization: String?, serverId: String, kind: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

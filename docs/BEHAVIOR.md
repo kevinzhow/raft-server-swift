@@ -992,3 +992,10 @@ RFC 074 personal assistant：
 - `GET /share/:id.png`：200 原始上传 PNG 字节（`Content-Type: image/png`、`Cache-Control: public, immutable, max-age=31536000`、`Content-Disposition: inline`、`X-Content-Type-Options: nosniff`、`Content-Length`）；即使配置了 CDN，本机路由仍可回退服务。
 - 非法 uuid 或未知 id 的页面与图片都是 404 纯文本 `Not found`。
 - 明确排除：上传中断时释放上游存储连接（真实对象存储 socket 生命周期）这一条，依赖未移植的对象存储传输层。
+
+### internalAgentApi.registryParity：route-auth policy 失败关闭组
+
+- 声明的 agent principal 前缀（`/internal/agent-api/`、`/internal/agent/`）对未注册路径失败关闭：带有效 agent 凭据 → 401 `{"error":"This internal surface is not registered","code":"auth_policy_unregistered_path"}`，而不是路由 404（避免"路由存在但缺 policy 条目"看起来像未挂载）。
+- 同一路径上：machine 凭据 → 401 `invalid_principal`（不是该前缀声明的 principal）；无 Bearer → 401 `auth_required`。
+- 已注册路由不受 catch-all 影响；`POST /internal/computer/preflight` 的 `computerSurface` 不因新增通配路由增减（通配不进入声明清单）。
+- 明确排除：上游用 TypeScript 契约源码断言"每个 contract 声明路由都注册在 routeAuthPolicy"的源码级校验（不可移植）；其等价可观测面由本组锁定。

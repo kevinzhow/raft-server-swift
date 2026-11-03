@@ -1608,6 +1608,20 @@ public func configure(_ app: Application, services: FallbackServices) {
             ))
         }
     }
+    // The claimed agent principal prefixes fail closed the same way. A route
+    // that exists without a policy entry must not look like an unmounted 404.
+    for method in [HTTPRequest.Method.get, .post, .put, .patch, .delete] {
+        app.on(method, "internal", "agent-api", "**") { request -> Response in
+            routeResponse(services.emailAccounts.unregisteredInternalAgentSurface(
+                authorization: request.headers[.authorization]
+            ))
+        }
+        app.on(method, "internal", "agent", "**") { request -> Response in
+            routeResponse(services.emailAccounts.unregisteredInternalAgentSurface(
+                authorization: request.headers[.authorization]
+            ))
+        }
+    }
     app.post("api", "agents") { request -> Response in
         routeResponse(services.emailAccounts.createAgentRoute(
             authorization: request.headers[.authorization],
