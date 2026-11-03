@@ -320,9 +320,9 @@ drivers/runtimeChild	daemon	pending	-	auto-seed
 drivers/runtimeContract	daemon	pending	-	auto-seed
 drivers/runtimeSession	daemon	pending	-	auto-seed
 drivers/spawnErrorListenerOrder	daemon	locked	06b59b1	non-executable black-box: Node child_process scheduling counterexamples proving a spawn error can arrive before RuntimeSession attaches its listener; Node-specific scheduling with no daemon-frame surface in this port
-drivers/systemPrompt.snapshot	daemon	pending	-	auto-seed
+drivers/systemPrompt.snapshot	daemon	locked	b5d72b6	non-executable black-box: byte-compares the generated systemPrompt snapshot file against its committed copy; this port has no generated prompt snapshot artifact or CLI manual
 drivers/systemPrompt	daemon	pending	-	auto-seed
-drivers/toolEnvContract	daemon	pending	-	auto-seed
+drivers/toolEnvContract	daemon	locked	b5d72b6	non-executable black-box: drives the Kimi Code SDK's local tool runtime (LocalKaos) through prepareCliTransport/toolEnvFromSpawnEnv and inspects a spawned probe child; this port does not ship the Kimi SDK or the agent runtime process manager
 drivers/windowsLaunch	daemon	pending	-	auto-seed
 drivers/windowsPowerShellEnv	daemon	locked	ee768bb	windows PowerShell child env: every case variant of PSModulePath is omitted so the child initializes its own module path, the supplied environment is not mutated, and an omitted environment is derived from the inherited process env
 feedbackAgentEventTail	daemon	pending	-	auto-seed
