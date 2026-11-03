@@ -44,14 +44,14 @@
 
 | 指标 | 当前 | 里程碑 | 剩余 |
 | --- | --- | --- | --- |
-| route 模块 locked | 106 / 219（48.4%） | 132 / 219（60%） | 26 个模块 |
-| route 用例 locked | 678 / 2000（33.9%） | 800 / 2000（40%） | 122 条用例 |
+| route 模块 locked | 107 / 219（48.9%） | 132 / 219（60%） | 25 个模块 |
+| route 用例 locked | 688 / 2000（34.4%） | 800 / 2000（40%） | 112 条用例 |
 | socket 模块 | 2 / 7 | 按 frame 组推进 | 5 个模块 |
 | daemon 模块 | 3 / 180 | 按真实 socket 队列推进 | 177 个模块 |
-| 整体模块 | 111 / 406（27.3%） | 244 / 406（60%） | 133 个模块 |
-| 整体用例 | 748 / 4632（16.1%） | 1853 / 4632（40%） | 1105 条用例 |
+| 整体模块 | 112 / 406（27.6%） | 244 / 406（60%） | 132 个模块 |
+| 整体用例 | 758 / 4632（16.4%） | 1853 / 4632（40%） | 1095 条用例 |
 
-最近锁定的模块：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api`、`servers.api`、`internalAgentApi.agentStatus`、`internalAgentApi.senderMentionDeliveries`、`internalAgentApi.attachmentComments`、`tasks.realtimeProjection.api`、`computerAdopt.api`、`internalComputer.preflight`、`internalComputer.runners`、`mobileDownload`、`desktopDownload`、`publicVisits.api`、`notifications.api`、`productEvents.api`、`shareArtifacts.api`、`internalAgentApi.registryParity`、`errorResponse.dmTarget`、`internalAgentApi.wakeHintStream`、`internalComputer.agentMigrationControl.bodyLimit.api`。剩余用例高度集中在 `internalAgentApi.auth`（93）、`agents.api`（87）、`internalAgentApi.send`（65）、`auth.api`（45）、`internal.channelMembership.api`（43）；下一片按第 4 节执行顺序 2–5 推进（`internalAgentApi.auth` 剩余组或下一个 pending 小模块）。
+最近锁定的模块：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api`、`servers.api`、`internalAgentApi.agentStatus`、`internalAgentApi.senderMentionDeliveries`、`internalAgentApi.attachmentComments`、`tasks.realtimeProjection.api`、`computerAdopt.api`、`internalComputer.preflight`、`internalComputer.runners`、`mobileDownload`、`desktopDownload`、`publicVisits.api`、`notifications.api`、`productEvents.api`、`shareArtifacts.api`、`internalAgentApi.registryParity`、`errorResponse.dmTarget`、`internalAgentApi.wakeHintStream`、`internalComputer.agentMigrationControl.bodyLimit.api`、`internalAgentApi.mentionActions`。剩余用例高度集中在 `internalAgentApi.auth`（93）、`agents.api`（87）、`internalAgentApi.send`（65）、`auth.api`（45）、`internal.channelMembership.api`（43）；下一片按第 4 节执行顺序 2–5 推进（`internalAgentApi.auth` 剩余组或下一个 pending 小模块）。
 
 ### 切片边界即检查点
 
@@ -191,10 +191,10 @@
 
 ### 下一片设计（2026-11-04 源码调研结论）
 
-**`internalAgentApi.mentionActions`（10 条，agent 侧）— 已完成主体（b25fadc）**
+**`internalAgentApi.mentionActions`（10 条，agent 侧）— 已锁定（b25fadc / 本片补 cloak 断言）**
 
 - 已实现 pending/execute 两个端点、createdAt/7 天窗口、limit+1、notify 写入与去重、add 的 agent 拒绝与发送者参与度复核、deleted-message 级联、typed per-id。
-- 剩余两条：notify 对私有 thread 内容的 cloak 断言（可移植，补测试即可），以及 notify handoff/drop 重试语义（orchestrator spy，按契约排除）。
+- 剩余：notify handoff/drop 重试语义（in-process orchestrator spy，按契约排除，已在 PARITY notes 注明）。
 
 **`internal.search.api`（8 条）**
 
