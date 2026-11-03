@@ -1181,3 +1181,7 @@ RFC 074 personal assistant：
 - 两族都遵循 value-provenance 纪律：仅提取有限数值、显式 allowlist（不 passthrough 原对象）、mark-absent 不零填——空/缺失 usage 不产生事件，字段存在且为 0 是真实上报的 0，照常发出。
 - `PiTokenUsage`：pi-ai `Usage` 顶层 input/output/cacheRead/cacheWrite/cacheWrite1h/reasoning/totalTokens → `*_tokens`，嵌套 `cost` 的 total/input/output/cacheRead/cacheWrite → `totalCostUsd/cost_*_usd`；`message.usage` 为空/非对象/数组 → nil；source=`pi_message_end_usage`。
 - `GeminiTokenUsage`：只提取 runtime 契约确认的 `total_tokens`；source=`gemini_result_stats`；null sessionId 归一为缺省。
+
+### daemon windowsPowerShellEnv
+
+- Windows PowerShell 子进程环境会删除所有大小写变体的 `PSModulePath`（PowerShell 7 导出的模块路径会破坏 Windows PowerShell 5.1 启动），让子进程按自己的 edition 初始化；传入 env 不被修改，未传入时从继承环境派生副本。

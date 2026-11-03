@@ -324,7 +324,7 @@ drivers/systemPrompt.snapshot	daemon	pending	-	auto-seed
 drivers/systemPrompt	daemon	pending	-	auto-seed
 drivers/toolEnvContract	daemon	pending	-	auto-seed
 drivers/windowsLaunch	daemon	pending	-	auto-seed
-drivers/windowsPowerShellEnv	daemon	pending	-	auto-seed
+drivers/windowsPowerShellEnv	daemon	locked	SLICE	windows PowerShell child env: every case variant of PSModulePath is omitted so the child initializes its own module path, the supplied environment is not mutated, and an omitted environment is derived from the inherited process env
 feedbackAgentEventTail	daemon	pending	-	auto-seed
 feedbackMachineEvidence	daemon	pending	-	auto-seed
 feedbackMachineLogTail	daemon	pending	-	auto-seed
