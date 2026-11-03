@@ -1195,3 +1195,9 @@ RFC 074 personal assistant：
 
 - 已被 Computer 接管的 legacy machine key 再次启动 raft-daemon 时，`LegacyDaemonKeyAdoptedByComputerError` 拒绝启动并给出精确指引：迁移目标（slug 展示为 `/slug`，否则 serverId）、"do not restart raft-daemon with the migrated key"、以及 supervisor 清理命令。
 - detection 命中时使用其 `detail` + `cleanupCommands`；未命中时回退 PM2 / systemd / launchd 三条固定清理命令。末尾总是给出 `raft-computer start|status [/slug]`。
+
+### daemon runtimeProcessBindingFence
+
+- 被替换进程的 output 会被拒绝：同一 process × reason × source 每 10s 窗口只记录一次 trace（`daemon.agent.runtime_binding.rejected`，带 `agent_id/process_instance_id/direction/source/reason/suppressed_count`），其间拒绝只计数；窗口结束后下一次拒绝记录累计的 suppressed_count 并从零重新计数。
+- input 拒绝（binding 不匹配）每次 send 都单独记录、不折叠；binding 匹配时放行（本移植的 fence 只做校验与记录，不转接 runtime send）。
+- 绑定按 runtime token 建立；validation 依 binding_missing / inactive_process_generation / agent / process / launch / session 不匹配给出原因。
