@@ -1078,3 +1078,10 @@ RFC 074 personal assistant：
 - `GET /api/attachments/:id/comments`：不可见/不存在 404（不泄漏），返回按创建时间排序的 `comments[{id,attachmentId,content,anchor,sender{type,id,name},createdAt,reactions}]` 与 `viewer{canComment,reason}`（archived / unlinked / not_member / ok）。
 - `POST /api/attachments/:id/comments`：flag → malformed-id → 私有频道 cloak 404 → 未链接 422 `attachment_not_linked` → 归档 409 `channel_archived` → 非成员 403 `not_a_member` → body 校验；成功时写 comment 记录与消息。
 - 仍待补：thread 宿主复用/级联、read-only 计费只读态、结构 anchors 词表与上限、mentions 管线、history scoped metadata 与 agent scope quotation。
+
+### announcements.api：targeted audience 组
+
+- `GET /api/announcements/active` 与 `POST /api/announcements/:id/dismiss` 接受至多一个 `server_id`：未提供时 `server_id` 规则只放行无 audience 的公告；非法 UUID 或重复参数 → 400，绝不会退化为全局可见。
+- targeted 公告只在 `server_id` 命中且调用者是该 Server 成员时可见（冒名成员得到空列表；dismiss 得到 404），payload 不包含 `audience` 字段。`X-Server-Id` 头作为 `server_id` 的等价来源。
+- 每用户 dismissal 独立；重新发布的新公告行会再次出现。发布/admin 路由未挂载：`POST /api/announcements` 与 `/api/admin/announcements*` 一律 404。
+- 明确排除：failed-write frontier 的游标推进（DB 写失败前缀，非 HTTP 可观察）、scheduled 内容/时间可编辑的 service 级断言（窗口排队的可观察行为已由过期回落覆盖）、onboarding login family gate（本端口无该 gate，行为恒为放行）。

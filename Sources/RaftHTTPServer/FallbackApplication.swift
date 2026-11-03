@@ -657,13 +657,16 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("api", "announcements", "active") { request -> Response in
         routeResponse(services.emailAccounts.activeAnnouncements(
             authorization: request.headers[.authorization],
-            after: desktopQuery(request.url.query, "after")
+            after: desktopQuery(request.url.query, "after"),
+            query: request.url.query
         ))
     }
     app.post("api", "announcements", ":announcementId", "dismiss") { request -> Response in
         routeResponse(services.emailAccounts.dismissAnnouncement(
             authorization: request.headers[.authorization],
-            announcementId: request.parameters.get("announcementId") ?? ""
+            announcementId: request.parameters.get("announcementId") ?? "",
+            query: request.url.query,
+            headerServerId: request.headers[HTTPField.Name("X-Server-Id")!]
         ))
     }
     app.post("api", "channels", "inbox", "done") { request -> Response in

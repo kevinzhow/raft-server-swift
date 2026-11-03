@@ -395,7 +395,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     // Human read frontiers live in the ledger alongside the message rows. The
     // directory keeps no parallel cursor store.
     private var agentActivities: [String: (activity: String, detail: String)] = [:]
-    private var announcements: [(id: String, title: String, pages: [String], startsAt: Date, expiresAt: Date?, status: String, publishedAt: Date?, imageId: String?)] = []
+    private var announcements: [(id: String, title: String, pages: [String], startsAt: Date, expiresAt: Date?, status: String, publishedAt: Date?, imageId: String?, audienceServerIds: [String])] = []
     private var announcementImageAssets: [String: AnnouncementImageAsset] = [:]
     private var announcementImageStorageAvailable = true
 
@@ -25203,6 +25203,52 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     @discardableResult
+    public func setAnnouncementAudienceForTesting(id: String, serverIds: [String]) {
+        lock.lock()
+        if let index = announcements.firstIndex(where: { $0.id == id }) {
+            announcements[index].audienceServerIds = serverIds
+        }
+        lock.unlock()
+    }
+
+    /// A targeted announcement is only visible inside one of its servers; the
+    /// audience itself is never echoed to the client.
+    private func announcementVisibleLocked(
+        _ announcement: (id: String, title: String, pages: [String], startsAt: Date, expiresAt: Date?, status: String, publishedAt: Date?, imageId: String?, audienceServerIds: [String]),
+        userId: String,
+        serverId: String?
+    ) -> Bool {
+        guard !announcement.audienceServerIds.isEmpty else { return true }
+        guard let serverId else { return false }
+        return announcement.audienceServerIds.contains(serverId)
+            && oauth.memberRole(serverId: serverId, userId: userId) != nil
+    }
+
+    private enum AnnouncementContext {
+        case success(String?)
+        case failure(HTTPReply)
+    }
+
+    /// `server_id` must appear at most once and be a UUID; a duplicate or a
+    /// malformed value never degrades into an unscoped answer.
+    private static func announcementContextQuery(_ query: String?, headerServerId: String? = nil) -> AnnouncementContext {
+        let values = (query ?? "").split(separator: "&").compactMap { pair -> String? in
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.first == "server_id" else { return nil }
+            return parts.count > 1 ? String(parts[1]).removingPercentEncoding ?? String(parts[1]) : ""
+        }
+        if values.count > 1 {
+            return .failure(json(400, "{\"error\":\"server_id must be provided at most once\"}"))
+        }
+        if let value = values.first {
+            guard ServerScope.isUUID(value) else {
+                return .failure(json(400, "{\"error\":\"server_id must be a valid UUID\"}"))
+            }
+            return .success(value)
+        }
+        return .success(headerServerId)
+    }
+
     public func addAnnouncementForTesting(
         title: String,
         pages: [String],
@@ -25210,7 +25256,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         expiresAt: Date? = nil,
         status: String = "published",
         publishedAt: Date? = nil,
-        imageId: String? = nil
+        imageId: String? = nil,
+        audienceServerIds: [String] = []
     ) -> String {
         let id = UUID().uuidString.lowercased()
         lock.lock()
@@ -25222,7 +25269,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             expiresAt: expiresAt,
             status: status,
             publishedAt: publishedAt ?? (status == "draft" ? nil : Date()),
-            imageId: imageId
+            imageId: imageId,
+            audienceServerIds: audienceServerIds
         ))
         lock.unlock()
         return id
@@ -25370,12 +25418,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         )
     }
 
-    public func activeAnnouncements(authorization: String?, after: String?) -> HTTPReply {
+    public func activeAnnouncements(authorization: String?, after: String?, query: String? = nil) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
         if let after, !after.isEmpty, !ServerScope.isUUID(after) {
             return Self.json(400, "{\"error\":\"Invalid announcement cursor\"}")
+        }
+        let scopedServer: String?
+        switch Self.announcementContextQuery(query) {
+        case .failure(let reply):
+            return reply
+        case .success(let serverId):
+            scopedServer = serverId
         }
         let now = Date()
         lock.lock()
@@ -25385,6 +25440,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let rows = announcements
             .filter { $0.status == "published" && $0.publishedAt != nil }
             .filter { $0.startsAt <= now && ($0.expiresAt == nil || $0.expiresAt! > now) }
+            .filter { announcementVisibleLocked($0, userId: userId, serverId: scopedServer) }
             .filter { !announcementDismissals.contains("\(userId)\n\($0.id)") }
             .filter { after == nil || $0.id != after }
             .sorted { $0.startsAt < $1.startsAt }
@@ -25397,12 +25453,26 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"announcements\":[\(documents)]}")
     }
 
-    public func dismissAnnouncement(authorization: String?, announcementId: String) -> HTTPReply {
+    public func dismissAnnouncement(
+        authorization: String?,
+        announcementId: String,
+        query: String? = nil,
+        headerServerId: String? = nil
+    ) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
+        let scopedServer: String?
+        switch Self.announcementContextQuery(query, headerServerId: headerServerId) {
+        case .failure(let reply):
+            return reply
+        case .success(let serverId):
+            scopedServer = serverId
+        }
         lock.lock()
-        guard announcements.contains(where: { $0.id == announcementId }) else {
+        guard let announcement = announcements.first(where: { $0.id == announcementId }),
+              announcementVisibleLocked(announcement, userId: userId, serverId: scopedServer)
+        else {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Announcement not found\"}")
         }
