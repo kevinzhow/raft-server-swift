@@ -1225,3 +1225,10 @@ RFC 074 personal assistant：
 
 - 启动前按 driver 的 launchVersionPolicy 评估 runtime CLI 版本：只 block 精确的 known-bad 版本（版本三元组取首段 `x.y.z`，含前后缀可解析）；低于 tested-good 但不在 known-bad 时 warn 并放行；缺失版本（probe unavailable 或 version 缺失）与不可解析版本分别 warn `version_unavailable`/`version_unparseable`；等于或高于 tested-good 为 compatible；无 policy 的 runtime 为 `not_configured` 字节级不变。
 - 每次创建都重新 probe（不缓存），因此就地升级 CLI 后无需重启 daemon 即解锁；`enforce` 在 block 时抛错、warn 时回调警告。
+
+### daemon startupMemoryBlock
+
+- flag 只在 server 端开启时生效：server 未开则 env 无法打开；env 只能关闭（`0`），per-agent env 覆盖 process env；预算默认 4000 tokens（`RAFT_STARTUP_MEMORY_BLOCK_TOKENS` 可覆盖）。
+- 读取工作区 `MEMORY.md`：缺失/空/仅空白 → 不注入；预算内（4 bytes/token）→ 全文注入并标 `complete="true"` 与 no-re-read 提示；超预算 → 按行边界头截断，带 `shown="first X.X KB"`、`read the file for the rest` 与准确大小，多字节字符不截断码点。
+- `apply`：block 为 nil 时原样返回；否则 block + 双换行 + prompt，promptSource 加 `_with_memory`。
+- 明确排除：上游第 8 条（recycle briefing 中 chrome/memory/panel 的排序）依赖尚未移植的 `wakeSessionRecycle`，其断言在 PARITY 记为依赖 epic。
