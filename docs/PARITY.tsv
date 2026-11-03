@@ -367,7 +367,7 @@ runtimeAccountUsage/oarKimi	daemon	pending	-	auto-seed
 runtimeCliVersionTracker	daemon	pending	-	auto-seed
 runtimeDetectionRound	daemon	pending	-	auto-seed
 runtimeErrorDiagnostics	daemon	pending	-	auto-seed
-runtimeLaunchVersion	daemon	pending	-	auto-seed
+runtimeLaunchVersion	daemon	locked	SLICE	runtime launch version policy: only exact known-bad versions block, older unproven versions warn but start, missing and unparseable versions warn with their own reasons, tested-good and newer versions are compatible, runtimes without a policy are a no-op, every creation re-probes so an in-place CLI upgrade unlocks without a daemon restart, and enforce throws on block and reports warnings
 runtimeModelSourceProjection	daemon	pending	-	auto-seed
 runtimeModels/modelSourceCache	daemon	pending	-	auto-seed
 runtimeModels/oarListModels	daemon	pending	-	auto-seed

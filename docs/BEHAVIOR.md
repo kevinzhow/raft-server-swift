@@ -1220,3 +1220,8 @@ RFC 074 personal assistant：
 
 - `RuntimeTurnState`：跟踪 Codex turn 生命周期——markTurnStarted 设置当前 turn（并接住 pending 期间的非空输入证据）、noteTurnAccepted 只记 pending（此时不可 steer）、tool boundary 后 gate 住 busy steering 直到 markProgress、markTurnCompleted/reset 清空状态；hasLiveTurn 覆盖 accepted/running，completedTurnIds 上限 16，completedWithoutRuntimeActivity 只在无 activity 且无 token usage 时为真。
 - `DeviceClassDetector`：mac 用 `system_profiler` JSON（VirtualMac* → vm；MacBook*/Mac mini/Mac Studio/iMac/Mac Pro 前缀映射），Linux 用 DMI chassis 集合（laptop 8/9/10/14/31/32、desktop 3/4/5/6/7/13/15/16/35/36、server 17/23/28/29）且 hypervisor vendor/type 优先判 vm；WSL、Windows、读取失败均为 nil；只输出类别，不保留原始型号/DMI 字符串。
+
+### daemon runtimeLaunchVersion
+
+- 启动前按 driver 的 launchVersionPolicy 评估 runtime CLI 版本：只 block 精确的 known-bad 版本（版本三元组取首段 `x.y.z`，含前后缀可解析）；低于 tested-good 但不在 known-bad 时 warn 并放行；缺失版本（probe unavailable 或 version 缺失）与不可解析版本分别 warn `version_unavailable`/`version_unparseable`；等于或高于 tested-good 为 compatible；无 policy 的 runtime 为 `not_configured` 字节级不变。
+- 每次创建都重新 probe（不缓存），因此就地升级 CLI 后无需重启 daemon 即解锁；`enforce` 在 block 时抛错、warn 时回调警告。
