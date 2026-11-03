@@ -44,14 +44,14 @@
 
 | 指标 | 当前 | 里程碑 | 剩余 |
 | --- | --- | --- | --- |
-| route 模块 locked | 110 / 219（50.2%） | 132 / 219（60%） | 22 个模块 |
-| route 用例 locked | 693 / 2000（34.6%） | 800 / 2000（40%） | 107 条用例 |
+| route 模块 locked | 111 / 219（50.7%） | 132 / 219（60%） | 21 个模块 |
+| route 用例 locked | 698 / 2000（34.9%） | 800 / 2000（40%） | 102 条用例 |
 | socket 模块 | 2 / 7 | 按 frame 组推进 | 5 个模块 |
 | daemon 模块 | 3 / 180 | 按真实 socket 队列推进 | 177 个模块 |
-| 整体模块 | 115 / 406（28.3%） | 244 / 406（60%） | 129 个模块 |
-| 整体用例 | 763 / 4632（16.5%） | 1853 / 4632（40%） | 1090 条用例 |
+| 整体模块 | 116 / 406（28.6%） | 244 / 406（60%） | 128 个模块 |
+| 整体用例 | 768 / 4632（16.6%） | 1853 / 4632（40%） | 1085 条用例 |
 
-最近锁定的模块：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api`、`servers.api`、`internalAgentApi.agentStatus`、`internalAgentApi.senderMentionDeliveries`、`internalAgentApi.attachmentComments`、`tasks.realtimeProjection.api`、`computerAdopt.api`、`internalComputer.preflight`、`internalComputer.runners`、`mobileDownload`、`desktopDownload`、`publicVisits.api`、`notifications.api`、`productEvents.api`、`shareArtifacts.api`、`internalAgentApi.registryParity`、`errorResponse.dmTarget`、`internalAgentApi.wakeHintStream`、`internalComputer.agentMigrationControl.bodyLimit.api`、`internalAgentApi.mentionActions`、`attachmentPreviewBridge.api`、`internalAgentApi.inboxEligibility`。剩余用例高度集中在 `internalAgentApi.auth`（93）、`agents.api`（87）、`internalAgentApi.send`（65）、`auth.api`（45）、`internal.channelMembership.api`（43）；下一片按第 4 节执行顺序 2–5 推进（`internalAgentApi.auth` 剩余组或下一个 pending 小模块）。
+最近锁定的模块：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api`、`servers.api`、`internalAgentApi.agentStatus`、`internalAgentApi.senderMentionDeliveries`、`internalAgentApi.attachmentComments`、`tasks.realtimeProjection.api`、`computerAdopt.api`、`internalComputer.preflight`、`internalComputer.runners`、`mobileDownload`、`desktopDownload`、`publicVisits.api`、`notifications.api`、`productEvents.api`、`shareArtifacts.api`、`internalAgentApi.registryParity`、`errorResponse.dmTarget`、`internalAgentApi.wakeHintStream`、`internalComputer.agentMigrationControl.bodyLimit.api`、`internalAgentApi.mentionActions`、`attachmentPreviewBridge.api`、`internalAgentApi.inboxEligibility`、`providerConnections.api`。剩余用例高度集中在 `internalAgentApi.auth`（93）、`agents.api`（87）、`internalAgentApi.send`（65）、`auth.api`（45）、`internal.channelMembership.api`（43）；下一片按第 4 节执行顺序 2–5 推进（`internalAgentApi.auth` 剩余组或下一个 pending 小模块）。
 
 ### 切片边界即检查点
 
