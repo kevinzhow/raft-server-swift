@@ -1181,7 +1181,8 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("internal", "agent-api", "wake-hints") { request -> Response in
         routeResponse(services.emailAccounts.agentWakeHints(
             authorization: request.headers[.authorization],
-            since: desktopQuery(request.url.query, "since")
+            since: desktopQuery(request.url.query, "since"),
+            limit: desktopQuery(request.url.query, "limit")
         ))
     }
     app.get("internal", "agent-api", "wake-hints", "stream") { request -> Response in

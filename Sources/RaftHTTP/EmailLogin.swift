@@ -6930,15 +6930,89 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// `GET /internal/agent-api/wake-hints`. A read credential sees the
     /// undrained third-party events as wake hints.
-    public func agentWakeHints(authorization: String?, since: String?) -> HTTPReply {
+    /// `GET /internal/agent-api/wake-hints`. A content-free peek at pending
+    /// messages: it repeats until `/events` drains them, never advances a
+    /// cursor, and never returns message bodies. `since` is a numeric seq or
+    /// `latest`; `limit` bounds the batch.
+    public func agentWakeHints(authorization: String?, since: String?, limit: String? = nil) -> HTTPReply {
         switch agentReadCredential(authorization) {
         case .failure(let reply):
             return reply
         case .success(let agentId):
-            let hints = oauth.pendingThirdPartyEventMessages(agentId: agentId).map {
-                "{\"seq\":null,\"message_id\":\(jsonString($0.id)),\"wake_reason\":\"message_pending\"}"
-            }.joined(separator: ",")
-            return Self.json(200, "{\"wake_hints\":[\(hints)]}")
+            guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted else {
+                return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            }
+            let rawSince = (since ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            var sinceSeq: Int?
+            if !rawSince.isEmpty, rawSince != "latest" {
+                guard let value = Int(rawSince), value >= 0 else {
+                    return Self.json(400, "{\"error\":\"since must be a non-negative integer or 'latest'\",\"code\":\"since_invalid\"}")
+                }
+                sinceSeq = value
+            }
+            let hintLimit = min(max(Int(limit ?? "") ?? 100, 1), 500)
+            lock.lock()
+            var conversations: [(id: String, storage: String, name: String, kind: String, parentName: String?, parentShort: String?)] = []
+            for (id, channel) in postableChannels.sorted(by: { $0.key < $1.key }) {
+                guard channel.serverId == agent.serverId, channel.deletedAt == nil else { continue }
+                let visible: Bool
+                if channel.kind == "dm" || channel.kind == "thread" || channel.kind == "private" {
+                    visible = channel.memberIds.contains(agentId)
+                        || oauth.channelAgentIds(channelId: id).contains(agentId)
+                } else {
+                    visible = true
+                }
+                guard visible else { continue }
+                let storage = jointProjections.first { $0.localChannelId == id }?.canonicalChannelId ?? id
+                var parentName: String?
+                var parentShort: String?
+                if channel.kind == "thread", let parentId = channel.parentChannelId {
+                    parentName = postableChannels[parentId]?.name
+                    parentShort = channel.parentMessageId.map { String($0.prefix(8)) }
+                }
+                conversations.append((id, storage, channel.name, channel.kind, parentName, parentShort))
+            }
+            func hintTarget(_ conversation: (id: String, storage: String, name: String, kind: String, parentName: String?, parentShort: String?)) -> String {
+                switch conversation.kind {
+                case "dm":
+                    let peer = postableChannels[conversation.id]?.memberIds.first { $0 != agentId }
+                        .flatMap { peerId in accounts.values.first { $0.id == peerId }?.name }
+                    return "dm:@\(peer ?? conversation.name)"
+                case "thread":
+                    if let parentName = conversation.parentName {
+                        return "#\(parentName):\(conversation.parentShort ?? "")"
+                    }
+                    return "#\(conversation.name)"
+                default:
+                    return "#\(conversation.name)"
+                }
+            }
+            var pending: [(seq: Int, message: StoredHumanMessage, target: String)] = []
+            for conversation in conversations {
+                let key = "\(conversation.id)\n\(agentId)"
+                let cursor = agentChannelReadCursors[key]?.seq ?? 0
+                let target = hintTarget(conversation)
+                for message in humanMessageRows
+                where message.channelId == conversation.storage
+                    && message.seq > cursor
+                    && message.senderId != agentId
+                    && (sinceSeq.map { message.seq > $0 } ?? true) {
+                    pending.append((message.seq, message, target))
+                }
+            }
+            let thirdParty = oauth.pendingThirdPartyEventMessages(agentId: agentId)
+            lock.unlock()
+            pending.sort { $0.seq < $1.seq }
+            let hasMore = pending.count > hintLimit
+            let shown = pending.prefix(hintLimit)
+            var hints = shown.map { entry -> String in
+                "{\"event_id\":\(jsonString("wake-hint:\(entry.message.id)")),\"seq\":\(entry.seq),\"message_id\":\(jsonString(entry.message.id)),\"target\":\(jsonString(entry.target)),\"wake_reason\":\"message_pending\"}"
+            }
+            for event in thirdParty {
+                hints.append("{\"event_id\":\(jsonString("wake-hint:\(event.id)")),\"seq\":null,\"message_id\":\(jsonString(event.id)),\"target\":null,\"wake_reason\":\"message_pending\"}")
+            }
+            let lastHintSeq = shown.last.map { "\($0.seq)" } ?? "null"
+            return Self.json(200, "{\"wake_hints\":[\(hints.joined(separator: ","))],\"last_hint_seq\":\(lastHintSeq),\"has_more\":\(hasMore)}")
         }
     }
 
