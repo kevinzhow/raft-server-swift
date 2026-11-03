@@ -1190,3 +1190,8 @@ RFC 074 personal assistant：
 
 - `assess` 以 reportGeneratedAt 与 tolerance（默认 15 分钟）计算 report window，从 transcript（JSON 或逐行 JSONL，坏行单独跳过）里深度≤12、节点≤100k 地扫描 timestamp/created_at/updated_at/started_at/ended_at 等键，只抽取时间戳、绝不导出内容。
 - coverage：report 时间不可解析 → `report_time_invalid`；无时间戳 → `timestamps_unavailable`；最后事件早于 window 起点 → `outside_report_window`；否则 `covered`，并给出 first/last 事件的 ISO 毫秒时间。
+
+### daemon computerMigrationGuard
+
+- 已被 Computer 接管的 legacy machine key 再次启动 raft-daemon 时，`LegacyDaemonKeyAdoptedByComputerError` 拒绝启动并给出精确指引：迁移目标（slug 展示为 `/slug`，否则 serverId）、"do not restart raft-daemon with the migrated key"、以及 supervisor 清理命令。
+- detection 命中时使用其 `detail` + `cleanupCommands`；未命中时回退 PM2 / systemd / launchd 三条固定清理命令。末尾总是给出 `raft-computer start|status [/slug]`。

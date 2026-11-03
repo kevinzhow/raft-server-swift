@@ -267,7 +267,7 @@ apps/reminder/reminderCache	daemon	pending	-	auto-seed
 apps/reminder/runtime	daemon	pending	-	auto-seed
 chatBridgeRequest	daemon	pending	-	auto-seed
 codexToolArgumentParseSignature	daemon	pending	-	auto-seed
-computerMigrationGuard	daemon	pending	-	auto-seed
+computerMigrationGuard	daemon	locked	SLICE	migration guard error surface: a migrated legacy machine key refuses raft-daemon startup with the migrated-to Computer target (slug or server id), the do-not-restart warning, precise detected-supervisor cleanup commands, PM2/systemd/launchd fallbacks when detection is unavailable, and the raft-computer start/status guidance
 connection	daemon	locked	e5af042	clock-driven link: backoff/jitter, duplicate key, watchdog, replay, traces, live loop
 contextGeneration	daemon	pending	-	auto-seed
 core.runtimeDetection	daemon	pending	-	auto-seed
