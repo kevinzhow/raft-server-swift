@@ -91,7 +91,7 @@ integrations.api	route	partial	-	auto-seed
 integrations.appPermissionReview.api	route	locked	60e2842	revision-bound approval, 400 on bad id, 409 stale, pending projection
 internal.agentScope.api	route	locked	e1fa956	covered by the existing metric/scope tests
 internal.attestedSend.api	route	partial	-	auto-seed
-internal.channelMembership.api	route	partial	-	agent self-service membership group covered (legacy and v2 join/leave share the helper, born-read join system notice, private/joint/archived join refusals, #all leave refusal, empty private channel soft delete, legacy thread unfollow by channel:short-id or thread id with non-thread 400 and parent-membership-free unfollow, private-parent cloak); excluded: socket members-updated broadcasts, orchestrator purge/delivery-ack spies, causal actor DB columns, capability-denial spy matrix, create/update/add-member/remove-member/server-info groups pending
+internal.channelMembership.api	route	partial	1a31453	agent self-service membership group covered (legacy and v2 join/leave share the helper, born-read join system notice, private/joint/archived join refusals, #all leave refusal, empty private channel soft delete, legacy thread unfollow by channel:short-id or thread id with non-thread 400 and parent-membership-free unfollow, private-parent cloak); excluded: socket members-updated broadcasts, orchestrator purge/delivery-ack spies, causal actor DB columns, capability-denial spy matrix, create/update/add-member/remove-member/server-info groups pending
 internal.profile.api	route	pending	-	auto-seed
 internal.reminders.api	route	pending	-	auto-seed
 internal.runtimeProfile.api	route	locked	4c138e3	deprecated migration-done noop/handled shapes
