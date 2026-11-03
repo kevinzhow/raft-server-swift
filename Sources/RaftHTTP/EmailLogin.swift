@@ -15470,7 +15470,94 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var name: String
         var description: String?
         var apiKey: String?
+        var apiKeyFingerprint: String? = nil
+        var legacyKeyMigratedAt: Date? = nil
+        var hostname: String? = nil
+        var lastSeenAt: Date? = nil
         var runtimes: [String] = []
+    }
+
+    static func apiKeyFingerprint(_ apiKey: String) -> String {
+        "sha256:" + sha256Hex(apiKey)
+    }
+
+    /// `GET /api/computer/legacy-machines`. A daemon-adoption roster scoped to
+    /// the caller's own machines on one Server. Unknown, deleted and
+    /// non-member servers collapse into one 403 so the roster cannot enumerate
+    /// servers, and credentials never leave through this surface.
+    public func legacyMachines(authorization: String?, serverSlug: String?, includeAll: Bool) -> HTTPReply {
+        guard computerAttachEnabled() else {
+            return Self.json(404, "{\"error\":\"Not found\",\"code\":\"not_found\"}")
+        }
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
+        }
+        guard let serverSlug, !serverSlug.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return Self.json(400, "{\"error\":\"serverSlug is required\",\"code\":\"server_slug_required\"}")
+        }
+        guard let serverId = oauth.serverIdForSlug(serverSlug),
+              let details = oauth.serverDetailsValue(id: serverId),
+              oauth.memberRole(serverId: serverId, userId: userId) != nil
+        else {
+            return Self.json(403, "{\"error\":\"Not authorized\",\"code\":\"not_authorized\"}")
+        }
+        lock.lock()
+        let rows = machines
+            .filter { machine in
+                machine.serverId == serverId
+                    && machine.userId == userId
+                    && (includeAll || machine.apiKeyFingerprint != nil)
+            }
+            .sorted { $0.name < $1.name }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let entries = rows.map { machine -> String in
+            let seenJSON = machine.lastSeenAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+            let hostnameJSON = machine.hostname.map(jsonString) ?? "null"
+            let migratedJSON = machine.legacyKeyMigratedAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+            let fingerprint = (machine.apiKeyFingerprint != nil && includeAll == false)
+                ? machine.apiKeyFingerprint.map(jsonString) ?? "null"
+                : nil
+            var entry = "{\"daemonId\":\(jsonString(machine.id)),\"machineName\":\(jsonString(machine.name)),\"hostname\":\(hostnameJSON),\"lastSeenAt\":\(seenJSON),\"hasFingerprint\":\(machine.apiKeyFingerprint != nil),\"legacyKeyMigratedAt\":\(migratedJSON)"
+            if let fingerprint { entry += ",\"apiKeyFingerprint\":\(fingerprint)" }
+            entry += "}"
+            return entry
+        }
+        lock.unlock()
+        return Self.json(200, "{\"serverId\":\(jsonString(serverId)),\"serverSlug\":\(jsonString(details.slug)),\"entries\":[\(entries.joined(separator: ","))]}")
+    }
+
+    public func registerMachineWithKeyForTesting(serverId: String, userId: String, name: String) -> (id: String, apiKey: String, fingerprint: String) {
+        let id = UUID().uuidString.lowercased()
+        let apiKey = Self.machineAPIKeyMaterial()
+        lock.lock()
+        machines.append(MachineRecord(
+            id: id,
+            serverId: serverId,
+            userId: userId,
+            name: name,
+            description: nil,
+            apiKey: apiKey,
+            apiKeyFingerprint: Self.apiKeyFingerprint(apiKey)
+        ))
+        lock.unlock()
+        return (id, apiKey, Self.apiKeyFingerprint(apiKey))
+    }
+
+    public func nullMachineFingerprintForTesting(machineId: String) {
+        lock.lock()
+        if let index = machines.firstIndex(where: { $0.id == machineId }) {
+            machines[index].apiKeyFingerprint = nil
+        }
+        lock.unlock()
+    }
+
+    public func markMachineLegacyMigratedForTesting(machineId: String, at date: Date) {
+        lock.lock()
+        if let index = machines.firstIndex(where: { $0.id == machineId }) {
+            machines[index].legacyKeyMigratedAt = date
+        }
+        lock.unlock()
     }
 
     public func computerLifecycleOperation(

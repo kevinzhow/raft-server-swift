@@ -899,3 +899,10 @@ RFC 074 personal assistant：
 - `POST /internal/computer/preflight`（`sk_computer_*` Bearer）→ 200 `{ok:true,serverId,serverSlug,principal:{kind:"computer",id,name}}`；未知/已撤销凭据 → 401。
 - UUID 形状的 `serverSlug` 只按 slug 解析，绝不当作 serverId 别名（→ 403）。
 - 明确排除：mobile-download email journey 行断言、`computers.machineId` DB 行断言、既有 machines 表联动细节（以 HTTP 行为验收）。
+
+### computerLegacyMachines.api：daemon adoption roster 组
+
+- `GET /api/computer/legacy-machines?serverSlug=`：默认挂载；gate 关闭 → 404；未认证 → 401 `auth_required`；缺 `serverSlug` → 400 `server_slug_required`；未知/已删除/非成员 Server 全部返回**同一** 403 `not_authorized`（cloak 对称，不可枚举）。
+- 200 响应 `{serverId,serverSlug,entries:[...]}`，entries 仅限调用者在该 Server 的 machines；行含 `daemonId`、`machineName`、`hostname`、`lastSeenAt`、`hasFingerprint`、`legacyKeyMigratedAt`；默认只含已有 fingerprint 的行并带 `apiKeyFingerprint`（`sha256:<hex>`），NULL fingerprint 行默认排除。
+- `includeAll=1`：包含 NULL fingerprint 行，但整批省略 `apiKeyFingerprint` 键（不泄露任何指纹字节）；已 adopted 行（legacyKeyMigratedAt 非空）照常包含以支持中断恢复。
+- SECRET REDLINE：响应永不含 `apiKeyHash`/`apiKeyPrefix`/原始 apiKey 或 machine key。
