@@ -262,3 +262,10 @@
 2. **socket epic**：`connection` 之外的 reconnect/watchdog、outbound replay（`socket` 区仍是 2/7 模块、6/16 用例）。
 3. **route 剩余 pending**：`independentAudit.api`（设备 token 登出 / guest sync 拒绝）、`guestRbac.api`、`guestVisibilityBoundaries.api`、`authPendingSocialLink.api`、`actions.privateAccess.api`、`agentAppAccess.api`、`appSetup.api`、`internal.reminders.api`（17 例，App-owned service 生命周期）、`securityLifecycle.api`（14 例）。
 4. 每个切片保持既有纪律：先失败验收测试 → 实现 → `swift test` → `make test-e2e` → BEHAVIOR/PARITY/PLAN → 切片 + credit 双提交。
+
+### 剩余 route pending 的开工备注（2026-11 检查）
+
+- `guestRbac.api`（8 例）：Guest Join 上限/归档保留、Guest 共享频道集、动作卡只读、Guest archive 只读 + 删除 cloak、channel detail/rosters 的 guest 可见性。其中 detail/rosters 已由 `guestVisibilityBoundaries` 的 gate 覆盖；其余需要 app/feature-flag 与 archive 夹具。
+- `appSetup.api`（6 例）：installation setup 声明、owner-only 回报、卡片披露与注册审批；需要 App 安装/声明数据模型（当前 port 仅部分 App 面）。
+- `agentAppAccess.api`（6 例）：自动授权、撤销持久、app events 分页/过期/私有可见性、requests/agent 接受 id；需要 agent app grant/event 存储。
+- `authPendingSocialLink.api`（12 例）、`actions.privateAccess.api`（19 例）、`securityLifecycle.api`（14 例）、`internal.reminders.api`（17 例）为中大型切片，建议在完整上下文预算下逐个做。
