@@ -255,3 +255,10 @@
 | commit 历史 | 进度：每个切片一条提交 |
 
 同一内容只写在一处；不要在 README 里复述计划，也不要把行为日志写回 README。
+
+## 下一步队列（按上下文预算排序，供后续轮次直接开工）
+
+1. **daemon 可执行大块**：`wakeSessionRecycle`（12 例，transcript tail + cold-idle sweep）、`wakeBriefingPanel`（13 例，面板分段/预算）、`claudeEventNormalizer`（40 例，最大驱动块）、`runtimeErrorDiagnostics`（28 例，错误文本 redaction）。
+2. **socket epic**：`connection` 之外的 reconnect/watchdog、outbound replay（`socket` 区仍是 2/7 模块、6/16 用例）。
+3. **route 剩余 pending**：`independentAudit.api`（设备 token 登出 / guest sync 拒绝）、`guestRbac.api`、`guestVisibilityBoundaries.api`、`authPendingSocialLink.api`、`actions.privateAccess.api`、`agentAppAccess.api`、`appSetup.api`、`internal.reminders.api`（17 例，App-owned service 生命周期）、`securityLifecycle.api`（14 例）。
+4. 每个切片保持既有纪律：先失败验收测试 → 实现 → `swift test` → `make test-e2e` → BEHAVIOR/PARITY/PLAN → 切片 + credit 双提交。
