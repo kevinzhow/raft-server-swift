@@ -126,6 +126,9 @@ private func legacyRosterGet(
             let defaultEntries = (defaultRoster.body["entries"] as? [[String: Any]]) ?? []
             #expect(defaultEntries.compactMap { $0["machineName"] as? String } == ["has-fp"], "pre-handshake rows stay out by default")
 
+            let explicitDefault = try await legacyRosterGet(client, token: f.ownerToken, query: "?serverSlug=\(f.serverSlug)&includeAll=0")
+            #expect(((explicitDefault.body["entries"] as? [[String: Any]]) ?? []).compactMap { $0["machineName"] as? String } == ["has-fp"], "includeAll=0 means the default fingerprint-only roster")
+
             let all = try await legacyRosterGet(client, token: f.ownerToken, query: "?serverSlug=\(f.serverSlug)&includeAll=1")
             #expect(all.status == .ok)
             #expect(!all.raw.contains("apiKeyFingerprint"), "includeAll omits the fingerprint key entirely")

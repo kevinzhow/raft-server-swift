@@ -927,3 +927,7 @@ RFC 074 personal assistant：
 ### computerRevocation.api：runner 表面的未认证拒绝
 
 - `GET /internal/computer/runners` 未带 Bearer → 401（与已撤销/未链接电脑凭据同一拒绝面），不泄露任何 runner 信息。
+
+### computerLegacyMachines.api：includeAll 的显式默认值
+
+- `includeAll=0` 与缺省等价：仍只返回已有 fingerprint 的行（并带 `apiKeyFingerprint`）；只有 `includeAll=1` 才切换到省略指纹键的完整名册。
