@@ -12,6 +12,7 @@ private struct AttachmentCommentsFixture {
     let channelId: String
     let privateChannelId: String
     let ownerId: String
+    let parentMessageId: String
     let reviewerId: String
     let reviewerToken: String
     let linked: String
@@ -45,12 +46,14 @@ private func makeAttachmentCommentsFixture() -> AttachmentCommentsFixture {
     accounts.oauth.addChannelHuman(channelId: privateChannelId, userId: ownerId)
     let privateHost = accounts.addChannelMessageForTesting(channelId: privateChannelId, content: "private host", senderId: ownerId)
     let privateAttachment = accounts.addChannelAttachment(channelId: privateChannelId, uploaderId: ownerId, filename: "secret.pdf", mimeType: "application/pdf", sizeBytes: 10, messageId: privateHost)
+    accounts.setMessageAttachmentIdsForTesting(messageId: hostMessage, attachmentIds: [linked, sibling])
     return AttachmentCommentsFixture(
         accounts: accounts,
         serverId: serverId,
         channelId: channelId,
         privateChannelId: privateChannelId,
         ownerId: ownerId,
+        parentMessageId: hostMessage,
         reviewerId: reviewerId,
         reviewerToken: accounts.mintAccessTokenForTesting(userId: reviewerId),
         linked: linked,
@@ -352,6 +355,56 @@ private func commentsRequest(
             let deniedBody = (try JSONSerialization.jsonObject(with: Data((deniedListing.body.string ?? "").utf8))) as? [String: Any] ?? [:]
             let deniedRow = ((deniedBody["messages"] as? [[String: Any]]) ?? []).first { ($0["id"] as? String) == commentId }
             #expect(deniedRow?["commentRef"] is NSNull || deniedRow?["commentRef"] == nil, "a denied viewer must not observe the scoped chip")
+        }
+    }
+}
+
+@Test func attachmentCommentCountsAndRefsProjectThroughSyncAndContext() async throws {
+    let f = makeAttachmentCommentsFixture()
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let created = try await commentsRequest(
+                client, f, method: .post, path: "/api/attachments/\(f.linked)/comments", body: "{\"content\":\"projected\"}"
+            )
+            let threadChannelId = try #require(created.body["threadChannelId"] as? String)
+            let commentId = try #require((created.body["message"] as? [String: Any])?["id"] as? String)
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(f.reviewerToken)"
+            headers[HTTPField.Name("X-Server-Id")!] = f.serverId
+            func jsonObject(_ path: String) async throws -> Any? {
+                let response = try await client.get(URI(string: path), headers: headers)
+                return try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))
+            }
+            func commentRef(_ rows: [[String: Any]], _ id: String) -> Any? {
+                rows.first { ($0["id"] as? String) == id }?["commentRef"]
+            }
+            func commentCount(_ rows: [[String: Any]], _ messageId: String, _ attachmentId: String) -> Int? {
+                let attachments = (rows.first { ($0["id"] as? String) == messageId }?["attachments"] as? [[String: Any]]) ?? []
+                return ((attachments.first { ($0["id"] as? String) == attachmentId }?["commentCount"]) as? NSNumber)?.intValue
+            }
+
+            // Enabled viewer: commentRef and commentCount project everywhere.
+            let threadSync = ((try await jsonObject("/api/messages/sync?channel_id=\(threadChannelId)&since_seq=0&limit=50") as? [[String: Any]]) ?? [])
+            #expect(commentRef(threadSync, commentId) != nil)
+            let parentSync = ((try await jsonObject("/api/messages/sync?channel_id=\(f.channelId)&since_seq=0&limit=50") as? [[String: Any]]) ?? [])
+            #expect(commentCount(parentSync, f.parentMessageId, f.linked) == 1)
+
+            let commentContext = ((try await jsonObject("/api/messages/context/\(commentId)?channelId=\(threadChannelId)") as? [String: Any])?["messages"] as? [[String: Any]]) ?? []
+            #expect(commentRef(commentContext, commentId) != nil)
+            let parentContext = ((try await jsonObject("/api/messages/context/\(f.parentMessageId)?channelId=\(f.channelId)") as? [String: Any])?["messages"] as? [[String: Any]]) ?? []
+            #expect(commentCount(parentContext, f.parentMessageId, f.linked) == 1)
+
+            // A user-denied viewer observes zero count and no scoped ref.
+            f.accounts.addFeatureFlagRuleForTesting(key: "attachment_comments_v0", stage: "user", decision: "deny", values: [f.reviewerId])
+            let deniedThreadSync = ((try await jsonObject("/api/messages/sync?channel_id=\(threadChannelId)&since_seq=0&limit=50") as? [[String: Any]]) ?? [])
+            #expect(commentRef(deniedThreadSync, commentId) is NSNull || commentRef(deniedThreadSync, commentId) == nil)
+            let deniedParentSync = ((try await jsonObject("/api/messages/sync?channel_id=\(f.channelId)&since_seq=0&limit=50") as? [[String: Any]]) ?? [])
+            #expect(commentCount(deniedParentSync, f.parentMessageId, f.linked) == 0)
+            let deniedCommentContext = ((try await jsonObject("/api/messages/context/\(commentId)?channelId=\(threadChannelId)") as? [String: Any])?["messages"] as? [[String: Any]]) ?? []
+            #expect(commentRef(deniedCommentContext, commentId) is NSNull || commentRef(deniedCommentContext, commentId) == nil)
+            let deniedParentContext = ((try await jsonObject("/api/messages/context/\(f.parentMessageId)?channelId=\(f.channelId)") as? [String: Any])?["messages"] as? [[String: Any]]) ?? []
+            #expect(commentCount(deniedParentContext, f.parentMessageId, f.linked) == 0)
         }
     }
 }

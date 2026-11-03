@@ -3735,9 +3735,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let end = min(rows.count, index + 1 + afterCount)
             let parts = rows[start..<end].map { row -> String in
                 let seq = row.seq
+                let commentsVisible = attachmentCommentsEnabled(serverId: serverId ?? "", userId: userId)
                 let metadata = forwardMetadataJSONLocked(messageId: row.id, userId: userId, serverId: serverId)
                     ?? actionCardMetadataLocked(messageId: row.id)
-                var json = "{\"id\":\(jsonString(row.id)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(row.content)),\"seq\":\(seq)"
+                var json = "{\"id\":\(jsonString(row.id)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(row.content)),\"seq\":\(seq),\"attachments\":[\(messageAttachmentsJSONLocked(row.attachmentIds, commentsVisible: commentsVisible))]"
+                if let commentRef = commentRefJSONLocked(messageId: row.id), commentsVisible {
+                    json += ",\"commentRef\":\(commentRef)"
+                }
                 if let metadata {
                     json += ",\"actionMetadata\":\(metadata)"
                 }
@@ -6046,6 +6050,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Email verification required\"}")
         }
         let pageLimit = Self.messagePageLimit(rawLimit)
+        let commentsVisible = attachmentCommentsEnabled(serverId: serverId ?? "", userId: userId)
         if channelId == nil {
             let cursor = Int(sinceSeq ?? "") ?? 0
             lock.lock()
@@ -6060,7 +6065,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             for id in visibleChannels {
                 let rows = humanMessageRows.filter { $0.channelId == id }
                 for message in rows where message.seq > cursor {
-                    listed.append("{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(id)),\"seq\":\(message.seq),\"content\":\(jsonString(message.content))}")
+                    var row = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(id)),\"seq\":\(message.seq),\"content\":\(jsonString(message.content)),\"attachments\":[\(messageAttachmentsJSONLocked(message.attachmentIds, commentsVisible: commentsVisible))]"
+                    if let commentRef = commentRefJSONLocked(messageId: message.id), commentsVisible {
+                        row += ",\"commentRef\":\(commentRef)"
+                    }
+                    listed.append(row + "}")
                 }
             }
             lock.unlock()
@@ -6094,7 +6103,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let indexed = allRows.filter { $0.seq > cursor }
         let limitedIndexed = Array(indexed.suffix(pageLimit))
         let listed = limitedIndexed.map { message -> String in
-            var row = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(channelId)),\"seq\":\(message.seq),\"content\":\(jsonString(message.content))"
+            var row = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(channelId)),\"seq\":\(message.seq),\"content\":\(jsonString(message.content)),\"attachments\":[\(messageAttachmentsJSONLocked(message.attachmentIds, commentsVisible: commentsVisible))]"
+            if let commentRef = commentRefJSONLocked(messageId: message.id), commentsVisible {
+                row += ",\"commentRef\":\(commentRef)"
+            }
             if let metadata = forwardMetadataJSONLocked(messageId: message.id, userId: userId, serverId: serverId)
                 ?? actionCardMetadataLocked(messageId: message.id) {
                 row += ",\"actionMetadata\":\(metadata)"
@@ -6221,10 +6233,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let pageHasNewer = rawBefore != nil
         let completeThroughLatest = isTail
         let windowJSON = "{\"schemaVersion\":1,\"domain\":\"receiver_visible_messages_v1\",\"serverId\":\(jsonString(serverId ?? "")),\"receiverKind\":\"user\",\"receiverId\":\(jsonString(userId ?? "")),\"scopeId\":\(jsonString(channelId)),\"coveredFromSeq\":\(coveredFrom),\"coveredAfterSeq\":\(coveredAfter),\"coveredThroughSeq\":\(coveredThrough),\"remoteHighWaterSeq\":\(highWater),\"hasGap\":\(pageHasGap),\"hasNewer\":\(pageHasNewer),\"completeThroughLatest\":\(completeThroughLatest)}"
+        let commentsVisible = attachmentCommentsEnabled(serverId: serverId ?? "", userId: userId)
         let listed = pageRows.map { message in
-            var row = "{\"id\":\(jsonString(message.id)),\"content\":\(jsonString(message.content)),\"attachments\":[\(Self.attachmentJSON(message.attachmentIds))],\"reactions\":[\(reactionJSONLocked(messageId: message.id))],\"mentions\":[\(visibleMentionJSONLocked(messageId: message.id))]"
-            if let commentRef = commentRefJSONLocked(messageId: message.id),
-               attachmentCommentsEnabled(serverId: serverId ?? "", userId: userId) {
+            var row = "{\"id\":\(jsonString(message.id)),\"content\":\(jsonString(message.content)),\"attachments\":[\(messageAttachmentsJSONLocked(message.attachmentIds, commentsVisible: commentsVisible))],\"reactions\":[\(reactionJSONLocked(messageId: message.id))],\"mentions\":[\(visibleMentionJSONLocked(messageId: message.id))]"
+            if let commentRef = commentRefJSONLocked(messageId: message.id), commentsVisible {
                 row += ",\"commentRef\":\(commentRef)"
             }
             var metadata = actionCardMetadataLocked(messageId: message.id)
@@ -6351,6 +6363,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return storedMentions.first { $0.id == id }?.notifiedAction
+    }
+
+    public func setMessageAttachmentIdsForTesting(messageId: String, attachmentIds: [String]) {
+        lock.lock()
+        if let index = humanMessageRows.firstIndex(where: { $0.id == messageId }) {
+            humanMessageRows[index].attachmentIds = attachmentIds
+        }
+        lock.unlock()
     }
 
     public func messageCountForTesting(channelId: String) -> Int {
@@ -17795,6 +17815,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Scoped commentRef projection. Callers hold the directory lock. The chip
     /// payload carries the host coordinates the client routes with; it is only
     /// emitted to viewers who may see the scoped comment.
+    /// Attachment projection with the scoped comment count; a viewer who cannot
+    /// use attachment comments always observes zero, never a hint.
+    private func messageAttachmentsJSONLocked(_ ids: [String], commentsVisible: Bool) -> String {
+        ids.map { id -> String in
+            let count = commentsVisible ? (attachmentCommentRecords[id]?.count ?? 0) : 0
+            return "{\"id\":\(jsonString(id)),\"commentCount\":\(count)}"
+        }.joined(separator: ",")
+    }
+
     private func commentRefJSONLocked(messageId: String) -> String? {
         for (attachmentId, records) in attachmentCommentRecords {
             guard let record = records.first(where: { $0.id == messageId }),

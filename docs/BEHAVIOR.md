@@ -1104,3 +1104,9 @@ RFC 074 personal assistant：
 - 评论消息带 scoped `commentRef`：`{attachmentId, hostMessageId, hostSource:{type:"channel",routeKind:"channel",channelId,rootThreadChannelId}}`；创建响应里直接可见（供本地立即渲染），thread 消息列表（`GET /api/messages/channel/:id`）对同一行富化同一份 chip。
 - flag 评估加入 user stage：user-stage deny 的用户在 list/counts/create 得到 403 `attachment_comments_disabled`，thread 消息列表仍 200 但该行的 `commentRef` 被隐藏（不泄漏 scoped 元数据）。
 - 仍待补：`message:updated` live 事件、context/permalink 与 sync 的 commentRef/commentCount 富化、history scoped metadata、agent scope quotation。
+
+### attachmentComments.api：sync / context 投影组
+
+- `GET /api/messages/sync` 与 `GET /api/messages/context/:id` 的消息行现在都带 `attachments[{id,commentCount}]` 与 scoped `commentRef`：启用的查看者在父消息上看到真实 commentCount、在评论行上看到 chip；user-stage deny 的查看者两类投影分别退化为 `commentCount: 0` 与缺失/`null`，不泄漏 scoped 元数据。
+- `GET /api/messages/channel/:id` 同样使用带 commentCount 的附件投影（此前只有 id）。
+- 仍待补：`message:updated` live 事件（进程内 io spy，按契约排除）、history scoped metadata、agent scope quotation。
