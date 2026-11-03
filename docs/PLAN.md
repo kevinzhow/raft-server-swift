@@ -201,6 +201,16 @@
 - 7 条可移植（发送者 handle 解析/过滤、thread reply 的 channelId 投影、member_not_found/ambiguous、时区 offset 校验与绝对边界、recent 排序）；trace 断言与 CLI e2e 排除。
 - 唯一缺口是第 2 条的 `taskNumber` + `taskCurrentProjection`：本端口尚无 task amend 模型，需要先做 `PATCH /api/tasks/:id`（title/description + revision/superseded/amendedAt/amendedBy）这一独立切片，再回填搜索投影。
 
+### 基础设施复核（2026-11-04）：feature-flag 规则引擎已存在
+
+`EmailLoginDirectory.featureFlagRecords` + `featureFlagRuleRecords` 已实现 user/platform/client/server 四级规则与测试 seam（`createFeatureFlagForTesting`、`addFeatureFlagRuleForTesting`、`setFeatureFlagKillSwitchForTesting`、`setFeatureFlagDefaultForTesting`）。因此下列模块可直接复用该引擎，不需要新建基础设施：
+
+- `attachmentComments.api`：用 `attachment_comments_v0`（defaultEnabled=true）做 server-stage kill switch，403 `attachment_comments_disabled` 在 body 校验之前。
+- `providerConnections.api`：`provider_connections_v0` server-stage 规则（launch servers 默认关闭）。
+- guest 相关面：`SERVER_GUEST_FEATURE_FLAG_KEY` server-stage 规则。
+
+`attachmentComments.api` 实现清单（下次切片直接照做）：`GET /api/attachments/comments/counts?ids=`（1-100 个 id、仅可读附件、403 先于参数校验）、`GET /api/attachments/:id/comments`（403 先于 malformed-id 400、404 cloak、`viewer {canComment,reason}` 五态 archived/unlinked/read_only/not_member/ok、comment 是父消息 thread 里的普通消息 + ref 行）、`POST /api/attachments/:id/comments`（403 先于一切 body 校验、malformed-id 400、未链接 422、非成员 403、归档 409、anchor 词表/上限、mentions 走共享消息管线）、cross-server 附件 404 与同一 thread 复用。
+
 ## 5. 风险与回退
 
 - **socket.io 协议偏差**：只做 WS transport（上游测试也只用 websocket），用原始包文本断言收敛；不做 polling/ack/Redis adapter。
