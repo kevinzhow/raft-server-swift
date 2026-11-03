@@ -152,7 +152,7 @@ messagesStorageColumns.api	route	locked	67b77fb	storage-only columns and sender 
 messagesThreadSummaries.api	route	locked	bde33f8	locked: page/context summaries, empty map, page-window scope, access gate
 mobileAppEmailUnsubscribe.api	route	locked	3cc0599	locked: signed visible/one-click URL, tampered fail-closed, zh locale, RFC8058 body, scheduled email cancel
 mobileDownload	route	locked	5509026	public mobile download group covered (session-free entry point, explicit platform overriding UA with macOS-string iPadOS left unclassifiable, absolute chooser redirect with 300s cache, iOS TestFlight-only redirect without a Hands call, Android APK-over-AAB preference, signature-clamped redirect cache, empty-channel 404 vs store-only no_installable_build vs misconfiguration/upstream 502 with no redirects); excluded: private-helper unit tests (UA classifier, chooser URL builder, lookupLatestAsset direct calls) whose behavior is asserted through the route, plus the viewport-width unit assertion that has no HTTP surface
-notifications.api	route	partial	-	auto-seed
+notifications.api	route	locked	5247150	full module verified: default-off kill switch closing routes and ledger persistence, key-bound <=60s hash-only single-use enrollment, preview/no-proof/expired-grant/dead-family fail-closed, enforced attestation only with a signed-app verifier, SSE rejecting user sessions with latest-start and user-scoped replay plus logout close, per-frame reauthentication and in-flight batch revocation, key-bound credential rotation with expiry/device-revoke invalidation, no sensitive values in native logs, replay overflow and expired cursors before SSE headers
 oauth.api	route	partial	-	auto-seed
 oauthAgentDirectory.api	route	locked	87f8e28	minimal server-bound directory; expiry/revocation/scope guards
 oauthOfflineSource.api	route	locked	0262dfe	offline private App settings listing, publish-request no-op, republish install restore, human login exchange, revoked token retention, private re-install
@@ -174,7 +174,7 @@ publicSearch.api	route	partial	-	auto-seed
 publicSearchServiceAccess.api	route	partial	-	auto-seed
 publicSearchSettingsFence.realPg	route	partial	-	auto-seed
 publicServer.api	route	partial	-	auto-seed
-publicVisits.api	route	partial	-	auto-seed
+publicVisits.api	route	locked	baf802b	full portable module verified: per-server visit counting with server-decided visitor class (anonymous/signed-in member vs non-member), coarse request context without raw UA, view/open/thread-open field retention with per-field validation, indistinguishable no-store 204 refusals that record nothing, repeated-uuid dedupe under the daily cap, consenting logged-out visitor ids and join-linked ids gated on the joiner's usage-data choice, referrer registrable-domain projection; excluded: Redis shared-check and replica-fallback cases (no Redis in this port) and the product.public_visitors DB-row assertion (asserted through the visit-event projection instead)
 push.api	route	locked	bde33f8	locked: APNs/FCM tuples, delivery status, family revoke, logout, web push
 raftbench.api	route	pending	-	auto-seed
 raftbench.canary.api	route	pending	-	auto-seed
