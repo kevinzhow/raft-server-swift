@@ -788,3 +788,11 @@ RFC 074 personal assistant：
 
 - `GET /internal/agent-api/mentions`（credential 需 `mentions` scope，否则 401 `auth_required`）：只返回该 agent 作为目标的 mention 行，且只包含 `notifiableAtSend == true` 或已有 `notifiedAt` 的行——发送时不可通知且从未通知的 outsider/pending 行不会出现在目标侧 feed。
 - 行投影为 `{messageId}`，按创建顺序倒序（最新在前）；`limit` 用「多取一条」判定 `has_more`：恰好等于 limit 行时 `has_more:false`，超过时 true。
+
+### internalAgentApi.auth：search 契约组
+
+- `GET /internal/agent-api/search`：`q` 分词匹配（全部命中优先，不足时按部分命中排序），`sort=recent` 按消息 `createdAt` 倒序、否则按相关度再按时间；`limit` 默认 20、上限 100，`hasMore` 由多取一条判定。
+- 每行投影：`{id,content,senderName,senderType,senderId,channelId,channelName,parentChannelId,snippet}`；`senderName` 对 human 用 displayName（无则 name），对 agent 用 displayName/name；thread 行的 `channelId` 是 thread、`parentChannelId` 是父频道。
+- 可见性与 history 一致：公开频道、agent 所属 private/joint、以及父频道可由该 agent 读取的 thread 回复；不可见 private 的行（含正文）不出现。
+- `sender` 先做成员目录解析：解析不到与「存在但被隐藏」返回同一 404 `{errorCode:"member_not_found"}`，因此 member 角色 agent 在隐藏 human 目录开启时无法枚举 human handle；`sender` 命中后按 senderId 过滤。
+- 明确排除：trace span/`server.db.query` 断言、sender 别名/多重身份等其它查询参数矩阵。

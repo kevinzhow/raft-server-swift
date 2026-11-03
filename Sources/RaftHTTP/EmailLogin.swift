@@ -3373,6 +3373,29 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 channel.serverId == agent.serverId && channel.name == name
             }?.key
         }()
+        // A sender filter resolves through the member directory first. A name
+        // the caller may not see is the same `member_not_found` as an unknown
+        // one, so the query cannot enumerate a hidden human directory.
+        var senderScope: String?
+        if let senderRef, !senderRef.isEmpty {
+            let handle = senderRef.hasPrefix("@") ? String(senderRef.dropFirst()) : senderRef
+            let directoryHidden = hideHumansFromMembers[agent.serverId] == true
+                && oauth.agentRole(serverId: agent.serverId, agentId: agent.id) == "member"
+            let agentMatch = oauth.activeAgentIds(serverId: agent.serverId).first {
+                oauth.agentRuntimeInfo(id: $0)?.name.lowercased() == handle.lowercased()
+            }
+            let humanMatch: String? = directoryHidden
+                ? nil
+                : accounts.values.first { account in
+                    account.name.lowercased() == handle.lowercased()
+                        || (account.displayName ?? "").lowercased() == handle.lowercased()
+                }?.id
+            guard let resolvedSender = agentMatch ?? humanMatch else {
+                lock.unlock()
+                return Self.json(404, "{\"error\":\"Member not found\",\"errorCode\":\"member_not_found\"}")
+            }
+            senderScope = resolvedSender
+        }
         var hits: [(message: StoredHumanMessage, score: Int)] = []
         for message in humanMessageRows where messageSearchVisibleLocked(
             messageChannelId: message.channelId,
@@ -3380,16 +3403,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             viewer: .agent(agent.id)
         ) {
             if let channelFilter, message.channelId != channelFilter { continue }
-            if let senderRef, !senderRef.isEmpty {
-                let handle = senderRef.hasPrefix("@") ? String(senderRef.dropFirst()) : senderRef
-                let found: String? = {
-                    if message.senderType == "agent" {
-                        return oauth.agentRuntimeInfo(id: message.senderId)?.name
-                    }
-                    return accounts.values.first { $0.id == message.senderId }?.name
-                }()
-                guard found?.lowercased() == handle.lowercased() else { continue }
-            }
+            if let senderScope, message.senderId != senderScope { continue }
             let counts = Self.tokenCounts(message.content)
             if tokens.isEmpty {
                 hits.append((message, 0))
@@ -3410,9 +3424,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let message = hit.message
             let channel = postableChannels[message.channelId]
             let parentId = (channel?.kind == "thread" ? channel?.parentChannelId : nil) ?? message.channelId
-            let senderName = message.senderType == "agent"
-                ? (oauth.agentRuntimeInfo(id: message.senderId)?.name ?? "")
-                : (accounts.values.first { $0.id == message.senderId }?.name ?? "")
+            let senderName: String
+            if message.senderType == "agent" {
+                let runtime = oauth.agentRuntimeInfo(id: message.senderId)
+                senderName = runtime.map { $0.displayName.isEmpty ? $0.name : $0.displayName } ?? ""
+            } else {
+                let account = accounts.values.first { $0.id == message.senderId }
+                senderName = account.map { ($0.displayName?.isEmpty == false ? $0.displayName : nil) ?? $0.name } ?? ""
+            }
             let senderType = message.senderType == "agent" ? "agent" : "human"
             let channelName = channel?.name ?? ""
             let snippet = Self.searchSnippet(message.content)
