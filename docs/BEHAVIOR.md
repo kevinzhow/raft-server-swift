@@ -706,3 +706,14 @@ RFC 074 personal assistant：
 - v2 send：无法解析到可见目标的 `@handle` 回 `unresolvedMentionHandles`（带 `@` 前缀），且不出现 `pendingMentionActions`；markdown inline/fenced code 里的 `@` 不计入。
 - 隐藏 human directory 开启时，未类型化的 `@handle` 一律记为 unresolved（不泄漏存在性）；typed mentions（`mentions:[{type,id,name}]`）不产生 pending/unresolved。
 - 发送者自己的 handle 不计入解析结果。
+
+### internalAgentApi.send：freshness hold 组
+
+- `POST /internal/agent-api/send` 的 freshness gate（SMR-006）在接口启用时运行：带 `seenUpToSeq`、`sendDraft`、`continueAnyway`、`draftReholdCount`、`draftReplacedExisting` 或 `freshnessContextMode:"withheld"` 的发送 opt-in；`SLOCK_ATTESTED_SEND_MODE=force` 时无标记的普通发送也走 gate。接口关闭（off/未知）且请求 opt-in → 403 `{"error":"Send freshness interface is not enabled for this agent."}`；`allowlist` 只对 `SLOCK_ATTESTED_SEND_SERVER_IDS`/`SLOCK_ATTESTED_SEND_AGENT_IDS` 中列出的 server/agent（或 `*`）启用。
+- 边界：显式 `seenUpToSeq`（向下取整、≥0）为 model-seen 边界，并与会话内最新一条非本人消息的 seq 取 min；thread 无显式边界时回退到父消息 seq；channel/DM 无边界时边界为 0。只统计本会话中 seq 大于边界、且 sender 不是本 agent 的消息，最新 seq 之前没有新消息则不 hold（`state:"sent"`）。
+- inline hold 响应：200 `{ok:true,state:"held",outcome:"held",subtype:"freshness",reason:"newer_messages_available",decision:"syncing_hold",producerFactId:"freshness_decision_fact:<64 hex>",available_actions:["check_messages","send_draft","send_anyway"],heldMessages[≤3 条],newMessageCount,shownMessageCount,omittedMessageCount,seenUpToSeq,seenUpToMessageId,firstShownSeq,mentionAnnotation:{formalMentionCount}}`；`draftReholdCount ≥ 3` 时附 `continueAnywaySuggested:true`；held 响应不带 `pendingMentionActions`；不出现 `neverShownRange`/`neverShownCount`。
+- 计数语义：有 model-seen 边界时 `newMessageCount` 是 (边界, 最新] 的真实条数（不是 seq 跨度），`shownMessageCount` 是最后 3 条，`omittedMessageCount` 为差值；无边界（first-touch 或 thread parent）时 `newMessageCount = shownMessageCount = min(条数, 3)`，`omittedMessageCount:0`。
+- held 消息信封带会话身份：`channel_id`/`channel_type`/`channel_name`，thread 另带 `parent_channel_id`/`parent_channel_type`/`parent_channel_name`；DM 的 `channel_name` 是 agent 视角的对端名；同时保留 `id`/`message_id`/`channelId`/`seq`/`content`/`sender_id`/`sender_name`/`sender_type`/`createdAt`/`timestamp`。
+- 读状态：hold 展示了它统计的全部消息时才把 agent 读游标推进到 `seenUpToSeq`；有 omitted 时游标不动（省略的消息保持未读）；withheld 模式不动游标。
+- `freshnessContextMode:"withheld"`（reviewer isolation）：响应恒为 `{state:"held",freshnessContextMode:"withheld",withheldMessageCount}` 三个键，不回显目标/正文/计数/可用动作，且不推进读游标。
+- `continue:true` → 400 `--continue is no longer supported. Use normal message send to update a draft, or --send-draft to send the current saved draft.`；`continueAnyway:true` 但无 `sendDraft` → 400 `--send-draft --anyway requires a saved draft`；非 reconcile 且 `content` 为空 → 400 `Content is required`。`continueAnyway:true` 且 `sendDraft:true` 直接提交（sent），不返回 hold 字段。

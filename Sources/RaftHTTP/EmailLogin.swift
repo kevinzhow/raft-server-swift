@@ -377,6 +377,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var staleThreadFollowerUndoTokens: Set<String> = []
     private var channelReadVersions: [String: Int] = [:]
     private var agentChannelReadCursors: [String: (seq: Int, version: Int)] = [:]
+    /// Test-only override of `SLOCK_ATTESTED_SEND_MODE`; process environment is
+    /// global state and parallel suites must not race on it.
+    private var sendFreshnessModeOverride: String?
     private var userChannelReadCursors: [String: Int] = [:]
     private var agentActivities: [String: (activity: String, detail: String)] = [:]
     private var announcements: [(id: String, title: String, pages: [String], startsAt: Date, expiresAt: Date?, status: String, publishedAt: Date?, imageId: String?)] = []
@@ -19285,6 +19288,139 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
+    /// Which attested-send freshness interface this server/agent runs under.
+    /// The upstream default is on; `off` disables the interface entirely and
+    /// `allowlist` enables it only for the listed server/agent ids (or `*`).
+    public func setSendFreshnessModeForTesting(_ mode: String?) {
+        lock.lock()
+        sendFreshnessModeOverride = mode
+        lock.unlock()
+    }
+
+    private func sendFreshnessModeValue() -> String {
+        let configured = sendFreshnessModeOverride
+            ?? ProcessInfo.processInfo.environment["SLOCK_ATTESTED_SEND_MODE"]
+            ?? "on"
+        return configured.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func sendFreshnessInterfaceEnabled(serverId: String, agentId: String) -> Bool {
+        let mode = sendFreshnessModeValue()
+        switch mode {
+        case "on", "force", "1", "true":
+            return true
+        case "allowlist":
+            func listed(_ key: String) -> Set<String> {
+                Set((ProcessInfo.processInfo.environment[key] ?? "")
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty })
+            }
+            let servers = listed("SLOCK_ATTESTED_SEND_SERVER_IDS")
+            let agents = listed("SLOCK_ATTESTED_SEND_AGENT_IDS")
+            return servers.contains("*") || agents.contains("*")
+                || servers.contains(serverId) || agents.contains(agentId)
+        default:
+            return false
+        }
+    }
+
+    /// `freshness_decision_fact:<sha256>` over the shared projector's stable
+    /// input object: keys sorted, absent optional fields serialized as null.
+    private static func freshnessDecisionProducerFactId(
+        agentId: String,
+        target: String,
+        reason: String,
+        pendingMaxSeq: Int,
+        modelSeenSeq: Int,
+        heldMessageCount: Int,
+        omittedMessageCount: Int
+    ) -> String {
+        let payload = "{"
+            + "\"action\":\"send\","
+            + "\"agentId\":\(jsonString(agentId)),"
+            + "\"decision\":\"syncing_hold\","
+            + "\"heldMessageCount\":\(heldMessageCount),"
+            + "\"modelSeenSeq\":\(modelSeenSeq),"
+            + "\"omittedMessageCount\":\(omittedMessageCount),"
+            + "\"pendingMaxSeq\":\(pendingMaxSeq),"
+            + "\"reason\":\(jsonString(reason)),"
+            + "\"target\":\(jsonString(target))"
+            + "}"
+        return "freshness_decision_fact:" + sha256Hex(payload)
+    }
+
+    /// The conversation identity the agent sees for the target, so held
+    /// messages keep a reply target instead of being dropped by clients.
+    /// Callers hold `lock`.
+    private func heldConversationIdentityLocked(channelId: String, agentId: String) -> String {
+        guard let channel = postableChannels[channelId] else {
+            return "{\"channel_id\":\(jsonString(channelId)),\"channel_type\":\"channel\",\"channel_name\":\"\"}"
+        }
+        let channelType: String
+        switch channel.kind {
+        case "dm": channelType = "dm"
+        case "thread": channelType = "thread"
+        case "private": channelType = "private"
+        default: channelType = "channel"
+        }
+        var peerName: String?
+        if channel.kind == "dm" || channel.kind == "thread" {
+            let dmId: String? = channel.kind == "dm"
+                ? channelId
+                : (channel.parentChannelId.flatMap { postableChannels[$0]?.kind == "dm" ? $0 : nil })
+            if let dmId, let dm = postableChannels[dmId] {
+                if let peerId = dm.memberIds.first(where: { $0 != agentId }) {
+                    peerName = accounts.values.first { $0.id == peerId }?.name
+                }
+            }
+        }
+        let channelName = channel.kind == "dm" ? (peerName ?? channel.name) : channel.name
+        var json = "{\"channel_id\":\(jsonString(channelId)),\"channel_type\":\(jsonString(channelType)),\"channel_name\":\(jsonString(channelName))"
+        if channel.kind == "thread", let parentId = channel.parentChannelId, let parent = postableChannels[parentId] {
+            let parentType: String
+            switch parent.kind {
+            case "dm": parentType = "dm"
+            case "private": parentType = "private"
+            default: parentType = "channel"
+            }
+            let parentName = parent.kind == "dm" ? (peerName ?? parent.name) : parent.name
+            json += ",\"parent_channel_id\":\(jsonString(parentId)),\"parent_channel_type\":\(jsonString(parentType)),\"parent_channel_name\":\(jsonString(parentName))"
+        }
+        json += "}"
+        return json
+    }
+
+    /// One held-context message envelope: the legacy camelCase fields plus the
+    /// agent-facing snake_case identity and sender fields. Callers hold `lock`.
+    private func heldFreshnessMessageJSONLocked(
+        seq: Int,
+        message: StoredHumanMessage,
+        conversationIdentity: String
+    ) -> String {
+        let senderType: String
+        if message.senderType == "external_projection" {
+            senderType = "third_party_app"
+        } else if message.messageType == "system" || message.senderId == "system" {
+            senderType = "system"
+        } else if message.senderType == "agent" {
+            senderType = "agent"
+        } else {
+            senderType = "human"
+        }
+        let senderName = message.externalSenderName
+            ?? accounts.values.first { $0.id == message.senderId }?.name
+            ?? (message.senderId == "system" ? "system" : message.senderId)
+        let timestamp = Self.isoString(message.createdAt)
+        let identityFields = String(conversationIdentity.dropFirst().dropLast())
+        var json = "{\"id\":\(jsonString(message.id)),\"message_id\":\(jsonString(message.id)),\"channelId\":\(jsonString(message.channelId)),\"seq\":\(seq),\"content\":\(jsonString(message.content)),\"sender_id\":\(jsonString(message.senderId)),\"sender_name\":\(jsonString(senderName)),\"senderName\":\(jsonString(senderName)),\"sender_type\":\(jsonString(senderType)),\"senderType\":\(jsonString(senderType)),\"createdAt\":\(jsonString(timestamp)),\"timestamp\":\(jsonString(timestamp))"
+        if !identityFields.isEmpty {
+            json += ",\(identityFields)"
+        }
+        json += "}"
+        return json
+    }
+
     public func agentSendMessage(authorization: String?, body: String, v2: Bool) -> HTTPReply {
         let identity: (agentId: String, serverId: String)
         switch feedbackLocatorIdentity(authorization: authorization, capability: "send") {
@@ -19298,6 +19434,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let content = (object["content"] as? String) ?? ""
         let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isSendDraft = object["sendDraft"] as? Bool == true
+        let isContinueAnyway = object["continueAnyway"] as? Bool == true
+        if object["continue"] as? Bool == true {
+            return Self.json(400, "{\"error\":\"--continue is no longer supported. Use normal message send to update a draft, or --send-draft to send the current saved draft.\"}")
+        }
+        if isContinueAnyway && !isSendDraft {
+            return Self.json(400, "{\"error\":\"--send-draft --anyway requires a saved draft\"}")
+        }
         let assistantOwner = assistantOwnerFor(agentId: identity.agentId, serverId: identity.serverId)
         if let assistantOwner {
             guard trimmed.hasPrefix("dm:@") else {
@@ -19318,7 +19462,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let reconcileOnly = object["reconcileOnly"] as? Bool == true
         guard reconcileOnly || !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return Self.json(400, "{\"error\":\"Invalid send request\"}")
+            return Self.json(400, "{\"error\":\"Content is required\"}")
         }
         var attachmentIds: [String] = []
         if let rawAttachments = object["attachmentIds"], !(rawAttachments is NSNull) {
@@ -19494,6 +19638,94 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
 
+        // Freshness gate (SMR-006): a send that names the boundary its model
+        // has seen (`seenUpToSeq`), a saved draft, a reviewer-isolation hold or
+        // a re-hold opt into the gate. Newer messages from anyone but the
+        // sender hold the draft; the response carries the latest bounded
+        // context instead of committing anything.
+        let seenUpToSeqValue = (object["seenUpToSeq"] as? NSNumber)?.doubleValue
+        let hasClientSeenBoundary = seenUpToSeqValue.map { $0.isFinite } ?? false
+        let clientSeenUpToSeq = hasClientSeenBoundary ? max(0, Int(seenUpToSeqValue!.rounded(.down))) : 0
+        let withheldMode = (object["freshnessContextMode"] as? String) == "withheld"
+        let draftReholdCount = max(0, (object["draftReholdCount"] as? NSNumber)?.intValue ?? 0)
+        let draftReplacedExisting = object["draftReplacedExisting"] as? Bool == true
+        let requestedSendFreshness = isSendDraft || isContinueAnyway || hasClientSeenBoundary
+            || (object["draftReholdCount"] is NSNumber) || draftReplacedExisting || withheldMode
+        let freshnessEnabled = sendFreshnessInterfaceEnabled(serverId: identity.serverId, agentId: identity.agentId)
+        let forcedFreshness = sendFreshnessModeValue() == "force"
+        if !freshnessEnabled && requestedSendFreshness {
+            return Self.json(403, "{\"error\":\"Send freshness interface is not enabled for this agent.\"}")
+        }
+        if freshnessEnabled, (requestedSendFreshness || forcedFreshness), !isContinueAnyway {
+            lock.lock()
+            let conversation = postableChannels[channelId]
+            let rows = humanMessageRows.enumerated().compactMap { offset, message -> (seq: Int, message: StoredHumanMessage)? in
+                guard message.channelId == channelId else { return nil }
+                return (offset + 1, message)
+            }
+            let latestFromOthers = rows.last { $0.message.senderId != identity.agentId }?.seq ?? 0
+            let threadParentSeq = conversation?.kind == "thread"
+                ? (conversation?.parentMessageId.flatMap { parentId in rows.first { $0.message.id == parentId }?.seq } ?? 0)
+                : 0
+            let fallbackBoundarySeq = conversation?.kind == "thread" ? threadParentSeq : 0
+            let boundarySeq = min(hasClientSeenBoundary ? clientSeenUpToSeq : fallbackBoundarySeq, latestFromOthers)
+            let hasModelSeenProof = hasClientSeenBoundary
+            let newer = rows.filter { $0.seq > boundarySeq && $0.message.senderId != identity.agentId }
+            let formalMentionCount = newer.reduce(0) { partial, entry in
+                partial + (storedMentions.contains {
+                    $0.messageId == entry.message.id && $0.targetType == "agent" && $0.targetId == identity.agentId
+                } ? 1 : 0)
+            }
+            if let latestSeq = newer.last?.seq {
+                let attentionCount = newer.count
+                let shownRows = Array(newer.suffix(3))
+                let shownCount = shownRows.count
+                let holdCount = hasModelSeenProof ? attentionCount : min(attentionCount, 3)
+                let omittedCount = hasModelSeenProof ? max(0, attentionCount - shownCount) : 0
+                let showedEveryHeldMessage = shownCount >= attentionCount
+                let conversationIdentity = heldConversationIdentityLocked(channelId: channelId, agentId: identity.agentId)
+                let heldMessageJSON = shownRows.map { entry in
+                    heldFreshnessMessageJSONLocked(seq: entry.seq, message: entry.message, conversationIdentity: conversationIdentity)
+                }.joined(separator: ",")
+                if !withheldMode, showedEveryHeldMessage {
+                    // Every counted message was handed over: the read position
+                    // may move through them. Omitted ones must stay queued.
+                    let cursorKey = "\(channelId)\n\(identity.agentId)"
+                    let previous = agentChannelReadCursors[cursorKey] ?? (seq: 0, version: 0)
+                    if latestSeq > previous.seq {
+                        agentChannelReadCursors[cursorKey] = (latestSeq, previous.version + 1)
+                    }
+                }
+                lock.unlock()
+                if withheldMode {
+                    return Self.json(200, "{\"state\":\"held\",\"freshnessContextMode\":\"withheld\",\"withheldMessageCount\":\(holdCount)}")
+                }
+                let reason = hasModelSeenProof ? "server_stale_model_boundary" : "server_first_touch_context"
+                let producerFactId = Self.freshnessDecisionProducerFactId(
+                    agentId: identity.agentId,
+                    target: trimmed,
+                    reason: reason,
+                    pendingMaxSeq: latestSeq,
+                    modelSeenSeq: hasModelSeenProof ? boundarySeq : 0,
+                    heldMessageCount: shownCount,
+                    omittedMessageCount: omittedCount
+                )
+                var response = "{\"ok\":true,\"state\":\"held\",\"outcome\":\"held\",\"subtype\":\"freshness\",\"reason\":\"newer_messages_available\",\"decision\":\"syncing_hold\",\"producerFactId\":\(jsonString(producerFactId)),\"available_actions\":[\"check_messages\",\"send_draft\",\"send_anyway\"],\"heldMessages\":[\(heldMessageJSON)],\"newMessageCount\":\(holdCount),\"shownMessageCount\":\(shownCount),\"omittedMessageCount\":\(omittedCount),\"seenUpToSeq\":\(latestSeq)"
+                if let latestMessageId = newer.last?.message.id {
+                    response += ",\"seenUpToMessageId\":\(jsonString(latestMessageId))"
+                }
+                if let firstShownSeq = shownRows.first?.seq {
+                    response += ",\"firstShownSeq\":\(firstShownSeq)"
+                }
+                response += ",\"mentionAnnotation\":{\"formalMentionCount\":\(formalMentionCount)}"
+                if draftReholdCount >= 3 {
+                    response += ",\"continueAnywaySuggested\":true"
+                }
+                response += "}"
+                return Self.json(200, response)
+            }
+            lock.unlock()
+        }
         let messageId = UUID().uuidString.lowercased()
         lock.lock()
         humanMessageRows.append(StoredHumanMessage(
