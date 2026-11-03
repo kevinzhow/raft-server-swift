@@ -40,18 +40,22 @@
 - 基线（`--seed` 自动生成）：406 个模块；route 148 partial / 71 pending / 0 locked，加权覆盖 0.0%。`partial` 只是「存在相关 Swift 测试」的启发式标记，不代表完成；`locked` 必须带一个真实 commit。
 - 里程碑：锁定模块 ≥ 60%，用例加权覆盖 ≥ 40%。
 
-### 2026-11-02 当前快照
+### 2026-11-03 当前快照
 
 | 指标 | 当前 | 里程碑 | 剩余 |
 | --- | --- | --- | --- |
-| route 模块 locked | 84 / 219（38.4%） | 132 / 219（60%） | 48 个模块 |
-| route 用例 locked | 518 / 2000（25.9%） | 800 / 2000（40%） | 282 条用例 |
+| route 模块 locked | 94 / 219（42.9%） | 132 / 219（60%） | 38 个模块 |
+| route 用例 locked | 582 / 2000（29.1%） | 800 / 2000（40%） | 218 条用例 |
 | socket 模块 | 2 / 7 | 按 frame 组推进 | 5 个模块 |
 | daemon 模块 | 3 / 180 | 按真实 socket 队列推进 | 177 个模块 |
-| 整体模块 | 89 / 406（21.9%） | 244 / 406（60%） | 155 个模块 |
-| 整体用例 | 588 / 4632（12.7%） | 1853 / 4632（40%） | 1265 条用例 |
+| 整体模块 | 99 / 406（24.4%） | 244 / 406（60%） | 145 个模块 |
+| 整体用例 | 652 / 4632（14.1%） | 1853 / 4632（40%） | 1201 条用例 |
 
-最近锁定的模块：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api`、`servers.api`、`internalAgentApi.agentStatus`、`internalAgentApi.senderMentionDeliveries`、`internalAgentApi.attachmentComments`、`tasks.realtimeProjection.api`。剩余用例高度集中在 `internalAgentApi.auth`（93）、`agents.api`（87）、`internalAgentApi.send`（65）、`auth.api`（45）、`internal.channelMembership.api`（43）。
+最近锁定的模块：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api`、`servers.api`、`internalAgentApi.agentStatus`、`internalAgentApi.senderMentionDeliveries`、`internalAgentApi.attachmentComments`、`tasks.realtimeProjection.api`、`computerAdopt.api`。剩余用例高度集中在 `internalAgentApi.auth`（93）、`agents.api`（87）、`internalAgentApi.send`（65）、`auth.api`（45）、`internal.channelMembership.api`（43）；下一片按第 4 节执行顺序 2–5 推进。
+
+### 切片边界即检查点
+
+上下文会被压缩，仓库不能靠对话记忆。每个切片收尾时：提交（或回退）在飞改动、`docs/PARITY.tsv` 与 `docs/BEHAVIOR.md` 已更新、本节指标已刷新；下一片的目标模块与已覆盖/已排除分组写在 `docs/PARITY.tsv` 的 notes 里。会话变长不是阻塞条件，不在上下文耗尽时把目标标 blocked。
 
 ## 3. 工作契约
 

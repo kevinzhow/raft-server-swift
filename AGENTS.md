@@ -24,6 +24,12 @@ One slice = one upstream route module (or one frame family) plus the data model,
 
 `make parity` reads `docs/PARITY.tsv` and prints locked modules and weighted case coverage. Report that, not test counts or turn counts.
 
+## Checkpoints
+
+- A slice boundary is a checkpoint. Before a turn ends the repo must describe itself: the slice committed (or reverted), `docs/PARITY.tsv` and `docs/BEHAVIOR.md` current, `docs/PLAN.md` snapshot refreshed when the numbers moved.
+- Context compaction is normal, not a blocker. Do not block the goal because a session is long: finish or revert the in-flight slice, write the next step into the docs, and continue on the next round.
+- Never hand an unverified change to a later round. Green target test, `make test`, and `make test-e2e` when ports/processes are involved come first; the commit records the behaviors it locks.
+
 ## Constraints
 
 - Vapor is pinned at `0f2a8ee9f38b2589c066b604de3e3168ed54c82d`. Do not switch to a branch, do not hand-edit `Package.resolved`.
