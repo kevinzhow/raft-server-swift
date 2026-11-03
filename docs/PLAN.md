@@ -44,14 +44,14 @@
 
 | 指标 | 当前 | 里程碑 | 剩余 |
 | --- | --- | --- | --- |
-| route 模块 locked | 94 / 219（42.9%） | 132 / 219（60%） | 38 个模块 |
-| route 用例 locked | 582 / 2000（29.1%） | 800 / 2000（40%） | 218 条用例 |
+| route 模块 locked | 95 / 219（43.4%） | 132 / 219（60%） | 37 个模块 |
+| route 用例 locked | 585 / 2000（29.2%） | 800 / 2000（40%） | 215 条用例 |
 | socket 模块 | 2 / 7 | 按 frame 组推进 | 5 个模块 |
 | daemon 模块 | 3 / 180 | 按真实 socket 队列推进 | 177 个模块 |
-| 整体模块 | 99 / 406（24.4%） | 244 / 406（60%） | 145 个模块 |
-| 整体用例 | 652 / 4632（14.1%） | 1853 / 4632（40%） | 1201 条用例 |
+| 整体模块 | 100 / 406（24.6%） | 244 / 406（60%） | 144 个模块 |
+| 整体用例 | 655 / 4632（14.1%） | 1853 / 4632（40%） | 1198 条用例 |
 
-最近锁定的模块：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api`、`servers.api`、`internalAgentApi.agentStatus`、`internalAgentApi.senderMentionDeliveries`、`internalAgentApi.attachmentComments`、`tasks.realtimeProjection.api`、`computerAdopt.api`。剩余用例高度集中在 `internalAgentApi.auth`（93）、`agents.api`（87）、`internalAgentApi.send`（65）、`auth.api`（45）、`internal.channelMembership.api`（43）；下一片按第 4 节执行顺序 2–5 推进。
+最近锁定的模块：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api`、`servers.api`、`internalAgentApi.agentStatus`、`internalAgentApi.senderMentionDeliveries`、`internalAgentApi.attachmentComments`、`tasks.realtimeProjection.api`、`computerAdopt.api`、`internalComputer.preflight`。剩余用例高度集中在 `internalAgentApi.auth`（93）、`agents.api`（87）、`internalAgentApi.send`（65）、`auth.api`（45）、`internal.channelMembership.api`（43）；下一片按第 4 节执行顺序 2–5 推进（`internalAgentApi.auth` 剩余组或 `internalComputer.runners`）。
 
 ### 切片边界即检查点
 
