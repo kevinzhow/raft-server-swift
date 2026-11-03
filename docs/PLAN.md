@@ -211,6 +211,16 @@
 
 `attachmentComments.api` 实现清单（下次切片直接照做）：`GET /api/attachments/comments/counts?ids=`（1-100 个 id、仅可读附件、403 先于参数校验）、`GET /api/attachments/:id/comments`（403 先于 malformed-id 400、404 cloak、`viewer {canComment,reason}` 五态 archived/unlinked/read_only/not_member/ok、comment 是父消息 thread 里的普通消息 + ref 行）、`POST /api/attachments/:id/comments`（403 先于一切 body 校验、malformed-id 400、未链接 422、非成员 403、归档 409、anchor 词表/上限、mentions 走共享消息管线）、cross-server 附件 404 与同一 thread 复用。
 
+### 下一片候选设计：`agentMigrationReceiptDm.api`（2 条）
+
+- 上游语义：迁移完成时创建"收据 DM"（唯一成员是被迁移 agent，频道名 `migration-receipt-<supportRef>`）；agent 侧看到的名字是 `dm:@migration-receipt-<supportRef>`，并能用该名字读历史；其他 agent 得到中性 404；向该 DM 发消息 → 409 `code=MIGRATION_RECEIPT_READ_ONLY` 且不落库。
+- 端口缺口：完成钩子（`migrationStep` 的 `completed` 转移）未创建收据频道；`resolveDMPeerLocked` 只按真实对端名解析；agent 侧 DM 目标名由 peer 名推导，未处理"无名 peer"的收据频道；发送路径没有 409 只读拒绝。
+- 实现顺序：① 完成钩子创建 kind=dm、memberIds=[agentId]、name=`migration-receipt-<ref>` 的频道并写一条收据消息；② DM ref 解析/展示加收据频道特例（仅 owning agent，其他 server/agent 一律 404）；③ 发送到收据频道返回 409 `MIGRATION_RECEIPT_READ_ONLY`；④ 验收测试用测试 seam 直接建收据频道（迁移全流程已有独立测试覆盖，不重复），断言读/写/他 agent 三条行为。
+
+### `attachmentComments.api` 待办（12 条，端口已有 POST 与 agent 面）
+
+按上游顺序实现：flag kill switch（403 先于一切 body 校验）→ malformed id（403 后、404 前）→ `GET /comments/counts`（1-100 ids、仅可读附件）→ `GET /:id/comments`（404 cloak、`viewer {canComment,reason}` 五态、thread 宿主复用、时间排序）→ 边界（unlinked 422、非成员 403、归档 409、read-only 只读可读）→ anchor 词表/上限/round-trip → mentions 走共享管线 → 私密频道 cloak 先于 body 校验。case 2/4 的消息历史 scoped metadata 与 case 12 的 agent scope quotation 已有相邻模块覆盖，可在验收时排除并注明。
+
 ## 5. 风险与回退
 
 - **socket.io 协议偏差**：只做 WS transport（上游测试也只用 websocket），用原始包文本断言收敛；不做 polling/ack/Redis adapter。
