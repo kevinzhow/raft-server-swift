@@ -1063,3 +1063,10 @@ RFC 074 personal assistant：
 - `GET /api/announcements/active` 只返回 `status == "published"` 且已有 `publishedAt` 的行：draft 永远不出现在任何通道（即使 startsAt 已到），scheduled 在 startsAt 之前不出现。
 - 未过期、未 dismiss 的行按 startsAt 升序每次只返回最旧一条；`after=<id>` 继续下一页；最新一条到期后自然回落到下一条未读（这就是 scheduled 窗口排队的行为）。
 - 仍待补：targeted audience（`server_id` 查询、冒名成员 404、recipient id 不外泄）、removed admin 路由的 404 全矩阵、失败写入 frontier 游标。
+
+### agentMigrationReceiptDm.api：迁移回执 DM 组
+
+- Computer 迁移完成时写入一条回执到"只有被迁移 agent 是成员"的隐藏 DM，频道名 `migration-receipt-<supportRef>`：agent 侧 `GET /internal/agent-api/inbox/conversations` 以 `dm:@migration-receipt-<supportRef>` 列出它（与真实 DM 同一命名规则），`GET /internal/agent-api/history?channel=dm:@migration-receipt-<ref>` 返回 200，正文含 "Migration completed" 与 supportRef。
+- 其他 agent 用同一名字读历史得到中性的 404 `Channel not found or not visible`，响应里不含回执正文；名字解析不命中任何 peer。
+- 向回执 DM 发消息是只读拒绝：`/send` 与 `/v2/send` 都返回 409 `code=MIGRATION_RECEIPT_READ_ONLY`，error 含 "one-way notice"、suggestedNextAction 指向 owner's DM，且不落任何消息；其他 agent 发送仍 404。
+- 回执 DM 不再被 inbox 隐藏（旧端口测试按"隐藏"固定，现按上游"列出且可读"更新）。

@@ -67,9 +67,6 @@ private func makeAgentInboxFixture(suffix: String) -> AgentInboxFixture {
     _ = accounts.addChannelMessageForTesting(channelId: dmThread, content: "dm thread reply", senderId: ownerId)
     accounts.followThreadForTesting(serverId: serverId, userId: agent, threadChannelId: dmThread, parentMessageId: dmParent)
 
-    let receipt = accounts.oauth.createChannel(serverId: serverId, name: "migration-receipt-\(suffix)", creatorUserId: ownerId, type: "dm")
-    accounts.addPostableChannel(serverId: serverId, channelId: receipt, memberId: agent, kind: "dm", name: "migration-receipt-\(suffix)")
-    _ = accounts.addChannelMessageForTesting(channelId: receipt, content: "migration receipt", senderId: "system", senderType: "user", messageType: "system")
 
     let apiKey = accounts.mintAgentCredential(agentId: agent, scopes: ["read"], name: "inbox-list-\(suffix)")
     return AgentInboxFixture(

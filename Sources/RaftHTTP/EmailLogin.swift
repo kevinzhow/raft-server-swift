@@ -4928,6 +4928,40 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return "{\"targetType\":\"agent\",\"targetId\":\(jsonString(agentId)),\"reason\":\"agent_stopped\"}"
     }
 
+    /// A completed Computer migration writes one receipt into an agent-only DM
+    /// named `migration-receipt-<supportRef>`; the agent reads it as
+    /// `dm:@migration-receipt-<supportRef>` and cannot reply to it.
+    @discardableResult
+    public func createMigrationReceiptDm(agentId: String, serverId: String, supportRef: String) -> String? {
+        let name = "migration-receipt-\(supportRef)"
+        lock.lock()
+        let existing = postableChannels.first(where: { _, channel in
+            channel.kind == "dm" && channel.name == name && channel.memberIds == [agentId]
+        })?.key
+        lock.unlock()
+        if let existing { return existing }
+        let channelId = oauth.createChannel(serverId: serverId, name: name, creatorUserId: agentId, type: "dm")
+        addPostableChannel(serverId: serverId, channelId: channelId, memberId: agentId, kind: "dm", name: name)
+        oauth.addChannelAgent(channelId: channelId, agentId: agentId)
+        lock.lock()
+        appendHumanMessageLocked(StoredHumanMessage(
+            id: UUID().uuidString.lowercased(),
+            channelId: channelId,
+            senderId: "system",
+            content: "Migration completed. Your Computer workspace moved successfully (migration \(supportRef)). This is a one-way notice: continue in your owner's DM.",
+            randomId: nil,
+            messageType: "system",
+            senderType: "system"
+        ))
+        lock.unlock()
+        return channelId
+    }
+
+    public func createMigrationReceiptDmForTesting(agentId: String, supportRef: String) -> String? {
+        guard let serverId = oauth.agentRuntimeInfo(id: agentId)?.serverId else { return nil }
+        return createMigrationReceiptDm(agentId: agentId, serverId: serverId, supportRef: supportRef)
+    }
+
     /// Outsider mentions on a new human send are returned beside the message, not inside it.
     private func withPendingMentionActions(_ reply: HTTPReply, channelId: String, mentions: [MentionInput]) -> HTTPReply {
         guard reply.status == 200,
@@ -6313,6 +6347,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return storedMentions.first { $0.id == id }?.notifiedAction
+    }
+
+    public func messageCountForTesting(channelId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return humanMessageRows.filter { $0.channelId == channelId }.count
     }
 
     public func removeMessageForTesting(messageId: String) {
@@ -12548,6 +12588,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         machineMigrations[migrationRef] = record
         lock.unlock()
+        if nextState == "completed" {
+            createMigrationReceiptDm(agentId: record.agentId, serverId: record.serverId, supportRef: record.supportRef)
+        }
         return (Self.json(200, "{\"ok\":true,\"migration\":\(migrationTargetViewJSON(record, targetMachineId: machineId))}"), record)
     }
 
@@ -20755,6 +20798,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if let kind, kind != "agent", kind != "human" {
             return .invalidKind(kind, name)
         }
+        // A migration receipt DM has no peer account: its only member is the
+        // migrated agent, and only that agent may name it. Caller holds the lock.
+        if kind == nil, name.hasPrefix("migration-receipt-") {
+            let owned = postableChannels.first { _, channel in
+                channel.kind == "dm" && channel.name == name && channel.memberIds == [agentId]
+            }
+            guard let owned else { return .notFound }
+            return .resolved(peerId: agentId, peerKind: "agent", name: name)
+        }
         let humans = accounts.values.filter {
             $0.id != agentId
                 && ($0.name.caseInsensitiveCompare(name) == .orderedSame
@@ -21224,6 +21276,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
         } else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+
+        // A migration receipt DM is a one-way notice written at completion.
+        if let channel = postableChannels[channelId], channel.name.hasPrefix("migration-receipt-") {
+            return Self.json(409, "{\"error\":\"This migration receipt DM is a one-way notice; it cannot be replied to. Message your owner's DM instead.\",\"code\":\"MIGRATION_RECEIPT_READ_ONLY\",\"suggestedNextAction\":\"Read the receipt, then continue in your owner's DM.\"}")
         }
 
         // Freshness gate (SMR-006): a send that names the boundary its model
@@ -22038,7 +22095,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             guard visible else { continue }
             var target: String
             var kind: String
-            if channel.kind == "dm" {
+            if channel.kind == "dm", channel.name.hasPrefix("migration-receipt-"), channel.memberIds == [agentId] {
+                target = "dm:@\(channel.name)"
+                kind = "dm"
+            } else if channel.kind == "dm" {
                 let peer = channel.memberIds.compactMap { member -> (String, String)? in
                     guard member != agentId,
                           let account = accounts.values.first(where: { $0.id == member }),
