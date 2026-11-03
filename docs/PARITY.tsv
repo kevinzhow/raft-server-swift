@@ -43,7 +43,7 @@ authLoginTrace	route	locked	6d7c1c9	non-executable black-box: asserts login-rout
 authPendingSocialLink.api	route	pending	-	auto-seed
 authRefreshAttemptRoute	route	locked	6d7c1c9	non-executable black-box: asserts a trace-recorded refresh attempt with no HTTP-visible difference.
 authRefreshTrace	route	locked	6d7c1c9	non-executable black-box: asserts refresh-route span attributes; trace sinks are excluded by contract.
-authRevocation.api	route	pending	-	auto-seed
+authRevocation.api	route	locked	5898d38	excluded with reason: every case proves that a revoked access token cannot complete social identity linking or reconnect/receive socket user-room data, and that revocation during the Socket handshake cannot resurrect stale authorization; the socket room surface is not ported yet (socket epic has only connection/frame families), so these have no executable surface here
 billing.api	route	pending	-	auto-seed
 channelAdmin.api	route	partial	-	auto-seed
 channelFiles.api	route	locked	3afd934	channel/thread file union, source metadata, cursor paging
