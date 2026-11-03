@@ -910,3 +910,8 @@ RFC 074 personal assistant：
 ### computerAttach.api：attach ↔ adoption roster 联动
 
 - 一次成功的 `/api/computer/attach` 会注册 machine 并进入 `GET /api/computer/legacy-machines?serverSlug=...&includeAll=1` 的 entries：`daemonId` 等于 attach 返回的 `serverMachineId`，`machineName` 为请求 name，`hasFingerprint:false`（daemon 握手前无指纹）；默认（不带 includeAll）该行因无指纹而不出现。
+
+### computerRevocation.api：machine 删除即撤销 Computer 凭据
+
+- `DELETE /api/servers/:id/machines/:machineId`（owner/admin 或 machine 所有者；活跃 migration → 409）在删除 machine 前先写撤销回执：关联 computers 的 `revokedAt` 置为当前时间且 `machineId` 清空。
+- 被撤销的 `sk_computer_*` 之后的 `/internal/computer/runners` → 401，不能为新 agent mint 凭据；`computerRecordForTesting` 可见 `revokedAt != nil`、`machineId == nil`。

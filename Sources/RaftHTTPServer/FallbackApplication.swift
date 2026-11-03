@@ -2686,6 +2686,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.delete("api", "servers", ":id", "machines", ":machineId") { request -> Response in
+        routeResponse(services.emailAccounts.deleteServerMachine(
+            authorization: request.headers[.authorization],
+            serverId: request.parameters.get("id") ?? "",
+            machineId: request.parameters.get("machineId") ?? ""
+        ))
+    }
     app.post("api", "computer", "attach") { request -> Response in
         routeResponse(services.emailAccounts.attachComputer(
             authorization: request.headers[.authorization],
