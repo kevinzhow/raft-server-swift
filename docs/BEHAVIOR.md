@@ -1232,3 +1232,9 @@ RFC 074 personal assistant：
 - 读取工作区 `MEMORY.md`：缺失/空/仅空白 → 不注入；预算内（4 bytes/token）→ 全文注入并标 `complete="true"` 与 no-re-read 提示；超预算 → 按行边界头截断，带 `shown="first X.X KB"`、`read the file for the rest` 与准确大小，多字节字符不截断码点。
 - `apply`：block 为 nil 时原样返回；否则 block + 双换行 + prompt，promptSource 加 `_with_memory`。
 - 明确排除：上游第 8 条（recycle briefing 中 chrome/memory/panel 的排序）依赖尚未移植的 `wakeSessionRecycle`，其断言在 PARITY 记为依赖 epic。
+
+### daemon agentStartPendingDeliveryBuffer
+
+- 负责"wake 已接受、runtime 尚不能收输入"窗口内的消息缓冲：I1 每个 pending key 必须属于当前 start-state 快照（queued/starting/terminal recovery/cooldown），否则 assertInvariants 抛 "pending messages for non-starting agent"。
+- I2 exactly-once：rebindWake 把旧 wake append 进 pending（不覆盖，DROP 回归）、drainOnSpawn 返回全部并清空 owner（二次 drain 只给新缓冲，DUP 回归）、cancelStart/cancelAllStarts 清理孤儿、suppressConsumed 按谓词移除已消费消息并返回数量。
+- 只暴露 count/snapshot/transition verbs：values 返回副本，外部改动不影响内部。
