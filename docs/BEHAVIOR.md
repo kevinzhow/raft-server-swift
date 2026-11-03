@@ -1215,3 +1215,8 @@ RFC 074 personal assistant：
 - 各 reason 的 userMessage：versionTooOld 原样消息；model_not_found 指名模型（renamed/removed 或 provider 无 key，不引导重装 CLI）；agent_proxy_bind_failed / runner_credential_mint_failed / provider_connection_materialization_failed（http 带状态码、invalid_payload/invalid_environment 各自文案）/ model_not_configured / session_needs_reset / session_runtime_mismatch / runtime_login_required / runtime_config_invalid 均有固定文案；`runtime_not_found` 依 lookup verdict：confirmed miss（`not_on_path`）给安装指引，其余 lookup 结果给 resolver 自己的 path-free 消息，无 verdict 给中性文案。
 - lookup verdict 支持 launch 词表与 probe 词表（not_installed→not_on_path、probe_timeout→lookup_timed_out、permission_denied→lookup_permission_denied、probe_failed→lookup_failed），可来自 cause；unsupported_version 无 verdict。
 - `startFailureActivity`：detail=userMessage，spawnFailure 仅在 model 类 reason 时携带截断 128 的 model、仅 `runtime_not_found` 时携带 lookupReason。
+
+### daemon runtimeTurnState / deviceClass
+
+- `RuntimeTurnState`：跟踪 Codex turn 生命周期——markTurnStarted 设置当前 turn（并接住 pending 期间的非空输入证据）、noteTurnAccepted 只记 pending（此时不可 steer）、tool boundary 后 gate 住 busy steering 直到 markProgress、markTurnCompleted/reset 清空状态；hasLiveTurn 覆盖 accepted/running，completedTurnIds 上限 16，completedWithoutRuntimeActivity 只在无 activity 且无 token usage 时为真。
+- `DeviceClassDetector`：mac 用 `system_profiler` JSON（VirtualMac* → vm；MacBook*/Mac mini/Mac Studio/iMac/Mac Pro 前缀映射），Linux 用 DMI chassis 集合（laptop 8/9/10/14/31/32、desktop 3/4/5/6/7/13/15/16/35/36、server 17/23/28/29）且 hypervisor vendor/type 优先判 vm；WSL、Windows、读取失败均为 nil；只输出类别，不保留原始型号/DMI 字符串。
