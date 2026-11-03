@@ -189,8 +189,8 @@ private func membershipChannels(
             #expect(archivedJoin.body["code"] as? String == "channel_archived")
 
             let channels = try await membershipChannels(client, f: f)
-            #expect(channels["agent-private-invite-only"] == false)
-            #expect(channels["agent-joint-invite-only"] == false)
+            #expect(channels["agent-private-invite-only"] == nil, "non-member private channels stay hidden")
+            #expect(channels["agent-joint-invite-only"] == nil, "non-member joint channels stay hidden")
         }
     }
 }

@@ -759,3 +759,12 @@ RFC 074 personal assistant：
 - leave：离开自己的常规频道不需要 admin（200 `{"ok":true}`）；虚拟 `#all` 不可离开 → 403，错误文本含 `#all channel`；archived → 409；private/joint 频道在最后一个 human 和 agent 都离开后软删除（从 server info/历史可见性消失）。
 - `POST /internal/agent/:agentId/threads/unfollow`（machine key）与 v2 `/internal/agent-api/threads/unfollow` 共用实现，接受 `"#channel:<parentShortId>"` 或完整 thread channel id：只能取消关注 thread，顶层频道目标 → 400 `Target must be a thread`；成功取消后 thread 列表不再包含该 thread，且不会改变父频道成员关系。不可见的 private 父频道下的 thread 仍按 cloak 返回 404 `Thread not found`。
 - 明确排除：socket `channel:members-updated` 广播、orchestrator inbox purge/delivery ack、causal actor DB 列、`channel:join` 的 capability 拒绝矩阵中的 spy 断言。
+
+### internal.channelMembership.api：agent 频道/服务器管理组
+
+- `GET /internal/agent/:agentId/server`（machine key）与 `GET /internal/agent-api/server` 共用实现：`runtimeContext` 带 `agentId/runtime/model/reasoningEffort/serverId` 以及当前 machine 的 `machineId/machineName/machineDescription`（未建模字段 hostname/os/daemonVersion/workspacePath 为 null）；`channels[]` 带 `type`（channel/private/joint）与 `joined`，按「公开频道全部可见 + private/joint 仅成员可见 + 排除 archived/deleted/thread/dm」过滤；`agents[]` 带 role/status/activity/activityDetail。
+- `POST /internal/agent/:agentId/channels` 与 v2 共用：member 角色即可创建；`name` 去掉前导 `#` 并校验 `[a-z0-9][a-z0-9-]{0,79}`；支持 `description`、`visibility`（public/private）；创建者 agent 自动加入；响应 `{id,name,type,description,joined:true,createdByAgentId}`。无 Server 角色 → 403 精确 payload（`server_role_required`、`requiredCapabilities:["createChannels"]`、`requiredRole:"member"`、`currentRole:null` 与指引文案）。
+- `PATCH /internal/agent/:agentId/channels/:channelId` 与 v2 共用：仅 owner/admin；可改 name/description/visibility，响应 `{id,name,description,type}`，并同步 postable 投影与 server info。
+- `POST|DELETE /internal/agent/:agentId/channels/:channelId/members` 与 v2 共用：按 handle（可带 `@`）加/移 human 或按名字加/移 agent；加入 human 时写 system 消息 `@<name> was added to this channel.`，该行对执行 agent born-read、对被加入 human 保持未读；移除响应带 `wasMember` 与 attention 说明。
+- `PATCH /internal/agent/:agentId/server` 与 v2 共用：仅 owner/admin 可改服务器名，响应 `{ok,id,name}`。
+- 明确排除：trace span/event 断言、socket `channel:updated`/`channel:members-updated` 广播、inbox notification fact 的 unreadEligible DB 行、orchestrator 回滚/重试。

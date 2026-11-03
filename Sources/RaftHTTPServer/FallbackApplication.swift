@@ -684,6 +684,52 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.get("internal", "agent", ":agentId", "server") { request -> Response in
+        routeResponse(services.emailAccounts.agentServerInfo(
+            authorization: request.headers[.authorization],
+            legacyAgentId: request.parameters.get("agentId") ?? ""
+        ))
+    }
+    app.patch("internal", "agent", ":agentId", "server") { request -> Response in
+        routeResponse(services.emailAccounts.agentUpdateServer(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}",
+            legacyAgentId: request.parameters.get("agentId") ?? ""
+        ))
+    }
+    app.post("internal", "agent", ":agentId", "channels") { request -> Response in
+        routeResponse(services.emailAccounts.agentCreateChannel(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}",
+            legacyAgentId: request.parameters.get("agentId") ?? ""
+        ))
+    }
+    app.patch("internal", "agent", ":agentId", "channels", ":channelId") { request -> Response in
+        routeResponse(services.emailAccounts.agentUpdateChannel(
+            authorization: request.headers[.authorization],
+            channelId: request.parameters.get("channelId") ?? "",
+            body: request.body.string ?? "{}",
+            legacyAgentId: request.parameters.get("agentId") ?? ""
+        ))
+    }
+    app.post("internal", "agent", ":agentId", "channels", ":channelId", "members") { request -> Response in
+        routeResponse(services.emailAccounts.agentChannelMemberWrite(
+            authorization: request.headers[.authorization],
+            channelId: request.parameters.get("channelId") ?? "",
+            body: request.body.string ?? "{}",
+            remove: false,
+            legacyAgentId: request.parameters.get("agentId") ?? ""
+        ))
+    }
+    app.delete("internal", "agent", ":agentId", "channels", ":channelId", "members") { request -> Response in
+        routeResponse(services.emailAccounts.agentChannelMemberWrite(
+            authorization: request.headers[.authorization],
+            channelId: request.parameters.get("channelId") ?? "",
+            body: request.body.string ?? "{}",
+            remove: true,
+            legacyAgentId: request.parameters.get("agentId") ?? ""
+        ))
+    }
     app.post("internal", "agent", ":agentId", "channels", ":channelId", "join") { request -> Response in
         routeResponse(services.emailAccounts.agentChannelMembershipFromMachine(
             authorization: request.headers[.authorization],

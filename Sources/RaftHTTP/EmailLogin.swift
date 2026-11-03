@@ -12160,6 +12160,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return machines.first { $0.id == machineId }?.userId
     }
 
+    public func setMachineDescriptionForTesting(machineId: String, description: String?) {
+        lock.lock()
+        if let index = machines.firstIndex(where: { $0.id == machineId }) {
+            machines[index].description = description
+        }
+        lock.unlock()
+    }
+
     public func machineDescriptionForTesting(machineId: String) -> String? {
         lock.lock()
         defer { lock.unlock() }
@@ -18368,6 +18376,33 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         Self.json(403, "{\"error\":\(jsonString(error)),\"code\":\"server_role_required\",\"currentRole\":\"member\",\"suggestedNextAction\":\"Ask a server owner or admin to grant the capability; your role is member.\"}")
     }
 
+    /// Identity for the agent channel/server management routes: an
+    /// `sk_agent_*` credential must carry the scopes, a legacy machine key uses
+    /// the path agent id.
+    private func agentWriterAndRole(
+        authorization: String?,
+        legacyAgentId: String?,
+        scopes: [String]
+    ) -> (agent: OAuthLedger.AgentRuntimeInfo, role: String?)? {
+        lock.lock()
+        let token = authorization?.hasPrefix("Bearer ") == true ? String(authorization!.dropFirst("Bearer ".count)) : ""
+        let credential = agentCredentials[token]
+        let machine = machines.first { $0.apiKey == token }
+        lock.unlock()
+        if let credential, credential.revokedAt == nil {
+            guard scopes.allSatisfy({ credential.scopes.contains($0) }),
+                  let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+            else { return nil }
+            return (agent, oauth.agentRole(serverId: agent.serverId, agentId: agent.id))
+        }
+        if let machine, let legacyAgentId, !legacyAgentId.isEmpty,
+           let agent = oauth.agentRuntimeInfo(id: legacyAgentId), !agent.deleted,
+           agent.serverId == machine.serverId {
+            return (agent, oauth.agentRole(serverId: agent.serverId, agentId: agent.id))
+        }
+        return nil
+    }
+
     private func agentAndRole(_ authorization: String?, scopes: [String]) -> (agent: OAuthLedger.AgentRuntimeInfo, role: String?)? {
         lock.lock()
         let token = authorization?.hasPrefix("Bearer ") == true ? String(authorization!.dropFirst("Bearer ".count)) : ""
@@ -18379,10 +18414,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return (agent, oauth.agentRole(serverId: agent.serverId, agentId: agent.id))
     }
 
-    public func agentUpdateChannel(authorization: String?, channelId: String, body: String) -> HTTPReply {
-        guard let (agent, role) = agentAndRole(authorization, scopes: ["channels"]) else {
+    public func agentUpdateChannel(authorization: String?, channelId: String, body: String, legacyAgentId: String? = nil) -> HTTPReply {
+        guard let writer = agentWriterAndRole(authorization: authorization, legacyAgentId: legacyAgentId, scopes: ["channels"]),
+              let agent = oauth.agentRuntimeInfo(id: writer.agent.id), !agent.deleted
+        else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
+        let role = writer.role
         guard role == "owner" || role == "admin" else {
             return agentCapabilityDenied("Agent requires editChannelMetadata or changeChannelVisibility capability to update channels")
         }
@@ -18396,21 +18434,42 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if let raw = object["name"] as? String {
             name = raw.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
         }
+        var description = channel.description
+        if let raw = object["description"] as? String {
+            description = raw
+        }
+        var type = oauth.channelType(id: channelId) ?? "channel"
+        if let visibility = object["visibility"] as? String {
+            guard ["public", "private"].contains(visibility) else {
+                return Self.json(400, "{\"error\":\"Invalid channel visibility\"}")
+            }
+            type = visibility == "private" ? "private" : "channel"
+        }
         _ = oauth.renameChannel(id: channelId, name: name)
+        var updatedType = type
+        if let current = oauth.channelInfo(id: channelId), current.description != description || type != (oauth.channelType(id: channelId) ?? "channel") {
+            _ = oauth.updateChannel(id: channelId, name: nil, description: description, systemMessage: nil)
+            if oauth.setChannelType(id: channelId, type: type) { updatedType = type }
+        }
         lock.lock()
         postableChannels[channelId]?.name = name
+        postableChannels[channelId]?.kind = updatedType
         lock.unlock()
-        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name)),\"type\":\(jsonString(oauth.channelType(id: channelId) == "private" ? "private" : "channel"))}")
+        let descriptionJSON = description.map(jsonString) ?? "null"
+        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name)),\"description\":\(descriptionJSON),\"type\":\(jsonString(updatedType))}")
     }
 
     private var memberAttentionJSON: String {
         ",\"attention\":{\"stillArrives\":[\"Followed threads still notify this member unless they unfollow them.\"],\"threadBoundary\":\"Removing this member does not unfollow existing thread follows. Private channel/thread content still requires current parent access.\",\"manageCommand\":\"Use raft thread unfollow to manage thread follows.\"}"
     }
 
-    public func agentChannelMemberWrite(authorization: String?, channelId: String, body: String, remove: Bool) -> HTTPReply {
-        guard let (agent, role) = agentAndRole(authorization, scopes: ["channels"]) else {
+    public func agentChannelMemberWrite(authorization: String?, channelId: String, body: String, remove: Bool, legacyAgentId: String? = nil) -> HTTPReply {
+        guard let writer = agentWriterAndRole(authorization: authorization, legacyAgentId: legacyAgentId, scopes: ["channels"]),
+              let agent = oauth.agentRuntimeInfo(id: writer.agent.id), !agent.deleted
+        else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
+        let role = writer.role
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == agent.serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
@@ -18420,7 +18479,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
             return Self.json(400, "{\"error\":\"Invalid channel member\"}")
         }
-        if let userName = object["user"] as? String {
+        if let rawUser = object["user"] as? String {
+            let userName = rawUser.hasPrefix("@") ? String(rawUser.dropFirst()) : rawUser
             lock.lock()
             let target = accounts.values.first { $0.name == userName || $0.id == userName }?.id
             lock.unlock()
@@ -18438,6 +18498,22 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let already = oauth.channelHumanIds(channelId: channelId).contains(target)
             if !already {
                 accountsForInvite(userId: target, serverId: agent.serverId, channelId: channelId)
+                lock.lock()
+                let noticeSeq = appendHumanMessageLocked(StoredHumanMessage(
+                    id: UUID().uuidString.lowercased(),
+                    channelId: channelId,
+                    senderId: "system",
+                    content: "@\(userName) was added to this channel.",
+                    randomId: nil,
+                    messageType: "system",
+                    senderType: "system"
+                ))
+                // The acting agent made this notice: it is born-read for the
+                // actor while the added human keeps it unread.
+                let actorKey = "\(channelId)\n\(agent.id)"
+                let previous = agentChannelReadCursors[actorKey] ?? (seq: 0, version: 0)
+                agentChannelReadCursors[actorKey] = (max(previous.seq, noticeSeq), previous.version + 1)
+                lock.unlock()
             }
             return Self.json(200, "{\"ok\":true,\"alreadyMember\":\(already),\"member\":{\"type\":\"human\",\"name\":\(jsonString(userName))}}")
         }
@@ -18460,10 +18536,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(400, "{\"error\":\"Invalid channel member\"}")
     }
 
-    public func agentUpdateServer(authorization: String?, body: String) -> HTTPReply {
-        guard let (agent, role) = agentAndRole(authorization, scopes: ["server"]) else {
+    public func agentUpdateServer(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
+        guard let writer = agentWriterAndRole(authorization: authorization, legacyAgentId: legacyAgentId, scopes: ["server"]),
+              let agent = oauth.agentRuntimeInfo(id: writer.agent.id), !agent.deleted
+        else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
+        let role = writer.role
         guard role == "owner" || role == "admin" else {
             return agentCapabilityDenied("Agent requires editServerSettings capability to edit the server profile")
         }
@@ -18534,9 +18613,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"channel\":{\"ref\":\(jsonString(reference)),\"type\":\(jsonString(type))},\"humans\":[\(humans)],\"agents\":[\(agents)]}")
     }
 
-    public func agentServerInfo(authorization: String?) -> HTTPReply {
-        guard let credential = agentCredentialAgent(authorization),
-              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+    public func agentServerInfo(authorization: String?, legacyAgentId: String? = nil) -> HTTPReply {
+        guard let writer = agentWriterAndRole(authorization: authorization, legacyAgentId: legacyAgentId, scopes: []),
+              let agent = oauth.agentRuntimeInfo(id: writer.agent.id), !agent.deleted
         else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
@@ -18545,11 +18624,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let role = oauth.agentRole(serverId: agent.serverId, agentId: agent.id)
         lock.lock()
+        let machineId = agentMachineIds[agent.id]
+        let machine = machineId.flatMap { id in machines.first { $0.id == id } }
         let channels = postableChannels
-            .filter { $0.value.serverId == agent.serverId && $0.value.deletedAt == nil }
-            .map { id, channel -> (String, String, Bool) in
+            .filter {
+                $0.value.serverId == agent.serverId
+                    && $0.value.deletedAt == nil
+                    && !$0.value.archived
+                    && oauth.channelArchivedAt(id: $0.key) == nil
+                    && $0.value.kind != "dm"
+                    && $0.value.kind != "thread"
+            }
+            .compactMap { id, channel -> (String, String, String, Bool)? in
                 let joined = channel.memberIds.contains(agent.id) || oauth.channelAgentIds(channelId: id).contains(agent.id)
-                return (id, channel.name, joined)
+                // Private and joint surfaces stay invisible without membership;
+                // public channels are listed too, with their join state.
+                if !joined && (channel.kind == "private" || channel.kind == "joint") { return nil }
+                let type = channel.kind == "private" || channel.kind == "joint" ? channel.kind : "channel"
+                return (id, channel.name, type, joined)
             }
             .sorted { $0.0 < $1.0 }
         let agentRows = oauth.activeAgentIds(serverId: agent.serverId).map { otherId -> String in
@@ -18559,11 +18651,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return "{\"id\":\(jsonString(otherId)),\"name\":\(jsonString(info?.name ?? "")),\"role\":\(otherRole == "null" ? "null" : jsonString(otherRole)),\"status\":\"active\",\"activity\":\(jsonString(activity.activity)),\"activityDetail\":\(jsonString(activity.detail))}"
         }
         lock.unlock()
-        let channelJSON = channels.map { id, name, joined in
-            "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"joined\":\(joined)}"
+        let channelJSON = channels.map { id, name, type, joined in
+            "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"type\":\(jsonString(type)),\"joined\":\(joined)}"
         }.joined(separator: ",")
         let roleJSON = role.map { jsonString($0) } ?? "null"
-        let body = "{\"id\":\(jsonString(profile.id)),\"name\":\(jsonString(profile.name)),\"slug\":\(jsonString(profile.slug)),\"runtimeContext\":{\"agentId\":\(jsonString(agent.id)),\"runtime\":\(jsonString(agent.runtime)),\"model\":\"external\",\"reasoningEffort\":null},\"serverRole\":\(roleJSON),\"serverCapabilities\":{\"addChannelMembers\":true,\"createChannels\":true},\"channels\":[\(channelJSON)],\"agents\":[\(agentRows.joined(separator: ","))]}"
+        let machineIdJSON = machine.map { jsonString($0.id) } ?? "null"
+        let machineNameJSON = machine.map { jsonString($0.name) } ?? "null"
+        let machineDescriptionJSON = machine?.description.map(jsonString) ?? "null"
+        let runtimeContext = "{\"agentId\":\(jsonString(agent.id)),\"runtime\":\(jsonString(agent.runtime)),\"model\":\"external\",\"reasoningEffort\":null,\"serverId\":\(jsonString(agent.serverId)),\"machineId\":\(machineIdJSON),\"machineName\":\(machineNameJSON),\"machineDescription\":\(machineDescriptionJSON),\"machineHostname\":null,\"machineOs\":null,\"daemonVersion\":null,\"workspacePath\":null}"
+        let body = "{\"id\":\(jsonString(profile.id)),\"name\":\(jsonString(profile.name)),\"slug\":\(jsonString(profile.slug)),\"runtimeContext\":\(runtimeContext),\"serverRole\":\(roleJSON),\"serverCapabilities\":{\"addChannelMembers\":true,\"createChannels\":true},\"channels\":[\(channelJSON)],\"agents\":[\(agentRows.joined(separator: ","))]}"
         return Self.json(200, body)
     }
 
@@ -18598,9 +18694,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"channelId\":\(jsonString(channelId)),\"type\":\(jsonString(type))}")
     }
 
-    public func agentCreateChannel(authorization: String?, body: String) -> HTTPReply {
-        guard let credential = agentCredentialAgent(authorization), credential.scopes.contains("channels"),
-              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+    public func agentCreateChannel(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
+        guard let writer = agentWriterAndRole(authorization: authorization, legacyAgentId: legacyAgentId, scopes: ["channels"]),
+              let agent = oauth.agentRuntimeInfo(id: writer.agent.id), !agent.deleted
         else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
@@ -18617,14 +18713,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard ["public", "private"].contains(visibility) else {
             return Self.json(400, "{\"error\":\"Invalid channel visibility\"}")
         }
+        guard let role = writer.role else {
+            return Self.json(403, "{\"error\":\"Agent requires createChannels capability to create channels\",\"code\":\"server_role_required\",\"suggestedNextAction\":\"To create channels you need the member role on this server; you are not a member of this server. Ask a server owner or admin to do it, or to change your role.\",\"requiredCapabilities\":[\"createChannels\"],\"requiredRole\":\"member\",\"currentRole\":null}")
+        }
+        let description = object["description"] as? String
         let type = visibility == "private" ? "private" : "channel"
-        let channelId = oauth.createChannel(serverId: agent.serverId, name: name, creatorUserId: agent.id, type: type)
+        let channelId = oauth.createChannel(serverId: agent.serverId, name: name, creatorUserId: agent.id, type: type, description: description)
         oauth.removeChannelHuman(channelId: channelId, userId: agent.id)
         oauth.addChannelAgent(channelId: channelId, agentId: agent.id)
         lock.lock()
         postableChannels[channelId] = PostableChannel(serverId: agent.serverId, memberIds: [], kind: type, name: name)
         lock.unlock()
-        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name)),\"type\":\(jsonString(type)),\"createdByAgentId\":\(jsonString(agent.id))}")
+        _ = role
+        let descriptionJSON = description.map(jsonString) ?? "null"
+        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name)),\"type\":\(jsonString(type)),\"description\":\(descriptionJSON),\"joined\":true,\"createdByAgentId\":\(jsonString(agent.id))}")
     }
 
     // MARK: - Product feedback locators (`POST/GET /internal/agent-api/feedback-locators`)
