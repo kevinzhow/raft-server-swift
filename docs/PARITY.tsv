@@ -249,7 +249,7 @@ agentProcessManager.grok	daemon	pending	-	auto-seed
 agentProcessManager.residency	daemon	pending	-	auto-seed
 agentProcessManager.serverWake	daemon	pending	-	auto-seed
 agentProcessManager.sessionTranscript	daemon	pending	-	auto-seed
-agentProcessManager.spawnFailCooldown	daemon	pending	-	auto-seed
+agentProcessManager.spawnFailCooldown	daemon	locked	3370ccd	non-executable black-box: drives AgentProcessManager with fake child processes, daemon fetch stubs and lifecycle records to prove an active spawn-fail cooldown always carries a restart config; this port has no agent runtime process manager to drive
 agentProcessManager.systemPrompt	daemon	pending	-	auto-seed
 agentProcessManager.teardown	daemon	locked	61895fe	non-executable black-box: an integration run of AgentProcessManager teardown with the unported agent runtime process manager
 agentProcessManager.wakeRecycle	daemon	pending	-	auto-seed
