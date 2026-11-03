@@ -1201,3 +1201,10 @@ RFC 074 personal assistant：
 - 被替换进程的 output 会被拒绝：同一 process × reason × source 每 10s 窗口只记录一次 trace（`daemon.agent.runtime_binding.rejected`，带 `agent_id/process_instance_id/direction/source/reason/suppressed_count`），其间拒绝只计数；窗口结束后下一次拒绝记录累计的 suppressed_count 并从零重新计数。
 - input 拒绝（binding 不匹配）每次 send 都单独记录、不折叠；binding 匹配时放行（本移植的 fence 只做校验与记录，不转接 runtime send）。
 - 绑定按 runtime token 建立；validation 依 binding_missing / inactive_process_generation / agent / process / launch / session 不匹配给出原因。
+
+### daemon grokEventNormalizer
+
+- Grok (ACP/JSON-RPC) 通知归一：`agent_message_chunk`/`agent_thought_chunk` → text/thinking（带 runtimeTurn 归属：进行中的 generation 标 active、上一个已完成的标 completed）；非本 session 的通知丢弃。
+- 工具：`tool_call_delta_chunk` 按 tool_index/tool_call_id 累积参数并只回 internal_progress；`tool_call` 首次发出 tool_call（name 从 `_meta.x.ai/tool.name`/name/title 取，参数为 rawInput 或累积 JSON），重复只回 progress；`tool_call_update` 的 completed/failed/cancelled 首次发出 tool_output（`grokToolEndOutcome`：completed 为 ok；failed/cancelled 仅在带 exit_code 时 ok 且记录 exitCode），重复或 turn 已结束且未见过该调用则回 progress。
+- 轮次：`turn_completed` 按 prompt_id 归属 generation；已完成的 generation 去重（上限 32）；晚到/未知 prompt 不完成新轮；autonomous successor（`task-completed-call-*`）在无活动轮时自建一轮且终态只发一次，有活动 foreground 轮时抑制并保持去重；`finishPrompt` 产出 token_usage telemetry（grok_acp）、error（stop_reason=error/cancelled）与 turn_end，并清空工具状态。
+- `pending_interaction`/`interaction_resolved`/未知扩展一律 internal_progress（含 payloadBytes）。
