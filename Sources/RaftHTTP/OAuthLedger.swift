@@ -691,6 +691,37 @@ public final class OAuthLedger: @unchecked Sendable {
         return createdAt
     }
 
+    /// Records a message row the directory already sequenced. The directory
+    /// keeps the authoritative message list; this mirror makes the same rows
+    /// visible to the ledger-backed reads (history, thread anchors).
+    public func appendMirroredMessage(
+        id: String,
+        channelId: String,
+        content: String,
+        senderId: String,
+        seq: Int,
+        createdAt: Date,
+        senderTimezone: String?,
+        senderType: String?,
+        messageType: String?
+    ) {
+        lock.lock()
+        if !channelMessages.contains(where: { $0.id == id }) {
+            channelMessages.append(ChannelMessageRecord(
+                id: id,
+                channelId: channelId,
+                content: content,
+                createdAt: createdAt,
+                senderId: senderId,
+                seq: seq,
+                senderTimezone: senderTimezone,
+                senderType: senderType,
+                messageType: messageType
+            ))
+        }
+        lock.unlock()
+    }
+
     public func createMessageRecord(
         channelId: String,
         content: String,
@@ -964,6 +995,8 @@ public final class OAuthLedger: @unchecked Sendable {
         public var seq: Int
         public var createdAt: Date
         public var senderTimezone: String?
+        public var senderType: String?
+        public var messageType: String?
     }
 
     public func historyMessages(channelId: String) -> [HistoryMessage] {
@@ -972,7 +1005,7 @@ public final class OAuthLedger: @unchecked Sendable {
         return channelMessages
             .filter { $0.channelId == channelId }
             .sorted { $0.seq < $1.seq }
-            .map { HistoryMessage(id: $0.id, content: $0.content, senderId: $0.senderId, seq: $0.seq, createdAt: $0.createdAt, senderTimezone: $0.senderTimezone) }
+            .map { HistoryMessage(id: $0.id, content: $0.content, senderId: $0.senderId, seq: $0.seq, createdAt: $0.createdAt, senderTimezone: $0.senderTimezone, senderType: $0.senderType, messageType: $0.messageType) }
     }
 
     public func messageContent(id: String) -> (channelId: String, content: String)? {
@@ -1240,6 +1273,8 @@ public final class OAuthLedger: @unchecked Sendable {
         var senderId: String
         var seq: Int
         var senderTimezone: String? = nil
+        var senderType: String? = nil
+        var messageType: String? = nil
     }
 
     public func memberRole(serverId: String, userId: String) -> String? {

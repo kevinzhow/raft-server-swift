@@ -66,7 +66,7 @@ private func makeFollowedPageFixture() -> FollowedPageFixture {
             senderId: replierId
         )
         if index % 2 == 1 {
-            accounts.oauth.setChannelReadCursor(channelId: thread, userId: ownerId, seq: 1)
+            accounts.oauth.setChannelReadCursor(channelId: thread, userId: ownerId, seq: accounts.humanMessageSequence(id: reply) ?? 1)
         }
         accounts.followThreadForTesting(
             serverId: serverId,

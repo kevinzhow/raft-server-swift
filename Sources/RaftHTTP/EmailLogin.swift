@@ -3620,7 +3620,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let start = max(0, index - beforeCount)
             let end = min(rows.count, index + 1 + afterCount)
             let parts = rows[start..<end].map { row -> String in
-                let seq = (rows.firstIndex { $0.id == row.id } ?? 0) + 1
+                let seq = row.seq
                 let metadata = forwardMetadataJSONLocked(messageId: row.id, userId: userId, serverId: serverId)
                     ?? actionCardMetadataLocked(messageId: row.id)
                 var json = "{\"id\":\(jsonString(row.id)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(row.content)),\"seq\":\(seq)"
@@ -3634,7 +3634,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.contextJSON(
                 channelId: channelId,
                 message: message,
-                seq: index + 1,
+                seq: message.seq,
                 archived: channel.archived,
                 canonical: nil,
                 messagesJSON: parts.joined(separator: ","),
@@ -5393,7 +5393,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public func addHumanMessageForTesting(channelId: String, senderId: String, content: String, messageType: String = "chat", senderType: String = "user") -> String {
         let id = UUID().uuidString.lowercased()
         lock.lock()
-        humanMessageRows.append(StoredHumanMessage(
+        appendHumanMessageLocked(StoredHumanMessage(
             id: id,
             channelId: channelId,
             senderId: senderId,
@@ -5471,15 +5471,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             var firstUnread: String?
             if !threadReplies.isEmpty {
                 unreadCount = 0
-                for (index, reply) in threadReplies.enumerated() where index + 1 > info.maxReadSeq && reply.senderId != userId {
+                for reply in threadReplies where reply.seq > info.maxReadSeq && reply.senderId != userId {
                     unreadCount += 1
                     if firstUnread == nil { firstUnread = reply.id }
                 }
             }
             if unreadOnly, unreadCount == 0 { continue }
-            let unreadIDs = Set(threadReplies.enumerated().filter { index, reply in
-                index + 1 > info.maxReadSeq && reply.senderId != userId
-            }.map { $0.element.id })
+            let unreadIDs = Set(threadReplies.filter { $0.seq > info.maxReadSeq && $0.senderId != userId }.map(\.id))
             let hasMention = storedMentions.contains { row in
                 row.targetType == "user"
                     && row.targetId == userId
@@ -5694,7 +5692,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                     firstUnread = oauth.firstUnreadMessageId(channelId: threadId, userId: userId)
                 } else {
                     var first: String?
-                    for (index, reply) in replies.enumerated() where index + 1 > unreadInfo.maxReadSeq && reply.senderId != userId {
+                    for reply in replies where reply.seq > unreadInfo.maxReadSeq && reply.senderId != userId {
                         unreadCount += 1
                         if first == nil { first = reply.id }
                     }
@@ -5753,8 +5751,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             var listed: [String] = []
             for id in visibleChannels {
                 let rows = humanMessageRows.filter { $0.channelId == id }
-                for (index, message) in rows.enumerated() where index + 1 > cursor {
-                    listed.append("{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(id)),\"seq\":\(index + 1),\"content\":\(jsonString(message.content))}")
+                for message in rows where message.seq > cursor {
+                    listed.append("{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(id)),\"seq\":\(message.seq),\"content\":\(jsonString(message.content))}")
                 }
             }
             lock.unlock()
@@ -5785,10 +5783,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let storageChannelId = jointProjections.first { $0.localChannelId == channelId }?.canonicalChannelId ?? channelId
         let allRows = humanMessageRows.filter { $0.channelId == storageChannelId || $0.channelId == channelId }
         let cursor = Int(sinceSeq ?? "") ?? 0
-        let indexed = allRows.enumerated().filter { $0.offset + 1 > cursor }
+        let indexed = allRows.filter { $0.seq > cursor }
         let limitedIndexed = Array(indexed.suffix(pageLimit))
-        let listed = limitedIndexed.map { index, message -> String in
-            var row = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(channelId)),\"seq\":\(index + 1),\"content\":\(jsonString(message.content))"
+        let listed = limitedIndexed.map { message -> String in
+            var row = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(channelId)),\"seq\":\(message.seq),\"content\":\(jsonString(message.content))"
             if let metadata = forwardMetadataJSONLocked(messageId: message.id, userId: userId, serverId: serverId)
                 ?? actionCardMetadataLocked(messageId: message.id) {
                 row += ",\"actionMetadata\":\(metadata)"
@@ -5899,15 +5897,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }()
         let storageChannelId = jointProjections.first { $0.localChannelId == channelId }?.canonicalChannelId ?? channelId
         let rows = humanMessageRows.filter { $0.channelId == storageChannelId || $0.channelId == channelId }
-        let cursorRows = rows.enumerated().filter { index, _ in
-            let seq = index + 1
-            if let before = before.value, seq >= before { return false }
-            if let after = after.value, seq <= after { return false }
+        let cursorRows = rows.filter { row in
+            if let before = before.value, row.seq >= before { return false }
+            if let after = after.value, row.seq <= after { return false }
             return true
-        }.map(\.element)
+        }
         let pageRows = Array(cursorRows.suffix(Self.messagePageLimit(rawLimit)))
-        let highWater = rows.count
-        let pageSeqs = pageRows.compactMap { row in rows.firstIndex(where: { $0.id == row.id }).map { $0 + 1 } }
+        let highWater = rows.map(\.seq).max() ?? 0
+        let pageSeqs = pageRows.map(\.seq)
         let isTail = rawBefore == nil && rawAfter == nil
         let coveredFrom = pageSeqs.first ?? (isTail ? 1 : 0)
         let coveredThrough = pageSeqs.last ?? 0
@@ -5991,7 +5988,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Stores a message row with a fixed id. Reaction short-id tests need a known prefix.
     public func insertHumanMessage(id: String, channelId: String, senderId: String, content: String, messageType: String = "chat", senderType: String = "user", actionKind: String? = nil) {
         lock.lock()
-        humanMessageRows.append(StoredHumanMessage(
+        appendHumanMessageLocked(StoredHumanMessage(
             id: id,
             channelId: channelId,
             senderId: senderId,
@@ -6430,8 +6427,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 return Self.json(404, "{\"error\":\"Inbox scope not found\"}")
             }
             if let latestOwned = ownedFacts.last,
-               let index = humanMessageRows.firstIndex(where: { $0.id == latestOwned.messageId }) {
-                oauth.setChannelReadCursor(channelId: threadId, userId: userId, seq: index + 1)
+               let owned = humanMessageRows.first(where: { $0.id == latestOwned.messageId }) {
+                oauth.setChannelReadCursor(channelId: threadId, userId: userId, seq: owned.seq)
             }
             lock.unlock()
             _ = serverId
@@ -6511,7 +6508,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     ) -> String {
         let id = explicitId ?? UUID().uuidString.lowercased()
         lock.lock()
-        humanMessageRows.append(StoredHumanMessage(
+        appendHumanMessageLocked(StoredHumanMessage(
             id: id,
             channelId: channelId,
             senderId: senderId,
@@ -6529,7 +6526,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public func addSystemMessageForTesting(channelId: String, content: String) -> String {
         let id = UUID().uuidString.lowercased()
         lock.lock()
-        humanMessageRows.append(StoredHumanMessage(
+        appendHumanMessageLocked(StoredHumanMessage(
             id: id,
             channelId: channelId,
             senderId: "system",
@@ -6552,7 +6549,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     ) -> String {
         let id = UUID().uuidString.lowercased()
         lock.lock()
-        humanMessageRows.append(StoredHumanMessage(
+        appendHumanMessageLocked(StoredHumanMessage(
             id: id,
             channelId: channelId,
             senderId: "external-projection-\(id.prefix(8))",
@@ -6986,22 +6983,22 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             for conversation in conversations {
                 let key = "\(conversation.id)\n\(agentId)"
                 let cursor = agentChannelReadCursors[key]?.seq ?? 0
-                let pending = humanMessageRows.enumerated().filter { offset, message in
+                let pending = humanMessageRows.filter { message in
                     message.channelId == conversation.storage
-                        && offset + 1 > cursor
+                        && message.seq > cursor
                         && message.senderId != agentId
                 }
                 if pending.count > Self.agentInboxPullCap { hasMore = true }
-                for (offset, message) in pending.prefix(Self.agentInboxPullCap) {
+                for message in pending.prefix(Self.agentInboxPullCap) {
                     guard seenMessages.insert(message.id).inserted else { continue }
                     let senderName = message.externalSenderName
                         ?? accounts.values.first { $0.id == message.senderId }?.name
                         ?? (message.senderId == "system" ? "system" : message.senderId)
-                    selected.append((offset + 1, message, conversation, senderName))
+                    selected.append((message.seq, message, conversation, senderName))
                 }
                 if let last = pending.prefix(Self.agentInboxPullCap).last {
                     let previous = agentChannelReadCursors[key] ?? (seq: 0, version: 0)
-                    let newSeq = max(previous.seq, last.offset + 1)
+                    let newSeq = max(previous.seq, last.seq)
                     agentChannelReadCursors[key] = (newSeq, previous.version + (newSeq > previous.seq ? 1 : 0))
                 }
             }
@@ -7762,6 +7759,28 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return humanMessageRows.count
     }
 
+    /// Appends one message row and stamps its server-wide sequence.
+    @discardableResult
+    private func appendHumanMessageLocked(_ message: StoredHumanMessage, seq explicitSeq: Int? = nil) -> Int {
+        var stored = message
+        stored.seq = explicitSeq ?? (humanMessageRows.count + 1)
+        humanMessageRows.append(stored)
+        // Mirror into the ledger so ledger-backed reads (agent history, thread
+        // anchors) see the same server-wide sequence and sender metadata.
+        oauth.appendMirroredMessage(
+            id: stored.id,
+            channelId: stored.channelId,
+            content: stored.content,
+            senderId: stored.senderId,
+            seq: stored.seq,
+            createdAt: stored.createdAt,
+            senderTimezone: stored.senderTimezone,
+            senderType: stored.senderType,
+            messageType: stored.messageType
+        )
+        return stored.seq
+    }
+
     private func storeHumanMessage(channelId: String, senderId: String, content: String, randomId: String?, attachmentIds: [String], senderTimezone: String? = nil, mentions: [MentionInput] = []) -> (reply: HTTPReply, created: Bool) {
         lock.lock()
         if let randomId, let existing = humanMessageRows.first(where: { $0.senderId == senderId && $0.randomId == randomId }) {
@@ -7810,11 +7829,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             channelAttachments[id]?.messageId = stored.id
             channelAttachments[id]?.messagePosition = position
         }
-        humanMessageRows.append(stored)
+        let sequence = appendHumanMessageLocked(stored)
         if postableChannels[channelId]?.kind == "thread" {
             inboxDoneScopes = inboxDoneScopes.filter { !$0.hasSuffix("\n\(channelId)") }
         }
-        let sequence = humanMessageRows.count
         let cursorKey = "\(channelId)\n\(senderId)"
         userChannelReadCursors[cursorKey] = max(userChannelReadCursors[cursorKey] ?? 0, sequence)
         recordedChannelMessageEvents.append(ChannelMessageEvent(
@@ -8856,6 +8874,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var channelId: String
         var senderId: String
         var content: String
+        /// Server-wide message sequence. Assigned when the row is appended.
+        var seq: Int = 0
         var randomId: String?
         var attachmentIds: [String] = []
         var messageType: String = "chat"
@@ -10671,10 +10691,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 continue
             }
             let cursor = oauth.channelReadCursor(channelId: id, userId: context.ownerId)
-            let messages = humanMessageRows.enumerated().filter { index, message in
-                message.channelId == id && index + 1 > cursor
+            let messages = humanMessageRows.filter { message in
+                message.channelId == id && message.seq > cursor
             }
-            let unread = messages.filter { $0.element.senderId != context.ownerId }.count
+            let unread = messages.filter { $0.senderId != context.ownerId }.count
             guard unread > 0 else { continue }
             var item = "{\"kind\":\(jsonString(kind)),\"channelId\":\(jsonString(id)),\"unreadCount\":\(unread)"
             if let parentChannelId {
@@ -15273,9 +15293,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         defer { lock.unlock() }
         let rows = humanMessageRows.filter { $0.channelId == channelId }
         let cursor = oauth.channelUnreadInfo(channelId: channelId, userId: userId).maxReadSeq
-        return rows.enumerated().filter { index, row in
-            index + 1 > cursor && row.senderId != userId
-        }.count
+        return rows.filter { $0.seq > cursor && $0.senderId != userId }.count
     }
 
     public func serversUnreadSummary(authorization: String?) -> HTTPReply {
@@ -15287,7 +15305,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 $0.joined && ($0.type == "channel" || $0.type == "")
             }
             let total = joined.reduce(0) { sum, channel in
-                sum + oauth.channelUnreadInfo(channelId: channel.id, userId: userId).unreadCount + humanUnreadCount(channelId: channel.id, userId: userId)
+                sum + oauth.channelUnreadInfo(channelId: channel.id, userId: userId).unreadCount
             }
             let muted = oauth.isServerPushMuted(serverId: serverId, userId: userId)
             return "{\"serverId\":\(jsonString(serverId)),\"unreadCount\":\(total),\"serverPushMuted\":\(muted),\"activityUnreadCount\":\(total)}"
@@ -15959,7 +15977,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let messageId = UUID().uuidString.lowercased()
         lock.lock()
-        humanMessageRows.append(StoredHumanMessage(
+        appendHumanMessageLocked(StoredHumanMessage(
             id: messageId,
             channelId: channelId,
             senderId: agent.id,
@@ -16252,7 +16270,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             senderType: "user",
             createdAt: now
         ))
-        humanMessageRows.append(StoredHumanMessage(
+        appendHumanMessageLocked(StoredHumanMessage(
             id: id,
             channelId: attachment.channelId,
             senderId: userId,
@@ -19753,9 +19771,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if freshnessEnabled, (requestedSendFreshness || forcedFreshness), !isContinueAnyway {
             lock.lock()
             let conversation = postableChannels[channelId]
-            let rows = humanMessageRows.enumerated().compactMap { offset, message -> (seq: Int, message: StoredHumanMessage)? in
+            let rows = humanMessageRows.compactMap { message -> (seq: Int, message: StoredHumanMessage)? in
                 guard message.channelId == channelId else { return nil }
-                return (offset + 1, message)
+                return (message.seq, message)
             }
             let latestFromOthers = rows.last { $0.message.senderId != identity.agentId }?.seq ?? 0
             let threadParentSeq = conversation?.kind == "thread"
@@ -19831,7 +19849,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let messageId = UUID().uuidString.lowercased()
         lock.lock()
-        humanMessageRows.append(StoredHumanMessage(
+        appendHumanMessageLocked(StoredHumanMessage(
             id: messageId,
             channelId: channelId,
             senderId: identity.agentId,
@@ -19840,16 +19858,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             messageType: "chat",
             senderType: "agent"
         ))
-        let ownSeq = humanMessageRows.count
+        let ownSeq = humanMessageRows.last?.seq ?? humanMessageRows.count
         // Sending is not reading: the cursor may pass the own message only when
         // no message from someone else below it is still unhanded.
         let cursorKey = "\(channelId)\n\(identity.agentId)"
         let cursor = agentChannelReadCursors[cursorKey]?.seq ?? 0
-        let unreadBelow = humanMessageRows.enumerated().contains { offset, message in
+        let unreadBelow = humanMessageRows.contains { message in
             message.channelId == channelId
                 && message.senderId != identity.agentId
-                && offset + 1 > cursor
-                && offset + 1 < ownSeq
+                && message.seq > cursor
+                && message.seq < ownSeq
         }
         if !unreadBelow, ownSeq > cursor {
             let previous = agentChannelReadCursors[cursorKey] ?? (seq: 0, version: 0)
@@ -20314,7 +20332,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
             let receiptId = UUID().uuidString.lowercased()
             let receiptContent = "@\(assignee.name) assigned you: \(titles.first ?? "task")"
-            humanMessageRows.append(StoredHumanMessage(
+            appendHumanMessageLocked(StoredHumanMessage(
                 id: receiptId,
                 channelId: channelId,
                 senderId: auth.agentId,
@@ -20457,9 +20475,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
         func latestMessage(_ storageChannelId: String) -> (seq: Int, message: StoredHumanMessage?) {
             let messages = humanMessageRows.filter { $0.channelId == storageChannelId }
-            guard let last = messages.last else { return (0, nil) }
-            let global = (humanMessageRows.firstIndex { $0.id == last.id } ?? 0) + 1
-            return (global, last)
+            guard let last = messages.max(by: { $0.seq < $1.seq }) else { return (0, nil) }
+            return (last.seq, last)
         }
         func senderName(_ message: StoredHumanMessage?) -> String? {
             guard let message else { return nil }
@@ -20475,8 +20492,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             guard !ids.isEmpty else { return (0, nil) }
             let messages = humanMessageRows.filter { $0.channelId == channelId }
             var maxSeq: Int?
-            for (index, message) in messages.enumerated() where ids.contains(message.id) {
-                maxSeq = index + 1
+            for message in messages where ids.contains(message.id) {
+                maxSeq = message.seq
             }
             return (ids.count, maxSeq)
         }
@@ -20511,9 +20528,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let latest = latestMessage(storage)
             guard latest.seq > 0 else { continue }
             let cursor = agentChannelReadCursors["\(id)\n\(agentId)"]?.seq ?? 0
-            let unread = humanMessageRows.filter { $0.channelId == storage }.enumerated().filter { index, message in
-                index + 1 > cursor && message.senderId != agentId
-            }.count
+            let unread = humanMessageRows.filter { $0.channelId == storage && $0.seq > cursor && $0.senderId != agentId }.count
             let mentions = mentionStats(channelId: storage)
             rows.append(AgentInboxRow(
                 target: target,
@@ -20544,9 +20559,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let latest = latestMessage(storage)
             guard latest.seq > 0 else { continue }
             let cursor = agentChannelReadCursors["\(follow.threadChannelId)\n\(agentId)"]?.seq ?? 0
-            let unread = humanMessageRows.filter { $0.channelId == storage }.enumerated().filter { index, message in
-                index + 1 > cursor && message.senderId != agentId
-            }.count
+            let unread = humanMessageRows.filter { $0.channelId == storage && $0.seq > cursor && $0.senderId != agentId }.count
             let mentions = mentionStats(channelId: storage)
             let parentShort = String((thread.parentMessageId ?? "").prefix(8))
             let target: String
@@ -20844,7 +20857,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         )
         let content = "Operation: register Login with Raft app \(name) (\(clientKey ?? "auto-generated client key"))"
         lock.lock()
-        humanMessageRows.append(StoredHumanMessage(
+        appendHumanMessageLocked(StoredHumanMessage(
             id: messageId,
             channelId: target.storage,
             senderId: agent.id,
@@ -21011,7 +21024,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         )
         let content = "Operation: install Marketplace app \(binding.name) (\(clientKey)) on this Server"
         lock.lock()
-        humanMessageRows.append(StoredHumanMessage(
+        appendHumanMessageLocked(StoredHumanMessage(
             id: messageId,
             channelId: target.storage,
             senderId: agent.id,
@@ -21110,7 +21123,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let messageId = UUID().uuidString.lowercased()
         let content = "@\(agent.name) proposed creating channel #\(trimmedName)"
         lock.lock()
-        humanMessageRows.append(StoredHumanMessage(
+        appendHumanMessageLocked(StoredHumanMessage(
             id: messageId,
             channelId: resolved.storage,
             senderId: identity.agentId,
@@ -21226,7 +21239,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             content = "@\(requester.name) your action card `\(cardRef)` (creating channel #\(card.channelName ?? "")) failed when @\(confirmerHandle) tried to execute it on \(serverName): \(failureReason ?? "the action could not be completed"). The card is still pending and can be retried."
         }
         let replyId = UUID().uuidString.lowercased()
-        humanMessageRows.append(StoredHumanMessage(
+        appendHumanMessageLocked(StoredHumanMessage(
             id: replyId,
             channelId: threadId,
             senderId: "system",
@@ -21983,7 +21996,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
 
         let json = page.map { message -> String in
-            let senderType = message.senderId == agent.id ? "agent" : "user"
+            let senderType: String
+            if message.messageType == "system" || message.senderId == "system" {
+                senderType = "system"
+            } else if message.senderType == "external_projection" {
+                senderType = "third_party_app"
+            } else if message.senderId == agent.id || message.senderType == "agent" {
+                senderType = "agent"
+            } else {
+                senderType = "user"
+            }
             let senderName: String
             if senderType == "agent" {
                 senderName = oauth.agentRuntimeInfo(id: message.senderId)?.name ?? message.senderId
@@ -22140,7 +22162,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     private func recordBatchMembershipNotice(channelId: String, name: String) {
         lock.lock()
-        humanMessageRows.append(StoredHumanMessage(
+        appendHumanMessageLocked(StoredHumanMessage(
             id: UUID().uuidString.lowercased(),
             channelId: channelId,
             senderId: "system",
@@ -22213,7 +22235,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var messageId: String?
         if let content = object["content"] as? String, !content.isEmpty {
             let id = UUID().uuidString.lowercased()
-            humanMessageRows.append(StoredHumanMessage(
+            appendHumanMessageLocked(StoredHumanMessage(
                 id: id,
                 channelId: threadId,
                 senderId: userId,
@@ -23142,8 +23164,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public func humanMessageSequence(id: String) -> Int? {
         lock.lock()
         defer { lock.unlock() }
-        guard let index = humanMessageRows.firstIndex(where: { $0.id == id }) else { return nil }
-        return index + 1
+        return humanMessageRows.first(where: { $0.id == id })?.seq
     }
 
     public func setAgentReadCursorForTesting(agentId: String, channelId: String, seq: Int, version: Int = 1) {
@@ -23668,9 +23689,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             var latestMessageId = info.latestMessageId
             var latestSeq = info.latestSeq
             if !threadReplies.isEmpty {
-                unreadCount = threadReplies.enumerated().filter { index, reply in
-                    index + 1 > info.maxReadSeq && reply.senderId != userId
-                }.count
+                unreadCount = threadReplies.filter { $0.seq > info.maxReadSeq && $0.senderId != userId }.count
                 latestMessageId = threadReplies.last?.id
                 latestSeq = threadReplies.count
             }

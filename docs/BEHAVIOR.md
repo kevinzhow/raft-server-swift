@@ -736,3 +736,11 @@ RFC 074 personal assistant：
 - 锚点解析：`before`/`after` 的纯数字一律是 seq（即使 8 位宽）；`around` 的 8 位十六进制按 short id 优先匹配（多匹配 → 400 `AMBIGUOUS_ID` 且 `suggestedNextAction` 要求用完整 UUID），纯数字是 seq，完整 UUID 精确匹配；形状非法（`around`）→ 400 `INVALID_ARG`，形状合法但不存在 → 404 `NOT_FOUND`，错误文本包含锚点。
 - history 消息行：`createdAt` 是消息自身创建时间（ISO8601 毫秒 + `Z`），不出现 `timestamp`；human 发送者带时区时行上带 `senderTimezone`（如 `Asia/Shanghai`），无时区或 agent 发送者为 `null`。human 频道页不投影他人 `senderTimezone`。
 - 明确排除：history 目前读 ledger 消息表，而 inbox/events 读另一份消息行，两套 seq 空间尚未统一（DomainStore 收口前无法覆盖「history 浏览推进 unread 但不构成 send freshness 证据」「51 条隐藏间隙」这类跨存储断言）；未移植 `unread=true` 模式、延迟推进（settle）、joint 投影与 forwarded 快照。
+
+### 消息存储收口（DomainStore 第一步）
+
+- 消息行只有一份权威顺序：`humanMessageRows` 在 append 时给每条消息盖一个 server-wide `seq`（跨频道单调递增），所有 channel/thread/DM 读取都用这个 `seq`，不再用「频道内下标 + 1」。human 读游标、agent 读游标、thread summary、inbox、events、history、send freshness 因而共享同一 seq 空间。
+- 每次 append 同时镜像一条 ledger 记录（同 id、同 seq、同 createdAt、senderTimezone、senderType、messageType），使 ledger 侧读取（agent history、thread anchor 解析、`/api/messages/channel` 之外的历史接口、mention/staff 查询）能看到真实 HTTP 流量；ledger 自身 `createMessageRecord`/`createChannelMessage` 仍可用于构造测试数据。
+- 结果：`POST /api/messages` 的 human 消息、`/internal/agent-api/send` 的 agent 消息、系统消息都同时出现在 agent history 与 human 频道页；`history` 浏览推进读游标但不构成 send freshness 证据；thread 目标可以用 HTTP 发送的父消息 short id 解析。
+- `GET /api/servers/unread-summary` 的 `unreadCount`/`activityUnreadCount` 只按 ledger 未读数统计（镜像后与消息行一致），不再把两份存储相加。
+- 明确排除：ledger 测试构造的行仍按调用方给的 seq 追加，若与真实流量混在同一频道，排序以各自 seq 为准；Postgres 输出仍未接管（B 阶段后续把该收口迁到 `DomainStore`）。

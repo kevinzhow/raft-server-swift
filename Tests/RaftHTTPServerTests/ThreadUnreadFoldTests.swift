@@ -58,7 +58,7 @@ import VaporTesting
     accounts.addMessageMention(messageId: mention, targetType: "user", targetId: ownerId)
     _ = accounts.addChannelMessageForTesting(channelId: plain.thread, content: "plain reply", senderId: replierId)
     let readReply = accounts.addChannelMessageForTesting(channelId: allRead.thread, content: "read reply", senderId: replierId)
-    accounts.oauth.setChannelReadCursor(channelId: allRead.thread, userId: ownerId, seq: 1)
+    accounts.oauth.setChannelReadCursor(channelId: allRead.thread, userId: ownerId, seq: accounts.humanMessageSequence(id: readReply) ?? 1)
     _ = accounts.addChannelMessageForTesting(channelId: done.thread, content: "reply in a done thread", senderId: replierId)
     _ = accounts.addChannelMessageForTesting(channelId: notFollowed.thread, content: "reply in an unfollowed thread", senderId: replierId)
     _ = accounts.addChannelMessageForTesting(channelId: otherThread.thread, content: "reply under the other channel", senderId: replierId)

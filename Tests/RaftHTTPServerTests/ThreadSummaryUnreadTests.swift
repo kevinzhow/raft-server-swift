@@ -60,13 +60,13 @@ import VaporTesting
                 request.body = .init(string: "{\"parentMessageId\":\"\(followedParent)\"}")
             }
             let followedThreadId = (try JSONSerialization.jsonObject(with: Data((followedThread.body.string ?? "").utf8)) as? [String: Any])?["threadChannelId"] as? String ?? ""
-            _ = try await send(replierToken, followedThreadId, "already read reply")
+            let alreadyReadReply = try await send(replierToken, followedThreadId, "already read reply")
             let unreadReply = try await send(replierToken, followedThreadId, "unread reply")
             #expect(try await client.send(.post, headers: headers(ownerToken), to: "/api/channels/threads/follow") { request in
                 request.body = .init(string: "{\"threadChannelId\":\"\(followedThreadId)\"}")
             }.status == .ok)
             #expect(try await client.send(.post, headers: headers(ownerToken), to: "/api/channels/\(followedThreadId)/read") { request in
-                request.body = .init(string: "{\"seq\":1}")
+                request.body = .init(string: "{\"seq\":\(accounts.humanMessageSequence(id: alreadyReadReply) ?? 1)}")
             }.status == .ok)
 
             let unfollowedParent = try await send(ownerToken, channel, "unfollowed parent")
