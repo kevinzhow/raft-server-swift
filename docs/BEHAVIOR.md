@@ -818,3 +818,11 @@ RFC 074 personal assistant：
 - 访问门：本 Server 成员 + 该频道成员（未加入公开频道、非成员 private 一律 404 cloak）；系统 `#all` 对 Server 人类隐式成员可用；thread 目标 → 400 `Display preferences are stored on the parent channel`（在 membership 判断之前）。
 - 投影：`GET /api/channels` 行与 `GET /api/channels/:id` 详情都带 `collapseLongMessages` 与 `displayPrefsVersion`（当前用户视角）。
 - 明确排除：`message_display_prefs:updated` socket 广播与 trace 断言、功能开关 `topbar_overflow_v0` 的退役配置行为。
+
+### channels.api：unread 计数与可见性守卫组
+
+- `GET /api/channels/unread`：只统计「他人消息」，自己的频道/DM 消息永不计入；无未读的频道不出现在 map 里（不是 0）。
+- `POST /api/channels/:id/unread`：把读游标回退到「最新一条他人消息 seq - 1」，即使最新消息是自己发的也持久化，响应 `{channelId,unreadCount,maxReadSeq}`；随后 `/api/channels/unread` 回 1。
+- `PATCH /api/channels/:id` 的 `visibility`：`#all` 对 human 与 agent 都拒绝，403 `{"code":"all_channel_visibility_managed_separately"}`，错误文本指引「Only a human can do it, from channel settings or server settings」；agent 频道更新同样受此守卫。`#all` 的隐藏/恢复只走 human 的 `/api/channels/system/all/hide|restore`，且可逆。
+- 普通频道改 visibility 需要「owner/admin 能力 + 当前是该频道成员」：非成员（human 或 agent）→ 403 `{"code":"channel_membership_required"}`；普通 member 即使已加入也因缺 changeChannelVisibility 被 403；server owner 加入后可 private↔public 往返。
+- DM 创建（human 与 agent 对端）现在注册 postable 会话与双方成员身份，人类 DM 可直接收发消息。

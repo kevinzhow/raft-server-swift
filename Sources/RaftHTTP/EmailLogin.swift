@@ -18641,6 +18641,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
             return Self.json(400, "{\"error\":\"Invalid channel update\"}")
         }
+        if object["visibility"] != nil, oauth.allChannelId(serverId: agent.serverId) == channelId {
+            return Self.json(403, "{\"error\":\"Only a human can do it, from channel settings or server settings\",\"code\":\"all_channel_visibility_managed_separately\"}")
+        }
+        if object["visibility"] != nil {
+            lock.lock()
+            let isMember = postableChannels[channelId]?.memberIds.contains(agent.id) == true
+                || channelAgentMembers[channelId]?.contains(agent.id) == true
+                || oauth.channelAgentIds(channelId: channelId).contains(agent.id)
+            lock.unlock()
+            guard isMember || oauth.isChannelParticipant(channelId: channelId, userId: agent.id) else {
+                return Self.json(403, "{\"error\":\"You must be a channel member\",\"code\":\"channel_membership_required\"}")
+            }
+        }
         var name = channel.name
         if let raw = object["name"] as? String {
             name = raw.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
@@ -23467,6 +23480,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
             let channelId = oauth.createDirectChannel(serverId: serverId, firstUserId: userId, secondUserId: agentId)
             oauth.addChannelAgent(channelId: channelId, agentId: agentId)
+            lock.lock()
+            postableChannels[channelId] = PostableChannel(serverId: serverId, memberIds: [userId, agentId], kind: "dm", name: "dm")
+            lock.unlock()
             emitRealtime("channel:\(channelId)", "dm:new", "{\"channelId\":\(jsonString(channelId))}")
             emitRealtime("user:\(userId)", "dm:new", "{\"channelId\":\(jsonString(channelId))}")
             return Self.json(200, "{\"id\":\(jsonString(channelId)),\"type\":\"dm\",\"activityMuteSupported\":false,\"peerId\":\(jsonString(agentId)),\"peerType\":\"agent\"}")
@@ -23477,6 +23493,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"Invalid DM peer\"}")
         }
         let channelId = oauth.createDirectChannel(serverId: serverId, firstUserId: userId, secondUserId: peerId)
+        oauth.addChannelHuman(channelId: channelId, userId: userId)
+        oauth.addChannelHuman(channelId: channelId, userId: peerId)
+        lock.lock()
+        postableChannels[channelId] = PostableChannel(serverId: serverId, memberIds: [userId, peerId], kind: "dm", name: "dm")
+        lock.unlock()
         return Self.json(200, "{\"id\":\(jsonString(channelId)),\"type\":\"dm\",\"activityMuteSupported\":false,\"peerId\":\(jsonString(peerId)),\"peerType\":\"user\"}")
     }
 
