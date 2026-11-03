@@ -975,3 +975,10 @@ RFC 074 personal assistant：
 - Android → 解析 Hands `latest`：APK 优先于 store bundle（与 assets 顺序无关）；命中 → 302 到 `download_url`，`Cache-Control: private, max-age=min(expires_in,300)`（缺 `expires_in` 时为 0）。
 - 空频道 → 404 `{"error":"No build available yet","code":"no_active_release"}`；只有 store bundle → 404 `{"error":"No installable build available yet","code":"no_installable_build"}` 且无 Location；配置错误（404 但 code 非 `no_active_release`、缺 code、缺该平台 asset）→ 502 `{"error":"Mobile download is unavailable","code":"not_configured"}`；传输失败或非 2xx → 502 `code:"upstream_error"`；错误分支都不重定向。
 - 明确排除：上游对私有 helper 的单元断言（UA 分类、chooser URL 构造、`lookupLatestAsset` 直调）不作为移植对象——其行为已通过 HTTP 路由断言覆盖；viewport 宽度不参与判定一类纯单元断言没有 HTTP 观测面，按不可移植排除。
+
+### productEvents.api：client 行为事件组
+
+- `GET /api/product-events/config` → `{clientEventsAllowed}`，仅在用户显式 `shareUsageData=true` 时为 true；否则 `POST /api/product-events/batch` 仍返回 202 但 `{"accepted":0}` 且不落任何记录。
+- `POST /api/product-events/batch`（`source:"web"`）：只接受注册事件 `activity_open`（白名单属性 `from`）与 `activity_mark`（`action`）；陌生属性整条跳过、未注册事件跳过、时间戳超过 7 天的跳过；同批重复 uuid 只存一次，最近已见 uuid 再提交被丢弃；`app_version` 必须是 `x.y.z`，`client_session_id` 必须是 uuid，否则 400。
+- 落库只在 analytics id 下：记录 `to` 事件名、analytics id（首次生成后按用户稳定）、serverId、source、session、appVersion 与投影后的属性；属性里附加由请求派生的 `$browser`/`$browser_version`/`$os`/`$device_type`/`$country`（国家仅接受两位字母代码），原始 User-Agent 与 Raft 用户 id 绝不进入记录。
+- onboarding-wizard 组：核心步骤事件按白名单 sanitize 后落库（`latency_ms` 取整、未知键丢弃），未跟踪的推送步骤 400 且不落库；显式 opt-out 或 workspace analytics 关闭时仍 204 但不落库。

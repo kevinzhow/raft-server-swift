@@ -162,7 +162,7 @@ oauthServerinfo.contract	route	partial	-	auto-seed
 oauthServerinfoDocs.contract	route	partial	-	auto-seed
 oidc.api	route	locked	eec3052	standard and scoped issuer: discovery, PKCE, ID token, claims, invalid_grant
 otlpRelay	route	pending	-	auto-seed
-productEvents.api	route	partial	-	auto-seed
+productEvents.api	route	partial	-	full portable module covered: sanitized onboarding-wizard core events with tracked-step allowlist and 400 on untracked push steps, opt-out and workspace analytics switch suppressing records while staying 204, usage-data-gated client-event config and batch, registered event + property allowlists with stale/unregistered/unknown-property skips, analytics-id-only storage with derived browser/os/device/country context and no raw User-Agent or Raft user id, malformed batch/session/version rejection and uuid dedupe within and across batches
 productFeedback.api	route	partial	-	auto-seed
 productFeedback.diagnostics.api	route	partial	-	auto-seed
 productFeedback.multiApp.api	route	partial	-	auto-seed
