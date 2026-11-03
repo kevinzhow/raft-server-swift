@@ -25189,7 +25189,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let now = Date()
         lock.lock()
+        // Drafts never surface; a published row only surfaces once published and
+        // until it expires. Expiring the newest row falls through to the next
+        // unread one, which is what makes scheduled windows queue.
         let rows = announcements
+            .filter { $0.status == "published" && $0.publishedAt != nil }
             .filter { $0.startsAt <= now && ($0.expiresAt == nil || $0.expiresAt! > now) }
             .filter { !announcementDismissals.contains("\(userId)\n\($0.id)") }
             .filter { after == nil || $0.id != after }

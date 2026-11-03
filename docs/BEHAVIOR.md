@@ -1057,3 +1057,9 @@ RFC 074 personal assistant：
 - 分配面：`GET /:id/agents` 返回 `{agents:[{id,name,displayName,runtime,status,computerName,deleted}]}`，member 403、跨 Server 或未知连接 404、无 secret 泄漏；DELETE `/:id/agents/:agentId` 对 malformed id 400、对仍活跃 Agent 409 `provider_connection_assignment_active`（Agent 编辑器是唯一改 provider 的入口）、已删除 Agent 可 detach。
 - 删除连接：仍有活跃分配时 409；软删除的 Agent 不再阻塞，删除连接会一并清掉其分配行。
 - 明确排除：case 1 的迁移默认值/launch-server 白名单纯单元断言，以及 case 3 的 `liftWakeBlockForConfigChange` orchestrator 调用 spy（契约排除进程内投递/编排注入）；其可观察结果（rename 不触发、rotate/patch-key 触发 runtime 值变化）依赖该 spy，无 HTTP 面。
+
+### announcements.api：可见性组（部分）
+
+- `GET /api/announcements/active` 只返回 `status == "published"` 且已有 `publishedAt` 的行：draft 永远不出现在任何通道（即使 startsAt 已到），scheduled 在 startsAt 之前不出现。
+- 未过期、未 dismiss 的行按 startsAt 升序每次只返回最旧一条；`after=<id>` 继续下一页；最新一条到期后自然回落到下一条未读（这就是 scheduled 窗口排队的行为）。
+- 仍待补：targeted audience（`server_id` 查询、冒名成员 404、recipient id 不外泄）、removed admin 路由的 404 全矩阵、失败写入 frontier 游标。

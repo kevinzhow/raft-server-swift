@@ -57,3 +57,45 @@ import VaporTesting
         }
     }
 }
+
+@Test func draftsNeverSurfaceAndExpiringTheNewestFallsThroughToOlderUnread() async throws {
+    let accounts = EmailLoginDirectory()
+    let userId = "11111111-1111-4111-8111-111111111642"
+    accounts.addAccount(id: userId, email: "announcement-draft@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: userId)
+    let base = Date(timeIntervalSince1970: 1_700_100_000)
+    let live = accounts.addAnnouncementForTesting(title: "Live", pages: ["live body"], startsAt: base)
+    _ = accounts.addAnnouncementForTesting(title: "Draft", pages: ["draft body"], startsAt: base.addingTimeInterval(1), status: "draft")
+    let scheduled = accounts.addAnnouncementForTesting(
+        title: "Scheduled", pages: ["scheduled body"], startsAt: base.addingTimeInterval(2), status: "scheduled"
+    )
+    _ = accounts.addAnnouncementForTesting(
+        title: "Expiring", pages: ["expiring body"], startsAt: base.addingTimeInterval(-10),
+        expiresAt: base.addingTimeInterval(60), status: "published", publishedAt: base.addingTimeInterval(-10)
+    )
+    _ = live
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            var loginHeaders = HTTPFields()
+            loginHeaders[.contentType] = "application/json"
+            let login = try await client.send(.post, headers: loginHeaders, to: "/api/auth/login") { request in
+                request.body = .init(string: "{\"email\":\"announcement-draft@slock.test\",\"password\":\"password123\"}")
+            }
+            let loginBody = (try JSONSerialization.jsonObject(with: Data((login.body.string ?? "").utf8))) as? [String: Any]
+            let token = loginBody?["accessToken"] as? String ?? ""
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(token)"
+            func ids(_ path: String) async throws -> [String] {
+                let response = try await client.get(URI(string: path), headers: headers)
+                let body = (try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any]
+                return (body?["announcements"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String }
+            }
+            let first = try await ids("/api/announcements/active")
+            #expect(first.count == 1, "drafts and future scheduled rows never surface")
+            #expect(first.first != scheduled)
+            let afterFirst = try await ids("/api/announcements/active?after=\(first.first ?? "")")
+            #expect(!afterFirst.contains(live), "only the oldest unread is served")
+        }
+    }
+}
