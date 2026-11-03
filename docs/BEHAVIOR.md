@@ -1265,3 +1265,9 @@ RFC 074 personal assistant：
 - 未捕获的 5xx 路由失败经 `JSONErrorBoundaryMiddleware` 转为净化 JSON：状态 500，header `x-slock-error-id` 与 body `correlationId` 同值，body 恰好 `{error:"Internal server error", code:"internal_server_error", correlationId}`，绝不泄漏 SQL/内部消息。
 - 显式 typed 路由响应（如 409 `MACHINE_HAS_ASSIGNED_AGENTS`）不被改写、不带 error id header。
 - 明确排除：RisingWave 连接池饱和的 503 + Retry-After 路径（本移植无 RisingWave 依赖）。
+
+### independentAudit.api（设备 token 撤销 + guest 作用域外溢）
+
+- 撤销族（logout）后，该族 access token 不再通过 `authorize`：既不能审批 device 授权，也不能换取新 session；控制组 refresh 仍 401。
+- guest 角色的历史/同步作用域只覆盖其显式加入的频道：`GET /api/messages/sync`（省略 channel_id）不得返回 guest 未加入频道的消息；`GET /api/messages/channel/:id` 对非成员的 guest 返回 403。
+- 明确排除：legacy machine key 迁移缓存热态用例（依赖 DB 缓存夹具与迁移写路径，本移植未移植该缓存层）。

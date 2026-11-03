@@ -6056,10 +6056,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let commentsVisible = attachmentCommentsEnabled(serverId: serverId ?? "", userId: userId)
         if channelId == nil {
             let cursor = Int(sinceSeq ?? "") ?? 0
+            let isGuest = serverId.flatMap { oauth.memberRole(serverId: $0, userId: userId) } == "guest"
+            var guestJoined: Set<String> = []
+            if isGuest {
+                lock.lock()
+                let candidateIds = Array(postableChannels.keys)
+                lock.unlock()
+                guestJoined = Set(candidateIds.filter { oauth.channelHumanIds(channelId: $0).contains(userId) })
+            }
             lock.lock()
             var visibleChannels: [String] = []
             for (id, channel) in postableChannels {
                 guard channel.serverId == serverId, channel.deletedAt == nil, !channel.archived else { continue }
+                if isGuest && !guestJoined.contains(id) { continue }
                 if channel.kind == "channel" || channel.memberIds.contains(userId) {
                     visibleChannels.append(id)
                 }
@@ -6181,6 +6190,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let threadScope = postableChannels[channelId]?.kind == "thread"
             let guestVisible = guestCanSeeScopeLocked(channelId)
             lock.unlock()
+            if oauth.memberRole(serverId: serverId, userId: userId) == "guest",
+               !oauth.channelHumanIds(channelId: channelId).contains(userId) {
+                return Self.json(403, "{\"error\":\"Forbidden\"}")
+            }
             if threadScope, oauth.memberRole(serverId: serverId, userId: userId) == "guest", !guestVisible {
                 return Self.json(403, "{\"error\":\"Forbidden\"}")
             }
@@ -26793,8 +26806,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let token = String(authorization.dropFirst("Bearer ".count))
         lock.lock()
         let id = accessTokens[token]
+        let family = accessTokenFamilies[token]
+        let familyRevoked = family.map { revokedFamilies.contains($0) } ?? false
         lock.unlock()
-        guard let id else { return .rejected(Self.invalidToken) }
+        guard let id, !familyRevoked else { return .rejected(Self.invalidToken) }
         return .user(id)
     }
 
