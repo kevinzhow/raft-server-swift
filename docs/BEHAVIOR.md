@@ -999,3 +999,10 @@ RFC 074 personal assistant：
 - 同一路径上：machine 凭据 → 401 `invalid_principal`（不是该前缀声明的 principal）；无 Bearer → 401 `auth_required`。
 - 已注册路由不受 catch-all 影响；`POST /internal/computer/preflight` 的 `computerSurface` 不因新增通配路由增减（通配不进入声明清单）。
 - 明确排除：上游用 TypeScript 契约源码断言"每个 contract 声明路由都注册在 routeAuthPolicy"的源码级校验（不可移植）；其等价可观测面由本组锁定。
+
+### errorResponse.dmTarget：DM 目标解析错误组
+
+- agent send 的 `dm:@<name>` 目标在同名人类与同名 agent 并存时 → 409 `{"code":"DM_TARGET_AMBIGUOUS"}`；error 文本点名 `dm:@<name>~agent`，`suggestedNextAction` 同时给出 `dm:@<name>~agent` 与 `dm:@<name>~human` 两条改法。
+- 未知 peer kind（如 `dm:@<name>~bot`）→ 400 `{"code":"DM_TARGET_INVALID_PEER_KIND"}`，`suggestedNextAction` 指示改用 `dm:@<name>~human` 或 `dm:@<name>~agent`。
+- 显式 `~agent` / `~human` 目标仍正常解析并发送——上述错误只针对歧义与非法 kind，而不是"找不到"。
+- 明确排除：上游 helper 级单元（直接调用 `respondToDmTargetResolutionError`）不作为移植对象；其等价可观测面已由 agent send 路径锁定。
