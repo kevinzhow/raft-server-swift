@@ -6219,15 +6219,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
         let visible: Bool = {
-            guard let channel = postableChannels[channelId], channel.serverId == serverId, let userId else { return false }
+            guard let channel = postableChannels[channelId], channel.serverId == serverId,
+                  channel.deletedAt == nil, let userId
+            else { return false }
             if channel.kind == "channel" { return true }
             let guest = serverId.flatMap { oauth.memberRole(serverId: $0, userId: userId) } == "guest"
             if channel.kind == "thread" {
                 if guest { return false }
-                if let parentId = channel.parentChannelId,
-                   let parent = postableChannels[parentId], parent.kind == "channel" {
-                    return true
+                if let parentId = channel.parentChannelId, let parent = postableChannels[parentId] {
+                    if parent.kind == "channel" { return parent.deletedAt == nil }
+                    return channel.memberIds.contains(userId)
                 }
+                return channel.memberIds.contains(userId)
             }
             return channel.memberIds.contains(userId)
         }()

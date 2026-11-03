@@ -1277,3 +1277,8 @@ RFC 074 personal assistant：
 - guest 角色对未显式加入的 hidden public channel 完全 cloaked：`GET /api/channels/:id`、`/members`、`/agents` 一律 404。
 - guest 的 broad sync（省略 channel_id）不包含 hidden channel 的消息；guest 对 hidden channel 的 `read`、`read-all`、`unread` 写操作一律 404（`guestDeniedHiddenChannel` 统一 gate：guest 且非 `channelHumanIds` 成员）。
 - 明确排除：三个 socket room 断言（metadata-bearing server-room events、降级为 guest 时断开、撤销 guestVisible 时驱逐 channel room）——socket room 面未移植。
+
+### 删除频道 cloak（guest channel 生命周期前置）
+
+- `DELETE /api/channels/:id` 后，`GET /api/messages/channel/:deletedId` 返回 404；线程深链在其 parent 被删除后同样 404（parent 仍存在且 `deletedAt` 非空时按删除处理），joint 投影线程保持原有成员可见性回退。
+- 列表/同步/搜索的删除过滤保持原行为；本切片只补历史深链的可见性判断（`visible` 闭包先检查 `deletedAt`）。
