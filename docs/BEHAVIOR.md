@@ -982,3 +982,13 @@ RFC 074 personal assistant：
 - `POST /api/product-events/batch`（`source:"web"`）：只接受注册事件 `activity_open`（白名单属性 `from`）与 `activity_mark`（`action`）；陌生属性整条跳过、未注册事件跳过、时间戳超过 7 天的跳过；同批重复 uuid 只存一次，最近已见 uuid 再提交被丢弃；`app_version` 必须是 `x.y.z`，`client_session_id` 必须是 uuid，否则 400。
 - 落库只在 analytics id 下：记录 `to` 事件名、analytics id（首次生成后按用户稳定）、serverId、source、session、appVersion 与投影后的属性；属性里附加由请求派生的 `$browser`/`$browser_version`/`$os`/`$device_type`/`$country`（国家仅接受两位字母代码），原始 User-Agent 与 Raft 用户 id 绝不进入记录。
 - onboarding-wizard 组：核心步骤事件按白名单 sanitize 后落库（`latency_ms` 取整、未知键丢弃），未跟踪的推送步骤 400 且不落库；显式 opt-out 或 workspace analytics 关闭时仍 204 但不落库。
+
+### shareArtifacts.api：公开分享截图组
+
+- `POST /api/share-artifacts/message-selection`（用户 Bearer + `X-Server-Id`）：未认证 401；非 Server 成员 403；guest 403 `Guests cannot create share artifacts`（在任何上传校验之前）。
+- 上传校验：缺 image 或为空 → 400 `image is required`；超过 10MB → 413 `{error:"Max 10MB per image",errorCode:"SHARE_ARTIFACT_TOO_LARGE",maxBytes}`；非 PNG → 415 `Share artifact must be a PNG image`；缺 `channelId` → 400 `channelId is required`；channel 不在该 Server 或调用者无权访问 → 403 `You do not have access to this channel`。
+- 成功 200 `{id, url, imageUrl}`：`url` = 规范化分享页基址（`SHARE_BASE_URL`，缺省 `<SERVER_URL>/share`）+ `/<id>`；`imageUrl` = 配置了 `CDN_BASE_URL` 时 `<cdn>/<serverId>/share-artifacts/<id>.png`，否则 `<serverBase>/share/<id>.png`；两者都去尾斜杠。
+- `GET /share/:id`：200 HTML（`Cache-Control: public, max-age=300`、`X-Robots-Tag: noindex, nofollow`），含完整 OG/Twitter 元数据：`og:type=article`、标题/描述、`og:url`（规范分享地址）、`og:image`/`og:image:secure_url`/`og:image:type=image/png`、真实宽高（从 PNG IHDR 读取）、`twitter:card=summary_large_image`、`twitter:title/description/image/alt`；配置 CDN 后元数据只出现规范主机，不出现请求 Host。
+- `GET /share/:id.png`：200 原始上传 PNG 字节（`Content-Type: image/png`、`Cache-Control: public, immutable, max-age=31536000`、`Content-Disposition: inline`、`X-Content-Type-Options: nosniff`、`Content-Length`）；即使配置了 CDN，本机路由仍可回退服务。
+- 非法 uuid 或未知 id 的页面与图片都是 404 纯文本 `Not found`。
+- 明确排除：上传中断时释放上游存储连接（真实对象存储 socket 生命周期）这一条，依赖未移植的对象存储传输层。

@@ -199,7 +199,7 @@ servers.joinCommunity.api	route	locked	bde33f8	locked: community/community-cn jo
 servers.mentionRedriveAuthz.api	route	locked	6ea6dda	NOT_ACCESSIBLE/NOT_JOINABLE auth and version body
 servers.scopeAttestation.api	route	locked	b00f30b	HS256 claims and member/owner capability scopes
 servers.transcriptFeedback.api	route	locked	b00f30b	202/400/403/404 transcript feedback gates
-shareArtifacts.api	route	partial	-	auto-seed
+shareArtifacts.api	route	partial	-	share artifact group covered (user+server-scoped creation with guest refusal before upload validation, image-required/10MB/PNG/channelId/channel-access validation with typed 400/413/415/403, canonical SHARE_BASE_URL page URL and CDN_BASE_URL storage-key image URL with server-local fallback, full OG/Twitter page metadata with real IHDR dimensions and 300s page cache, immutable no-store-free PNG served with nosniff and inline disposition, plain-text 404 for malformed/unknown ids); excluded: aborting the upstream object-storage socket mid-stream (needs the unported storage transport)
 sidebarOrder.roundTrips.api	route	partial	-	auto-seed
 slackBridge.api	route	partial	-	auto-seed
 slackBridgedAgentMention	route	partial	-	auto-seed

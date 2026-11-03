@@ -32,6 +32,12 @@ public struct FallbackServices: Sendable {
     public var publicTranslationBudget: PublicAttachmentBudget
     public var emailAccounts: EmailLoginDirectory
     public var realtime: RealtimeHub?
+    /// Public share artifacts address themselves through one canonical page host
+    /// and (optionally) a CDN host. Tests inject them; the process derives them
+    /// from the deployment environment.
+    public var serverBaseURL: String?
+    public var shareBaseURL: String?
+    public var cdnBaseURL: String?
 
     public init(
         nodeEnv: String,
@@ -52,7 +58,10 @@ public struct FallbackServices: Sendable {
         publicAttachmentBudget: PublicAttachmentBudget = PublicAttachmentBudget(),
         publicTranslationBudget: PublicAttachmentBudget = PublicAttachmentBudget(),
         emailAccounts: EmailLoginDirectory = EmailLoginDirectory(),
-        realtime: RealtimeHub? = nil
+        realtime: RealtimeHub? = nil,
+        serverBaseURL: String? = nil,
+        shareBaseURL: String? = nil,
+        cdnBaseURL: String? = nil
     ) {
         self.nodeEnv = nodeEnv
         self.tracker = tracker
@@ -73,7 +82,38 @@ public struct FallbackServices: Sendable {
         self.publicTranslationBudget = publicTranslationBudget
         self.emailAccounts = emailAccounts
         self.realtime = realtime
+        self.serverBaseURL = serverBaseURL
+        self.shareBaseURL = shareBaseURL
+        self.cdnBaseURL = cdnBaseURL
     }
+}
+
+/// Canonical public bases for share artifacts. One page host (`SHARE_BASE_URL`,
+/// falling back to `<server>/share`) and one optional image host
+/// (`CDN_BASE_URL`, which addresses the stored object key directly).
+private func shareArtifactBases(_ services: FallbackServices, _ request: Request) -> (server: String, share: String, cdn: String?) {
+    func stripTrailingSlash(_ value: String) -> String {
+        value.hasSuffix("/") ? String(value.dropLast()) : value
+    }
+    func configured(_ key: String) -> String? {
+        let raw = services.releaseEnvironment[key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return raw.isEmpty ? nil : raw
+    }
+    if let injectedServer = services.serverBaseURL {
+        let server = stripTrailingSlash(injectedServer)
+        return (
+            server,
+            stripTrailingSlash(services.shareBaseURL ?? configured("SHARE_BASE_URL") ?? "\(server)/share"),
+            (services.cdnBaseURL ?? configured("CDN_BASE_URL")).map(stripTrailingSlash)
+        )
+    }
+    let host = request.headers[HTTPField.Name("Host")!] ?? "localhost"
+    let server = stripTrailingSlash(configured("SERVER_URL") ?? "http://\(host)")
+    return (
+        server,
+        stripTrailingSlash(services.shareBaseURL ?? configured("SHARE_BASE_URL") ?? "\(server)/share"),
+        (services.cdnBaseURL ?? configured("CDN_BASE_URL")).map(stripTrailingSlash)
+    )
 }
 
 private struct AttachmentUploadForm: Content {
@@ -82,7 +122,16 @@ private struct AttachmentUploadForm: Content {
     var file: File?
 }
 
-private func parseAttachmentMultipart(data: Data, boundary: String) -> (channelId: String, files: [(filename: String, mimeType: String?, sizeBytes: Int, data: Data)])? {
+private struct MultipartPart {
+    var name: String?
+    var filename: String?
+    var mimeType: String?
+    var data: Data
+}
+
+/// Splits a multipart body into named parts. Attachment uploads and share
+/// artifacts differ only in which parts they require, so they share this parser.
+private func multipartParts(data: Data, boundary: String) -> [MultipartPart] {
     let separator = Data("\r\n--\(boundary)".utf8)
     var chunks: [Data] = []
     var splitCursor = data.startIndex
@@ -96,8 +145,7 @@ private func parseAttachmentMultipart(data: Data, boundary: String) -> (channelI
         first = first.dropFirst(firstPrefix.count)
         chunks[0] = first
     }
-    var channelId: String?
-    var files: [(filename: String, mimeType: String?, sizeBytes: Int, data: Data)] = []
+    var parts: [MultipartPart] = []
     for chunk in chunks {
         var part = chunk
         if part.starts(with: Data("\r\n".utf8)) { part = part.dropFirst(2) }
@@ -124,14 +172,39 @@ private func parseAttachmentMultipart(data: Data, boundary: String) -> (channelI
                 mimeType = line.components(separatedBy: ":").dropFirst().joined(separator: ":").trimmingCharacters(in: .whitespaces)
             }
         }
-        if name == "channelId" {
-            channelId = String(decoding: body, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        } else if let filename, !filename.isEmpty {
-            files.append((filename: filename, mimeType: mimeType, sizeBytes: body.count, data: Data(body)))
+        parts.append(MultipartPart(name: name, filename: filename, mimeType: mimeType, data: Data(body)))
+    }
+    return parts
+}
+
+private func parseAttachmentMultipart(data: Data, boundary: String) -> (channelId: String, files: [(filename: String, mimeType: String?, sizeBytes: Int, data: Data)])? {
+    var channelId: String?
+    var files: [(filename: String, mimeType: String?, sizeBytes: Int, data: Data)] = []
+    for part in multipartParts(data: data, boundary: boundary) {
+        if part.name == "channelId" {
+            channelId = String(decoding: part.data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        } else if let filename = part.filename, !filename.isEmpty {
+            files.append((filename: filename, mimeType: part.mimeType, sizeBytes: part.data.count, data: part.data))
         }
     }
     guard let channelId, !channelId.isEmpty else { return nil }
     return (channelId, files)
+}
+
+/// Share creation needs the image even when `channelId` is missing, so the two
+/// required fields are reported separately.
+private func parseShareArtifactMultipart(data: Data, boundary: String) -> (channelId: String?, image: (bytes: Data, sizeBytes: Int)?) {
+    var channelId: String?
+    var image: (bytes: Data, sizeBytes: Int)?
+    for part in multipartParts(data: data, boundary: boundary) {
+        if part.name == "channelId" {
+            let value = String(decoding: part.data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            channelId = value.isEmpty ? nil : value
+        } else if part.name == "image" {
+            image = (bytes: part.data, sizeBytes: part.data.count)
+        }
+    }
+    return (channelId, image)
 }
 
 public func configure(_ app: Application, services: FallbackServices) {
@@ -1391,32 +1464,48 @@ public func configure(_ app: Application, services: FallbackServices) {
         }
         return routeResponse(reply)
     }
-    app.post("api", "share-artifacts", "message-selection") { request -> Response in
-        let baseURL = ProcessInfo.processInfo.environment["SHARE_BASE_URL"]
-            ?? "http://\(request.headers[HTTPField.Name("Host")!] ?? "localhost")"
+    app.post("api", "share-artifacts", "message-selection") { request async throws -> Response in
+        let bases = shareArtifactBases(services, request)
+        var parsed: (channelId: String?, image: (bytes: Data, sizeBytes: Int)?) = (nil, nil)
+        if let contentType = request.headers[.contentType],
+           let boundary = contentType.components(separatedBy: "boundary=").dropFirst().first?
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"")),
+           !boundary.isEmpty,
+           let buffer = try await request.body.collect(max: .specified(ByteCount(value: 11 * 1024 * 1024))) {
+            parsed = parseShareArtifactMultipart(data: buffer, boundary: boundary)
+        }
         return routeResponse(services.emailAccounts.createShareArtifact(
             authorization: request.headers[.authorization],
             serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-            body: request.body.string ?? "",
-            baseURL: baseURL
+            channelId: parsed.channelId,
+            image: parsed.image,
+            serverBase: bases.server,
+            shareBase: bases.share,
+            cdnBase: bases.cdn
         ))
     }
     app.get("share", ":file") { request -> Response in
-        let baseURL = ProcessInfo.processInfo.environment["SHARE_BASE_URL"]
-            ?? "http://\(request.headers[HTTPField.Name("Host")!] ?? "localhost")"
+        let bases = shareArtifactBases(services, request)
         let file = request.parameters.get("file") ?? ""
         if file.hasSuffix(".png") {
-            let id = String(file.dropLast(4))
-            if services.emailAccounts.shareArtifactExists(id: id) {
+            if let image = services.emailAccounts.shareArtifactImage(id: String(file.dropLast(4))) {
                 var headers = HTTPFields()
                 headers[.contentType] = "image/png"
                 headers[.cacheControl] = "public, immutable, max-age=31536000"
-                return Response(status: .ok, headers: headers, body: .init(data: EmailLoginDirectory.sharePNGData))
+                headers[HTTPField.Name("Content-Disposition")!] = "inline"
+                headers[HTTPField.Name("X-Content-Type-Options")!] = "nosniff"
+                headers[.contentLength] = String(image.bytes.count)
+                return Response(status: .ok, headers: headers, body: .init(data: image.bytes))
             }
-        } else if let reply = services.emailAccounts.shareArtifactPage(id: file, baseURL: baseURL) {
+        } else if let reply = services.emailAccounts.shareArtifactPage(
+            id: file,
+            serverBase: bases.server,
+            shareBase: bases.share,
+            cdnBase: bases.cdn
+        ) {
             return routeResponse(reply)
         }
-        return Response(status: .notFound, body: .init(string: "{\"error\":\"Not found\"}"))
+        return Response(status: .notFound, body: .init(string: "Not found"))
     }
     app.post("api", "servers", "join-community") { request -> Response in
         guard let directory = services.publicVisits else {

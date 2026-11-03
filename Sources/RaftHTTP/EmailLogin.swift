@@ -339,7 +339,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public var providerConnectionsEnabledServers: Set<String> = []
     private var providerConnections: [ProviderConnection] = []
     private var providerAssignments: [ProviderAssignment] = []
-    private var shareArtifacts: Set<String> = []
+    /// Share artifacts store the uploaded PNG bytes and the intrinsic size read
+    /// from the IHDR chunk, because the public page advertises the real image
+    /// dimensions and the PNG route serves the same bytes the user selected.
+    private struct ShareArtifactRecord {
+        var bytes: Data
+        var width: Int
+        var height: Int
+        var serverId: String
+        var createdAt: Date
+    }
+
+    private var shareArtifacts: [String: ShareArtifactRecord] = [:]
     private var timezoneObservations: [String: TimezoneObservation] = [:]
     private var serverLabsState: [String: ServerLabsState] = [:]
     private var serverInvites: [(id: String, serverId: String, email: String, role: String, tokenHash: String?)] = []
@@ -16166,7 +16177,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(202, "{\"accepted\":true,\"feedbackReportId\":\(jsonString(reportId)),\"agentId\":\(jsonString(agentId))}")
     }
 
-    public func createShareArtifact(authorization: String?, serverId: String, body: String, baseURL: String) -> HTTPReply {
+    /// `POST /api/share-artifacts/message-selection`. A PNG screenshot becomes a
+    /// public share page plus the image behind it. The image bytes are served
+    /// back exactly as uploaded, so the OG card advertises the real dimensions.
+    public func createShareArtifact(
+        authorization: String?,
+        serverId: String,
+        channelId: String?,
+        image: (bytes: Data, sizeBytes: Int)?,
+        serverBase: String,
+        shareBase: String,
+        cdnBase: String?
+    ) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
@@ -16176,53 +16198,125 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard role != "guest" else {
             return Self.json(403, "{\"error\":\"Guests cannot create share artifacts\"}")
         }
-        guard let channelId = Self.multipartField(body, name: "channelId"),
-              let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId
-        else {
-            return Self.json(403, "{\"error\":\"Channel is outside the active server\"}")
+        let maxBytes = 10 * 1024 * 1024
+        guard let image, image.sizeBytes > 0, !image.bytes.isEmpty else {
+            return Self.json(400, "{\"error\":\"image is required\"}")
+        }
+        guard image.sizeBytes <= maxBytes else {
+            return Self.json(413, "{\"error\":\"Max 10MB per image\",\"errorCode\":\"SHARE_ARTIFACT_TOO_LARGE\",\"maxBytes\":\(maxBytes)}")
+        }
+        guard Self.isPNGBytes(image.bytes) else {
+            return Self.json(415, "{\"error\":\"Share artifact must be a PNG image\"}")
+        }
+        guard let channelId else {
+            return Self.json(400, "{\"error\":\"channelId is required\"}")
+        }
+        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
+        case .missing:
+            return Self.json(403, "{\"error\":\"You do not have access to this channel\"}")
+        case .readOnly, .write:
+            break
         }
         let id = UUID().uuidString.lowercased()
+        let size = Self.pngDimensions(image.bytes)
         lock.lock()
-        shareArtifacts.insert(id)
+        shareArtifacts[id] = ShareArtifactRecord(
+            bytes: image.bytes,
+            width: size.width,
+            height: size.height,
+            serverId: serverId,
+            createdAt: Date()
+        )
         lock.unlock()
-        let root = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
-        return Self.json(200, "{\"id\":\(jsonString(id)),\"url\":\(jsonString(root + "/share/" + id)),\"imageUrl\":\(jsonString(root + "/share/" + id + ".png"))}")
+        return Self.json(200, "{\"id\":\(jsonString(id)),\"url\":\(jsonString(Self.shareURL(id: id, shareBase: shareBase))),\"imageUrl\":\(jsonString(Self.shareImageURL(id: id, serverId: serverId, serverBase: serverBase, cdnBase: cdnBase)))}")
     }
 
-    private static func multipartField(_ body: String, name: String) -> String? {
-        guard let range = body.range(of: "name=\"\(name)\"") else { return nil }
-        let rest = body[range.upperBound...]
-        guard let separator = rest.range(of: "\r\n\r\n") else { return nil }
-        let value = rest[separator.upperBound...]
-        guard let end = value.range(of: "\r\n") else { return nil }
-        return String(value[..<end.lowerBound])
+    static func isPNGBytes(_ data: Data) -> Bool {
+        data.count >= 8 && data.prefix(8).elementsEqual([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
     }
 
-    public func shareArtifactPage(id: String, baseURL: String) -> HTTPReply? {
+    /// Width and height from the PNG IHDR chunk, falling back to 1x1.
+    static func pngDimensions(_ data: Data) -> (width: Int, height: Int) {
+        guard data.count >= 24 else { return (1, 1) }
+        let bytes = [UInt8](data[16..<24])
+        let width = bytes[0..<4].reduce(0) { $0 << 8 | Int($1) }
+        let height = bytes[4..<8].reduce(0) { $0 << 8 | Int($1) }
+        return (width > 0 ? width : 1, height > 0 ? height : 1)
+    }
+
+    static func shareURL(id: String, shareBase: String) -> String {
+        let base = shareBase.hasSuffix("/") ? String(shareBase.dropLast()) : shareBase
+        return base + "/" + id
+    }
+
+    static func shareImageURL(id: String, serverId: String, serverBase: String, cdnBase: String?) -> String {
+        if let cdnBase {
+            let base = cdnBase.hasSuffix("/") ? String(cdnBase.dropLast()) : cdnBase
+            return "\(base)/\(serverId)/share-artifacts/\(id).png"
+        }
+        let base = serverBase.hasSuffix("/") ? String(serverBase.dropLast()) : serverBase
+        return base + "/share/" + id + ".png"
+    }
+
+    /// `GET /share/:id`. The public page carries the canonical OG metadata for
+    /// the configured share host and image host.
+    public func shareArtifactPage(id: String, serverBase: String, shareBase: String, cdnBase: String?) -> HTTPReply? {
         guard id.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
             return nil
         }
         lock.lock()
-        let exists = shareArtifacts.contains(id.lowercased())
+        let artifact = shareArtifacts[id.lowercased()]
         lock.unlock()
-        guard exists else { return nil }
-        let root = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
-        let imageURL = root + "/share/" + id + ".png"
+        guard let artifact else { return nil }
+        let shareURL = Self.shareURL(id: id, shareBase: shareBase)
+        let imageURL = Self.shareImageURL(id: id, serverId: artifact.serverId, serverBase: serverBase, cdnBase: cdnBase)
+        let title = "Slock conversation screenshot"
+        let description = "A conversation screenshot shared from Slock."
         let html = """
-        <!DOCTYPE html><html><head><meta charset="utf-8">
-        <meta name="robots" content="noindex, nofollow">
-        <meta name="twitter:card" content="summary_large_image">
-        <meta name="twitter:image" content="\(imageURL)">
-        <meta property="og:image:width" content="1">
-        <meta property="og:image:height" content="1">
-        <meta name="twitter:image:alt" content="Slock conversation screenshot">
-        <style>.share-card { width: min(100%, 960px); margin-inline: auto; }</style></head>
-        <body><div class="share-card"><img src="\(imageURL)" alt="Slock conversation screenshot"></div></body></html>
+        <!doctype html>
+        <html lang="en">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>\(Self.escapeHTML(title))</title>
+          <meta name="robots" content="noindex, nofollow">
+          <meta property="og:type" content="article">
+          <meta property="og:title" content="\(Self.escapeHTML(title))">
+          <meta property="og:description" content="\(Self.escapeHTML(description))">
+          <meta property="og:url" content="\(Self.escapeHTML(shareURL))">
+          <meta property="og:image" content="\(Self.escapeHTML(imageURL))">
+          <meta property="og:image:secure_url" content="\(Self.escapeHTML(imageURL))">
+          <meta property="og:image:type" content="image/png">
+          <meta property="og:image:width" content="\(artifact.width)">
+          <meta property="og:image:height" content="\(artifact.height)">
+          <meta name="twitter:card" content="summary_large_image">
+          <meta name="twitter:title" content="\(Self.escapeHTML(title))">
+          <meta name="twitter:description" content="\(Self.escapeHTML(description))">
+          <meta name="twitter:image" content="\(Self.escapeHTML(imageURL))">
+          <meta name="twitter:image:alt" content="\(Self.escapeHTML(title))">
+          <style>
+            body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: #fffdf4; color: #111; }
+            main { min-height: 100vh; display: grid; place-items: center; padding: 24px; box-sizing: border-box; }
+            .share-card { width: min(100%, 960px); margin-inline: auto; }
+            img { display: block; width: 100%; height: auto; border: 2px solid #111; box-shadow: 4px 4px 0 #111; background: #fff; box-sizing: border-box; }
+            p { font-size: 13px; color: rgba(0,0,0,.6); margin-top: 16px; }
+          </style>
+        </head>
+        <body>
+          <main>
+            <div class="share-card">
+              <img src="\(Self.escapeHTML(imageURL))" alt="\(Self.escapeHTML(title))">
+              <p>Shared from Slock.</p>
+            </div>
+          </main>
+        </body>
+        </html>
         """
         return HTTPReply(
             status: 200,
             headers: [
                 "Content-Type": "text/html; charset=utf-8",
+                "Cache-Control": "public, max-age=300",
                 "X-Robots-Tag": "noindex, nofollow",
                 "Content-Length": String(Data(html.utf8).count),
             ],
@@ -16230,13 +16324,26 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         )
     }
 
-    public func shareArtifactExists(id: String) -> Bool {
+    /// `GET /share/:id.png`. Serves the uploaded bytes with the non-expiring
+    /// immutable cache the public card depends on.
+    public func shareArtifactImage(id: String) -> (bytes: Data, width: Int, height: Int)? {
         guard id.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
-            return false
+            return nil
         }
         lock.lock()
-        defer { lock.unlock() }
-        return shareArtifacts.contains(id.lowercased())
+        let artifact = shareArtifacts[id.lowercased()]
+        lock.unlock()
+        guard let artifact else { return nil }
+        return (artifact.bytes, artifact.width, artifact.height)
+    }
+
+    private static func escapeHTML(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&#39;")
     }
 
     public static let sharePNGData = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=") ?? Data()
