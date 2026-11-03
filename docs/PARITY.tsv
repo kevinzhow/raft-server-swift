@@ -353,8 +353,8 @@ proxyFailureTrace	daemon	locked	2ff64f5	content-free typed projection and canned
 raftDiskJanitor	daemon	pending	-	auto-seed
 raftHome	daemon	pending	-	auto-seed
 recentDeliveryIds	daemon	locked	c59d3df	ported bounded set: age expiry (maxAge boundary), max-entries eviction of the oldest, and re-remembering moves an id to the newest end; all three upstream cases asserted
-registry.manifest.appTrace	daemon	pending	-	auto-seed
-registryManifestApps	daemon	pending	-	auto-seed
+registry.manifest.appTrace	daemon	locked	a746626	non-executable black-box: boots the daemon app registry (inbox/reminder/cleaner) against a temp data dir and noopTracer to pin per-app trace keys; this port has no daemon app registry or trace sink
+registryManifestApps	daemon	locked	a746626	non-executable black-box: a TypeScript source scan of registry.manifest.ts asserting the daemon app registry is exactly system.reminder and system.cleaner; this port has no TS manifest to scan
 releaseRuntimeSdkPreflight	daemon	pending	-	auto-seed
 reminderRetryRoutes.sourceContract	daemon	pending	-	auto-seed
 runnerApp.e2e	daemon	pending	-	auto-seed
@@ -392,12 +392,12 @@ testing/drydock	daemon	pending	-	auto-seed
 testing/networkGuard	daemon	pending	-	auto-seed
 toolCallOutcome	daemon	locked	3fd1584	tool outcome bookkeeping: daemon-measured start/end duration by call id, finished calls forgotten, runtime-supplied duration winning over the measurement (negative dropped), an end with nothing reported yielding no outcome while an unknown id still reports its fields, and the 256-entry open-call bound dropping the oldest first
 traceBundleUpload	daemon	pending	-	auto-seed
-traceBundleUploadAttrDropWindow	daemon	pending	-	auto-seed
+traceBundleUploadAttrDropWindow	daemon	locked	a746626	non-executable black-box: drives LocalRotatingTraceSink and the daemon trace bundle uploader over temp directories and mtimes; this port has no trace sink or uploader (the contract excludes trace sinks)
 traceBundleUploadFairness	daemon	pending	-	auto-seed
 traceBundleUploadPassSpan	daemon	pending	-	auto-seed
 traceBundleUploadPrunedWithoutReceipt	daemon	pending	-	auto-seed
 traceBundleUploadReceiptIdentity	daemon	pending	-	auto-seed
-traceBundleUploadWriteFailure	daemon	pending	-	auto-seed
+traceBundleUploadWriteFailure	daemon	locked	a746626	non-executable black-box: a daemon trace bundle uploader write-failure scenario over temp directories; this port has no trace uploader
 traceBundleUploaderState	daemon	pending	-	auto-seed
 traceContractKeyDestinations	daemon	pending	-	auto-seed
 turnSummaryTracker	daemon	locked	a3def34	turn summary group: begin folds the previous unfinished turn with its previousOutcome, observe folds tool_start/tool_end with shell/command classification and callId pairing (unmatched ends consume queued kinds), send outcomes count sent/held, finish emits the v1 summary once (ordered actions, toolCalls, capped problems with full problemCount, messagesSent, lastReplyMessageId), turnOutcomeForActivity ends only on idle/stop/crash frames, and turnTriggerFromMessages formats channel/thread/DM targets with channelId/sender/messageId
