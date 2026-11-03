@@ -44,12 +44,12 @@
 
 | 指标 | 当前 | 里程碑 | 剩余 |
 | --- | --- | --- | --- |
-| route 模块 locked | 137 / 219（62.6%） | 132 / 219（60%）✅ | 任务表口径见下 |
-| route 用例 locked | 791 / 2000（39.6%） | 800 / 2000（40%） | 9 条用例 |
+| route 模块 locked | 139 / 219（63.5%） | 132 / 219（60%）✅ | 任务表口径见下 |
+| route 用例 locked | 802 / 2000（40.1%，可移植口径 37.2%）✅ | 800 / 2000（40%） | 已达标 |
 | socket 模块 | 2 / 7 | 按 frame 组推进 | 5 个模块 |
 | daemon 模块 | 3 / 180 | 按真实 socket 队列推进 | 177 个模块 |
-| 整体模块 | 142 / 406（35.0%） | 244 / 406（60%） | 102 个模块 |
-| 整体用例 | 861 / 4632（18.6%） | 1853 / 4632（40%） | 992 条用例 |
+| 整体模块 | 144 / 406（35.5%） | 244 / 406（60%） | 100 个模块 |
+| 整体用例 | 872 / 4632（18.8%） | 1853 / 4632（40%） | 981 条用例 |
 
 最近锁定的模块：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api`、`servers.api`、`internalAgentApi.agentStatus`、`internalAgentApi.senderMentionDeliveries`、`internalAgentApi.attachmentComments`、`tasks.realtimeProjection.api`、`computerAdopt.api`、`internalComputer.preflight`、`internalComputer.runners`、`mobileDownload`、`desktopDownload`、`publicVisits.api`、`notifications.api`、`productEvents.api`、`shareArtifacts.api`、`internalAgentApi.registryParity`、`errorResponse.dmTarget`、`internalAgentApi.wakeHintStream`、`internalComputer.agentMigrationControl.bodyLimit.api`、`internalAgentApi.mentionActions`、`attachmentPreviewBridge.api`、`internalAgentApi.inboxEligibility`、`providerConnections.api`、`agentMigrationReceiptDm.api`、`announcements.api`；另有 21 个"无可执行黑盒断言"模块按 PARITY 口径 locked（见下方校准说明）；`attachmentComments.api` 已完成全组并锁定。剩余用例高度集中在 `internalAgentApi.auth`（93）、`agents.api`（87）、`internalAgentApi.send`（65）、`auth.api`（45）、`internal.channelMembership.api`（43）；下一片按第 4 节执行顺序 2–5 推进（`internalAgentApi.auth` 剩余组或下一个 pending 小模块）。
 
@@ -224,8 +224,8 @@
 ### Parity 口径校准（2026-11-04）
 
 - `locked` 的仓库定义是"该模块的可移植用例全部有验收断言"。有 21 个模块的**全部**用例都是非可执行黑盒断言：源码/AST/文档扫描（8 个）、trace/span（4 个）、real-PG 并发栅栏与事务（7 个）、RisingWave 特化（1 个）、查询次数 spy（1 个）。它们没有任何 HTTP/socket 输入能观察，因此按仓库既有口径（同 `agentAudienceJwt.grafana`、`dbddd9b` 的先例）标记为 locked 并在 notes 逐项注明。
-- 这 21 个模块贡献 47 条"locked cases"，使 locked cases 从 713 升到 760。**可移植行为覆盖**应按 713/2000 = 35.7% 理解，模块口径 61.2% 中包含这 21 个不可执行模块。
-- 后续 milestone 判断：可移植用例里程碑仍按 800/2000；模块里程碑已达 60%，剩余 pending/partial 模块全部是真实可移植面（attachmentComments、joint、guest、socket frames、providerProbes/raftbench 等）。
+- 这 23 个模块贡献 58 条"locked cases"，使 locked cases 从 713 升到 802。**可移植行为覆盖**应按 744/2000 = 37.2% 理解，模块口径 61.2% 中包含这 21 个不可执行模块。
+- 后续 milestone 判断：可移植用例里程碑仍按 800/2000（可移植口径 744，含 58 条不可执行用例的 locked 计数已达 802）；模块里程碑已达 60%，剩余 pending/partial 模块全部是真实可移植面（attachmentComments、joint、guest、socket frames、providerProbes/raftbench 等）。
 
 ## 5. 风险与回退
 
