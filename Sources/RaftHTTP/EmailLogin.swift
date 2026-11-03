@@ -10156,6 +10156,50 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// `GET /api/agent-runtime-providers/:kind`. Owners and admins can ask
     /// whether a hosted provider is usable for this server; the answer never
     /// exposes the deployment token or the provider base URL.
+    private struct AttachedComputer {
+        let id: String
+        let serverId: String
+        let userId: String
+        let name: String
+        let apiKey: String
+    }
+
+    private var attachedComputers: [String: AttachedComputer] = [:]
+    private var computerAttachEnabledOverride: Bool?
+
+    public func setComputerAttachEnabledForTesting(_ enabled: Bool?) {
+        lock.lock()
+        computerAttachEnabledOverride = enabled
+        lock.unlock()
+    }
+
+    private func computerAttachEnabled() -> Bool {
+        lock.lock()
+        let override = computerAttachEnabledOverride
+        lock.unlock()
+        if let override { return override }
+        let raw = (ProcessInfo.processInfo.environment["SLOCK_DEVICE_LOGIN_ENABLED"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return raw != "false"
+    }
+
+    /// `POST /internal/computer/preflight`. Read-only principal check for an
+    /// attached Computer credential.
+    public func computerPreflight(authorization: String?) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let computer = computers.first { $0.apiKey == token && $0.revokedAt == nil }
+        lock.unlock()
+        guard let computer, let details = oauth.serverDetailsValue(id: computer.serverId) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
+        }
+        return Self.json(200, "{\"ok\":true,\"serverId\":\(jsonString(computer.serverId)),\"serverSlug\":\(jsonString(details.slug)),\"principal\":{\"kind\":\"computer\",\"id\":\(jsonString(computer.id)),\"name\":\(jsonString(computer.name))}}")
+    }
+
     public func agentRuntimeProviderProbe(authorization: String?, serverId: String, kind: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -15044,28 +15088,50 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"apiKey\":\(jsonString(key))}")
     }
 
-    public func attachComputer(authorization: String?, serverId: String, body: String) -> HTTPReply {
+    /// `POST /api/computer/attach`. Mints a `sk_computer_*` principal for a
+    /// server Computer. The gate is default-on; the slug resolves the Server in
+    /// the body, and only owner/admin hold the manageMachines capability.
+    public func attachComputer(authorization: String?, body: String) -> HTTPReply {
+        guard computerAttachEnabled() else {
+            return Self.json(404, "{\"error\":\"Not found\",\"code\":\"not_found\"}")
+        }
         guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+            return Self.json(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
         }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+        guard let serverSlug = object["serverSlug"] as? String, !serverSlug.isEmpty else {
+            return Self.json(400, "{\"error\":\"serverSlug is required\",\"code\":\"server_slug_required\"}")
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let name = object["name"] as? String,
-              !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let slug = object["serverSlug"] as? String,
-              oauth.serverDetailsValue(id: serverId)?.slug == slug
+        guard let serverId = oauth.serverIdForSlug(serverSlug),
+              let details = oauth.serverDetailsValue(id: serverId),
+              let role = oauth.memberRole(serverId: serverId, userId: userId)
         else {
-            return Self.json(400, "{\"error\":\"Invalid computer attach request\"}")
+            return Self.json(403, "{\"error\":\"Not authorized\",\"code\":\"not_authorized\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"This action requires an admin or the owner\",\"code\":\"requires_admin\"}")
+        }
+        let requestedName = (object["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let name = requestedName.isEmpty ? "raft-computer" : requestedName
+        lock.lock()
+        let collides = computers.contains { computer in
+            computer.revokedAt == nil
+                && computer.serverId == serverId
+                && computer.name == name
+                && computerAttachers[computer.machineId ?? ""] == userId
+        }
+        lock.unlock()
+        if collides {
+            return Self.json(409, "{\"error\":\"A Computer with this name already exists\",\"code\":\"COMPUTER_NAME_COLLISION\"}")
         }
         let machineId = registerMachine(serverId: serverId, userId: userId, name: name)
         let apiKey = Self.computerAPIKeyMaterial()
         lock.lock()
-        computers.append((id: UUID().uuidString.lowercased(), serverId: serverId, name: name, apiKey: apiKey, machineId: machineId, revokedAt: nil, online: false, version: nil))
+        let computerId = UUID().uuidString.lowercased()
+        computers.append((id: computerId, serverId: serverId, name: name, apiKey: apiKey, machineId: machineId, revokedAt: nil, online: false, version: nil))
         computerAttachers[machineId] = userId
         lock.unlock()
-        return Self.json(201, "{\"apiKey\":\(jsonString(apiKey)),\"machineId\":\(jsonString(machineId))}")
+        return Self.json(201, "{\"apiKey\":\(jsonString(apiKey)),\"serverMachineId\":\(jsonString(machineId)),\"machineId\":\(jsonString(machineId)),\"serverId\":\(jsonString(serverId)),\"serverSlug\":\(jsonString(details.slug)),\"name\":\(jsonString(name)),\"resumed\":false}")
     }
 
     /// `POST /internal/computer/runners/:agentId/credentials`. A live Computer

@@ -890,3 +890,12 @@ RFC 074 personal assistant：
 - `after`/`before` 时间过滤必须是带时区偏移的 ISO-8601（`Z` 或 `+08:00`）；缺失偏移 → 400 `{"errorCode":"INVALID_DATE_FILTER"}`，错误文本包含 "missing a timezone offset"、"+08:00"、"raft CLI"；带偏移按绝对时刻比较（after 严格大于、before 严格小于）。
 - `sort=recent` 按 createdAt 倒序；`sender` 过滤在 hidden human directory 下对 member agent 隐藏 human handle。
 - 明确排除：trace span/`messages.search` query 断言、task 最新投影字段、CLI e2e。
+
+### computerAttach.api：Computer attach 组
+
+- `POST /api/computer/attach` 默认挂载；环境 `SLOCK_DEVICE_LOGIN_ENABLED=false`（或测试 seam 关闭）→ 404（等同未挂载）。未认证 → 401。
+- body 必须 `serverSlug`（`serverId` 不再接受）→ 缺失 400 `{"code":"server_slug_required"}`；slug 解析不到、或调用者非 Server 成员 → 统一 403 `{"code":"not_authorized"}`（零枚举）；已加入的普通 member → 403 `{"code":"requires_admin"}`；owner/admin → 201。
+- 201 响应 `{apiKey:"sk_computer_*", serverMachineId, machineId, serverId, serverSlug, name, resumed:false}`；同 (server,user,name) 再次 attach → 409 `{"code":"COMPUTER_NAME_COLLISION"}` 且不轮换已有凭据；不同 name 生成新的 Computer。
+- `POST /internal/computer/preflight`（`sk_computer_*` Bearer）→ 200 `{ok:true,serverId,serverSlug,principal:{kind:"computer",id,name}}`；未知/已撤销凭据 → 401。
+- UUID 形状的 `serverSlug` 只按 slug 解析，绝不当作 serverId 别名（→ 403）。
+- 明确排除：mobile-download email journey 行断言、`computers.machineId` DB 行断言、既有 machines 表联动细节（以 HTTP 行为验收）。

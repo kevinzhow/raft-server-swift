@@ -60,7 +60,7 @@ channels.membership.api	route	partial	-	auto-seed
 channels.threads.api	route	locked	11dba01	create/summary/dedup/info/follow/undo/mentions/conversion/removal/Done/unread/pagination/deleted Done covered; excluded tracer/query/RW diagnostics, concurrent open, stale socket delivery, durable Activity rows, residue-service counters
 channels.unread.rwFailures.api	route	partial	-	auto-seed
 computerAdopt.api	route	pending	-	auto-seed
-computerAttach.api	route	pending	-	auto-seed
+computerAttach.api	route	partial	-	attach surface group covered (default-on gate with kill switch 404, auth and server_slug_required, uniform not_authorized vs requires_admin role gate, sk_computer_* issuance with name collision, preflight principal projection, UUID-shaped slug treated as slug); excluded: email journey/DB row assertions, machine linkage internals
 computerLegacyMachines.api	route	pending	-	auto-seed
 computerRevocation.api	route	locked	905d885	runner mint gate, machine delete revokes key, orphan 401
 corsPreflight.api	route	locked	43565c1	two-hour preflight cache

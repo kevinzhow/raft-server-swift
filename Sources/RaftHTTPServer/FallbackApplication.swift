@@ -1490,6 +1490,11 @@ public func configure(_ app: Application, services: FallbackServices) {
             kind: request.parameters.get("kind") ?? ""
         ))
     }
+    app.post("internal", "computer", "preflight") { request -> Response in
+        routeResponse(services.emailAccounts.computerPreflight(
+            authorization: request.headers[.authorization]
+        ))
+    }
     app.post("api", "agents") { request -> Response in
         routeResponse(services.emailAccounts.createAgentRoute(
             authorization: request.headers[.authorization],
@@ -2677,7 +2682,6 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.post("api", "computer", "attach") { request -> Response in
         routeResponse(services.emailAccounts.attachComputer(
             authorization: request.headers[.authorization],
-            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
             body: request.body.string ?? ""
         ))
     }
