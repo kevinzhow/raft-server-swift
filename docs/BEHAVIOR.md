@@ -1259,3 +1259,9 @@ RFC 074 personal assistant：
 
 - `buildDaemonActivityMessage` 只允许 fact-typed detail kind 过线：未注册/非字符串 detailKind → drop `unknown_activity_detail_kind`；none/daemon_activity/external_activity/slock_action/other 等弱结论 kind → drop `non_fact_activity_detail_kind`，drop 记录 agentId/activity/detailKind/reason/isHeartbeat。
 - 成功的 `agent:activity` 帧不携带 `activity`/`activityKind` 结论字段；status entry 会剥掉自身的 activity/activityKind，只保留 kind/detail/detailKind；辅助函数覆盖 drop trace attrs、thinking/text 投影与结束 thinking 的事件集合。
+
+### errorResponse（全局 JSON 错误边界）
+
+- 未捕获的 5xx 路由失败经 `JSONErrorBoundaryMiddleware` 转为净化 JSON：状态 500，header `x-slock-error-id` 与 body `correlationId` 同值，body 恰好 `{error:"Internal server error", code:"internal_server_error", correlationId}`，绝不泄漏 SQL/内部消息。
+- 显式 typed 路由响应（如 409 `MACHINE_HAS_ASSIGNED_AGENTS`）不被改写、不带 error id header。
+- 明确排除：RisingWave 连接池饱和的 503 + Retry-After 路径（本移植无 RisingWave 依赖）。

@@ -3810,6 +3810,7 @@ public func configure(_ app: Application, services: FallbackServices) {
     }
     var middleware = Middlewares()
     internalSurface.set(InternalSurfacePolicy.snapshot(routes: app.routes.all))
+    middleware.use(JSONErrorBoundaryMiddleware())
     middleware.use(ExperimentalSurfaceGate(directory: services.emailAccounts))
     middleware.use(RequestBodyLimitMiddleware(accounts: services.emailAccounts))
     middleware.use(BufferedRequestBodyMiddleware())
