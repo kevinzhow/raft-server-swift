@@ -1135,3 +1135,9 @@ RFC 074 personal assistant：
 - `DaemonTextFormatting.formatHistoryMessageLine`：header 依序拼 `seq/msg/time`（UTC 时间戳 `yyyy-MM-dd HH:mm:ssZ`，不可解析时回显原值），可选 `type`、`threadId`、`replyCount`（>0 才出现）；sender 句柄为 `@name` 或 `@name — description`；附件后缀列出 `filename (id:att-id)` 并带 `raft attachment view --id <attachmentId> --output <path>` 提示（`mcp_tool` 风格为 `view_file`），任务后缀 `[task #N status=… assignee=type:id]`。
 - `RecentDeliveryIds`：按 age 过期（达到 maxAge 即失效）与 maxEntries 上限淘汰最旧项；重复 remember 会把 id 移到最新端。
 - `DaemonLog`：订阅者收到 `{level,line,message}`，line 形如 `yyyy-MM-dd HH:mm:ssZ [INFO] message`；unsubscribe 后不再收到。
+
+### daemon helpers: processEnvPatch / osVariant
+
+- `DaemonProcessEnv.withProcessEnvPatch(patch, removeFirst:)`：在真实进程环境上叠加 agent env，覆盖/删除的键在结束后恢复（原本不存在则删除），叠加期间 `ambient()` 返回未叠加的副本；多次叠加串行执行，跨 await 保持。
+- `DaemonOsVariant`：`microsoft-standard`/`wsl2` → wsl2，仅 `microsoft`（如 `4.4.0-19041-Microsoft`）→ wsl1，其余 Linux 内核为 nil；非 linux 平台或内核读取失败返回 nil。
+- 明确排除：processEnvPatch 的 3 条 TS 源码守卫用例（扫描 `node:child_process` 调用点必须显式传 env、drivers 必须使用 `ambientProcessEnv()`）——纯源码扫描，本移植没有对应 TS 源码可扫描；其行为已由 `ambient()` 的运行时语义覆盖。
