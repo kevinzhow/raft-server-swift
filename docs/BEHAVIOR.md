@@ -1147,3 +1147,9 @@ RFC 074 personal assistant：
 - 每个 machine key 只允许一个 daemon 运行：`machine-<sha256(apiKey) 前16>` 目录下的 `daemon.lock` + `owner.json`（`{pid, token, hostname, startedAt, serverUrl, apiKeyFingerprint, schemaVersion:2, kind, serverId?, serverMachineId?}`）。
 - 冲突时抛错并带 `pid/startedAt/host` 描述（`Another Slock daemon is already running ...`）；`owner.json` 已是 pid 0 的陈旧锁可被回收；无 owner 且目录新鲜（<30s）的不完整锁保留并冲突；ledger 里 `SLOCK_HOME`（或 `RAFT_HOME`）决定默认 `machines/` 根目录。
 - 干净释放不删除机器身份：把 `owner.json` 的 pid 改写为 0，保留 fingerprint/provenance；managed Computer runner 的 `kind/serverId/serverMachineId` 在释放后仍保留。
+
+### daemon turnSummaryTracker
+
+- `DaemonTurnSummaryTracker` 按 agent 维护 turn：`begin` 打开新 turn（若上一个未结束则以其 `previousOutcome` 收束并返回 summary）；`observe` 折叠 `tool_start`/`tool_end`（工具分类：shell 命令表 → run_checks/version_control/read_file/search/run_command，send/read 等语义映射，`mcp__`/斜杠工具 → mcp），未匹配 callId 的 end 依序消费 unmatched；`noteSendOutcome` 记录 sent（messageId/lastReply）或 held（send_held problem）；`finish` 只产出一次。
+- summary 形状与上游一致：`v:1`、startedAt/endedAt（clamp）、outcome、trigger、按首次出现排序的 actions、toolCalls、problems（上限 20，problemCount 为全量）、messagesSent、lastReplyMessageId；`turnOutcomeForActivity` 只在 online+idle / offline+runtime_crashed|runtime_unavailable / offline+其他 detail 时结束 turn。
+- `turnTriggerFromMessages`：频道路径 `#name`，thread 路径 `#parent:channelName 的 8 位后缀`，DM 路径 `dm:@sender`，并携带 channelId/sender/messageId。

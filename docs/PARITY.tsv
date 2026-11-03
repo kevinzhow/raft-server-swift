@@ -400,7 +400,7 @@ traceBundleUploadReceiptIdentity	daemon	pending	-	auto-seed
 traceBundleUploadWriteFailure	daemon	pending	-	auto-seed
 traceBundleUploaderState	daemon	pending	-	auto-seed
 traceContractKeyDestinations	daemon	pending	-	auto-seed
-turnSummaryTracker	daemon	pending	-	auto-seed
+turnSummaryTracker	daemon	locked	SLICE	turn summary group: begin folds the previous unfinished turn with its previousOutcome, observe folds tool_start/tool_end with shell/command classification and callId pairing (unmatched ends consume queued kinds), send outcomes count sent/held, finish emits the v1 summary once (ordered actions, toolCalls, capped problems with full problemCount, messagesSent, lastReplyMessageId), turnOutcomeForActivity ends only on idle/stop/crash frames, and turnTriggerFromMessages formats channel/thread/DM targets with channelId/sender/messageId
 turnTriggerTrace	daemon	pending	-	auto-seed
 wakeBriefingPanel	daemon	pending	-	auto-seed
 wakeSessionRecycle	daemon	pending	-	auto-seed
