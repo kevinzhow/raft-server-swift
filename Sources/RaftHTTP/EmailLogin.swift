@@ -25918,6 +25918,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
             return Self.json(400, "{\"error\":\"Invalid channel update\"}")
         }
+        if object["guestVisible"] != nil || object["guestJoinable"] != nil {
+            guard let role = oauth.memberRole(serverId: serverId, userId: userId), role == "owner" || role == "admin" else {
+                return Self.json(403, "{\"error\":\"Forbidden\"}")
+            }
+            lock.lock()
+            if let visible = object["guestVisible"] as? Bool { guestVisibleChannels[channelId] = visible }
+            if let joinable = object["guestJoinable"] as? Bool { guestJoinableChannels[channelId] = joinable }
+            let visibleNow = guestVisibleChannels[channelId] ?? false
+            let joinableNow = guestJoinableChannels[channelId] ?? false
+            lock.unlock()
+            return Self.json(200, "{\"ok\":true,\"id\":\(jsonString(channelId)),\"guestVisible\":\(visibleNow),\"guestJoinable\":\(joinableNow)}")
+        }
         if let rawVisibility = object["visibility"] {
             guard let visibility = rawVisibility as? String, ["private", "public"].contains(visibility) else {
                 return Self.json(400, "{\"error\":\"Invalid channel visibility\"}")

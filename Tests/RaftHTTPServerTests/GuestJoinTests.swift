@@ -45,3 +45,48 @@ import VaporTesting
         }
     }
 }
+
+
+@Test func adminsCanEnableGuestJoinThroughTheChannelApi() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111667"
+    let memberId = "11111111-1111-4111-8111-111111111668"
+    let guestId = "11111111-1111-4111-8111-111111111669"
+    let serverId = "33333333-3333-4333-8333-333333333696"
+    for (id, email) in [(ownerId, "joinapi-owner@slock.test"), (memberId, "joinapi-member@slock.test"), (guestId, "joinapi-guest@slock.test")] {
+        accounts.addAccount(id: id, email: email, password: "password123")
+        accounts.markEmailVerified(userId: id)
+    }
+    accounts.oauth.addOwnedServer(id: serverId, slug: "joinapi", name: "Join API", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: memberId, role: "member")
+    accounts.oauth.addMember(serverId: serverId, userId: guestId, role: "guest")
+    let channelId = accounts.oauth.createChannel(serverId: serverId, name: "joinapi-room", creatorUserId: ownerId)
+    accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, name: "joinapi-room")
+    accounts.oauth.addChannelHuman(channelId: channelId, userId: ownerId)
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            func patch(_ userId: String, _ body: String) async throws -> ClientResponse {
+                var headers = HTTPFields()
+                headers[.authorization] = "Bearer \(accounts.mintAccessTokenForTesting(userId: userId))"
+                headers[.contentType] = "application/json"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
+                return try await client.send(.patch, headers: headers, to: URI(string: "/api/channels/\(channelId)")) { request in
+                    request.body = .init(string: body)
+                }
+            }
+            let denied = try await patch(memberId, #"{"guestJoinable":true}"#)
+            #expect(denied.status == .forbidden, "only owners/admins may change guest settings")
+            let enabled = try await patch(ownerId, #"{"guestJoinable":true,"guestVisible":true}"#)
+            #expect(enabled.status == .ok)
+            let body = (try? JSONSerialization.jsonObject(with: Data((enabled.body.string ?? "").utf8))) as? [String: Any]
+            #expect(body?["guestJoinable"] as? Bool == true)
+            #expect(body?["guestVisible"] as? Bool == true)
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(accounts.mintAccessTokenForTesting(userId: guestId))"
+            headers[HTTPField.Name("X-Server-Id")!] = serverId
+            let joined = try await client.send(.post, headers: headers, to: URI(string: "/api/channels/\(channelId)/join"))
+            #expect(joined.status == .ok)
+        }
+    }
+}

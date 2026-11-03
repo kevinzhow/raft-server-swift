@@ -1288,3 +1288,4 @@ RFC 074 personal assistant：
 
 - 频道新增 `guestJoinable` 状态（默认 false，含 `setChannelGuestJoinableForTesting` seam）：guest 角色加入 public 频道必须先置位，否则 403；置位后 guest join 无每服务器上限（并行加入均 200）；归档频道 join 仍 409。
 - 非 guest 成员加入逻辑不变。
+- Guest 设置通过频道 API 暴露：`PATCH /api/channels/:id` 接受 `guestVisible`/`guestJoinable` 布尔（仅 owner/admin，否则 403），响应回显当前两值；启用后 guest 即可 join。
