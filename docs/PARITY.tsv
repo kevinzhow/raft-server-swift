@@ -136,7 +136,7 @@ internalAgentApi.taskWriteFreshness.api	route	partial	-	auto-seed
 internalAgentApi.threadRead	route	locked	c7e4e7a	thread entity discrimination, runnable Next action, DM consumption scope
 internalAgentApi.userChannels.realPg	route	partial	-	auto-seed
 internalAgentApi.userChannels	route	partial	-	auto-seed
-internalAgentApi.wakeHintStream	route	partial	-	SSE projection group covered (replay of pending hints with server-seq ids and content-free frames, peek not drained, Last-Event-ID numeric/latest semantics with since_invalid before the stream opens, JSON errors before any event-stream bytes for missing/bad/machine credentials, tick-driven discovery of durable pending hints, heartbeat frames, close on revoked credentials); excluded: the external-agent follow-up pull chain (outrunning inbox chain) and trace/span assertions
+internalAgentApi.wakeHintStream	route	locked	5d0d0c2	SSE projection group covered (replay of pending hints with server-seq ids and content-free frames, peek not drained, Last-Event-ID numeric/latest semantics with since_invalid before the stream opens, JSON errors before any event-stream bytes for missing/bad/machine credentials, tick-driven discovery of durable pending hints, heartbeat frames, close on revoked credentials); excluded: the external-agent follow-up pull chain (outrunning inbox chain) and trace/span assertions
 internalAgentKnowledge.api	route	partial	-	auto-seed
 internalComputer.agentMigration	route	partial	7e4363d	manifest/chunks/upload/target import/cancel-ack/quiesce/progress/transport-lost covered; idempotent flip/arrive, archive retries, wake-lock and typed lost variants pending
 internalComputer.agentMigrationControl.bodyLimit.api	route	partial	-	auto-seed
