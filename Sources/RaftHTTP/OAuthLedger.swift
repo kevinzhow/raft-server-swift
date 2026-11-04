@@ -71,6 +71,7 @@ public final class OAuthLedger: @unchecked Sendable {
     private var serverPushMutes: Set<String> = []
 
     private var clients: [Client] = []
+    private var integrationAuditEvents: [IntegrationAuditEvent] = []
     private var requests: [AccessRequest] = []
     private var tokens: [AccessToken] = []
     private var installations: [Installation] = []
@@ -1444,7 +1445,9 @@ public final class OAuthLedger: @unchecked Sendable {
         returnUrl: String? = nil,
         allowedScopes: [String]? = nil,
         agentManifestUrl: String? = nil,
-        agentManifestUrlSource: String? = nil
+        agentManifestUrlSource: String? = nil,
+        setupUrl: String? = nil,
+        setupDescription: String? = nil
     ) throws -> CreatedOAuthClient {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw OAuthClientRejection(message: "name is required") }
@@ -1455,6 +1458,8 @@ public final class OAuthLedger: @unchecked Sendable {
         if let returnUrl, !Self.isSafeReturnURL(returnUrl) {
             throw OAuthClientRejection(message: "returnUrl must be HTTPS (or loopback HTTP), without credentials or fragment")
         }
+        let normalizedSetupUrl = try AppSetupContract.normalizeSetupUrl(setupUrl)
+        let normalizedSetupDescription = try AppSetupContract.normalizeSetupDescription(setupDescription)
         var bytes = Data(count: 24)
         for index in bytes.indices { bytes[index] = UInt8.random(in: 0...255) }
         let secret = "raft_secret_" + bytes.map { String(format: "%02x", $0) }.joined()
@@ -1473,7 +1478,9 @@ public final class OAuthLedger: @unchecked Sendable {
             returnUrl: returnUrl,
             allowedScopes: allowedScopes,
             agentManifestUrl: agentManifestUrl,
-            agentManifestUrlSource: agentManifestUrlSource ?? (agentManifestUrl == nil ? nil : "explicit")
+            agentManifestUrlSource: agentManifestUrlSource ?? (agentManifestUrl == nil ? nil : "explicit"),
+            setupUrl: normalizedSetupUrl,
+            setupDescription: normalizedSetupDescription
         ))
         lock.unlock()
         return CreatedOAuthClient(id: id, clientId: normalized, clientSecret: secret)
@@ -3301,6 +3308,131 @@ public final class OAuthLedger: @unchecked Sendable {
         var agentManifestUrl: String? = nil
         var agentManifestUrlSource: String? = nil
         var whenToUse: String? = nil
+        var setupUrl: String? = nil
+        var setupDescription: String? = nil
+        var setupRevision: Int = 1
+    }
+
+    private struct IntegrationAuditEvent {
+        var eventType: String
+        var clientRecordId: String
+        var installationId: String
+        var serverId: String
+    }
+
+    public struct AppSetupConflictError: Error, Equatable {
+        public let message: String
+        public init(_ message: String) { self.message = message }
+    }
+
+    /// Update the App-owned setup declaration. A changed setup URL is a new
+    /// declaration revision and invalidates completions of earlier revisions;
+    /// a wording-only change does not require configuration again.
+    @discardableResult
+    public func updateClientSetupDeclaration(
+        clientRecordId: String, setupUrl: String?, setupDescription: String?
+    ) throws -> Bool {
+        let normalizedUrl = try AppSetupContract.normalizeSetupUrl(setupUrl)
+        let normalizedDescription = try AppSetupContract.normalizeSetupDescription(setupDescription)
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = clients.firstIndex(where: { $0.id == clientRecordId }) else { return false }
+        let urlChanged = clients[index].setupUrl != normalizedUrl
+        clients[index].setupUrl = normalizedUrl
+        clients[index].setupDescription = normalizedDescription
+        guard urlChanged else { return true }
+        clients[index].setupRevision += 1
+        for installationIndex in installations.indices where installations[installationIndex].clientId == clientRecordId {
+            installations[installationIndex].setupCompletedRevision = nil
+            installations[installationIndex].setupCompletedAt = nil
+        }
+        return true
+    }
+
+    /// The setup state of one server's active installation. Callers establish
+    /// human Server access (or App authentication) first.
+    public func getAppInstallationSetup(clientRecordId: String, serverId: String) -> AppSetupState? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let client = clients.first(where: { $0.id == clientRecordId && $0.enabled }) else { return nil }
+        guard let installation = installations.first(where: {
+            $0.clientId == clientRecordId && $0.serverId == serverId && $0.status == "active"
+        }) else { return nil }
+        return try? AppSetupContract.project(
+            setupUrl: client.setupUrl,
+            setupDescription: client.setupDescription,
+            setupRevision: client.setupRevision,
+            installationId: installation.id,
+            serverId: installation.serverId,
+            completedRevision: installation.setupCompletedRevision,
+            completedAt: installation.setupCompletedAt
+        )
+    }
+
+    /// App-authenticated, revision-bound and idempotent; never a permissions
+    /// grant. Returns nil when the client/installation is not usable.
+    public func updateAppInstallationSetup(
+        clientRecordId: String, installationId: String, revision: Int, status: String
+    ) throws -> AppSetupState? {
+        guard status == "pending" || status == "complete" else {
+            throw OAuthClientRejection(message: "status must be pending or complete")
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let clientIndex = clients.firstIndex(where: { $0.id == clientRecordId && $0.enabled }) else { return nil }
+        guard let installationIndex = installations.firstIndex(where: {
+            $0.id == installationId && $0.clientId == clientRecordId && $0.status == "active"
+        }) else { return nil }
+        let client = clients[clientIndex]
+        guard let setupUrl = client.setupUrl, !setupUrl.isEmpty, revision == client.setupRevision else {
+            throw AppSetupConflictError("Setup declaration changed; read current setup state before reporting completion")
+        }
+        let complete = status == "complete"
+        let desiredRevision: Int? = complete ? client.setupRevision : nil
+        if installations[installationIndex].setupCompletedRevision != desiredRevision {
+            installations[installationIndex].setupCompletedRevision = desiredRevision
+            installations[installationIndex].setupCompletedAt = complete ? Date() : nil
+            integrationAuditEvents.append(IntegrationAuditEvent(
+                eventType: "installation.setup_updated", clientRecordId: client.id,
+                installationId: installationId, serverId: installations[installationIndex].serverId
+            ))
+        }
+        let installation = installations[installationIndex]
+        return try? AppSetupContract.project(
+            setupUrl: client.setupUrl,
+            setupDescription: client.setupDescription,
+            setupRevision: client.setupRevision,
+            installationId: installation.id,
+            serverId: installation.serverId,
+            completedRevision: installation.setupCompletedRevision,
+            completedAt: installation.setupCompletedAt
+        )
+    }
+
+    /// Marketplace uninstall: drops the active installation; a later install
+    /// creates a new installation id and therefore a fresh setup state.
+    @discardableResult
+    public func uninstallClient(serverId: String, clientRecordId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let before = installations.count
+        installations.removeAll {
+            $0.clientId == clientRecordId && $0.serverId == serverId && $0.status == "active"
+        }
+        return installations.count != before
+    }
+
+    public func integrationAuditEventCount(eventType: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return integrationAuditEvents.filter { $0.eventType == eventType }.count
+    }
+
+    public func clientSetupDeclarationForTesting(clientRecordId: String) -> (url: String?, description: String?, revision: Int)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let client = clients.first(where: { $0.id == clientRecordId }) else { return nil }
+        return (client.setupUrl, client.setupDescription, client.setupRevision)
     }
 
     public func addClientMaintainer(clientRecordId: String, agentId: String, role: String = "owner") {
@@ -3479,6 +3611,8 @@ public final class OAuthLedger: @unchecked Sendable {
         var status: String
         /// Legacy installation-level switch, ignored by issuance.
         var agentJwtEnabled: Bool? = false
+        var setupCompletedRevision: Int? = nil
+        var setupCompletedAt: Date? = nil
     }
 
     private struct AccessRequest {

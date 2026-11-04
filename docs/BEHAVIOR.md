@@ -1572,3 +1572,11 @@ RFC 074 personal assistant：
 - 状态投影：`project` 把 `installation_id`、`server_id`、`setup_revision` 作为精确上下文附加到 URL（覆盖输入中同名参数，保留其它参数），`status = completedRevision == setupRevision ? complete : pending`；完成时间仅在 complete 时输出 ISO UTC；无 setupUrl 时 `not_required`、url/description/completedAt 均为空。
 - `installation_id` 必须是安装 UUID，否则 fail closed（防止路径/身份注入）。
 - 该契约将用于 `appSetup.api` 的 GET clients/:clientId/setup、PUT installations/:id/setup、PATCH client 声明与安装卡片绑定。
+
+### route App setup ledger 模型（appSetup.api 切片基础二）
+
+- Client 记录新增 `setupUrl/setupDescription/setupRevision`（创建时校验并归一化，默认 revision 1）；Installation 记录新增 `setupCompletedRevision/setupCompletedAt`。
+- 声明更新：setup URL 变化 → revision+1 并清空该 App 所有安装的完成状态；仅 description 措辞变化不升 revision、不要求重新配置。
+- 读取 setup：仅 enabled client + active installation；无 setupUrl → `not_required`；有则按契约附加 installation_id/server_id/setup_revision 并返回 pending/complete。
+- 上报 setup：仅 App 自身（clientRecordId）+ active installation；`revision != setupRevision` 或无 setupUrl → 409 语义冲突；complete/pending 幂等（重复上报不重复审计），审计事件 `installation.setup_updated` 可计数。
+- 卸载删除 active installation；重新安装生成新 installation id 且 setup 回到 pending。
