@@ -1378,3 +1378,8 @@ RFC 074 personal assistant：
 ### daemon passiveAxGate
 
 - RFC 072 §7 passive AX 门禁：server flag 为唯一开启条件；`RAFT_PASSIVE_AX=0/false/off/空串` 在 agent env_vars 或 daemon 进程 env 任一处置 false 即关闭（紧急停止，两侧互不覆盖）；无法解析的值视为无意见；env 不能在没有 server flag 时开启。
+
+### daemon agentStartCoordinator
+
+- agent start 的队列/查找单一边界：同一 agent 重复 enqueue 报 already queued；starting 集合与 queued 集合互斥（starting 中不能再 enqueue、queued 中不能 markStarting）；队列 age 取自不可变的 enqueuedAt（缺失为 0）。
+- 泵状态受容量门禁：active starts 达到 maxConcurrentStarts 时 blocked(capacity_full)，release 后对队首 ready；取消操作同时清 queue 与 lookup，`cancelAllQueued` 的 per-item 回调在持锁外执行且观察到清理前深度（避免 NSLock 非重入死锁）。
