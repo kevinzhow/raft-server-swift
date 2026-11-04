@@ -1290,3 +1290,8 @@ RFC 074 personal assistant：
 - 非 guest 成员加入逻辑不变。
 - Guest 设置通过频道 API 暴露：`PATCH /api/channels/:id` 接受 `guestVisible`/`guestJoinable` 布尔（仅 owner/admin，否则 403），响应回显当前两值；启用后 guest 即可 join。
 - Guest 频道列表按 `guestVisible` 过滤：`guestVisible=false` 的频道不出现在 guest 的 `/api/channels`；未显式设置的频道保持默认可见（兼容现有行为）。
+
+### Guest 动作卡只读
+
+- guest 可读取频道内的 action-card 摘要消息（carrier 历史包含代表 card 的消息）。
+- guest 对 `POST /api/actions/:messageId/execute` 与新增的 `POST /api/actions/:messageId/mark-executed` 一律 403；`mark-executed` 由人类成员调用时把 card 置为 executed 并返回 `{kind:"action-card",state:"executed"}`，guest 不改变 card 状态。

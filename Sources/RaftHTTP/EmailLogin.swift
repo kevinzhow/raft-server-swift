@@ -23230,6 +23230,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
+        if oauth.memberRole(serverId: serverId, userId: userId) == "guest" {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
         lock.lock()
         let installCard = marketplaceInstallCards[messageId]
         let registerCard = integrationRegisterCards[messageId]
@@ -23296,6 +23299,31 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
         postActionCardReply(card: card, confirmerUserId: userId, success: true, resultName: name, failureReason: nil)
         let metadata = "{\"kind\":\"action-card\",\"state\":\"executed\",\"action\":{\"type\":\"channel:create\",\"name\":\(jsonString(name))},\"result\":{\"kind\":\"channel\",\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name))}}"
+        return Self.json(200, "{\"messageId\":\(jsonString(messageId)),\"metadata\":\(metadata)}")
+    }
+
+    /// `POST /api/actions/:messageId/mark-executed`: a human records an action
+    /// card as already carried out. Guests are read-only and cannot mark it.
+    public func markActionCardExecuted(authorization: String?, serverId: String, messageId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        if oauth.memberRole(serverId: serverId, userId: userId) == "guest" {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        lock.lock()
+        guard var card = actionCardRecords[messageId] else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Action card not found\",\"code\":\"NOT_FOUND\"}")
+        }
+        card.state = "executed"
+        card.executedByUserId = userId
+        actionCardRecords[messageId] = card
+        lock.unlock()
+        let metadata = "{\"kind\":\"action-card\",\"state\":\"executed\"}"
         return Self.json(200, "{\"messageId\":\(jsonString(messageId)),\"metadata\":\(metadata)}")
     }
 

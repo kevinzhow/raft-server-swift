@@ -1263,6 +1263,14 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("api", "actions", ":messageId", "mark-executed") { request -> Response in
+        routeResponse(services.emailAccounts.markActionCardExecuted(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            messageId: request.parameters.get("messageId") ?? "",
+            body: request.body.string ?? ""
+        ))
+    }
     app.get("internal", "agent-api", "mcp", "tools") { request -> Response in
         routeResponse(services.emailAccounts.managedMCPToolSnapshot(
             authorization: request.headers[.authorization]
