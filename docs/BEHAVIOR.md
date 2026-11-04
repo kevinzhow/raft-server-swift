@@ -1440,3 +1440,8 @@ RFC 074 personal assistant：
 
 - 唤醒 turn 的触发属性（T4 端到端唤醒延迟）：只输出 kind 与毫秒数，无 id/内容。`triggerAgeMs` = turn start − 批次内最老触发的创建时间（消息用 Server 时钟，负值保留不截 0；本地 mint 的 app inbox 项同钟）；`localWaitMs` = turn start − 本机收到最老触发的时间（本地钟，免疫时钟偏移，且下限 0）。
 - 消息：空 → other；任一 mention → mention；全部 sender_type=third_party_app → app；否则 message。app inbox：取 createdAtMs 最小项（缺省视为无穷）的 appId 映射 reminder（system.reminder）/wake_hint（system.cleaner）/app；mint 即接收。
+
+### daemon runtimeModels/modelSourceCache
+
+- 每个 runtime 的模型列表 stale-while-revalidate：live 列表缓存 60s（fresh 命中不探测）；过期则立即返回旧列表并单飞后台刷新（stale）；无可用条目则前台等待（miss）；force 绕过缓存等待（forced）并重新缓存。
+- 只缓存 live；确定性非 live（未登录/无配置/无模型/未安装/不支持）删除条目；瞬时失败（retryable 且 code 缺省/detect_timeout/detect_failed，或 runtime_not_found 且 reason 非 not_installed）保留旧列表；connect 时 push 的 store() 同样预热；各 runtime 独立；确认缺失（not_installed 或无 reason）删除。
