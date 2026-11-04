@@ -1768,3 +1768,9 @@ RFC 074 personal assistant：
 - 该模块是 `routes/attachments.ts` 的导出辅助函数单元测试，无 running app、无 HTTP 请求/响应断言：缩略图/CDN URL、文件名 mojibake 归一、Free/Pro 单文件上限、content-disposition/RFC5987、inline disposition/CSP、MIME 猜测与上传类型归一、字节范围、下载 disposition、direct-upload 阈值等。
 - 按工作契约“规格 = 上游套件断言的 HTTP 状态/JSON/头/帧”，这些不是可观测 HTTP 契约；其中 EXIF/HEIC/SVG 栅格化用例还依赖 Node sharp 图像管线，本移植无该进程。附件可观测 HTTP 行为归 `attachments.api`（仍为 partial）。
 - 故以不可执行裁决锁定，不新增运行时行为。
+
+### route internal（裁决锁定）
+
+- 该模块是 `dbTest` 直连 Postgres 的服务层/纯辅助函数单元测试：`classifyHistoryAroundCursor`、`paginateHistoryProbe`、`resolveMessageSeqAnchor`、`resolveMessageIdInServer`、`getMessageContext*`、history thread metadata、`resolveReminderMsgId`/`resolveMessageInChannel` 的 seq/short-id/full-id 解析与歧义、上下文 cutoff 等；无 running app、无 HTTP 请求/响应。
+- 按契约“规格 = 上游套件断言的 HTTP/状态/JSON/头/帧”，这些 DB 行/服务函数返回不是可观测 HTTP 契约；其可观测行为由 history/message 路由模块（已锁定/仍有 partial 的部分）承担。
+- 故以不可执行裁决锁定，不新增运行时行为。
