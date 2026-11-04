@@ -242,23 +242,23 @@ agentNoProcessResidency	daemon	locked	010e9a9	no-process residency invariants (c
 agentProcessManager.appInboxTrace	daemon	locked	06b59b1	non-executable black-box: asserts trace event attributes emitted by the in-process agent process manager; this port has no agent runtime process manager and the contract excludes trace sinks
 agentProcessManager.builtin.e2e	daemon	locked	ef39171	non-executable black-box: an end-to-end run of AgentProcessManager with the built-in pi driver, a local http server and daemon fetch mocks; this port has no agent runtime process manager or built-in runtime driver
 agentProcessManager.cindy	daemon	locked	61895fe	non-executable black-box: an integration run of the in-process agent process manager with the unported cindy runtime
-agentProcessManager.claude	daemon	pending	-	auto-seed
-agentProcessManager.codex	daemon	pending	-	auto-seed
-agentProcessManager.feedbackTranscriptHonesty	daemon	pending	-	auto-seed
+agentProcessManager.claude	daemon	locked	7667457	non-executable integration black-box: drives AgentProcessManager's Claude lifecycle with fake child processes, session transcripts and wake/steering signals; this port has no agent runtime process manager or Claude driver
+agentProcessManager.codex	daemon	locked	7667457	non-executable integration black-box: drives AgentProcessManager's Codex lifecycle with fake app-server children, resume and steering states; this port has no agent runtime process manager or Codex driver
+agentProcessManager.feedbackTranscriptHonesty	daemon	locked	7667457	non-executable integration black-box: asserts AgentProcessManager's feedback transcript window honesty with fake sessions; this port has no agent runtime process manager
 agentProcessManager.grok	daemon	locked	ef39171	non-executable black-box: an integration run of AgentProcessManager with the Grok driver, fake child processes and MemoryTraceSink assertions; this port has no agent runtime process manager, Grok driver or trace sink
 agentProcessManager.residency	daemon	locked	20d55a0	non-executable black-box: drives AgentProcessManager with fake child processes, lifecycle records and inbox state to prove no-process residency invariants and blast radius; this port has no agent runtime process manager to drive
-agentProcessManager.serverWake	daemon	pending	-	auto-seed
-agentProcessManager.sessionTranscript	daemon	pending	-	auto-seed
+agentProcessManager.serverWake	daemon	locked	7667457	non-executable integration black-box: server-wake delivery through AgentProcessManager with fake children; this port has no agent runtime process manager
+agentProcessManager.sessionTranscript	daemon	locked	7667457	non-executable integration black-box: session-transcript attachment reads through AgentProcessManager with fake sessions; this port has no agent runtime process manager
 agentProcessManager.spawnFailCooldown	daemon	locked	3370ccd	non-executable black-box: drives AgentProcessManager with fake child processes, daemon fetch stubs and lifecycle records to prove an active spawn-fail cooldown always carries a restart config; this port has no agent runtime process manager to drive
 agentProcessManager.systemPrompt	daemon	locked	20d55a0	non-executable black-box: an integration run of AgentProcessManager prompt construction, restart and resume selection against the prompt fixture; this port has no agent runtime process manager
 agentProcessManager.teardown	daemon	locked	61895fe	non-executable black-box: an integration run of AgentProcessManager teardown with the unported agent runtime process manager
-agentProcessManager.wakeRecycle	daemon	pending	-	auto-seed
+agentProcessManager.wakeRecycle	daemon	locked	7667457	non-executable integration black-box: wake-recycle restarts through AgentProcessManager with fake children; the pure recycle policy is already ported separately (WakeSessionRecycle)
 agentRuntimeInput.snapshot	daemon	locked	2a7d82f	turn-input copy snapshots independent of delivery mode: empty/unread resume prompts, the inbox notice block with pending/changed-target pluralization and per-target first/latest identity, the other-unread and bounded-startup suffixes with their reading guidance, and empty suffixes for missing/empty target maps
 agentRuntimeInput	daemon	locked	b0daabb	concrete-message runtime input: header lines carry target/msg/UTC time/type/sender, continuation lines for body, sender description, attachment names and thread context are prefixed so every splitlines separator is neutralised, the direct-mention follow reactivation renders the exact repeatable unfollow command while ordinary deliveries do not, and thread-join parent/recent context lines keep their read-only shape
 agentStartCoordinator	daemon	locked	a6c569a	agent start queue/lookup boundary: duplicate enqueue and starting-vs-queued exclusivity errors, immutable enqueue-age reporting, capacity-gated pump state that reopens on slot release, and cancel operations that drain both queue and lookup while callbacks observe pre-clear state outside the lock
 agentStartPendingDeliveryBuffer	daemon	locked	1e2a45f	agent start pending delivery buffer: I1 membership against the queued/starting/terminal-recovery/cooldown snapshot (non-starting owners rejected), I2 exactly-once (rebindWake appends instead of dropping, drainOnSpawn returns once and clears, a second drain only sees new work), orphan cleanup by cancelStart/cancelAllStarts, immutable snapshot values, and suppressConsumed removing consumed messages with a count
 agentVisibleDeliveryLedger	daemon	pending	-	auto-seed
-apmStateMachine.contract	daemon	pending	-	auto-seed
+apmStateMachine.contract	daemon	locked	7667457	non-executable contract test: verifies every APM status-transition contract row maps to an implemented reducer in the APM state machine, which this port does not ship
 apps/cleaner/configReceiver	daemon	pending	-	auto-seed
 apps/cleaner/diskDelivery	daemon	locked	012be5a	non-executable black-box: an integration test of the system.cleaner app runtime composed with the daemon app registry, agent app inbox store, fake timers and a mocked statfs; this port has no daemon app registry/app inbox runtime to drive
 apps/cleaner/runtime	daemon	pending	-	auto-seed
@@ -283,7 +283,7 @@ drivers/claudeLaunch	daemon	pending	-	auto-seed
 drivers/cliTransport	daemon	pending	-	auto-seed
 drivers/codex.integration	daemon	locked	61895fe	non-executable black-box: a live integration run against the real Codex CLI, which this port does not ship or drive
 drivers/codex	daemon	pending	-	auto-seed
-drivers/codexBlankFinalAnswer.contract	daemon	pending	-	auto-seed
+drivers/codexBlankFinalAnswer.contract	daemon	locked	7667457	non-executable source contract: pins Codex driver final-answer handling by scanning/importing the unported Codex driver
 drivers/codexInstructionShape	daemon	locked	61895fe	non-executable black-box: pins the codex instruction/trace attribute contract through the shared BasicTracer/MemoryTraceSink and hashes of instruction text; this port has no agent runtime process manager or trace sink, and the contract excludes trace sinks
 drivers/copilot	daemon	pending	-	auto-seed
 drivers/cursor	daemon	pending	-	auto-seed
@@ -309,7 +309,7 @@ drivers/piCompactionFit	daemon	locked	cfd0ab1	non-executable black-box: the list
 drivers/piEventNormalizer	daemon	locked	018e670	token usage normalizer: pi-ai Usage top-level token counts plus the nested cost breakdown map through the explicit allowlist, present-0 is emitted while absent/empty/NaN/non-numeric fields are not, unknown keys and array/non-object usage are ignored, and message.usage presence gates the pi_message_end_usage per-turn telemetry event with null session normalized
 drivers/piToolExecutionObservability	daemon	pending	-	auto-seed
 drivers/piToolExecutionRuntimeSession	daemon	locked	605dd85	non-executable black-box: drives the pi SDK runtime session with a fake child process and asserts trace attribute contracts through the shared MemoryTraceSink; this port does not ship the pi SDK, the agent runtime session, or trace sinks
-drivers/probe.async	daemon	pending	-	auto-seed
+drivers/probe.async	daemon	locked	7667457	non-executable integration test: async child-process probes (spawn/kill/output caps/timing) against unported driver probe helpers
 drivers/probe	daemon	pending	-	auto-seed
 drivers/probeChild	daemon	pending	-	auto-seed
 drivers/raftCliGuideFreshness	daemon	locked	06b59b1	non-executable black-box: byte-equality between the generated manual/agent-knowledge/raft-cli-overview.md artifact and its TypeScript builder; this port has no CLI manual or generator
@@ -317,7 +317,7 @@ drivers/raftCliGuideInstalledApps	daemon	pending	-	auto-seed
 drivers/raftCliGuideOfficialAppsHint	daemon	pending	-	auto-seed
 drivers/raftCliGuideServerInfoScope	daemon	locked	06b59b1	non-executable black-box: CLI/manual text guards for `raft server info` wording across generated and hand-written docs; this port has no CLI surface
 drivers/runtimeChild	daemon	locked	acc3a0f	runtime child early-lifecycle guard: output/error/exit/close and stdin errors are recorded until a single hand-off replay, an unclaimed child is abandoned after 10s (output dropped, warning with errors list, SIGTERM then SIGKILL after 5s) with the abandoned marker replacing any partial replay, and output past the 4MiB cap abandons instead of truncating
-drivers/runtimeContract	daemon	pending	-	auto-seed
+drivers/runtimeContract	daemon	locked	7667457	non-executable source contract: scans driver modules for `standingPromptRefreshesOnResume`, stdin-steerability and per-turn properties across all runtime driver classes; this port ships no driver classes
 drivers/runtimeSession	daemon	pending	-	auto-seed
 drivers/spawnErrorListenerOrder	daemon	locked	06b59b1	non-executable black-box: Node child_process scheduling counterexamples proving a spawn error can arrive before RuntimeSession attaches its listener; Node-specific scheduling with no daemon-frame surface in this port
 drivers/systemPrompt.snapshot	daemon	locked	b5d72b6	non-executable black-box: byte-compares the generated systemPrompt snapshot file against its committed copy; this port has no generated prompt snapshot artifact or CLI manual
@@ -356,7 +356,7 @@ recentDeliveryIds	daemon	locked	c59d3df	ported bounded set: age expiry (maxAge b
 registry.manifest.appTrace	daemon	locked	a746626	non-executable black-box: boots the daemon app registry (inbox/reminder/cleaner) against a temp data dir and noopTracer to pin per-app trace keys; this port has no daemon app registry or trace sink
 registryManifestApps	daemon	locked	a746626	non-executable black-box: a TypeScript source scan of registry.manifest.ts asserting the daemon app registry is exactly system.reminder and system.cleaner; this port has no TS manifest to scan
 releaseRuntimeSdkPreflight	daemon	locked	5b98556	non-executable black-box: a source/metadata contract over the daemon package.json, the Computer package version and scripts/release-runtime-sdk-preflight.mjs; this port has no npm release lane or that script
-reminderRetryRoutes.sourceContract	daemon	pending	-	auto-seed
+reminderRetryRoutes.sourceContract	daemon	locked	7667457	non-executable source contract: scans server route sources for reminder retry wiring; the route module itself remains pending
 runnerApp.e2e	daemon	locked	031f5e5	excluded with reason: an end-to-end run of the Node runner app entrypoint (spawns the JS runner and its lifecycle); this port does not ship the Node runner app
 runtimeAccountUsage/collector	daemon	locked	52ad45b	account-usage collector over OAR: the installation probe runs once and the same object reaches the reader, unavailable/missing probes are unsupported while thrown reads are error with no windows, the Kimi pre-probe gate short-circuits only rejected/revoked and expired-transient verdicts, gate-off leaves OAR untouched, and the factory reads each provider with injected now. One upstream case (real OAR provider runtimes) is excluded as those runtimes are not ported
 runtimeAccountUsage/kimiAuth	daemon	locked	d8c8b25	Kimi Code auth resolution: default host pair keeps the client key while custom pairs get the sha256 digest suffix, storage names reject traversal-ish keys, provider-list projection honors env overrides and configured non-default storage, and resolveKimiCodeAuth projects a bounded `provider list --json` probe (nil for unparseable output or no managed kimi provider)
@@ -393,13 +393,13 @@ testing/networkGuard	daemon	locked	0d9bafc	non-executable test-harness contract:
 toolCallOutcome	daemon	locked	3fd1584	tool outcome bookkeeping: daemon-measured start/end duration by call id, finished calls forgotten, runtime-supplied duration winning over the measurement (negative dropped), an end with nothing reported yielding no outcome while an unknown id still reports its fields, and the 256-entry open-call bound dropping the oldest first
 traceBundleUpload	daemon	pending	-	auto-seed
 traceBundleUploadAttrDropWindow	daemon	locked	a746626	non-executable black-box: drives LocalRotatingTraceSink and the daemon trace bundle uploader over temp directories and mtimes; this port has no trace sink or uploader (the contract excludes trace sinks)
-traceBundleUploadFairness	daemon	pending	-	auto-seed
-traceBundleUploadPassSpan	daemon	pending	-	auto-seed
-traceBundleUploadPrunedWithoutReceipt	daemon	pending	-	auto-seed
+traceBundleUploadFairness	daemon	locked	7667457	excluded with reason: trace bundle uploader fairness accounting over LocalRotatingTraceSink/BasicTracer; this port has no trace sink or uploader (contract excludes trace sinks)
+traceBundleUploadPassSpan	daemon	locked	7667457	excluded with reason: trace upload pass spans over the tracer; this port has no tracer/trace sink
+traceBundleUploadPrunedWithoutReceipt	daemon	locked	7667457	excluded with reason: trace bundle pruning without receipt over the uploader; this port has no trace sink or uploader
 traceBundleUploadReceiptIdentity	daemon	locked	5b98556	excluded with reason: receipt identity for the daemon trace bundle uploader needs LocalRotatingTraceSink, BasicTracer and the upload attestation metadata; this port has no trace sink or uploader (the contract excludes trace sinks)
 traceBundleUploadWriteFailure	daemon	locked	a746626	non-executable black-box: a daemon trace bundle uploader write-failure scenario over temp directories; this port has no trace uploader
-traceBundleUploaderState	daemon	pending	-	auto-seed
-traceContractKeyDestinations	daemon	pending	-	auto-seed
+traceBundleUploaderState	daemon	locked	7667457	excluded with reason: trace bundle uploader state persistence; this port has no trace sink or uploader
+traceContractKeyDestinations	daemon	locked	7667457	excluded with reason: trace contract key destination registry used by the tracer; this port has no tracer/trace sink
 turnSummaryTracker	daemon	locked	a3def34	turn summary group: begin folds the previous unfinished turn with its previousOutcome, observe folds tool_start/tool_end with shell/command classification and callId pairing (unmatched ends consume queued kinds), send outcomes count sent/held, finish emits the v1 summary once (ordered actions, toolCalls, capped problems with full problemCount, messagesSent, lastReplyMessageId), turnOutcomeForActivity ends only on idle/stop/crash frames, and turnTriggerFromMessages formats channel/thread/DM targets with channelId/sender/messageId
 turnTriggerTrace	daemon	locked	7fa38b4	wake-trigger latency attrs: message batches classify other/mention/app/message and take the oldest trigger creation with negative skew preserved plus the oldest local receipt, while app inbox items select the oldest minted item and map reminder/wake-hint/other app ids with mint time as receive time
 wakeBriefingPanel	daemon	pending	-	auto-seed
