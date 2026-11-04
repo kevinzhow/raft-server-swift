@@ -1695,3 +1695,11 @@ RFC 074 personal assistant：
 - provider.apiKey 为 write-only：创建/PATCH/读取/list 投影中 `runtimeConfig.provider.apiKey` 一律红acted 为空串，原始密钥仅保存在服务端配置；PATCH 省略/空 apiKey 时保留已存密钥（keep-secret），提供新 apiKey 时替换（replace-secret）。
 - 结构化 runtimeConfig 投影保留 provider kind/baseUrl/supportsImageInput/providerId、model preset/custom、envVars、loadLocalPlugins、hostUserState、reasoningEffort；kimi-sdk effort 只存 RuntimeConfig（explicit high/默认 null），legacy reasoningEffort 列不承担。
 - PATCH 响应同样红acted；已知 AgentsApiCreateTests 的期望同步为 write-only。
+
+### route tasks.assignee.api（锁定）
+
+- `PATCH /api/tasks/:id/assignee`：member 级权限（非 admin-only）；assignee 支持 user/agent/withdraw(null)；assign 只记录 assignee/type 并 revision+1，不推进状态、不写 claimedAt；对同一 assignee 的 no-op 返回 200 不 burn revision。
+- 拒绝且不写：缺 assignee 键、非法 type/id、非整数 expectedRevision（400）；done task（409）；跨频道 assignee（409）；stale expectedRevision（409 且返回 currentRevision，不改行）。
+- claim 仍启动任务（todo→in_progress，写 claimedAt）；self-assign 后 status 路由可 todo→in_progress；非 assignee 可改 status 但不夺 assignee；仅当前 assignee 可把 in_progress 退回 todo（他人 409），退回清 claimedAt 但保留 reservation；非 assignee 可 unclaim 他人任务。
+- 每次真实 assign/withdraw/unclaim 恰好记录一条 assignee_changed 审计（assigneeId/previousAssigneeId/类型 + actorType/actorId）；in_review 死锁可由第三方 unassign 释放，之后不同 actor 可 claim。
+- 删除仍限 creator/admin；assignment 不写 message 侧 task shadow。

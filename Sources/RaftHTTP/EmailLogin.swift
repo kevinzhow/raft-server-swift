@@ -20504,6 +20504,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
             return Self.json(400, "{\"error\":\"Invalid assignment\"}")
         }
+        guard object["assignee"] != nil else {
+            return Self.json(400, "{\"error\":\"Invalid assignment\"}")
+        }
         let assignee: (type: String, id: String)?
         if object["assignee"] is NSNull {
             assignee = nil
@@ -20514,7 +20517,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         } else {
             return Self.json(400, "{\"error\":\"Invalid assignment\"}")
         }
-        let expectedRevision = object["expectedRevision"] as? Int
+        var expectedRevision: Int?
+        if let rawRevision = object["expectedRevision"], !(rawRevision is NSNull) {
+            guard let parsed = rawRevision as? Int else {
+                return Self.json(400, "{\"error\":\"expectedRevision must be an integer\"}")
+            }
+            expectedRevision = parsed
+        }
         lock.lock()
         guard let index = taskRecords.firstIndex(where: { $0.id == taskId }) else {
             lock.unlock()
@@ -20559,10 +20568,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(200, taskJSON(task))
         }
+        let previousAssigneeId = taskRecords[index].assigneeId
+        let previousAssigneeType = taskRecords[index].assigneeType
         taskRecords[index].assigneeId = assignee?.id
         taskRecords[index].assigneeType = assignee?.type
         taskRecords[index].claimedAt = nil
         taskRecords[index].revision += 1
+        assigneeChangeEvents.append((
+            taskId: taskId, assigneeId: assignee?.id, assigneeType: assignee?.type,
+            previousAssigneeId: previousAssigneeId, previousAssigneeType: previousAssigneeType,
+            actorType: "user", actorId: userId
+        ))
         let task = taskRecords[index]
         lock.unlock()
         return Self.json(200, taskJSON(task))
@@ -25407,10 +25423,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         case .write: break
         }
         lock.lock()
+        let previousAssigneeId = taskRecords[index].assigneeId
+        let previousAssigneeType = taskRecords[index].assigneeType
         taskRecords[index].assigneeId = nil
         taskRecords[index].assigneeType = nil
         taskRecords[index].claimedAt = nil
         taskRecords[index].revision += 1
+        assigneeChangeEvents.append((
+            taskId: taskId, assigneeId: nil, assigneeType: nil,
+            previousAssigneeId: previousAssigneeId, previousAssigneeType: previousAssigneeType,
+            actorType: "user", actorId: userId
+        ))
         let task = taskRecords[index]
         lock.unlock()
         return Self.json(200, taskJSON(task))
@@ -25666,6 +25689,42 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     private var taskEvents: [(taskId: String, eventType: String, actorType: String)] = []
+    private var assigneeChangeEvents: [(
+        taskId: String, assigneeId: String?, assigneeType: String?,
+        previousAssigneeId: String?, previousAssigneeType: String?,
+        actorType: String, actorId: String
+    )] = []
+
+    public func taskRevisionForTesting(taskId: String) -> Int? {
+        lock.lock()
+        defer { lock.unlock() }
+        return taskRecords.first(where: { $0.id == taskId })?.revision
+    }
+
+    public func taskClaimedAtForTesting(taskId: String) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return taskRecords.first(where: { $0.id == taskId })?.claimedAt
+    }
+
+    public func setTaskStatusForTesting(taskId: String, status: String) {
+        lock.lock()
+        if let index = taskRecords.firstIndex(where: { $0.id == taskId }) {
+            taskRecords[index].status = status
+        }
+        lock.unlock()
+    }
+
+    public func assigneeChangeEventsForTesting(taskId: String) -> [(
+        assigneeId: String?, assigneeType: String?, previousAssigneeId: String?,
+        previousAssigneeType: String?, actorType: String, actorId: String
+    )] {
+        lock.lock()
+        defer { lock.unlock() }
+        return assigneeChangeEvents.filter { $0.taskId == taskId }.map {
+            ($0.assigneeId, $0.assigneeType, $0.previousAssigneeId, $0.previousAssigneeType, $0.actorType, $0.actorId)
+        }
+    }
 
     public func taskStatusForTesting(taskId: String) -> String? {
         lock.lock()

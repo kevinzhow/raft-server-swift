@@ -207,7 +207,7 @@ socketMembershipRevocation.api	route	partial	-	server-member removal and family 
 socketSendTimeAudience.api	route	locked	7861a25	excluded with reason: asserts send-time audience delivery over socket rooms; the socket room surface is not ported yet, so it has no executable surface here
 storageResponseStream.callSites	route	locked	6d7c1c9	non-executable black-box: counts streamStorageResponse call sites in routes/attachments.ts; the port streams through its own middleware.
 systemNotifications.api	route	locked	8e0d4f8	v1 machine feed plus v2 attention receipts
-tasks.assignee.api	route	partial	-	auto-seed
+tasks.assignee.api	route	locked	SLICE	member-level task assignment: assign to others/self/agent or withdraw without starting the task, attribute-preserving status/claim/unclaim flows including the in_review unlock, revision-bound OCC with currentRevision on loss and no revision burn for no-ops or refusals, one assignee_changed audit event per real change with actor and previous assignee, done-task refusal and creator/admin-only delete; assignment never writes message-side task shadow
 tasks.channelMembership.api	route	locked	bb36d22	public read-only tasks, private cloak, status filter
 tasks.jointSurface.api	route	locked	55151fb	excluded with reason: joint-task behavior across two servers; this port does not implement the joint channel/server model
 tasks.orphanCleanup.api	route	locked	5db3af6	channel delete auto-closes open tasks with system event, agent delete releases claims, orphan terminal-only status/claim, admin delete and member rejection
