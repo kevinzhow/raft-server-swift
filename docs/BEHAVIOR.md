@@ -1610,3 +1610,12 @@ RFC 074 personal assistant：
 - 人的授权（`POST /api/integrations/agents/:id/grants`）→ 201 新建 person grant 并清除 block；已存在 active grant 时 200 复用。权限仅 Agent creator 或 Server owner/admin；scope 必须非空且是 App allowedScopes 子集（否则 400）；App 必须在目标 Server 可用（否则 404）。
 - 管理面：`GET /api/integrations/agents/:id/grants`（仅管理权限可见，普通 member 看到空）、`GET .../grantable-apps`（管理权限 200 列表；普通 member 403）；`approve`（`POST /api/integrations/requests/:id/approve`）仅 Agent creator 或 owner/admin，remember 时落地 person grant。
 - `requests/agent` 接受 `agentId`（优先于 agentName）；非法/不存在/外服 id → 404。
+
+### route agentAppAccess.api（锁定）
+
+- `GET /api/integrations/agents/:id/events`：仅 Agent creator 或 Server owner/admin 可读（普通 member 403），事件按 createdAt 倒序、tie 用 id 倒序；`limit` 必须 1–100（0/非法 400）；`before` 为不透明 cursor（毫秒时间戳 + 事件 id），非法 400；`nextCursor` 在还有下一页时返回，否则 null。
+- 事件状态显示：`delivered` 保持 delivered；`expired`/`rejected` → expired；其余若 `expiresAt <= now` → expired，否则 queued。
+- 事件 summary 含 id/kind/summary/status/createdAt/expiresAt/deliveredAt/externalEventId/app{clientKey,clientName,logoUrl:null}；detail 额外返回解析后的 `payload`。
+- 另一 Agent 的事件 id 与不存在 id 一律 404。
+- `pruneExpiredAgentAppEvents(now:batchSize:)`：只删除 `expiresAt <= now - 30d` 的事件，按 expiresAt 升序、最多 batchSize 条；保留窗口内事件不动。
+- 上游 6 条断言由 `AgentAppAccessTests`（4）与 `AgentAppEventListTests`（2）覆盖。

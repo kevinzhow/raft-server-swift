@@ -17900,6 +17900,61 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"apps\":[\(body)]}")
     }
 
+    public func agentAppEvents(authorization: String?, agentId: String, limit: String?, before: String?) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        let parsedLimit: Int
+        if let limit, !limit.isEmpty {
+            guard let value = Int(limit), value > 0 else {
+                return Self.json(400, "{\"error\":\"limit must be a positive integer\"}")
+            }
+            parsedLimit = value
+        } else {
+            parsedLimit = 50
+        }
+        switch oauth.agentAppEvents(userId: userId, agentId: agentId, limit: parsedLimit, before: before) {
+        case .forbidden:
+            return Self.json(403, "{\"error\":\"You cannot manage this agent's app access\"}")
+        case .notFound:
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        case .invalidLimit:
+            return Self.json(400, "{\"error\":\"limit must be a positive integer\"}")
+        case .invalidCursor:
+            return Self.json(400, "{\"error\":\"before is not a valid cursor\"}")
+        case .events(let rows, let nextCursor):
+            let eventsJSON = rows.map(Self.agentAppEventJSON).joined(separator: ",")
+            let next = nextCursor.map(jsonString) ?? "null"
+            return Self.json(200, "{\"events\":[\(eventsJSON)],\"nextCursor\":\(next)}")
+        }
+    }
+
+    private static func agentAppEventJSON(_ event: OAuthLedger.AgentAppEventSummary) -> String {
+        let deliveredAt = event.deliveredAt.map { jsonString(ISO8601DateFormatter().string(from: $0)) } ?? "null"
+        let externalEventId = event.externalEventId.map(jsonString) ?? "null"
+        let createdAt = jsonString(ISO8601DateFormatter().string(from: event.createdAt))
+        let expiresAt = jsonString(ISO8601DateFormatter().string(from: event.expiresAt))
+        let app = "{\"clientKey\":\(jsonString(event.clientKey)),\"clientName\":\(jsonString(event.clientName)),\"logoUrl\":null}"
+        return "{\"id\":\(jsonString(event.id)),\"kind\":\(jsonString(event.kind)),\"summary\":\(jsonString(event.summary)),\"status\":\(jsonString(event.status)),\"createdAt\":\(createdAt),\"expiresAt\":\(expiresAt),\"deliveredAt\":\(deliveredAt),\"externalEventId\":\(externalEventId),\"app\":\(app)}"
+    }
+
+    public func agentAppEventDetail(authorization: String?, agentId: String, eventId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        switch oauth.agentAppEventDetail(userId: userId, agentId: agentId, eventId: eventId) {
+        case .forbidden:
+            return Self.json(403, "{\"error\":\"You cannot manage this agent's app access\"}")
+        case .notFound:
+            return Self.json(404, "{\"error\":\"Event not found\"}")
+        case .event(let event):
+            let summary = Self.agentAppEventJSON(event)
+            let payload = event.payloadJSON.isEmpty ? "null" : event.payloadJSON
+            let detail = String(summary.dropLast()) + ",\"payload\":\(payload)}"
+            return Self.json(200, detail)
+        }
+    }
+
     /// Feature flag gate shared by the attachment-comment routes. It answers
     /// before body validation so a disabled server sees one uniform 403.
     public func attachmentCommentsEnabled(serverId: String, userId: String? = nil) -> Bool {

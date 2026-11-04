@@ -2792,6 +2792,141 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    public static let agentAppEventRetentionAfterExpiryMs = 30 * 24 * 60 * 60 * 1000
+
+    public enum AgentAppEventListOutcome: Sendable {
+        case events(rows: [AgentAppEventSummary], nextCursor: String?)
+        case forbidden
+        case notFound
+        case invalidLimit
+        case invalidCursor
+    }
+
+    public struct AgentAppEventSummary: Sendable, Equatable {
+        public var id: String
+        public var kind: String
+        public var summary: String
+        public var status: String
+        public var createdAt: Date
+        public var expiresAt: Date
+        public var deliveredAt: Date?
+        public var externalEventId: String?
+        public var clientKey: String
+        public var clientName: String
+        public var payloadJSON: String
+    }
+
+    private func appEventDisplayStatusLocked(_ event: AgentEvent, now: Date) -> String {
+        if event.status == "delivered" { return "delivered" }
+        if event.status == "expired" || event.status == "rejected" { return "expired" }
+        return event.expiresAt <= now ? "expired" : "queued"
+    }
+
+    private func appEventCursorLocked(_ event: AgentEvent) -> String {
+        "\(Int(event.createdAt.timeIntervalSince1970 * 1000)).\(event.id)"
+    }
+
+    private func parseAppEventCursorLocked(_ raw: String) -> (createdAt: Int, id: String)? {
+        let parts = raw.split(separator: ".", maxSplits: 1).map(String.init)
+        guard parts.count == 2, let millis = Int(parts[0]) else { return nil }
+        return (millis, parts[1])
+    }
+
+    public func agentAppEvents(userId: String, agentId: String, limit: Int, before: String?) -> AgentAppEventListOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let agent = agents[agentId], !agent.deleted else { return .notFound }
+        guard isAgentAuthorityLocked(userId: userId, agent: agent, serverId: agent.serverId) else { return .forbidden }
+        guard limit > 0, limit <= 100 else { return .invalidLimit }
+        var cursor: (createdAt: Int, id: String)?
+        if let before, !before.isEmpty {
+            guard let parsed = parseAppEventCursorLocked(before) else { return .invalidCursor }
+            cursor = parsed
+        }
+        let now = Date()
+        var rows = agentEvents.filter { $0.agentId == agentId }
+        if let cursor {
+            rows = rows.filter { event in
+                let millis = Int(event.createdAt.timeIntervalSince1970 * 1000)
+                return millis < cursor.createdAt || (millis == cursor.createdAt && event.id < cursor.id)
+            }
+        }
+        rows.sort { lhs, rhs in
+            if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
+            return lhs.id > rhs.id
+        }
+        let page = Array(rows.prefix(limit))
+        let summaries = page.map { event -> AgentAppEventSummary in
+            let client = clients.first(where: { $0.id == event.clientId })
+            return AgentAppEventSummary(
+                id: event.id, kind: event.kind, summary: event.summary,
+                status: appEventDisplayStatusLocked(event, now: now),
+                createdAt: event.createdAt, expiresAt: event.expiresAt,
+                deliveredAt: event.deliveredAt, externalEventId: event.externalEventId,
+                clientKey: client?.clientId ?? "", clientName: client?.name ?? "",
+                payloadJSON: event.payloadJSON
+            )
+        }
+        let next = rows.count > limit ? page.last.map { appEventCursorLocked($0) } : nil
+        return .events(rows: summaries, nextCursor: next)
+    }
+
+    public enum AgentAppEventDetailOutcome: Sendable {
+        case event(AgentAppEventSummary)
+        case forbidden
+        case notFound
+    }
+
+    public func agentAppEventDetail(userId: String, agentId: String, eventId: String) -> AgentAppEventDetailOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let agent = agents[agentId], !agent.deleted else { return .notFound }
+        guard isAgentAuthorityLocked(userId: userId, agent: agent, serverId: agent.serverId) else { return .forbidden }
+        guard let event = agentEvents.first(where: { $0.id == eventId && $0.agentId == agentId }) else {
+            return .notFound
+        }
+        let client = clients.first(where: { $0.id == event.clientId })
+        let now = Date()
+        return .event(AgentAppEventSummary(
+            id: event.id, kind: event.kind, summary: event.summary,
+            status: appEventDisplayStatusLocked(event, now: now),
+            createdAt: event.createdAt, expiresAt: event.expiresAt,
+            deliveredAt: event.deliveredAt, externalEventId: event.externalEventId,
+            clientKey: client?.clientId ?? "", clientName: client?.name ?? "",
+            payloadJSON: event.payloadJSON
+        ))
+    }
+
+    /// Deletes events whose expiry is past the retention window. Bounded by
+    /// `batchSize`; callers may repeat until it returns 0.
+    @discardableResult
+    public func pruneExpiredAgentAppEvents(now: Date = Date(), batchSize: Int = 1000) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let cutoff = now.addingTimeInterval(-Double(Self.agentAppEventRetentionAfterExpiryMs) / 1000)
+        var candidates = agentEvents.indices.filter { agentEvents[$0].expiresAt <= cutoff }
+        candidates.sort { agentEvents[$0].expiresAt < agentEvents[$1].expiresAt }
+        let removing = Set(candidates.prefix(max(1, batchSize)))
+        agentEvents = agentEvents.enumerated().filter { !removing.contains($0.offset) }.map(\.element)
+        return removing.count
+    }
+
+    public func seedAgentAppEventForTesting(
+        id: String, agentId: String, clientRecordId: String, summary: String,
+        status: String, expiresAt: Date, createdAt: Date, payloadJSON: String = "{}",
+        externalEventId: String? = nil
+    ) {
+        lock.lock()
+        agentEvents.append(AgentEvent(
+            id: id.lowercased(), serverId: agents[agentId]?.serverId ?? "",
+            agentId: agentId, clientId: clientRecordId, kind: "notification",
+            summary: summary, payloadHash: sha256(payloadJSON), payloadJSON: payloadJSON,
+            externalEventId: externalEventId, status: status,
+            expiresAt: expiresAt, createdAt: createdAt
+        ))
+        lock.unlock()
+    }
+
     public func pendingThirdPartyEventMessages(agentId: String) -> [ThirdPartyEventMessage] {
         lock.lock()
         defer { lock.unlock() }

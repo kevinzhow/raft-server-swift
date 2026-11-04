@@ -459,6 +459,21 @@ public func configure(_ app: Application, services: FallbackServices) {
             agentId: request.parameters.get("agentId") ?? ""
         ))
     }
+    app.get("api", "integrations", "agents", ":agentId", "events") { request -> Response in
+        routeResponse(services.emailAccounts.agentAppEvents(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId") ?? "",
+            limit: desktopQuery(request.url.query, "limit"),
+            before: desktopQuery(request.url.query, "before")
+        ))
+    }
+    app.get("api", "integrations", "agents", ":agentId", "events", ":eventId") { request -> Response in
+        routeResponse(services.emailAccounts.agentAppEventDetail(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId") ?? "",
+            eventId: request.parameters.get("eventId") ?? ""
+        ))
+    }
     app.post("api", "integrations", "grants", ":grantId", "revoke") { request -> Response in
         routeResponse(services.emailAccounts.revokeAgentGrant(
             authorization: request.headers[.authorization],
