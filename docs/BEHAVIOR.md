@@ -1345,3 +1345,7 @@ RFC 074 personal assistant：
 
 - system.reminder 的 due 通知项由 OS mint：itemId=`reminder:<uuid>:<revision>`、retention `until_explicit_ack`、primaryAction `run_command`/`reminder.ack`、actionCli `raft reminder ack --id <id 前 8> --revision <n>`；sourceRef 严格 `{kind:"reminder", id:UUID, revision:正整数}`，多余字段或 app 提供的 action 一律拒绝（invalid_source_ref / invalid_primary_action）。
 - 标题预览单行化：控制字符与空白折叠为单空格、trim，超过 120 字符时截断到 119 字符并追加可见 `…`（按 UTF-16 计宽，绝不切断代理对）；空标题为 nil；store 以 itemId 去重并保序。
+
+### daemon agentRuntimeInput.snapshot
+
+- 回合输入文案快照（与 runtime delivery mode 无关）：空 resume 固定文案；unread resume 按 target 列表渲染 `- <target>: N unread` 并附 catch-up 指引（read 每频道最多一次、禁 check、命中直接请求则转入 active handling 等）；inbox notice 渲染 `[Raft inbox notice:` 块（pending/changed target 单复数、每 target first/latest sender/latest msg 行）与读取指引；other-unread 与 bounded-startup 后缀分别在非空时渲染两个前导空行 + 列表 + `raft inbox check` 指引，nil/空数组不输出任何后缀。

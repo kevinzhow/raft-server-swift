@@ -253,7 +253,7 @@ agentProcessManager.spawnFailCooldown	daemon	locked	3370ccd	non-executable black
 agentProcessManager.systemPrompt	daemon	pending	-	auto-seed
 agentProcessManager.teardown	daemon	locked	61895fe	non-executable black-box: an integration run of AgentProcessManager teardown with the unported agent runtime process manager
 agentProcessManager.wakeRecycle	daemon	pending	-	auto-seed
-agentRuntimeInput.snapshot	daemon	pending	-	auto-seed
+agentRuntimeInput.snapshot	daemon	locked	SLICE	turn-input copy snapshots independent of delivery mode: empty/unread resume prompts, the inbox notice block with pending/changed-target pluralization and per-target first/latest identity, the other-unread and bounded-startup suffixes with their reading guidance, and empty suffixes for missing/empty target maps
 agentRuntimeInput	daemon	locked	b0daabb	concrete-message runtime input: header lines carry target/msg/UTC time/type/sender, continuation lines for body, sender description, attachment names and thread context are prefixed so every splitlines separator is neutralised, the direct-mention follow reactivation renders the exact repeatable unfollow command while ordinary deliveries do not, and thread-join parent/recent context lines keep their read-only shape
 agentStartCoordinator	daemon	pending	-	auto-seed
 agentStartPendingDeliveryBuffer	daemon	locked	1e2a45f	agent start pending delivery buffer: I1 membership against the queued/starting/terminal-recovery/cooldown snapshot (non-starting owners rejected), I2 exactly-once (rebindWake appends instead of dropping, drainOnSpawn returns once and clears, a second drain only sees new work), orphan cleanup by cancelStart/cancelAllStarts, immutable snapshot values, and suppressConsumed removing consumed messages with a count
