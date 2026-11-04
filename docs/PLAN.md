@@ -301,3 +301,8 @@ daemon 180/180、socket 7/7 已完成；剩余唯一缺口是 route 的 6 个 pe
 - `productFeedback.api` 已完成提交面（`9570104`）；下一片补 reporter session/list/comments/close 与 attribution，随后 `productFeedback.multiApp.api`。
 - raftbench/read-mutations 等大集成轨道需先落数据模型与 route 骨架，再逐 case 锁定；不要以服务注入 spy 直接换取 locked。
 
+
+### publicSearchServiceAccess 剩余（本轮结论）
+- index 分页语义：每页最多 500 个候选 server 扫描、最多 75 条 entries（≈25 个有 entry 的 server）；`nextCursor` 为 32 位十六进制「下一个候选 server 偏移」+ `:done`；命中 500 扫描上限但无 entry 时也必须返回前向 cursor。实现放在 `PublicSearch.indexBody(_:cursor:)`，cursor 前缀即 server 偏移。
+- in-flight 槽位：内存 bucket 已有 acquire/release 原语；HTTP 接线需用 Vapor `AsyncMiddleware` 包裹在响应完成后 release，避免当前中间件重复进入导致的槽位泄漏；IP limiter 必须在 key lookup 之前、且与匿名桶分离。
+- Redis EVAL 适配器（原子 Lua + TTL 修复）按未移植 Redis 基础设施裁决，不实现。
