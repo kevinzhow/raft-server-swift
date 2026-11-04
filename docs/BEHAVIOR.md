@@ -1307,3 +1307,11 @@ RFC 074 personal assistant：
 
 - 具体消息渲染：每条消息一行 header（`[target=#parent:thread msg=… time=yyyy-MM-dd HH:mm:ssZ type=human] @name: body`），时间显式 UTC；body/sender_description/attachment 文件名/线程 context 的续行统一加 `  │ ` 前缀，splitlines 的所有分隔符（\n \r \v \f \x1c-\x1e \x85 U+2028 U+2029）都被中和，无法伪造第二条 header。
 - 直接提及的 follow 复活提示渲染固定文案与 `raft thread unfollow --target "#parent:hash"`；普通 follow 投递不产生复活提示；thread join context 的 parent/recent 行以 `- [msg=… seq=… time=… type=…] @name:` 形式渲染。
+
+### daemon wakeSessionRecycle
+
+- 配置：仅 server 的 `constructed_wake_context` 可开启；per-agent `env_vars` 覆盖 daemon 进程 env；`RAFT_WAKE_RECYCLE=0` 是本地 kill switch（env 不能强行开启）；阈值默认 128k tokens / 1h。
+- 决策：按序 gate → disabled、unsupported_runtime、no_prior_session、explicit_resume_prompt、runtime_profile_control、session_facts_unavailable、cache_possibly_warm（idle ≤ minColdGap）、context_below_threshold（≤ 阈值），全部 fail closed 为 resume(reason)；只有冷 gap + 大 context 才 recycle，且 briefing 为空（无公告/无指令）。
+- transcript facts：读取 `~/.claude/projects/-workspace-agent/<sessionId>.jsonl` 尾部，last activity 取最后带 timestamp 的记录，context tokens 取最后 assistant usage 的 input+cache_read+cache_creation；无文件即 unknown。
+- cold-idle sweep：按序跳过 disabled/not_idle/unsupported_runtime/no_session/recent_event/session_facts_unavailable/recent_activity（含 subagent sidecar mtime 与 transcript 时钟取 max）/context_below_threshold/no_transcript/background_tasks_unknown/background_tasks_outstanding；outstanding 扫描识别 Monitor/background/task 通知标记，terminal 标记清除后允许。
+- 稳定化：`ProbeGate` 限流测试改为按启动信号顺序编排，消除 Task 调度顺序造成的误报。
