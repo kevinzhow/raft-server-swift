@@ -44,6 +44,11 @@ import VaporTesting
             #expect(withoutAttestation.1["state"] as? String != "held")
             #expect(accounts.taskAssigneeForTesting(taskId: taskId) == agentId)
 
+            // A boundary that covers the board passes without a hold.
+            accounts.assignTaskForTesting(taskId: taskId, assigneeId: nil)
+            let covers = try await claim(accounts.messageSeqForTesting(messageId: unseenMessage))
+            #expect(covers.1["state"] as? String != "held")
+
             // Reset the claim so the stale-boundary flow can run.
             accounts.assignTaskForTesting(taskId: taskId, assigneeId: nil)
             let held = try await claim(seenSeq)
@@ -78,6 +83,7 @@ import VaporTesting
     let key = accounts.mintAgentCredential(agentId: agentId, scopes: ["send", "read", "tasks"], name: "task-freshness-2")
     let taskId = accounts.addTaskWithDescriptionForTesting(channelId: channelId, title: "human task", description: "body")
     accounts.assignTaskForTesting(taskId: taskId, assigneeId: agentId)
+    _ = accounts.addTaskWithDescriptionForTesting(channelId: channelId, title: "second write", description: "body")
     let seen = accounts.addHumanMessageForTesting(channelId: channelId, senderId: ownerId, content: "seen")
     let unseen = accounts.addHumanMessageForTesting(channelId: channelId, senderId: ownerId, content: "unseen")
     let seenSeq = accounts.messageSeqForTesting(messageId: seen) ?? 0
@@ -95,15 +101,18 @@ import VaporTesting
                 let json = (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:]
                 return (response, json)
             }
-            let heldUpdate = try await post("/internal/agent-api/tasks/update-status", ["channel": "#board2", "task_number": 1, "status": "done", "seenUpToSeq": seenSeq])
+            let heldUpdate = try await post("/internal/agent-api/tasks/update-status", ["channel": "#board2", "task_number": 1, "status": "in_progress", "seenUpToSeq": seenSeq])
             #expect(heldUpdate.1["state"] as? String == "held")
             #expect(accounts.taskStatusForTesting(taskId: taskId) == "todo")
             let boundary = heldUpdate.1["seenUpToSeq"] as? Int ?? 0
+            let otherHeld = try await post("/internal/agent-api/tasks/update-status", ["channel": "#board2", "task_number": 2, "status": "in_progress", "seenUpToSeq": seenSeq])
+            #expect(otherHeld.1["state"] as? String == "held", "another write on the board is checked as usual")
 
             // One hold per catch-up: a newer message after the hold does not hold the rerun again.
             _ = accounts.addHumanMessageForTesting(channelId: channelId, senderId: ownerId, content: "newer after hold")
-            let rerunUpdate = try await post("/internal/agent-api/tasks/update-status", ["channel": "#board2", "task_number": 1, "status": "done", "seenUpToSeq": boundary])
+            let rerunUpdate = try await post("/internal/agent-api/tasks/update-status", ["channel": "#board2", "task_number": 1, "status": "in_progress", "seenUpToSeq": boundary])
             #expect(rerunUpdate.1["state"] as? String != "held")
+            #expect(accounts.taskStatusForTesting(taskId: taskId) == "in_progress")
 
             // A rerun that did not catch up to its last hold is held again.
             _ = accounts.addHumanMessageForTesting(channelId: channelId, senderId: ownerId, content: "regap")

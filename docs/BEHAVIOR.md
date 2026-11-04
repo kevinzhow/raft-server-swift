@@ -1853,3 +1853,10 @@ RFC 074 personal assistant：
 
 - `POST /api/read-mutations`（`kind=channel_read_all`，需登录 + X-Server-Id）首次返回 201 `ADMITTED`，同一 `mutationId` 重放返回 200 `ALREADY_TERMINAL`，其 ack 的 `capturedBoundary[].throughSeq` 与 `scopes[].maxReadSeq` 只取接收者自己的 read cursor（绝不取频道 live max）；`GET /api/read-mutations/frontier` 同样只回报该 cursor。
 - 覆盖“前私有频道成员仍拥有 cursor”场景：live max 已增长时，admission/ack/frontier 均不超过 receiver-owned max。
+
+### route internalAgentApi.taskWriteFreshness.api（锁定，含裁决）
+
+- task claim / update-status / amend 接受 `seenUpToSeq`：未带 boundary 时永不 hold（即使有未读）；stale boundary 返回与 send 相同的 held envelope（`state=held`、`decision=syncing_hold`、`available_actions=["check_messages","retry_action"]`、heldMessages/newMessageCount/seenUpToSeq，无 continueAnyway），且写入不生效。
+- held 的 catch-up 点是“最新未读 seq”：以该 boundary 重跑即应用一次；之后追加的新消息不会再 hold（一次 catch-up 一个 hold）；以更旧 boundary 重跑会再次 hold。hold 状态按 `(agent, channel, action:taskNumber)` 隔离，另一个 task 的写入仍按自身未读检查。
+- update-status/amend 与 claim 同规则；boundary 覆盖整个 board 时直接通过。
+- 裁决：跨 replica 查找 last hold 的用例依赖多实例/共享存储注入；reviewer isolation 的 count-only hold 依赖 DB 行级可见性；两者不移植，其余 HTTP/JSON 语义已覆盖。
