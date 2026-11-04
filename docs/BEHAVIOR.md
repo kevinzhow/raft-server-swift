@@ -1445,3 +1445,9 @@ RFC 074 personal assistant：
 
 - 每个 runtime 的模型列表 stale-while-revalidate：live 列表缓存 60s（fresh 命中不探测）；过期则立即返回旧列表并单飞后台刷新（stale）；无可用条目则前台等待（miss）；force 绕过缓存等待（forced）并重新缓存。
 - 只缓存 live；确定性非 live（未登录/无配置/无模型/未安装/不支持）删除条目；瞬时失败（retryable 且 code 缺省/detect_timeout/detect_failed，或 runtime_not_found 且 reason 非 not_installed）保留旧列表；connect 时 push 的 store() 同样预热；各 runtime 独立；确认缺失（not_installed 或无 reason）删除。
+
+### daemon raftHome
+
+- Raft home 单一规则：`$RAFT_HOME`（trim 后非空）优先于 `$SLOCK_HOME`；都未设时 `~/.slock` 已含 Raft 状态（agents/computer/machines/profiles/agent-state 任一存在）则用它，否则 `~/.raft`；只有 notice 文件的 `~/.slock` 不算。返回值规范化为绝对路径；`resolvePath` 拼接子路径。
+- 自定义 home 时，`listLegacyStatePaths` 报告默认根下已存在的 agents/machines/attachments（带 destination 与描述）供迁移提示；默认 home 时为空。
+- 非移植用例：上游「全仓源码不得硬编码默认 home」的源码扫描不适用于本移植（PARITY 已注明）。

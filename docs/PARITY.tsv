@@ -351,7 +351,7 @@ providerRequestFetch	daemon	locked	a140327	provider request diagnostics: waiting
 proxy	daemon	locked	2ff64f5	dispatcher cache, NO_PROXY, isolated lanes, timeouts, eviction
 proxyFailureTrace	daemon	locked	2ff64f5	content-free typed projection and canned excerpts
 raftDiskJanitor	daemon	pending	-	auto-seed
-raftHome	daemon	pending	-	auto-seed
+raftHome	daemon	locked	SLICE	single Raft-home rule: RAFT_HOME over SLOCK_HOME, legacy ~/.slock only when it holds real state (a notice-only ~/.slock does not count), ~/.raft otherwise, absolute normalization, child-path joins, and legacy-state reporting when a custom home is configured. One upstream case (whole-repo source scan for hard-coded home joins) is excluded as non-portable
 recentDeliveryIds	daemon	locked	c59d3df	ported bounded set: age expiry (maxAge boundary), max-entries eviction of the oldest, and re-remembering moves an id to the newest end; all three upstream cases asserted
 registry.manifest.appTrace	daemon	locked	a746626	non-executable black-box: boots the daemon app registry (inbox/reminder/cleaner) against a temp data dir and noopTracer to pin per-app trace keys; this port has no daemon app registry or trace sink
 registryManifestApps	daemon	locked	a746626	non-executable black-box: a TypeScript source scan of registry.manifest.ts asserting the daemon app registry is exactly system.reminder and system.cleaner; this port has no TS manifest to scan
