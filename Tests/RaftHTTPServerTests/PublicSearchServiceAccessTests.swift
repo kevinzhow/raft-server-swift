@@ -164,6 +164,13 @@ private func seedDirectory() -> (directory: PublicServerDirectory, seed: PublicS
     }
 }
 
+private struct SlowKeySource: PublicSearchServiceKeyProviding {
+    func keys() throws -> [PublicSearchServiceKey] {
+        Thread.sleep(forTimeInterval: 1.5)
+        return [PublicSearchServiceKey(keyId: "k-current", sha256: String(repeating: "a", count: 64))]
+    }
+}
+
 private struct UnavailableBucket: PublicSearchBucketStoring {
     func consume(limit: Int) -> PublicSearchBucketDecision { .unavailable }
 }
@@ -223,6 +230,27 @@ private struct UnavailableBucket: PublicSearchBucketStoring {
             let service = try await client.get(URI(string: url), headers: headers)
             #expect(service.status == .serviceUnavailable)
             let anonymous = try await client.get(URI(string: url))
+            #expect(anonymous.status == .ok)
+        }
+    }
+}
+
+
+@Test func keyLookupDeadlineFailsClosed() async throws {
+    let current = ServiceCredential(token: "current-token-0123456789abcdef")
+    let (directory, seed) = seedDirectory()
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {},
+            publicSearch: directory.projectedCatalog(), publicServerDirectory: directory,
+            publicSearchServiceKeySource: SlowKeySource(), publicSearchServiceBucket: PublicSearchMemoryBucketStore()
+        ))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[HTTPField.Name("Authorization")!] = current.header
+            let service = try await client.get(URI(string: "/api/public/search/servers/\(seed.serverPublicId)"), headers: headers)
+            #expect(service.status == .serviceUnavailable)
+            let anonymous = try await client.get(URI(string: "/api/public/search/servers/\(seed.serverPublicId)"))
             #expect(anonymous.status == .ok)
         }
     }

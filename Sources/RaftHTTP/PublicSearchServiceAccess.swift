@@ -92,7 +92,8 @@ public enum PublicSearchServiceAccess {
     public static func classify(
         authorization: String?,
         keySource: (any PublicSearchServiceKeyProviding)?,
-        clock: Date = Date()
+        clock: Date = Date(),
+        deadlineMs: Int = 250
     ) -> PublicSearchServiceCredential {
         guard let authorization, authorization.hasPrefix("Raft-Service") else { return .anonymous }
         let parts = authorization.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
@@ -100,12 +101,22 @@ public enum PublicSearchServiceAccess {
         let pair = parts[2].split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
         guard pair.count == 2, !pair[0].isEmpty, !pair[1].isEmpty else { return .invalid }
         guard let keySource else { return .unavailable }
-        let rows: [PublicSearchServiceKey]
-        do {
-            rows = try keySource.keys()
-        } catch {
+        final class LookupBox: @unchecked Sendable {
+            var rows: [PublicSearchServiceKey] = []
+            var failed = false
+        }
+        let box = LookupBox()
+        let semaphore = DispatchSemaphore(value: 0)
+        let thread = Thread {
+            do { box.rows = try keySource.keys() } catch { box.failed = true }
+            semaphore.signal()
+        }
+        thread.start()
+        guard semaphore.wait(timeout: .now() + .milliseconds(max(1, deadlineMs))) == .success else {
             return .unavailable
         }
+        guard !box.failed else { return .unavailable }
+        let rows = box.rows
         guard !rows.isEmpty, validKeySet(rows) else { return .unavailable }
         guard rows.contains(where: { $0.expiresAt == nil }) else { return .unavailable }
         guard let row = rows.first(where: { $0.keyId == pair[0] }) else { return .invalid }
