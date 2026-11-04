@@ -1565,3 +1565,10 @@ RFC 074 personal assistant：
 - 真实 socket 端到端：desktop 连接发送 `desktop:attention {attended:true}` 后，该 user 在 `DESKTOP_ATTENTION_WINDOW_MS`（10 分钟，固定不可配置）内被记为“桌面在场”；同一时刻 web 连接发送同样事件不产生记录（浏览器不能压制自己的通知）。
 - `{attended:false}` 立即清除该 user（不等 TTL），浏览器推送恢复；`DesktopAttentionRegistry.usersWithRecentDesktopAttention([...])` 只返回窗口内仍有效的 user，读失败时失败开放（不压制任何人）。
 - 记录以内存实现 Redis TTL 的可观测语义，`resetForTests()` 支持清空。
+
+### route App setup contract（appSetup.api 切片基础）
+
+- 声明校验：`setupUrl` 必须为 HTTPS（或 loopback HTTP），无 userinfo、无 fragment，长度 ≤2000；空值视为未声明（`not_required`）。`setupDescription` 必须单行、无控制字符、≤500 字符。
+- 状态投影：`project` 把 `installation_id`、`server_id`、`setup_revision` 作为精确上下文附加到 URL（覆盖输入中同名参数，保留其它参数），`status = completedRevision == setupRevision ? complete : pending`；完成时间仅在 complete 时输出 ISO UTC；无 setupUrl 时 `not_required`、url/description/completedAt 均为空。
+- `installation_id` 必须是安装 UUID，否则 fail closed（防止路径/身份注入）。
+- 该契约将用于 `appSetup.api` 的 GET clients/:clientId/setup、PUT installations/:id/setup、PATCH client 声明与安装卡片绑定。
