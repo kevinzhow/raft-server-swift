@@ -1393,3 +1393,8 @@ RFC 074 personal assistant：
 
 - 直传能力：daemon 先向 server `POST /internal/machine/scope-attestation`（Bearer machine key，body scope+可选 metadata）取签名的 machine-scope attestation；再向 worker `POST <createPath>`（body 携带 attestation，不带 server 凭据）创建上传会话；最后按会话给出的 method/url/headers 直接 PUT 字节，server 不在数据面。
 - 失败带 hop 标签（attestation/create/put）与 HTTP status，`classify` 不解析文案：有 status 按 4xx/5xx 分类，URLError 记 network，其余 other；server 返回 HTML 413 也按 413 归类。
+
+### daemon providerConnectionLaunch
+
+- 启动期 provider connection materialization：daemon `POST <server>/internal/computer/runners/<agent>/provider-connection`（Bearer daemon key、X-Raft-Client 标识、body 仅 connectionId），严格校验响应形状——顶层键恰为 envVars/providerConnection，projection 键恰为 endpointUrl/providerId/supportsImageInput，providerId 必须在 preset（16 个，如 deepseek→DEEPSEEK_API_KEY、google→GEMINI_API_KEY）或 gateway（openai-compatible/anthropic-compatible）集合内；未知字段报 invalid payload。
+- preset 必须 env 恰为一个非空 key、endpointUrl=null 且 supportsImageInput=false；gateway 必须 env 恰为 apiKey/baseUrl 两键、endpointUrl 非空且与 baseUrl env 完全一致；不一致报 invalid environment；HTTP 失败带状态。
