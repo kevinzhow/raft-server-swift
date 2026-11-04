@@ -1409,3 +1409,9 @@ RFC 074 personal assistant：
 - resumed session 的 standing prompt 刷新（task #13）：按 agent 在其 workspace `.raft/standing-prompt.json` 记录 sessionId + promptHash（sha256 前 32 hex，仅 id/hash/时间）；hash 前先清空 volatile 字段（`runtimeContext.daemonVersion`、`runtimeProfileControl`，发布/通知不算新 prompt），其它配置变化才算。
 - 计划：非 resume 或 runtime 自行重建 prompt → none；无记录或记录属于别的 session → baseline_unknown（只写记录不注入）；hash 相同 → unchanged；不同 → inject 并带 staleForMs（now-recordedAt，最小 0）。注入把完整当前 prompt 以 `<raft-standing-prompt-update>` 块放到首条输入最前并标记替换旧指令，promptSource 追加 `_with_standing_prompt_update`；unchanged 情形原样返回。
 - 非移植用例：上游 5 例中「各 driver 的 standingPromptRefreshesOnResume 标志表」依赖未移植的 driver 类，本移植不适用（PARITY 已注明）。
+
+### daemon agentMigrationObjectStoreBundle
+
+- 迁移 bundle 条目计数：严格 250,000 上限（含 export walk 仅计数未入列的 overflow 条目）；超限抛 `AgentMigrationObjectStoreEntryCountLimitError`，message 固定为 `MIGRATION_OBJECT_STORE_ENTRY_COUNT_LIMIT_EXCEEDED:entryCount=<n>:maxEntries=<m>:topPathCounts=<path,count;...>`，最多 3 个 top-level 路径、每段 percent-encode 后最长 96 字符，整体 <500。
+- 计数按 workspace 相对路径的顶层目录聚合、降序（同数按路径升序）；secret/token/credential/api-key/.env 形状的路径归并为 `other/`，错误 wire 不泄露明文、主机路径或绝对路径；`bundleTooLargeTopEntries` 同样按字节降序并 redaction。
+- workspace 相对路径规范化：拒绝空、`.`、POSIX 绝对、盘符绝对/相对、UNC、任何 `..` 父段与 NUL；反斜杠统一为 `/`，去除 `./` 与空段（`./nested\safe//file.txt` → `nested/safe/file.txt`）。
