@@ -7388,12 +7388,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         provider: String = "slack"
     ) -> String {
         let id = UUID().uuidString.lowercased()
+        let rendered = provider == "slack" ? content : Self.neutralizeExternalProjectionContent(content)
         lock.lock()
         appendHumanMessageLocked(StoredHumanMessage(
             id: id,
             channelId: channelId,
             senderId: "external-projection-\(id.prefix(8))",
-            content: content,
+            content: rendered,
             randomId: nil,
             messageType: "chat",
             senderType: "external_projection",
@@ -7976,6 +7977,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// Third-party content stays inert: mentions read as plain `user:<handle>`.
+    static func neutralizeExternalProjectionContent(_ text: String) -> String {
+        var value = text
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+        value = value.replacingOccurrences(of: "@([A-Za-z0-9_.-]+)", with: "user:$1", options: .regularExpression)
+        value = value.replacingOccurrences(of: "#([A-Za-z0-9_.-]+)", with: "channel:$1", options: .regularExpression)
+        return value
+    }
+
     private static func inertThirdPartyMentions(_ text: String) -> String {
         text.replacingOccurrences(
             of: "@([A-Za-z0-9_.-]+)",
@@ -19529,7 +19540,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let createdAt = formatter.string(from: message.createdAt)
         let senderTimezone = message.senderTimezone.map(jsonString) ?? "null"
-        let json = "{\"message_id\":\(jsonString(message.id)),\"channel_id\":\(jsonString(effectiveChannelId)),\"channel_name\":\(jsonString(channelName)),\"channel_type\":\(jsonString(channelType)),\"sender_type\":\(jsonString(senderType)),\"sender_name\":\(jsonString(senderName)),\"content\":\(jsonString(message.content)),\"created_at\":\(jsonString(createdAt)),\"sender_timezone\":\(senderTimezone)}"
+        let mentioned = storedMentions.contains { $0.messageId == message.id && $0.targetType == "agent" && $0.targetId == agent.id }
+        var json = "{\"message_id\":\(jsonString(message.id)),\"id\":\(jsonString(message.id)),\"channel_id\":\(jsonString(effectiveChannelId)),\"channel_name\":\(jsonString(channelName)),\"channel_type\":\(jsonString(channelType)),\"sender_type\":\(jsonString(senderType)),\"sender_name\":\(jsonString(senderName)),\"content\":\(jsonString(message.content)),\"created_at\":\(jsonString(createdAt)),\"sender_timezone\":\(senderTimezone),\"mentioned\":\(mentioned ? "true" : "false")}"
+        if message.senderType == "external_projection" {
+            json = String(json.dropLast()) + ",\"external_message\":{\"message_id\":\(message.externalMessageId.map(jsonString) ?? "null"),\"provider\":\(message.externalProvider.map(jsonString) ?? "null"),\"actor_name\":\(message.externalSenderName.map(jsonString) ?? "null")}}"
+        }
         lock.unlock()
         return Self.json(200, "{\"message\":\(json)}")
     }
@@ -25552,6 +25567,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
         }
 
+        lock.lock()
+        let pageIds = Set(page.map(\.id))
+        let externalFacts: [String: (messageId: String?, provider: String?, actor: String?)] = Dictionary(
+            uniqueKeysWithValues: humanMessageRows.filter { pageIds.contains($0.id) }.map {
+                ($0.id, ($0.externalMessageId, $0.externalProvider, $0.externalSenderName))
+            }
+        )
+        let mentionedIds = Set(storedMentions.filter { $0.targetType == "agent" && $0.targetId == agent.id }.map(\.messageId))
+        lock.unlock()
         let json = page.map { message -> String in
             let senderType: String
             if message.messageType == "system" || message.senderId == "system" {
@@ -25572,7 +25596,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 lock.unlock()
             }
             let senderTimezone = message.senderTimezone.map(jsonString) ?? "null"
-            return "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(message.content)),\"seq\":\(message.seq),\"senderType\":\(jsonString(senderType)),\"senderId\":\(jsonString(message.senderId)),\"senderName\":\(jsonString(senderName)),\"senderTimezone\":\(senderTimezone),\"createdAt\":\(jsonString(formatter.string(from: message.createdAt))),\"attachments\":[]}"
+            let mentioned = mentionedIds.contains(message.id)
+            var row = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(message.content)),\"seq\":\(message.seq),\"senderType\":\(jsonString(senderType)),\"senderId\":\(jsonString(message.senderId)),\"senderName\":\(jsonString(senderName)),\"senderTimezone\":\(senderTimezone),\"createdAt\":\(jsonString(formatter.string(from: message.createdAt))),\"attachments\":[],\"mentioned\":\(mentioned ? "true" : "false")"
+            if senderType == "third_party_app", let external = externalFacts[message.id] {
+                row += ",\"external_message\":{\"message_id\":\(external.messageId.map(jsonString) ?? "null"),\"provider\":\(external.provider.map(jsonString) ?? "null"),\"actor_name\":\(external.actor.map(jsonString) ?? "null")}"
+            }
+            return row + "}"
         }.joined(separator: ",")
         let modelSeenJSON = modelSeenSeq.map(String.init) ?? "null"
         return Self.json(200, "{\"messages\":[\(json)],\"has_more\":\(hasMore),\"has_older\":\(hasOlder),\"has_newer\":\(hasNewer),\"last_read_seq\":\(priorSeq),\"model_seen_up_to_seq\":\(modelSeenJSON),\"target\":\(jsonString(canonicalTarget ?? reference))\(consumptionScope.map { ",\"consumption_scope\":\($0)" } ?? "")\(channelCard)}")

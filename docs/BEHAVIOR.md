@@ -1830,3 +1830,9 @@ RFC 074 personal assistant：
 - `POST /api/product-feedback` 现在真实代理 Hands：multipart 表单（type/message/submission_id/metadata/may_contact）转发到 `{HANDS_FEEDBACK_BASE_URL}/public/v2/apps/{APP_ID}/feedback`，可选 Bearer app token。
 - 移动端（android/ios/ohos）diagnostics 引用校验后以 `presigned` JSON 数组字段转发：r2_key 必须 `feedback/{APP_ID}/presigned/{uuid}-{filename}.zip`、filename=diagnostics.zip、content_type=application/zip、size 为正整数 ≤200MB，拒绝数组/额外 upload_url；web 端或 malformed → 400 `feedback_diagnostics_invalid`，且不触达 Hands；无 diagnostics 不发 presigned 字段。
 - Hands 结果映射：2xx → 201 `{id,status}`；409 → 409 `feedback_submission_conflict`；400 + diagnostics + code∈{presigned_invalid,presigned_not_found,presigned_size_mismatch} → 400 `feedback_diagnostics_rejected`；其他 400 → 400 `feedback_invalid`；其余（含 422）→ 503 `feedback_service_unavailable`。
+
+### route slackBridgedAgentMention（锁定，含裁决）
+
+- Slack 桥接的外部投影消息对 agent 的 history/events/resolve 读路径保持普通内容：`@name`、`#channel`、`<result>` 原样渲染，`mentioned` 仅对具名 mention fact 的目标 agent 为 true，并保留 `external_message.provider` 与 actor；`mentions` 原始事实不泄漏到 wire。
+- 非 Slack provider 的投影消息保持 inert：`@x`/`#x` 中和为 `user:x`/`channel:x`，`<`/`>` 转义（`&lt;result&gt;`），`mentioned` 恒为 false。
+- 裁决：同一用例还断言 orchestrator 的 live batch/single delivery 注入结果（`deliverMessagesToAgents`/`deliverMessageToAgent` 的 mock），属 orchestrator 注入，按契约不移植；其 HTTP 读路径语义已覆盖。
