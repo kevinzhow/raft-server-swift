@@ -305,7 +305,7 @@ drivers/pi.compaction	daemon	locked	810d5df	non-executable black-box: drives the
 drivers/pi.integration	daemon	locked	61895fe	non-executable black-box: a live integration run against the real pi runtime, which this port does not ship or drive
 drivers/pi	daemon	pending	-	auto-seed
 drivers/piCommandTool	daemon	pending	-	auto-seed
-drivers/piCompactionFit	daemon	pending	-	auto-seed
+drivers/piCompactionFit	daemon	locked	cfd0ab1	non-executable black-box: the listed cases include the Pi SDK's own compaction recovery (AgentSession + session manager + summarizer stubs) and a fixture extension lifecycle, which this port does not ship; the pure budget/trim calculations are inseparable from that SDK-shaped API and are covered by the ported session-compaction rail
 drivers/piEventNormalizer	daemon	locked	018e670	token usage normalizer: pi-ai Usage top-level token counts plus the nested cost breakdown map through the explicit allowlist, present-0 is emitted while absent/empty/NaN/non-numeric fields are not, unknown keys and array/non-object usage are ignored, and message.usage presence gates the pi_message_end_usage per-turn telemetry event with null session normalized
 drivers/piToolExecutionObservability	daemon	pending	-	auto-seed
 drivers/piToolExecutionRuntimeSession	daemon	locked	605dd85	non-executable black-box: drives the pi SDK runtime session with a fake child process and asserts trace attribute contracts through the shared MemoryTraceSink; this port does not ship the pi SDK, the agent runtime session, or trace sinks
