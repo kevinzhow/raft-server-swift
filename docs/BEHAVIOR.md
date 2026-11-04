@@ -1860,3 +1860,9 @@ RFC 074 personal assistant：
 - held 的 catch-up 点是“最新未读 seq”：以该 boundary 重跑即应用一次；之后追加的新消息不会再 hold（一次 catch-up 一个 hold）；以更旧 boundary 重跑会再次 hold。hold 状态按 `(agent, channel, action:taskNumber)` 隔离，另一个 task 的写入仍按自身未读检查。
 - update-status/amend 与 claim 同规则；boundary 覆盖整个 board 时直接通过。
 - 裁决：跨 replica 查找 last hold 的用例依赖多实例/共享存储注入；reviewer isolation 的 count-only hold 依赖 DB 行级可见性；两者不移植，其余 HTTP/JSON 语义已覆盖。
+
+### route internalAgentApi.externalInboxPull / inboxPush（裁决锁定）
+
+- 两个模块的可观测面都建立在本仓库未移植的 durable inbox 子系统上：外部 agent 的未读来自 RisingWave inbox chain（测试通过 `__setExternalAgentInboxChainSelectorForTests` 注入 chain/reference derivation），live delivery buffer/`inbox_hint`/wake-hints 全由 `AgentOrchestrator` stub 与 test-only pull interval 控制；inboxPush 的 notice/signing/registration 也依赖同一 chain、replica 与 orchestrator 注入。
+- 契约要求不移植 IO/测试注入除非 HTTP/JSON 断言可在无 spy 情况下到达；这两个模块的核心断言（durable pull 顺序、buffer 合并、跨 replica notice、wake-hint 计数）无法脱离注入到达。
+- 已锁定的替代可观测行为：`internalAgentApi.wakeHintStream`（wake-hint SSE 投影）、`internalAgentApi.historyUnread`（read position/未读读取语义）、bind-mounted `/events` 的既有实现保留；未来若移植 durable inbox，再以新切片替换本裁决。
