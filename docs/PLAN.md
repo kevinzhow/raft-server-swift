@@ -60,6 +60,19 @@
 
 上下文会被压缩，仓库不能靠对话记忆。每个切片收尾时：提交（或回退）在飞改动、`docs/PARITY.tsv` 与 `docs/BEHAVIOR.md` 已更新、本节指标已刷新；下一片的目标模块与已覆盖/已排除分组写在 `docs/PARITY.tsv` 的 notes 里。会话变长不是阻塞条件，不在上下文耗尽时把目标标 blocked。
 
+## 3.1 route 收尾队列（daemon/socket 已清零）
+
+daemon 180/180、socket 7/7 已完成；剩余唯一缺口是 route 的 6 个 pending 模块（158/219 模块，919/2000 用例）。按切片大小与依赖排序：
+
+1. `appSetup.api`（6 例）——首要切片：`setupUrl/setupRevision` 声明与校验、GET `/api/integrations/clients/:clientId/setup`、PUT `/api/oauth/installations/:installationId/setup`（App 认证、revision CAS、幂等审计）、PATCH client 声明、marketplace install/uninstall 生命周期、agent integrations list 的 setup 投影、`integration:install_marketplace_app` 卡片的 setup 绑定与 `APP_SETUP_CHANGED` 冲突、`integration:register_app` 的 setupUrl/setupDescription 校验。需要补齐：安装行模型（现仅 message 级 install 卡）、`recordIntegrationAuditEvent` 等价物、agent list/app update/status 的 setup 投影。
+2. `agentAppAccess.api`（6 例）——OAuth access request 的 agent 授权、person revoke 粘滞、creator/owner/admin 管理面、app events 分页/过期/私有可见性、`pruneExpiredAgentAppEvents` 保留窗口、agent id 形式的 `requests/agent`。
+3. `authPendingSocialLink.api`（12 例）——web/PKCE/password 三路的 pending social link 状态机（linkOnConflict、account_link_required、conflict completion 无 userId、过期/取消、rollback）。
+4. `securityLifecycle.api`（14 例）——family revoke/logout lineage、socket 撤销与成员移除广播、visibility 收缩驱逐、reset token 并发、DB 数据不入日志。
+5. `internal.reminders.api`（17 例）——app-owned reminder 服务的 CRUD/lifecycle revision 同步、agent-api 与 legacy 双路由、4xx span 分类、anchor cloak/visible joint projection。
+6. `actions.privateAccess.api`（19 例）——action card 的私有 carrier/thread 权限、跨 server UUID 拒绝、channel:create/agent:create 的 post-commit 广播与回滚。
+
+每个切片仍按工作契约执行：先写失败验收测试 → 实现 → 目标测试 + `make test` + `make test-e2e`（涉及端口/进程）→ 一个提交 → 更新 BEHAVIOR/PARITY/PLAN → push。route 测试位于 `Tests/RaftHTTPServerTests/`（VaporTesting），handler 集中在 `Sources/RaftHTTP/EmailLogin.swift`，路由注册在 `Sources/RaftHTTPServer/FallbackApplication.swift`。
+
 ## 3. 工作契约
 
 1. **单位**：一个功能切片 = 上游一个 route 模块（或一组 frame）+ 所需数据/事件/权限 + 验收测试。
