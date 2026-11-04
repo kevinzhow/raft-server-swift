@@ -699,6 +699,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var state: String
         var executedByUserId: String?
         var resultJSON: String?
+        var setupUrl: String? = nil
+        var setupRevision: Int = 1
     }
 
     /// A prepared `integration:register_app` card. The initial client secret
@@ -715,6 +717,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var homepageUrl: String?
         var returnUrl: String
         var agentManifestUrl: String?
+        var setupUrl: String?
+        var setupDescription: String?
         var scopes: [String]
         var state: String
         var executedByUserId: String?
@@ -17741,7 +17745,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// `PUT /api/oauth/installations/:installationId/setup`. Only the owning
     /// App's backend can report; human login is not App authentication.
-    public func reportInstallationSetup(installationId: String, body: String) -> HTTPReply {
+    public func reportInstallationSetup(authorization: String?, installationId: String, body: String) -> HTTPReply {
+        // This surface takes App backend credentials only; a human session is
+        // not App authentication.
+        if let authorization, !authorization.isEmpty {
+            return Self.json(401, "{\"error\":\"Installation setup reports require App credentials\"}")
+        }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
               let clientKey = object["clientId"] as? String,
               let clientSecret = object["clientSecret"] as? String,
@@ -22842,7 +22851,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let draftHint = includeDraftHint
             ? ",\"draftHint\":\(jsonString("\(card.agentName) requested \(card.clientName), which is public in the Raft Marketplace but is not installed on this Server. Installing is a Server owner/admin action; the Agent cannot install it automatically."))"
             : ""
-        return "{\"type\":\"integration:install_marketplace_app\",\"clientId\":\(jsonString(card.clientRecordId)),\"clientKey\":\(jsonString(card.clientKey)),\"clientName\":\(jsonString(card.clientName)),\"clientNameSha256\":\(jsonString(card.clientNameSha256)),\"agentId\":\(jsonString(card.agentId)),\"agentName\":\(jsonString(card.agentName)),\"scopes\":[\(scopes)]\(draftHint)}"
+        let setupUrl = card.setupUrl.map(jsonString) ?? "null"
+        return "{\"type\":\"integration:install_marketplace_app\",\"clientId\":\(jsonString(card.clientRecordId)),\"clientKey\":\(jsonString(card.clientKey)),\"clientName\":\(jsonString(card.clientName)),\"clientNameSha256\":\(jsonString(card.clientNameSha256)),\"agentId\":\(jsonString(card.agentId)),\"agentName\":\(jsonString(card.agentName)),\"scopes\":[\(scopes)],\"setupUrl\":\(setupUrl),\"setupRevision\":\(card.setupRevision)\(draftHint)}"
     }
 
     private func marketplaceInstallPresentationJSON(_ card: MarketplaceInstallCard) -> String {
@@ -22891,6 +22901,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let scopes = card.scopes.map(jsonString).joined(separator: ",")
         fields.append("\"scopes\":[" + scopes + "]")
+        if let setupUrl = card.setupUrl { fields.append("\"setupUrl\":\(jsonString(setupUrl))") }
+        if let setupDescription = card.setupDescription { fields.append("\"setupDescription\":\(jsonString(setupDescription))") }
         return "{" + fields.joined(separator: ",") + "}"
     }
 
@@ -22923,6 +22935,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         homepageUrl: String?,
         returnUrl: String,
         agentManifestUrl: String?,
+        setupUrl: String? = nil,
+        setupDescription: String? = nil,
         scopes: [String],
         target: (local: String, storage: String)
     ) -> String {
@@ -22940,6 +22954,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             homepageUrl: homepageUrl,
             returnUrl: returnUrl,
             agentManifestUrl: agentManifestUrl,
+            setupUrl: setupUrl,
+            setupDescription: setupDescription,
             scopes: scopes,
             state: "prepared",
             executedByUserId: nil,
@@ -23014,7 +23030,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 homepageUrl: card.homepageUrl,
                 returnUrl: card.returnUrl,
                 allowedScopes: card.scopes,
-                agentManifestUrl: card.agentManifestUrl
+                agentManifestUrl: card.agentManifestUrl,
+                setupUrl: card.setupUrl,
+                setupDescription: card.setupDescription
             )
         } catch let error as OAuthClientRejection {
             return Self.json(409, "{\"error\":\(jsonString(error.message)),\"errorCode\":\"APP_REGISTRATION_REJECTED\"}")
@@ -23094,6 +23112,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
               let rawName = client["name"] as? String
         else { return nil }
         let binding = Self.marketplaceAppNameBinding(rawName)
+        let declaration = oauth.clientSetupDeclarationForTesting(clientRecordId: recordId)
         let agentName = agent.displayName.isEmpty ? agent.name : agent.displayName
         let messageId = UUID().uuidString.lowercased()
         let card = MarketplaceInstallCard(
@@ -23110,7 +23129,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             localCarrierChannelId: target.local,
             state: "prepared",
             executedByUserId: nil,
-            resultJSON: nil
+            resultJSON: nil,
+            setupUrl: declaration?.url,
+            setupRevision: declaration?.revision ?? 1
         )
         let content = "Operation: install Marketplace app \(binding.name) (\(clientKey)) on this Server"
         lock.lock()
@@ -23163,6 +23184,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard binding.sha256 == card.clientNameSha256, binding.name == card.clientName else {
             return Self.json(409, "{\"error\":\"Marketplace app identity changed; prepare a fresh login request\",\"errorCode\":\"MARKETPLACE_APP_CHANGED\"}")
         }
+        let declaration = oauth.clientSetupDeclarationForTesting(clientRecordId: card.clientRecordId)
+        guard (declaration?.url ?? nil) == card.setupUrl, (declaration?.revision ?? 1) == card.setupRevision else {
+            return Self.json(409, "{\"error\":\"The App setup declaration changed; prepare a fresh request\",\"errorCode\":\"APP_SETUP_CHANGED\"}")
+        }
         guard let agent = oauth.agentRuntimeInfo(id: card.agentId), !agent.deleted else {
             return Self.json(409, "{\"error\":\"Requesting agent identity changed; prepare a fresh login request\",\"errorCode\":\"AGENT_BINDING_CHANGED\"}")
         }
@@ -23174,7 +23199,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             _ = oauth.installClient(serverId: serverId, clientRecordId: card.clientRecordId, installedByUserId: userId, groups: [])
         }
         let scopes = card.scopes.map(jsonString).joined(separator: ",")
-        let result = "{\"kind\":\"marketplace-app-installation\",\"clientId\":\(jsonString(card.clientRecordId)),\"clientKey\":\(jsonString(card.clientKey)),\"clientName\":\(jsonString(card.clientName)),\"serverId\":\(jsonString(serverId)),\"agentId\":\(jsonString(card.agentId)),\"agentName\":\(jsonString(card.agentName)),\"scopes\":[\(scopes)]}"
+        let setup = oauth.getAppInstallationSetup(clientRecordId: card.clientRecordId, serverId: serverId)
+        let setupUrlJSON = setup?.url.map(jsonString) ?? "null"
+        let result = "{\"kind\":\"marketplace-app-installation\",\"clientId\":\(jsonString(card.clientRecordId)),\"clientKey\":\(jsonString(card.clientKey)),\"clientName\":\(jsonString(card.clientName)),\"serverId\":\(jsonString(serverId)),\"agentId\":\(jsonString(card.agentId)),\"agentName\":\(jsonString(card.agentName)),\"scopes\":[\(scopes)],\"setupUrl\":\(setupUrlJSON)}"
         var updated = card
         updated.state = "executed"
         updated.executedByUserId = userId
@@ -23185,6 +23212,72 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"messageId\":\(jsonString(card.messageId)),\"metadata\":\(marketplaceInstallMetadataJSON(updated))}")
     }
 
+    private func prepareIntegrationActionCard(
+        identity: (agentId: String, serverId: String), target: String, action: [String: Any]
+    ) -> HTTPReply? {
+        guard let type = action["type"] as? String,
+              type == "integration:install_marketplace_app" || type == "integration:register_app"
+        else { return nil }
+        guard let resolved = actionCardTarget(serverId: identity.serverId, agentId: identity.agentId, target: target) else {
+            return Self.json(404, "{\"error\":\"Target channel not found\",\"code\":\"TARGET_NOT_FOUND\"}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: identity.agentId) else {
+            return Self.json(404, "{\"error\":\"Requester agent not found\",\"code\":\"AGENT_NOT_FOUND\"}")
+        }
+        if type == "integration:install_marketplace_app" {
+            let clientRef = action["clientId"] as? String ?? ""
+            let client: [String: Any]?
+            if let marketplace = oauth.marketplaceInstallableClient(recordId: clientRef) {
+                client = marketplace
+            } else if let publicClient = oauth.publicIntegrationClient(clientId: action["clientKey"] as? String ?? clientRef) {
+                client = publicClient
+            } else {
+                client = nil
+            }
+            guard let client, let messageId = prepareMarketplaceInstallCard(
+                serverId: identity.serverId, agent: agent, client: client,
+                scopes: (action["scopes"] as? [Any])?.compactMap { $0 as? String } ?? [],
+                target: resolved
+            ) else {
+                return Self.json(404, "{\"error\":\"Integration app not found\"}")
+            }
+            lock.lock()
+            let metadata = marketplaceInstallMetadataJSON(marketplaceInstallCards[messageId]!)
+            lock.unlock()
+            return Self.json(201, "{\"messageId\":\(jsonString(messageId)),\"metadata\":\(metadata)}")
+        }
+        guard let name = (action["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty,
+              let returnUrl = (action["returnUrl"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !returnUrl.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"Invalid app registration request\",\"errorCode\":\"INVALID_APP_METADATA\"}")
+        }
+        let setupUrl: String?
+        let setupDescription: String?
+        do {
+            setupUrl = try AppSetupContract.normalizeSetupUrl(action["setupUrl"] as? String)
+            setupDescription = try AppSetupContract.normalizeSetupDescription(action["setupDescription"] as? String)
+        } catch let error as AppSetupValidationError {
+            return Self.json(400, "{\"error\":\(jsonString(error.message)),\"errorCode\":\"INVALID_APP_METADATA\"}")
+        } catch {
+            return Self.json(400, "{\"error\":\"Invalid app metadata\",\"errorCode\":\"INVALID_APP_METADATA\"}")
+        }
+        let clientKey = (action["clientKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let messageId = prepareIntegrationRegisterCard(
+            serverId: identity.serverId, agent: agent, name: name,
+            clientKey: (clientKey?.isEmpty == false) ? clientKey : nil,
+            homepageUrl: (action["homepageUrl"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+            returnUrl: returnUrl,
+            agentManifestUrl: (action["agentManifestUrl"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+            setupUrl: setupUrl, setupDescription: setupDescription,
+            scopes: (action["scopes"] as? [Any])?.compactMap { $0 as? String } ?? [],
+            target: resolved
+        )
+        lock.lock()
+        let metadata = integrationRegisterMetadataJSON(integrationRegisterCards[messageId]!)
+        lock.unlock()
+        return Self.json(201, "{\"messageId\":\(jsonString(messageId)),\"metadata\":\(metadata)}")
+    }
+
     public func prepareActionCard(authorization: String?, body: String) -> HTTPReply {
         let identity: (agentId: String, serverId: String)
         switch feedbackLocatorIdentity(authorization: authorization, capability: "send") {
@@ -23193,8 +23286,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
               let target = object["target"] as? String,
-              let action = object["action"] as? [String: Any],
-              (action["type"] as? String) == "channel:create",
+              let action = object["action"] as? [String: Any]
+        else {
+            return Self.json(400, "{\"error\":\"Invalid action card request\",\"code\":\"INVALID_PAYLOAD\"}")
+        }
+        if let reply = prepareIntegrationActionCard(identity: identity, target: target, action: action) {
+            return reply
+        }
+        guard (action["type"] as? String) == "channel:create",
               let channelName = action["name"] as? String
         else {
             return Self.json(400, "{\"error\":\"Invalid action card request\",\"code\":\"INVALID_PAYLOAD\"}")

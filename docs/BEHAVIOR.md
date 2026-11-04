@@ -1594,3 +1594,11 @@ RFC 074 personal assistant：
 - 发布方 Server 的 setup 完成不算目标 Server 完成（各自 installation 独立）。
 - `integrations/app/update` 接受 `setupUrl/setupDescription`：setup URL 变化 bump declaration revision 并清空完成态；非法 URL/描述 400 INVALID_APP_METADATA。
 - `integrations/app/status` 的 app 投影包含 `setupUrl/setupDescription/setupRevision/setup{status,url,description,revision,completedAt}`。
+
+### route appSetup.api（锁定）
+
+- 安装 setup 卡片：`prepare-action` 支持 `integration:install_marketplace_app`；卡片 action 携带 **canonical** `setupUrl/setupRevision`（忽略请求里的伪造值）；执行时若 App 声明 revision/url 已变化 → 409 `APP_SETUP_CHANGED`，不安装；成功 result 的 `setupUrl` 为目标 Server 带 `installation_id/server_id/setup_revision` 的上下文 URL。
+- 注册卡片：`prepare-action` 支持 `integration:register_app`，准备阶段校验 setupUrl（HTTPS/loopback、无凭据/片段、≤2000）与单行 setupDescription（≤500、无控制字符），非法 → 400 `INVALID_APP_METADATA`；执行时把声明写入新建 client。
+- 上传报告仅接受 App 凭据：带人类 Bearer 的 PUT setup 报告返回 401。
+- 人类读取按角色：member 可读 status 但 url=null/canConfigure=false；owner/admin 可见 url；suspended installation → 404。
+- 上游 6 条 appSetup 断言由 `AppSetupRoutesTests`/`AppSetupLedgerTests`/`AppSetupAgentProjectionTests`/`AppSetupCardTests` 覆盖。

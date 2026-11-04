@@ -450,6 +450,7 @@ public func configure(_ app: Application, services: FallbackServices) {
     }
     app.put("api", "oauth", "installations", ":installationId", "setup") { request -> Response in
         routeResponse(services.emailAccounts.reportInstallationSetup(
+            authorization: request.headers[.authorization],
             installationId: request.parameters.get("installationId") ?? "",
             body: request.body.string ?? "{}"
         ))

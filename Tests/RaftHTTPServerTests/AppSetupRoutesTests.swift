@@ -101,3 +101,77 @@ import VaporTesting
         }
     }
 }
+
+@Test func setupReadsAreRoleGatedAndUnsafeDeclarationsFailClosed() async throws {
+    let accounts = EmailLoginDirectory()
+    let sourceId = "33333333-3333-4333-8333-000001078011"
+    let targetId = "33333333-3333-4333-8333-000001078012"
+    let ownerId = "11111111-1111-4111-8111-000001078011"
+    let memberId = "11111111-1111-4111-8111-000001078012"
+    accounts.addAccount(id: ownerId, email: "setup-gate@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.addAccount(id: memberId, email: "setup-member@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: memberId)
+    accounts.oauth.addOwnedServer(id: sourceId, slug: "publisher", name: "Publisher", ownerId: ownerId)
+    accounts.oauth.addOwnedServer(id: targetId, slug: "installed", name: "Installed", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: targetId, userId: memberId, role: "member")
+    let created = try accounts.oauth.createClient(
+        serverId: sourceId, createdByUserId: ownerId, name: "Setup Gate", clientId: "setup-gate-app",
+        setupUrl: "https://setup.example.test/configure"
+    )
+    accounts.oauth.setClientAppType(clientRecordId: created.id, appType: "third_party_global")
+    accounts.oauth.publishClient(clientRecordId: created.id, humanMarketplaceVisible: true)
+    let installation = accounts.oauth.installClient(
+        serverId: targetId, clientRecordId: created.id, installedByUserId: ownerId, groups: []
+    )
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            func login(_ email: String) async throws -> String {
+                var headers = HTTPFields()
+                headers[.contentType] = "application/json"
+                let response = try await client.send(.post, headers: headers, to: "/api/auth/login") { request in
+                    request.body = .init(string: "{\"email\":\"\(email)\",\"password\":\"password123\"}")
+                }
+                return (try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
+            }
+            func headers(_ token: String, _ serverId: String) -> HTTPFields {
+                var value = HTTPFields()
+                value[.authorization] = "Bearer \(token)"
+                value[.contentType] = "application/json"
+                value[HTTPField.Name("X-Server-Id")!] = serverId
+                return value
+            }
+            let memberHeaders = headers(try await login("setup-member@slock.test"), targetId)
+            let memberRead = try await client.get(URI(string: "/api/integrations/clients/\(created.id)/setup"), headers: memberHeaders)
+            #expect(memberRead.status == .ok)
+            let memberState = try JSONSerialization.jsonObject(with: Data((memberRead.body.string ?? "").utf8)) as? [String: Any] ?? [:]
+            #expect(memberState["url"] == nil || memberState["url"] is NSNull)
+            #expect(memberState["canConfigure"] as? Bool == false)
+
+            let ownerToken = try await login("setup-gate@slock.test")
+            let ownerHeaders = headers(ownerToken, targetId)
+            var humanReport = HTTPFields()
+            humanReport[.contentType] = "application/json"
+            humanReport[.authorization] = "Bearer \(ownerToken)"
+            let human = try await client.send(.put, headers: humanReport, to: "/api/oauth/installations/\(installation)/setup") { request in
+                request.body = .init(string: "{\"clientId\":\"setup-gate-app\",\"clientSecret\":\"\(created.clientSecret)\",\"revision\":1,\"status\":\"complete\"}")
+            }
+            #expect(human.status == .unauthorized, "human login is not App backend authentication")
+
+            var sourceHeaders = ownerHeaders
+            sourceHeaders[HTTPField.Name("X-Server-Id")!] = sourceId
+            for url in ["javascript:alert(1)", "https://user:pass@example.test/setup", "http://example.test/setup", "https://example.test/setup#token"] {
+                let patch = try await client.send(.patch, headers: sourceHeaders, to: "/api/integrations/clients/\(created.id)") { request in
+                    request.body = .init(string: "{\"setupUrl\":\"\(url)\"}")
+                }
+                #expect(patch.status == .badRequest, Comment(rawValue: url))
+            }
+            accounts.oauth.setInstallationStatusForTesting(clientRecordId: created.id, serverId: targetId, status: "suspended")
+            #expect((try await client.get(URI(string: "/api/integrations/clients/\(created.id)/setup"), headers: ownerHeaders)).status == .notFound)
+        }
+    }
+}
