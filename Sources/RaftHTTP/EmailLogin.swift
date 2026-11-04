@@ -304,6 +304,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var threadOrder: [String] = []
     private var serverMemberRoles: [String: String] = [:]
     private var hideHumansFromMembers: [String: Bool] = [:]
+    private var membershipAgreementAudits: [(
+        serverId: String, subjectId: String, actorUserId: String,
+        source: String, agreementId: String?, agreementVersion: Int?
+    )] = []
     private var jointProjections: [JointChannelLink] = []
     private var composerResourceServers: Set<String> = []
     private var installedServerApps: [String: Set<String>] = [:]
@@ -19274,7 +19278,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.lock()
             let message = seatLimitMessageLocked(serverId: link.serverId)
             lock.unlock()
-            return Self.inviteInfoJSON(profile: profile, message: message)
+            return inviteInfoJSON(profile: profile, message: message)
         }
         let hash = Self.sha256(token)
         lock.lock()
@@ -19286,12 +19290,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         let message = seatLimitMessageLocked(serverId: invite.serverId)
         lock.unlock()
-        return Self.inviteInfoJSON(profile: profile, message: message)
+        return inviteInfoJSON(profile: profile, message: message)
     }
 
-    private static func inviteInfoJSON(profile: OAuthLedger.ServerProfile, message: String?) -> HTTPReply {
+    private func inviteInfoJSON(profile: OAuthLedger.ServerProfile, message: String?) -> HTTPReply {
         let messageJSON = message.map(jsonString) ?? "null"
-        return json(200, "{\"serverId\":\(jsonString(profile.id)),\"serverName\":\(jsonString(profile.name)),\"serverSlug\":\(jsonString(profile.slug)),\"humanSeatLimitReached\":\(message != nil),\"humanSeatLimitMessage\":\(messageJSON)}")
+        let hidden = hideHumansFromMembers[profile.id] == true
+        let memberCount = hidden ? 0 : oauth.memberRoles(serverId: profile.id).count
+        let agentCount = hidden ? 0 : oauth.serverAgents(serverId: profile.id).count
+        let agreementJSON = oauth.activeServerAgreement(serverId: profile.id).map { Self.agreementJSON($0) } ?? "null"
+        return Self.json(200, "{\"serverId\":\(jsonString(profile.id)),\"serverName\":\(jsonString(profile.name)),\"serverSlug\":\(jsonString(profile.slug)),\"humanSeatLimitReached\":\(message != nil),\"humanSeatLimitMessage\":\(messageJSON),\"memberCount\":\(memberCount),\"agentCount\":\(agentCount),\"insideCountsHidden\":\(hidden ? "true" : "false"),\"agreement\":\(agreementJSON)}")
     }
 
     public func acceptInvite(authorization: String?, body: String) -> HTTPReply {
@@ -19316,6 +19324,23 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 lock.unlock()
                 return Self.json(400, "{\"error\":\(jsonString(message))}")
             }
+            let active = oauth.activeServerAgreement(serverId: existing.serverId)
+            if let active {
+                guard let requested = object["agreementId"] as? String else {
+                    let agreementJSON = Self.agreementJSON(active)
+                    lock.unlock()
+                    return Self.json(409, "{\"error\":\"agreement_required\",\"agreement\":\(agreementJSON)}")
+                }
+                guard requested == active.id else {
+                    let agreementJSON = Self.agreementJSON(active)
+                    lock.unlock()
+                    return Self.json(409, "{\"error\":\"agreement_changed\",\"agreement\":\(agreementJSON)}")
+                }
+                membershipAgreementAudits.append((
+                    serverId: existing.serverId, subjectId: userId, actorUserId: userId,
+                    source: "invite", agreementId: active.id, agreementVersion: active.version
+                ))
+            }
             let oldCount = joinLinks[rawToken.lowercased()]?.useCount ?? 0
             joinLinks[rawToken.lowercased()]?.useCount = oldCount + 1
             lock.unlock()
@@ -19339,10 +19364,48 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(400, "{\"error\":\(jsonString(message))}")
         }
+        if let active = oauth.activeServerAgreement(serverId: invite.serverId) {
+            guard let requested = object["agreementId"] as? String else {
+                let agreementJSON = Self.agreementJSON(active)
+                lock.unlock()
+                return Self.json(409, "{\"error\":\"agreement_required\",\"agreement\":\(agreementJSON)}")
+            }
+            guard requested == active.id else {
+                let agreementJSON = Self.agreementJSON(active)
+                lock.unlock()
+                return Self.json(409, "{\"error\":\"agreement_changed\",\"agreement\":\(agreementJSON)}")
+            }
+            membershipAgreementAudits.append((
+                serverId: invite.serverId, subjectId: userId, actorUserId: userId,
+                source: "invite", agreementId: active.id, agreementVersion: active.version
+            ))
+        }
         serverInvites.remove(at: index)
         lock.unlock()
         oauth.addMember(serverId: invite.serverId, userId: userId, role: invite.role)
         return Self.json(200, "{\"ok\":true,\"serverId\":\(jsonString(invite.serverId))}")
+    }
+
+    public func membershipAgreementAuditsForTesting(serverId: String, subjectId: String) -> [(
+        source: String, actorUserId: String, agreementId: String?, agreementVersion: Int?
+    )] {
+        lock.lock()
+        defer { lock.unlock() }
+        return membershipAgreementAudits
+            .filter { $0.serverId == serverId && $0.subjectId == subjectId }
+            .map { ($0.source, $0.actorUserId, $0.agreementId, $0.agreementVersion) }
+    }
+
+    public func joinLinkUseCountForTesting(token: String) -> Int? {
+        lock.lock()
+        defer { lock.unlock() }
+        return joinLinks[token.lowercased()]?.useCount
+    }
+
+    public func setServerHideHumansForTesting(serverId: String, hidden: Bool) {
+        lock.lock()
+        hideHumansFromMembers[serverId] = hidden
+        lock.unlock()
     }
 
     public func setServerInviteTokenForTesting(inviteId: String, token: String) {

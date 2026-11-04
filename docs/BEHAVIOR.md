@@ -1703,3 +1703,10 @@ RFC 074 personal assistant：
 - claim 仍启动任务（todo→in_progress，写 claimedAt）；self-assign 后 status 路由可 todo→in_progress；非 assignee 可改 status 但不夺 assignee；仅当前 assignee 可把 in_progress 退回 todo（他人 409），退回清 claimedAt 但保留 reservation；非 assignee 可 unclaim 他人任务。
 - 每次真实 assign/withdraw/unclaim 恰好记录一条 assignee_changed 审计（assigneeId/previousAssigneeId/类型 + actorType/actorId）；in_review 死锁可由第三方 unassign 释放，之后不同 actor 可 claim。
 - 删除仍限 creator/admin；assignment 不写 message 侧 task shadow。
+
+### route serverAgreements.api（锁定，含裁决）
+
+- `PUT /api/servers/:id/agreement` 仅 owner/admin（member 403 且错误文案固定）；enabled 时写入新版本并停用旧版本（version+1、新 id）；enabled=false 返回 agreement:null。
+- bodyMarkdown 上限 5000 字符：恰好 5000 接受并原样返回，5001 → 400 "Agreement body must be 5000 characters or fewer"。
+- invite-info（join-link 与 email invite）返回 `memberCount/agentCount/insideCountsHidden`（hideHumansFromMembers 时 0/0/true）以及当前 active agreement；accept-invite 若存在 active agreement：缺 agreementId → 409 `agreement_required` + agreement，过期 id → 409 `agreement_changed` + 当前 agreement，且都不创建 membership；接受成功写入成员资格审计（source=invite、actor=joiner、agreement id/version），join-link useCount+1。
+- 裁决为不可执行：self-serve join 的 “检查时无 active、事务内变 active” 竞态依赖 ambient transaction/DB 隔离（上游服务层事务测试），HTTP 面无法构造；同语义由 accept-invite 的 agreement_required/changed 精确拒绝覆盖。
