@@ -1462,3 +1462,10 @@ RFC 074 personal assistant：
 - OAR 快照 → wire（protocolVersion 2）：身份在边界 mask（保留首 1–3 字符 + `****` + 可选尾 0–5 字符 + 小写 domain，无法 mask 的 email 直接丢弃，原值绝不出现）；plan/displayName 走 safeLabel（trim、1–80、无控制字符；有 maskedLabel 时不带 displayName）。
 - 窗口：label 缺省为 "Usage limit"；`usedRatio` 非有限或越界 [0,1] → `parse_unavailable`（不带 usedRatio）并置 `parseErrorCode=oar_window_ratio_unreadable`；ratio≥1 → `limit_reached`，否则 ok；resetsAt 规范化为带毫秒 ISO，无法解析即缺省；rateLimited → health `rate_limited`；超过 wire 上限 12 个窗口 → health `error` 且无窗口（绝不截断）；unsupported/reauth_required → 无窗口。
 - accountKey = sha256(provider + NUL + localAccountSlot) hex（provider 作用域、不泄露本地 slot）；读取失败 → health `error`、无窗口（绝不表示 0 用量）。
+
+### daemon runtimeAccountUsage/collector
+
+- 通过 OAR runtime 读取单 provider 账户用量并投影到 wire：installation 探针每次读恰好一次，available 时才把**同一个对象**交给 accountUsage；not_found/unsupported 或缺少 probe/reader → `unsupported`（结构性不可得）；读取抛错/超时 → `error` 且无窗口（绝不显示 0 用量）。
+- Kimi 预刷新门禁（默认关闭）：开启时先按可用 installation 的 command 解析客户端 auth 并 ensureFresh；仅 rejected/revoked → `reauth_required`，transient 且 expired → `error`，其余 freshness（fresh/refreshed/adopted/missing/非过期 transient/platform_unsupported）都放行探针并保留 OAR 结果；关闭时不解析、不刷新、OAR 结果原样投影。
+- collector 工厂按 provider 读取并把 now 注入 observedAt。
+- 非移植用例：上游「每个 usage provider 路由到真实 OAR provider runtime」依赖未移植的 @botiverse/oar 实现（PARITY 已注明；工厂接线由本移植测试覆盖）。
