@@ -1878,3 +1878,8 @@ RFC 074 personal assistant：
 - 模块围绕 Slack 桥接的 provisioning/control-plane 与 OAuth 适配器：注入 `SlackBridgeRouteDependencies`/`SlackBridgeProvisioningControlPlane`，并断言 external app registrations/installs/grants、OAuth attempts、channel bindings 与 ingress metrics。这些外部 Slack 控制面、provider adapter 与 DB registry 均未移植；无黑盒 HTTP 可在无注入下到达 provisioning/oauth 断言。
 - 已锁定的替代面：`slackBridgedAgentMention`（Slack 外部投影消息在 agent 读路径的普通 mention 语义）。
 - 按契约不以外部服务/注入换实现，故裁决为非可执行。
+
+### route agentRuntimeProviders.api（裁决锁定）
+
+- 模块是 hosted runtime provider（`raft-agent-provider.v1`）的端到端契约：通过 `__setAgentRuntimeProviderTransportForTests` 注入 fake transport/baseUrl，断言 provider registration、provisioning、webhook、health、transport timeout 与凭据轮换。
+- 本仓库未移植 hosted provider 服务与 provider 协议/传输层；没有该外部 provider 与注入 transport，无黑盒 HTTP 路径可到达断言。按契约不以外部服务/transport 注入换实现，故裁决为非可执行。
