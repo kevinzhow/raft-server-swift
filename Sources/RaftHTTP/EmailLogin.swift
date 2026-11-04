@@ -23388,16 +23388,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private func taskWriteFreshnessHold(agentId: String, channelId: String, seenUpToSeq: Int?, actionKey: String) -> HTTPReply? {
         guard let seen = seenUpToSeq else { return nil }
         lock.lock()
-        let rows = humanMessageRows.filter { $0.channelId == channelId && $0.senderId != agentId && $0.seq > seen }
-        guard !rows.isEmpty else { lock.unlock(); return nil }
         let key = "\(agentId)\n\(channelId)\n\(actionKey)"
         if let held = taskWriteHolds[key], seen == held.seen {
             taskWriteHolds.removeValue(forKey: key)
             lock.unlock()
             return nil
         }
+        let rows = humanMessageRows.filter { $0.channelId == channelId && $0.senderId != agentId && $0.seq > seen }
+        guard !rows.isEmpty else { lock.unlock(); return nil }
         let latest = rows.map(\.seq).max() ?? seen
-        taskWriteHolds[key] = (seen, latest)
+        taskWriteHolds[key] = (latest, latest)
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let heldMessages = rows.sorted { $0.seq < $1.seq }.prefix(5).map { message in
