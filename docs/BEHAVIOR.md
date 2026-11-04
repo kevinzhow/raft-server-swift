@@ -1435,3 +1435,8 @@ RFC 074 personal assistant：
   - PM2：祖先进程中含 pm2 或 env 有 PM2_HOME/pm_id 时才探测（不为无关进程启动 pm2）；`pm2 jlist` 中匹配 related pid 的 app 名 → `pm2 delete '<name>'` + `pm2 save`（名字单引号安全转义，含 `'` 时按 `'\''`）；解析失败给占位名称。
   - systemd（仅 linux）：`/proc/<pid>/cgroup` 里取最后一个非 `user@N.service` 的 `.service` 单元，`/user.slice/` 内用 `systemctl --user`，否则 `sudo systemctl`；仅 INVOCATION_ID 无单元时给占位；普通用户会话 cgroup（如 vte-spawn.scope）不误报。
   - launchd（仅 darwin）：LAUNCH_JOBKEY_LABEL 或 XPC_SERVICE_NAME（非空且非 "0"）→ `launchctl bootout gui/$(id -u)/'<label>'` + 删 LaunchAgents plist；三者按 PM2→systemd→launchd 顺序。
+
+### daemon turnTriggerTrace
+
+- 唤醒 turn 的触发属性（T4 端到端唤醒延迟）：只输出 kind 与毫秒数，无 id/内容。`triggerAgeMs` = turn start − 批次内最老触发的创建时间（消息用 Server 时钟，负值保留不截 0；本地 mint 的 app inbox 项同钟）；`localWaitMs` = turn start − 本机收到最老触发的时间（本地钟，免疫时钟偏移，且下限 0）。
+- 消息：空 → other；任一 mention → mention；全部 sender_type=third_party_app → app；否则 message。app inbox：取 createdAtMs 最小项（缺省视为无穷）的 appId 映射 reminder（system.reminder）/wake_hint（system.cleaner）/app；mint 即接收。
