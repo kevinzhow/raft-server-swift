@@ -359,6 +359,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public var handsFeedbackConfigured = false
     public var handsFeedbackBaseURLOverride: String?
     public var handsFeedbackAppIdOverride: String?
+    public var handsFeedbackAppSlugOverride: String?
     public var handsFeedbackAppTokenOverride: String?
     public var providerConnectionsEnabledServers: Set<String> = []
     private var providerConnections: [ProviderConnection] = []
@@ -29120,17 +29121,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// `POST /api/product-feedback`. The upstream proxy is not ported; the
     /// route still enforces the auth, form, and configuration contract.
-    public func setHandsFeedbackForTesting(baseURL: String?, appId: String?, appToken: String?) {
+    public func setHandsFeedbackForTesting(baseURL: String?, appId: String?, appToken: String?, appSlug: String? = nil) {
         lock.lock()
         handsFeedbackBaseURLOverride = baseURL
         handsFeedbackAppIdOverride = appId
+        handsFeedbackAppSlugOverride = appSlug
         handsFeedbackAppTokenOverride = appToken
         lock.unlock()
     }
 
     public func submitProductFeedback(authorization: String?, contentType: String, body: String) -> HTTPReply {
-        guard sessionUserId(authorization: authorization) != nil else {
+        guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        let verified = accounts.values.first { $0.id == userId }?.emailVerified == true
+        lock.unlock()
+        guard verified else {
+            return Self.json(403, "{\"error\":\"Email verification required\",\"code\":\"account_unverified\"}")
         }
         guard let fields = Self.multipartFields(body: body, contentType: contentType),
               let submissionId = fields["submission_id"],
@@ -29156,17 +29164,35 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         if let handsFeedbackBaseURLOverride { environment["HANDS_FEEDBACK_BASE_URL"] = handsFeedbackBaseURLOverride }
         if let handsFeedbackAppIdOverride { environment["HANDS_FEEDBACK_APP_ID"] = handsFeedbackAppIdOverride }
+        if let handsFeedbackAppSlugOverride { environment["HANDS_FEEDBACK_APP_SLUG"] = handsFeedbackAppSlugOverride }
         if let handsFeedbackAppTokenOverride { environment["HANDS_FEEDBACK_APP_TOKEN"] = handsFeedbackAppTokenOverride }
         lock.unlock()
         guard handsFeedbackConfigured || environment["HANDS_FEEDBACK_BASE_URL"] != nil else {
             return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_not_configured\"}")
         }
-        let clientKind: String? = {
-            guard let rawMetadata = fields["metadata"],
-                  let metadataObject = (try? JSONSerialization.jsonObject(with: Data(rawMetadata.utf8))) as? [String: Any]
-            else { return nil }
-            return metadataObject["client_kind"] as? String
-        }()
+        var metadataObject: [String: Any] = [:]
+        if let rawMetadata = fields["metadata"],
+           let parsed = (try? JSONSerialization.jsonObject(with: Data(rawMetadata.utf8))) as? [String: Any] {
+            metadataObject = parsed
+        }
+        let clientKind = metadataObject["client_kind"] as? String
+        if let clientKind, ["ios", "android", "macos", "windows", "linux", "ohos"].contains(clientKind) {
+            var forwarded: [String: Any] = [
+                "client_kind": clientKind,
+                "platform": metadataObject["platform"] as? String ?? clientKind,
+                "product_type": clientKind,
+                "feedback_type": type,
+                "contact_consent": fields["may_contact"] == "true",
+            ]
+            for key in ["client_version", "locale", "os_version"] {
+                if let value = metadataObject[key] { forwarded[key] = value }
+            }
+            metadataObject = forwarded
+        } else {
+            for key in ["browser", "viewport", "web_version", "userId", "reporterId", "baseUrl", "appToken"] {
+                metadataObject.removeValue(forKey: key)
+            }
+        }
         var presignedJSON: String?
         if let rawDiagnostics = fields["diagnostics"], !rawDiagnostics.isEmpty {
             guard let native = clientKind, ["android", "ios", "ohos"].contains(native),
@@ -29177,7 +29203,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             presignedJSON = "[\("\(diagnostics)")]"
         }
         guard let base = environment["HANDS_FEEDBACK_BASE_URL"]?.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
-              let appId = environment["HANDS_FEEDBACK_APP_ID"], !appId.isEmpty
+              let appId = environment["HANDS_FEEDBACK_APP_SLUG"] ?? environment["HANDS_FEEDBACK_APP_ID"], !appId.isEmpty
         else {
             return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_not_configured\"}")
         }
@@ -29189,7 +29215,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         appendField("type", type)
         appendField("message", message)
         appendField("submission_id", submissionId)
-        if let metadata = fields["metadata"] { appendField("metadata", metadata) }
+        appendField("metadata", Self.serializeJSON(metadataObject))
         if let contact = fields["may_contact"] { appendField("may_contact", contact) }
         if let presignedJSON { appendField("presigned", presignedJSON) }
         multipart.append(Data("--\(boundary)--\r\n".utf8))

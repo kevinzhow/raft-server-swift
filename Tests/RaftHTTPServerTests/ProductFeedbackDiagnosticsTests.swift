@@ -7,7 +7,7 @@ import Testing
 import Vapor
 import VaporTesting
 
-private final class FakeHands: @unchecked Sendable {
+final class FakeHands: @unchecked Sendable {
     struct Captured: Sendable {
         let path: String
         let body: String
