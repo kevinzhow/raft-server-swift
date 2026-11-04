@@ -1688,3 +1688,10 @@ RFC 074 personal assistant：
 - `channel:add_member` 的目标 channel 必须属于本 server（否则 400 且错误含 channel），该卡片类型本身未移植（显式 501 NOT_SUPPORTED）。
 - action card 写权限、mark-executed result kind、私有 carrier 404 cloak、public reader 403、迁移卡 410 等见上一条记录。
 - 裁决为不可执行（上游依赖 actionCardsService 内部 DB 语义/ambient transaction/realtime seq 与 fake-io 断言）：私有 thread 的 stale room 不泄漏、执行后更新 private thread followers、`channel:add_member` 成功前置成员存在断言、`agent:create` 结构化 computer 约束/required computer/mark-executed 权限与 result kind 冲突、prepared card 的 realtime gap-recovery seq 与 message sync recovery metadata、`channel:create` 事务提交后才广播/回滚不发广播、public channel create 延后 publishChannelUpdate。这些属于尚未移植的 action-card 事务/实时元数据内部面，公开 HTTP 行为已由本模块与已锁定的 actionCards.resultReply.api 覆盖。
+
+### route agents.mobileV1120SaveRequests.api（锁定）
+
+- 已发布 v1.12.0 移动端的 8 个 verbatim save 请求（fixture `Tests/RaftHTTPServerTests/Fixtures/mobile-v1.12.0-save-requests.json`，不修改）全部被接受：create builtin preset/gateway、kimi-sdk explicit/default effort、edit builtin keep/replace secret、edit kimi effort-picked/untouched。
+- provider.apiKey 为 write-only：创建/PATCH/读取/list 投影中 `runtimeConfig.provider.apiKey` 一律红acted 为空串，原始密钥仅保存在服务端配置；PATCH 省略/空 apiKey 时保留已存密钥（keep-secret），提供新 apiKey 时替换（replace-secret）。
+- 结构化 runtimeConfig 投影保留 provider kind/baseUrl/supportsImageInput/providerId、model preset/custom、envVars、loadLocalPlugins、hostUserState、reasoningEffort；kimi-sdk effort 只存 RuntimeConfig（explicit high/默认 null），legacy reasoningEffort 列不承担。
+- PATCH 响应同样红acted；已知 AgentsApiCreateTests 的期望同步为 write-only。

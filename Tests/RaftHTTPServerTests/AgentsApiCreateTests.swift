@@ -93,7 +93,7 @@ private func createAgentBody(_ client: any Client, token: String, serverId: Stri
             let expected: [String: Any] = [
                 "version": 1,
                 "runtime": "claude",
-                "provider": ["kind": "custom", "apiUrl": "https://gateway.example.test/v1", "apiKey": "sk-ant-test"],
+                "provider": ["kind": "custom", "apiUrl": "https://gateway.example.test/v1", "apiKey": ""],
                 "model": ["kind": "custom", "name": "claude-opus-4-6"],
                 "mode": ["kind": "default"],
                 "reasoningEffort": NSNull(),
@@ -143,7 +143,7 @@ private func createAgentBody(_ client: any Client, token: String, serverId: Stri
             let expected: [String: Any] = [
                 "version": 1,
                 "runtime": "claude",
-                "provider": ["kind": "custom", "apiUrl": "https://gateway.example.test/v1", "apiKey": "sk-ant-test"],
+                "provider": ["kind": "custom", "apiUrl": "https://gateway.example.test/v1", "apiKey": ""],
                 "model": ["kind": "custom", "name": "claude-opus-4-6"],
                 "mode": ["kind": "default"],
                 "reasoningEffort": NSNull(),
