@@ -1718,3 +1718,10 @@ RFC 074 personal assistant：
 - 分页顺序为 channelName → taskNumber → id（与 legacy channel 排序一致），跨空频道/`all` 不重复不漏；status 过滤与分页组合。
 - `detail=summary`：每行恰好 24 个契约键（无 description 体，hasDescription/descriptionBytes 正确），createdBy/claimedBy 名称按 user displayName 与 agent handle 分离，createdAt/updatedAt/completedAt ISO；非分页 summary 不含 next_cursor。
 - 新形状响应超 8 MiB 时写 `[tasks/server] paginated/summary …` 告警（legacy 仅头）；`x-response-bytes` 两形状均返回。
+
+### route computerLegacyMachines.api（锁定）
+
+- `GET /api/computer/legacy-machines`：gate off → 404；未认证 → 401 `auth_required`；缺 serverSlug → 400 `server_slug_required`；unknown/deleted slug 与非成员统一 403 `not_authorized`（四体一致，包含 includeAll=1，防枚举）。
+- 默认 roster：仅 (userId, serverId) 且 apiKeyFingerprint 非 nil 的机器，按 machineName 排序；输出 daemonId/machineName/hostname/lastSeenAt/hasFingerprint/legacyKeyMigratedAt/apiKeyFingerprint（sha256(apiKey) 前 16 hex）。
+- `includeAll=1`：包含 NULL fingerprint 行，且全部行都不输出 apiKeyFingerprint 字节（hasFingerprint 仍区分）；已迁移行（legacyKeyMigratedAt 非空）仍返回用于中断恢复。
+- 凭据红线：响应永不包含 apiKeyHash/apiKeyPrefix/api_key_hash/raw apiKey/前缀；跨用户隔离：共享 server 上只能看到自己的 daemon。
