@@ -1587,3 +1587,10 @@ RFC 074 personal assistant：
 - `PATCH /api/integrations/clients/:clientId`：source server owner/admin 才能改声明；setupUrl/setupDescription 校验失败 400；setup URL 变化 bump revision 并清空完成态。
 - `PUT /api/oauth/installations/:installationId/setup`：clientId+clientSecret App 认证（人类登录 401）；status 必须 pending/complete；revision 不匹配或无 setupUrl → 409；active installation 不存在/不属该 App → 404；幂等（重复 complete 不重复审计）。
 - `POST/DELETE /api/integrations/marketplace/:clientId/install`：owner/admin 在目标 Server 安装/卸载 marketplace App（record id 可直接解析）；卸载后 setup 读取与上报均为 404；重装生成新 installation。
+
+### route Agent integrations 的 setup 投影（appSetup.api 基础四）
+
+- `GET /internal/agent-api/integrations` 的 services 现在包含已安装到该 Server 的 marketplace App（不仅本 Server 自建 App）；每个 service 在有 active installation 时带 `setup{status,url,description,revision}`，url 携带目标 Server 的 installation_id/server_id/setup_revision。
+- 发布方 Server 的 setup 完成不算目标 Server 完成（各自 installation 独立）。
+- `integrations/app/update` 接受 `setupUrl/setupDescription`：setup URL 变化 bump declaration revision 并清空完成态；非法 URL/描述 400 INVALID_APP_METADATA。
+- `integrations/app/status` 的 app 投影包含 `setupUrl/setupDescription/setupRevision/setup{status,url,description,revision,completedAt}`。

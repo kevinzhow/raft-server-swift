@@ -1483,8 +1483,11 @@ public final class OAuthLedger: @unchecked Sendable {
     public func integrationServices(serverId: String) -> [[String: Any]] {
         lock.lock()
         defer { lock.unlock() }
-        return clients.filter {
-            $0.serverId == serverId && $0.appType != "slock_builtin" && $0.enabled
+        return clients.filter { client in
+            client.appType != "slock_builtin" && client.enabled
+                && (client.serverId == serverId || installations.contains {
+                    $0.clientId == client.id && $0.serverId == serverId && $0.status == "active"
+                })
         }.map { client in
             let manifest = manifestFields(client)
             return [
@@ -3517,6 +3520,26 @@ public final class OAuthLedger: @unchecked Sendable {
         return integrationAppProjection(client, serverId: serverId, admin: admin)
     }
 
+    private func setupStateDictionary(client: Client, serverId: String) -> Any {
+        guard let installation = installations.first(where: {
+            $0.clientId == client.id && $0.serverId == serverId && $0.status == "active"
+        }) else { return NSNull() }
+        guard let state = try? AppSetupContract.project(
+            setupUrl: client.setupUrl, setupDescription: client.setupDescription,
+            setupRevision: client.setupRevision, installationId: installation.id,
+            serverId: installation.serverId,
+            completedRevision: installation.setupCompletedRevision,
+            completedAt: installation.setupCompletedAt
+        ) else { return NSNull() }
+        return [
+            "status": state.status.rawValue,
+            "url": state.url as Any,
+            "description": state.description as Any,
+            "revision": state.revision,
+            "completedAt": state.completedAt as Any,
+        ]
+    }
+
     private func integrationAppProjection(_ client: Client, serverId: String, admin: Bool) -> [String: Any] {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -3536,6 +3559,10 @@ public final class OAuthLedger: @unchecked Sendable {
             "homepageUrl": client.homepageUrl as Any,
             "callbackUrl": client.returnUrl as Any,
             "agentManifestUrl": client.agentManifestUrl as Any,
+            "setupUrl": client.setupUrl as Any,
+            "setupDescription": client.setupDescription as Any,
+            "setupRevision": client.setupRevision,
+            "setup": setupStateDictionary(client: client, serverId: serverId) as Any,
             "scopes": client.allowedScopes ?? [],
             "category": "Other",
             "dataAccessSummary": NSNull(),

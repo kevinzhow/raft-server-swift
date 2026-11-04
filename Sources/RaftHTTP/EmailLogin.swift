@@ -17668,7 +17668,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 return "{\"clientId\":\(jsonString(clientId)),\"agentManifestUrl\":\(Self.integrationValueJSON(service, "agentManifestUrl")),\"agentManifestUrlSource\":\(Self.integrationValueJSON(service, "agentManifestUrlSource"))}"
             }
         lock.unlock()
-        let servicesJSON = services.map(Self.integrationServiceJSON).joined(separator: ",")
+        let servicesJSON = services.map { service -> String in
+            let base = Self.integrationServiceJSON(service)
+            guard let recordId = service["id"] as? String,
+                  let state = oauth.getAppInstallationSetup(clientRecordId: recordId, serverId: agent.serverId)
+            else { return base }
+            let setup = "{\"status\":\(jsonString(state.status.rawValue)),\"url\":\(state.url.map(jsonString) ?? "null"),\"description\":\(state.description.map(jsonString) ?? "null"),\"revision\":\(state.revision)}"
+            return String(base.dropLast()) + ",\"setup\":\(setup)}"
+        }.joined(separator: ",")
         return Self.json(200, "{\"services\":[\(servicesJSON)],\"activeLogins\":[\(active.joined(separator: ","))]}")
     }
 
@@ -18242,6 +18249,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Integration app not found\"}")
         }
         var updatedFields: [String] = []
+        if object.keys.contains("setupUrl") || object.keys.contains("setupDescription") {
+            do {
+                try oauth.updateClientSetupDeclaration(
+                    clientRecordId: recordId,
+                    setupUrl: object["setupUrl"] as? String ?? oauth.clientSetupDeclarationForTesting(clientRecordId: recordId)?.url,
+                    setupDescription: object["setupDescription"] as? String ?? oauth.clientSetupDeclarationForTesting(clientRecordId: recordId)?.description
+                )
+                if object.keys.contains("setupUrl") { updatedFields.append("setupUrl") }
+                if object.keys.contains("setupDescription") { updatedFields.append("setupDescription") }
+            } catch {
+                return Self.json(400, "{\"error\":\"Invalid app metadata\",\"errorCode\":\"INVALID_APP_METADATA\"}")
+            }
+        }
         if object.keys.contains("whenToUse") {
             do {
                 let normalized = try Self.normalizedWhenToUse(object["whenToUse"] as? String)
