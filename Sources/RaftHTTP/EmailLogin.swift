@@ -4177,6 +4177,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let parentArchived = channel.kind == "thread"
             && channel.parentChannelId.flatMap { oauth.channelArchivedAt(id: $0) } != nil
         if channel.archived || parentArchived {
+            if oauth.memberRole(serverId: channel.serverId, userId: userId) == "guest" {
+                return Self.json(403, "{\"error\":\"Forbidden\"}")
+            }
             return Self.json(409, "{\"error\":\"This channel is archived\",\"code\":\"channel_archived\"}")
         }
         let appIds = Self.appReferenceIds(content)

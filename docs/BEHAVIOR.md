@@ -1295,3 +1295,4 @@ RFC 074 personal assistant：
 
 - guest 可读取频道内的 action-card 摘要消息（carrier 历史包含代表 card 的消息）。
 - guest 对 `POST /api/actions/:messageId/execute` 与新增的 `POST /api/actions/:messageId/mark-executed` 一律 403；`mark-executed` 由人类成员调用时把 card 置为 executed 并返回 `{kind:"action-card",state:"executed"}`，guest 不改变 card 状态。
+- Guest 归档频道保持只读：归档后离开 active 列表，但 guest 历史仍可读；搜索命中保留 `channelArchivedAt` 只读标记；`join` 返回 409；guest 发帖返回 403（成员发帖仍 409 `channel_archived`）。
