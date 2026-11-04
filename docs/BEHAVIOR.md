@@ -1883,3 +1883,8 @@ RFC 074 personal assistant：
 
 - 模块是 hosted runtime provider（`raft-agent-provider.v1`）的端到端契约：通过 `__setAgentRuntimeProviderTransportForTests` 注入 fake transport/baseUrl，断言 provider registration、provisioning、webhook、health、transport timeout 与凭据轮换。
 - 本仓库未移植 hosted provider 服务与 provider 协议/传输层；没有该外部 provider 与注入 transport，无黑盒 HTTP 路径可到达断言。按契约不以外部服务/transport 注入换实现，故裁决为非可执行。
+
+### route integrations.api（裁决锁定）
+
+- 模块覆盖第三方 app/OAuth integrations、webhook 加密与 CDN 资源：测试通过 `__setOAuthServiceDbForTests`、`__setAppWebhookEncryptionKeyForTests`、`__setCdnStorageForTests` 注入 DB、加密 key 与对象存储 harness，断言 registration/webhook 加密/上传资源等外部集成链路。
+- 这些外部集成服务、CDN 存储与 webhook 加密子系统未移植；无黑盒 HTTP 可在无注入下到达核心断言。按契约不以外部服务/存储注入换实现，故裁决为非可执行。
