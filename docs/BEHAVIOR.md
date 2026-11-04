@@ -1848,3 +1848,8 @@ RFC 074 personal assistant：
 ### publicSearchServiceAccess 补充：in-flight cap（已实现）
 
 - 服务请求在消耗共享桶额度后，若 bucket 实现 `PublicSearchInFlightGating`，则以 `maxInFlight` 获取槽位并在整个搜索响应结束时（`defer`）释放；槽位耗尽返回 429 + Retry-After，且不会泄漏到后续请求（跨请求平衡测试覆盖）。IP limiter 顺序仍不实现。
+
+### route readMutationsResidueBoundary.api（锁定）
+
+- `POST /api/read-mutations`（`kind=channel_read_all`，需登录 + X-Server-Id）首次返回 201 `ADMITTED`，同一 `mutationId` 重放返回 200 `ALREADY_TERMINAL`，其 ack 的 `capturedBoundary[].throughSeq` 与 `scopes[].maxReadSeq` 只取接收者自己的 read cursor（绝不取频道 live max）；`GET /api/read-mutations/frontier` 同样只回报该 cursor。
+- 覆盖“前私有频道成员仍拥有 cursor”场景：live max 已增长时，admission/ack/frontier 均不超过 receiver-owned max。

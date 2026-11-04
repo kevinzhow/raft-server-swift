@@ -608,6 +608,19 @@ public func configure(_ app: Application, services: FallbackServices) {
         }
         return routeResponse(PublicServerMessages.thread(threadChannelId: threadId))
     }
+    app.post("api", "read-mutations") { request -> Response in
+        routeResponse(services.emailAccounts.postReadMutation(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.get("api", "read-mutations", "frontier") { request -> Response in
+        routeResponse(services.emailAccounts.readMutationFrontier(
+            authorization: request.headers[.authorization],
+            scopeIds: desktopQuery(request.url.query, "scopeIds")
+        ))
+    }
     app.post("api", "messages", "mention-actions", "execute") { request -> Response in
         routeResponse(services.emailAccounts.executeMentionActions(
             body: request.body.string ?? "",

@@ -312,6 +312,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         source: String, agreementId: String?, agreementVersion: Int?
     )] = []
     private var jointProjections: [JointChannelLink] = []
+    private var readMutationAcks: [String: (scopeId: String, throughSeq: Int)] = [:]
+    private var userChannelReadCursorsForTesting: [String: Int] = [:]
     private var jointInvites: [(
         id: String, hostServerId: String, hostChannelId: String,
         targetServerId: String, targetChannelId: String,
@@ -28392,6 +28394,47 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         postableChannels[channelId] = PostableChannel(serverId: serverId, memberIds: [userId], name: name)
         lock.unlock()
         return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name)),\"joined\":true,\"activityMuteSupported\":true,\"activityMuted\":false,\"muteFromSeq\":null,\"prefsVersion\":0,\"maxReadSeq\":0,\"readStateVersion\":0}")
+    }
+
+    public func setUserChannelReadCursorForTesting(userId: String, channelId: String, seq: Int) {
+        lock.lock()
+        userChannelReadCursorsForTesting["\(userId)\n\(channelId)"] = seq
+        lock.unlock()
+    }
+
+    public func postReadMutation(authorization: String?, serverId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let mutationId = object["mutationId"] as? String, ServerScope.isUUID(mutationId),
+              let scopeId = object["scopeId"] as? String,
+              (object["kind"] as? String) == "channel_read_all"
+        else { return Self.json(400, "{\"error\":\"Invalid read mutation\",\"code\":\"invalid_read_mutation\"}") }
+        lock.lock()
+        let key = "\(userId)\n\(mutationId)"
+        if let ack = readMutationAcks[key] {
+            lock.unlock()
+            return Self.json(200, "{\"outcome\":\"ALREADY_TERMINAL\",\"ack\":{\"terminalReason\":\"completed\",\"capturedBoundary\":[{\"scopeId\":\(jsonString(ack.scopeId)),\"throughSeq\":\(ack.throughSeq)}],\"scopes\":[{\"scopeId\":\(jsonString(ack.scopeId)),\"maxReadSeq\":\(ack.throughSeq)}]}}")
+        }
+        let cursor = userChannelReadCursorsForTesting["\(userId)\n\(scopeId)"] ?? 0
+        readMutationAcks[key] = (scopeId, cursor)
+        lock.unlock()
+        return Self.json(201, "{\"mutationId\":\(jsonString(mutationId)),\"outcome\":\"ADMITTED\",\"serverId\":\(jsonString(serverId))}")
+    }
+
+    public func readMutationFrontier(authorization: String?, scopeIds: String?) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        let ids = (scopeIds ?? "").split(separator: ",").map(String.init)
+        lock.lock()
+        let rows = ids.map { scope -> String in
+            let seq = userChannelReadCursorsForTesting["\(userId)\n\(scope)"] ?? 0
+            return "{\"scopeId\":\(jsonString(scope)),\"maxReadSeq\":\(seq)}"
+        }.joined(separator: ",")
+        lock.unlock()
+        return Self.json(200, "{\"scopes\":[\(rows)]}")
     }
 
     public func acceptJointChannelInvite(authorization: String?, inviteId: String) -> HTTPReply {
