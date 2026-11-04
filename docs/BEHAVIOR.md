@@ -1302,3 +1302,8 @@ RFC 074 personal assistant：
 - OpenCode 模型列表的异步探针子进程与同步孪生行为一致：Windows 上同样经 PowerShell 解析可执行文件，按版本选择 `models` 参数（2.x ≥ 2.0.27 带 `--standalone`），listing 子进程使用 5s 预算、`HOME`/`NO_COLOR=1` 环境与 `shell:false`。
 - 失败映射一致：非零退出保留 status（无 error），timeout/spawn 失败携带 error；解析失败以 result 返回（status nil + 固定解析文案）而不抛错；`detectOpenCodeModelSource*` 区分 command failure（retryable error）、空成功（no_models）与 live 列表。
 - 取消语义：预取消以 ABORT_ERR 拒绝；listing 途中 abort 连同 cleanup 透传，detect 包装不吞掉 abort。
+
+### daemon agentRuntimeInput
+
+- 具体消息渲染：每条消息一行 header（`[target=#parent:thread msg=… time=yyyy-MM-dd HH:mm:ssZ type=human] @name: body`），时间显式 UTC；body/sender_description/attachment 文件名/线程 context 的续行统一加 `  │ ` 前缀，splitlines 的所有分隔符（\n \r \v \f \x1c-\x1e \x85 U+2028 U+2029）都被中和，无法伪造第二条 header。
+- 直接提及的 follow 复活提示渲染固定文案与 `raft thread unfollow --target "#parent:hash"`；普通 follow 投递不产生复活提示；thread join context 的 parent/recent 行以 `- [msg=… seq=… time=… type=…] @name:` 形式渲染。
