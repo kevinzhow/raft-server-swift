@@ -1428,3 +1428,10 @@ RFC 074 personal assistant：
 - 进程内存采样：启动后 60s 首采、之后每 5 分钟采样并原子写 `<samplePath>`（0600）；最多每 30 分钟发一次 `daemon.process.memory`（attrs 在事件时读取 context，再并入样本的整 MB 字段）；写文件失败仅回调 onWriteError 不影响后续采样；stop 清定时器。
 - attrs 契约固定 keys（process_instance_id/agents_running/agents_in_process/uptime_ms/*_mb/lazy_schemas_* + 可选 swap_mb/service_*）；无 swap 时缺省；service 样本仅在 sampledAt 距今 0–15 分钟内携带（rss/heap 必须数字，可带 swap）。
 - Linux VmSwap 解析出 swapBytes（缺失即缺省）；Swift 无 V8 heap space，`old_space` 等取自进程 heap 数字（文档化替代，不是 V8 语义）。
+
+### daemon legacySupervisor
+
+- 检测仍在托管本 daemon 的 legacy supervisor 并给出精确清理命令（可注入 probe：pid/platform/env/execFile/readFile）：
+  - PM2：祖先进程中含 pm2 或 env 有 PM2_HOME/pm_id 时才探测（不为无关进程启动 pm2）；`pm2 jlist` 中匹配 related pid 的 app 名 → `pm2 delete '<name>'` + `pm2 save`（名字单引号安全转义，含 `'` 时按 `'\''`）；解析失败给占位名称。
+  - systemd（仅 linux）：`/proc/<pid>/cgroup` 里取最后一个非 `user@N.service` 的 `.service` 单元，`/user.slice/` 内用 `systemctl --user`，否则 `sudo systemctl`；仅 INVOCATION_ID 无单元时给占位；普通用户会话 cgroup（如 vte-spawn.scope）不误报。
+  - launchd（仅 darwin）：LAUNCH_JOBKEY_LABEL 或 XPC_SERVICE_NAME（非空且非 "0"）→ `launchctl bootout gui/$(id -u)/'<label>'` + 删 LaunchAgents plist；三者按 PM2→systemd→launchd 顺序。
