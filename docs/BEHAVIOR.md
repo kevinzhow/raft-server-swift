@@ -1403,3 +1403,9 @@ RFC 074 personal assistant：
 
 - Codex driver 唯一被许可的 stderr 文本签名（task #1127）：同一行同时包含 tracing target `codex_core::tools::router` 与句子 `failed to parse function arguments:` 才判定为工具参数反序列化失败（转成 typed ToolArgumentParseError code）；serde 尾部（类型/值）不参与签名也绝不记录。同 target 的 `write_stdin failed` 或其它 target 的同句都不匹配；按 `\r?\n` 拆 chunk，容忍多行 stderr 但两半必须同行。
 - trace 契约 `daemon.agent.tool_argument_parse_failed` 仅允许 agentId/launchId/runtime/model，禁止 stderr/error/arguments/detail/message，防止参数值进入 trace。
+
+### daemon standingPromptRefresh
+
+- resumed session 的 standing prompt 刷新（task #13）：按 agent 在其 workspace `.raft/standing-prompt.json` 记录 sessionId + promptHash（sha256 前 32 hex，仅 id/hash/时间）；hash 前先清空 volatile 字段（`runtimeContext.daemonVersion`、`runtimeProfileControl`，发布/通知不算新 prompt），其它配置变化才算。
+- 计划：非 resume 或 runtime 自行重建 prompt → none；无记录或记录属于别的 session → baseline_unknown（只写记录不注入）；hash 相同 → unchanged；不同 → inject 并带 staleForMs（now-recordedAt，最小 0）。注入把完整当前 prompt 以 `<raft-standing-prompt-update>` 块放到首条输入最前并标记替换旧指令，promptSource 追加 `_with_standing_prompt_update`；unchanged 情形原样返回。
+- 非移植用例：上游 5 例中「各 driver 的 standingPromptRefreshesOnResume 标志表」依赖未移植的 driver 类，本移植不适用（PARITY 已注明）。
