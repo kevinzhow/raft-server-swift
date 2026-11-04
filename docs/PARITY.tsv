@@ -218,13 +218,13 @@ tasks.shapeSurfaces.api	route	locked	29c8fa5	REST delete across v0/backfilled/v1
 tasks.snapshotMetrics.api	route	locked	e1fa956	covered by the existing metric/scope tests
 timezoneObservation.api	route	locked	595ec75	auth/validation, first+last preservation, canonical IANA alias, legacy first-pair fallback; excluded DB clock and concurrent observers
 version.api	route	locked	5247150	build identity and explicit 503 covered
-accessRevocation.redis	socket	pending	-	auto-seed
+accessRevocation.redis	socket	locked	SLICE	no executable assertions in the upstream suite; the Redis-backed family revocation behaviour is exercised through the socket hub/close paths and the route-level revocation tests
 desktopAttention.api	socket	pending	-	auto-seed
 desktopAttentionEvents	socket	locked	051e3ba	desktop:attention socket event: only desktop sockets receive it, true records the socket's own user with a 30s per-socket throttle, false clears at once and resets the record throttle, malformed payloads are ignored, and record/clear failures stay inside the handler
 index	socket	locked	4156721	handshake parser, room contract, and live transport covered
 platformScope	socket	locked	4156721	room helpers and mobile-scoped push covered
-roomTargeting.contract	socket	pending	-	auto-seed
-traceMetadata	socket	pending	-	auto-seed
+roomTargeting.contract	socket	locked	SLICE	non-executable source-scan guard: scans TypeScript production sources for chained Socket.IO `.in()/.to()` room targets (union semantics); this port has no TS sources and its room API takes a single room per call, so the invariant is structural rather than asserted
+traceMetadata	socket	locked	SLICE	socket trace metadata stripping: recursively removes the `_trace` envelope at any depth while preserving other keys, arrays and scalars
 activity/activitySink	daemon	locked	cafd468	legacy activity sink: facts carry sequence/fact-id/observation/daemon generation with a produced trace, non-fact or unknown detail kinds drop with an error trace and no frame, heartbeats mark replay provenance with the legacy namespace, probe replies carry the probe id without an observation time, and raw sends pass caller sequences through
 activity/agentActivityProducer	daemon	locked	6d573d9	daemon activity producer: unknown or non-string detail kinds drop with unknown_activity_detail_kind, weak conclusion-bearing kinds (none/daemon_activity/external_activity/slock_action/other) drop with non_fact_activity_detail_kind and typed trace attrs, and fact-typed frames omit the producer activity/activityKind conclusions while status entries drop their own activity fields
 agentAppInbox	daemon	locked	934a133	non-executable runtime rail: the Computer-local typed app inbox store needs the daemon's injected app registry, storage capability and runtime action builders; this port ships no agent runtime or app registry
