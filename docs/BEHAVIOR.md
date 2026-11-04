@@ -1480,3 +1480,10 @@ RFC 074 personal assistant：
 - 共享 chat-bridge HTTP 执行器：`executeJSON` 成功返回解析后的 JSON 与 duration；`executeResponse` 返回原始 body（二进制/文件流）。
 - 本地超时：用本地 deadline 取消在途请求并记录结构化 `[ChatBridgeTimeout] tool=... target=... duration_ms=... timeout_ms=... outcome=timeout`，抛带 tool/target/timeout/duration 的 ChatBridgeToolTimeoutError。
 - 状态优先：非 2xx 直接按 HTTP status 抛 HttpStatusError（HTML 错误页不会被误报为 JSON 解析错误）；JSON 错误体的 `error`（最多 300 字符）保留在 serverError 旁。
+
+### daemon raftDiskJanitor
+
+- 有界磁盘巡检：目录测量按 64 项一批扣预算（默认 200k 项 / 30s），只统计普通文件、不跟随 symlink；耗尽时 outcome 明确为 `truncated`/`timeout`（绝不当作完整小数值）；缺失目录为 0。
+- 迁移代清理：`migrations/<migration>/<generation>` 含 `chunks`/`source-spool`/`extracting-*` 且最近活动（根与直接子项最大 mtime）早于 7 天 → 删除 bulk、保留 JSON 报告，返回释放字节。
+- 备份保留：每个 agent 的 `migration-workspace-backups/<agent>/<backup>` 按 mtime 降序，保留前 3 且 mtime ≥ 30 天 cutoff；其余删除并逐条上报 owner/kind(preexisting|migration)/ageDays/freedBytes。
+- footprint 分开统计 migrations / workspace backups / (cli-transport + agent-proxy-tokens)，并带 measure outcome；定时器初始 10 分钟后、此后每 24 小时跑一次，pass 不重叠（结束才重新 arm），stop 清定时器。
