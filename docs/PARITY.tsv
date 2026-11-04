@@ -360,7 +360,7 @@ reminderRetryRoutes.sourceContract	daemon	pending	-	auto-seed
 runnerApp.e2e	daemon	pending	-	auto-seed
 runtimeAccountUsage/collector	daemon	pending	-	auto-seed
 runtimeAccountUsage/kimiAuth	daemon	locked	d8c8b25	Kimi Code auth resolution: default host pair keeps the client key while custom pairs get the sha256 digest suffix, storage names reject traversal-ish keys, provider-list projection honors env overrides and configured non-default storage, and resolveKimiCodeAuth projects a bounded `provider list --json` probe (nil for unparseable output or no managed kimi provider)
-runtimeAccountUsage/kimiCredentialLock	daemon	locked	SLICE	Kimi refresh lock parity: a directory sentinel taken with bounded backoff, fn never runs without the lock, a stale lock is reclaimed by mtime, a lock reclaimed or removed underneath the daemon is reported as compromised on the handle instead of thrown, and the lock is released after fn settles
+runtimeAccountUsage/kimiCredentialLock	daemon	locked	a278c87	Kimi refresh lock parity: a directory sentinel taken with bounded backoff, fn never runs without the lock, a stale lock is reclaimed by mtime, a lock reclaimed or removed underneath the daemon is reported as compromised on the handle instead of thrown, and the lock is released after fn settles
 runtimeAccountUsage/kimiTokenRefresh	daemon	pending	-	auto-seed
 runtimeAccountUsage/oarAdapter	daemon	pending	-	auto-seed
 runtimeAccountUsage/oarKimi	daemon	pending	-	auto-seed
