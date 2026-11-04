@@ -181,7 +181,7 @@ public enum PublicSearch {
             if parseIndexCursor(cursor) == .invalid {
                 return notFound(method: method)
             }
-            let body = indexEnabled ? indexBody(catalog) : "{\"entries\":[],\"nextCursor\":null}"
+            let body = indexEnabled ? indexBody(catalog, cursor: cursor) : "{\"entries\":[],\"nextCursor\":null}"
             return json(status: 200, body: body, method: method, extra: [:])
         }
         guard indexEnabled else {
@@ -348,24 +348,39 @@ public enum PublicSearch {
         return "{\"type\":\(jsonString(kind)),\"displayName\":\(jsonString(name)),\"avatarUrl\":null}"
     }
 
-    private static func indexBody(_ catalog: PublicSearchCatalog) -> String {
-        var entries: [String] = []
+    private static func indexBody(_ catalog: PublicSearchCatalog, cursor: String?) -> String {
         let servers = catalog.servers.filter(\.searchable).sorted { $0.publicId < $1.publicId }
-        for server in servers {
+        let start = cursor.flatMap { Int($0.prefix(32), radix: 16) } ?? 0
+        var entries: [String] = []
+        var index = max(0, min(start, servers.count))
+        var scanned = 0
+        while index < servers.count, scanned < 500, entries.count < 75 {
+            let server = servers[index]
+            var serverEntries: [String] = []
             let serverLastmod = server.indexLastmod ?? server.updatedAt
-            entries.append(indexEntry("server", serverPath(server), serverLastmod))
+            serverEntries.append(indexEntry("server", serverPath(server), serverLastmod))
             let channels = server.channels.filter(\.guestVisible).sorted { $0.publicId < $1.publicId }
             for channel in channels {
-                entries.append(indexEntry("channel", channelPath(server, channel), channel.indexLastmod ?? serverLastmod))
+                serverEntries.append(indexEntry("channel", channelPath(server, channel), channel.indexLastmod ?? serverLastmod))
             }
             let threads = channels.flatMap { channel in
                 channel.threads.filter { !$0.replies.isEmpty }.map { (channel, $0) }
             }.sorted { $0.1.publicId < $1.1.publicId }
             for (channel, thread) in threads {
-                entries.append(indexEntry("thread", threadPath(server, channel, thread), thread.indexLastmod ?? serverLastmod))
+                serverEntries.append(indexEntry("thread", threadPath(server, channel, thread), thread.indexLastmod ?? serverLastmod))
             }
+            if !entries.isEmpty, entries.count + serverEntries.count > 75 { break }
+            entries.append(contentsOf: serverEntries)
+            index += 1
+            scanned += 1
         }
-        return "{\"entries\":[\(entries.joined(separator: ","))],\"nextCursor\":null}"
+        var nextCursorJSON = "null"
+        if index < servers.count {
+            let hex = String(index, radix: 16)
+            let padded = String(repeating: "0", count: max(0, 32 - hex.count)) + hex + ":done"
+            nextCursorJSON = jsonString(padded)
+        }
+        return "{\"entries\":[\("\(entries.joined(separator: ","))")],\"nextCursor\":\(nextCursorJSON)}"
     }
 
     private static func indexEntry(_ type: String, _ path: String, _ lastmod: String) -> String {
