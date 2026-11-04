@@ -1508,3 +1508,11 @@ RFC 074 personal assistant：
 - 失败方向安全：写前先删旧文件；写/rename 失败清理 tmp 并把 generation 文件清掉（绝不留下可被 CLI 匹配的旧 id）；表写失败删除整表（宁丢表也不复用 compaction 前 id）。
 - 计划与发布分离：plan 只计算不落盘；bindToSession 在 runtime 报告的 session 与 resume 目标不一致时先发布新 id（继承本次 spawn 的 passiveAx gate），再绑定 session→id；compaction 后重新绑定。
 - `RUNTIME_REPORTS_COMPACTION` 为每个已注册 runtime 显式声明是否上报 compaction；configPassiveAx 仅显式 true 开启。
+
+### daemon runtimeModels/oarListModels
+
+- 经 OAR `listModels` 读取 runtime 可用模型并投影到既有 outcome：ok→live（保留 effort 菜单/默认 effort/service tier，`verified: launchable`），空列表或全部 disabled→no_models，unauthenticated→retryable `runtime_not_authenticated`，unsupported 交调用方决定（携带 OAR reason），listing 抛错→retryable 无 code。
+- 截止时间：本地 deadline 先到→retryable `detect_timeout`；传给 lister 的 timeout 始终大于本地 deadline（本地 deadline 决定结果）；deadline 只停止等待，listing 继续跑到自身 timeout。
+- 单飞：同一 lister 上仍在跑的 listing 被后续请求 join（不会并发发起第二个）；settle 后下一次请求才启动新 listing。
+- 投影去重 id、丢弃 disabled；runtime 无法应用 effort 时丢弃 effort 字段。
+- 注：上游 13 例中 3 例（opencode 安装形态/解析器对齐）依赖未移植的 opencode driver parser 与 provider label formatter，未计入（PARITY 注明）。
