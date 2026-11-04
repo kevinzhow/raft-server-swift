@@ -1580,3 +1580,10 @@ RFC 074 personal assistant：
 - 读取 setup：仅 enabled client + active installation；无 setupUrl → `not_required`；有则按契约附加 installation_id/server_id/setup_revision 并返回 pending/complete。
 - 上报 setup：仅 App 自身（clientRecordId）+ active installation；`revision != setupRevision` 或无 setupUrl → 409 语义冲突；complete/pending 幂等（重复上报不重复审计），审计事件 `installation.setup_updated` 可计数。
 - 卸载删除 active installation；重新安装生成新 installation id 且 setup 回到 pending。
+
+### route App setup HTTP 面（appSetup.api 切片基础三）
+
+- `GET /api/integrations/clients/:clientId/setup`：需 server member；enabled client + active installation 才 200，否则 404；响应 `status/url/description/revision/completedAt/canConfigure` 且 `Cache-Control: no-store`；仅 owner/admin 看到 url/description（member 看到 url=null、canConfigure=false）。
+- `PATCH /api/integrations/clients/:clientId`：source server owner/admin 才能改声明；setupUrl/setupDescription 校验失败 400；setup URL 变化 bump revision 并清空完成态。
+- `PUT /api/oauth/installations/:installationId/setup`：clientId+clientSecret App 认证（人类登录 401）；status 必须 pending/complete；revision 不匹配或无 setupUrl → 409；active installation 不存在/不属该 App → 404；幂等（重复 complete 不重复审计）。
+- `POST/DELETE /api/integrations/marketplace/:clientId/install`：owner/admin 在目标 Server 安装/卸载 marketplace App（record id 可直接解析）；卸载后 setup 读取与上报均为 404；重装生成新 installation。

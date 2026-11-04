@@ -1316,12 +1316,6 @@ public final class OAuthLedger: @unchecked Sendable {
         var messageType: String? = nil
     }
 
-    public func memberRole(serverId: String, userId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return members["\(serverId)\n\(userId)"]
-    }
-
     public func addMember(serverId: String, userId: String, role: String) {
         lock.lock()
         members["\(serverId)\n\(userId)"] = role
@@ -3420,6 +3414,44 @@ public final class OAuthLedger: @unchecked Sendable {
             $0.clientId == clientRecordId && $0.serverId == serverId && $0.status == "active"
         }
         return installations.count != before
+    }
+
+    /// App backend authentication for the setup report: the owning App's
+    /// client id + secret, enabled and user-managed.
+    public func verifyClientSecret(clientKey: String, clientSecret: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return clients.first {
+            ($0.clientId == clientKey || $0.id == clientKey) && $0.enabled
+                && $0.appType != "slock_builtin" && $0.secretHash == sha256(clientSecret)
+        }?.id
+    }
+
+    public func memberRole(serverId: String, userId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return members["\(serverId)\n\(userId)"]
+    }
+
+    /// Resolves an App by client key or record id for a target Server, whether
+    /// the App is owned by that Server or installed on it from a publisher.
+    public func setupClientRecordId(serverId: String, clientKey: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return clients.first { client in
+            (client.clientId == clientKey || client.id == clientKey)
+                && (client.serverId == serverId || installations.contains {
+                    $0.clientId == client.id && $0.serverId == serverId && $0.status == "active"
+                })
+        }?.id
+    }
+
+    public func clientRecordIdForServer(serverId: String, clientKey: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return clients.first {
+            $0.serverId == serverId && ($0.clientId == clientKey || $0.id == clientKey)
+        }?.id
     }
 
     public func integrationAuditEventCount(eventType: String) -> Int {

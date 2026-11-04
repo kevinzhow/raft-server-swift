@@ -433,6 +433,41 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
         ))
     }
+    app.get("api", "integrations", "clients", ":clientId", "setup") { request -> Response in
+        routeResponse(services.emailAccounts.integrationClientSetup(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            clientId: request.parameters.get("clientId") ?? ""
+        ))
+    }
+    app.patch("api", "integrations", "clients", ":clientId") { request -> Response in
+        routeResponse(services.emailAccounts.updateIntegrationClientSetup(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            clientId: request.parameters.get("clientId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.put("api", "oauth", "installations", ":installationId", "setup") { request -> Response in
+        routeResponse(services.emailAccounts.reportInstallationSetup(
+            installationId: request.parameters.get("installationId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.post("api", "integrations", "marketplace", ":clientId", "install") { request -> Response in
+        routeResponse(services.emailAccounts.installMarketplaceClient(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            clientId: request.parameters.get("clientId") ?? ""
+        ))
+    }
+    app.delete("api", "integrations", "marketplace", ":clientId", "install") { request -> Response in
+        routeResponse(services.emailAccounts.uninstallMarketplaceClient(
+            authorization: request.headers[.authorization],
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            clientId: request.parameters.get("clientId") ?? ""
+        ))
+    }
     app.get("api", "integrations", "marketplace") { request -> Response in
         routeResponse(services.emailAccounts.integrationMarketplace(
             authorization: request.headers[.authorization],

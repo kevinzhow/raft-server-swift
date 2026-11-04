@@ -17672,6 +17672,134 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"services\":[\(servicesJSON)],\"activeLogins\":[\(active.joined(separator: ","))]}")
     }
 
+    /// `GET /api/integrations/clients/:clientId/setup`. Reading or visiting the
+    /// setup link never completes setup and never changes grants; only
+    /// owner/admin see the destination URL.
+    public func integrationClientSetup(authorization: String?, serverId: String, clientId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard let recordId = oauth.setupClientRecordId(serverId: serverId, clientKey: clientId),
+              let state = oauth.getAppInstallationSetup(clientRecordId: recordId, serverId: serverId)
+        else {
+            return Self.json(404, "{\"error\":\"Active installation not found\"}")
+        }
+        let canConfigure = role == "owner" || role == "admin"
+        let url = canConfigure ? state.url : nil
+        let description = canConfigure ? state.description : nil
+        let body = "{\"status\":\(jsonString(state.status.rawValue)),\"url\":\(url.map(jsonString) ?? "null"),\"description\":\(description.map(jsonString) ?? "null"),\"revision\":\(state.revision),\"completedAt\":\(state.completedAt.map(jsonString) ?? "null"),\"canConfigure\":\(canConfigure ? "true" : "false")}"
+        return Self.jsonNoStore(200, body)
+    }
+
+    private static func jsonNoStore(_ status: Int, _ body: String) -> HTTPReply {
+        var reply = json(status, body)
+        reply.headers["Cache-Control"] = "no-store"
+        return reply
+    }
+
+    /// `PATCH /api/integrations/clients/:clientId`: the owning App's Server
+    /// owner/admin edits the setup declaration. A changed setup URL is a new
+    /// revision; wording-only changes do not require configuration again.
+    public func updateIntegrationClientSetup(authorization: String?, serverId: String, clientId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId), role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Only server owners and admins can change app setup\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid request body\"}")
+        }
+        guard let recordId = oauth.setupClientRecordId(serverId: serverId, clientKey: clientId) else {
+            return Self.json(404, "{\"error\":\"Integration app not found\"}")
+        }
+        do {
+            try oauth.updateClientSetupDeclaration(
+                clientRecordId: recordId,
+                setupUrl: object["setupUrl"] as? String,
+                setupDescription: object["setupDescription"] as? String
+            )
+        } catch let error as AppSetupValidationError {
+            return Self.json(400, "{\"error\":\(jsonString(error.message)),\"errorCode\":\"INVALID_APP_METADATA\"}")
+        } catch {
+            return Self.json(400, "{\"error\":\"Invalid app metadata\",\"errorCode\":\"INVALID_APP_METADATA\"}")
+        }
+        let declaration = oauth.clientSetupDeclarationForTesting(clientRecordId: recordId)
+        let body = "{\"clientId\":\(jsonString(clientId)),\"setupUrl\":\(declaration?.url.map(jsonString) ?? "null"),\"setupDescription\":\(declaration?.description.map(jsonString) ?? "null"),\"setupRevision\":\(declaration?.revision ?? 1)}"
+        return Self.json(200, body)
+    }
+
+    /// `PUT /api/oauth/installations/:installationId/setup`. Only the owning
+    /// App's backend can report; human login is not App authentication.
+    public func reportInstallationSetup(installationId: String, body: String) -> HTTPReply {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let clientKey = object["clientId"] as? String,
+              let clientSecret = object["clientSecret"] as? String,
+              let revision = object["revision"] as? Int,
+              let status = object["status"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"Invalid setup report\"}")
+        }
+        guard status == "pending" || status == "complete" else {
+            return Self.json(400, "{\"error\":\"status must be pending or complete\"}")
+        }
+        guard let recordId = oauth.verifyClientSecret(clientKey: clientKey, clientSecret: clientSecret) else {
+            return Self.json(401, "{\"error\":\"Invalid client credentials\"}")
+        }
+        do {
+            guard let state = try oauth.updateAppInstallationSetup(
+                clientRecordId: recordId, installationId: installationId, revision: revision, status: status
+            ) else {
+                return Self.json(404, "{\"error\":\"Active installation not found\"}")
+            }
+            let body = "{\"status\":\(jsonString(state.status.rawValue)),\"url\":\(state.url.map(jsonString) ?? "null"),\"description\":\(state.description.map(jsonString) ?? "null"),\"revision\":\(state.revision),\"completedAt\":\(state.completedAt.map(jsonString) ?? "null")}"
+            return Self.jsonNoStore(200, body)
+        } catch is OAuthLedger.AppSetupConflictError {
+            return Self.json(409, "{\"error\":\"Setup declaration changed; read current setup state before reporting completion\"}")
+        } catch {
+            return Self.json(400, "{\"error\":\"Invalid setup report\"}")
+        }
+    }
+
+    /// `POST /api/integrations/marketplace/:clientId/install` for the target Server.
+    public func installMarketplaceClient(authorization: String?, serverId: String, clientId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId), role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Only server owners and admins can install apps\"}")
+        }
+        let recordId: String
+        if oauth.marketplaceInstallableClient(recordId: clientId) != nil {
+            recordId = clientId
+        } else if let direct = oauth.clientRecordIdForServer(serverId: serverId, clientKey: clientId) {
+            recordId = direct
+        } else {
+            return Self.json(404, "{\"error\":\"Integration app not found\"}")
+        }
+        let installationId = oauth.installClient(serverId: serverId, clientRecordId: recordId, installedByUserId: userId, groups: [])
+        let state = oauth.getAppInstallationSetup(clientRecordId: recordId, serverId: serverId)
+        return Self.json(200, "{\"id\":\(jsonString(installationId)),\"setup\":{\"status\":\(jsonString(state?.status.rawValue ?? "not_required")),\"revision\":\(state?.revision ?? 1)}}")
+    }
+
+    /// `DELETE /api/integrations/marketplace/:clientId/install`.
+    public func uninstallMarketplaceClient(authorization: String?, serverId: String, clientId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId), role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Only server owners and admins can uninstall apps\"}")
+        }
+        guard let recordId = oauth.setupClientRecordId(serverId: serverId, clientKey: clientId) else {
+            return Self.json(404, "{\"error\":\"Integration app not found\"}")
+        }
+        _ = oauth.uninstallClient(serverId: serverId, clientRecordId: recordId)
+        return Self.json(200, "{\"ok\":true}")
+    }
+
     /// Feature flag gate shared by the attachment-comment routes. It answers
     /// before body validation so a disabled server sees one uniform 403.
     public func attachmentCommentsEnabled(serverId: String, userId: String? = nil) -> Bool {
