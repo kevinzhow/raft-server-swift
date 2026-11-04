@@ -1326,3 +1326,9 @@ RFC 074 personal assistant：
 
 - provider 请求的被动诊断：等待时发 waiting，收到响应头后发 responding（2xx）或 failed（非 2xx，带 httpStatus）；transport 抛错时 failed，取消时 cancelled；observer 抛错不影响请求；requestId 全程唯一，provider 非法名归一为 `custom`。
 - 请求与响应原样透传：保留原始 body/options/signal，返回 transport 的同一响应对象（identity/metadata/未锁定 body 不变，可独立 clone 读取），诊断不含请求或响应正文。
+
+### daemon runtimeAccountUsage/kimiAuth
+
+- Kimi Code OAuth key：默认 host 对（auth.kimi.com + api.kimi.com/coding/v1）映射 `oauth/kimi-code`；其他 host 对按 `{oauthHost,baseUrl}` 的 sha256 前 16 hex 生成 `oauth/kimi-code-env-<digest>`；storage name 拒绝空/以 `.` 开头/含路径分隔符的 key。
+- provider-list 投影：仅 `managed:kimi-code` 且 type=kimi 时有效；env `KIMI_CODE_BASE_URL`/`KIMI_CODE_OAUTH_HOST`（兼容 `KIMI_OAUTH_HOST`）覆盖配置；无覆盖且配置 key 匹配时保留配置 storage（非 file 记 `other`）；`KIMI_CODE_HOME` 或 `~/.kimi-code` 树下派生 credentialPath（credentials/<name>.json）与 lockTarget（oauth/<name>）。
+- `resolveKimiCodeAuth` 以 `provider list --json` 探针读取并投影，非 JSON 或无名 managed provider 返回 nil；附带 device headers 与 `device_id` 创建逻辑。

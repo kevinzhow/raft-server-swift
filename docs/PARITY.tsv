@@ -359,7 +359,7 @@ releaseRuntimeSdkPreflight	daemon	pending	-	auto-seed
 reminderRetryRoutes.sourceContract	daemon	pending	-	auto-seed
 runnerApp.e2e	daemon	pending	-	auto-seed
 runtimeAccountUsage/collector	daemon	pending	-	auto-seed
-runtimeAccountUsage/kimiAuth	daemon	pending	-	auto-seed
+runtimeAccountUsage/kimiAuth	daemon	locked	SLICE	Kimi Code auth resolution: default host pair keeps the client key while custom pairs get the sha256 digest suffix, storage names reject traversal-ish keys, provider-list projection honors env overrides and configured non-default storage, and resolveKimiCodeAuth projects a bounded `provider list --json` probe (nil for unparseable output or no managed kimi provider)
 runtimeAccountUsage/kimiCredentialLock	daemon	pending	-	auto-seed
 runtimeAccountUsage/kimiTokenRefresh	daemon	pending	-	auto-seed
 runtimeAccountUsage/oarAdapter	daemon	pending	-	auto-seed
