@@ -1366,3 +1366,7 @@ RFC 074 personal assistant：
 ### daemon runtimeModelSourceProjection
 
 - `machine:runtime_models:result` 增量载体：live 时同时携带 typed `outcome`（models 补 verified、保留 default 与可选 catalog）与 legacy `models`/`default` 字段；空 live catalog 先归一为 `no_models`（legacy models: []）；非 live 保留 typed outcome（missing_config 可带 recovery；error 带 retryable/code/reason）并按类型写 legacy `error`（missing_config/unsupported/error）或空 models。
+
+### daemon runtimeProgressState
+
+- 派生的 runtime 进度时钟：只有 runtime app event 与显式 internal-progress 刷新 lastEvent 或清除 stale latch（turn start 不清 latch）；stale 时间戳保留首次值；`ageMs` 以「lastEvent 与当前 turn start 取较晚者」为锚（避免长空闲后的首条输入被误判为整段空闲停滞），`lastEventAgeMs` 保持按 lastEvent 字面计算（`last_event_age_*` 遥测口径）；新的 runtime event 会覆盖更早的 turn start 锚。
