@@ -1660,3 +1660,10 @@ RFC 074 personal assistant：
 - legacy 机器凭据族：`GET/POST /internal/agent/:id/reminders`、`DELETE /internal/agent/:id/reminders/:reminderId`；机器凭据解析 server，agent 必须属于该 server；external agent 写 → 409 `reminders_unsupported_for_external_agents`；agent-created reminder 必须带 `msgId`（缺失 400），`fireAt` 或 `delaySeconds` 二选一；取消需 `expectedVersion`，不匹配 409 且不改状态；列表 `status` 过滤非法 400。
 - agent-api 绑定身份族：`GET/POST /internal/agent-api/reminders`，凭 credential 的 agent 身份而非路径 id；同样 external 409、msgId 400、status 过滤。
 - 目前 CRUD 仅覆盖 list/create/cancel；snooze/update/events、reminder_app rollout、socket `reminder:scheduled`/`reminder:canceled` 分发、anchor cloak/joint projection、legacy 历史短日志仍待补。
+
+### route internal reminders（状态机与日志，进行中）
+
+- snooze/update/log 已接入双路由族：update/snooze 绑定当前 version；fired 状态禁止 update（409 提示先 snooze 回 scheduled），canceled 禁止 snooze；snooze 允许 fired→scheduled。
+- `/log` 返回事件日志（newest-first，`{eventType,version}`）：scheduled → updated → fired → snoozed → canceled 顺序可断言。
+- reminder summary 现在含 `reminderId`（与 id 同值）、`ownerAgentId`、`status`、`version`、`title`、`fireAt`。
+- 仍待补：reminder_app rollout（legacy 写拒绝 `reminders_moved_to_app`）、socket `reminder:scheduled`/`reminder:canceled` 分发给可查看 agent 的用户、legacy 历史短日志/owner transfer、anchor cloak/joint projection、4xx span 分类。

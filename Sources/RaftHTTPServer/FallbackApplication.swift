@@ -835,6 +835,55 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? "{}"
         ))
     }
+    app.post("internal", "agent", ":agentId", "reminders", ":reminderId", "snooze") { request -> Response in
+        routeResponse(services.emailAccounts.legacyReminderSnooze(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId") ?? "",
+            reminderId: request.parameters.get("reminderId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.patch("internal", "agent", ":agentId", "reminders", ":reminderId") { request -> Response in
+        routeResponse(services.emailAccounts.legacyReminderUpdate(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId") ?? "",
+            reminderId: request.parameters.get("reminderId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.get("internal", "agent", ":agentId", "reminders", ":reminderId", "log") { request -> Response in
+        routeResponse(services.emailAccounts.legacyReminderLog(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId") ?? "",
+            reminderId: request.parameters.get("reminderId") ?? ""
+        ))
+    }
+    app.delete("internal", "agent-api", "reminders", ":reminderId") { request -> Response in
+        routeResponse(services.emailAccounts.agentApiReminderCancel(
+            authorization: request.headers[.authorization],
+            reminderId: request.parameters.get("reminderId") ?? ""
+        ))
+    }
+    app.post("internal", "agent-api", "reminders", ":reminderId", "snooze") { request -> Response in
+        routeResponse(services.emailAccounts.agentApiReminderSnooze(
+            authorization: request.headers[.authorization],
+            reminderId: request.parameters.get("reminderId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.patch("internal", "agent-api", "reminders", ":reminderId") { request -> Response in
+        routeResponse(services.emailAccounts.agentApiReminderUpdate(
+            authorization: request.headers[.authorization],
+            reminderId: request.parameters.get("reminderId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.get("internal", "agent-api", "reminders", ":reminderId", "log") { request -> Response in
+        routeResponse(services.emailAccounts.agentApiReminderLog(
+            authorization: request.headers[.authorization],
+            reminderId: request.parameters.get("reminderId") ?? ""
+        ))
+    }
     app.get("internal", "agent-api", "reminders") { request -> Response in
         routeResponse(services.emailAccounts.agentApiReminderList(
             authorization: request.headers[.authorization],

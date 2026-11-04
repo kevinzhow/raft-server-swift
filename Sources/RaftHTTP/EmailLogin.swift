@@ -25771,6 +25771,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let index = reminderRecords.firstIndex(where: { $0.id == reminderId && $0.ownerAgentId == ownerAgentId }) else {
             return .notFound
         }
+        if type == "updated", reminderRecords[index].status == "fired" {
+            return .invalid("cannot update a fired reminder; snooze it back to scheduled first")
+        }
+        if type == "snoozed", reminderRecords[index].status == "canceled" {
+            return .invalid("cannot snooze a canceled reminder")
+        }
         guard reminderRecords[index].version == expectedVersion else {
             return .conflict(currentVersion: reminderRecords[index].version)
         }
@@ -25784,18 +25790,44 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     public func listAppReminders(
         serverId: String, ownerAgentId: String, status: String?
-    ) -> (rows: [(id: String, status: String, version: Int, title: String)], invalidStatus: Bool) {
+    ) -> (rows: [(id: String, status: String, version: Int, title: String, fireAt: Date)], invalidStatus: Bool) {
         let allowed = Set(["scheduled", "canceled", "fired", "all"])
-        if let status, !allowed.contains(status) {
-            return ([], true)
+        var wanted: Set<String>?
+        if let status, !status.isEmpty {
+            let parts = status.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard !parts.isEmpty, parts.allSatisfy({ allowed.contains($0) }) else {
+                return ([], true)
+            }
+            if !parts.contains("all") { wanted = Set(parts) }
         }
         lock.lock()
         defer { lock.unlock() }
         let rows = reminderRecords.filter { reminder in
             reminder.serverId == serverId && reminder.ownerAgentId == ownerAgentId
-                && (status == nil || status == "all" || reminder.status == status)
-        }.map { ($0.id, $0.status, $0.version, $0.title) }
+                && (wanted == nil || wanted!.contains(reminder.status))
+        }.map { ($0.id, $0.status, $0.version, $0.title, $0.fireAt) }
         return (rows, false)
+    }
+
+    public func fireAppReminderForTesting(reminderId: String) -> ReminderMutationOutcome {
+        mutateAppReminder(reminderId: reminderId, ownerAgentId: ownerAgentIdForReminder(reminderId) ?? "",
+                          expectedVersion: appReminderRowForTesting(id: reminderId)?.version ?? 0, type: "fired") { reminder in
+            reminder.status = "fired"
+        }
+    }
+
+    public func ownerAgentIdForReminder(_ reminderId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return reminderRecords.first(where: { $0.id == reminderId })?.ownerAgentId
+    }
+
+    public func appReminderEventLogForTesting(reminderId: String) -> [(eventType: String, version: Int)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return reminderEvents.filter { $0.reminderId == reminderId }
+            .sorted { $0.createdAt > $1.createdAt }
+            .map { ($0.type, $0.version) }
     }
 
     private func legacyReminderMachine(_ authorization: String?) -> (machineId: String, serverId: String)? {
@@ -25812,8 +25844,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return agent
     }
 
-    private static func reminderSummaryJSON(_ row: (id: String, status: String, version: Int, title: String)) -> String {
-        "{\"id\":\(jsonString(row.id)),\"status\":\(jsonString(row.status)),\"version\":\(row.version),\"title\":\(jsonString(row.title))}"
+    private static func reminderSummaryJSON(
+        _ row: (id: String, status: String, version: Int, title: String),
+        ownerAgentId: String? = nil,
+        fireAt: Date? = nil
+    ) -> String {
+        let fireJSON = fireAt.map { jsonString(ISO8601DateFormatter().string(from: $0)) } ?? "null"
+        let ownerJSON = ownerAgentId.map(jsonString) ?? "null"
+        return "{\"id\":\(jsonString(row.id)),\"reminderId\":\(jsonString(row.id)),\"ownerAgentId\":\(ownerJSON),\"status\":\(jsonString(row.status)),\"version\":\(row.version),\"title\":\(jsonString(row.title)),\"fireAt\":\(fireJSON)}"
     }
 
     public func legacyReminderList(authorization: String?, agentId: String, status: String?) -> HTTPReply {
@@ -25827,7 +25865,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if listed.invalidStatus {
             return Self.json(400, "{\"error\":\"Invalid status filter\"}")
         }
-        let rows = listed.rows.map { Self.reminderSummaryJSON($0) }.joined(separator: ",")
+        let rows = listed.rows.map {
+            Self.reminderSummaryJSON(($0.id, $0.status, $0.version, $0.title), ownerAgentId: agentId, fireAt: $0.fireAt)
+        }.joined(separator: ",")
         return Self.json(200, "{\"reminders\":[\(rows)]}")
     }
 
@@ -25885,6 +25925,124 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
+    private func reminderMutationReply(_ outcome: ReminderMutationOutcome, reminderId: String, ownerAgentId: String) -> HTTPReply {
+        switch outcome {
+        case .notFound:
+            return Self.json(404, "{\"error\":\"Reminder not found\"}")
+        case .conflict(let current):
+            return Self.json(409, "{\"error\":\"Reminder version conflict\",\"currentVersion\":\(current)}")
+        case .invalid(let message):
+            return Self.json(409, "{\"error\":\(jsonString(message))}")
+        case .ok:
+            let row = appReminderRowForTesting(id: reminderId)
+            let summary = Self.reminderSummaryJSON(
+                (reminderId, row?.status ?? "scheduled", row?.version ?? 0, row?.title ?? ""),
+                ownerAgentId: ownerAgentId, fireAt: row?.fireAt
+            )
+            return Self.json(200, "{\"reminder\":\(summary)}")
+        }
+    }
+
+    public func legacyReminderSnooze(authorization: String?, agentId: String, reminderId: String, body: String) -> HTTPReply {
+        guard legacyReminderMachine(authorization) != nil else { return Self.json(401, "{\"error\":\"Unauthorized\"}") }
+        guard let row = appReminderRowForTesting(id: reminderId), row.status != "canceled" else {
+            return Self.json(404, "{\"error\":\"Reminder not found\"}")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+        let fireAt: Date
+        if let raw = object["fireAt"] as? String, let parsed = ISO8601DateFormatter().date(from: raw) {
+            fireAt = parsed
+        } else if let delay = object["delaySeconds"] as? Int, delay >= 0 {
+            fireAt = Date().addingTimeInterval(Double(delay))
+        } else {
+            return Self.json(400, "{\"error\":\"fireAt or delaySeconds is required\"}")
+        }
+        let outcome = snoozeAppReminder(reminderId: reminderId, ownerAgentId: agentId, expectedVersion: row.version, fireAt: fireAt)
+        return reminderMutationReply(outcome, reminderId: reminderId, ownerAgentId: agentId)
+    }
+
+    public func legacyReminderUpdate(authorization: String?, agentId: String, reminderId: String, body: String) -> HTTPReply {
+        guard legacyReminderMachine(authorization) != nil else { return Self.json(401, "{\"error\":\"Unauthorized\"}") }
+        guard let row = appReminderRowForTesting(id: reminderId) else { return Self.json(404, "{\"error\":\"Reminder not found\"}") }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid reminder update\"}")
+        }
+        let fireAt = (object["fireAt"] as? String).flatMap { ISO8601DateFormatter().date(from: $0) }
+        let outcome = updateAppReminder(
+            reminderId: reminderId, ownerAgentId: agentId, expectedVersion: row.version,
+            title: object["title"] as? String, fireAt: fireAt, notes: object["notes"] as? String
+        )
+        return reminderMutationReply(outcome, reminderId: reminderId, ownerAgentId: agentId)
+    }
+
+    private static func reminderLogJSON(_ events: [(eventType: String, version: Int)]) -> String {
+        let items = events.map { "{\"eventType\":\(jsonString($0.eventType)),\"version\":\($0.version)}" }.joined(separator: ",")
+        return "{\"events\":[\(items)]}"
+    }
+
+    public func legacyReminderLog(authorization: String?, agentId: String, reminderId: String) -> HTTPReply {
+        guard legacyReminderMachine(authorization) != nil else { return Self.json(401, "{\"error\":\"Unauthorized\"}") }
+        guard ownerAgentIdForReminder(reminderId) == agentId else { return Self.json(404, "{\"error\":\"Reminder not found\"}") }
+        return Self.json(200, Self.reminderLogJSON(appReminderEventLogForTesting(reminderId: reminderId)))
+    }
+
+    public func agentApiReminderCancel(authorization: String?, reminderId: String) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else { return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}") }
+        guard let row = appReminderRowForTesting(id: reminderId) else { return Self.json(404, "{\"error\":\"Reminder not found\"}") }
+        return reminderMutationReply(
+            cancelAppReminder(reminderId: reminderId, ownerAgentId: agent.id, expectedVersion: row.version),
+            reminderId: reminderId, ownerAgentId: agent.id
+        )
+    }
+
+    public func agentApiReminderSnooze(authorization: String?, reminderId: String, body: String) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else { return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}") }
+        guard let row = appReminderRowForTesting(id: reminderId) else { return Self.json(404, "{\"error\":\"Reminder not found\"}") }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+        let fireAt: Date
+        if let raw = object["fireAt"] as? String, let parsed = ISO8601DateFormatter().date(from: raw) {
+            fireAt = parsed
+        } else if let delay = object["delaySeconds"] as? Int, delay >= 0 {
+            fireAt = Date().addingTimeInterval(Double(delay))
+        } else {
+            return Self.json(400, "{\"error\":\"fireAt or delaySeconds is required\"}")
+        }
+        return reminderMutationReply(
+            snoozeAppReminder(reminderId: reminderId, ownerAgentId: agent.id, expectedVersion: row.version, fireAt: fireAt),
+            reminderId: reminderId, ownerAgentId: agent.id
+        )
+    }
+
+    public func agentApiReminderUpdate(authorization: String?, reminderId: String, body: String) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else { return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}") }
+        guard let row = appReminderRowForTesting(id: reminderId) else { return Self.json(404, "{\"error\":\"Reminder not found\"}") }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid reminder update\"}")
+        }
+        let fireAt = (object["fireAt"] as? String).flatMap { ISO8601DateFormatter().date(from: $0) }
+        return reminderMutationReply(
+            updateAppReminder(
+                reminderId: reminderId, ownerAgentId: agent.id, expectedVersion: row.version,
+                title: object["title"] as? String, fireAt: fireAt, notes: object["notes"] as? String
+            ),
+            reminderId: reminderId, ownerAgentId: agent.id
+        )
+    }
+
+    public func agentApiReminderLog(authorization: String?, reminderId: String) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else { return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}") }
+        guard ownerAgentIdForReminder(reminderId) == agent.id else { return Self.json(404, "{\"error\":\"Reminder not found\"}") }
+        return Self.json(200, Self.reminderLogJSON(appReminderEventLogForTesting(reminderId: reminderId)))
+    }
+
     public func agentApiReminderList(authorization: String?, status: String?) -> HTTPReply {
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
@@ -25895,7 +26053,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if listed.invalidStatus {
             return Self.json(400, "{\"error\":\"Invalid status filter\"}")
         }
-        let rows = listed.rows.map { Self.reminderSummaryJSON($0) }.joined(separator: ",")
+        let rows = listed.rows.map {
+            Self.reminderSummaryJSON(($0.id, $0.status, $0.version, $0.title), ownerAgentId: agent.id, fireAt: $0.fireAt)
+        }.joined(separator: ",")
         return Self.json(200, "{\"reminders\":[\(rows)]}")
     }
 

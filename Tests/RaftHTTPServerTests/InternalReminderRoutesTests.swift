@@ -88,3 +88,74 @@ import VaporTesting
         }
     }
 }
+
+@Test func snoozeUpdateFireAndLogFollowTheReminderStateMachine() async throws {
+    let accounts = EmailLoginDirectory()
+    let serverId = "33333333-3333-4333-8333-000001087011"
+    let ownerId = "11111111-1111-4111-8111-000001087011"
+    accounts.addAccount(id: ownerId, email: "reminder-state@internal.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "reminder-state", name: "Reminder State", ownerId: ownerId)
+    let machineId = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "reminder-state-machine")
+    let machineKey = try #require(accounts.machineAPIKey(machineId: machineId))
+    let agentId = accounts.oauth.createAgent(serverId: serverId, name: "state-agent", creatorUserId: ownerId, runtime: "claude")
+    let agentKey = accounts.mintAgentCredential(agentId: agentId, scopes: ["read", "tasks"], name: "state-key")
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var machineHeaders = HTTPFields()
+            machineHeaders[.authorization] = "Bearer \(machineKey)"
+            machineHeaders[.contentType] = "application/json"
+            var agentHeaders = HTTPFields()
+            agentHeaders[.authorization] = "Bearer \(agentKey)"
+            agentHeaders[.contentType] = "application/json"
+
+            let create = try await client.send(.post, headers: machineHeaders, to: URI(string: "/internal/agent/\(agentId)/reminders")) { request in
+                request.body = .init(string: "{\"title\":\"b-minimal\",\"msgId\":\"m-1\",\"delaySeconds\":120}")
+            }
+            let created = try JSONSerialization.jsonObject(with: Data((create.body.string ?? "").utf8)) as? [String: Any] ?? [:]
+            let reminder = try #require(created["reminder"] as? [String: Any])
+            let reminderId = try #require(reminder["reminderId"] as? String)
+
+            let update = try await client.send(.patch, headers: machineHeaders, to: URI(string: "/internal/agent/\(agentId)/reminders/\(reminderId)")) { request in
+                request.body = .init(string: "{\"title\":\"updated title\"}")
+            }
+            #expect(update.status == .ok)
+            let updated = try JSONSerialization.jsonObject(with: Data((update.body.string ?? "").utf8)) as? [String: Any] ?? [:]
+            #expect((updated["reminder"] as? [String: Any])?["title"] as? String == "updated title")
+            #expect((updated["reminder"] as? [String: Any])?["status"] as? String == "scheduled")
+
+            _ = accounts.fireAppReminderForTesting(reminderId: reminderId)
+            #expect(accounts.appReminderRowForTesting(id: reminderId)?.status == "fired")
+            let rejectedUpdate = try await client.send(.patch, headers: machineHeaders, to: URI(string: "/internal/agent/\(agentId)/reminders/\(reminderId)")) { request in
+                request.body = .init(string: "{\"title\":\"cannot update fired\"}")
+            }
+            #expect(rejectedUpdate.status == .conflict)
+            #expect(rejectedUpdate.body.string?.contains("snooze it back to scheduled") == true)
+
+            let snooze = try await client.send(.post, headers: machineHeaders, to: URI(string: "/internal/agent/\(agentId)/reminders/\(reminderId)/snooze")) { request in
+                request.body = .init(string: "{\"delaySeconds\":300}")
+            }
+            #expect(snooze.status == .ok)
+            let snoozed = try JSONSerialization.jsonObject(with: Data((snooze.body.string ?? "").utf8)) as? [String: Any] ?? [:]
+            #expect((snoozed["reminder"] as? [String: Any])?["status"] as? String == "scheduled")
+
+            let log = try await client.get(URI(string: "/internal/agent/\(agentId)/reminders/\(reminderId)/log"), headers: machineHeaders)
+            #expect(log.status == .ok)
+            let logBody = try JSONSerialization.jsonObject(with: Data((log.body.string ?? "").utf8)) as? [String: Any] ?? [:]
+            #expect((logBody["events"] as? [[String: Any]])?.compactMap { $0["eventType"] as? String } == ["snoozed", "fired", "updated", "scheduled"])
+
+            let agentCancel = try await client.send(.delete, headers: agentHeaders, to: URI(string: "/internal/agent-api/reminders/\(reminderId)"))
+            #expect(agentCancel.status == .ok)
+            let canceled = try JSONSerialization.jsonObject(with: Data((agentCancel.body.string ?? "").utf8)) as? [String: Any] ?? [:]
+            #expect((canceled["reminder"] as? [String: Any])?["status"] as? String == "canceled")
+            #expect((canceled["reminder"] as? [String: Any])?["ownerAgentId"] as? String == agentId)
+            let agentLog = try await client.get(URI(string: "/internal/agent-api/reminders/\(reminderId)/log"), headers: agentHeaders)
+            let agentLogBody = try JSONSerialization.jsonObject(with: Data((agentLog.body.string ?? "").utf8)) as? [String: Any] ?? [:]
+            #expect((agentLogBody["events"] as? [[String: Any]])?.compactMap { $0["eventType"] as? String } == ["canceled", "snoozed", "fired", "updated", "scheduled"])
+        }
+    }
+}
