@@ -163,3 +163,67 @@ private func seedDirectory() -> (directory: PublicServerDirectory, seed: PublicS
         }
     }
 }
+
+private struct UnavailableBucket: PublicSearchBucketStoring {
+    func consume(limit: Int) -> PublicSearchBucketDecision { .unavailable }
+}
+
+@Test func invalidKeySetsLimitsAndBucketUnavailabilityFailClosed() async throws {
+    let current = ServiceCredential(token: "current-token-0123456789abcdef")
+    let (directory, seed) = seedDirectory()
+    let url = "/api/public/search/servers/\(seed.serverPublicId)"
+    let invalidSets: [[PublicSearchServiceKey]] = [
+        [PublicSearchServiceKey(keyId: "k-current", sha256: current.sha256), PublicSearchServiceKey(keyId: "k-current", sha256: current.sha256)],
+        [PublicSearchServiceKey(keyId: "k-current", sha256: "not-a-digest")],
+    ]
+    for rows in invalidSets {
+        let source = MutableKeySource(rows)
+        try await withApp { app in
+            configure(app, services: FallbackServices(
+                nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {},
+                publicSearch: directory.projectedCatalog(), publicServerDirectory: directory,
+                publicSearchServiceKeySource: source, publicSearchServiceBucket: PublicSearchMemoryBucketStore()
+            ))
+            try await app.testing { client in
+                var headers = HTTPFields()
+                headers[HTTPField.Name("Authorization")!] = current.header
+                let service = try await client.get(URI(string: url), headers: headers)
+                #expect(service.status == .serviceUnavailable)
+                let anonymous = try await client.get(URI(string: url))
+                #expect(anonymous.status == .ok)
+            }
+        }
+    }
+    let source = MutableKeySource([PublicSearchServiceKey(keyId: "k-current", sha256: current.sha256)])
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {},
+            publicSearch: directory.projectedCatalog(), publicServerDirectory: directory,
+            publicSearchServiceKeySource: source, publicSearchServiceBucket: PublicSearchMemoryBucketStore(),
+            publicSearchServiceLimits: PublicSearchServiceLimits(environment: ["RAFT_LANDING_SERVICE_RATE_PER_MINUTE": "0"])
+        ))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[HTTPField.Name("Authorization")!] = current.header
+            let service = try await client.get(URI(string: url), headers: headers)
+            #expect(service.status == .serviceUnavailable)
+            let anonymous = try await client.get(URI(string: url))
+            #expect(anonymous.status == .ok)
+        }
+    }
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {},
+            publicSearch: directory.projectedCatalog(), publicServerDirectory: directory,
+            publicSearchServiceKeySource: source, publicSearchServiceBucket: UnavailableBucket()
+        ))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[HTTPField.Name("Authorization")!] = current.header
+            let service = try await client.get(URI(string: url), headers: headers)
+            #expect(service.status == .serviceUnavailable)
+            let anonymous = try await client.get(URI(string: url))
+            #expect(anonymous.status == .ok)
+        }
+    }
+}

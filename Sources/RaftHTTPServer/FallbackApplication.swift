@@ -4110,6 +4110,9 @@ private struct PublicSearchMiddleware: Middleware {
             return serviceRefusal(refusal.status, refusal.code)
         }
         if case .service = credential {
+            guard serviceLimits.ratePerMinute > 0, serviceLimits.maxInFlight > 0 else {
+                return serviceRefusal(503, "service_unavailable")
+            }
             guard let serviceBucket else { return serviceRefusal(503, "service_unavailable") }
             switch serviceBucket.consume(limit: serviceLimits.ratePerMinute) {
             case .allowed: break

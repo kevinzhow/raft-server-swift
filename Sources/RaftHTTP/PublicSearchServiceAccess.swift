@@ -71,7 +71,7 @@ public struct PublicSearchServiceLimits: Sendable {
 
     public init(environment: [String: String] = ProcessInfo.processInfo.environment) {
         func value(_ key: String, _ fallback: Int) -> Int {
-            guard let raw = environment[key], let parsed = Int(raw), parsed > 0 else { return fallback }
+            guard let raw = environment[key], let parsed = Int(raw) else { return fallback }
             return parsed
         }
         ratePerMinute = value("RAFT_LANDING_SERVICE_RATE_PER_MINUTE", 60)
@@ -106,13 +106,23 @@ public enum PublicSearchServiceAccess {
         } catch {
             return .unavailable
         }
-        guard !rows.isEmpty else { return .unavailable }
+        guard !rows.isEmpty, validKeySet(rows) else { return .unavailable }
         guard rows.contains(where: { $0.expiresAt == nil }) else { return .unavailable }
         guard let row = rows.first(where: { $0.keyId == pair[0] }) else { return .invalid }
         if let expiresAt = row.expiresAt, expiresAt <= clock { return .invalid }
         let digest = SHA256.hash(data: Data(pair[1].utf8)).map { String(format: "%02x", $0) }.joined()
         guard digest.count == row.sha256.count, timingSafeEqual(digest, row.sha256.lowercased()) else { return .invalid }
         return .service(keyId: row.keyId)
+    }
+
+    public static func validKeySet(_ rows: [PublicSearchServiceKey]) -> Bool {
+        let ids = Set(rows.map(\.keyId))
+        guard ids.count == rows.count else { return false }
+        let hex = CharacterSet(charactersIn: "0123456789abcdef")
+        return rows.allSatisfy { row in
+            row.sha256.count == 64 && row.sha256.unicodeScalars.allSatisfy { hex.contains($0) }
+                && !row.keyId.isEmpty
+        }
     }
 
     private static func timingSafeEqual(_ lhs: String, _ rhs: String) -> Bool {
