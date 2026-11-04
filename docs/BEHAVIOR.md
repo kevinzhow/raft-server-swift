@@ -1494,3 +1494,10 @@ RFC 074 personal assistant：
 - inbox notice fingerprint：按消息身份取集合键（seq 优先，否则 message_id/id），排序后用逗号连接（`s:11,s:9` 字典序），空集为空串；同计数但集合变化（读一条+新一条）产生不同 fingerprint。
 - 去重 memo：仅抑制**同 session** 且完全相同的已写 fingerprint（空指纹永不抑制）；recordNoticeWritten 记录贡献身份集合，filterUncontributedMessages 只过滤同 session 已贡献的已识别消息，pruneContributedToPending 让已消费行可再次出现。
 - failed-encode memo：仅抑制同 session 相同 fingerprint 的失败尝试（空不记）；成功写入清除失败 memo；clear 清空两类 memo。
+
+### daemon agentInboxProjection
+
+- 收件箱投影按 target 分组待处理消息（不含正文）：thread → `#parent:8hex` 或 `dm:@parent:8hex`，dm → `dm:@peer`，channel → `#name`；行含 pendingCount、first/latest msg 与 seq、latestSenderName/Type、flags（thread/dm/task/mention/non_member_mention，字典序）。
+- flags 渲染：mention → "you were mentioned"；non_member_mention → 固定非成员回复指引文本；未知 flag 用 JSON 引号转义并截断 40 字符显示；third-party 分组 target 显示为 "Third-party app events"、过滤 dm flag 并追加 "fetch with raft message check"。
+- 格式化：snapshot 头区分 pending targets 与 suppressed-only targets；delta 头用 "pending your read across all conversations"（不用 unread），空行为 "Inbox update: no pending targets"；attention_hint 按 schema/trigger/scope/suggested_command/copy/copy_version/epoch_ms/thresholds 紧凑 JSON 输出。
+- 抑制计数为旁路参数：仅正整数有效（Infinity/小数/负数/NaN 丢弃），全部被抑制的 target 仍产生 pendingCount=0 的行；省略该参数与传空 map 结果一致。
