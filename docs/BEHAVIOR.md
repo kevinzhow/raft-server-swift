@@ -1817,3 +1817,10 @@ RFC 074 personal assistant：
 
 - 该模块断言 cross-replica 唤醒信号：orchestrator 的 `publishExternalWakeSignalCrossReplica` spy、打开的 SSE wake-hint 流读取、以及 replicaRouter 的 `handleReplicaMessage` 单元（通过 `__setExternalWakeSignalHandlerForTests`/`__setMachinePrincipalFenceHandlerForTests` 注入处理器）。这些是进程内服务/测试钩子与 SSE 管道行为，没有 HTTP 状态/JSON 黑盒断言；SSE wake-hint stream 与 replica router 属未移植的跨副本基础设施。
 - 其用户可见的“exhausted→wake”语义已由 `internalAgentApi.wakeHintStream` 模块锁定；本模块不新增运行时行为。
+
+### route publicSearch.api（锁定，含裁决）
+
+- 谓词矩阵：关闭 master index/search switch、public rollout、server 可见性、server search、删除 server 时，server/channel/thread 三出口同时 404 且 index 为空；仅 channel 维度（非 guest-visible/archived/deleted/private）时 server 页仍 200 但 channels 为空、channel/thread 404、index 仅剩 server；逐项恢复后三出口与 index 完全恢复。
+- search off 只影响搜索出口：`/api/public/servers/:slug` 访客页仍 200（读与搜分离）。
+- 其余已覆盖行为：GET/HEAD only 405、public ids/display-only DTO、长 thread 截断、错误 id/游标 plain 404、owner-only 设置与回填 public ids、rendered-edit lastmod。
+- 裁决：lastmod 的 “thread 换频道/删除” 用例需要目录层 move/delete thread 编辑（当前仅有 rendered-edit 模型，已由 settings 测试覆盖 lastmod 变动语义）；public route 唯一约束碰撞是 DB 内部断言；这两类不重复实现。

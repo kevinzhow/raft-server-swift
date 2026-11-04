@@ -322,6 +322,13 @@ public final class PublicServerDirectory: @unchecked Sendable {
         case addReply(threadId: String, content: String)
         case renameServer(id: String, name: String)
         case renamePrivateChannel(id: String, name: String)
+        case setServerPublic(id: String, visible: Bool)
+        case setServerSearch(id: String, enabled: Bool)
+        case setServerDeleted(id: String, deleted: Bool)
+        case setChannelGuestVisible(id: String, visible: Bool)
+        case setChannelArchived(id: String, archived: Bool)
+        case setChannelDeleted(id: String, deleted: Bool)
+        case setChannelPrivate(id: String, privateChannel: Bool)
     }
 
     public func apply(_ edit: Edit) {
@@ -360,6 +367,38 @@ public final class PublicServerDirectory: @unchecked Sendable {
             mutateChannel(id) { channel in
                 channel.name = name
             }
+        case .setServerPublic(let id, let visible):
+            if let index = servers.firstIndex(where: { $0.id == id }) {
+                servers[index].publiclyVisible = visible
+                servers[index].publicChangedAtMs = now
+            }
+        case .setServerSearch(let id, let enabled):
+            if let index = servers.firstIndex(where: { $0.id == id }) {
+                servers[index].publicSearchEnabled = enabled
+                servers[index].publicChangedAtMs = now
+            }
+        case .setServerDeleted(let id, let deleted):
+            if let index = servers.firstIndex(where: { $0.id == id }) { servers[index].deleted = deleted }
+        case .setChannelGuestVisible(let id, let visible):
+            mutateChannel(id) { channel in
+                channel.guestVisible = visible
+                if visible { channel.publicChangedAtMs = now }
+            }
+        case .setChannelArchived(let id, let archived):
+            mutateChannel(id) { channel in
+                channel.archived = archived
+                channel.publicChangedAtMs = now
+            }
+        case .setChannelDeleted(let id, let deleted):
+            mutateChannel(id) { channel in
+                channel.deleted = deleted
+                channel.publicChangedAtMs = now
+            }
+        case .setChannelPrivate(let id, let privateChannel):
+            mutateChannel(id) { channel in
+                channel.isPrivate = privateChannel
+                channel.publicChangedAtMs = now
+            }
         }
     }
 
@@ -367,10 +406,10 @@ public final class PublicServerDirectory: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         let projected = servers.compactMap { server -> PublicSearchServer? in
-            guard server.publiclyVisible, server.publicSearchEnabled, let publicId = server.publicId else { return nil }
+            guard rolloutEnabled, server.publiclyVisible, server.publicSearchEnabled, !server.deleted, let publicId = server.publicId else { return nil }
             let serverLast = iso(serverLastmod(server))
             let channels = server.channels.compactMap { channel -> PublicSearchChannel? in
-                guard let channelPublicId = channel.publicId else { return nil }
+                guard let channelPublicId = channel.publicId, !channel.archived, !channel.deleted, !channel.isPrivate else { return nil }
                 let threads = channel.threads.compactMap { thread -> PublicSearchThread? in
                     guard let threadPublicId = thread.publicId else { return nil }
                     return PublicSearchThread(
@@ -586,6 +625,9 @@ public final class PublicServerDirectory: @unchecked Sendable {
         var createdAtMs: Int
         var publicChangedAtMs: Int?
         var threads: [Thread]
+        var archived: Bool = false
+        var deleted: Bool = false
+        var isPrivate: Bool = false
     }
 
     private struct Server {
@@ -601,5 +643,6 @@ public final class PublicServerDirectory: @unchecked Sendable {
         var publicChangedAtMs: Int
         var members: [String: String]
         var channels: [Channel]
+        var deleted: Bool = false
     }
 }
