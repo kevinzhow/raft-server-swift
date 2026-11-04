@@ -1619,3 +1619,9 @@ RFC 074 personal assistant：
 - 另一 Agent 的事件 id 与不存在 id 一律 404。
 - `pruneExpiredAgentAppEvents(now:batchSize:)`：只删除 `expiresAt <= now - 30d` 的事件，按 expiresAt 升序、最多 batchSize 条；保留窗口内事件不动。
 - 上游 6 条断言由 `AgentAppAccessTests`（4）与 `AgentAppEventListTests`（2）覆盖。
+
+### route pending social link（核心，authPendingSocialLink.api 进行中）
+
+- 一次性 pending social link：包含 provider、providerUserId、规范化 email、returnTo/returnUri、expiresAt；`cancel` 幂等（重复 204），取消/过期/已用后不可再用。
+- 密码登录携带 `pendingLinkToken`：token 无效/取消/过期/已用 → 410 `pending_link_expired`；email 与 token 归属不符 → 403 `pending_link_account_mismatch`（不发 session）；密码错误 → 401 `AUTH_INVALID_CREDENTIALS`（token 仍可用）；成功 → 建立 session、一次性消费 token、写入 provider identity，响应含 `linkedProvider`。
+- 成功消费后 replay → 410，且不产生第二个 session。

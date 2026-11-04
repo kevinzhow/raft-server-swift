@@ -3773,6 +3773,9 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("api", "auth", "pending-link", "cancel") { request -> Response in
+        routeResponse(services.emailAccounts.cancelPendingSocialLink(body: request.body.string ?? "{}"))
+    }
     app.post("api", "auth", "login") { request -> Response in
         return routeResponse(services.emailAccounts.login(body: request.body.string ?? ""))
     }

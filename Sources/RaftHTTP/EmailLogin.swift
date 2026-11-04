@@ -303,6 +303,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var composerResourceServers: Set<String> = []
     private var installedServerApps: [String: Set<String>] = [:]
     private var socialCompletions: [SocialCompletion] = []
+    private var pendingSocialLinks: [String: PendingSocialLink] = [:]
     private var mobileRequests: [String: MobileOAuthRequest] = [:]
     private var providerExchanges = 0
     private var consumedHandoffs: Set<String> = []
@@ -1660,6 +1661,61 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// A provider callback already exchanged. The raw code is what `POST /:provider/complete` spends.
+    private struct PendingSocialLink {
+        var token: String
+        var provider: String
+        var providerUserId: String
+        var email: String
+        var returnTo: String?
+        var returnUri: String?
+        var expiresAt: Date
+        var consumed: Bool = false
+        var cancelled: Bool = false
+    }
+
+    /// Test seam: the conflict handler creates these; the login/provider
+    /// completion paths spend them once.
+    @discardableResult
+    public func issuePendingSocialLinkForTesting(
+        provider: String, providerUserId: String, email: String,
+        returnTo: String? = nil, returnUri: String? = nil,
+        expiresAt: Date = Date().addingTimeInterval(600)
+    ) -> String {
+        let token = Self.randomHex(32)
+        lock.lock()
+        pendingSocialLinks[token] = PendingSocialLink(
+            token: token, provider: provider, providerUserId: providerUserId,
+            email: Self.normalize(email), returnTo: returnTo, returnUri: returnUri,
+            expiresAt: expiresAt
+        )
+        lock.unlock()
+        return token
+    }
+
+    public func pendingSocialLinkExpiryForTesting(token: String) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return pendingSocialLinks[token]?.expiresAt
+    }
+
+    /// `POST /api/auth/pending-link/cancel`. Cancelling twice stays 204.
+    public func cancelPendingSocialLink(body: String) -> HTTPReply {
+        if let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+           let token = object["pendingLinkToken"] as? String {
+            lock.lock()
+            if var pending = pendingSocialLinks[token] {
+                pending.cancelled = true
+                pendingSocialLinks[token] = pending
+            }
+            lock.unlock()
+        }
+        return Self.empty(204)
+    }
+
+    private static func empty(_ status: Int) -> HTTPReply {
+        HTTPReply(status: status, headers: ["Content-Length": "0"], body: "")
+    }
+
     public func addSocialCompletion(
         provider: String,
         code: String,
@@ -8660,6 +8716,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private func authenticate(_ request: Request) -> HTTPReply {
         let email = Self.normalize(request.email)
         lock.lock()
+        var pendingLink: PendingSocialLink?
+        if let token = request.pendingLinkToken, !token.isEmpty {
+            guard var pending = pendingSocialLinks[token], !pending.consumed, !pending.cancelled,
+                  pending.expiresAt > Date()
+            else {
+                lock.unlock()
+                return Self.json(410, "{\"error\":\"This sign-in link expired. Sign in again to connect the account.\",\"code\":\"pending_link_expired\"}")
+            }
+            guard pending.email == email else {
+                lock.unlock()
+                return Self.json(403, "{\"error\":\"The pending link belongs to a different account\",\"code\":\"pending_link_account_mismatch\"}")
+            }
+            pendingLink = pending
+        }
         let account = accounts[email]
         let matches = account.map { $0.passwordHash == Self.sha256(request.password) } ?? false
         guard var accountSnapshot = account, matches, accountSnapshot.retiredAt == nil else {
@@ -8671,7 +8741,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             accounts[email] = accountSnapshot
         }
         let issued = openSessionLocked(userId: accountSnapshot.id)
-        let body = "{\"user\":{\"id\":\(jsonString(accountSnapshot.id)),\"email\":\(jsonString(accountSnapshot.email))},\"accessToken\":\(jsonString(issued.accessToken)),\"refreshToken\":\(jsonString(issued.refreshToken))}"
+        var linkedProviderJSON = "null"
+        if var pending = pendingLink {
+            pending.consumed = true
+            pendingSocialLinks[pending.token] = pending
+            if !linkedIdentities.contains(where: {
+                $0.userId == accountSnapshot.id && $0.provider == pending.provider && $0.providerUserId == pending.providerUserId
+            }) {
+                linkedIdentities.append(LinkedIdentity(
+                    userId: accountSnapshot.id, provider: pending.provider,
+                    providerUserId: pending.providerUserId, providerEmail: pending.email
+                ))
+            }
+            linkedProviderJSON = jsonString(pending.provider)
+        }
+        let body = "{\"user\":{\"id\":\(jsonString(accountSnapshot.id)),\"email\":\(jsonString(accountSnapshot.email))},\"accessToken\":\(jsonString(issued.accessToken)),\"refreshToken\":\(jsonString(issued.refreshToken)),\"linkedProvider\":\(linkedProviderJSON)}"
         lock.unlock()
         return Self.json(200, body)
     }
@@ -9214,6 +9298,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private struct Request {
         var email: String
         var password: String
+        var pendingLinkToken: String? = nil
     }
 
     private struct Issue {
@@ -9236,7 +9321,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let email = stringField(object["email"], path: "email", into: &issues)
         let password = stringField(object["password"], path: "password", into: &issues)
         if !issues.isEmpty { return .invalid(issues) }
-        return .request(Request(email: email ?? "", password: password ?? ""))
+        let pendingLinkToken = object["pendingLinkToken"] as? String
+        return .request(Request(email: email ?? "", password: password ?? "", pendingLinkToken: pendingLinkToken))
     }
 
     private struct JointChannelLink {
