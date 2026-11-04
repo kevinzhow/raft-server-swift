@@ -404,4 +404,4 @@ turnSummaryTracker	daemon	locked	a3def34	turn summary group: begin folds the pre
 turnTriggerTrace	daemon	pending	-	auto-seed
 wakeBriefingPanel	daemon	pending	-	auto-seed
 wakeSessionRecycle	daemon	locked	1781415	RFC 070 wake recycling: server-only enable with per-agent env overrides and a local kill switch, the full fail-closed gate chain with typed resume reasons, empty briefing, Claude transcript tail facts (last activity + assistant context tokens), the cold-idle sweep with sidecar/transcript freshest-clock and outstanding-background-task gates, and end-to-end planWakeSessionRecycle; the constructed panel and startup-memory extras are separate slices (not asserted by this suite)
-workspaces	daemon	pending	-	auto-seed
+workspaces	daemon	locked	SLICE	agent workspace directories: containment-based resolution rejects root/nested/traversal names while still accepting trailing-slash and hidden children, recursive summaries report file count/bytes/latest mtime with the outbox excluded, deletion never removes the root, and display paths are ~-relative only under the exact home prefix

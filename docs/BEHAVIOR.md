@@ -1415,3 +1415,10 @@ RFC 074 personal assistant：
 - 迁移 bundle 条目计数：严格 250,000 上限（含 export walk 仅计数未入列的 overflow 条目）；超限抛 `AgentMigrationObjectStoreEntryCountLimitError`，message 固定为 `MIGRATION_OBJECT_STORE_ENTRY_COUNT_LIMIT_EXCEEDED:entryCount=<n>:maxEntries=<m>:topPathCounts=<path,count;...>`，最多 3 个 top-level 路径、每段 percent-encode 后最长 96 字符，整体 <500。
 - 计数按 workspace 相对路径的顶层目录聚合、降序（同数按路径升序）；secret/token/credential/api-key/.env 形状的路径归并为 `other/`，错误 wire 不泄露明文、主机路径或绝对路径；`bundleTooLargeTopEntries` 同样按字节降序并 redaction。
 - workspace 相对路径规范化：拒绝空、`.`、POSIX 绝对、盘符绝对/相对、UNC、任何 `..` 父段与 NUL；反斜杠统一为 `/`，去除 `./` 与空段（`./nested\safe//file.txt` → `nested/safe/file.txt`）。
+
+### daemon workspaces
+
+- 工作区目录解析采用包含性校验（非黑名单）：解析后的目标必须恰好是 dataDir 的一级子目录；`.`/空/`./`/`x/..`/`../x`/嵌套路径一律返回 nil，`agent-1/` 与 `.hidden-agent` 仍被接受。
+- 扫描：递归汇总每个工作区目录的 fileCount、总字节与最新 mtime（含子目录自身 mtime），跳过 runtime-outcome outbox；`lastModified` 为带毫秒 ISO8601；displayPath 在用户 home 下显示 `~/…/`，否则绝对路径 + `/`，仅前缀相同不算 home（/home/alice2）。
+- 删除只接受合法一级子目录并递归删除；请求 `.`/空串时返回 false 且根目录与所有工作区保持不变。
+- initializeWorkspace 建目录、缺省写 MEMORY.md 与 seedFiles（已存在不覆盖）。
