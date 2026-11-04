@@ -25816,6 +25816,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
+    public func agentIdForReminderTesting(reminderId: String) -> String? {
+        ownerAgentIdForReminder(reminderId)
+    }
+
     public func ownerAgentIdForReminder(_ reminderId: String) -> String? {
         lock.lock()
         defer { lock.unlock() }
@@ -25828,6 +25832,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return reminderEvents.filter { $0.reminderId == reminderId }
             .sorted { $0.createdAt > $1.createdAt }
             .map { ($0.type, $0.version) }
+    }
+
+    public func serverMemberRoles(serverId: String) -> [(userId: String, role: String)] {
+        oauth.memberRoles(serverId: serverId)
+    }
+
+    private static let remindersMovedReply = json(409, "{\"error\":\"Reminders are managed by the Reminder App now\",\"code\":\"reminders_moved_to_app\"}")
+
+    private func legacyReminderWritesMoved(serverId: String) -> Bool {
+        featureFlagEnabledForServer("reminder_app", serverId: serverId)
     }
 
     private func legacyReminderMachine(_ authorization: String?) -> (machineId: String, serverId: String)? {
@@ -25878,6 +25892,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let agent = reminderAgentOnServer(agentId, serverId: machine.serverId) else {
             return Self.json(404, "{\"error\":\"Agent not found\"}")
         }
+        if legacyReminderWritesMoved(serverId: machine.serverId) { return Self.remindersMovedReply }
         guard agent.runtime != "external" else {
             return Self.json(409, "{\"error\":\"External agents cannot create reminders\",\"code\":\"reminders_unsupported_for_external_agents\"}")
         }
@@ -25944,7 +25959,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func legacyReminderSnooze(authorization: String?, agentId: String, reminderId: String, body: String) -> HTTPReply {
-        guard legacyReminderMachine(authorization) != nil else { return Self.json(401, "{\"error\":\"Unauthorized\"}") }
+        guard let machine = legacyReminderMachine(authorization) else { return Self.json(401, "{\"error\":\"Unauthorized\"}") }
+        if legacyReminderWritesMoved(serverId: machine.serverId) { return Self.remindersMovedReply }
         guard let row = appReminderRowForTesting(id: reminderId), row.status != "canceled" else {
             return Self.json(404, "{\"error\":\"Reminder not found\"}")
         }
@@ -25962,7 +25978,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func legacyReminderUpdate(authorization: String?, agentId: String, reminderId: String, body: String) -> HTTPReply {
-        guard legacyReminderMachine(authorization) != nil else { return Self.json(401, "{\"error\":\"Unauthorized\"}") }
+        guard let machine = legacyReminderMachine(authorization) else { return Self.json(401, "{\"error\":\"Unauthorized\"}") }
+        if legacyReminderWritesMoved(serverId: machine.serverId) { return Self.remindersMovedReply }
         guard let row = appReminderRowForTesting(id: reminderId) else { return Self.json(404, "{\"error\":\"Reminder not found\"}") }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
             return Self.json(400, "{\"error\":\"Invalid reminder update\"}")

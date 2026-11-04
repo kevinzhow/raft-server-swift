@@ -159,3 +159,40 @@ import VaporTesting
         }
     }
 }
+
+@Test func reminderAppRolloutMovesLegacyWritesButKeepsReadsAndCancel() async throws {
+    let accounts = EmailLoginDirectory()
+    let serverId = "33333333-3333-4333-8333-000001087021"
+    let ownerId = "11111111-1111-4111-8111-000001087021"
+    accounts.addAccount(id: ownerId, email: "reminder-rollout@internal.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "reminder-rollout", name: "Reminder Rollout", ownerId: ownerId)
+    let machineId = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "rollout-machine")
+    let machineKey = try #require(accounts.machineAPIKey(machineId: machineId))
+    let agentId = accounts.oauth.createAgent(serverId: serverId, name: "rollout-agent", creatorUserId: ownerId, runtime: "claude")
+    accounts.createFeatureFlagForTesting(key: "reminder_app", defaultEnabled: false)
+    accounts.addFeatureFlagRuleForTesting(key: "reminder_app", stage: "server", decision: "allow", values: [serverId])
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(machineKey)"
+            headers[.contentType] = "application/json"
+            let create = try await client.send(.post, headers: headers, to: URI(string: "/internal/agent/\(agentId)/reminders")) { request in
+                request.body = .init(string: "{\"title\":\"moved\",\"msgId\":\"m-1\",\"delaySeconds\":60}")
+            }
+            #expect(create.status == .conflict)
+            #expect(create.body.string?.contains("reminders_moved_to_app") == true)
+            let list = try await client.get(URI(string: "/internal/agent/\(agentId)/reminders"), headers: headers)
+            #expect(list.status == .ok)
+            let existingId = accounts.createAppReminderForTesting(serverId: serverId, ownerAgentId: agentId, title: "existing", fireAt: Date())
+            let cancel = try await client.send(.delete, headers: headers, to: URI(string: "/internal/agent/\(agentId)/reminders/\(existingId)")) { request in
+                request.body = .init(string: "{\"expectedVersion\":1}")
+            }
+            #expect(cancel.status == .ok)
+        }
+    }
+}

@@ -1667,3 +1667,10 @@ RFC 074 personal assistant：
 - `/log` 返回事件日志（newest-first，`{eventType,version}`）：scheduled → updated → fired → snoozed → canceled 顺序可断言。
 - reminder summary 现在含 `reminderId`（与 id 同值）、`ownerAgentId`、`status`、`version`、`title`、`fireAt`。
 - 仍待补：reminder_app rollout（legacy 写拒绝 `reminders_moved_to_app`）、socket `reminder:scheduled`/`reminder:canceled` 分发给可查看 agent 的用户、legacy 历史短日志/owner transfer、anchor cloak/joint projection、4xx span 分类。
+
+### route internal.reminders.api（锁定，含裁决）
+
+- reminder_app rollout：server 命中 `reminder_app` flag 时，legacy 的 create/update/snooze 返回 409 `reminders_moved_to_app`；列表/日志/取消保留可用。agent-api（App-owned 面）写不受影响。
+- socket 分发：legacy/agent-api 创建成功后向 `user:<userId>` 发送 `reminder:scheduled`，取消发送 `reminder:canceled`，payload `{reminderId,ownerAgentId}`；接收者仅 owner/admin 与该 agent 的 human creator。
+- 锁定的可执行面：双路由族 CRUD、版本 CAS、fired/canceled 状态规则、newest-first 事件日志、`reminderId/ownerAgentId/status/version/title/fireAt` summary、`status=a,b` 过滤、external agent 409、msgId 缺失 400、rollout 拒绝。
+- 裁决为不可执行：路由源码扫描契约（本移植为 Swift，无 TS 源可扫）、请求 span 的 error_code/reason_class（无 tracer sink）、legacy 历史短日志/owner transfer 遮蔽（需 DB 行投影）、recurring 的 lifecycle metadata 细节、anchor cloak（隐藏频道）与 visible joint projection（joint 频道投影未移植到该层级）、socket 分发的真实传输断言（recipients 与 emit 已实现，传输由 socket epic 覆盖）、Computer lifecycle revision 同步（orchestrator stub）、以及 fire/receipt 的 DB 行断言。

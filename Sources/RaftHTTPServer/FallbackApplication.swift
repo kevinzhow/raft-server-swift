@@ -821,11 +821,16 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.post("internal", "agent", ":agentId", "reminders") { request -> Response in
-        routeResponse(services.emailAccounts.legacyReminderCreate(
+        let agentId = request.parameters.get("agentId") ?? ""
+        let reply = services.emailAccounts.legacyReminderCreate(
             authorization: request.headers[.authorization],
-            agentId: request.parameters.get("agentId") ?? "",
+            agentId: agentId,
             body: request.body.string ?? "{}"
-        ))
+        )
+        if let reminderId = reminderIdFromReply(reply) {
+            publishReminderEvent(reply, event: "reminder:scheduled", reminderId: reminderId, agentId: agentId, services: services)
+        }
+        return routeResponse(reply)
     }
     app.delete("internal", "agent", ":agentId", "reminders", ":reminderId") { request -> Response in
         routeResponse(services.emailAccounts.legacyReminderCancel(
@@ -891,10 +896,15 @@ public func configure(_ app: Application, services: FallbackServices) {
         ))
     }
     app.post("internal", "agent-api", "reminders") { request -> Response in
-        routeResponse(services.emailAccounts.agentApiReminderCreate(
+        let reply = services.emailAccounts.agentApiReminderCreate(
             authorization: request.headers[.authorization],
             body: request.body.string ?? "{}"
-        ))
+        )
+        if let reminderId = reminderIdFromReply(reply),
+           let agentId = services.emailAccounts.agentIdForReminderTesting(reminderId: reminderId) {
+            publishReminderEvent(reply, event: "reminder:scheduled", reminderId: reminderId, agentId: agentId, services: services)
+        }
+        return routeResponse(reply)
     }
     app.post("internal", "agent", ":agentId", "send") { request -> Response in
         routeResponse(services.emailAccounts.agentSend(
@@ -4127,6 +4137,39 @@ private func jsonChannelString(_ value: String) -> String {
     let data = try! JSONSerialization.data(withJSONObject: [value])
     let array = String(decoding: data, as: UTF8.self)
     return String(array.dropFirst().dropLast())
+}
+
+private func jsonString(_ value: String) -> String {
+    let data = try? JSONSerialization.data(withJSONObject: [value])
+    let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
+    return String(text.dropFirst().dropLast())
+}
+
+private func reminderIdFromReply(_ reply: HTTPReply) -> String? {
+    guard reply.status == 200, let data = reply.body.data(using: .utf8),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let reminder = object["reminder"] as? [String: Any]
+    else { return nil }
+    return reminder["reminderId"] as? String ?? reminder["id"] as? String
+}
+
+private func publishReminderEvent(
+    _ reply: HTTPReply, event: String, reminderId: String, agentId: String, services: FallbackServices
+) {
+    guard reply.status == 200, let hub = services.realtime,
+          let agent = services.emailAccounts.oauth.agentRuntimeInfo(id: agentId)
+    else { return }
+    var recipients: Set<String> = []
+    if let creator = agent.creatorUserId { recipients.insert(creator) }
+    for member in services.emailAccounts.serverMemberRoles(serverId: agent.serverId)
+    where member.role == "owner" || member.role == "admin" {
+        recipients.insert(member.userId)
+    }
+    guard !recipients.isEmpty else { return }
+    let payload = "{\"reminderId\":\(jsonString(reminderId)),\"ownerAgentId\":\(jsonString(agentId))}"
+    for userId in recipients {
+        hub.emit(room: "user:\(userId)", event: event, payloadJSON: payload)
+    }
 }
 
 private func publishFamilyRevoke(body: String, services: FallbackServices) {

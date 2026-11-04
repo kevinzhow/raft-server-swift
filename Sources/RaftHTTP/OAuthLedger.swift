@@ -3755,6 +3755,16 @@ public final class OAuthLedger: @unchecked Sendable {
         }?.id
     }
 
+    public func memberRoles(serverId: String) -> [(userId: String, role: String)] {
+        lock.lock()
+        defer { lock.unlock() }
+        let prefix = "\(serverId)\n"
+        return members.compactMap { key, role in
+            guard key.hasPrefix(prefix) else { return nil }
+            return (String(key.dropFirst(prefix.count)), role)
+        }.sorted { $0.userId < $1.userId }
+    }
+
     public func memberRole(serverId: String, userId: String) -> String? {
         lock.lock()
         defer { lock.unlock() }
