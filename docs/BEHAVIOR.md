@@ -1774,3 +1774,9 @@ RFC 074 personal assistant：
 - 该模块是 `dbTest` 直连 Postgres 的服务层/纯辅助函数单元测试：`classifyHistoryAroundCursor`、`paginateHistoryProbe`、`resolveMessageSeqAnchor`、`resolveMessageIdInServer`、`getMessageContext*`、history thread metadata、`resolveReminderMsgId`/`resolveMessageInChannel` 的 seq/short-id/full-id 解析与歧义、上下文 cutoff 等；无 running app、无 HTTP 请求/响应。
 - 按契约“规格 = 上游套件断言的 HTTP/状态/JSON/头/帧”，这些 DB 行/服务函数返回不是可观测 HTTP 契约；其可观测行为由 history/message 路由模块（已锁定/仍有 partial 的部分）承担。
 - 故以不可执行裁决锁定，不新增运行时行为。
+
+### route serverSetupGate.daemonReady（裁决锁定）
+
+- 唯一用例通过真实 Computer 凭据 + 已认证 `/daemon/connect` socket + 真实 `ready` 帧 + 真实 `AgentOrchestrator` 驱动 setup gate 从 closed 到 open，并依赖 Redis 背书的 machine replica-generation 就绪提交（测试自述浏览器环节 NOT_COVERED）。
+- 本移植的 SwiftNIO `/daemon/connect` 不包含 Node `AgentOrchestrator`/Redis replica-owner 就绪子系统，无法在不注入被测系统的前提下构造该转换；setup gate 的静态 HTTP 投影已由 `appSetup.api` 锁定。
+- 故以不可执行裁决锁定，不新增运行时行为。
