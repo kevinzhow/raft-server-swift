@@ -1315,3 +1315,9 @@ RFC 074 personal assistant：
 - transcript facts：读取 `~/.claude/projects/-workspace-agent/<sessionId>.jsonl` 尾部，last activity 取最后带 timestamp 的记录，context tokens 取最后 assistant usage 的 input+cache_read+cache_creation；无文件即 unknown。
 - cold-idle sweep：按序跳过 disabled/not_idle/unsupported_runtime/no_session/recent_event/session_facts_unavailable/recent_activity（含 subagent sidecar mtime 与 transcript 时钟取 max）/context_below_threshold/no_transcript/background_tasks_unknown/background_tasks_outstanding；outstanding 扫描识别 Monitor/background/task 通知标记，terminal 标记清除后允许。
 - 稳定化：`ProbeGate` 限流测试改为按启动信号顺序编排，消除 Task 调度顺序造成的误报。
+
+### daemon drivers/runtimeChild
+
+- runtime child 在 session 接管前被 guard 记录：stdout/stderr chunk、error、exit、close 按到达顺序保存（stdin error 也暂存，从不抛出）；hand-off 只回放一次，之后返回 nil。
+- 未在 10s 内接管的 child 被放弃：丢弃已缓存输出、保留 error/exit、记录 warning（含 `not taken over within 10000ms` 与 `errors=<code>`），发 SIGTERM，5s 后仍存活再发 SIGKILL；放弃后到达的输出不再保存，hand-off 得到 `abandoned` 文案而非部分回放。
+- 接管前输出超过 4MiB 也放弃（`exceeded`），不截断后伪装成完整回放。
