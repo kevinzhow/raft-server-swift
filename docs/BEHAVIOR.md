@@ -1805,3 +1805,10 @@ RFC 074 personal assistant：
 - 与锚点互斥：unread 与 after/before/around 同用 → 400 `INVALID_ARG` + suggestedNextAction `raft message read --target '#x' --unread`；普通读取不返回 `unread_after_seq`。
 - 自身消息不算未读但读取会越过；read position 只推进已 settle 的行（默认窗口 2s），too-recent 行返回但不推进，窗口过后由 deferred advance 越过，不会重复返回。
 - 裁决：5 个 service-level/测试钩子用例（settledReadThroughSeq 纯函数、deferred check 顺序/迟到 commit、每 agent 单次 deferred、窗口内测试时钟）依赖 readPositionSettle 内部服务与 fake timers，不移植；其 HTTP 可观测语义由本模块覆盖。
+
+### route agentChannelJoint.api（锁定，含裁决）
+
+- 新增 joint 频道创建/接受：`POST /api/channels` visibility=joint + targetServerSlug + invitedPeople（目标 server 成员）→ 返回 host projection id 与 jointInvite；`POST /api/channels/joint-invites/:id/accept`（目标 server 成员）→ 返回目标 projection id。两个 projection 经 canonical 关联（jointProjections）。
+- agent 侧：leave 只移除本 server projection 的 agent 成员，peer 成员不变；admin agent 可增删本 server 成员，peer server 人员 404（不可寻址）；rename/archive 传播到全部 projection，visibility 变更 403；普通 agent archive 403。
+- joint member listing：人类成员按各 projection 并集列出；同时参与两侧的人带 `servers`（own server 在前且 yours=true，再 peer），仅 own 的人不输出 servers（与旧行为一致），仅 peer 的人只列 peer。
+- 裁决：leave 用例中 orchestrator `purgeAgentInboxForChannelTree` 的 spy 断言属 orchestrator 注入，不移植；其成员移除的 HTTP/JSON 行为已覆盖。

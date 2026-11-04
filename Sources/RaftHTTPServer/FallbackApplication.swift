@@ -2393,6 +2393,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? "{}"
         ))
     }
+    app.post("api", "channels", "joint-invites", ":inviteId", "accept") { request -> Response in
+        routeResponse(services.emailAccounts.acceptJointChannelInvite(
+            authorization: request.headers[.authorization],
+            inviteId: request.parameters.get("inviteId") ?? ""
+        ))
+    }
     app.post("api", "channels", ":channelId", "threads") { request -> Response in
         routeResponse(services.emailAccounts.createThreadFromChannel(
             authorization: request.headers[.authorization],

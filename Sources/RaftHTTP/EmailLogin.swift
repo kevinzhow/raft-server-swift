@@ -309,6 +309,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         source: String, agreementId: String?, agreementVersion: Int?
     )] = []
     private var jointProjections: [JointChannelLink] = []
+    private var jointInvites: [(
+        id: String, hostServerId: String, hostChannelId: String,
+        targetServerId: String, targetChannelId: String,
+        targetOwnerId: String, status: String
+    )] = []
     private var composerResourceServers: Set<String> = []
     private var installedServerApps: [String: Set<String>] = [:]
     private var socialCompletions: [SocialCompletion] = []
@@ -21377,6 +21382,36 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
             return Self.json(400, "{\"error\":\"Invalid channel update\"}")
         }
+        lock.lock()
+        let jointCanonical = jointProjections.first { $0.localChannelId == channelId }?.canonicalChannelId
+        let jointLinkIds = jointCanonical.map { canonical in
+            jointProjections.filter { $0.canonicalChannelId == canonical }.map(\.localChannelId)
+        } ?? []
+        lock.unlock()
+        if !jointLinkIds.isEmpty {
+            if object["visibility"] != nil {
+                return Self.json(403, "{\"error\":\"Joint channel visibility cannot be changed\",\"code\":\"joint_visibility_immutable\"}")
+            }
+            if let archived = object["archived"] as? Bool {
+                for linkId in jointLinkIds {
+                    oauth.setChannelArchived(id: linkId, archivedAt: archived ? Date() : nil)
+                    lock.lock()
+                    postableChannels[linkId]?.archived = archived
+                    lock.unlock()
+                }
+                return Self.json(200, "{\"id\":\(jsonString(channelId)),\"archived\":\(archived ? "true" : "false")}")
+            }
+            if let raw = object["name"] as? String {
+                let newName = raw.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+                for linkId in jointLinkIds {
+                    _ = oauth.renameChannel(id: linkId, name: newName)
+                    lock.lock()
+                    postableChannels[linkId]?.name = newName
+                    lock.unlock()
+                }
+                return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(newName)),\"type\":\"joint\"}")
+            }
+        }
         if object["visibility"] != nil, oauth.allChannelId(serverId: agent.serverId) == channelId {
             return Self.json(403, "{\"error\":\"Only a human can do it, from channel settings or server settings\",\"code\":\"all_channel_visibility_managed_separately\"}")
         }
@@ -21539,7 +21574,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let shortId = parts.count > 1 ? parts[1] : nil
         lock.lock()
         let parent = postableChannels.first { _, channel in
-            channel.serverId == agent.serverId && channel.name == name && channel.kind == "channel" && channel.deletedAt == nil
+            channel.serverId == agent.serverId && channel.name == name
+                && (channel.kind == "channel" || channel.kind == "joint") && channel.deletedAt == nil
         }?.key
         var targetId = parent
         var type = "channel"
@@ -21555,16 +21591,46 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
-        let humanIds = oauth.channelHumanIds(channelId: parentId)
-        let agentIds = oauth.channelAgentIds(channelId: parentId)
+        var humanIds = oauth.channelHumanIds(channelId: parentId)
+        var agentIds = oauth.channelAgentIds(channelId: parentId)
+        if let canonical = jointProjections.first(where: { $0.localChannelId == parentId })?.canonicalChannelId {
+            for link in jointProjections where link.canonicalChannelId == canonical {
+                humanIds = Array(Set(humanIds).union(oauth.channelHumanIds(channelId: link.localChannelId)))
+                agentIds = Array(Set(agentIds).union(oauth.channelAgentIds(channelId: link.localChannelId)))
+            }
+        }
         let humanNames = Dictionary(uniqueKeysWithValues: humanIds.map { id in
             (id, accounts.values.first { $0.id == id }?.name ?? id)
         })
         lock.unlock()
+        lock.lock()
+        let jointCanonical = jointProjections.first { $0.localChannelId == parentId }?.canonicalChannelId
+        let jointLinks = jointCanonical.map { canonical in
+            jointProjections.filter { $0.canonicalChannelId == canonical }
+        } ?? []
+        lock.unlock()
+        func serversJSON(for userId: String) -> String? {
+            guard !jointLinks.isEmpty else { return nil }
+            var badges: [(name: String, slug: String, yours: Bool)] = []
+            for link in jointLinks {
+                guard oauth.channelHumanIds(channelId: link.localChannelId).contains(userId),
+                      let details = oauth.serverDetailsValue(id: link.serverId)
+                else { continue }
+                badges.append((details.name, details.slug, link.serverId == agent.serverId))
+            }
+            badges.sort { $0.yours && !$1.yours }
+            guard !badges.isEmpty, badges.contains(where: { !$0.yours }) else { return nil }
+            let items = badges.map { badge in
+                "{\"name\":\(jsonString(badge.name)),\"slug\":\(jsonString(badge.slug))\("\(badge.yours ? ",\"yours\":true" : "")")}"
+            }.joined(separator: ",")
+            return "[\(items)]"
+        }
         let humans = humanIds.map { id -> String in
             let name = humanNames[id] ?? id
             let role = oauth.memberRole(serverId: agent.serverId, userId: id) ?? "member"
-            return "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"role\":\(jsonString(role))}"
+            var row = "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"role\":\(jsonString(role))"
+            if let servers = serversJSON(for: id) { row += ",\"servers\":\(servers)" }
+            return row + "}"
         }.joined(separator: ",")
         let agents = agentIds.map { id -> String in
             let name = oauth.agentRuntimeInfo(id: id)?.name ?? ""
@@ -28251,6 +28317,34 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(400, "{\"error\":\"Invalid channel\"}")
         }
+        if (object["visibility"] as? String) == "joint" {
+            guard let targetSlug = (object["targetServerSlug"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  let targetServerId = oauth.serverIdForSlug(targetSlug),
+                  targetServerId != serverId,
+                  let targetServer = oauth.serverDetailsValue(id: targetServerId)
+            else {
+                return Self.json(400, "{\"error\":\"targetServerSlug is required\"}")
+            }
+            let invited = object["invitedPeople"] as? [String] ?? []
+            let inviteHandle = invited.first.map { $0.hasPrefix("@") ? String($0.dropFirst()) : $0 } ?? ""
+            let targetOwnerId = accounts.values.first { $0.name.caseInsensitiveCompare(inviteHandle) == .orderedSame }?.id
+            guard let targetOwnerId, oauth.memberRole(serverId: targetServerId, userId: targetOwnerId) != nil else {
+                return Self.json(400, "{\"error\":\"invited person must belong to the target server\"}")
+            }
+            let hostChannelId = oauth.createChannel(serverId: serverId, name: name, creatorUserId: userId)
+            _ = oauth.setChannelType(id: hostChannelId, type: "joint")
+            let targetChannelId = oauth.createChannel(serverId: targetServerId, name: name, creatorUserId: targetOwnerId)
+            _ = oauth.setChannelType(id: targetChannelId, type: "joint")
+            addJointChannelProjection(localChannelId: hostChannelId, canonicalChannelId: hostChannelId, serverId: serverId)
+            addJointChannelProjection(localChannelId: targetChannelId, canonicalChannelId: hostChannelId, serverId: targetServerId)
+            lock.lock()
+            postableChannels[hostChannelId] = PostableChannel(serverId: serverId, memberIds: [userId], kind: "joint", name: name)
+            postableChannels[targetChannelId] = PostableChannel(serverId: targetServerId, memberIds: [], kind: "joint", name: name)
+            let inviteId = UUID().uuidString.lowercased()
+            jointInvites.append((inviteId, serverId, hostChannelId, targetServerId, targetChannelId, targetOwnerId, "pending"))
+            lock.unlock()
+            return Self.json(200, "{\"id\":\(jsonString(hostChannelId)),\"name\":\(jsonString(name)),\"type\":\"joint\",\"targetServerSlug\":\(jsonString(targetServer.slug)),\"jointInvite\":{\"id\":\(jsonString(inviteId)),\"status\":\"pending\"},\"joined\":true}")
+        }
         let description = object["description"] as? String
         let channelId = oauth.createChannel(
             serverId: serverId,
@@ -28262,6 +28356,29 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         postableChannels[channelId] = PostableChannel(serverId: serverId, memberIds: [userId], name: name)
         lock.unlock()
         return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name)),\"joined\":true,\"activityMuteSupported\":true,\"activityMuted\":false,\"muteFromSeq\":null,\"prefsVersion\":0,\"maxReadSeq\":0,\"readStateVersion\":0}")
+    }
+
+    public func acceptJointChannelInvite(authorization: String?, inviteId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        guard let index = jointInvites.firstIndex(where: { $0.id == inviteId }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Invite not found\"}")
+        }
+        let invite = jointInvites[index]
+        lock.unlock()
+        guard oauth.memberRole(serverId: invite.targetServerId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        oauth.addChannelHuman(channelId: invite.targetChannelId, userId: userId)
+        lock.lock()
+        jointInvites[index].status = "accepted"
+        postableChannels[invite.targetChannelId]?.memberIds.insert(userId)
+        let channel = postableChannels[invite.targetChannelId]
+        lock.unlock()
+        return Self.json(200, "{\"id\":\(jsonString(invite.targetChannelId)),\"name\":\(jsonString(channel?.name ?? "")),\"type\":\"joint\",\"joined\":true}")
     }
 
     public func listChannels(authorization: String?, serverId: String, archived: String? = nil) -> HTTPReply {
