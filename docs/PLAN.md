@@ -314,3 +314,11 @@ daemon 180/180、socket 7/7 已完成；剩余唯一缺口是 route 的 6 个 pe
 - **socket 帧族**：`socketMembershipRevocation.api`（guest join/resume 可见性，需要新 WS 夹具）。
 - **可继续的小切片**：`internalAgentApi.selfCausedNoticeFreshness.api`（复用 send hold + 注意因果 actor）、`internalComputer.agentMigration`、`productFeedback.multiApp`（app registry 注入）、`publicSearchServiceAccess` 已锁定、`readMutationsResidueBoundary` 已锁定。
 - 策略：优先小切片锁定；大模块按数据模型→路由→case 分批推进，不以测试钩子换 locked。
+
+### Round 255 closeout（目标未完成）
+
+- 最终口径：route **194 / 219 locked（88.6%）**、用例 **1362 / 2000（68.1%，可移植口径 61.3%）**；socket **7/7（16/16）**；daemon **180/180（2616/2616）**；整体 **381/406（93.8%）、3986/4632（86.0%）**。
+- 直接实现并锁定的模块已覆盖 tasks/attachments 边界、scope attestation、joint channels、history/unread、public search 与服务访问、read-mutation residue、task write freshness 等；检索、事件、socket、daemon 轨道 100%。
+- 剩余 **25 partial** 的未完成原因：`internalAgentApi.send/auth`、`agents.api`、`auth.api`、membership 等大模块需多切片；`messageTranslations`、`productFeedback` 会话代理需外部 provider/Hands 会话链路；`slackBridge`、`integrations`、`agentRuntimeProviders`、`agentCredentialSecurity`、external inbox 已按“外部服务/注入、无黑盒路径”裁决锁定；`socketMembershipRevocation` 需新 WS guest 夹具；`productFeedback.multiApp`/`internalComputer.agentMigration` 需多切片。
+- 仓库状态：`main` clean，所有已推提交通过 `make test`（ProbeGate 并发用例偶发依赖调度，隔离通过后整包重跑通过）；最后提交见 git log。
+- 结论：目标保留 active，未标记 complete/blocked；后续按 PLAN“剩余 25 partial 分类”继续。
