@@ -331,6 +331,14 @@ public final class PublicServerDirectory: @unchecked Sendable {
         case setChannelPrivate(id: String, privateChannel: Bool)
     }
 
+    public func setServerPublicIdForTesting(serverId: String, publicId: String) {
+        lock.lock()
+        if let index = servers.firstIndex(where: { $0.id == serverId }) {
+            servers[index].publicId = publicId
+        }
+        lock.unlock()
+    }
+
     public func apply(_ edit: Edit) {
         lock.lock()
         defer { lock.unlock() }

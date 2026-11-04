@@ -1836,3 +1836,11 @@ RFC 074 personal assistant：
 - Slack 桥接的外部投影消息对 agent 的 history/events/resolve 读路径保持普通内容：`@name`、`#channel`、`<result>` 原样渲染，`mentioned` 仅对具名 mention fact 的目标 agent 为 true，并保留 `external_message.provider` 与 actor；`mentions` 原始事实不泄漏到 wire。
 - 非 Slack provider 的投影消息保持 inert：`@x`/`#x` 中和为 `user:x`/`channel:x`，`<`/`>` 转义（`&lt;result&gt;`），`mentioned` 恒为 false。
 - 裁决：同一用例还断言 orchestrator 的 live batch/single delivery 注入结果（`deliverMessagesToAgents`/`deliverMessageToAgent` 的 mock），属 orchestrator 注入，按契约不移植；其 HTTP 读路径语义已覆盖。
+
+### route publicSearchServiceAccess.api（锁定，含裁决）
+
+- Raft-Service v1 服务访问：`Raft-Service v1 keyId.token` 每请求重新读取 key set（支持即时撤销/轮换）；key set 必须唯一、sha256 为 64-hex 且至少有一个无过期时间的 current key，否则仅服务路径 503；key lookup 有 250ms 截止时间，超时 503 且不占桶。
+- 共享有限桶：每请求先消耗服务桶额度（默认 60/min，可配），耗尽 429 + 1..60 秒 Retry-After；无共享桶/桶不可用/显式非法 limits → 仅服务路径 503；匿名路径与匿名桶始终不受影响。凭证拒绝一律 401 且 `Cache-Control: no-store`，不回落到匿名。
+- 谓词不因凭证放宽：关闭 master search、server 转 private 时服务请求同样 404/空 index；服务凭证不打开内容。
+- 索引有界分页：每页最多扫描 500 个候选 server（含 search-off 的空候选）、最多输出 75 条 entries，`nextCursor` 为 32-hex「下一候选偏移」+`:done`；空页同样返回前向 cursor，walk 覆盖每条 entry 恰好一次且无重复。
+- 裁决：in-flight cap/IP limiter 顺序用例依赖 EventEmitter/express 伪响应与两个 gate 的注入；Redis EVAL 适配器依赖未移植 Redis 原子 Lua 基础设施；两者不移植，其余 HTTP/JSON 语义已覆盖。
