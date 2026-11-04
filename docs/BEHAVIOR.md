@@ -1374,3 +1374,7 @@ RFC 074 personal assistant：
 ### daemon runtimeCliVersionTracker
 
 - 记录上次检测到的各 runtime CLI 版本（`<slockHome>/computer/runtime-cli-versions.json`，0600、原子写）：版本按点分数字比较（`codex-cli 0.163.0`、`2.1.301 (Claude Code)` 等前缀后缀不影响）；首次只记录，之后变化产生 change（upgrade/downgrade/changed），downgrade 同时保留 notice（from 为首次下降前的好版本、to 与时间），回到 >= from 时清除；本轮未检测到的 runtime 保留原记录；文件损坏读作空状态。
+
+### daemon passiveAxGate
+
+- RFC 072 §7 passive AX 门禁：server flag 为唯一开启条件；`RAFT_PASSIVE_AX=0/false/off/空串` 在 agent env_vars 或 daemon 进程 env 任一处置 false 即关闭（紧急停止，两侧互不覆盖）；无法解析的值视为无意见；env 不能在没有 server flag 时开启。
