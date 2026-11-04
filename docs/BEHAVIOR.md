@@ -1648,3 +1648,9 @@ RFC 074 personal assistant：
 - logout lineage：连续多次轮换后旧 token 不能再次 refresh；旧 token logout 仍能撤销最终 family，后续 refresh/access 全部 401。
 - reset token 并发：同一 token 并发两次修改密码，仅一个 200、另一个 400；只有胜者密码可登录（单次消费在锁内完成）。
 - 裁决为不可执行（上游断言依赖未移植的 socket 频道订阅/可见性驱逐 epic、DB 行/日志捕获或 orchestrator 重试注入，HTTP/JSON/frame 可观测面不存在）：guest-policy/role-demotion/public-to-private 的 socket 订阅驱逐、blast radius 频道可见性驱逐、guest 隐藏频道 `channel:updated` 元数据、新公开频道 tasks 回归、他人 logout 保留在途 handshake、login/search catch 日志脱敏、post-commit revoke 重试修复。对应 socket 订阅 epic 仍是后续计划项。
+
+### route internal reminders（模型基础，internal.reminders.api 进行中）
+
+- App-owned reminder 记录：id/serverId/ownerAgentId/title/notes/fireAt/status(scheduled|canceled|fired)/version/recurrenceJSON/channelId/threadId/createdAt/updatedAt；每次变更追加 ReminderEvent（type/version/actor/fireAt）。
+- 生命周期：create → version 1 scheduled；cancel/snooze/update 必须匹配调用方观察到的 expectedVersion，不匹配 → 409 语义冲突（带 currentVersion），不改状态；匹配则 version+1 并记录 canceled/snoozed/updated 事件。
+- 归属与过滤：只有 ownerAgentId 匹配的 agent 才能变更；列表可按 status 过滤（scheduled/canceled/fired/all），非法 status 标记 invalid。

@@ -427,6 +427,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var sidebarSections: [String: (sections: [(id: String, name: String, emoji: String?, sortMode: String)], order: [String], placements: [(kind: String, id: String, sectionId: String, position: Int)], version: Int)] = [:]
     private var sidebarPinnedRefs: [String: (refs: [(kind: String, id: String)], channelIds: [String], agentIds: [String], version: Int)] = [:]
     private var reminderRecords: [ReminderRecord] = []
+    private var reminderEvents: [ReminderEvent] = []
     private var taskRecords: [TaskRecord] = []
     private var pushRegistrations: [PushRegistration] = []
     public var fcmPushAvailable = true
@@ -25656,6 +25657,145 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var ownerAgentId: String
         var title: String
         var fireAt: Date
+        var status: String = "scheduled"
+        var version: Int = 1
+        var notes: String? = nil
+        var recurrenceJSON: String? = nil
+        var channelId: String? = nil
+        var threadId: String? = nil
+        var createdAt: Date = Date()
+        var updatedAt: Date = Date()
+    }
+
+    private struct ReminderEvent {
+        var reminderId: String
+        var serverId: String
+        var ownerAgentId: String
+        var type: String
+        var version: Int
+        var actorType: String
+        var actorId: String?
+        var createdAt: Date
+        var fireAt: Date?
+    }
+
+    public enum ReminderMutationOutcome: Sendable {
+        case ok(version: Int)
+        case notFound
+        case conflict(currentVersion: Int)
+        case invalid(String)
+    }
+
+    @discardableResult
+    private func appendReminderEventLocked(
+        _ reminder: ReminderRecord, type: String, actorType: String, actorId: String? = nil,
+        fireAt: Date? = nil
+    ) -> ReminderRecord {
+        var updated = reminder
+        updated.updatedAt = Date()
+        reminderEvents.append(ReminderEvent(
+            reminderId: reminder.id, serverId: reminder.serverId, ownerAgentId: reminder.ownerAgentId,
+            type: type, version: updated.version, actorType: actorType, actorId: actorId,
+            createdAt: updated.updatedAt, fireAt: fireAt
+        ))
+        return updated
+    }
+
+    @discardableResult
+    public func createAppReminderForTesting(
+        serverId: String, ownerAgentId: String, title: String, fireAt: Date,
+        notes: String? = nil, recurrenceJSON: String? = nil,
+        channelId: String? = nil, threadId: String? = nil,
+        actorType: String = "agent", actorId: String? = nil
+    ) -> String {
+        lock.lock()
+        let reminder = ReminderRecord(
+            id: UUID().uuidString.lowercased(), serverId: serverId, ownerAgentId: ownerAgentId,
+            title: title, fireAt: fireAt, status: "scheduled", version: 1, notes: notes,
+            recurrenceJSON: recurrenceJSON, channelId: channelId, threadId: threadId,
+            createdAt: Date(), updatedAt: Date()
+        )
+        reminderRecords.append(appendReminderEventLocked(reminder, type: "scheduled", actorType: actorType, actorId: actorId))
+        lock.unlock()
+        return reminder.id
+    }
+
+    public func appReminderRowForTesting(id: String) -> (status: String, version: Int, title: String, fireAt: Date)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let reminder = reminderRecords.first(where: { $0.id == id }) else { return nil }
+        return (reminder.status, reminder.version, reminder.title, reminder.fireAt)
+    }
+
+    public func appReminderEventsForTesting(reminderId: String) -> [(type: String, version: Int)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return reminderEvents.filter { $0.reminderId == reminderId }.map { ($0.type, $0.version) }
+    }
+
+    public func cancelAppReminder(reminderId: String, ownerAgentId: String, expectedVersion: Int) -> ReminderMutationOutcome {
+        mutateAppReminder(reminderId: reminderId, ownerAgentId: ownerAgentId, expectedVersion: expectedVersion, type: "canceled") { reminder in
+            reminder.status = "canceled"
+        }
+    }
+
+    public func snoozeAppReminder(
+        reminderId: String, ownerAgentId: String, expectedVersion: Int, fireAt: Date
+    ) -> ReminderMutationOutcome {
+        mutateAppReminder(reminderId: reminderId, ownerAgentId: ownerAgentId, expectedVersion: expectedVersion, type: "snoozed") { reminder in
+            reminder.status = "scheduled"
+            reminder.fireAt = fireAt
+        }
+    }
+
+    public func updateAppReminder(
+        reminderId: String, ownerAgentId: String, expectedVersion: Int,
+        title: String?, fireAt: Date?, notes: String?
+    ) -> ReminderMutationOutcome {
+        guard title != nil || fireAt != nil || notes != nil else {
+            return .invalid("no update fields")
+        }
+        return mutateAppReminder(reminderId: reminderId, ownerAgentId: ownerAgentId, expectedVersion: expectedVersion, type: "updated") { reminder in
+            if let title { reminder.title = title }
+            if let fireAt { reminder.fireAt = fireAt }
+            if let notes { reminder.notes = notes }
+        }
+    }
+
+    private func mutateAppReminder(
+        reminderId: String, ownerAgentId: String, expectedVersion: Int, type: String,
+        mutate: (inout ReminderRecord) -> Void
+    ) -> ReminderMutationOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = reminderRecords.firstIndex(where: { $0.id == reminderId && $0.ownerAgentId == ownerAgentId }) else {
+            return .notFound
+        }
+        guard reminderRecords[index].version == expectedVersion else {
+            return .conflict(currentVersion: reminderRecords[index].version)
+        }
+        var reminder = reminderRecords[index]
+        mutate(&reminder)
+        reminder.version += 1
+        let updated = appendReminderEventLocked(reminder, type: type, actorType: "agent", actorId: ownerAgentId)
+        reminderRecords[index] = updated
+        return .ok(version: updated.version)
+    }
+
+    public func listAppReminders(
+        serverId: String, ownerAgentId: String, status: String?
+    ) -> (rows: [(id: String, status: String, version: Int, title: String)], invalidStatus: Bool) {
+        let allowed = Set(["scheduled", "canceled", "fired", "all"])
+        if let status, !allowed.contains(status) {
+            return ([], true)
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        let rows = reminderRecords.filter { reminder in
+            reminder.serverId == serverId && reminder.ownerAgentId == ownerAgentId
+                && (status == nil || status == "all" || reminder.status == status)
+        }.map { ($0.id, $0.status, $0.version, $0.title) }
+        return (rows, false)
     }
 
     public func saveChannelMessage(authorization: String?, serverId: String, body: String) -> HTTPReply {
