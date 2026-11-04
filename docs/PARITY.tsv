@@ -219,7 +219,7 @@ tasks.snapshotMetrics.api	route	locked	e1fa956	covered by the existing metric/sc
 timezoneObservation.api	route	locked	595ec75	auth/validation, first+last preservation, canonical IANA alias, legacy first-pair fallback; excluded DB clock and concurrent observers
 version.api	route	locked	5247150	build identity and explicit 503 covered
 accessRevocation.redis	socket	locked	d7e5631	no executable assertions in the upstream suite; the Redis-backed family revocation behaviour is exercised through the socket hub/close paths and the route-level revocation tests
-desktopAttention.api	socket	pending	-	auto-seed
+desktopAttention.api	socket	locked	SLICE	end-to-end over a real socket: a desktop socket's attention report marks only its own user within the fixed 10-minute window, a browser socket's identical report marks nobody, and an away report clears the user at once; the registry fails open when it cannot read
 desktopAttentionEvents	socket	locked	051e3ba	desktop:attention socket event: only desktop sockets receive it, true records the socket's own user with a 30s per-socket throttle, false clears at once and resets the record throttle, malformed payloads are ignored, and record/clear failures stay inside the handler
 index	socket	locked	4156721	handshake parser, room contract, and live transport covered
 platformScope	socket	locked	4156721	room helpers and mobile-scoped push covered

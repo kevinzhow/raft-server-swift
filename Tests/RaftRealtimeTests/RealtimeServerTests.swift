@@ -306,6 +306,82 @@ struct RealtimeTransportTests {
     #expect(reactions.first?["emoji"] as? String == "👍")
 }
 
+
+@Test func aDesktopSocketAttentionReportMarksOnlyItsOwnUser() async throws {
+    let auth = StubAuth(
+        tokens: ["owner-token": "owner-1", "browser-token": "follower-1"],
+        roles: ["s1\nowner-1": "member", "s1\nfollower-1": "member"],
+        channels: [:]
+    )
+    let server = try await RealtimeServer.start(auth: auth)
+    defer { Task { try? await server.close() } }
+    server.desktopAttention.resetForTests()
+
+    let browser = try await RawSocketIOClient(port: server.port)
+    defer { browser.close() }
+    _ = await browser.waitForText { $0.hasPrefix("0") }
+    browser.send("40{\"token\":\"browser-token\",\"serverId\":\"s1\",\"clientKind\":\"web\"}")
+    #expect(await browser.waitForText { $0 == "42[\"rooms:joined\"]" } != nil)
+
+    let desktop = try await RawSocketIOClient(port: server.port)
+    defer { desktop.close() }
+    _ = await desktop.waitForText { $0.hasPrefix("0") }
+    desktop.send("40{\"token\":\"owner-token\",\"serverId\":\"s1\",\"clientKind\":\"desktop\"}")
+    #expect(await desktop.waitForText { $0 == "42[\"rooms:joined\"]" } != nil)
+
+    browser.send("42[\"desktop:attention\",{\"attended\":true}]")
+    desktop.send("42[\"desktop:attention\",{\"attended\":true}]")
+
+    var attended: Set<String> = []
+    let deadline = Date().addingTimeInterval(2)
+    while Date() < deadline {
+        attended = server.desktopAttention.usersWithRecentDesktopAttention(["owner-1", "follower-1"])
+        if !attended.isEmpty { break }
+        try? await Task.sleep(for: .milliseconds(20))
+    }
+    #expect(attended == ["owner-1"])
+
+    // The browser report had the same time to land; it must still be absent.
+    try? await Task.sleep(for: .milliseconds(100))
+    #expect(server.desktopAttention.usersWithRecentDesktopAttention(["follower-1"]).isEmpty)
+}
+
+@Test func aDesktopSocketAwayReportClearsItsUserOverARealConnection() async throws {
+    let auth = StubAuth(
+        tokens: ["owner-token": "owner-1"],
+        roles: ["s1\nowner-1": "member"],
+        channels: [:]
+    )
+    let server = try await RealtimeServer.start(auth: auth)
+    defer { Task { try? await server.close() } }
+    server.desktopAttention.resetForTests()
+
+    let desktop = try await RawSocketIOClient(port: server.port)
+    defer { desktop.close() }
+    _ = await desktop.waitForText { $0.hasPrefix("0") }
+    desktop.send("40{\"token\":\"owner-token\",\"serverId\":\"s1\",\"clientKind\":\"desktop\"}")
+    #expect(await desktop.waitForText { $0 == "42[\"rooms:joined\"]" } != nil)
+
+    desktop.send("42[\"desktop:attention\",{\"attended\":true}]")
+    var seen: Set<String> = []
+    let attendDeadline = Date().addingTimeInterval(2)
+    while Date() < attendDeadline {
+        seen = server.desktopAttention.usersWithRecentDesktopAttention(["owner-1"])
+        if !seen.isEmpty { break }
+        try? await Task.sleep(for: .milliseconds(20))
+    }
+    #expect(seen == ["owner-1"])
+
+    desktop.send("42[\"desktop:attention\",{\"attended\":false}]")
+    let clearDeadline = Date().addingTimeInterval(2)
+    while Date() < clearDeadline {
+        seen = server.desktopAttention.usersWithRecentDesktopAttention(["owner-1"])
+        if seen.isEmpty { break }
+        try? await Task.sleep(for: .milliseconds(20))
+    }
+    #expect(seen.isEmpty)
+}
+
 }
 private struct StubAuth: RealtimeAuthorizing {
     var tokens: [String: String]

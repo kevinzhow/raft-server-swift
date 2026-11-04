@@ -1559,3 +1559,9 @@ RFC 074 personal assistant：
 - `{attended:true}` 记录该 socket 自身 user 的“桌面在场”（忽略 payload 中的 userId 等其他键），同一 socket 30s 内重复上报被丢弃；`{attended:false}`（空闲/锁屏）立即清除该 user 的记录，并把 record 节流重置为立即可记录；恢复上报不受 30s 限制。
 - 非法 payload（非对象、attended 非布尔、缺 attended）一律忽略；record/clear 失败不外抛（只记日志），回到“记录自然过期”的安全状态。
 - 记录存放在 `DesktopAttentionRegistry`（本移植以内存实现 Redis 服务的可观测抑制状态）。
+
+### socket desktopAttention.api
+
+- 真实 socket 端到端：desktop 连接发送 `desktop:attention {attended:true}` 后，该 user 在 `DESKTOP_ATTENTION_WINDOW_MS`（10 分钟，固定不可配置）内被记为“桌面在场”；同一时刻 web 连接发送同样事件不产生记录（浏览器不能压制自己的通知）。
+- `{attended:false}` 立即清除该 user（不等 TTL），浏览器推送恢复；`DesktopAttentionRegistry.usersWithRecentDesktopAttention([...])` 只返回窗口内仍有效的 user，读失败时失败开放（不压制任何人）。
+- 记录以内存实现 Redis TTL 的可观测语义，`resetForTests()` 支持清空。

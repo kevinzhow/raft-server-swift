@@ -90,13 +90,15 @@ public final class RealtimeServer: Sendable {
     private let group: MultiThreadedEventLoopGroup
     private let channel: any Channel
     public let hub: RealtimeHub
+    public let desktopAttention: DesktopAttentionRegistry
     public let port: Int
 
-    private init(group: MultiThreadedEventLoopGroup, channel: any Channel, port: Int, hub: RealtimeHub) {
+    private init(group: MultiThreadedEventLoopGroup, channel: any Channel, port: Int, hub: RealtimeHub, desktopAttention: DesktopAttentionRegistry) {
         self.group = group
         self.channel = channel
         self.port = port
         self.hub = hub
+        self.desktopAttention = desktopAttention
     }
 
     public static func start(
@@ -121,7 +123,7 @@ public final class RealtimeServer: Sendable {
                 try await group.shutdownGracefully()
                 throw RealtimeServerError.missingPort
             }
-            return RealtimeServer(group: group, channel: channel, port: boundPort, hub: hub)
+            return RealtimeServer(group: group, channel: channel, port: boundPort, hub: hub, desktopAttention: desktopAttention)
         } catch {
             try await group.shutdownGracefully()
             throw error
@@ -310,6 +312,10 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler, @unchecked
               let array = (try? JSONSerialization.jsonObject(with: data)) as? [Any],
               let event = array.first as? String
         else { return }
+        if event == DesktopAttentionEvents.eventName {
+            desktopAttentionHandler?.handle(array.count > 1 ? array[1] : nil)
+            return
+        }
         guard let serverId = session.serverId else { return }
         let userId = session.userId
         switch event {

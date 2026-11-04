@@ -16,24 +16,53 @@ public protocol DesktopAttentionRecording: Sendable {
     func clear(userId: String)
 }
 
-/// In-memory record of users whose desktop window is attended. The upstream
-/// service is Redis-backed; this port keeps the observable suppression state.
+/// In-memory record of users whose desktop window was attended within the
+/// fixed window. The upstream service is Redis-backed with a TTL; this port
+/// keeps the same observable suppression state.
 public final class DesktopAttentionRegistry: DesktopAttentionRecording, @unchecked Sendable {
+    /// Fixed window (not user-configurable): a desktop that is merely open but
+    /// unused stops suppressing after it lapses.
+    public static let windowMs = 10 * 60 * 1000
     private let lock = NSLock()
-    private var attended: Set<String> = []
+    private var attendedUntil: [String: Int] = [:]
 
     public init() {}
 
     public func record(userId: String) {
-        lock.withLock { _ = attended.insert(userId) }
+        record(userId: userId, now: Int(Date().timeIntervalSince1970 * 1000))
+    }
+
+    public func record(userId: String, now: Int) {
+        lock.withLock { attendedUntil[userId] = now + Self.windowMs }
     }
 
     public func clear(userId: String) {
-        lock.withLock { attended.remove(userId) }
+        lock.withLock { attendedUntil.removeValue(forKey: userId) }
     }
 
-    public func isAttended(userId: String) -> Bool {
-        lock.withLock { attended.contains(userId) }
+    public func isAttended(userId: String, now: Int = Int(Date().timeIntervalSince1970 * 1000)) -> Bool {
+        lock.withLock {
+            guard let until = attendedUntil[userId] else { return false }
+            if until > now { return true }
+            attendedUntil.removeValue(forKey: userId)
+            return false
+        }
+    }
+
+    /// The subset of `userIds` whose desktop window was attended within the
+    /// window. Fails open: an unreadable store suppresses nobody.
+    public func usersWithRecentDesktopAttention(
+        _ userIds: [String], now: Int = Int(Date().timeIntervalSince1970 * 1000)
+    ) -> Set<String> {
+        var attended: Set<String> = []
+        for userId in userIds {
+            if isAttended(userId: userId, now: now) { attended.insert(userId) }
+        }
+        return attended
+    }
+
+    public func resetForTests() {
+        lock.withLock { attendedUntil.removeAll() }
     }
 }
 
