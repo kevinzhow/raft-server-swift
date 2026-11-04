@@ -1469,3 +1469,8 @@ RFC 074 personal assistant：
 - Kimi 预刷新门禁（默认关闭）：开启时先按可用 installation 的 command 解析客户端 auth 并 ensureFresh；仅 rejected/revoked → `reauth_required`，transient 且 expired → `error`，其余 freshness（fresh/refreshed/adopted/missing/非过期 transient/platform_unsupported）都放行探针并保留 OAR 结果；关闭时不解析、不刷新、OAR 结果原样投影。
 - collector 工厂按 provider 读取并把 now 注入 observedAt。
 - 非移植用例：上游「每个 usage provider 路由到真实 OAR provider runtime」依赖未移植的 @botiverse/oar 实现（PARITY 已注明；工厂接线由本移植测试覆盖）。
+
+### daemon runtimeAccountUsage/oarKimi
+
+- Kimi 用量在 OAR 契约下的边界（测试-only 模块，现由 oarAdapter + collector 断言）：窗口百分比/resets 保持原值，account 身份 maskedLabel（`alpha@example.com`→`a****@example.com`）且原 email 不出现；无 email 的手机登录用 profile nickname（trim）作 displayName，有 maskedLabel 时不带 displayName；订阅窗口满但 Extra Usage 有余量时 health 仍 ok（满窗口 limit_reached、extra ok）；成功/失败读使用同一 provider-slot identity；无 reset 的百分比可用且无 parseErrorCode。
+- collector 边界：installation 每次读探测一次且同一对象交给 reader；available/reauth_required/unsupported 分别投影；无 installation → unsupported 且绝不读 credentials；无关失败 → error 且错误文案不外泄（不引导重登）。
