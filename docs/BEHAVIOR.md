@@ -1516,3 +1516,12 @@ RFC 074 personal assistant：
 - 单飞：同一 lister 上仍在跑的 listing 被后续请求 join（不会并发发起第二个）；settle 后下一次请求才启动新 listing。
 - 投影去重 id、丢弃 disabled；runtime 无法应用 effort 时丢弃 effort 字段。
 - 注：上游 13 例中 3 例（opencode 安装形态/解析器对齐）依赖未移植的 opencode driver parser 与 provider label formatter，未计入（PARITY 注明）。
+
+### daemon agentMigrationExport
+
+- 迁移工作区扫描：未知文件默认全部迁移；只有明确工具生成的目录被列为 regenerable（third-party: node_modules/.venv/.terraform/.tox/vendor…；cache: __pycache__/.mypy_cache/.turbo/.gradle…；build: dist/target/.next/.nuxt/.svelte-kit），按类别统计；`build/` 不在白名单内，照常迁移。
+- `.raftmigrateignore`：逐行精确路径（`#` 注释，含 `*?[]!` 的模式行跳过），仅可排除可重建/可重新下载的内容；MEMORY.md、ignore 文件自身、`.raft/activity` 及其父/子路径永不排除；被忽略目录递归统计 fileCount/sizeBytes。
+- 不可读目录记入 `unreachable`（read_error），不中断扫描；`onEntry` 按名称顺序收到每个包含的文件路径。
+- symlink target 归一化：拒绝绝对路径、Windows drive/UNC、NUL 与逃出 workspace 的目标（相对 link 目录解析），反斜杠转 `/`；`../target-file` 允许。
+- summary：included 计数/字节、regenerable 计数与四类分布、MEMORY.md/notes/ 存在性；只有存在被忽略路径时才输出 excludedIgnored（count/fileCount/bytes/largest≤5），否则省略以兼容旧 server。
+- 注：排序采用与 Node `localeCompare` 一致的口径（`_` 先于 `.`、字母忽略大小写）。
