@@ -25798,6 +25798,143 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return (rows, false)
     }
 
+    private func legacyReminderMachine(_ authorization: String?) -> (machineId: String, serverId: String)? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        let key = String(authorization.dropFirst("Bearer ".count))
+        guard let machine = machineCredential(apiKey: key) else { return nil }
+        return (machine.machineId, machine.serverId)
+    }
+
+    private func reminderAgentOnServer(_ agentId: String, serverId: String) -> OAuthLedger.AgentRuntimeInfo? {
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
+            return nil
+        }
+        return agent
+    }
+
+    private static func reminderSummaryJSON(_ row: (id: String, status: String, version: Int, title: String)) -> String {
+        "{\"id\":\(jsonString(row.id)),\"status\":\(jsonString(row.status)),\"version\":\(row.version),\"title\":\(jsonString(row.title))}"
+    }
+
+    public func legacyReminderList(authorization: String?, agentId: String, status: String?) -> HTTPReply {
+        guard let machine = legacyReminderMachine(authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard reminderAgentOnServer(agentId, serverId: machine.serverId) != nil else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        let listed = listAppReminders(serverId: machine.serverId, ownerAgentId: agentId, status: status)
+        if listed.invalidStatus {
+            return Self.json(400, "{\"error\":\"Invalid status filter\"}")
+        }
+        let rows = listed.rows.map { Self.reminderSummaryJSON($0) }.joined(separator: ",")
+        return Self.json(200, "{\"reminders\":[\(rows)]}")
+    }
+
+    public func legacyReminderCreate(authorization: String?, agentId: String, body: String) -> HTTPReply {
+        guard let machine = legacyReminderMachine(authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let agent = reminderAgentOnServer(agentId, serverId: machine.serverId) else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        guard agent.runtime != "external" else {
+            return Self.json(409, "{\"error\":\"External agents cannot create reminders\",\"code\":\"reminders_unsupported_for_external_agents\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let title = (object["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"title is required\"}")
+        }
+        guard let messageId = object["msgId"] as? String, !messageId.isEmpty else {
+            return Self.json(400, "{\"error\":\"msgId is required for agent-created reminders\"}")
+        }
+        let fireAt: Date
+        if let raw = object["fireAt"] as? String, let parsed = ISO8601DateFormatter().date(from: raw) {
+            fireAt = parsed
+        } else if let delay = object["delaySeconds"] as? Int, delay >= 0 {
+            fireAt = Date().addingTimeInterval(Double(delay))
+        } else {
+            return Self.json(400, "{\"error\":\"fireAt or delaySeconds is required\"}")
+        }
+        let id = createAppReminderForTesting(
+            serverId: machine.serverId, ownerAgentId: agentId, title: title, fireAt: fireAt,
+            notes: object["notes"] as? String, recurrenceJSON: object["recurrence"] as? String,
+            channelId: object["channelId"] as? String, threadId: object["threadId"] as? String,
+            actorType: "agent", actorId: agentId
+        )
+        let row = (id: id, status: "scheduled", version: 1, title: title)
+        return Self.json(200, "{\"reminder\":\(Self.reminderSummaryJSON(row))}")
+    }
+
+    public func legacyReminderCancel(authorization: String?, agentId: String, reminderId: String, body: String) -> HTTPReply {
+        guard legacyReminderMachine(authorization) != nil else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        let expected = (try? JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any])?["expectedVersion"] as? Int ?? 0
+        switch cancelAppReminder(reminderId: reminderId, ownerAgentId: agentId, expectedVersion: expected) {
+        case .notFound:
+            return Self.json(404, "{\"error\":\"Reminder not found\"}")
+        case .conflict(let current):
+            return Self.json(409, "{\"error\":\"Reminder version conflict\",\"currentVersion\":\(current)}")
+        case .invalid:
+            return Self.json(400, "{\"error\":\"Invalid reminder update\"}")
+        case .ok(let version):
+            let row = (id: reminderId, status: "canceled", version: version, title: appReminderRowForTesting(id: reminderId)?.title ?? "")
+            return Self.json(200, "{\"reminder\":\(Self.reminderSummaryJSON(row))}")
+        }
+    }
+
+    public func agentApiReminderList(authorization: String?, status: String?) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        let listed = listAppReminders(serverId: agent.serverId, ownerAgentId: agent.id, status: status)
+        if listed.invalidStatus {
+            return Self.json(400, "{\"error\":\"Invalid status filter\"}")
+        }
+        let rows = listed.rows.map { Self.reminderSummaryJSON($0) }.joined(separator: ",")
+        return Self.json(200, "{\"reminders\":[\(rows)]}")
+    }
+
+    public func agentApiReminderCreate(authorization: String?, body: String) -> HTTPReply {
+        guard let credential = agentCredentialAgent(authorization),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard agent.runtime != "external" else {
+            return Self.json(409, "{\"error\":\"External agents cannot create reminders\",\"code\":\"reminders_unsupported_for_external_agents\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let title = (object["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"title is required\"}")
+        }
+        guard let messageId = object["msgId"] as? String, !messageId.isEmpty else {
+            return Self.json(400, "{\"error\":\"msgId is required for agent-created reminders\"}")
+        }
+        _ = messageId
+        let fireAt: Date
+        if let raw = object["fireAt"] as? String, let parsed = ISO8601DateFormatter().date(from: raw) {
+            fireAt = parsed
+        } else if let delay = object["delaySeconds"] as? Int, delay >= 0 {
+            fireAt = Date().addingTimeInterval(Double(delay))
+        } else {
+            return Self.json(400, "{\"error\":\"fireAt or delaySeconds is required\"}")
+        }
+        let id = createAppReminderForTesting(
+            serverId: agent.serverId, ownerAgentId: agent.id, title: title, fireAt: fireAt,
+            notes: object["notes"] as? String, recurrenceJSON: object["recurrence"] as? String,
+            channelId: object["channelId"] as? String, threadId: object["threadId"] as? String,
+            actorType: "agent", actorId: agent.id
+        )
+        let row = (id: id, status: "scheduled", version: 1, title: title)
+        return Self.json(200, "{\"reminder\":\(Self.reminderSummaryJSON(row))}")
+    }
+
     public func saveChannelMessage(authorization: String?, serverId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

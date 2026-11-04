@@ -813,6 +813,40 @@ public func configure(_ app: Application, services: FallbackServices) {
         response.headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
         return response
     }
+    app.get("internal", "agent", ":agentId", "reminders") { request -> Response in
+        routeResponse(services.emailAccounts.legacyReminderList(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId") ?? "",
+            status: desktopQuery(request.url.query, "status")
+        ))
+    }
+    app.post("internal", "agent", ":agentId", "reminders") { request -> Response in
+        routeResponse(services.emailAccounts.legacyReminderCreate(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.delete("internal", "agent", ":agentId", "reminders", ":reminderId") { request -> Response in
+        routeResponse(services.emailAccounts.legacyReminderCancel(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId") ?? "",
+            reminderId: request.parameters.get("reminderId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.get("internal", "agent-api", "reminders") { request -> Response in
+        routeResponse(services.emailAccounts.agentApiReminderList(
+            authorization: request.headers[.authorization],
+            status: desktopQuery(request.url.query, "status")
+        ))
+    }
+    app.post("internal", "agent-api", "reminders") { request -> Response in
+        routeResponse(services.emailAccounts.agentApiReminderCreate(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? "{}"
+        ))
+    }
     app.post("internal", "agent", ":agentId", "send") { request -> Response in
         routeResponse(services.emailAccounts.agentSend(
             authorization: request.headers[.authorization],

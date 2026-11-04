@@ -1654,3 +1654,9 @@ RFC 074 personal assistant：
 - App-owned reminder 记录：id/serverId/ownerAgentId/title/notes/fireAt/status(scheduled|canceled|fired)/version/recurrenceJSON/channelId/threadId/createdAt/updatedAt；每次变更追加 ReminderEvent（type/version/actor/fireAt）。
 - 生命周期：create → version 1 scheduled；cancel/snooze/update 必须匹配调用方观察到的 expectedVersion，不匹配 → 409 语义冲突（带 currentVersion），不改状态；匹配则 version+1 并记录 canceled/snoozed/updated 事件。
 - 归属与过滤：只有 ownerAgentId 匹配的 agent 才能变更；列表可按 status 过滤（scheduled/canceled/fired/all），非法 status 标记 invalid。
+
+### route internal reminders（HTTP 接线，进行中）
+
+- legacy 机器凭据族：`GET/POST /internal/agent/:id/reminders`、`DELETE /internal/agent/:id/reminders/:reminderId`；机器凭据解析 server，agent 必须属于该 server；external agent 写 → 409 `reminders_unsupported_for_external_agents`；agent-created reminder 必须带 `msgId`（缺失 400），`fireAt` 或 `delaySeconds` 二选一；取消需 `expectedVersion`，不匹配 409 且不改状态；列表 `status` 过滤非法 400。
+- agent-api 绑定身份族：`GET/POST /internal/agent-api/reminders`，凭 credential 的 agent 身份而非路径 id；同样 external 409、msgId 400、status 过滤。
+- 目前 CRUD 仅覆盖 list/create/cancel；snooze/update/events、reminder_app rollout、socket `reminder:scheduled`/`reminder:canceled` 分发、anchor cloak/joint projection、legacy 历史短日志仍待补。
