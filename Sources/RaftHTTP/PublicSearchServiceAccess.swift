@@ -37,15 +37,34 @@ public protocol PublicSearchBucketStoring: Sendable {
     func consume(limit: Int) -> PublicSearchBucketDecision
 }
 
-public final class PublicSearchMemoryBucketStore: PublicSearchBucketStoring, @unchecked Sendable {
+/// Shared in-flight accounting for the service path; the slot is held until the
+/// response ends. Buckets that also gate in-flight requests conform to this.
+public protocol PublicSearchInFlightGating: Sendable {
+    func acquire(max: Int) -> Bool
+    func release()
+}
+
+public final class PublicSearchMemoryBucketStore: PublicSearchBucketStoring, PublicSearchInFlightGating, @unchecked Sendable {
     private let lock = NSLock()
     private let now: @Sendable () -> Date
     private var windowStart: Date
     private var used = 0
+    private var inFlight = 0
 
     public init(now: @escaping @Sendable () -> Date = { Date() }) {
         self.now = now
         self.windowStart = now()
+    }
+
+    public func acquire(max: Int) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard inFlight < max else { return false }
+        inFlight += 1
+        return true
+    }
+
+    public func release() {
+        lock.lock(); inFlight = max(0, inFlight - 1); lock.unlock()
     }
 
     public func consume(limit: Int) -> PublicSearchBucketDecision {

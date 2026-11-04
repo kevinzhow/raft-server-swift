@@ -255,3 +255,14 @@ private struct UnavailableBucket: PublicSearchBucketStoring {
         }
     }
 }
+
+@Test func memoryBucketHoldsInFlightSlotsUntilReleased() {
+    let store = PublicSearchMemoryBucketStore()
+    #expect(store.acquire(max: 2))
+    #expect(store.acquire(max: 2))
+    #expect(!store.acquire(max: 2))
+    store.release()
+    #expect(store.acquire(max: 2))
+    store.release()
+    store.release()
+}
