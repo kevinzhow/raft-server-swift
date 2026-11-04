@@ -301,7 +301,7 @@ drivers/nodeHostLaunch	daemon	pending	-	auto-seed
 drivers/opencode.live	daemon	locked	61895fe	non-executable black-box: a live integration run against the real opencode CLI, which this port does not ship or drive
 drivers/opencode.modelsAsync	daemon	locked	d425598	OpenCode model listing async twin: resolves the same Windows executable, selects --standalone for 2.x>=2.0.27, maps nonzero exit to status and timeout/spawn failures to errors exactly like the sync path, returns Windows resolution failures as results, keeps command-failure/no_models/live detection distinct, passes the 5s budget plus HOME/NO_COLOR and no shell, and propagates pre-abort and mid-listing aborts with cleanup
 drivers/opencode	daemon	pending	-	auto-seed
-drivers/pi.compaction	daemon	pending	-	auto-seed
+drivers/pi.compaction	daemon	locked	810d5df	non-executable black-box: drives the installed pi SDK's AgentSession compaction recovery (_runAutoCompaction/_checkCompaction) with an in-memory session manager and summarizer stubs; this port does not ship the pi SDK or its SDK session internals
 drivers/pi.integration	daemon	locked	61895fe	non-executable black-box: a live integration run against the real pi runtime, which this port does not ship or drive
 drivers/pi	daemon	pending	-	auto-seed
 drivers/piCommandTool	daemon	pending	-	auto-seed
