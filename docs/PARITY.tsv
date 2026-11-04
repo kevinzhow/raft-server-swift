@@ -275,7 +275,7 @@ core	daemon	pending	-	auto-seed
 daemonFetch.http1	daemon	pending	-	auto-seed
 daemonFetch	daemon	pending	-	auto-seed
 deviceClass	daemon	locked	b5af20b	device class detection: macOS system_profiler model names map to laptop/mini/studio/imac/desktop with VirtualMac as vm, Linux DMI chassis sets map laptop/desktop/server with hypervisor vendor or type winning as vm, unknown models/fields/bad JSON stay undefined, and WSL, Windows and unreadable inputs stay unknown without retaining model names or DMI strings
-directUploadCapability	daemon	locked	SLICE	direct-upload capability: server-signed machine-scope attestation (scope/metadata forwarded), worker session creation carrying only the attestation, byte upload straight to the signed URL with the server out of the data plane, and typed stage/status failure classification that never parses messages
+directUploadCapability	daemon	locked	e9d03b9	direct-upload capability: server-signed machine-scope attestation (scope/metadata forwarded), worker session creation carrying only the attestation, byte upload straight to the signed URL with the server out of the data plane, and typed stage/status failure classification that never parses messages
 drivers/claude.integration	daemon	locked	61895fe	non-executable black-box: a live integration run against the real Claude Code CLI, which this port does not ship or drive
 drivers/claude	daemon	pending	-	auto-seed
 drivers/claudeEventNormalizer	daemon	pending	-	auto-seed
