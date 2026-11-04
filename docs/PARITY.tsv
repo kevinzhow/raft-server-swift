@@ -266,7 +266,7 @@ apps/reminder/inboxDefinition	daemon	locked	942f160	system.reminder inbox defini
 apps/reminder/reminderCache	daemon	pending	-	auto-seed
 apps/reminder/runtime	daemon	pending	-	auto-seed
 chatBridgeRequest	daemon	pending	-	auto-seed
-codexToolArgumentParseSignature	daemon	pending	-	auto-seed
+codexToolArgumentParseSignature	daemon	locked	SLICE	the one sanctioned Codex stderr signature: same-line target+sentence matching tolerates multi-line chunks and varying serde tails while rejecting the sibling stdin router error and other targets, and the parse-failure trace span is contracted to identity+model only
 computerMigrationGuard	daemon	locked	2ce4f81	migration guard error surface: a migrated legacy machine key refuses raft-daemon startup with the migrated-to Computer target (slug or server id), the do-not-restart warning, precise detected-supervisor cleanup commands, PM2/systemd/launchd fallbacks when detection is unavailable, and the raft-computer start/status guidance
 connection	daemon	locked	e5af042	clock-driven link: backoff/jitter, duplicate key, watchdog, replay, traces, live loop
 contextGeneration	daemon	pending	-	auto-seed

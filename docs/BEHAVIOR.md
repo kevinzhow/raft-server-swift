@@ -1398,3 +1398,8 @@ RFC 074 personal assistant：
 
 - 启动期 provider connection materialization：daemon `POST <server>/internal/computer/runners/<agent>/provider-connection`（Bearer daemon key、X-Raft-Client 标识、body 仅 connectionId），严格校验响应形状——顶层键恰为 envVars/providerConnection，projection 键恰为 endpointUrl/providerId/supportsImageInput，providerId 必须在 preset（16 个，如 deepseek→DEEPSEEK_API_KEY、google→GEMINI_API_KEY）或 gateway（openai-compatible/anthropic-compatible）集合内；未知字段报 invalid payload。
 - preset 必须 env 恰为一个非空 key、endpointUrl=null 且 supportsImageInput=false；gateway 必须 env 恰为 apiKey/baseUrl 两键、endpointUrl 非空且与 baseUrl env 完全一致；不一致报 invalid environment；HTTP 失败带状态。
+
+### daemon codexToolArgumentParseSignature
+
+- Codex driver 唯一被许可的 stderr 文本签名（task #1127）：同一行同时包含 tracing target `codex_core::tools::router` 与句子 `failed to parse function arguments:` 才判定为工具参数反序列化失败（转成 typed ToolArgumentParseError code）；serde 尾部（类型/值）不参与签名也绝不记录。同 target 的 `write_stdin failed` 或其它 target 的同句都不匹配；按 `\r?\n` 拆 chunk，容忍多行 stderr 但两半必须同行。
+- trace 契约 `daemon.agent.tool_argument_parse_failed` 仅允许 agentId/launchId/runtime/model，禁止 stderr/error/arguments/detail/message，防止参数值进入 trace。
