@@ -4102,6 +4102,8 @@ private struct PublicSearchMiddleware: Middleware {
         guard PublicSearch.isSearchPath(request.url.path) else {
             return try await next.respond(to: request)
         }
+        var releaseServiceSlot: (() -> Void)?
+        defer { releaseServiceSlot?() }
         let credential = PublicSearchServiceAccess.classify(
             authorization: request.headers[HTTPField.Name("Authorization")!],
             keySource: serviceKeySource
@@ -4118,6 +4120,10 @@ private struct PublicSearchMiddleware: Middleware {
             case .allowed: break
             case .rateLimited(let retryAfter): return serviceLimited(retryAfter)
             case .unavailable: return serviceRefusal(503, "service_unavailable")
+            }
+            if let gating = serviceBucket as? any PublicSearchInFlightGating {
+                guard gating.acquire(max: serviceLimits.maxInFlight) else { return serviceLimited(1) }
+                releaseServiceSlot = { gating.release() }
             }
         }
         let method = request.method.rawValue

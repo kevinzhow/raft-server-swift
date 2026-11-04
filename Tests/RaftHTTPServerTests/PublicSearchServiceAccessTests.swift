@@ -266,3 +266,23 @@ private struct UnavailableBucket: PublicSearchBucketStoring {
     store.release()
     store.release()
 }
+
+@Test func memoryBucketSlotsAreBalancedAcrossRequests() async throws {
+    let store = PublicSearchMemoryBucketStore()
+    let current = ServiceCredential(token: "current-token-0123456789abcdef")
+    let source = MutableKeySource([PublicSearchServiceKey(keyId: "k-current", sha256: current.sha256)])
+    let (directory, seed) = seedDirectory()
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {},
+            publicSearch: directory.projectedCatalog(), publicServerDirectory: directory,
+            publicSearchServiceKeySource: source, publicSearchServiceBucket: store
+        ))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[HTTPField.Name("Authorization")!] = current.header
+            let response = try await client.get(URI(string: "/api/public/search/servers/\(seed.serverPublicId)"), headers: headers)
+            #expect(response.status == .ok)
+        }
+    }
+}

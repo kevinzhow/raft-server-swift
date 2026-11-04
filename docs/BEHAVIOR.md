@@ -1844,3 +1844,7 @@ RFC 074 personal assistant：
 - 谓词不因凭证放宽：关闭 master search、server 转 private 时服务请求同样 404/空 index；服务凭证不打开内容。
 - 索引有界分页：每页最多扫描 500 个候选 server（含 search-off 的空候选）、最多输出 75 条 entries，`nextCursor` 为 32-hex「下一候选偏移」+`:done`；空页同样返回前向 cursor，walk 覆盖每条 entry 恰好一次且无重复。
 - 裁决：in-flight cap/IP limiter 顺序用例依赖 EventEmitter/express 伪响应与两个 gate 的注入；Redis EVAL 适配器依赖未移植 Redis 原子 Lua 基础设施；两者不移植，其余 HTTP/JSON 语义已覆盖。
+
+### publicSearchServiceAccess 补充：in-flight cap（已实现）
+
+- 服务请求在消耗共享桶额度后，若 bucket 实现 `PublicSearchInFlightGating`，则以 `maxInFlight` 获取槽位并在整个搜索响应结束时（`defer`）释放；槽位耗尽返回 429 + Retry-After，且不会泄漏到后续请求（跨请求平衡测试覆盖）。IP limiter 顺序仍不实现。
