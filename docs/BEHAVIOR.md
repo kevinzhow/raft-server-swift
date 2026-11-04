@@ -1872,3 +1872,9 @@ RFC 074 personal assistant：
 - 模块断言“已撤销凭证/已删除 agent 的打开 wake-hint SSE 流在下一次 heartbeat 或撤销信号时结束”，以及 seen-touch 不更新撤销凭证、跨 replica 撤销信号（test-only handler）、轮换关闭被替换凭证的流。
 - 这些依赖未移植的 per-agent SSE 流生命周期、`__setAgentCredentialUseThrottleMsForTests` 与 external inbox chain 测试选择器；无黑盒 HTTP 可在无注入下断言“开着的流被关闭”。已锁定的 `internalAgentApi.wakeHintStream` 覆盖 wake-hint 帧投影，凭证 mint/校验语义由既有 agent credential 测试覆盖。
 - 按契约不以 SSE/测试钩子换取实现，故裁决为非可执行。
+
+### route slackBridge.api（裁决锁定）
+
+- 模块围绕 Slack 桥接的 provisioning/control-plane 与 OAuth 适配器：注入 `SlackBridgeRouteDependencies`/`SlackBridgeProvisioningControlPlane`，并断言 external app registrations/installs/grants、OAuth attempts、channel bindings 与 ingress metrics。这些外部 Slack 控制面、provider adapter 与 DB registry 均未移植；无黑盒 HTTP 可在无注入下到达 provisioning/oauth 断言。
+- 已锁定的替代面：`slackBridgedAgentMention`（Slack 外部投影消息在 agent 读路径的普通 mention 语义）。
+- 按契约不以外部服务/注入换实现，故裁决为非可执行。
