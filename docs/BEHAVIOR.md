@@ -1535,3 +1535,12 @@ RFC 074 personal assistant：
 - decode 失败以读取代际为 failureInstanceId：首次 edge、同代重复 level；原子重写后下一次 decode 产生新代新 edge。
 - legacy 文件隔离到 `app-storage-quarantine/v1/unscoped/<uuid>-<leaf>`；第二次为 absent；目录创建/移动失败发一条 legacy_quarantine 事件并 rethrow。
 - scope 身份与 legacy 相对路径在构造路径前 fail closed（invalid/escapes root）。
+
+### daemon runtimeErrorDiagnostics
+
+- provider 错误分类（闭集）：Launcher → InputTooLarge → OperationAborted → INPUT_TOO_LARGE/too large/exceeds maximum/（max context + requested）→ Billing（402 或余额措辞，先于状态映射）→ plan-access（ModelConfigError）→ 显式 `*Error` 类 → HTTP 状态（429 RateLimit、401 Auth、403 需显式 auth 证据、404 NotFound、≥500 ProviderServer、其余 ProviderApi）→ auth 措辞 → model-not-supported/not-available → timeout → connection → stream → capacity/rate-limit → not found → RuntimeError。
+- 动作：AuthError → `user_reauth`；仅 plan-without-model 的 ModelConfigError → `user_model_access`；其余 `none`。瞬时限流标记（rate limit/too many requests/concurrency/retry/later/resets/at capacity/…）否决 plan-access。
+- 脱敏：Bearer/sk-*/xox*/email/URL query（保留 scheme/host/path）/Users|/home|Windows 用户路径；secret-shaped 键赋值保留 key、redact value（不误伤 NODE_ENV=production）；generic password/secret/token；ghp/gho/ghs/ghu/ghr 与 github_pat_ → `[REDACTED_TOKEN]`；excerpt 上限 4096 并标记 truncated。
+- 诊断：fingerprint = lowercased、hex→`<hex>`、数字→`<num>`、空白归一后的 sha256 前 16 位；length bucket 0/<1k/1k-4k/4k-16k/16k+；InputTooLarge 附加 estimated/budget/context-limit/requested/message/completion/overage/model 计数（仅当 requested>limit 时 overage）。
+- ActivityDiagnostic：保留精确 class/reason（显式 errorClass 优先）、fingerprint、reasonProvenance，requiredAction 仅在非 none 时出现；不含原始文本。
+- 文案：login-required（builtin/pi/其余 runtime 名称）、start-timeout、input-too-large（grok/pi/builtin 指向 Reset Session & Restart，其余提示 compact）、billing-exhausted、plan-access（含模型名，非登录）。
