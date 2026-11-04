@@ -312,6 +312,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         source: String, agreementId: String?, agreementVersion: Int?
     )] = []
     private var jointProjections: [JointChannelLink] = []
+    private var taskWriteHolds: [String: (seen: Int, latest: Int)] = [:]
     private var readMutationAcks: [String: (scopeId: String, throughSeq: Int)] = [:]
     private var userChannelReadCursorsForTesting: [String: Int] = [:]
     private var jointInvites: [(
@@ -6885,6 +6886,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         taskRecords.append(record)
         lock.unlock()
         return id
+    }
+
+    public func assignTaskForTesting(taskId: String, assigneeId: String?) {
+        lock.lock()
+        if let index = taskRecords.firstIndex(where: { $0.id == taskId }) {
+            taskRecords[index].assigneeId = assigneeId
+            taskRecords[index].assigneeType = assigneeId == nil ? nil : "agent"
+            taskRecords[index].claimedAt = nil
+        }
+        lock.unlock()
     }
 
     public func taskAssigneeForTesting(taskId: String) -> String? {
@@ -21055,6 +21066,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"Invalid task request\"}")
         }
         let description = object["description"] as? String
+        if let hold = taskWriteFreshnessHold(
+            agentId: auth.agentId, channelId: channelId,
+            seenUpToSeq: object["seenUpToSeq"] as? Int, actionKey: "amend:\(taskNumber)"
+        ) { return hold }
+        if let hold = taskWriteFreshnessHold(
+            agentId: auth.agentId, channelId: channelId,
+            seenUpToSeq: object["seenUpToSeq"] as? Int, actionKey: "amend:\(taskNumber)"
+        ) { return hold }
         lock.lock()
         guard let index = taskRecords.firstIndex(where: { $0.channelId == channelId && $0.taskNumber == taskNumber }) else {
             lock.unlock()
@@ -23366,6 +23385,29 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"tasks\":[\(rows)]}")
     }
 
+    private func taskWriteFreshnessHold(agentId: String, channelId: String, seenUpToSeq: Int?, actionKey: String) -> HTTPReply? {
+        guard let seen = seenUpToSeq else { return nil }
+        lock.lock()
+        let rows = humanMessageRows.filter { $0.channelId == channelId && $0.senderId != agentId && $0.seq > seen }
+        guard !rows.isEmpty else { lock.unlock(); return nil }
+        let key = "\(agentId)\n\(channelId)\n\(actionKey)"
+        if let held = taskWriteHolds[key], seen == held.seen {
+            taskWriteHolds.removeValue(forKey: key)
+            lock.unlock()
+            return nil
+        }
+        let latest = rows.map(\.seq).max() ?? seen
+        taskWriteHolds[key] = (seen, latest)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let heldMessages = rows.sorted { $0.seq < $1.seq }.prefix(5).map { message in
+            "{\"id\":\(jsonString(message.id)),\"seq\":\(message.seq),\"content\":\(jsonString(message.content)),\"senderId\":\(jsonString(message.senderId)),\"createdAt\":\(jsonString(formatter.string(from: message.createdAt)))}"
+        }.joined(separator: ",")
+        let count = rows.count
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true,\"state\":\"held\",\"outcome\":\"held\",\"subtype\":\"freshness\",\"reason\":\"newer_messages_available\",\"decision\":\"syncing_hold\",\"available_actions\":[\"check_messages\",\"retry_action\"],\"heldMessages\":[\(heldMessages)],\"newMessageCount\":\(count),\"seenUpToSeq\":\(latest)}")
+    }
+
     public func agentTaskClaim(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
         guard let writer = agentTaskWriter(authorization, legacyAgentId: legacyAgentId)
         else {
@@ -23380,6 +23422,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let taskNumbers = (object["task_numbers"] as? [Any])?.compactMap { $0 as? Int } ?? []
         let messageIds = (object["message_ids"] as? [Any])?.compactMap { $0 as? String } ?? []
+        if let hold = taskWriteFreshnessHold(
+            agentId: writer.agentId, channelId: channelId,
+            seenUpToSeq: object["seenUpToSeq"] as? Int, actionKey: "claim:\(taskNumbers.first ?? 0)"
+        ) { return hold }
         var results: [String] = []
         lock.lock()
         for number in taskNumbers {
@@ -23448,6 +23494,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(400, "{\"error\":\"Invalid task status request\"}")
         }
+        if let hold = taskWriteFreshnessHold(
+            agentId: writer.agentId, channelId: channelId,
+            seenUpToSeq: object["seenUpToSeq"] as? Int, actionKey: "update:\(taskNumber)"
+        ) { return hold }
         lock.lock()
         guard let index = taskRecords.firstIndex(where: { $0.channelId == channelId && $0.taskNumber == taskNumber }),
               taskRecords[index].hasHostMessage
