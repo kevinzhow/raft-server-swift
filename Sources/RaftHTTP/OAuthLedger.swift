@@ -666,6 +666,12 @@ public final class OAuthLedger: @unchecked Sendable {
             .sorted()
     }
 
+    public func channelKind(channelId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return channelRecords.first(where: { $0.id == channelId })?.type
+    }
+
     public func channelHumanIds(channelId: String) -> [String] {
         lock.lock()
         defer { lock.unlock() }

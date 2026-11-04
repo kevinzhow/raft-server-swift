@@ -1431,6 +1431,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("api", "actions", "migration-export") { _ -> Response in
+        routeResponse(HTTPReply(
+            status: 410,
+            headers: ["Content-Type": "application/json", "Content-Length": "76"],
+            body: "{\"error\":\"Migration action cards are no longer supported\",\"code\":\"migration_action_card_not_supported\"}"
+        ))
+    }
     app.post("api", "actions", ":messageId", "execute") { request -> Response in
         routeResponse(services.emailAccounts.executeActionCard(
             authorization: request.headers[.authorization],

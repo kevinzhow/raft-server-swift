@@ -23964,6 +23964,48 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         emitRealtime("channel:\(threadId)", "message:new", "{\"id\":\(jsonString(replyId)),\"channelId\":\(jsonString(threadId)),\"content\":\(jsonString(content))}")
     }
 
+    @discardableResult
+    public func addActionCardForTesting(
+        serverId: String, agentId: String, carrierChannelId: String,
+        actionType: String = "channel:create", state: String = "prepared"
+    ) -> String {
+        let id = UUID().uuidString.lowercased()
+        lock.lock()
+        actionCardRecords[id] = ActionCardRecord(
+            messageId: id, serverId: serverId, requesterAgentId: agentId,
+            storageChannelId: carrierChannelId, localCarrierChannelId: carrierChannelId,
+            actionType: actionType, channelName: "test-card-channel", visibility: "public",
+            state: state, executedByUserId: nil
+        )
+        lock.unlock()
+        return id
+    }
+
+    public func actionCardStateForTesting(messageId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return actionCardRecords[messageId]?.state
+    }
+
+    private func actionCardWriteAuthorization(userId: String, card: ActionCardRecord) -> HTTPReply? {
+        guard oauth.memberRole(serverId: card.serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let role = oauth.memberRole(serverId: card.serverId, userId: userId)
+        let allowed = role == "owner" || role == "admin"
+        lock.lock()
+        let channel = postableChannels[card.localCarrierChannelId] ?? postableChannels[card.storageChannelId]
+        let isMember = channel?.memberIds.contains(userId) == true
+            || oauth.channelHumanIds(channelId: card.localCarrierChannelId).contains(userId)
+            || oauth.channelHumanIds(channelId: card.storageChannelId).contains(userId)
+        let closed = channel.map { $0.kind != "channel" } ?? (oauth.channelKind(channelId: card.localCarrierChannelId) != "channel")
+        lock.unlock()
+        if allowed || isMember { return nil }
+        return closed
+            ? Self.json(404, "{\"error\":\"Action card not found\",\"code\":\"NOT_FOUND\"}")
+            : Self.json(403, "{\"error\":\"Forbidden\"}")
+    }
+
     public func executeActionCard(authorization: String?, serverId: String, messageId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -23990,9 +24032,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let card else {
             return Self.json(404, "{\"error\":\"Action card not found\",\"code\":\"NOT_FOUND\"}")
         }
-        guard oauth.memberRole(serverId: card.serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
+        if let refusal = actionCardWriteAuthorization(userId: userId, card: card) { return refusal }
         let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
         if let expected = object?["expectedState"] as? String, expected == "executed", card.state != "executed" {
             return Self.json(409, "{\"error\":\"The action card is not executed\",\"code\":\"STATE_MISMATCH\"}")
@@ -24053,15 +24093,31 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         lock.lock()
+        let stored = actionCardRecords[messageId]
+        lock.unlock()
+        guard let stored else {
+            return Self.json(404, "{\"error\":\"Action card not found\",\"code\":\"NOT_FOUND\"}")
+        }
+        if let refusal = actionCardWriteAuthorization(userId: userId, card: stored) { return refusal }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+        guard let result = object["result"] as? [String: Any], let kind = result["kind"] as? String else {
+            return Self.json(400, "{\"error\":\"A result is required\",\"code\":\"INVALID_RESULT\"}")
+        }
+        if stored.actionType == "channel:create", kind != "channel" {
+            return Self.json(409, "{\"error\":\"The result kind does not match this action\",\"code\":\"INCOMPATIBLE_RESULT\"}")
+        }
+        lock.lock()
         guard var card = actionCardRecords[messageId] else {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Action card not found\",\"code\":\"NOT_FOUND\"}")
         }
-        card.state = "executed"
-        card.executedByUserId = userId
-        actionCardRecords[messageId] = card
+        if card.state != "executed" {
+            card.state = "executed"
+            card.executedByUserId = userId
+            actionCardRecords[messageId] = card
+        }
+        let metadata = actionCardMetadataLocked(messageId: messageId) ?? "{\"kind\":\"action-card\",\"state\":\"executed\"}"
         lock.unlock()
-        let metadata = "{\"kind\":\"action-card\",\"state\":\"executed\"}"
         return Self.json(200, "{\"messageId\":\(jsonString(messageId)),\"metadata\":\(metadata)}")
     }
 

@@ -1674,3 +1674,9 @@ RFC 074 personal assistant：
 - socket 分发：legacy/agent-api 创建成功后向 `user:<userId>` 发送 `reminder:scheduled`，取消发送 `reminder:canceled`，payload `{reminderId,ownerAgentId}`；接收者仅 owner/admin 与该 agent 的 human creator。
 - 锁定的可执行面：双路由族 CRUD、版本 CAS、fired/canceled 状态规则、newest-first 事件日志、`reminderId/ownerAgentId/status/version/title/fireAt` summary、`status=a,b` 过滤、external agent 409、msgId 缺失 400、rollout 拒绝。
 - 裁决为不可执行：路由源码扫描契约（本移植为 Swift，无 TS 源可扫）、请求 span 的 error_code/reason_class（无 tracer sink）、legacy 历史短日志/owner transfer 遮蔽（需 DB 行投影）、recurring 的 lifecycle metadata 细节、anchor cloak（隐藏频道）与 visible joint projection（joint 频道投影未移植到该层级）、socket 分发的真实传输断言（recipients 与 emit 已实现，传输由 socket epic 覆盖）、Computer lifecycle revision 同步（orchestrator stub）、以及 fire/receipt 的 DB 行断言。
+
+### route actions.privateAccess.api（基础，进行中）
+
+- Action card 写权限独立于 server member/read 权限：执行/mark-executed 需要 server owner/admin、carrier 频道成员（人或 agent）中的调用者；否则 public carrier → 403，private/thread carrier → 404 隐藏存在性。读取公开频道不授予 action-card 写权限。
+- `POST /api/actions/:id/mark-executed`：需 result.kind；channel:create 的 result 必须 kind=channel（否则 409 INCOMPATIBLE_RESULT）；成功后 card 状态 executed、记录执行人并返回 action metadata；重复 mark 幂等。
+- `POST /api/actions/migration-export`：410 `migration_action_card_not_supported`（迁移 action card 路由已废弃，不再做 preflight/DB 写入）。
