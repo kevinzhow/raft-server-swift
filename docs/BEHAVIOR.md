@@ -1474,3 +1474,9 @@ RFC 074 personal assistant：
 
 - Kimi 用量在 OAR 契约下的边界（测试-only 模块，现由 oarAdapter + collector 断言）：窗口百分比/resets 保持原值，account 身份 maskedLabel（`alpha@example.com`→`a****@example.com`）且原 email 不出现；无 email 的手机登录用 profile nickname（trim）作 displayName，有 maskedLabel 时不带 displayName；订阅窗口满但 Extra Usage 有余量时 health 仍 ok（满窗口 limit_reached、extra ok）；成功/失败读使用同一 provider-slot identity；无 reset 的百分比可用且无 parseErrorCode。
 - collector 边界：installation 每次读探测一次且同一对象交给 reader；available/reauth_required/unsupported 分别投影；无 installation → unsupported 且绝不读 credentials；无关失败 → error 且错误文案不外泄（不引导重登）。
+
+### daemon chatBridgeRequest
+
+- 共享 chat-bridge HTTP 执行器：`executeJSON` 成功返回解析后的 JSON 与 duration；`executeResponse` 返回原始 body（二进制/文件流）。
+- 本地超时：用本地 deadline 取消在途请求并记录结构化 `[ChatBridgeTimeout] tool=... target=... duration_ms=... timeout_ms=... outcome=timeout`，抛带 tool/target/timeout/duration 的 ChatBridgeToolTimeoutError。
+- 状态优先：非 2xx 直接按 HTTP status 抛 HttpStatusError（HTML 错误页不会被误报为 JSON 解析错误）；JSON 错误体的 `error`（最多 300 字符）保留在 serverError 旁。
