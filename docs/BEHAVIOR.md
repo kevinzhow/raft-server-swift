@@ -1525,3 +1525,13 @@ RFC 074 personal assistant：
 - symlink target 归一化：拒绝绝对路径、Windows drive/UNC、NUL 与逃出 workspace 的目标（相对 link 目录解析），反斜杠转 `/`；`../target-file` 允许。
 - summary：included 计数/字节、regenerable 计数与四类分布、MEMORY.md/notes/ 存在性；只有存在被忽略路径时才输出 excludedIgnored（count/fileCount/bytes/largest≤5），否则省略以兼容旧 server。
 - 注：排序采用与 Node `localeCompare` 一致的口径（`_` 先于 `.`、字母忽略大小写）。
+
+### daemon scopedAppStorage
+
+- 平台拥有的按 (machine, server, app, agent) 作用域存储：`<home>/app-storage/v1/<machine>/<server>/<app>/{computer|agents/<agent>}/state.json`；同一 App/Agent 在不同 Server、同一 Server 下不同 Agent 互相隔离。
+- 能力对象仅暴露 readText/writeTextAtomic/assertActive/reportDataFailure；写入 tmp(0600)+rename，目录 0700，失败清理 tmp，不残留 `.tmp`。
+- 失败事件为隐私安全类型：operation(access/read/write/decode/legacy_quarantine)、store(app_state/legacy_unscoped)、appId、serverId、writerEpoch、outcome、reason（permission_denied/path_missing/lock_contention/storage_io/unknown/capability_revoked/invalid_payload）；不含路径、payload、agent id。
+- revoke 后已发放能力与 factory.open 全部拒绝（每个入口一条 access/capability_revoked 事件）。
+- decode 失败以读取代际为 failureInstanceId：首次 edge、同代重复 level；原子重写后下一次 decode 产生新代新 edge。
+- legacy 文件隔离到 `app-storage-quarantine/v1/unscoped/<uuid>-<leaf>`；第二次为 absent；目录创建/移动失败发一条 legacy_quarantine 事件并 rethrow。
+- scope 身份与 legacy 相对路径在构造路径前 fail closed（invalid/escapes root）。
