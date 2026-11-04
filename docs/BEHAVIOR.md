@@ -1725,3 +1725,10 @@ RFC 074 personal assistant：
 - 默认 roster：仅 (userId, serverId) 且 apiKeyFingerprint 非 nil 的机器，按 machineName 排序；输出 daemonId/machineName/hostname/lastSeenAt/hasFingerprint/legacyKeyMigratedAt/apiKeyFingerprint（sha256(apiKey) 前 16 hex）。
 - `includeAll=1`：包含 NULL fingerprint 行，且全部行都不输出 apiKeyFingerprint 字节（hasFingerprint 仍区分）；已迁移行（legacyKeyMigratedAt 非空）仍返回用于中断恢复。
 - 凭据红线：响应永不包含 apiKeyHash/apiKeyPrefix/api_key_hash/raw apiKey/前缀；跨用户隔离：共享 server 上只能看到自己的 daemon。
+
+### route internal.scopeAttestation.bodyLimit.api（锁定，含裁决）
+
+- `POST /internal/machine/scope-attestation` 使用独立 1 MiB JSON 上限：180 KB 与恰好 1 MiB 均 200；1 MiB+1 返回 JSON 413（application/json，code=`scope_attestation_body_too_large`，limitBytes=1048576）。
+- 其余路由保留全局 100 KB：180 KB 请求在 `/internal/machine/agents/:id/stop`、未知 internal 路径、`/api/auth/login` 均 413。
+- 机器认证先于 1 MiB 解析：未认证或错误 apiKey 携带 180 KB/1 MiB+1 均 401（不被解析、不落 413）；合法机器凭据无速率限制，150 连发全部 200。
+- 裁决：daemon 侧将服务端 413 分类为 413（非 JSON parse error）由 `RaftDaemonClientTests/DirectUploadCapabilityTests.classifiesAnHTML413FromTheServer` 覆盖，属 daemon 客户端契约，不在服务端重复断言。

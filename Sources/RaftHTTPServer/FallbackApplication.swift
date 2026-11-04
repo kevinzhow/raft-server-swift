@@ -2765,6 +2765,22 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("internal", "machine", "scope-attestation") { request -> Response in
+        let authorization = request.headers[.authorization]
+        guard services.emailAccounts.machineCredentialIsLive(authorization: authorization) else {
+            var headers = HTTPFields()
+            headers[.contentType] = "application/json"
+            return Response(status: .unauthorized, headers: headers, body: .init(string: "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}"))
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let expiresAt = formatter.string(from: Date().addingTimeInterval(300))
+        var headers = HTTPFields()
+        headers[.contentType] = "application/json"
+        headers[.cacheControl] = "no-store"
+        return Response(status: .ok, headers: headers, body: .init(string: "{\"capability\":\"scope-attestation-capability\",\"expiresAt\":\"\(expiresAt)\"}"))
+    }
+
     app.post("api", "servers", ":id", "scope-attestation") { request -> Response in
         routeResponse(services.emailAccounts.serverScopeAttestation(
             authorization: request.headers[.authorization],

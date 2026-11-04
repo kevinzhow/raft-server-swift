@@ -15,6 +15,7 @@ import Vapor
 struct RequestBodyLimitMiddleware: Middleware {
     static let globalJSONLimit = 100 * 1024
     static let migrationControlLimit = 512 * 1024 + 64 * 1024
+    static let scopeAttestationLimit = 1024 * 1024
 
     var accounts: EmailLoginDirectory
 
@@ -29,10 +30,18 @@ struct RequestBodyLimitMiddleware: Middleware {
         }
         let path = request.url.path
         let isMigrationControl = request.method == .post && path.hasSuffix("/resumable/control")
-        let limit = isMigrationControl ? Self.migrationControlLimit : Self.globalJSONLimit
+        let isScopeAttestation = request.method == .post && path.hasSuffix("/internal/machine/scope-attestation")
+        let limit = isMigrationControl ? Self.migrationControlLimit
+            : (isScopeAttestation ? Self.scopeAttestationLimit : Self.globalJSONLimit)
         request.maxBodySize = .init(value: limit)
         guard declared > limit else {
             return try await next.respond(to: request)
+        }
+        if isScopeAttestation, !accounts.machineCredentialIsLive(authorization: request.headers[.authorization]) {
+            return Self.jsonReply(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
+        }
+        if isScopeAttestation {
+            return Self.jsonReply(413, "{\"error\":\"Scope attestation body is too large\",\"code\":\"scope_attestation_body_too_large\",\"limitBytes\":\(limit)}")
         }
         if isMigrationControl, !accounts.computerCredentialIsLive(authorization: request.headers[.authorization]) {
             return Self.jsonReply(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")

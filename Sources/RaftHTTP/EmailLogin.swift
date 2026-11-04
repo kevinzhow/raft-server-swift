@@ -14605,6 +14605,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// Whether the presented bearer is a live Computer credential (used before
     /// parsing an oversized control-manifest body so secrets never reach a parser).
+    public func machineCredentialIsLive(authorization: String?) -> Bool {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return false }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        guard !token.isEmpty else { return false }
+        lock.lock()
+        defer { lock.unlock() }
+        return machines.contains { $0.apiKey == token }
+    }
+
     public func computerCredentialIsLive(authorization: String?) -> Bool {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return false }
         let token = String(authorization.dropFirst("Bearer ".count))
