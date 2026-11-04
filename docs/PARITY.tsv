@@ -368,7 +368,7 @@ runtimeCliVersionTracker	daemon	pending	-	auto-seed
 runtimeDetectionRound	daemon	pending	-	auto-seed
 runtimeErrorDiagnostics	daemon	pending	-	auto-seed
 runtimeLaunchVersion	daemon	locked	d5e791d	runtime launch version policy: only exact known-bad versions block, older unproven versions warn but start, missing and unparseable versions warn with their own reasons, tested-good and newer versions are compatible, runtimes without a policy are a no-op, every creation re-probes so an in-place CLI upgrade unlocks without a daemon restart, and enforce throws on block and reports warnings
-runtimeModelSourceProjection	daemon	pending	-	auto-seed
+runtimeModelSourceProjection	daemon	locked	SLICE	runtime model source result carrier: live outcomes fill verified defaults and keep default/catalog ancestry alongside the legacy models/default fields, empty live catalogs normalize to no_models, and every non-live outcome keeps its typed shape beside the legacy error/models field
 runtimeModels/modelSourceCache	daemon	pending	-	auto-seed
 runtimeModels/oarListModels	daemon	pending	-	auto-seed
 runtimeNotificationState	daemon	pending	-	auto-seed

@@ -1362,3 +1362,7 @@ RFC 074 personal assistant：
 - 单回合 token 计数按 provider 计费口径拆分：`input` 为未缓存输入、`cacheRead`/`cacheWrite` 为缓存部分、`output` 含 reasoning；未上报字段缺省（绝不写 0）。
 - 来源映射：`claude_result_usage` 直接取 inputTokens/outputTokens/cachedInputTokens/cacheCreationInputTokens；`pi_message_end_usage` 与 `kimi_turn_step_completed_usage` 按 input/output/cached_read/cache_write 累加；`codex_thread_token_usage_updated` 用 last* 与总量相减得到本轮值（cached input 从 input 中拆出），总量回退（session reset）时不给数字；其他来源（如 gemini 只有 total）跳过而不是猜测。
 - trace attrs 输出 `input_tokens`/`output_tokens`/`cache_read_tokens`/`cache_write_tokens`（仅出现的字段）。
+
+### daemon runtimeModelSourceProjection
+
+- `machine:runtime_models:result` 增量载体：live 时同时携带 typed `outcome`（models 补 verified、保留 default 与可选 catalog）与 legacy `models`/`default` 字段；空 live catalog 先归一为 `no_models`（legacy models: []）；非 live 保留 typed outcome（missing_config 可带 recovery；error 带 retryable/code/reason）并按类型写 legacy `error`（missing_config/unsupported/error）或空 models。
