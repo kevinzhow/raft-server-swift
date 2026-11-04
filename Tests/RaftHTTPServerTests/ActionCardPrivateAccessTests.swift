@@ -121,3 +121,53 @@ private func app_isPrepared(_ accounts: EmailLoginDirectory, _ cardId: String) -
         }
     }
 }
+
+@Test func actionCardTargetAccessAndInitialMemberScopeAreEnforced() async throws {
+    let accounts = EmailLoginDirectory()
+    let serverA = "33333333-3333-4333-8333-000001088031"
+    let serverB = "33333333-3333-4333-8333-000001088032"
+    let ownerA = "11111111-1111-4111-8111-000001088031"
+    let ownerB = "11111111-1111-4111-8111-000001088032"
+    accounts.addAccount(id: ownerA, email: "scope-a@private.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerA)
+    accounts.addAccount(id: ownerB, email: "scope-b@private.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerB)
+    accounts.oauth.addOwnedServer(id: serverA, slug: "scope-a", name: "Scope A", ownerId: ownerA)
+    accounts.oauth.addOwnedServer(id: serverB, slug: "scope-b", name: "Scope B", ownerId: ownerB)
+    let agentA = accounts.oauth.createAgent(serverId: serverA, name: "scope-agent-a", creatorUserId: ownerA, runtime: "claude")
+    let agentB = accounts.oauth.createAgent(serverId: serverB, name: "scope-agent-b", creatorUserId: ownerB, runtime: "claude")
+    let privateCarrier = accounts.oauth.createChannel(serverId: serverA, name: "scope-private-carrier", creatorUserId: ownerA, type: "private")
+    accounts.oauth.addChannelHuman(channelId: privateCarrier, userId: ownerA)
+    accounts.oauth.addChannelAgent(channelId: privateCarrier, agentId: agentA)
+    let inaccessible = accounts.oauth.createChannel(serverId: serverA, name: "scope-private-target", creatorUserId: ownerA, type: "private")
+    accounts.oauth.addChannelHuman(channelId: inaccessible, userId: ownerA)
+    let agentKey = accounts.mintAgentCredential(agentId: agentA, scopes: ["send", "read"], name: "scope-key")
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(agentKey)"
+            headers[.contentType] = "application/json"
+
+            func prepare(_ targetId: String, _ initial: String) async throws -> HTTPResponse.Status {
+                let payload = "{\"target\":\"\(targetId)\",\"action\":{\"type\":\"channel:create\",\"name\":\"scope-created\",\"visibility\":\"private\"\(initial)}}"
+                let response = try await client.send(.post, headers: headers, to: URI(string: "/internal/agent-api/prepare-action")) { request in
+                    request.body = .init(string: payload)
+                }
+                return response.status
+            }
+
+            let inaccessibleStatus = try await prepare(inaccessible, "")
+            #expect(inaccessibleStatus == .forbidden)
+            let foreignAgentStatus = try await prepare(privateCarrier, ",\"initialAgents\":[\"\(agentB)\"]")
+            #expect(foreignAgentStatus == .badRequest)
+            let foreignHumanStatus = try await prepare(privateCarrier, ",\"initialHumans\":[\"\(ownerB)\"]")
+            #expect(foreignHumanStatus == .badRequest)
+            let safeStatus = try await prepare(privateCarrier, ",\"initialAgents\":[\"\(agentA)\"],\"initialHumans\":[\"\(ownerA)\"]")
+            #expect(safeStatus == .created)
+        }
+    }
+}

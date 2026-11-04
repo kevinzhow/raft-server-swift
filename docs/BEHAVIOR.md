@@ -1680,3 +1680,11 @@ RFC 074 personal assistant：
 - Action card 写权限独立于 server member/read 权限：执行/mark-executed 需要 server owner/admin、carrier 频道成员（人或 agent）中的调用者；否则 public carrier → 403，private/thread carrier → 404 隐藏存在性。读取公开频道不授予 action-card 写权限。
 - `POST /api/actions/:id/mark-executed`：需 result.kind；channel:create 的 result 必须 kind=channel（否则 409 INCOMPATIBLE_RESULT）；成功后 card 状态 executed、记录执行人并返回 action metadata；重复 mark 幂等。
 - `POST /api/actions/migration-export`：410 `migration_action_card_not_supported`（迁移 action card 路由已废弃，不再做 preflight/DB 写入）。
+
+### route actions.privateAccess.api（锁定，含裁决）
+
+- target 解析：`#name` 或 channel UUID；UUID 目标必须属于同一 server（否则 404）；非 public 频道要求 agent 是频道成员，否则 403 `TARGET_NOT_ACCESSIBLE`。
+- 初始化成员作用域：`initialAgents[]` 必须是本 server 的 agent、`initialHumans[]` 必须是本 server 成员，跨 server UUID 逐一拒绝 400（错误含字段下标）；合法同 server 成员可通过。
+- `channel:add_member` 的目标 channel 必须属于本 server（否则 400 且错误含 channel），该卡片类型本身未移植（显式 501 NOT_SUPPORTED）。
+- action card 写权限、mark-executed result kind、私有 carrier 404 cloak、public reader 403、迁移卡 410 等见上一条记录。
+- 裁决为不可执行（上游依赖 actionCardsService 内部 DB 语义/ambient transaction/realtime seq 与 fake-io 断言）：私有 thread 的 stale room 不泄漏、执行后更新 private thread followers、`channel:add_member` 成功前置成员存在断言、`agent:create` 结构化 computer 约束/required computer/mark-executed 权限与 result kind 冲突、prepared card 的 realtime gap-recovery seq 与 message sync recovery metadata、`channel:create` 事务提交后才广播/回滚不发广播、public channel create 延后 publishChannelUpdate。这些属于尚未移植的 action-card 事务/实时元数据内部面，公开 HTTP 行为已由本模块与已锁定的 actionCards.resultReply.api 覆盖。

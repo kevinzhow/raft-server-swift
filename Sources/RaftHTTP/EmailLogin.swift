@@ -23786,13 +23786,51 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(400, "{\"error\":\"Invalid action card request\",\"code\":\"INVALID_PAYLOAD\"}")
         }
+        if (action["type"] as? String) == "channel:add_member" {
+            let channel = action["channel"] as? String ?? ""
+            guard ServerScope.isUUID(channel), oauth.channelServerId(channelId: channel) == identity.serverId else {
+                return Self.json(400, "{\"error\":\"channel must belong to this server\",\"code\":\"INVALID_PAYLOAD\"}")
+            }
+            return Self.json(501, "{\"error\":\"channel:add_member cards are not supported\",\"code\":\"NOT_SUPPORTED\"}")
+        }
+        if let initialAgents = action["initialAgents"] as? [Any] {
+            for (index, raw) in initialAgents.enumerated() {
+                guard let agentId = raw as? String, ServerScope.isUUID(agentId),
+                      oauth.agentRuntimeInfo(id: agentId)?.serverId == identity.serverId else {
+                    return Self.json(400, "{\"error\":\"initialAgents[\(index)] is not an agent on this server\",\"code\":\"INVALID_PAYLOAD\"}")
+                }
+            }
+        }
+        if let initialHumans = action["initialHumans"] as? [Any] {
+            for (index, raw) in initialHumans.enumerated() {
+                guard let userId = raw as? String, ServerScope.isUUID(userId),
+                      oauth.memberRole(serverId: identity.serverId, userId: userId) != nil else {
+                    return Self.json(400, "{\"error\":\"initialHumans[\(index)] is not a member of this server\",\"code\":\"INVALID_PAYLOAD\"}")
+                }
+            }
+        }
         let trimmedName = channelName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty, trimmedName.count <= 64 else {
             return Self.json(400, "{\"error\":\"Invalid channel name\",\"code\":\"INVALID_PAYLOAD\"}")
         }
         let visibility = (action["visibility"] as? String) == "private" ? "private" : "channel"
-        guard let resolved = actionCardTarget(serverId: identity.serverId, agentId: identity.agentId, target: target) else {
-            return Self.json(404, "{\"error\":\"Target channel not found\",\"code\":\"TARGET_NOT_FOUND\"}")
+        let resolved: (local: String, storage: String)
+        if ServerScope.isUUID(target) {
+            guard oauth.channelServerId(channelId: target) == identity.serverId else {
+                return Self.json(404, "{\"error\":\"Target channel not found\",\"code\":\"TARGET_NOT_FOUND\"}")
+            }
+            let isChannel = oauth.channelKind(channelId: target) == "channel"
+            let isMember = oauth.channelAgentIds(channelId: target).contains(identity.agentId)
+                || oauth.channelHumanIds(channelId: target).contains(identity.agentId)
+            guard isChannel || isMember else {
+                return Self.json(403, "{\"error\":\"Target channel is not accessible\",\"code\":\"TARGET_NOT_ACCESSIBLE\"}")
+            }
+            resolved = (target, target)
+        } else {
+            guard let byName = actionCardTarget(serverId: identity.serverId, agentId: identity.agentId, target: target) else {
+                return Self.json(404, "{\"error\":\"Target channel not found\",\"code\":\"TARGET_NOT_FOUND\"}")
+            }
+            resolved = byName
         }
         guard let agent = oauth.agentRuntimeInfo(id: identity.agentId) else {
             return Self.json(404, "{\"error\":\"Requester agent not found\",\"code\":\"AGENT_NOT_FOUND\"}")
