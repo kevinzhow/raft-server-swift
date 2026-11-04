@@ -53,8 +53,9 @@ public struct SocialAuthState: Equatable, Sendable {
     public var desktopNonce: String?
     public var returnTo: String?
     public var linkUserId: String?
+    public var linkOnConflict: Bool = false
 
-    public init(provider: String, mode: String, nonce: String, kind: String, mobileRequestId: String, desktopNonce: String?, returnTo: String? = nil, linkUserId: String? = nil) {
+    public init(provider: String, mode: String, nonce: String, kind: String, mobileRequestId: String, desktopNonce: String?, returnTo: String? = nil, linkUserId: String? = nil, linkOnConflict: Bool = false) {
         self.provider = provider
         self.mode = mode
         self.nonce = nonce
@@ -63,6 +64,7 @@ public struct SocialAuthState: Equatable, Sendable {
         self.desktopNonce = desktopNonce
         self.returnTo = returnTo
         self.linkUserId = linkUserId
+        self.linkOnConflict = linkOnConflict
     }
 }
 
@@ -1642,6 +1644,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return emailVerifications
     }
 
+    public func markPasswordCredentialEstablished(userId: String) {
+        lock.lock()
+        if let key = accounts.first(where: { $0.value.id == userId })?.key {
+            var account = accounts[key]!
+            account.passwordCredentialEstablishedAt = Date()
+            accounts[key] = account
+        }
+        lock.unlock()
+    }
+
+    public func linkIdentityForTesting(userId: String, provider: String, providerUserId: String, providerEmail: String? = nil) {
+        lock.lock()
+        linkedIdentities.append(LinkedIdentity(
+            userId: userId, provider: provider, providerUserId: providerUserId, providerEmail: providerEmail
+        ))
+        lock.unlock()
+    }
+
     public func hasAccount(email: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -1724,7 +1744,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         intendedAction: String = "login",
         returnTo: String = "/",
         userId: String? = nil,
-        providerUserId: String? = nil
+        providerUserId: String? = nil,
+        linkOnConflict: Bool = false
     ) {
         lock.lock()
         socialCompletions.append(SocialCompletion(
@@ -1735,7 +1756,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             email: Self.normalize(email),
             returnTo: returnTo,
             userId: userId,
-            providerUserId: providerUserId
+            providerUserId: providerUserId,
+            linkOnConflict: linkOnConflict
         ))
         lock.unlock()
     }
@@ -1809,6 +1831,55 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }.joined(separator: ",")
             let linked = "{\"provider\":\(jsonString(provider)),\"mode\":\"link\",\"returnTo\":\(jsonString(completion.returnTo)),\"identities\":[\(listed)]}"
             return Self.json(200, linked)
+        }
+        if let rawToken = object["pendingLinkToken"] as? String, !rawToken.isEmpty {
+            guard var pending = pendingSocialLinks[rawToken], !pending.consumed, !pending.cancelled,
+                  pending.expiresAt > Date()
+            else {
+                lock.unlock()
+                return Self.json(410, "{\"error\":\"This sign-in link expired. Sign in again to connect the account.\",\"code\":\"pending_link_expired\"}")
+            }
+            let identityOwner = linkedIdentities.first {
+                $0.provider == provider && $0.providerUserId == (completion.providerUserId ?? "")
+            }?.userId
+            let pendingOwner = accounts[pending.email]?.id
+            guard let identityOwner, identityOwner == pendingOwner else {
+                lock.unlock()
+                return Self.json(403, "{\"error\":\"The pending link belongs to a different account\",\"code\":\"pending_link_account_mismatch\"}")
+            }
+            pending.consumed = true
+            pendingSocialLinks[rawToken] = pending
+            if !linkedIdentities.contains(where: {
+                $0.userId == identityOwner && $0.provider == pending.provider && $0.providerUserId == pending.providerUserId
+            }) {
+                linkedIdentities.append(LinkedIdentity(
+                    userId: identityOwner, provider: pending.provider,
+                    providerUserId: pending.providerUserId, providerEmail: pending.email
+                ))
+            }
+            socialCompletions.remove(at: index)
+            let accessToken = Self.token()
+            let refreshToken = Self.token()
+            sessions[refreshToken] = LiveSession(userId: identityOwner, familyId: UUID().uuidString.lowercased())
+            accessTokens[accessToken] = identityOwner
+            lock.unlock()
+            return Self.json(200, "{\"provider\":\(jsonString(provider)),\"mode\":\"login\",\"returnTo\":\(jsonString(completion.returnTo)),\"accessToken\":\(jsonString(accessToken)),\"refreshToken\":\(jsonString(refreshToken)),\"linkedProvider\":\(jsonString(pending.provider))}")
+        }
+        if completion.userId == nil, completion.intendedAction == "link",
+           completion.linkOnConflict, let existing = accounts[completion.email] {
+            let token = Self.randomHex(32)
+            pendingSocialLinks[token] = PendingSocialLink(
+                token: token, provider: provider,
+                providerUserId: completion.providerUserId ?? "",
+                email: completion.email, returnTo: completion.returnTo, returnUri: nil,
+                expiresAt: Date().addingTimeInterval(600)
+            )
+            let linkedProviders = Set(linkedIdentities.filter { $0.userId == existing.id }.map(\.provider)).sorted()
+            let providersJSON = linkedProviders.map(jsonString).joined(separator: ",")
+            let hasPassword = existing.passwordCredentialEstablishedAt != nil
+            let expiry = ISO8601DateFormatter().string(from: Date().addingTimeInterval(600))
+            lock.unlock()
+            return Self.json(409, "{\"code\":\"account_link_required\",\"pendingLinkToken\":\(jsonString(token)),\"provider\":\(jsonString(provider)),\"email\":\(jsonString(existing.email)),\"expiresAt\":\(jsonString(expiry)),\"signInMethods\":{\"password\":\(hasPassword ? "true" : "false"),\"providers\":[\(providersJSON)]},\"returnTo\":\(jsonString(completion.returnTo))}")
         }
         if completion.mode == "login", completion.userId == nil {
             if object["acceptTerms"] as? Bool != true {
@@ -2347,7 +2418,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// `GET /api/auth/:provider/start`. Apple stays closed until its web platform rule is allowed.
-    public func startWebOAuth(provider: String, returnTo: String?) -> HTTPReply {
+    public func startWebOAuth(provider: String, returnTo: String?, linkOnConflict: Bool = false) -> HTTPReply {
         guard Self.socialProviders.contains(provider) else {
             return Self.json(404, "{\"error\":\"Not found\"}")
         }
@@ -2363,7 +2434,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             kind: "web",
             mobileRequestId: "",
             desktopNonce: nil,
-            returnTo: safeReturn
+            returnTo: safeReturn,
+            linkOnConflict: linkOnConflict
         ))
         let url = webAuthorizationURL(provider: provider, state: state, nonce: nonce)
         return Self.redirect(url, cookie: stateCookie(provider: provider, nonce: nonce))
@@ -2449,6 +2521,58 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 mode: state.mode,
                 returnTo: state.returnTo ?? "/",
                 error: error
+            ))
+        }
+        if state.mode == "login" {
+            guard let profile = webProviderProfile,
+                  !profile.providerUserId.isEmpty,
+                  !profile.email.isEmpty
+            else { return Self.redirect(invalid) }
+            if !profile.emailVerified {
+                return Self.redirect(Self.socialCallbackURL(
+                    appURL: appURL, provider: provider, mode: "login",
+                    returnTo: state.returnTo ?? "/",
+                    error: "\(provider) account email is not verified"
+                ))
+            }
+            let email = Self.normalize(profile.email)
+            let completionCode = Self.randomHex(32)
+            let existing = accounts[email]
+            let existingIdentity = linkedIdentities.first {
+                $0.provider == provider && $0.providerUserId == profile.providerUserId
+            }
+            if let existing, existingIdentity?.userId != existing.id {
+                if !state.linkOnConflict {
+                    return Self.redirect(Self.socialCallbackURL(
+                        appURL: appURL, provider: provider, mode: "login",
+                        returnTo: state.returnTo ?? "/",
+                        error: "An account with this email already exists. Sign in with email and password first, then connect \(provider) in Settings."
+                    ))
+                }
+                lock.lock()
+                socialCompletions.append(SocialCompletion(
+                    provider: provider, code: completionCode, mode: "login",
+                    intendedAction: "link", email: email,
+                    returnTo: state.returnTo ?? "/", userId: nil,
+                    providerUserId: profile.providerUserId, linkOnConflict: true
+                ))
+                lock.unlock()
+                return Self.redirect(Self.socialCallbackURL(
+                    appURL: appURL, provider: provider, mode: "login",
+                    returnTo: state.returnTo ?? "/", code: completionCode
+                ))
+            }
+            lock.lock()
+            socialCompletions.append(SocialCompletion(
+                provider: provider, code: completionCode, mode: "login",
+                intendedAction: "login", email: email,
+                returnTo: state.returnTo ?? "/",
+                userId: existing?.id, providerUserId: profile.providerUserId
+            ))
+            lock.unlock()
+            return Self.redirect(Self.socialCallbackURL(
+                appURL: appURL, provider: provider, mode: "login",
+                returnTo: state.returnTo ?? "/", code: completionCode
             ))
         }
         guard state.mode == "link",
@@ -9230,6 +9354,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var returnTo: String
         var userId: String?
         var providerUserId: String?
+        var linkOnConflict: Bool = false
     }
 
     private struct LinkedIdentity {
@@ -27607,6 +27732,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if let linkUserId = state.linkUserId {
             payload["linkUserId"] = linkUserId
         }
+        if state.linkOnConflict {
+            payload["linkOnConflict"] = true
+        }
         let encoded = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
         let body = base64url(encoded)
         let mac = Data(HMAC<SHA256>.authenticationCode(for: Data("\(header).\(body)".utf8), using: stateKey))
@@ -27639,7 +27767,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             mobileRequestId: requestId,
             desktopNonce: object["desktopNonce"] as? String,
             returnTo: object["returnTo"] as? String,
-            linkUserId: object["linkUserId"] as? String
+            linkUserId: object["linkUserId"] as? String,
+            linkOnConflict: object["linkOnConflict"] as? Bool ?? false
         )
     }
 

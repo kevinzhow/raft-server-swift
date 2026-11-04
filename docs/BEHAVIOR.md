@@ -1625,3 +1625,10 @@ RFC 074 personal assistant：
 - 一次性 pending social link：包含 provider、providerUserId、规范化 email、returnTo/returnUri、expiresAt；`cancel` 幂等（重复 204），取消/过期/已用后不可再用。
 - 密码登录携带 `pendingLinkToken`：token 无效/取消/过期/已用 → 410 `pending_link_expired`；email 与 token 归属不符 → 403 `pending_link_account_mismatch`（不发 session）；密码错误 → 401 `AUTH_INVALID_CREDENTIALS`（token 仍可用）；成功 → 建立 session、一次性消费 token、写入 provider identity，响应含 `linkedProvider`。
 - 成功消费后 replay → 410，且不产生第二个 session。
+
+### route pending social link（web 冲突与 provider 完成，进行中）
+
+- web 登录 callback 现在建立 completion：已存在 email 且该 provider 未链接时，`linkOnConflict=1` → 返回 completion code（非错误重定向）；未开启 → 旧错误重定向 “An account with this email already exists…”，且不建立任何 completion/pending 状态。
+- `POST /api/auth/:provider/complete` 对 link-conflict completion 返回 409 `account_link_required`：`pendingLinkToken`、provider、email、expiresAt、`signInMethods{password,providers}`、returnTo；此路径在首次登录法律条款校验之前处理，不发 session、不写 identity。
+- provider 完成携带 `pendingLinkToken`：校验“当前 provider 身份所属账户 == pending link 账户”，不符 → 403 `pending_link_account_mismatch` 且不消费 completion code；相符 → 一次性消费 token、链接 pending provider identity、发 session，响应 `linkedProvider` 为 pending provider。
+- web 冲突 completion 的 `linkOnConflict` 通过签名 state 传递并在 verify 时还原。

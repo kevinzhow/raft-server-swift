@@ -3685,7 +3685,8 @@ public func configure(_ app: Application, services: FallbackServices) {
     app.get("api", "auth", ":provider", "start") { request in
         routeResponse(services.emailAccounts.startWebOAuth(
             provider: request.parameters.get("provider") ?? "",
-            returnTo: desktopQuery(request.url.query, "returnTo")
+            returnTo: desktopQuery(request.url.query, "returnTo"),
+            linkOnConflict: desktopQuery(request.url.query, "linkOnConflict") == "1"
         ))
     }
     app.post("api", "auth", ":provider", "link", "start") { request -> Response in
