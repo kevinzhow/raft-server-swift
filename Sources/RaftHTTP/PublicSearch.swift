@@ -349,13 +349,18 @@ public enum PublicSearch {
     }
 
     private static func indexBody(_ catalog: PublicSearchCatalog, cursor: String?) -> String {
-        let servers = catalog.servers.filter(\.searchable).sorted { $0.publicId < $1.publicId }
+        let servers = catalog.servers.sorted { $0.publicId < $1.publicId }
         let start = cursor.flatMap { Int($0.prefix(32), radix: 16) } ?? 0
         var entries: [String] = []
         var index = max(0, min(start, servers.count))
         var scanned = 0
         while index < servers.count, scanned < 500, entries.count < 75 {
             let server = servers[index]
+            guard server.searchable else {
+                index += 1
+                scanned += 1
+                continue
+            }
             var serverEntries: [String] = []
             let serverLastmod = server.indexLastmod ?? server.updatedAt
             serverEntries.append(indexEntry("server", serverPath(server), serverLastmod))

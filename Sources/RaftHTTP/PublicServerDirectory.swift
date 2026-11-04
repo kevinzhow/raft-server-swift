@@ -406,7 +406,7 @@ public final class PublicServerDirectory: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         let projected = servers.compactMap { server -> PublicSearchServer? in
-            guard rolloutEnabled, server.publiclyVisible, server.publicSearchEnabled, !server.deleted, let publicId = server.publicId else { return nil }
+            guard rolloutEnabled, server.publiclyVisible, !server.deleted, let publicId = server.publicId else { return nil }
             let serverLast = iso(serverLastmod(server))
             let channels = server.channels.compactMap { channel -> PublicSearchChannel? in
                 guard let channelPublicId = channel.publicId, !channel.archived, !channel.deleted, !channel.isPrivate else { return nil }
@@ -439,8 +439,8 @@ public final class PublicServerDirectory: @unchecked Sendable {
                 name: server.name,
                 slug: server.slug,
                 updatedAt: serverLast,
-                searchable: true,
-                channels: channels,
+                searchable: server.publicSearchEnabled,
+                channels: server.publicSearchEnabled ? channels : [],
                 indexLastmod: serverLast
             )
         }
