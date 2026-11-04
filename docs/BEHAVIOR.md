@@ -1789,3 +1789,12 @@ RFC 074 personal assistant：
   - 无 key/空白 key 保持旧行为（每次创建）；成功响应写入 24h TTL ledger，过期后同 key 视为新请求（重新创建并替换 ledger），不同请求不再被拒。
 - ledger 清理：仅删除过期行，按 createdAt 最旧优先、有界批次数与批大小；live 行永不删除。
 - 裁决：4 个并发首请求/竞态用例依赖测试专用 race hooks（afterLookupMiss/onRaceLost）与 DB 回滚 winner，不移植；单进程串行语义与 409 形状已覆盖。
+
+### route internal.search.api（锁定，含裁决）
+
+- 托管 agent 搜索 `GET /internal/agent/:agentId/search`（machine key 绑定该 agent）支持 q/channel/sender/sort/limit/after/before：
+  - sender 用 member handle（`@name`）解析；不可见/未知 → 404 `member_not_found`；human/agent 同名或多个人类同名 → 409 `ambiguous_member_ref`。
+  - after/before 必须带时区偏移（Z 或 ±HH:MM），缺失 → 400 `INVALID_DATE_FILTER`（错误含 +08:00 与 raft CLI 提示）；边界按绝对时刻、after 严格大于、before 严格小于。
+  - 结果投影：thread 回复带 channelType=thread、threadId、parentMessageId、parentMessageContent；被 amend 的 task host 消息保留原 content，并附 taskNumber + taskCurrentProjection（最新 title/description/revision/superseded/amendedAt/amendedByType/amendedByName/source=tasks_current_projection）。
+- 补充实现 `POST /internal/agent-api/tasks/amend`（agent task:write，按 channel+task_number 改 title/description、revision+1、记录 amend 元数据），并把 convert-message 生成的 task 绑定回 host messageId 以便搜索投影。
+- 裁决：上游两个用例分别只断言 tracer span 的 agent/server 哈希与 `slack message search` CLI 子进程输出，属 tracer/CLI 契约（本仓库非 CLI e2e），不重复；其 HTTP 搜索语义已覆盖。

@@ -1309,6 +1309,13 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? "{}"
         ))
     }
+    app.post("internal", "agent-api", "tasks", "amend") { request -> Response in
+        routeResponse(services.emailAccounts.agentTasksAmend(
+            authorization: request.headers[.authorization],
+            legacyAgentId: nil,
+            body: request.body.string ?? "{}"
+        ))
+    }
     app.post("internal", "agent-api", "tasks", "claim") { request -> Response in
         routeResponse(services.emailAccounts.agentTaskClaim(
             authorization: request.headers[.authorization],

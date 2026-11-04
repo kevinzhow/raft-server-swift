@@ -3750,7 +3750,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let threadIdJSON = isThread ? jsonString(message.channelId) : "null"
             let parentMessageIdJSON = threadParentMessageId.map(jsonString) ?? "null"
             let parentContentJSON = parentContent.map(jsonString) ?? "null"
-            return "{\"id\":\(jsonString(message.id)),\"senderId\":\(jsonString(message.senderId)),\"senderName\":\(jsonString(senderName)),\"senderType\":\(jsonString(senderType)),\"channelId\":\(jsonString(message.channelId)),\"channelType\":\(jsonString(channelType)),\"channelName\":\(jsonString(channel?.name ?? "")),\"parentChannelId\":\(jsonString(parentId)),\"threadId\":\(threadIdJSON),\"parentMessageId\":\(parentMessageIdJSON),\"parentMessageContent\":\(parentContentJSON),\"content\":\(jsonString(message.content)),\"snippet\":\(jsonString(snippet)),\"channelArchivedAt\":\(archivedJSON)}"
+            var row = "{\"id\":\(jsonString(message.id)),\"senderId\":\(jsonString(message.senderId)),\"senderName\":\(jsonString(senderName)),\"senderType\":\(jsonString(senderType)),\"channelId\":\(jsonString(message.channelId)),\"channelType\":\(jsonString(channelType)),\"channelName\":\(jsonString(channel?.name ?? "")),\"parentChannelId\":\(jsonString(parentId)),\"threadId\":\(threadIdJSON),\"parentMessageId\":\(parentMessageIdJSON),\"parentMessageContent\":\(parentContentJSON),\"content\":\(jsonString(message.content)),\"snippet\":\(jsonString(snippet)),\"channelArchivedAt\":\(archivedJSON)}"
+            if let task = taskRecords.first(where: { $0.messageId == message.id }) {
+                let amendedAt = task.amendedAt.map { jsonString(Self.isoString($0)) } ?? "null"
+                let projection = "{\"title\":\(jsonString(task.title)),\"description\":\(task.description.map { jsonString($0) } ?? "null"),\"revision\":\(task.revision),\"superseded\":\(task.superseded ? "true" : "false"),\"amendedAt\":\(amendedAt),\"amendedByType\":\(task.amendedByType.map { jsonString($0) } ?? "null"),\"amendedByName\":\(task.amendedByName.map { jsonString($0) } ?? "null"),\"source\":\"tasks_current_projection\"}"
+                row = String(row.dropLast()) + ",\"taskNumber\":\(task.taskNumber),\"taskCurrentProjection\":\(projection)}"
+            }
+            return row
         }.joined(separator: ",")
         lock.unlock()
         return Self.json(200, "{\"results\":[\(results)],\"hasMore\":\(hasMore ? "true" : "false")}")
@@ -3763,15 +3769,51 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         channelRef: String?,
         senderRef: String?,
         sort: String?,
-        limit: String?
+        limit: String?,
+        managedAgentId: String? = nil,
+        after: String? = nil,
+        before: String? = nil,
+        enhanced: Bool = false
     ) -> HTTPReply {
-        guard let credential = agentCredentialAgent(authorization),
-              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
-        else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        let agent: OAuthLedger.AgentRuntimeInfo
+        if let managedAgentId {
+            guard let machineId = machineIdForCredential(authorization: authorization),
+                  let info = oauth.agentRuntimeInfo(id: managedAgentId), !info.deleted,
+                  info.serverId != "",
+                  canMachineServeAgent(machineId: machineId, agent: info)
+            else {
+                return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            }
+            agent = info
+        } else {
+            guard let credential = agentCredentialAgent(authorization),
+                  let info = oauth.agentRuntimeInfo(id: credential.agentId), !info.deleted
+            else {
+                return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            }
+            guard credential.scopes.contains("read") else {
+                return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
+            }
+            agent = info
         }
-        guard credential.scopes.contains("read") else {
-            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
+        var afterDate: Date?
+        var beforeDate: Date?
+        for (label, raw) in [("after", after), ("before", before)] {
+            guard let raw, !raw.isEmpty else { continue }
+            guard raw.range(of: #"(Z|[+-]\d{2}:\d{2})$"#, options: .regularExpression) != nil else {
+                return Self.json(400, "{\"error\":\"The \(label) filter is missing a timezone offset (for example +08:00); pass one from the raft CLI\",\"errorCode\":\"INVALID_DATE_FILTER\"}")
+            }
+            let parser = ISO8601DateFormatter()
+            parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            var parsed = parser.date(from: raw)
+            if parsed == nil {
+                parser.formatOptions = [.withInternetDateTime]
+                parsed = parser.date(from: raw)
+            }
+            guard let parsed else {
+                return Self.json(400, "{\"error\":\"Invalid \(label) date filter\",\"errorCode\":\"INVALID_DATE_FILTER\"}")
+            }
+            if label == "after" { afterDate = parsed } else { beforeDate = parsed }
         }
         let pageLimit = min(max(Int(limit ?? "") ?? 20, 1), 100)
         let tokens = Self.searchTokens((query ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
@@ -3795,12 +3837,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let agentMatch = oauth.activeAgentIds(serverId: agent.serverId).first {
                 oauth.agentRuntimeInfo(id: $0)?.name.lowercased() == handle.lowercased()
             }
-            let humanMatch: String? = directoryHidden
-                ? nil
-                : accounts.values.first { account in
+            let humanMatches: [String] = directoryHidden
+                ? []
+                : accounts.values.filter { account in
                     account.name.lowercased() == handle.lowercased()
                         || (account.displayName ?? "").lowercased() == handle.lowercased()
-                }?.id
+                }.map(\.id)
+            if agentMatch != nil && !humanMatches.isEmpty {
+                lock.unlock()
+                return Self.json(409, "{\"error\":\"Member reference is ambiguous\",\"errorCode\":\"ambiguous_member_ref\"}")
+            }
+            if humanMatches.count > 1 {
+                lock.unlock()
+                return Self.json(409, "{\"error\":\"Member reference is ambiguous\",\"errorCode\":\"ambiguous_member_ref\"}")
+            }
+            let humanMatch = humanMatches.first
             guard let resolvedSender = agentMatch ?? humanMatch else {
                 lock.unlock()
                 return Self.json(404, "{\"error\":\"Member not found\",\"errorCode\":\"member_not_found\"}")
@@ -3815,6 +3866,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         ) {
             if let channelFilter, message.channelId != channelFilter { continue }
             if let senderScope, message.senderId != senderScope { continue }
+            if let afterDate, message.createdAt <= afterDate { continue }
+            if let beforeDate, message.createdAt >= beforeDate { continue }
             let counts = Self.tokenCounts(message.content)
             if tokens.isEmpty {
                 hits.append((message, 0))
@@ -3846,7 +3899,26 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let senderType = message.senderType == "agent" ? "agent" : "human"
             let channelName = channel?.name ?? ""
             let snippet = Self.searchSnippet(message.content)
-            return "{\"id\":\(jsonString(message.id)),\"content\":\(jsonString(message.content)),\"senderName\":\(jsonString(senderName)),\"senderType\":\(jsonString(senderType)),\"senderId\":\(jsonString(message.senderId)),\"channelId\":\(jsonString(message.channelId)),\"channelName\":\(jsonString(channelName)),\"parentChannelId\":\(jsonString(parentId)),\"snippet\":\(jsonString(snippet))}"
+            var row = "{\"id\":\(jsonString(message.id)),\"content\":\(jsonString(message.content)),\"senderName\":\(jsonString(senderName)),\"senderType\":\(jsonString(senderType)),\"senderId\":\(jsonString(message.senderId)),\"channelId\":\(jsonString(message.channelId)),\"channelName\":\(jsonString(channelName)),\"parentChannelId\":\(jsonString(parentId)),\"snippet\":\(jsonString(snippet))}"
+            if enhanced {
+                let channelType = channel?.kind ?? "channel"
+                let threadId = channel?.kind == "thread" ? message.channelId : ""
+                let parentMessageId = channel?.kind == "thread" ? (channel?.parentMessageId ?? "") : ""
+                let parentContent: String
+                if !parentMessageId.isEmpty,
+                   let parent = humanMessageRows.first(where: { $0.id == parentMessageId }) {
+                    parentContent = parent.content
+                } else {
+                    parentContent = ""
+                }
+                row += ",\"channelType\":\(jsonString(channelType)),\"threadId\":\(threadId.isEmpty ? "null" : jsonString(threadId)),\"parentMessageId\":\(parentMessageId.isEmpty ? "null" : jsonString(parentMessageId)),\"parentMessageContent\":\(parentContent.isEmpty ? "null" : jsonString(parentContent))"
+                if let task = taskRecords.first(where: { $0.messageId == message.id }) {
+                    let amendedAt = task.amendedAt.map { jsonString(Self.isoString($0)) } ?? "null"
+                    let projection = "{\"title\":\(jsonString(task.title)),\"description\":\(task.description.map { jsonString($0) } ?? "null"),\"revision\":\(task.revision),\"superseded\":\(task.superseded ? "true" : "false"),\"amendedAt\":\(amendedAt),\"amendedByType\":\(task.amendedByType.map { jsonString($0) } ?? "null"),\"amendedByName\":\(task.amendedByName.map { jsonString($0) } ?? "null"),\"source\":\"tasks_current_projection\"}"
+                    row += ",\"taskNumber\":\(task.taskNumber),\"taskCurrentProjection\":\(projection)"
+                }
+            }
+            return row
         }.joined(separator: ",")
         lock.unlock()
         return Self.json(200, "{\"results\":[\(rows)],\"hasMore\":\(hasMore ? "true" : "false")}")
@@ -6721,6 +6793,43 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         if let index = humanMessageRows.firstIndex(where: { $0.id == messageId }) {
             humanMessageRows[index].attachmentIds = attachmentIds
+        }
+        lock.unlock()
+    }
+
+    public func amendTaskForTesting(taskId: String, title: String, description: String?, amendedByName: String = "user") {
+        lock.lock()
+        if let index = taskRecords.firstIndex(where: { $0.id == taskId }) {
+            taskRecords[index].title = title
+            if let description { taskRecords[index].description = description }
+            taskRecords[index].revision += 1
+            taskRecords[index].amendedAt = Date()
+            taskRecords[index].amendedByType = "user"
+            taskRecords[index].amendedByName = amendedByName
+            taskRecords[index].superseded = true
+        }
+        lock.unlock()
+    }
+
+    public func taskNumberForTaskIdForTesting(taskId: String) -> Int? {
+        lock.lock(); defer { lock.unlock() }
+        return taskRecords.first { $0.id == taskId }?.taskNumber
+    }
+
+    public func taskNumberForMessageForTesting(messageId: String) -> Int? {
+        lock.lock(); defer { lock.unlock() }
+        return taskRecords.first { $0.messageId == messageId }?.taskNumber
+    }
+
+    public func messageCreatedAtForTesting(messageId: String) -> Date? {
+        lock.lock(); defer { lock.unlock() }
+        return humanMessageRows.first { $0.id == messageId }?.createdAt
+    }
+
+    public func setMessageCreatedAtForTesting(messageId: String, at date: Date) {
+        lock.lock()
+        if let index = humanMessageRows.firstIndex(where: { $0.id == messageId }) {
+            humanMessageRows[index].createdAt = date
         }
         lock.unlock()
     }
@@ -17278,6 +17387,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return nil
     }
 
+    private func canMachineServeAgent(machineId: String, agent: OAuthLedger.AgentRuntimeInfo) -> Bool {
+        lock.lock()
+        let bound = agentMachineIds[agent.id]
+        let machineServer = machines.first { $0.id == machineId }?.serverId
+        lock.unlock()
+        guard machineServer == agent.serverId else { return false }
+        if let bound { return bound == machineId }
+        return true
+    }
+
     public func assignAgentMachineForTesting(agentId: String, machineId: String) {
         lock.lock()
         agentMachineIds[agentId] = machineId
@@ -20884,6 +21003,40 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let descriptions = tasks.map { $0["description"] as? String }
         let ids = addTasks(channelId: channelId, titles: titles, descriptions: descriptions, creatorId: userId)
         return Self.json(200, "{\"taskIds\":[\("\(ids.map { jsonString($0) }.joined(separator: ","))")]}")
+    }
+
+    public func agentTasksAmend(authorization: String?, legacyAgentId: String?, body: String) -> HTTPReply {
+        let auth: (agentId: String, serverId: String)
+        switch agentTaskAuth(authorization: authorization, legacyAgentId: legacyAgentId) {
+        case .refused(let reply): return reply
+        case .ok(let agentId, let serverId): auth = (agentId, serverId)
+        }
+        if let reply = agentGrantDenial(agentId: auth.agentId, scope: "task:write") { return reply }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let channelRef = object["channel"] as? String,
+              let channelId = agentTaskChannel(serverId: auth.serverId, agentId: auth.agentId, reference: channelRef),
+              let taskNumber = (object["task_number"] as? NSNumber)?.intValue,
+              let title = (object["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"Invalid task request\"}")
+        }
+        let description = object["description"] as? String
+        lock.lock()
+        guard let index = taskRecords.firstIndex(where: { $0.channelId == channelId && $0.taskNumber == taskNumber }) else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Task not found\"}")
+        }
+        taskRecords[index].title = title
+        if let description { taskRecords[index].description = description }
+        taskRecords[index].revision += 1
+        taskRecords[index].updatedAt = Date()
+        taskRecords[index].amendedAt = Date()
+        taskRecords[index].amendedByType = "agent"
+        taskRecords[index].amendedByName = oauth.agentRuntimeInfo(id: auth.agentId)?.name ?? "agent"
+        taskRecords[index].superseded = true
+        let task = taskRecords[index]
+        lock.unlock()
+        return Self.json(200, taskJSON(task))
     }
 
     public func assignTask(authorization: String?, serverId: String, taskId: String, body: String) -> HTTPReply {
@@ -25915,6 +26068,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         case .write: break
         }
         let ids = addTasks(channelId: channelId, titles: ["Converted message"], creatorId: userId)
+        lock.lock()
+        for index in taskRecords.indices where ids.contains(taskRecords[index].id) {
+            taskRecords[index].messageId = messageId
+        }
+        lock.unlock()
         return Self.json(200, "{\"taskIds\":[\("\(ids.map { jsonString($0) }.joined(separator: ","))")]}")
     }
 
@@ -26167,6 +26325,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         /// False for a pre-thread v0 orphan: the row has no host message, so the
         /// agent surface cannot address it.
         var hasHostMessage: Bool = true
+        var amendedAt: Date? = nil
+        var amendedByType: String? = nil
+        var amendedByName: String? = nil
+        var superseded: Bool = false
     }
 
     private var taskEvents: [(taskId: String, eventType: String, actorType: String)] = []
