@@ -17223,6 +17223,156 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         sessionUserId(authorization: authorization)
     }
 
+    public func machineIdForCredential(authorization: String?) -> String? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        defer { lock.unlock() }
+        return machines.first { $0.apiKey == token }?.id
+    }
+
+    public func assignAgentMachineForTesting(agentId: String, machineId: String) {
+        lock.lock()
+        agentMachineIds[agentId] = machineId
+        lock.unlock()
+    }
+
+    private static func attestationString(_ value: Any?) -> String? {
+        guard let value = value as? String else { return nil }
+        return value
+    }
+
+    private static func attestationInt(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber else { return nil }
+        let double = number.doubleValue
+        guard double.rounded() == double, double >= 0, double <= 9_007_199_254_740_991 else { return nil }
+        return number.intValue
+    }
+
+    private static let scopeAttestationMaxChars = 16 * 1024
+
+    public func machineScopeAttestation(authorization: String?, body: String) -> HTTPReply {
+        guard let machineId = machineIdForCredential(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let scope = object["scope"] as? String, scope == "daemon-trace-bundle:create",
+              let rawMetadata = object["metadata"] as? [String: Any]
+        else {
+            return Self.json(400, "{\"error\":\"Invalid attestation request\"}")
+        }
+        var metadata: [String: Any] = [:]
+        guard let bundleId = Self.attestationString(rawMetadata["bundleId"]),
+              !bundleId.isEmpty, bundleId.count <= 128,
+              let bundleSha256 = Self.attestationString(rawMetadata["bundleSha256"]),
+              bundleSha256.count == 64,
+              let bundleSizeBytes = Self.attestationInt(rawMetadata["bundleSizeBytes"])
+        else {
+            return Self.json(400, "{\"error\":\"Invalid attestation request\"}")
+        }
+        metadata["bundleId"] = bundleId
+        metadata["bundleSha256"] = bundleSha256
+        metadata["bundleSizeBytes"] = bundleSizeBytes
+        for key in ["bundleContentType", "bundleContentEncoding"] {
+            if let value = Self.attestationString(rawMetadata[key]) {
+                let cap = key == "bundleContentType" ? 128 : 64
+                if !value.isEmpty, value.count <= cap { metadata[key] = value }
+            }
+        }
+        let attachmentKind = Self.attestationString(rawMetadata["feedbackAttachmentKind"])
+        if let attachmentKind, ["session_transcript", "transcript_outcome"].contains(attachmentKind) {
+            metadata["feedbackAttachmentKind"] = attachmentKind
+        }
+        for key in ["feedbackReportId", "agentId"] {
+            if let value = Self.attestationString(rawMetadata[key]),
+               value.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil {
+                metadata[key] = value
+            }
+        }
+        for key in ["feedbackReportGeneratedAt", "feedbackReportWindowStartAt", "feedbackTranscriptFirstEventAt", "feedbackTranscriptLastEventAt"] {
+            if let value = Self.attestationString(rawMetadata[key]), !value.isEmpty, value.count <= 64 {
+                metadata[key] = value
+            }
+        }
+        if let source = Self.attestationString(rawMetadata["feedbackReportTimeSource"]),
+           ["web_report_bundle", "computer_clock", "unknown"].contains(source) {
+            metadata["feedbackReportTimeSource"] = source
+        }
+        if let coverage = Self.attestationString(rawMetadata["feedbackTranscriptWindowCoverage"]),
+           ["timestamps_available", "timestamps_unavailable"].contains(coverage) {
+            metadata["feedbackTranscriptWindowCoverage"] = coverage
+        }
+        if let direction = Self.attestationString(rawMetadata["feedbackTranscriptTruncationDirection"]),
+           ["window", "size"].contains(direction) {
+            metadata["feedbackTranscriptTruncationDirection"] = direction
+        }
+        if let truncated = rawMetadata["feedbackTranscriptTruncated"] {
+            if let bool = truncated as? Bool { metadata["feedbackTranscriptTruncated"] = bool }
+            else if let text = truncated as? String, text == "true" || text == "false" {
+                metadata["feedbackTranscriptTruncated"] = text == "true"
+            }
+        }
+        if let tolerance = Self.attestationInt(rawMetadata["feedbackTranscriptWindowToleranceMs"]),
+           tolerance <= 24 * 60 * 60 * 1000 {
+            metadata["feedbackTranscriptWindowToleranceMs"] = tolerance
+        }
+        if let content = Self.attestationString(rawMetadata["feedbackTranscriptContent"]),
+           ["native_session_file", "native_state_file"].contains(content) {
+            metadata["feedbackTranscriptContent"] = content
+        }
+        for key in ["feedbackTranscriptSourceBytes", "feedbackTranscriptBytes"] {
+            if let value = Self.attestationInt(rawMetadata[key]) { metadata[key] = value }
+        }
+        if let requestId = Self.attestationString(rawMetadata["feedbackTranscriptRequestId"]),
+           requestId.wholeMatch(of: /^[^\s]{1,128}$/) != nil {
+            metadata["feedbackTranscriptRequestId"] = requestId
+        }
+        if metadata["feedbackAttachmentKind"] as? String == "transcript_outcome" {
+            guard let reportId = metadata["feedbackReportId"] as? String,
+                  let agentId = metadata["agentId"] as? String,
+                  let requestId = metadata["feedbackTranscriptRequestId"] as? String
+            else {
+                return Self.json(400, "{\"error\":\"Invalid attestation request\"}")
+            }
+            lock.lock()
+            let agentServerId = oauth.agentRuntimeInfo(id: agentId)?.serverId
+            let agentMachineId = agentMachineIds[agentId]
+            let machine = machines.first { $0.id == machineId }
+            let serverId = machine?.serverId ?? ""
+            lock.unlock()
+            guard agentServerId == serverId else {
+                return Self.json(403, "{\"error\":\"Agent does not belong to this machine\",\"code\":\"agent_not_on_machine\"}")
+            }
+            guard agentMachineId == machineId else {
+                return Self.json(403, "{\"error\":\"Agent does not belong to this machine\",\"code\":\"agent_not_on_machine\"}")
+            }
+            let maxBytes = 2048
+            guard let size = metadata["bundleSizeBytes"] as? Int, size <= maxBytes else {
+                return Self.json(400, "{\"error\":\"Outcome bundle is too large\",\"code\":\"outcome_bundle_too_large\"}")
+            }
+            metadata.removeValue(forKey: "feedbackTranscriptContent")
+            metadata["feedbackReportId"] = reportId
+            metadata["agentId"] = agentId
+            metadata["feedbackTranscriptRequestId"] = requestId
+            metadata["objectKey"] = "feedback-transcript-outcomes/\(serverId)/\(machineId)/\(UUID().uuidString.lowercased()).json.gz"
+            metadata["bundleContentType"] = "application/json"
+            metadata["bundleContentEncoding"] = "gzip"
+            metadata["maxBytes"] = maxBytes
+        }
+        let metadataJSON = Self.serializeJSON(metadata)
+        let secret = ProcessInfo.processInfo.environment["SCOPE_ATTESTATION_SECRET"] ?? "scope-attestation-default-secret"
+        let header = Data("{\"alg\":\"HS256\",\"typ\":\"JWT\"}".utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        let payload = Data(metadataJSON.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        let signingInput = "\(header).\(payload)"
+        let mac = Data(HMAC<SHA256>.authenticationCode(for: Data(signingInput.utf8), using: SymmetricKey(data: Data(secret.utf8))))
+        let signature = mac.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        let attestation = "\(signingInput).\(signature)"
+        return Self.json(200, "{\"metadata\":\(metadataJSON),\"attestation\":\(jsonString(attestation))}")
+    }
+
     public func serverScopeAttestation(authorization: String?, serverId: String, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

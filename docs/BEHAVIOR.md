@@ -1732,3 +1732,10 @@ RFC 074 personal assistant：
 - 其余路由保留全局 100 KB：180 KB 请求在 `/internal/machine/agents/:id/stop`、未知 internal 路径、`/api/auth/login` 均 413。
 - 机器认证先于 1 MiB 解析：未认证或错误 apiKey 携带 180 KB/1 MiB+1 均 401（不被解析、不落 413）；合法机器凭据无速率限制，150 连发全部 200。
 - 裁决：daemon 侧将服务端 413 分类为 413（非 JSON parse error）由 `RaftDaemonClientTests/DirectUploadCapabilityTests.classifiesAnHTML413FromTheServer` 覆盖，属 daemon 客户端契约，不在服务端重复断言。
+
+### route internal.scopeAttestation.transcriptOutcome.api（锁定）
+
+- scope-attestation 签名响应为 `{metadata, attestation}`，attestation 为 HS256 JWT（SCOPE_ATTESTATION_SECRET），长度 ≤ 16384 字符。
+- transcript 元数据白名单归一：content 仅 `native_session_file|native_state_file`；source/bytes 必须非负整数且 ≤ MAX_SAFE_INTEGER；requestId 1–128 非空白字符；越界/错误类型/out-of-enum 直接丢弃，绝不强转。
+- `transcript_outcome` kind：必须有 reportId(UUID)、agentId(UUID)、requestId；agent 必须存在于本机器（否则 403 `agent_not_on_machine`）；bundleSizeBytes ≤ 2048（否则 400）；输出 objectKey `feedback-transcript-outcomes/{serverId}/{machineId}/{uuid}.json.gz`、bundleContentType=application/json、bundleContentEncoding=gzip、maxBytes=2048；outcome 不携带 transcript content label。
+- S3：所有新可选键取最大值仍能签名且 attestation 不超预算。
