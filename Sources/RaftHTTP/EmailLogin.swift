@@ -6821,6 +6821,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return taskRecords.first { $0.messageId == messageId }?.taskNumber
     }
 
+    public func messageSeqForTesting(messageId: String) -> Int? {
+        lock.lock(); defer { lock.unlock() }
+        return humanMessageRows.first { $0.id == messageId }?.seq
+    }
+
     public func messageCreatedAtForTesting(messageId: String) -> Date? {
         lock.lock(); defer { lock.unlock() }
         return humanMessageRows.first { $0.id == messageId }?.createdAt
@@ -25125,7 +25130,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return notFound()
     }
 
-    public func agentHistory(authorization: String?, agentId: String? = nil, channelRef: String?, before: String?, after: String?, around: String? = nil, limit: String?, consume: String? = nil) -> HTTPReply {
+    private var readPositionSettleMs: Int = 2000
+    private var deferredUnreadAdvance: [String: Int] = [:]
+
+    public func setReadPositionSettleForTesting(_ milliseconds: Int) {
+        lock.lock(); readPositionSettleMs = milliseconds; lock.unlock()
+    }
+
+    public func agentHistory(authorization: String?, agentId: String? = nil, channelRef: String?, before: String?, after: String?, around: String? = nil, limit: String?, consume: String? = nil, unread: Bool = false) -> HTTPReply {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
             return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
         }
@@ -25321,6 +25333,80 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"consume must be true or false\",\"errorCode\":\"INVALID_ARG\"}")
         }
         let consumePage = consumeValue == "true"
+        if unread {
+            guard (after ?? "").isEmpty, (before ?? "").isEmpty, (around ?? "").isEmpty else {
+                let nextAction = "raft message read --target '\(canonicalTarget ?? reference)' --unread"
+                return Self.json(400, "{\"error\":\"unread cannot be combined with an anchor\",\"errorCode\":\"INVALID_ARG\",\"suggestedNextAction\":\(jsonString(nextAction))}")
+            }
+            lock.lock()
+            let priorSeq = agentChannelReadCursors["\(channelId)\n\(agent.id)"]?.seq ?? 0
+            let settleMs = readPositionSettleMs
+            let pendingDeferred = deferredUnreadAdvance["\(channelId)\n\(agent.id)"]
+            lock.unlock()
+            var priorBoundary = priorSeq
+            let settledCutoff = Date().addingTimeInterval(-Double(settleMs) / 1000)
+            if let pendingDeferred {
+                var advanced = priorSeq
+                for message in messages where message.seq > priorSeq && message.seq <= pendingDeferred && message.createdAt <= settledCutoff {
+                    advanced = max(advanced, message.seq)
+                }
+                if advanced > priorSeq {
+                    lock.lock()
+                    let version = agentChannelReadCursors["\(channelId)\n\(agent.id)"]?.version ?? 0
+                    agentChannelReadCursors["\(channelId)\n\(agent.id)"] = (advanced, version + 1)
+                    deferredUnreadAdvance.removeValue(forKey: "\(channelId)\n\(agent.id)")
+                    lock.unlock()
+                    onAgentReadUpdated?(agent.serverId, channelId, agent.id, advanced)
+                    priorBoundary = advanced
+                } else if messages.contains(where: { $0.seq == pendingDeferred && $0.createdAt <= settledCutoff }) {
+                    lock.lock()
+                    deferredUnreadAdvance.removeValue(forKey: "\(channelId)\n\(agent.id)")
+                    lock.unlock()
+                }
+            }
+            let candidates = messages.filter { $0.seq > priorBoundary }
+            let visible = candidates.filter { $0.senderId != agent.id }
+            let page = Array(visible.prefix(pageLimit))
+            let hasNewer = visible.count > page.count
+            var advanceSeq = priorBoundary
+            let boundary = page.map(\.seq).max() ?? priorBoundary
+            for message in candidates where message.seq <= boundary && message.createdAt <= settledCutoff {
+                advanceSeq = max(advanceSeq, message.seq)
+            }
+            if advanceSeq == priorBoundary, !page.isEmpty, let lastSeq = page.map(\.seq).max() {
+                lock.lock()
+                deferredUnreadAdvance["\(channelId)\n\(agent.id)"] = lastSeq
+                lock.unlock()
+            }
+            if advanceSeq > priorBoundary {
+                lock.lock()
+                let version = agentChannelReadCursors["\(channelId)\n\(agent.id)"]?.version ?? 0
+                agentChannelReadCursors["\(channelId)\n\(agent.id)"] = (advanceSeq, version + 1)
+                lock.unlock()
+                onAgentReadUpdated?(agent.serverId, channelId, agent.id, advanceSeq)
+            }
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let json = page.map { message -> String in
+                let senderType: String
+                if message.senderId == agent.id || message.senderType == "agent" {
+                    senderType = "agent"
+                } else {
+                    senderType = "user"
+                }
+                let senderName: String
+                if senderType == "agent" {
+                    senderName = oauth.agentRuntimeInfo(id: message.senderId)?.name ?? message.senderId
+                } else {
+                    lock.lock()
+                    senderName = accounts.values.first { $0.id == message.senderId }?.name ?? message.senderId
+                    lock.unlock()
+                }
+                return "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(message.content)),\"seq\":\(message.seq),\"senderType\":\(jsonString(senderType)),\"senderId\":\(jsonString(message.senderId)),\"senderName\":\(jsonString(senderName)),\"senderTimezone\":null,\"createdAt\":\(jsonString(formatter.string(from: message.createdAt))),\"attachments\":[]}"
+            }.joined(separator: ",")
+            let modelSeen = page.map(\.seq).max() ?? advanceSeq
+            return Self.json(200, "{\"messages\":[\(json)],\"has_more\":\(hasNewer),\"has_older\":false,\"has_newer\":\(hasNewer),\"last_read_seq\":\(priorSeq),\"unread_after_seq\":\(priorSeq),\"model_seen_up_to_seq\":\(modelSeen),\"target\":\(jsonString(canonicalTarget ?? reference))}")
+        }
         var beforeSeq: Int?
         if let before, !before.isEmpty {
             let resolution = resolveHistoryAnchor(channelId: channelId, anchor: before, channelRef: reference, purpose: "pagination")

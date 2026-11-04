@@ -1093,7 +1093,8 @@ public func configure(_ app: Application, services: FallbackServices) {
             after: desktopQuery(request.url.query, "after"),
             around: desktopQuery(request.url.query, "around"),
             limit: desktopQuery(request.url.query, "limit"),
-            consume: desktopQuery(request.url.query, "consume")
+            consume: desktopQuery(request.url.query, "consume"),
+            unread: desktopQuery(request.url.query, "unread") == "true"
         ))
     }
     app.get("internal", "agent", ":agentId", "history") { request -> Response in

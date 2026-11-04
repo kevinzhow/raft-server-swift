@@ -1798,3 +1798,10 @@ RFC 074 personal assistant：
   - 结果投影：thread 回复带 channelType=thread、threadId、parentMessageId、parentMessageContent；被 amend 的 task host 消息保留原 content，并附 taskNumber + taskCurrentProjection（最新 title/description/revision/superseded/amendedAt/amendedByType/amendedByName/source=tasks_current_projection）。
 - 补充实现 `POST /internal/agent-api/tasks/amend`（agent task:write，按 channel+task_number 改 title/description、revision+1、记录 amend 元数据），并把 convert-message 生成的 task 绑定回 host messageId 以便搜索投影。
 - 裁决：上游两个用例分别只断言 tracer span 的 agent/server 哈希与 `slack message search` CLI 子进程输出，属 tracer/CLI 契约（本仓库非 CLI e2e），不重复；其 HTTP 搜索语义已覆盖。
+
+### route internalAgentApi.historyUnread（锁定，含裁决）
+
+- `GET /internal/agent-api/history?...&unread=true`：从 agent 的 read position 开始返回该会话未读（无调用方 seq），响应 `unread_after_seq`（读取前位置）与 `model_seen_up_to_seq`；读后位置推进，连续调用继续且最后为空；分页时同命令续页（has_newer 正确）。
+- 与锚点互斥：unread 与 after/before/around 同用 → 400 `INVALID_ARG` + suggestedNextAction `raft message read --target '#x' --unread`；普通读取不返回 `unread_after_seq`。
+- 自身消息不算未读但读取会越过；read position 只推进已 settle 的行（默认窗口 2s），too-recent 行返回但不推进，窗口过后由 deferred advance 越过，不会重复返回。
+- 裁决：5 个 service-level/测试钩子用例（settledReadThroughSeq 纯函数、deferred check 顺序/迟到 commit、每 agent 单次 deferred、窗口内测试时钟）依赖 readPositionSettle 内部服务与 fake timers，不移植；其 HTTP 可观测语义由本模块覆盖。
