@@ -1640,3 +1640,11 @@ RFC 074 personal assistant：
 - provider 完成：携带 pendingLinkToken 时校验当前 provider 身份所属账户与 pending 账户一致；不一致 403 且不消费 completion；一致则链接 pending provider、发 session、`linkedProvider` 为 pending provider。
 - Mobile PKCE：start 支持 `linkOnConflict`；冲突且未 opt-in → callback 重定向 `error=account_conflict` 无 code；opt-in → callback 返回 handoff code，complete 校验 PKCE 后 409 `account_link_required`（含 returnUri），handoff 换为 pending token（replay 非 200/409）；另一已链接 provider 的 mobile complete 携带 pendingLinkToken 完成链接；密码登录完成同一 pending token。
 - 上游 12 条断言由 `PendingSocialLinkTests`/`PendingSocialLinkWebTests`/`PendingSocialLinkMobileTests` 覆盖。
+
+### route securityLifecycle.api（锁定，含不可执行裁决）
+
+- family-revoke：`POST /api/push/family-revoke {capability}` → 204；该 family 的 access/refresh token 立即失效（HTTP `/api/auth/me` 401、refresh 401），保留窗口内重复 revoke 仍 204。
+- legacy predecessor logout：plain refresh 现在一次性轮换 refresh token 并记录 predecessor→family；用旧 refresh token 调用 `/api/auth/logout` 会撤销 successor 所在 family（successor access 401、successor refresh 401）。
+- logout lineage：连续多次轮换后旧 token 不能再次 refresh；旧 token logout 仍能撤销最终 family，后续 refresh/access 全部 401。
+- reset token 并发：同一 token 并发两次修改密码，仅一个 200、另一个 400；只有胜者密码可登录（单次消费在锁内完成）。
+- 裁决为不可执行（上游断言依赖未移植的 socket 频道订阅/可见性驱逐 epic、DB 行/日志捕获或 orchestrator 重试注入，HTTP/JSON/frame 可观测面不存在）：guest-policy/role-demotion/public-to-private 的 socket 订阅驱逐、blast radius 频道可见性驱逐、guest 隐藏频道 `channel:updated` 元数据、新公开频道 tasks 回归、他人 logout 保留在途 handshake、login/search catch 日志脱敏、post-commit revoke 重试修复。对应 socket 订阅 epic 仍是后续计划项。

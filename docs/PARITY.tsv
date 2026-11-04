@@ -188,7 +188,7 @@ releaseNotes.api	route	locked	bde33f8	locked: anonymous list/pagination, publish
 releaseNotesConcurrency.realPg	route	locked	6d7c1c9	non-executable black-box: real-PG concurrency rail for release-note revision ordering (advisory locks).
 reminders.api	route	locked	576e45b	read-only listing, scope by agent creator, writes 404
 rwStaleRead	route	locked	55151fb	excluded with reason: RisingWave stale-read semantics over its SQL surface; this port has no RisingWave backend
-securityLifecycle.api	route	pending	-	auto-seed
+securityLifecycle.api	route	locked	SLICE	family-revoke capability closes HTTP access and stays 204 within its retention window, legacy predecessor logout revokes the successor family through one-time refresh rotation, logout lineage holds across multiple rotations, and a reset token completes exactly one of two concurrent password changes; excluded as non-executable: socket subscription/visibility eviction (guest policy, role demotion, public-to-private, hidden channel metadata, new public channel task regression, in-flight handshake preservation, member-removal notification) because the channel-subscription socket epic is not ported, plus DB/log-capture assertions and orchestrator retry injection (post-commit revocation retry)
 serverAgreements.api	route	partial	-	auto-seed
 serverLabs.api	route	locked	8700cda	labs role parity, version CAS, audit, readback
 serverMemberEvents.api	route	partial	-	auto-seed

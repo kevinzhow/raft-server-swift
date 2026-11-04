@@ -133,6 +133,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var seenClientEventIDs: Set<String> = []
     private var sessions: [String: LiveSession] = [:]
     private var rotationReceipts: [String: RotationReceipt] = [:]
+    /// Plain refresh tokens are one-time; the predecessor hash still resolves
+    /// to its family so a legacy logout can revoke the successor.
+    private var predecessorFamilies: [String: String] = [:]
     private var revokedFamilies: Set<String> = []
     private var sessionFamilies: [String: SessionFamily] = [:]
     private var retirementReceipts: [String: RetirementReceipt] = [:]
@@ -1656,6 +1659,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return .some(completion.userId)
     }
 
+    public func mintFamilyRevokeCapabilityForTesting(refreshToken: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let live = sessions[refreshToken], let family = sessionFamilies[live.familyId] else { return nil }
+        let nonce = family.revokeCapabilityNonce ?? Self.randomHex(16)
+        var updated = family
+        updated.revokeCapabilityNonce = nonce
+        sessionFamilies[live.familyId] = updated
+        return "\(live.familyId).\(nonce)"
+    }
+
     public static func pkceChallengeForTesting(_ verifier: String) -> String {
         pkceS256(verifier)
     }
@@ -2278,6 +2292,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 sessionFamilies[live.familyId]?.revokedReason = "logout"
                 sessionFamilies[live.familyId]?.capabilityRetainUntil = Date().addingTimeInterval(30 * 24 * 60 * 60)
                 let familyTokens = sessions.filter { $0.value.familyId == live.familyId }.map { $0.key }
+                for token in familyTokens { sessions.removeValue(forKey: token) }
+            } else if let predecessorFamily = predecessorFamilies[Self.sha256(refreshToken)] {
+                revokedFamilies.insert(predecessorFamily)
+                sessionFamilies[predecessorFamily]?.revokedAt = Date()
+                sessionFamilies[predecessorFamily]?.revokedReason = "logout"
+                sessionFamilies[predecessorFamily]?.capabilityRetainUntil = Date().addingTimeInterval(30 * 24 * 60 * 60)
+                let familyTokens = sessions.filter { $0.value.familyId == predecessorFamily }.map { $0.key }
                 for token in familyTokens { sessions.removeValue(forKey: token) }
             } else if let receipt = rotationReceipts[Self.sha256(refreshToken)] {
                 revokedFamilies.insert(receipt.familyId)
@@ -9419,10 +9440,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let live = sessions[refreshToken], !revokedFamilies.contains(live.familyId) else {
             return .rejected
         }
+        sessions.removeValue(forKey: refreshToken)
+        predecessorFamilies[Self.sha256(refreshToken)] = live.familyId
+        let successor = Self.token()
+        sessions[successor] = live
         let accessToken = Self.token()
         accessTokens[accessToken] = live.userId
         accessTokenFamilies[accessToken] = live.familyId
-        return .rotated(IssuedRefresh(accessToken: accessToken, userId: live.userId), refreshToken)
+        return .rotated(IssuedRefresh(accessToken: accessToken, userId: live.userId), successor)
     }
 
     private func durableRefreshLocked(refreshToken: String, attemptId: String, installationId: String) -> RefreshOutcome {
