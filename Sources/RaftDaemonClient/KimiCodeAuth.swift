@@ -14,6 +14,19 @@ public struct KimiCodeAuth: Sendable, Equatable {
     public var home: String
     public var credentialPath: String
     public var lockTarget: String
+
+    public init(
+        baseUrl: String, oauthHost: String, storage: String, storageName: String,
+        home: String, credentialPath: String, lockTarget: String
+    ) {
+        self.baseUrl = baseUrl
+        self.oauthHost = oauthHost
+        self.storage = storage
+        self.storageName = storageName
+        self.home = home
+        self.credentialPath = credentialPath
+        self.lockTarget = lockTarget
+    }
 }
 
 public enum KimiCodeAuthResolver {

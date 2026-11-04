@@ -1349,3 +1349,10 @@ RFC 074 personal assistant：
 ### daemon agentRuntimeInput.snapshot
 
 - 回合输入文案快照（与 runtime delivery mode 无关）：空 resume 固定文案；unread resume 按 target 列表渲染 `- <target>: N unread` 并附 catch-up 指引（read 每频道最多一次、禁 check、命中直接请求则转入 active handling 等）；inbox notice 渲染 `[Raft inbox notice:` 块（pending/changed target 单复数、每 target first/latest sender/latest msg 行）与读取指引；other-unread 与 bounded-startup 后缀分别在非空时渲染两个前导空行 + 列表 + `raft inbox check` 指引，nil/空数组不输出任何后缀。
+
+### daemon runtimeAccountUsage/kimiTokenRefresh
+
+- Kimi Code token 保持新鲜：阈值 `max(300, expires_in*0.5)`；不在阈值内 fresh，不请求不写盘。需要刷新时在客户端同名锁内 re-read：若他人已轮换则 adopted；否则 `POST <oauthHost>/api/oauth/token`（form: client_id/grant_type/refresh_token，device headers 由 daemon 自称），轮换式响应写回客户端文件形态（2-space JSON + 末尾换行、0600、原子替换），锁释放后不留 `.lock`。
+- 拒绝语义：401/403/invalid_grant 不重试、不写、不写 revoked tombstone，报 `rejected:refresh_rejected`；若 100ms 后 re-read 发现 refresh_token 已变则 adopted。429/5xx/网络错误按 3 次退避重试后报 transient(`server`/`network`)，并带 `expired`（刷新前是否已过期）；200 缺 access_token 报 `malformed_response`（不写盘），缺轮换字段报 `rotation_missing`。
+- 锁/平台：客户端持锁（真实子进程目录锁）有界失败 `lock_unavailable`（不请求不写）；刷新期间锁被判断过期并被他人接管 → `lock_compromised` 且不写；win32、`KIMI_DISABLE_OAUTH_LOCK=1`、storage≠file 报 `platform_unsupported`；revoked tombstone 仅精确形态识别，`{}`/部分/错型/数组/非 JSON 报 `missing:malformed|unreadable`。
+- 已知残余窗口：客户端无锁 login 落在最后一次比较与 rename 之间会被覆盖（`withKnownIssue` 标记，与上游 expected-failure 一致）。
