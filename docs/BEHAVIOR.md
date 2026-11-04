@@ -1780,3 +1780,12 @@ RFC 074 personal assistant：
 - 唯一用例通过真实 Computer 凭据 + 已认证 `/daemon/connect` socket + 真实 `ready` 帧 + 真实 `AgentOrchestrator` 驱动 setup gate 从 closed 到 open，并依赖 Redis 背书的 machine replica-generation 就绪提交（测试自述浏览器环节 NOT_COVERED）。
 - 本移植的 SwiftNIO `/daemon/connect` 不包含 Node `AgentOrchestrator`/Redis replica-owner 就绪子系统，无法在不注入被测系统的前提下构造该转换；setup gate 的静态 HTTP 投影已由 `appSetup.api` 锁定。
 - 故以不可执行裁决锁定，不新增运行时行为。
+
+### route internalAgentApi.idempotentWrites（锁定，含裁决）
+
+- `POST /internal/agent-api/tasks` 与 `POST /internal/agent-api/prepare-action` 接受 body 内 `idempotencyKey`（trim 后为空视为无 key）：
+  - 同 key + 同一请求（规范化：JSON 键序无关、忽略 idempotencyKey、显式 false/缺省等价）→ 原样重放首次响应（任务 200 / 卡片 201，同 messageId/body），不重复写入；
+  - 同 key + 不同请求 → 409 `{"code":"idempotency_key_reused","mismatch":"request","error":…,"suggestedNextAction":…}` 且不写入；key 按 (agent, route) 作用域，taskCreate 与 actionPrepare 互不影响；
+  - 无 key/空白 key 保持旧行为（每次创建）；成功响应写入 24h TTL ledger，过期后同 key 视为新请求（重新创建并替换 ledger），不同请求不再被拒。
+- ledger 清理：仅删除过期行，按 createdAt 最旧优先、有界批次数与批大小；live 行永不删除。
+- 裁决：4 个并发首请求/竞态用例依赖测试专用 race hooks（afterLookupMiss/onRaceLost）与 DB 回滚 winner，不移植；单进程串行语义与 409 形状已覆盖。

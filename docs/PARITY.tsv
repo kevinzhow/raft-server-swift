@@ -118,7 +118,7 @@ internalAgentApi.grantCoverage	route	locked	6d7c1c9	non-executable black-box: wa
 internalAgentApi.grants	route	locked	60a162e	per-agent grants on join/task APIs, shared 403, reset
 internalAgentApi.historyUnread	route	partial	-	auto-seed
 internalAgentApi.hostedProfile.api	route	locked	672f241	hosted description lock, rename, self-hosted edit
-internalAgentApi.idempotentWrites	route	partial	-	auto-seed
+internalAgentApi.idempotentWrites	route	locked	SLICE	body-level idempotencyKey for agent task create and action prepare: canonical request fingerprint (key order, explicit false defaults, key excluded), byte-identical replay of the first 200/201 response, the send-shaped idempotency_key_reused 409 on a different request, (agent, route) scoping, unchanged no-key behavior, a 24-hour TTL ledger with expired-key re-creation and bounded oldest-first pruning; excluded as non-executable: four concurrency/race cases that require test-only race hooks and drizzle transaction rollback winners, with the sequential contract covered here
 internalAgentApi.inboxEligibility	route	locked	dd7175f	unread-eligibility group: an agent's own membership notice is born-read on every transport (no wake hint, not pulled by /events), the next ordinary message is announced and pulled, and a human-caused membership notice stays unread for the added agent with wake hints and /events agreeing (human add now writes the notice and keeps the acting human born-read); excluded: the pure unit matrix for the noise-subtype allowlist and mention piercing, covered through the HTTP transports instead
 internalAgentApi.inboxList	route	locked	6b26bab	offered conversations, activity paging, mention filter, 503
 internalAgentApi.inboxPush	route	partial	-	auto-seed

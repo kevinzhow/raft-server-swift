@@ -5786,6 +5786,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// `GET /api/messages/sync`. `since_seq=0` returns the channel page, including a joint canonical store.
+    public func seedPostableChannelForTesting(
+        serverId: String, channelId: String, name: String,
+        humanIds: [String], agentIds: [String]
+    ) {
+        lock.lock()
+        var channel = PostableChannel(serverId: serverId, memberIds: Set(humanIds), kind: "channel")
+        channel.name = name
+        for agentId in agentIds { channel.memberIds.insert(agentId) }
+        postableChannels[channelId] = channel
+        lock.unlock()
+        for humanId in humanIds { oauth.addChannelHuman(channelId: channelId, userId: humanId) }
+        for agentId in agentIds { oauth.addChannelAgent(channelId: channelId, agentId: agentId) }
+    }
+
     public func softDeletePostableChannelForTesting(channelId: String) {
         lock.lock()
         postableChannels[channelId]?.deletedAt = Date()
@@ -23299,6 +23313,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(400, "{\"error\":\"Invalid task request\"}")
         }
+        if let reply = agentApiIdempotencyReply(agentId: auth.agentId, route: "taskCreate", object: object) {
+            return reply
+        }
         let titles = rawTasks.compactMap { task -> String? in
             let title = (task["title"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             return title.isEmpty ? nil : title
@@ -23360,7 +23377,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let taskJSONs = ids.compactMap { id in taskRecords.first { $0.id == id }.map(taskJSON) }
         lock.unlock()
-        return Self.json(200, "{\"taskIds\":[\(idsJSON)],\"tasks\":[\(taskJSONs.joined(separator: ","))],\"assignmentReceipt\":\(receiptJSON)}")
+        let idempotentReply = Self.json(200, "{\"taskIds\":[\(idsJSON)],\"tasks\":[\(taskJSONs.joined(separator: ","))],\"assignmentReceipt\":\(receiptJSON)}")
+        storeAgentApiIdempotency(agentId: auth.agentId, route: "taskCreate", object: object, reply: idempotentReply)
+        return idempotentReply
     }
 
     public func agentTaskAssign(authorization: String?, body: String) -> HTTPReply {
@@ -24200,6 +24219,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(400, "{\"error\":\"Invalid action card request\",\"code\":\"INVALID_PAYLOAD\"}")
         }
+        if let reply = agentApiIdempotencyReply(agentId: identity.agentId, route: "actionPrepare", object: object) {
+            return reply
+        }
         if let reply = prepareIntegrationActionCard(identity: identity, target: target, action: action) {
             return reply
         }
@@ -24284,7 +24306,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         )
         lock.unlock()
         let metadata = "{\"kind\":\"action-card\",\"state\":\"prepared\",\"action\":{\"type\":\"channel:create\",\"name\":\(jsonString(trimmedName)),\"visibility\":\(jsonString(visibility))},\"carrierChannelId\":\(jsonString(resolved.storage))}"
-        return Self.json(201, "{\"messageId\":\(jsonString(messageId)),\"metadata\":\(metadata)}")
+        let idempotentReply = Self.json(201, "{\"messageId\":\(jsonString(messageId)),\"metadata\":\(metadata)}")
+        storeAgentApiIdempotency(agentId: identity.agentId, route: "actionPrepare", object: object, reply: idempotentReply)
+        return idempotentReply
     }
 
     private func actionCardServerName(_ serverId: String) -> String {
@@ -26148,6 +26172,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var taskEvents: [(taskId: String, eventType: String, actorType: String)] = []
     private var lastTaskServerWarning: String?
     private var lastTaskServerQuery: String?
+    private var agentApiIdempotencyKeys: [AgentApiIdempotencyRecord] = []
     private var assigneeChangeEvents: [(
         taskId: String, assigneeId: String?, assigneeType: String?,
         previousAssigneeId: String?, previousAssigneeType: String?,
@@ -26172,6 +26197,119 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             taskRecords[index].status = status
         }
         lock.unlock()
+    }
+
+    private struct AgentApiIdempotencyRecord {
+        var agentId: String
+        var route: String
+        var key: String
+        var fingerprint: String
+        var status: Int
+        var responseBody: String
+        var createdAt: Date
+    }
+
+    private static let agentApiIdempotencyTTL: TimeInterval = 24 * 60 * 60
+
+    private static func canonicalJSON(_ value: Any) -> Any {
+        if let dict = value as? [String: Any] {
+            var result: [String: Any] = [:]
+            for (key, child) in dict {
+                if key == "idempotencyKey" { continue }
+                if let bool = child as? Bool, bool == false { continue }
+                if child is NSNull { continue }
+                result[key] = canonicalJSON(child)
+            }
+            return result
+        }
+        if let array = value as? [Any] { return array.map(canonicalJSON) }
+        return value
+    }
+
+    private static func agentApiRequestFingerprint(_ object: [String: Any]) -> String {
+        let canonical = canonicalJSON(object)
+        let data = (try? JSONSerialization.data(withJSONObject: canonical, options: [.sortedKeys])) ?? Data()
+        return sha256Hex(String(decoding: data, as: UTF8.self))
+    }
+
+    private func agentApiIdempotencyReply(agentId: String, route: String, object: [String: Any]) -> HTTPReply? {
+        let rawKey = (object["idempotencyKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !rawKey.isEmpty else { return nil }
+        let fingerprint = Self.agentApiRequestFingerprint(object)
+        let now = Date()
+        lock.lock()
+        let existing = agentApiIdempotencyKeys.first { $0.agentId == agentId && $0.route == route && $0.key == rawKey }
+        if let existing, now.timeIntervalSince(existing.createdAt) < Self.agentApiIdempotencyTTL {
+            let reply: HTTPReply
+            if existing.fingerprint == fingerprint {
+                reply = HTTPReply(status: existing.status, headers: ["Content-Type": AppFallback.jsonContentType, "Cache-Control": "no-store", "Content-Length": String(existing.responseBody.utf8.count)], body: existing.responseBody)
+            } else {
+                reply = Self.json(409, "{\"error\":\"This idempotencyKey was already used for a different request\",\"code\":\"idempotency_key_reused\",\"mismatch\":\"request\",\"suggestedNextAction\":\"Retry with a new idempotencyKey.\"}")
+            }
+            lock.unlock()
+            return reply
+        }
+        lock.unlock()
+        return nil
+    }
+
+    private func storeAgentApiIdempotency(agentId: String, route: String, object: [String: Any], reply: HTTPReply) {
+        guard reply.status == 200 || reply.status == 201 else { return }
+        let rawKey = (object["idempotencyKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !rawKey.isEmpty else { return }
+        let fingerprint = Self.agentApiRequestFingerprint(object)
+        lock.lock()
+        if let index = agentApiIdempotencyKeys.firstIndex(where: { $0.agentId == agentId && $0.route == route && $0.key == rawKey }) {
+            agentApiIdempotencyKeys.remove(at: index)
+        }
+        agentApiIdempotencyKeys.append(AgentApiIdempotencyRecord(
+            agentId: agentId, route: route, key: rawKey, fingerprint: fingerprint,
+            status: reply.status, responseBody: reply.body, createdAt: Date()
+        ))
+        lock.unlock()
+    }
+
+    public func taskCountForTesting(channelId: String) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        return taskRecords.filter { $0.channelId == channelId }.count
+    }
+
+    public func actionCardCountForTesting(agentId: String) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        return actionCardRecords.values.filter { $0.requesterAgentId == agentId }.count
+    }
+
+    public func agentApiIdempotencyKeysForTesting(agentId: String, route: String) -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        return agentApiIdempotencyKeys.filter { $0.agentId == agentId && $0.route == route }.map(\.key)
+    }
+
+    public func ageAgentApiIdempotencyKeysForTesting(agentId: String, seconds: TimeInterval) {
+        lock.lock()
+        for index in agentApiIdempotencyKeys.indices where agentApiIdempotencyKeys[index].agentId == agentId {
+            agentApiIdempotencyKeys[index].createdAt = agentApiIdempotencyKeys[index].createdAt.addingTimeInterval(-seconds)
+        }
+        lock.unlock()
+    }
+
+    @discardableResult
+    public func pruneAgentApiIdempotencyKeysForTesting(now: Date = Date(), batchSize: Int = 3, maxBatches: Int = Int.max) -> Int {
+        var deleted = 0
+        var batches = 0
+        lock.lock()
+        while batches < maxBatches {
+            let expired = agentApiIdempotencyKeys.enumerated()
+                .filter { now.timeIntervalSince($0.element.createdAt) >= Self.agentApiIdempotencyTTL }
+                .sorted { $0.element.createdAt < $1.element.createdAt }
+            guard !expired.isEmpty else { break }
+            let slice = expired.prefix(max(1, batchSize))
+            for entry in slice.reversed() { agentApiIdempotencyKeys.remove(at: entry.offset) }
+            deleted += slice.count
+            batches += 1
+            if slice.count < batchSize { break }
+        }
+        lock.unlock()
+        return deleted
     }
 
     public func assigneeChangeEventsForTesting(taskId: String) -> [(
