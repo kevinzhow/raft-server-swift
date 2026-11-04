@@ -1356,3 +1356,9 @@ RFC 074 personal assistant：
 - 拒绝语义：401/403/invalid_grant 不重试、不写、不写 revoked tombstone，报 `rejected:refresh_rejected`；若 100ms 后 re-read 发现 refresh_token 已变则 adopted。429/5xx/网络错误按 3 次退避重试后报 transient(`server`/`network`)，并带 `expired`（刷新前是否已过期）；200 缺 access_token 报 `malformed_response`（不写盘），缺轮换字段报 `rotation_missing`。
 - 锁/平台：客户端持锁（真实子进程目录锁）有界失败 `lock_unavailable`（不请求不写）；刷新期间锁被判断过期并被他人接管 → `lock_compromised` 且不写；win32、`KIMI_DISABLE_OAUTH_LOCK=1`、storage≠file 报 `platform_unsupported`；revoked tombstone 仅精确形态识别，`{}`/部分/错型/数组/非 JSON 报 `missing:malformed|unreadable`。
 - 已知残余窗口：客户端无锁 login 落在最后一次比较与 rename 之间会被覆盖（`withKnownIssue` 标记，与上游 expected-failure 一致）。
+
+### daemon runtimeTurnTokens
+
+- 单回合 token 计数按 provider 计费口径拆分：`input` 为未缓存输入、`cacheRead`/`cacheWrite` 为缓存部分、`output` 含 reasoning；未上报字段缺省（绝不写 0）。
+- 来源映射：`claude_result_usage` 直接取 inputTokens/outputTokens/cachedInputTokens/cacheCreationInputTokens；`pi_message_end_usage` 与 `kimi_turn_step_completed_usage` 按 input/output/cached_read/cache_write 累加；`codex_thread_token_usage_updated` 用 last* 与总量相减得到本轮值（cached input 从 input 中拆出），总量回退（session reset）时不给数字；其他来源（如 gemini 只有 total）跳过而不是猜测。
+- trace attrs 输出 `input_tokens`/`output_tokens`/`cache_read_tokens`/`cache_write_tokens`（仅出现的字段）。
