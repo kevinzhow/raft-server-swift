@@ -326,7 +326,7 @@ drivers/toolEnvContract	daemon	locked	b5d72b6	non-executable black-box: drives t
 drivers/windowsLaunch	daemon	pending	-	auto-seed
 drivers/windowsPowerShellEnv	daemon	locked	ee768bb	windows PowerShell child env: every case variant of PSModulePath is omitted so the child initializes its own module path, the supplied environment is not mutated, and an omitted environment is derived from the inherited process env
 feedbackAgentEventTail	daemon	pending	-	auto-seed
-feedbackMachineEvidence	daemon	pending	-	auto-seed
+feedbackMachineEvidence	daemon	locked	55d527e	excluded with reason: reads the daemon trace corpus (`<machineDir>/traces/daemon-trace-*.jsonl`) plus the Computer version/lifecycle files, and round-trips through the shared strict parser and credential-redaction samples; this port writes no trace corpus (the contract excludes trace sinks) and does not ship those shared fixtures, so the collectors have no input surface here
 feedbackMachineLogTail	daemon	pending	-	auto-seed
 feedbackTranscriptCollector	daemon	pending	-	auto-seed
 feedbackTranscriptWindow	daemon	locked	2e57d9c	feedback transcript window: a bounded (default 15m) report window around reportGeneratedAt, timestamp scanning over JSON and per-line JSONL with depth/node budgets that never exports content, and coverage classification (report_time_invalid, timestamps_unavailable, outside_report_window, covered) with ISO-millisecond first/last event times
