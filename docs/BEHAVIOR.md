@@ -1762,3 +1762,9 @@ RFC 074 personal assistant：
 - 该模块是 daemon→server→trace-upload-worker 的跨版本 E2E：测试直接调用 daemon 的 `collectFeedbackTranscriptAttachment`/`uploadFeedbackTranscriptOutcome`（含冻结的 1bceea852 老实现）、trace-upload-worker 的 `handleRequest`（含冻结老 worker）与 mock R2，断言的是 worker 侧 object-key/ledger/内容标签在版本组合下的落盘与交付结果，不是服务端 HTTP/JSON 响应。
 - 本仓库没有 trace-upload-worker 与可替换 R2 链，无法在服务端契约测试中执行这些断言；其服务端签名/元数据归一/outcome 形状已由 `internal.scopeAttestation.api` 与 `internal.scopeAttestation.transcriptOutcome.api` 锁定。
 - 故该模块以不可执行裁决锁定，不新增运行时行为。
+
+### route attachments（裁决锁定）
+
+- 该模块是 `routes/attachments.ts` 的导出辅助函数单元测试，无 running app、无 HTTP 请求/响应断言：缩略图/CDN URL、文件名 mojibake 归一、Free/Pro 单文件上限、content-disposition/RFC5987、inline disposition/CSP、MIME 猜测与上传类型归一、字节范围、下载 disposition、direct-upload 阈值等。
+- 按工作契约“规格 = 上游套件断言的 HTTP 状态/JSON/头/帧”，这些不是可观测 HTTP 契约；其中 EXIF/HEIC/SVG 栅格化用例还依赖 Node sharp 图像管线，本移植无该进程。附件可观测 HTTP 行为归 `attachments.api`（仍为 partial）。
+- 故以不可执行裁决锁定，不新增运行时行为。
