@@ -220,7 +220,7 @@ timezoneObservation.api	route	locked	595ec75	auth/validation, first+last preserv
 version.api	route	locked	5247150	build identity and explicit 503 covered
 accessRevocation.redis	socket	pending	-	auto-seed
 desktopAttention.api	socket	pending	-	auto-seed
-desktopAttentionEvents	socket	pending	-	auto-seed
+desktopAttentionEvents	socket	locked	SLICE	desktop:attention socket event: only desktop sockets receive it, true records the socket's own user with a 30s per-socket throttle, false clears at once and resets the record throttle, malformed payloads are ignored, and record/clear failures stay inside the handler
 index	socket	locked	4156721	handshake parser, room contract, and live transport covered
 platformScope	socket	locked	4156721	room helpers and mobile-scoped push covered
 roomTargeting.contract	socket	pending	-	auto-seed

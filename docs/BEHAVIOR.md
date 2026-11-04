@@ -1552,3 +1552,10 @@ RFC 074 personal assistant：
 - 不支持语法（anchor/alias/tag/flow collection/复杂键/保留指示符 `@` `` ` `` `%`/序列项/未闭合引号/畸形 block header/嵌套 mapping）一律 fail closed 为空串；失败不影响其余键解析。
 - 结构层级仅由“可承载 key 的行”决定（注释、空行、无冒号行不参与），嵌套子键不会提升为顶层元数据；block body 中的 `key: value` 不被当作键；全部缩进的文档仍可解析。
 - CRLF 与 LF 解析结果一致；无 frontmatter 返回空 map；重复 key 后者覆盖。
+
+### socket desktopAttentionEvents
+
+- `desktop:attention { attended: true|false }` 仅 Raft Desktop socket 接收：web/mobile/cli 即使发送也不会改变任何人的通知状态。
+- `{attended:true}` 记录该 socket 自身 user 的“桌面在场”（忽略 payload 中的 userId 等其他键），同一 socket 30s 内重复上报被丢弃；`{attended:false}`（空闲/锁屏）立即清除该 user 的记录，并把 record 节流重置为立即可记录；恢复上报不受 30s 限制。
+- 非法 payload（非对象、attended 非布尔、缺 attended）一律忽略；record/clear 失败不外抛（只记日志），回到“记录自然过期”的安全状态。
+- 记录存放在 `DesktopAttentionRegistry`（本移植以内存实现 Redis 服务的可观测抑制状态）。

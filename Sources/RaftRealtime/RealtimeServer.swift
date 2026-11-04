@@ -106,11 +106,12 @@ public final class RealtimeServer: Sendable {
     ) async throws -> RealtimeServer {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let hub = RealtimeHub()
+        let desktopAttention = DesktopAttentionRegistry()
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
                 channel.pipeline.addHandler(
-                    RealtimeConnectionHandler(auth: auth, hub: hub, serverPort: port)
+                    RealtimeConnectionHandler(auth: auth, hub: hub, serverPort: port, desktopAttention: desktopAttention)
                 )
             }
         do {
@@ -142,15 +143,18 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler, @unchecked
 
     private let auth: any RealtimeAuthorizing
     private let hub: RealtimeHub
+    private let desktopAttention: DesktopAttentionRegistry
+    private var desktopAttentionHandler: DesktopAttentionHandler?
     private var httpBuffer: [UInt8] = []
     private var frameBuffer: [UInt8] = []
     private var upgraded = false
     private var session: SocketIOSession?
     private var closed = false
 
-    init(auth: any RealtimeAuthorizing, hub: RealtimeHub, serverPort: Int) {
+    init(auth: any RealtimeAuthorizing, hub: RealtimeHub, serverPort: Int, desktopAttention: DesktopAttentionRegistry) {
         self.auth = auth
         self.hub = hub
+        self.desktopAttention = desktopAttention
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -281,6 +285,11 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler, @unchecked
         )
         self.session = session
         hub.register(session)
+        desktopAttentionHandler = DesktopAttentionHandler(
+            userId: userId,
+            clientKind: handshake.clientKind,
+            recorder: desktopAttention
+        )
         send(text: socketIOConnectFrame(sid: session.id), context: context)
         session.join(["user:\(userId)", socketClientKindRoom(userId: userId, clientKind: handshake.clientKind)])
         if let serverId = handshake.serverId {
