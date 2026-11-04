@@ -1456,3 +1456,9 @@ RFC 074 personal assistant：
 
 - Node host 分类：先看 Electron（Electron 构建绝不是 SEA）；再跑 SEA 探针（注入的 execIsSea 或 seaProbe；`node:sea` 缺失/MODULE_NOT_FOUND/ERR_UNKNOWN_BUILTIN_MODULE 才是「非 SEA」证据，其它错误是「无法回答」→ unknown）；非 SEA 时 node 必须是正向判定（有 node runtime 信号），否则 unknown。
 - 启动解析：Electron → 同一 executable + `ELECTRON_RUN_AS_NODE=1` 且保留其余 env；纯 Node → executable 与 env 原样；SEA → 抛带 `node_host_unavailable`/hostKind 的具名能力错误（绝不回退 execPath）；unknown → 同样 fail-closed。
+
+### daemon runtimeAccountUsage/oarAdapter
+
+- OAR 快照 → wire（protocolVersion 2）：身份在边界 mask（保留首 1–3 字符 + `****` + 可选尾 0–5 字符 + 小写 domain，无法 mask 的 email 直接丢弃，原值绝不出现）；plan/displayName 走 safeLabel（trim、1–80、无控制字符；有 maskedLabel 时不带 displayName）。
+- 窗口：label 缺省为 "Usage limit"；`usedRatio` 非有限或越界 [0,1] → `parse_unavailable`（不带 usedRatio）并置 `parseErrorCode=oar_window_ratio_unreadable`；ratio≥1 → `limit_reached`，否则 ok；resetsAt 规范化为带毫秒 ISO，无法解析即缺省；rateLimited → health `rate_limited`；超过 wire 上限 12 个窗口 → health `error` 且无窗口（绝不截断）；unsupported/reauth_required → 无窗口。
+- accountKey = sha256(provider + NUL + localAccountSlot) hex（provider 作用域、不泄露本地 slot）；读取失败 → health `error`、无窗口（绝不表示 0 用量）。
