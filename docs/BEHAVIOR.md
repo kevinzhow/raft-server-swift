@@ -1602,3 +1602,11 @@ RFC 074 personal assistant：
 - 上传报告仅接受 App 凭据：带人类 Bearer 的 PUT setup 报告返回 401。
 - 人类读取按角色：member 可读 status 但 url=null/canConfigure=false；owner/admin 可见 url；suspended installation → 404。
 - 上游 6 条 appSetup 断言由 `AppSetupRoutesTests`/`AppSetupLedgerTests`/`AppSetupAgentProjectionTests`/`AppSetupCardTests` 覆盖。
+
+### route Agent App access（grant 核心，agentAppAccess.api 进行中）
+
+- `POST /api/oauth/requests/agent` 自动授权策略：App 所有者对 Agent 有权限（Agent creator 或 Server owner/admin）→ 自动创建 `app_request` grant 并返回 approved；`initiatedByAgent:true` → `agent_login` grant（无需人对 agent 的权限）；其他情况返回 pending。已存在 active grant 时直接 approved 且复用，不重复创建。
+- 人撤销 grant（`POST /api/integrations/grants/:id/revoke`）→ 该 grant revoked 并写入 auto-grant block；之后 app 请求与 agent 登录都变为 pending，直到人重新授权。
+- 人的授权（`POST /api/integrations/agents/:id/grants`）→ 201 新建 person grant 并清除 block；已存在 active grant 时 200 复用。权限仅 Agent creator 或 Server owner/admin；scope 必须非空且是 App allowedScopes 子集（否则 400）；App 必须在目标 Server 可用（否则 404）。
+- 管理面：`GET /api/integrations/agents/:id/grants`（仅管理权限可见，普通 member 看到空）、`GET .../grantable-apps`（管理权限 200 列表；普通 member 403）；`approve`（`POST /api/integrations/requests/:id/approve`）仅 Agent creator 或 owner/admin，remember 时落地 person grant。
+- `requests/agent` 接受 `agentId`（优先于 agentName）；非法/不存在/外服 id → 404。

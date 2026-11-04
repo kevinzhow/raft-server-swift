@@ -17816,6 +17816,90 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
+    public func approveAgentAccessRequest(authorization: String?, requestId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+        guard let reply = oauth.approveAgentAccessRequest(
+            userId: userId, requestId: requestId, remember: object["remember"] as? Bool ?? false
+        ) else {
+            return Self.json(404, "{\"error\":\"Access request not found\"}")
+        }
+        return reply
+    }
+
+    public func createAgentGrant(authorization: String?, agentId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let clientRecordId = object["clientId"] as? String
+        else {
+            return Self.json(400, "{\"error\":\"clientId is required\"}")
+        }
+        let scopes = (object["scopes"] as? [Any])?.compactMap { $0 as? String } ?? []
+        guard let result = oauth.createAgentGrant(userId: userId, agentId: agentId, clientRecordId: clientRecordId, scopes: scopes) else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        switch result.status {
+        case 403: return Self.json(403, "{\"error\":\"You cannot manage this agent's app access\"}")
+        case 404: return Self.json(404, "{\"error\":\"Integration app not found for this server\"}")
+        case 400: return Self.json(400, "{\"error\":\"invalid_scope\"}")
+        default:
+            return Self.json(result.status, "{\"grantId\":\(jsonString(result.grantId)),\"created\":\(result.created ? "true" : "false")}")
+        }
+    }
+
+    public func revokeAgentGrant(authorization: String?, grantId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let reply = oauth.revokeAgentGrant(userId: userId, grantId: grantId) else {
+            return Self.json(404, "{\"error\":\"Grant not found\"}")
+        }
+        return reply
+    }
+
+    public func agentGrantList(authorization: String?, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let rows = oauth.agentGrantListVisible(userId: userId, agentId: agentId) else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), oauth.agentRole(serverId: agent.serverId, agentId: agentId) != nil else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        if rows.isEmpty, oauth.memberRole(serverId: agent.serverId, userId: userId) == nil,
+           agent.creatorUserId != userId {
+            return Self.json(403, "{\"error\":\"You cannot manage this agent's app access\"}")
+        }
+        let body = rows.map { row in
+            "{\"id\":\(jsonString(row.id)),\"clientId\":\(jsonString(row.clientRecordId)),\"scopes\":[\(row.scopes.map(jsonString).joined(separator: ","))],\"grantSource\":\(jsonString(row.grantSource))}"
+        }.joined(separator: ",")
+        return Self.json(200, "[\(body)]")
+    }
+
+    public func agentGrantableApps(authorization: String?, agentId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard let apps = oauth.grantableApps(userId: userId, agentId: agentId) else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        if apps.isEmpty, let agent = oauth.agentRuntimeInfo(id: agentId),
+           oauth.memberRole(serverId: agent.serverId, userId: userId) == nil,
+           agent.creatorUserId != userId {
+            return Self.json(403, "{\"error\":\"You cannot manage this agent's app access\"}")
+        }
+        let body = apps.map { app in
+            let scopes = app.scopes.map(jsonString).joined(separator: ",")
+            return "{\"clientId\":\(jsonString(app.recordId)),\"clientKey\":\(jsonString(app.clientKey)),\"name\":\(jsonString(app.name)),\"scopes\":[\(scopes)]}"
+        }.joined(separator: ",")
+        return Self.json(200, "{\"apps\":[\(body)]}")
+    }
+
     /// Feature flag gate shared by the attachment-comment routes. It answers
     /// before body validation so a disabled server sees one uniform 403.
     public func attachmentCommentsEnabled(serverId: String, userId: String? = nil) -> Bool {

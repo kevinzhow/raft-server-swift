@@ -55,6 +55,8 @@ public final class OAuthLedger: @unchecked Sendable {
     private var clientMaintainerOwners: [String: Set<String>] = [:]
     private var agentEvents: [AgentEvent] = []
     private var revokedGrantClients: Set<String> = []
+    private var agentGrants: [AgentGrant] = []
+    private var autoGrantBlocked: Set<String> = []
     private var members: [String: String] = [:]
     private var channelRecords: [ChannelRecord] = []
     private var channelHumans: Set<String> = []
@@ -2288,6 +2290,166 @@ public final class OAuthLedger: @unchecked Sendable {
         return json(200, document, cacheControl: "private, no-store")
     }
 
+    public struct AgentGrantRow: Sendable, Equatable {
+        public var id: String
+        public var clientRecordId: String
+        public var scopes: [String]
+        public var grantSource: String
+        public var grantedByUserId: String?
+    }
+
+    public struct AgentAccessDecision: Sendable {
+        public var status: String
+        public var requestId: String
+    }
+
+    private func agentGrantKey(_ agentId: String, _ clientRecordId: String) -> String {
+        "\(agentId)\n\(clientRecordId)"
+    }
+
+    private func isAgentAuthorityLocked(userId: String, agent: Agent, serverId: String) -> Bool {
+        if agent.creatorUserId == userId { return true }
+        let role = members["\(serverId)\n\(userId)"]
+        return role == "owner" || role == "admin"
+    }
+
+    private func activeAgentGrantLocked(agentId: String, clientRecordId: String) -> AgentGrant? {
+        agentGrants.first {
+            $0.agentId == agentId && $0.clientRecordId == clientRecordId && $0.revokedAt == nil
+        }
+    }
+
+    private func appUsableOnServerLocked(_ client: Client, serverId: String) -> Bool {
+        (client.appType == "server_local" && client.serverId == serverId)
+            || installations.contains {
+                $0.clientId == client.id && $0.serverId == serverId && $0.status == "active"
+            }
+    }
+
+    public func agentGrantRowsForTesting(agentId: String) -> [AgentGrantRow] {
+        lock.lock()
+        defer { lock.unlock() }
+        return agentGrants.filter { $0.agentId == agentId && $0.revokedAt == nil }.map {
+            AgentGrantRow(id: $0.id, clientRecordId: $0.clientRecordId, scopes: $0.scopes,
+                          grantSource: $0.grantSource, grantedByUserId: $0.grantedByUserId)
+        }
+    }
+
+    public func autoGrantBlockCountForTesting(agentId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return autoGrantBlocked.filter { $0.hasPrefix("\(agentId)\n") }.count
+    }
+
+    /// Approve a pending agent access request. The agent's creator or an
+    /// owner/admin may approve; `remember` turns the request into a grant.
+    public func approveAgentAccessRequest(userId: String, requestId: String, remember: Bool) -> HTTPReply? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = requests.firstIndex(where: { $0.id == requestId }), let agentId = requests[index].agentId,
+              let agent = agents[agentId], !agent.deleted,
+              let client = clients.first(where: { $0.id == requests[index].clientId })
+        else { return nil }
+        guard isAgentAuthorityLocked(userId: userId, agent: agent, serverId: agent.serverId) else {
+            return json(403, "{\"error\":\"You cannot manage this agent's app access\"}")
+        }
+        requests[index].status = "approved"
+        if remember, activeAgentGrantLocked(agentId: agentId, clientRecordId: client.id) == nil {
+            agentGrants.append(AgentGrant(
+                id: UUID().uuidString.lowercased(), serverId: agent.serverId, agentId: agentId,
+                clientRecordId: client.id, scopes: requests[index].scopes, grantSource: "person",
+                grantedByUserId: userId, createdAt: Date()
+            ))
+        }
+        autoGrantBlocked.remove(agentGrantKey(agentId, client.id))
+        return json(200, "{\"status\":\"approved\"}")
+    }
+
+    /// Revoke one grant. A person's revoke blocks automatic re-granting until a
+    /// person grants again.
+    public func revokeAgentGrant(userId: String, grantId: String) -> HTTPReply? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = agentGrants.firstIndex(where: { $0.id == grantId }), agentGrants[index].revokedAt == nil,
+              let agent = agents[agentGrants[index].agentId]
+        else { return nil }
+        guard isAgentAuthorityLocked(userId: userId, agent: agent, serverId: agent.serverId) else {
+            return json(403, "{\"error\":\"You cannot manage this agent's app access\"}")
+        }
+        agentGrants[index].revokedAt = Date()
+        autoGrantBlocked.insert(agentGrantKey(agentGrants[index].agentId, agentGrants[index].clientRecordId))
+        return json(200, "{\"status\":\"revoked\"}")
+    }
+
+    public struct AgentGrantCreateResult: Sendable {
+        public var status: Int
+        public var grantId: String
+        public var created: Bool
+    }
+
+    /// A person grants an app access to an agent's behalf.
+    public func createAgentGrant(
+        userId: String, agentId: String, clientRecordId: String, scopes: [String]
+    ) -> AgentGrantCreateResult? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let agent = agents[agentId], !agent.deleted else { return nil }
+        guard isAgentAuthorityLocked(userId: userId, agent: agent, serverId: agent.serverId) else {
+            return AgentGrantCreateResult(status: 403, grantId: "", created: false)
+        }
+        guard let client = clients.first(where: { $0.id == clientRecordId }), isUserManaged(client),
+              client.enabled, appUsableOnServerLocked(client, serverId: agent.serverId)
+        else { return AgentGrantCreateResult(status: 404, grantId: "", created: false) }
+        let allowed = Set(client.allowedScopes ?? ["openid", "profile", "identity"])
+        guard !scopes.isEmpty, Set(scopes).isSubset(of: allowed) else {
+            return AgentGrantCreateResult(status: 400, grantId: "", created: false)
+        }
+        if let existing = activeAgentGrantLocked(agentId: agentId, clientRecordId: client.id) {
+            autoGrantBlocked.remove(agentGrantKey(agentId, client.id))
+            return AgentGrantCreateResult(status: 200, grantId: existing.id, created: false)
+        }
+        let grant = AgentGrant(
+            id: UUID().uuidString.lowercased(), serverId: agent.serverId, agentId: agentId,
+            clientRecordId: client.id, scopes: scopes, grantSource: "person",
+            grantedByUserId: userId, createdAt: Date()
+        )
+        agentGrants.append(grant)
+        autoGrantBlocked.remove(agentGrantKey(agentId, client.id))
+        return AgentGrantCreateResult(status: 201, grantId: grant.id, created: true)
+    }
+
+    public struct GrantableApp: Sendable {
+        public var recordId: String
+        public var clientKey: String
+        public var name: String
+        public var scopes: [String]
+    }
+
+    public func grantableApps(userId: String, agentId: String) -> [GrantableApp]? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let agent = agents[agentId], !agent.deleted else { return nil }
+        guard isAgentAuthorityLocked(userId: userId, agent: agent, serverId: agent.serverId) else { return [] }
+        return clients.filter { isUserManaged($0) && $0.enabled && appUsableOnServerLocked($0, serverId: agent.serverId) }
+            .map {
+                GrantableApp(
+                    recordId: $0.id, clientKey: $0.clientId, name: $0.name,
+                    scopes: $0.allowedScopes ?? ["openid", "profile", "identity"]
+                )
+            }
+    }
+
+    public func agentGrantListVisible(userId: String, agentId: String) -> [AgentGrantRow]? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let agent = agents[agentId], !agent.deleted else { return nil }
+        guard isAgentAuthorityLocked(userId: userId, agent: agent, serverId: agent.serverId) else { return [] }
+        return agentGrants.filter { $0.agentId == agentId && $0.revokedAt == nil }.map {
+            AgentGrantRow(id: $0.id, clientRecordId: $0.clientRecordId, scopes: $0.scopes,
+                          grantSource: $0.grantSource, grantedByUserId: $0.grantedByUserId)
+        }
+    }
+
     /// `POST /api/oauth/requests/agent`. A server-local or installed App asks
     /// for an Agent; the owner behind the App may auto-grant.
     public func requestAgentAccess(authorization: String?, body: String) -> HTTPReply {
@@ -2337,6 +2499,22 @@ public final class OAuthLedger: @unchecked Sendable {
             return json(400, "{\"error\":\"invalid_scope\"}")
         }
         let requestId = UUID().uuidString.lowercased()
+        let existingGrant = activeAgentGrantLocked(agentId: agent.id, clientRecordId: client.id)
+        let blocked = autoGrantBlocked.contains(agentGrantKey(agent.id, client.id))
+        let initiatedByAgent = (object?["initiatedByAgent"] as? Bool) == true
+        let hasAuthority = isAgentAuthorityLocked(userId: client.createdByUserId, agent: agent, serverId: server.id)
+        var status = "pending"
+        if existingGrant != nil {
+            status = "approved"
+        } else if !blocked && (hasAuthority || initiatedByAgent) {
+            let source = initiatedByAgent ? "agent_login" : "app_request"
+            agentGrants.append(AgentGrant(
+                id: UUID().uuidString.lowercased(), serverId: server.id, agentId: agent.id,
+                clientRecordId: client.id, scopes: scopes, grantSource: source,
+                grantedByUserId: initiatedByAgent ? nil : client.createdByUserId, createdAt: Date()
+            ))
+            status = "approved"
+        }
         requests.append(AccessRequest(
             id: requestId,
             serverId: server.id,
@@ -2348,11 +2526,11 @@ public final class OAuthLedger: @unchecked Sendable {
             humanEmailVerified: false,
             humanAvatarUrl: nil,
             agentId: agent.id,
-            status: "approved",
+            status: status,
             createdAt: Date()
         ))
         let scopeJSON = scopes.map { jsonString($0) }.joined(separator: ",")
-        let document = "{\"requestId\":\(jsonString(requestId)),\"status\":\"approved\",\"client\":{\"clientId\":\(jsonString(client.clientId)),\"appType\":\(jsonString(client.appType)),\"name\":\(jsonString(client.name)),\"description\":null,\"homepageUrl\":null},\"agent\":{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"serverId\":\(jsonString(server.id)),\"serverSlug\":\(jsonString(server.slug))},\"scopes\":[\(scopeJSON)]}"
+        let document = "{\"requestId\":\(jsonString(requestId)),\"status\":\(jsonString(status)),\"client\":{\"clientId\":\(jsonString(client.clientId)),\"appType\":\(jsonString(client.appType)),\"name\":\(jsonString(client.name)),\"description\":null,\"homepageUrl\":null},\"agent\":{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"serverId\":\(jsonString(server.id)),\"serverSlug\":\(jsonString(server.slug))},\"scopes\":[\(scopeJSON)]}"
         return json(200, document)
     }
 
@@ -3261,6 +3439,18 @@ public final class OAuthLedger: @unchecked Sendable {
         var envVarsJSON: String? = nil
         var status: String = "inactive"
         var deleted = false
+    }
+
+    private struct AgentGrant {
+        var id: String
+        var serverId: String
+        var agentId: String
+        var clientRecordId: String
+        var scopes: [String]
+        var grantSource: String
+        var grantedByUserId: String?
+        var createdAt: Date
+        var revokedAt: Date? = nil
     }
 
     private struct AgentEvent {

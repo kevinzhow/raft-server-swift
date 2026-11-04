@@ -433,6 +433,38 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
         ))
     }
+    app.post("api", "integrations", "requests", ":requestId", "approve") { request -> Response in
+        routeResponse(services.emailAccounts.approveAgentAccessRequest(
+            authorization: request.headers[.authorization],
+            requestId: request.parameters.get("requestId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.post("api", "integrations", "agents", ":agentId", "grants") { request -> Response in
+        routeResponse(services.emailAccounts.createAgentGrant(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId") ?? "",
+            body: request.body.string ?? "{}"
+        ))
+    }
+    app.get("api", "integrations", "agents", ":agentId", "grants") { request -> Response in
+        routeResponse(services.emailAccounts.agentGrantList(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId") ?? ""
+        ))
+    }
+    app.get("api", "integrations", "agents", ":agentId", "grantable-apps") { request -> Response in
+        routeResponse(services.emailAccounts.agentGrantableApps(
+            authorization: request.headers[.authorization],
+            agentId: request.parameters.get("agentId") ?? ""
+        ))
+    }
+    app.post("api", "integrations", "grants", ":grantId", "revoke") { request -> Response in
+        routeResponse(services.emailAccounts.revokeAgentGrant(
+            authorization: request.headers[.authorization],
+            grantId: request.parameters.get("grantId") ?? ""
+        ))
+    }
     app.get("api", "integrations", "clients", ":clientId", "setup") { request -> Response in
         routeResponse(services.emailAccounts.integrationClientSetup(
             authorization: request.headers[.authorization],
