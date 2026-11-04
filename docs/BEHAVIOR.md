@@ -1710,3 +1710,11 @@ RFC 074 personal assistant：
 - bodyMarkdown 上限 5000 字符：恰好 5000 接受并原样返回，5001 → 400 "Agreement body must be 5000 characters or fewer"。
 - invite-info（join-link 与 email invite）返回 `memberCount/agentCount/insideCountsHidden`（hideHumansFromMembers 时 0/0/true）以及当前 active agreement；accept-invite 若存在 active agreement：缺 agreementId → 409 `agreement_required` + agreement，过期 id → 409 `agreement_changed` + 当前 agreement，且都不创建 membership；接受成功写入成员资格审计（source=invite、actor=joiner、agreement id/version），join-link useCount+1。
 - 裁决为不可执行：self-serve join 的 “检查时无 active、事务内变 active” 竞态依赖 ambient transaction/DB 隔离（上游服务层事务测试），HTTP 面无法构造；同语义由 accept-invite 的 agreement_required/changed 精确拒绝覆盖。
+
+### route tasks.serverPagination.api（锁定）
+
+- `GET /api/tasks/channel/:channelId` 对非 UUID channelId 返回 404 `{"error":"Channel not found"}`（不是 500）。
+- `GET /api/tasks/server`：无分页参数时保持 legacy 形状（仅 `tasks` 键、full row、每行带 `description` 键、无 `next_cursor`），并带 `x-response-bytes` 头；limit=1..500、cursor 只能与 limit 同用、detail 仅 full/summary，重复/非法参数 400；cursor 为 base64url JSON `{c:uuid,n:int}`，非 UUID/坏形状/不可见 channel 位置 400。
+- 分页顺序为 channelName → taskNumber → id（与 legacy channel 排序一致），跨空频道/`all` 不重复不漏；status 过滤与分页组合。
+- `detail=summary`：每行恰好 24 个契约键（无 description 体，hasDescription/descriptionBytes 正确），createdBy/claimedBy 名称按 user displayName 与 agent handle 分离，createdAt/updatedAt/completedAt ISO；非分页 summary 不含 next_cursor。
+- 新形状响应超 8 MiB 时写 `[tasks/server] paginated/summary …` 告警（legacy 仅头）；`x-response-bytes` 两形状均返回。

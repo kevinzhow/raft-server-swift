@@ -213,7 +213,7 @@ tasks.jointSurface.api	route	locked	55151fb	excluded with reason: joint-task beh
 tasks.orphanCleanup.api	route	locked	5db3af6	channel delete auto-closes open tasks with system event, agent delete releases claims, orphan terminal-only status/claim, admin delete and member rejection
 tasks.periodMetrics.api	route	locked	e1fa956	covered by the existing metric/scope tests
 tasks.realtimeProjection.api	route	locked	bfb345f	message-only claim refuses with no events; canonical claim emits only task:updated with claimed task, never message:updated
-tasks.serverPagination.api	route	partial	-	auto-seed
+tasks.serverPagination.api	route	locked	SLICE	server-wide task pagination: non-UUID channel 404, stable channelName/taskNumber/id ordering walked exactly once, cursor/limit/detail validation with invisible-channel cursors rejected, summary rows carrying exactly the 24 contracted keys with separated displayName/handle enrichment and description bytes, legacy full-row shape preserved with x-response-bytes, status filter composition, and the >8 MiB warning only for paginated/summary responses
 tasks.shapeSurfaces.api	route	locked	29c8fa5	REST delete across v0/backfilled/v14 shapes, inert message-only rows, shadow clearing, agent orphan claim/status rejection
 tasks.snapshotMetrics.api	route	locked	e1fa956	covered by the existing metric/scope tests
 timezoneObservation.api	route	locked	595ec75	auth/validation, first+last preservation, canonical IANA alias, legacy first-pair fallback; excluded DB clock and concurrent observers

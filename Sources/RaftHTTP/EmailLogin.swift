@@ -20138,22 +20138,26 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return id
     }
 
-    public func addTasks(channelId: String, titles: [String]) -> [String] {
+    public func addTasks(
+        channelId: String, titles: [String], descriptions: [String?]? = nil,
+        creatorId: String? = nil, creatorType: String = "user"
+    ) -> [String] {
         lock.lock()
         defer { lock.unlock() }
         var ids: [String] = []
-        for title in titles {
+        for (offset, title) in titles.enumerated() {
             let taskNumber = taskRecords.filter { $0.channelId == channelId }.count + 1
             let id = UUID().uuidString.lowercased()
             taskRecords.append(TaskRecord(
                 id: id,
                 channelId: channelId,
                 title: title,
-                description: nil,
+                description: (descriptions?.count ?? 0) > offset ? (descriptions?[offset] ?? nil) : nil,
                 status: "todo",
                 taskNumber: taskNumber,
                 messageId: UUID().uuidString.lowercased(),
-                createdAt: Date()
+                createdAt: Date(),
+                creatorId: creatorId
             ))
             ids.append(id)
         }
@@ -20556,7 +20560,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"Invalid task list\"}")
         }
         let titles = tasks.compactMap { $0["title"] as? String }.filter { !$0.isEmpty }
-        let ids = addTasks(channelId: channelId, titles: titles)
+        let descriptions = tasks.map { $0["description"] as? String }
+        let ids = addTasks(channelId: channelId, titles: titles, descriptions: descriptions, creatorId: userId)
         return Self.json(200, "{\"taskIds\":[\("\(ids.map { jsonString($0) }.joined(separator: ","))")]}")
     }
 
@@ -23013,7 +23018,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 assignee = (humanMatch.id, "user", humanMatch.name)
             }
         }
-        let ids = addTasks(channelId: channelId, titles: titles)
+        let ids = addTasks(channelId: channelId, titles: titles, creatorId: auth.agentId, creatorType: "agent")
         let idsJSON = ids.map { jsonString($0) }.joined(separator: ",")
         var receiptJSON = "null"
         lock.lock()
@@ -25578,11 +25583,58 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         case .readOnly: return Self.json(403, "{\"error\":\"Join the channel to change tasks\"}")
         case .write: break
         }
-        let ids = addTasks(channelId: channelId, titles: ["Converted message"])
+        let ids = addTasks(channelId: channelId, titles: ["Converted message"], creatorId: userId)
         return Self.json(200, "{\"taskIds\":[\("\(ids.map { jsonString($0) }.joined(separator: ","))")]}")
     }
 
+    @discardableResult
+    public func addTaskWithDescriptionForTesting(channelId: String, title: String, description: String) -> String {
+        lock.lock()
+        let taskNumber = taskRecords.filter { $0.channelId == channelId }.count + 1
+        let id = UUID().uuidString.lowercased()
+        taskRecords.append(TaskRecord(
+            id: id, channelId: channelId, title: title, description: description,
+            status: "todo", taskNumber: taskNumber, messageId: UUID().uuidString.lowercased(),
+            createdAt: Date()
+        ))
+        lock.unlock()
+        return id
+    }
+
+    public func lastTaskServerQueryForTesting() -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return lastTaskServerQuery
+    }
+
+    public func lastTaskServerWarningForTesting() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastTaskServerWarning
+    }
+
+    private static let tasksServerResponseWarnBytes = 8 * 1024 * 1024
+
+    private func taskServerReply(_ body: String, serverId: String, newShape: Bool) -> HTTPReply {
+        let bytes = Data(body.utf8).count
+        if newShape, bytes > Self.tasksServerResponseWarnBytes {
+            let warning = "[tasks/server] paginated/summary response for server \(serverId) is \(bytes) bytes"
+            lock.lock()
+            lastTaskServerWarning = warning
+            lock.unlock()
+            FileHandle.standardError.write(Data((warning + "\n").utf8))
+        }
+        return HTTPReply(status: 200, headers: [
+            "X-Robots-Tag": AppFallback.robotsTag,
+            "Content-Type": AppFallback.jsonContentType,
+            "Content-Length": String(bytes),
+            "x-response-bytes": String(bytes),
+        ], body: body)
+    }
+
     public func listServerTasks(authorization: String?, serverId: String, rawQuery: String?) -> HTTPReply {
+        lock.lock()
+        lastTaskServerQuery = rawQuery
+        lock.unlock()
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
@@ -25602,7 +25654,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         case .valid(let value): status = value
         }
         guard let rawQuery else {
-            return legacyTasksJSON(serverId: serverId, userId: userId, status: status, detail: "full")
+            let body = legacyTasksBody(serverId: serverId, userId: userId, status: status)
+            return taskServerReply(body, serverId: serverId, newShape: false)
         }
         var params: [String: String] = [:]
         for pair in rawQuery.split(separator: "&") {
@@ -25657,10 +25710,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 : fullTaskJSON(entry.task, channelName: entry.channelName, channelType: entry.channelType)
         }.joined(separator: ",")
         if limit == nil {
-            return Self.json(200, "{\"tasks\":[\("\(items)")]}")
+            return taskServerReply("{\"tasks\":[\("\(items)")]}", serverId: serverId, newShape: true)
         }
         let cursorJSON = nextCursor.map { jsonString($0) } ?? "null"
-        return Self.json(200, "{\"tasks\":[\("\(items)")],\"next_cursor\":\(cursorJSON)}")
+        return taskServerReply("{\"tasks\":[\("\(items)")],\"next_cursor\":\(cursorJSON)}", serverId: serverId, newShape: true)
     }
 
     private func orderedTasks(
@@ -25668,7 +25721,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         userId: String,
         status: String?
     ) -> [(task: TaskRecord, channelName: String, channelType: String)] {
-        let visible = oauth.channelsForServer(serverId: serverId, userId: userId).filter { $0.joined }
+        let visible = oauth.channelsForServer(serverId: serverId, userId: userId).filter {
+            $0.joined && ($0.type == "channel" || $0.type == "joint")
+                && oauth.channelArchivedAt(id: $0.id) == nil
+        }
         let names = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, $0.name) })
         let types = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, $0.type) })
         lock.lock()
@@ -25685,12 +25741,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
     }
 
-    private func legacyTasksJSON(serverId: String, userId: String, status: String?, detail: String) -> HTTPReply {
+    private func legacyTasksBody(serverId: String, userId: String, status: String?) -> String {
         let ordered = orderedTasks(serverId: serverId, userId: userId, status: status)
         let items = ordered.map { entry in
             fullTaskJSON(entry.task, channelName: entry.channelName, channelType: entry.channelType)
         }.joined(separator: ",")
-        return Self.json(200, "{\"tasks\":[\("\(items)")]}")
+        return "{\"tasks\":[\("\(items)")]}"
     }
 
     private static func encodeCursor(channelId: String, taskNumber: Int) -> String {
@@ -25723,10 +25779,41 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private func summaryTaskJSON(_ task: TaskRecord, channelName: String, channelType: String) -> String {
         let descriptionBytes = task.description.map { Data($0.utf8).count } ?? 0
         let hasDescription = task.description != nil && !(task.description ?? "").isEmpty
-        let claimed = task.claimedAt.map { jsonString(ISO8601DateFormatter().string(from: $0)) } ?? "null"
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let claimed = task.claimedAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+        let completed = task.completedAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+        let updated = task.updatedAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+        let createdAt = jsonString(formatter.string(from: task.createdAt))
         let assignee = task.assigneeId.map { jsonString($0) } ?? "null"
         let assigneeType = task.assigneeType.map { jsonString($0) } ?? "null"
-        return "{\"channelId\":\(jsonString(task.channelId)),\"channelName\":\(jsonString(channelName)),\"channelType\":\(jsonString(channelType)),\"claimedAt\":\(claimed),\"claimedById\":\(assignee),\"claimedByName\":null,\"claimedByType\":\(assigneeType),\"completedAt\":null,\"createdAt\":null,\"createdById\":null,\"createdByName\":null,\"createdByType\":\"user\",\"descriptionBytes\":\(descriptionBytes),\"hasDescription\":\(hasDescription),\"id\":\(jsonString(task.id)),\"isLegacy\":false,\"messageId\":\(jsonString(task.messageId)),\"readOnlyReason\":null,\"revision\":\(task.revision),\"source\":\"tasks\",\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber),\"title\":\(jsonString(task.title)),\"updatedAt\":null}"
+        var claimedByName = "null"
+        if let assigneeId = task.assigneeId {
+            lock.lock()
+            if task.assigneeType == "agent", let agent = oauth.agentRuntimeInfo(id: assigneeId) {
+                claimedByName = jsonString(agent.name)
+            } else if let name = accounts.values.first(where: { $0.id == assigneeId })?.name {
+                claimedByName = jsonString(name)
+            }
+            lock.unlock()
+        }
+        var createdById = "null"
+        var createdByName = "null"
+        var createdByType = "null"
+        if let creatorId = task.creatorId {
+            lock.lock()
+            if let agent = oauth.agentRuntimeInfo(id: creatorId) {
+                createdById = jsonString(creatorId)
+                createdByName = jsonString(agent.name)
+                createdByType = jsonString("agent")
+            } else if let name = accounts.values.first(where: { $0.id == creatorId })?.name {
+                createdById = jsonString(creatorId)
+                createdByName = jsonString(name)
+                createdByType = jsonString("user")
+            }
+            lock.unlock()
+        }
+        return "{\"channelId\":\(jsonString(task.channelId)),\"channelName\":\(jsonString(channelName)),\"channelType\":\(jsonString(channelType)),\"claimedAt\":\(claimed),\"claimedById\":\(assignee),\"claimedByName\":\(claimedByName),\"claimedByType\":\(assigneeType),\"completedAt\":\(completed),\"createdAt\":\(createdAt),\"createdById\":\(createdById),\"createdByName\":\(createdByName),\"createdByType\":\(createdByType),\"descriptionBytes\":\(descriptionBytes),\"hasDescription\":\(hasDescription),\"id\":\(jsonString(task.id)),\"isLegacy\":false,\"messageId\":\(jsonString(task.messageId)),\"readOnlyReason\":null,\"revision\":\(task.revision),\"source\":\"tasks\",\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber),\"title\":\(jsonString(task.title)),\"updatedAt\":\(updated)}"
     }
 
     private struct TaskRecord {
@@ -25752,6 +25839,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     private var taskEvents: [(taskId: String, eventType: String, actorType: String)] = []
+    private var lastTaskServerWarning: String?
+    private var lastTaskServerQuery: String?
     private var assigneeChangeEvents: [(
         taskId: String, assigneeId: String?, assigneeType: String?,
         previousAssigneeId: String?, previousAssigneeType: String?,
