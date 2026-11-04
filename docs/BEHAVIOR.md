@@ -1824,3 +1824,9 @@ RFC 074 personal assistant：
 - search off 只影响搜索出口：`/api/public/servers/:slug` 访客页仍 200（读与搜分离）。
 - 其余已覆盖行为：GET/HEAD only 405、public ids/display-only DTO、长 thread 截断、错误 id/游标 plain 404、owner-only 设置与回填 public ids、rendered-edit lastmod。
 - 裁决：lastmod 的 “thread 换频道/删除” 用例需要目录层 move/delete thread 编辑（当前仅有 rendered-edit 模型，已由 settings 测试覆盖 lastmod 变动语义）；public route 唯一约束碰撞是 DB 内部断言；这两类不重复实现。
+
+### route productFeedback.diagnostics.api（锁定）
+
+- `POST /api/product-feedback` 现在真实代理 Hands：multipart 表单（type/message/submission_id/metadata/may_contact）转发到 `{HANDS_FEEDBACK_BASE_URL}/public/v2/apps/{APP_ID}/feedback`，可选 Bearer app token。
+- 移动端（android/ios/ohos）diagnostics 引用校验后以 `presigned` JSON 数组字段转发：r2_key 必须 `feedback/{APP_ID}/presigned/{uuid}-{filename}.zip`、filename=diagnostics.zip、content_type=application/zip、size 为正整数 ≤200MB，拒绝数组/额外 upload_url；web 端或 malformed → 400 `feedback_diagnostics_invalid`，且不触达 Hands；无 diagnostics 不发 presigned 字段。
+- Hands 结果映射：2xx → 201 `{id,status}`；409 → 409 `feedback_submission_conflict`；400 + diagnostics + code∈{presigned_invalid,presigned_not_found,presigned_size_mismatch} → 400 `feedback_diagnostics_rejected`；其他 400 → 400 `feedback_invalid`；其余（含 422）→ 503 `feedback_service_unavailable`。

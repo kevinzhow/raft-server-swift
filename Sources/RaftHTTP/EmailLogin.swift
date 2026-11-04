@@ -1,5 +1,8 @@
 import Crypto
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 public struct RefreshRotationReceipt: Equatable, Sendable {
     public var attemptId: String
@@ -354,6 +357,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// stay usable.
     public var failNextSessionIssuanceForTesting = false
     public var handsFeedbackConfigured = false
+    public var handsFeedbackBaseURLOverride: String?
+    public var handsFeedbackAppIdOverride: String?
+    public var handsFeedbackAppTokenOverride: String?
     public var providerConnectionsEnabledServers: Set<String> = []
     private var providerConnections: [ProviderConnection] = []
     private var providerAssignments: [ProviderAssignment] = []
@@ -29114,6 +29120,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// `POST /api/product-feedback`. The upstream proxy is not ported; the
     /// route still enforces the auth, form, and configuration contract.
+    public func setHandsFeedbackForTesting(baseURL: String?, appId: String?, appToken: String?) {
+        lock.lock()
+        handsFeedbackBaseURLOverride = baseURL
+        handsFeedbackAppIdOverride = appId
+        handsFeedbackAppTokenOverride = appToken
+        lock.unlock()
+    }
+
     public func submitProductFeedback(authorization: String?, contentType: String, body: String) -> HTTPReply {
         guard sessionUserId(authorization: authorization) != nil else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -29138,10 +29152,103 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 }
             }
         }
-        guard handsFeedbackConfigured else {
+        var environment = ProcessInfo.processInfo.environment
+        lock.lock()
+        if let handsFeedbackBaseURLOverride { environment["HANDS_FEEDBACK_BASE_URL"] = handsFeedbackBaseURLOverride }
+        if let handsFeedbackAppIdOverride { environment["HANDS_FEEDBACK_APP_ID"] = handsFeedbackAppIdOverride }
+        if let handsFeedbackAppTokenOverride { environment["HANDS_FEEDBACK_APP_TOKEN"] = handsFeedbackAppTokenOverride }
+        lock.unlock()
+        guard handsFeedbackConfigured || environment["HANDS_FEEDBACK_BASE_URL"] != nil else {
             return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_not_configured\"}")
         }
-        return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_integration_unavailable\"}")
+        let clientKind: String? = {
+            guard let rawMetadata = fields["metadata"],
+                  let metadataObject = (try? JSONSerialization.jsonObject(with: Data(rawMetadata.utf8))) as? [String: Any]
+            else { return nil }
+            return metadataObject["client_kind"] as? String
+        }()
+        var presignedJSON: String?
+        if let rawDiagnostics = fields["diagnostics"], !rawDiagnostics.isEmpty {
+            guard let native = clientKind, ["android", "ios", "ohos"].contains(native),
+                  let diagnostics = Self.validatedFeedbackDiagnostics(rawDiagnostics, environment: environment)
+            else {
+                return Self.json(400, "{\"error\":\"Invalid feedback diagnostics\",\"code\":\"feedback_diagnostics_invalid\"}")
+            }
+            presignedJSON = "[\("\(diagnostics)")]"
+        }
+        guard let base = environment["HANDS_FEEDBACK_BASE_URL"]?.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+              let appId = environment["HANDS_FEEDBACK_APP_ID"], !appId.isEmpty
+        else {
+            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_not_configured\"}")
+        }
+        let boundary = "raft-boundary-\(UUID().uuidString.lowercased())"
+        var multipart = Data()
+        func appendField(_ name: String, _ value: String) {
+            multipart.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8))
+        }
+        appendField("type", type)
+        appendField("message", message)
+        appendField("submission_id", submissionId)
+        if let metadata = fields["metadata"] { appendField("metadata", metadata) }
+        if let contact = fields["may_contact"] { appendField("may_contact", contact) }
+        if let presignedJSON { appendField("presigned", presignedJSON) }
+        multipart.append(Data("--\(boundary)--\r\n".utf8))
+        var request = URLRequest(url: URL(string: "\(base)/public/v2/apps/\(appId)/feedback")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        if let token = environment["HANDS_FEEDBACK_APP_TOKEN"], !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = multipart
+        let semaphore = DispatchSemaphore(value: 0)
+        final class UpstreamBox: @unchecked Sendable {
+            var status = 0
+            var body = Data()
+        }
+        let upstream = UpstreamBox()
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            if let http = response as? HTTPURLResponse { upstream.status = http.statusCode }
+            upstream.body = data ?? Data()
+            semaphore.signal()
+        }.resume()
+        _ = semaphore.wait(timeout: .now() + 12)
+        let upstreamStatus = upstream.status
+        let upstreamBody = upstream.body
+        let upstreamJSON = (try? JSONSerialization.jsonObject(with: upstreamBody)) as? [String: Any] ?? [:]
+        let upstreamCode = upstreamJSON["code"] as? String
+        if upstreamStatus == 201 || upstreamStatus == 200 {
+            let id = upstreamJSON["id"] as? String ?? UUID().uuidString.lowercased()
+            let status = upstreamJSON["status"] as? String ?? "open"
+            return Self.json(201, "{\"id\":\(jsonString(id)),\"status\":\(jsonString(status))}")
+        }
+        if upstreamStatus == 409 {
+            return Self.json(409, "{\"error\":\"This submission was already sent\",\"code\":\"feedback_submission_conflict\"}")
+        }
+        if upstreamStatus == 400, presignedJSON != nil,
+           let upstreamCode, ["presigned_invalid", "presigned_not_found", "presigned_size_mismatch"].contains(upstreamCode) {
+            return Self.json(400, "{\"error\":\"The diagnostics upload was rejected\",\"code\":\"feedback_diagnostics_rejected\"}")
+        }
+        if upstreamStatus == 400 {
+            return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
+        }
+        return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
+    }
+
+    private static func validatedFeedbackDiagnostics(_ raw: String, environment: [String: String]) -> String? {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any],
+              Set(object.keys).isSubset(of: ["r2_key", "filename", "content_type", "size"]),
+              let r2Key = object["r2_key"] as? String,
+              let filename = object["filename"] as? String, filename == "diagnostics.zip",
+              let contentType = object["content_type"] as? String, contentType == "application/zip",
+              let size = (object["size"] as? NSNumber)?.intValue, object["size"] is NSNumber,
+              size > 0, size <= 200 * 1024 * 1024
+        else { return nil }
+        let appId = environment["HANDS_FEEDBACK_APP_ID"] ?? "11111111-1111-4111-8111-111111111111"
+        let escapedApp = NSRegularExpression.escapedPattern(for: appId)
+        let pattern = "^feedback/\(escapedApp)/presigned/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[A-Za-z0-9._-]+\\.zip$"
+        guard r2Key.range(of: pattern, options: .regularExpression) != nil else { return nil }
+        return serializeJSON(["r2_key": r2Key, "filename": filename, "content_type": contentType, "size": size])
     }
 
     private static func multipartFields(body: String, contentType: String) -> [String: String]? {
