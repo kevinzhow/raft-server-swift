@@ -316,7 +316,7 @@ drivers/raftCliGuideFreshness	daemon	locked	06b59b1	non-executable black-box: by
 drivers/raftCliGuideInstalledApps	daemon	pending	-	auto-seed
 drivers/raftCliGuideOfficialAppsHint	daemon	pending	-	auto-seed
 drivers/raftCliGuideServerInfoScope	daemon	locked	06b59b1	non-executable black-box: CLI/manual text guards for `raft server info` wording across generated and hand-written docs; this port has no CLI surface
-drivers/runtimeChild	daemon	locked	SLICE	runtime child early-lifecycle guard: output/error/exit/close and stdin errors are recorded until a single hand-off replay, an unclaimed child is abandoned after 10s (output dropped, warning with errors list, SIGTERM then SIGKILL after 5s) with the abandoned marker replacing any partial replay, and output past the 4MiB cap abandons instead of truncating
+drivers/runtimeChild	daemon	locked	acc3a0f	runtime child early-lifecycle guard: output/error/exit/close and stdin errors are recorded until a single hand-off replay, an unclaimed child is abandoned after 10s (output dropped, warning with errors list, SIGTERM then SIGKILL after 5s) with the abandoned marker replacing any partial replay, and output past the 4MiB cap abandons instead of truncating
 drivers/runtimeContract	daemon	pending	-	auto-seed
 drivers/runtimeSession	daemon	pending	-	auto-seed
 drivers/spawnErrorListenerOrder	daemon	locked	06b59b1	non-executable black-box: Node child_process scheduling counterexamples proving a spawn error can arrive before RuntimeSession attaches its listener; Node-specific scheduling with no daemon-frame surface in this port
