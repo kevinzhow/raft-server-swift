@@ -45,6 +45,7 @@ private func post(_ client: any Client, _ path: String, _ body: String, apiKey: 
 @Test func scopeAttestationBodyLimitAcceptsOneMiBAndRejectsOneMore() async throws {
     var fixture = ScopeLimitFixture()
     fixture.registerMachine()
+    fixture.accounts.setScopeAttestationSecretForTesting("scope-body-secret")
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: fixture.accounts))
         try await app.testing { client in
@@ -65,6 +66,7 @@ private func post(_ client: any Client, _ path: String, _ body: String, apiKey: 
 @Test func otherRoutesKeepGlobalLimitAndMachineAuthRunsFirst() async throws {
     var fixture = ScopeLimitFixture()
     fixture.registerMachine()
+    fixture.accounts.setScopeAttestationSecretForTesting("scope-body-secret")
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: fixture.accounts))
         try await app.testing { client in

@@ -10825,6 +10825,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     private var attachedComputers: [String: AttachedComputer] = [:]
     private var computerAttachEnabledOverride: Bool?
+    private var scopeAttestationSecretOverride: String??
+    private var deploymentEnvironmentOverride: String??
+
+    public func setScopeAttestationSecretForTesting(_ secret: String?) {
+        lock.lock()
+        scopeAttestationSecretOverride = .some(secret)
+        lock.unlock()
+    }
+
+    public func setDeploymentEnvironmentForTesting(_ environment: String?) {
+        lock.lock()
+        deploymentEnvironmentOverride = .some(environment)
+        lock.unlock()
+    }
 
     public func setComputerAttachEnabledForTesting(_ enabled: Bool?) {
         lock.lock()
@@ -14612,6 +14626,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return machines.contains { $0.apiKey == token }
+            || computers.contains { $0.apiKey == token && $0.revokedAt == nil }
     }
 
     public func computerCredentialIsLive(authorization: String?) -> Bool {
@@ -17242,7 +17257,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let token = String(authorization.dropFirst("Bearer ".count))
         lock.lock()
         defer { lock.unlock() }
-        return machines.first { $0.apiKey == token }?.id
+        if let machine = machines.first(where: { $0.apiKey == token }) { return machine.id }
+        if let computer = computers.first(where: { $0.apiKey == token && $0.revokedAt == nil }) {
+            return computer.machineId
+        }
+        return nil
     }
 
     public func assignAgentMachineForTesting(agentId: String, machineId: String) {
@@ -17269,122 +17288,237 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard let machineId = machineIdForCredential(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
         }
+        lock.lock()
+        let secretOverride = scopeAttestationSecretOverride
+        let deploymentOverride = deploymentEnvironmentOverride
+        lock.unlock()
+        let secretValue: String?
+        if let secretOverride { secretValue = secretOverride } else {
+            secretValue = ProcessInfo.processInfo.environment["SCOPE_ATTESTATION_SECRET"]
+        }
+        guard let secret = secretValue, !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return Self.json(503, "{\"error\":\"Scope attestation signing is not configured\"}")
+        }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let scope = object["scope"] as? String, scope == "daemon-trace-bundle:create",
-              let rawMetadata = object["metadata"] as? [String: Any]
+              let scope = object["scope"] as? String
         else {
             return Self.json(400, "{\"error\":\"Invalid attestation request\"}")
         }
+        if object["audience"] != nil {
+            return Self.json(400, "{\"error\":\"audience is derived from scope\"}")
+        }
+        if object["resource"] != nil {
+            return Self.json(400, "{\"error\":\"resource is derived from scope\"}")
+        }
+        let supportedScopes: [String: (audience: String, suffix: String)] = [
+            "feedback-report:create": ("feedback-worker", "feedback-reports"),
+            "daemon-trace-bundle:create": ("trace-ingest-worker", "trace-bundles"),
+            "machine_log_tail:create": ("trace-ingest-worker", "trace-bundles"),
+            "machine_evidence:create": ("trace-ingest-worker", "trace-bundles"),
+        ]
+        guard let scopeContract = supportedScopes[scope] else {
+            return Self.json(400, "{\"error\":\"Unsupported scope: \(scope)\"}")
+        }
+        lock.lock()
+        let machine = machines.first { $0.id == machineId }
+        let serverId = machine?.serverId ?? ""
+        let serverSlug = oauth.serverProfile(id: serverId)?.slug ?? ""
+        lock.unlock()
+        guard !serverId.isEmpty else {
+            return Self.json(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
+        }
+        let resource = "servers/\(serverId)/machines/\(machineId)/\(scopeContract.suffix)"
         var metadata: [String: Any] = [:]
-        guard let bundleId = Self.attestationString(rawMetadata["bundleId"]),
-              !bundleId.isEmpty, bundleId.count <= 128,
-              let bundleSha256 = Self.attestationString(rawMetadata["bundleSha256"]),
-              bundleSha256.count == 64,
-              let bundleSizeBytes = Self.attestationInt(rawMetadata["bundleSizeBytes"])
-        else {
-            return Self.json(400, "{\"error\":\"Invalid attestation request\"}")
-        }
-        metadata["bundleId"] = bundleId
-        metadata["bundleSha256"] = bundleSha256
-        metadata["bundleSizeBytes"] = bundleSizeBytes
-        for key in ["bundleContentType", "bundleContentEncoding"] {
-            if let value = Self.attestationString(rawMetadata[key]) {
-                let cap = key == "bundleContentType" ? 128 : 64
-                if !value.isEmpty, value.count <= cap { metadata[key] = value }
-            }
-        }
-        let attachmentKind = Self.attestationString(rawMetadata["feedbackAttachmentKind"])
-        if let attachmentKind, ["session_transcript", "transcript_outcome"].contains(attachmentKind) {
-            metadata["feedbackAttachmentKind"] = attachmentKind
-        }
-        for key in ["feedbackReportId", "agentId"] {
-            if let value = Self.attestationString(rawMetadata[key]),
-               value.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil {
-                metadata[key] = value
-            }
-        }
-        for key in ["feedbackReportGeneratedAt", "feedbackReportWindowStartAt", "feedbackTranscriptFirstEventAt", "feedbackTranscriptLastEventAt"] {
-            if let value = Self.attestationString(rawMetadata[key]), !value.isEmpty, value.count <= 64 {
-                metadata[key] = value
-            }
-        }
-        if let source = Self.attestationString(rawMetadata["feedbackReportTimeSource"]),
-           ["web_report_bundle", "computer_clock", "unknown"].contains(source) {
-            metadata["feedbackReportTimeSource"] = source
-        }
-        if let coverage = Self.attestationString(rawMetadata["feedbackTranscriptWindowCoverage"]),
-           ["timestamps_available", "timestamps_unavailable"].contains(coverage) {
-            metadata["feedbackTranscriptWindowCoverage"] = coverage
-        }
-        if let direction = Self.attestationString(rawMetadata["feedbackTranscriptTruncationDirection"]),
-           ["window", "size"].contains(direction) {
-            metadata["feedbackTranscriptTruncationDirection"] = direction
-        }
-        if let truncated = rawMetadata["feedbackTranscriptTruncated"] {
-            if let bool = truncated as? Bool { metadata["feedbackTranscriptTruncated"] = bool }
-            else if let text = truncated as? String, text == "true" || text == "false" {
-                metadata["feedbackTranscriptTruncated"] = text == "true"
-            }
-        }
-        if let tolerance = Self.attestationInt(rawMetadata["feedbackTranscriptWindowToleranceMs"]),
-           tolerance <= 24 * 60 * 60 * 1000 {
-            metadata["feedbackTranscriptWindowToleranceMs"] = tolerance
-        }
-        if let content = Self.attestationString(rawMetadata["feedbackTranscriptContent"]),
-           ["native_session_file", "native_state_file"].contains(content) {
-            metadata["feedbackTranscriptContent"] = content
-        }
-        for key in ["feedbackTranscriptSourceBytes", "feedbackTranscriptBytes"] {
-            if let value = Self.attestationInt(rawMetadata[key]) { metadata[key] = value }
-        }
-        if let requestId = Self.attestationString(rawMetadata["feedbackTranscriptRequestId"]),
-           requestId.wholeMatch(of: /^[^\s]{1,128}$/) != nil {
-            metadata["feedbackTranscriptRequestId"] = requestId
-        }
-        if metadata["feedbackAttachmentKind"] as? String == "transcript_outcome" {
-            guard let reportId = metadata["feedbackReportId"] as? String,
-                  let agentId = metadata["agentId"] as? String,
-                  let requestId = metadata["feedbackTranscriptRequestId"] as? String
+        let rawMetadata = object["metadata"] as? [String: Any] ?? [:]
+        if scope == "daemon-trace-bundle:create" || scope == "machine_log_tail:create" || scope == "machine_evidence:create" {
+            guard let bundleId = Self.attestationString(rawMetadata["bundleId"]), !bundleId.isEmpty, bundleId.count <= 128,
+                  let bundleSha256 = Self.attestationString(rawMetadata["bundleSha256"]), bundleSha256.count == 64,
+                  let bundleSizeBytes = Self.attestationInt(rawMetadata["bundleSizeBytes"])
             else {
                 return Self.json(400, "{\"error\":\"Invalid attestation request\"}")
             }
-            lock.lock()
-            let agentServerId = oauth.agentRuntimeInfo(id: agentId)?.serverId
-            let agentMachineId = agentMachineIds[agentId]
-            let machine = machines.first { $0.id == machineId }
-            let serverId = machine?.serverId ?? ""
-            lock.unlock()
-            guard agentServerId == serverId else {
-                return Self.json(403, "{\"error\":\"Agent does not belong to this machine\",\"code\":\"agent_not_on_machine\"}")
+            metadata["bundleId"] = bundleId
+            metadata["bundleSha256"] = bundleSha256
+            metadata["bundleSizeBytes"] = bundleSizeBytes
+            if let contentType = Self.attestationString(rawMetadata["bundleContentType"]), contentType.count > 128 {
+                return Self.json(400, "{\"error\":\"bundleContentType is too long\"}")
             }
-            guard agentMachineId == machineId else {
-                return Self.json(403, "{\"error\":\"Agent does not belong to this machine\",\"code\":\"agent_not_on_machine\"}")
+            if let encoding = Self.attestationString(rawMetadata["bundleContentEncoding"]), encoding.count > 64 {
+                return Self.json(400, "{\"error\":\"bundleContentEncoding is too long\"}")
             }
-            let maxBytes = 2048
-            guard let size = metadata["bundleSizeBytes"] as? Int, size <= maxBytes else {
-                return Self.json(400, "{\"error\":\"Outcome bundle is too large\",\"code\":\"outcome_bundle_too_large\"}")
+            if let reportId = rawMetadata["feedbackReportId"] {
+                guard let text = reportId as? String, ServerScope.isUUID(text) else {
+                    return Self.json(400, "{\"error\":\"feedbackReportId must be a canonical UUID\"}")
+                }
+                metadata["feedbackReportId"] = text
             }
-            metadata.removeValue(forKey: "feedbackTranscriptContent")
-            metadata["feedbackReportId"] = reportId
-            metadata["agentId"] = agentId
-            metadata["feedbackTranscriptRequestId"] = requestId
-            metadata["objectKey"] = "feedback-transcript-outcomes/\(serverId)/\(machineId)/\(UUID().uuidString.lowercased()).json.gz"
-            metadata["bundleContentType"] = "application/json"
-            metadata["bundleContentEncoding"] = "gzip"
-            metadata["maxBytes"] = maxBytes
+            if let agentId = rawMetadata["agentId"] {
+                guard let text = agentId as? String, ServerScope.isUUID(text) else {
+                    return Self.json(400, "{\"error\":\"agentId must be a canonical UUID\"}")
+                }
+                metadata["agentId"] = text
+            }
+            let requestedKind = Self.attestationString(rawMetadata["feedbackAttachmentKind"])
+            if let requestedKind, ["session_transcript", "transcript_outcome", "machine_log_tail", "machine_evidence"].contains(requestedKind) {
+                metadata["feedbackAttachmentKind"] = requestedKind
+            }
+            let kind = metadata["feedbackAttachmentKind"] as? String ?? "session_transcript"
+            let envValue: String?
+            if let deploymentOverride { envValue = deploymentOverride } else {
+                envValue = ProcessInfo.processInfo.environment["DEPLOYMENT_ENV"]
+            }
+            let serverEnv = (envValue ?? "production").lowercased()
+            let producerEnv = Self.attestationString(rawMetadata["deploymentEnvironment"])
+            if let producerEnv {
+                let allowed = ["dev", "development", "staging", "production"]
+                guard allowed.contains(producerEnv) else {
+                    return Self.json(400, "{\"error\":\"deploymentEnvironment \(producerEnv) is not in the allowed producer set\"}")
+                }
+                if serverEnv != producerEnv, !(serverEnv == "staging" && (producerEnv == "dev" || producerEnv == "development")) {
+                    let deploymentMessage = "deploymentEnvironment \(producerEnv) is inconsistent with server deployment \"\(serverEnv)\""
+                    return Self.json(400, "{\"error\":\(jsonString(deploymentMessage))}")
+                }
+                metadata["deploymentEnvironment"] = producerEnv
+            } else {
+                metadata["deploymentEnvironment"] = serverEnv
+            }
+            if kind == "machine_log_tail" {
+                for key in ["feedbackMachineLogTailLineCount", "feedbackMachineLogTailSourceLineCount",
+                            "feedbackMachineLogTailLinesOutsideWindow", "feedbackMachineLogTailUndatedLines"] {
+                    if let value = Self.attestationInt(rawMetadata[key]), value <= 10_000_000 {
+                        metadata[key] = value
+                    }
+                }
+                for key in ["feedbackMachineLogTailTruncated", "feedbackMachineLogTailIncludesOtherAgents"] {
+                    if let value = rawMetadata[key] as? String, value == "true" || value == "false" {
+                        metadata[key] = value
+                    }
+                }
+            }
+            if kind == "machine_evidence" {
+                guard let agentId = metadata["agentId"] as? String, let reportId = metadata["feedbackReportId"] as? String else {
+                    return Self.json(400, "{\"error\":\"Invalid attestation request\"}")
+                }
+                lock.lock()
+                let agent = oauth.agentRuntimeInfo(id: agentId)
+                let boundMachine = agentMachineIds[agentId]
+                lock.unlock()
+                guard agent?.serverId == serverId, boundMachine == machineId else {
+                    return Self.json(403, "{\"error\":\"Agent does not belong to this machine\",\"code\":\"agent_not_on_machine\"}")
+                }
+                let maxBytes = 256 * 1024
+                guard bundleSizeBytes <= maxBytes else {
+                    return Self.json(400, "{\"error\":\"Evidence bundle is too large\",\"code\":\"evidence_bundle_too_large\"}")
+                }
+                metadata["feedbackReportId"] = reportId
+                metadata["feedbackAttachmentKind"] = kind
+                metadata["objectKey"] = "feedback-machine-evidence/\(serverId)/\(machineId)/\(UUID().uuidString.lowercased()).json.gz"
+                metadata["bundleContentType"] = "application/json"
+                metadata["bundleContentEncoding"] = "gzip"
+                metadata["maxBytes"] = maxBytes
+                metadata.removeValue(forKey: "machineId")
+                metadata.removeValue(forKey: "serverId")
+            } else if kind == "transcript_outcome" {
+                guard let agentId = metadata["agentId"] as? String,
+                      metadata["feedbackReportId"] != nil,
+                      let requestId = Self.attestationString(rawMetadata["feedbackTranscriptRequestId"]),
+                      requestId.wholeMatch(of: /^[^\s]{1,128}$/) != nil
+                else {
+                    return Self.json(400, "{\"error\":\"Invalid attestation request\"}")
+                }
+                lock.lock()
+                let agent = oauth.agentRuntimeInfo(id: agentId)
+                let boundMachine = agentMachineIds[agentId]
+                lock.unlock()
+                guard agent?.serverId == serverId, boundMachine == machineId else {
+                    return Self.json(403, "{\"error\":\"Agent does not belong to this machine\",\"code\":\"agent_not_on_machine\"}")
+                }
+                let maxBytes = 2048
+                guard bundleSizeBytes <= maxBytes else {
+                    return Self.json(400, "{\"error\":\"Outcome bundle is too large\",\"code\":\"outcome_bundle_too_large\"}")
+                }
+                metadata["feedbackTranscriptRequestId"] = requestId
+                metadata["objectKey"] = "feedback-transcript-outcomes/\(serverId)/\(machineId)/\(UUID().uuidString.lowercased()).json.gz"
+                metadata["bundleContentType"] = "application/json"
+                metadata["bundleContentEncoding"] = "gzip"
+                metadata["maxBytes"] = maxBytes
+                metadata.removeValue(forKey: "feedbackTranscriptContent")
+            } else {
+                let contentType = Self.attestationString(rawMetadata["bundleContentType"]) ?? "application/x-ndjson"
+                let encoding = Self.attestationString(rawMetadata["bundleContentEncoding"]) ?? "gzip"
+                metadata["bundleContentType"] = contentType
+                metadata["bundleContentEncoding"] = encoding
+                metadata["maxBytes"] = 50 * 1024 * 1024
+                metadata["objectKey"] = "trace-bundles/\(serverId)/\(machineId)/\(UUID().uuidString.lowercased()).jsonl.gz"
+            }
+            let timeKeys = ["feedbackReportGeneratedAt", "feedbackReportWindowStartAt",
+                            "feedbackTranscriptFirstEventAt", "feedbackTranscriptLastEventAt"]
+            for key in timeKeys {
+                if let value = Self.attestationString(rawMetadata[key]), !value.isEmpty, value.count <= 64 {
+                    metadata[key] = value
+                }
+            }
+            if let source = Self.attestationString(rawMetadata["feedbackReportTimeSource"]),
+               ["web_report_bundle", "computer_clock", "unknown"].contains(source) {
+                metadata["feedbackReportTimeSource"] = source
+            }
+            if let coverage = Self.attestationString(rawMetadata["feedbackTranscriptWindowCoverage"]),
+               ["timestamps_available", "timestamps_unavailable", "covered"].contains(coverage) {
+                metadata["feedbackTranscriptWindowCoverage"] = coverage
+            }
+            if let direction = Self.attestationString(rawMetadata["feedbackTranscriptTruncationDirection"]),
+               ["window", "size", "tail"].contains(direction) {
+                metadata["feedbackTranscriptTruncationDirection"] = direction
+            }
+            if let truncated = rawMetadata["feedbackTranscriptTruncated"] {
+                if let bool = truncated as? Bool { metadata["feedbackTranscriptTruncated"] = bool ? "true" : "false" }
+                else if let text = truncated as? String, text == "true" || text == "false" {
+                    metadata["feedbackTranscriptTruncated"] = text
+                }
+            }
+            if let tolerance = Self.attestationInt(rawMetadata["feedbackTranscriptWindowToleranceMs"]),
+               tolerance <= 24 * 60 * 60 * 1000 {
+                metadata["feedbackTranscriptWindowToleranceMs"] = tolerance
+            }
+            if kind != "transcript_outcome",
+               let content = Self.attestationString(rawMetadata["feedbackTranscriptContent"]),
+               ["native_session_file", "native_state_file"].contains(content) {
+                metadata["feedbackTranscriptContent"] = content
+            }
+            for key in ["feedbackTranscriptSourceBytes", "feedbackTranscriptBytes"] {
+                if let value = Self.attestationInt(rawMetadata[key]) { metadata[key] = value }
+            }
+            if let requestId = Self.attestationString(rawMetadata["feedbackTranscriptRequestId"]),
+               requestId.wholeMatch(of: /^[^\s]{1,128}$/) != nil {
+                metadata["feedbackTranscriptRequestId"] = requestId
+            }
+            metadata.removeValue(forKey: "machineId")
+            metadata.removeValue(forKey: "serverId")
         }
-        let metadataJSON = Self.serializeJSON(metadata)
-        let secret = ProcessInfo.processInfo.environment["SCOPE_ATTESTATION_SECRET"] ?? "scope-attestation-default-secret"
-        let header = Data("{\"alg\":\"HS256\",\"typ\":\"JWT\"}".utf8).base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
-        let payload = Data(metadataJSON.utf8).base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
-        let signingInput = "\(header).\(payload)"
+        let expires = Int(Date().timeIntervalSince1970) + 120
+        var claims: [String: Any] = [
+            "sub": "machine:\(machineId)", "actorType": "machine", "machineId": machineId,
+            "serverId": serverId, "serverSlug": serverSlug, "scope": scope,
+            "aud": scopeContract.audience, "resource": resource,
+            "jti": UUID().uuidString.lowercased(), "nonce": UUID().uuidString.lowercased(),
+            "exp": expires,
+        ]
+        if !metadata.isEmpty { claims["metadata"] = metadata }
+        let claimsJSON = Self.serializeJSON(claims)
+        let headerJSON = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}"
+        func b64(_ data: Data) -> String {
+            data.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        }
+        let signingInput = "\(b64(Data(headerJSON.utf8))).\(b64(Data(claimsJSON.utf8)))"
         let mac = Data(HMAC<SHA256>.authenticationCode(for: Data(signingInput.utf8), using: SymmetricKey(data: Data(secret.utf8))))
-        let signature = mac.base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
-        let attestation = "\(signingInput).\(signature)"
-        return Self.json(200, "{\"metadata\":\(metadataJSON),\"attestation\":\(jsonString(attestation))}")
+        let attestation = "\(signingInput).\(b64(mac))"
+        let metadataJSON = metadata.isEmpty ? "null" : claimsJSON
+        _ = metadataJSON
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let expiresAt = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(expires)))
+        let metadataResponse = metadata.isEmpty ? "null" : Self.serializeJSON(metadata)
+        return Self.json(200, "{\"attestation\":\(jsonString(attestation)),\"scope\":\(jsonString(scope)),\"audience\":\(jsonString(scopeContract.audience)),\"resource\":\(jsonString(resource)),\"expiresAt\":\(jsonString(expiresAt)),\"metadata\":\(metadataResponse)}")
     }
 
     public func serverScopeAttestation(authorization: String?, serverId: String, body: String) -> HTTPReply {

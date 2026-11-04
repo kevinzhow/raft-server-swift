@@ -1747,3 +1747,12 @@ RFC 074 personal assistant：
 - 签发：`sk_computer_*`、serverMachineId=Computer id、machineId=关联 machines 行 id、serverId/slug、resumed=false；同 (server,user,name) 冲突 409 `COMPUTER_NAME_COLLISION` 且保留原 machine 链；跨用户同名允许并各自新 machine。
 - 普通 Computer 凭据访问 `/internal/computer/attachment/revoke` 被拒 401 `auth_policy_unregistered_path`，不吊销。
 - 裁决：上游“attach 不再启动已退役 mobile-download email journey”断言仅检查 DB onboardingEmailJourneys 行；本移植无该 journey 存储，HTTP 面无该副作用，故不重复 DB 探针。
+
+### route internal.scopeAttestation.api（锁定，含裁决）
+
+- machine / Computer attachment 凭据均可签发 capability；HS256 JWT claims 含 sub=`machine:<id>`、actorType=machine、machineId/serverId/serverSlug、scope、aud、resource、jti、nonce、exp(≤now+120)，响应顶层 scope/audience/resource/expiresAt(+trace/evidence metadata)。
+- scope 映射固定：`feedback-report:create`→feedback-worker / …/feedback-reports；`daemon-trace-bundle:create`、`machine_log_tail:create`、`machine_evidence:create`→trace-ingest-worker / …/trace-bundles；未支持 scope 400 `Unsupported scope: X`；caller 传 audience/resource 400 固定错误。
+- 无 secret → 503 `not configured`；非 machine 凭据 401。
+- trace bundle：bundleId/sha/size 必填，contentType>128/encoding>64 400；非法 reportId/agentId（非 canonical UUID）400；deploymentEnvironment 允许集与 server 环境一致性（staging 允许 dev；production 拒绝并报 inconsistent；未知报 not in allowed producer set）；缺省回落 server env；maxBytes=50MiB、x-ndjson+gzip、trace-bundles objectKey；machine_log_tail 计数器仅在 tail kind 下且 malformed 丢弃；machine_evidence 要求 agent 属于本机、≤256KiB、JSON+gzip、feedback-machine-evidence 前缀；transcript_outcome 要求 requestId 且不带 content label。
+- 诊断字段（observedFailureSummary/feedbackTraceTail/feedbackMachineState）一律剔除；最大 metadata 仍 ≤16KiB。
+- 裁决：上游两条以 tracer sink 事件序列/警告 span 为断言的 case（sanitized breakdown trace events、诊断剔除的 warning trace event）不移植；其 HTTP/JSON/签名行为已由本模块其余断言覆盖。

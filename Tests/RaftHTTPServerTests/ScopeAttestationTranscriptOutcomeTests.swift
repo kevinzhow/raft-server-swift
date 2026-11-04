@@ -46,6 +46,7 @@ private func sign(_ client: any Client, _ fixture: OutcomeFixture, _ metadata: [
 @Test func transcriptContentAndCountsAreSignedOrDroppedNeverCoerced() async throws {
     var fixture = OutcomeFixture()
     fixture.seed()
+    fixture.accounts.setScopeAttestationSecretForTesting("transcript-outcome-test-secret")
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: fixture.accounts))
         try await app.testing { client in
@@ -88,6 +89,7 @@ private func sign(_ client: any Client, _ fixture: OutcomeFixture, _ metadata: [
 @Test func transcriptOutcomeRequiresReportAgentRequestIdAndMachineOwnership() async throws {
     var fixture = OutcomeFixture()
     fixture.seed()
+    fixture.accounts.setScopeAttestationSecretForTesting("transcript-outcome-test-secret")
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: fixture.accounts))
         try await app.testing { client in
@@ -128,6 +130,7 @@ private func sign(_ client: any Client, _ fixture: OutcomeFixture, _ metadata: [
 @Test func transcriptOptionalKeysAtMaximumStayWithinAttestationBudget() async throws {
     var fixture = OutcomeFixture()
     fixture.seed()
+    fixture.accounts.setScopeAttestationSecretForTesting("transcript-outcome-test-secret")
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: fixture.accounts))
         try await app.testing { client in
