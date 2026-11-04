@@ -1388,3 +1388,8 @@ RFC 074 personal assistant：
 
 - 旧版 `agent:activity` 传输：新 fact 盖 clientSeq、producer_fact_id（`daemon_activity:<agent>:<launch|legacy>[:<daemonInstanceId>]:<seq>`）、observedAtMs 与 daemonInstanceId，并记录 `daemon.agent.activity.produced` trace（含 server_id/ap_present/correlation_id/entry_kinds）；非 fact/未知 detail kind 丢弃并记录 `daemon.agent.activity.dropped`（status error），不发帧也不产生 produced trace。
 - heartbeat 标记 isHeartbeat 且 fact id 省略 daemonInstanceId 段（legacy 命名空间）；probe reply 携带 probeId、无 observedAtMs；raw send 原样透传调用方 clientSeq（nil 则省略）并带 daemonInstanceId。
+
+### daemon directUploadCapability
+
+- 直传能力：daemon 先向 server `POST /internal/machine/scope-attestation`（Bearer machine key，body scope+可选 metadata）取签名的 machine-scope attestation；再向 worker `POST <createPath>`（body 携带 attestation，不带 server 凭据）创建上传会话；最后按会话给出的 method/url/headers 直接 PUT 字节，server 不在数据面。
+- 失败带 hop 标签（attestation/create/put）与 HTTP status，`classify` 不解析文案：有 status 按 4xx/5xx 分类，URLError 记 network，其余 other；server 返回 HTML 413 也按 413 归类。
