@@ -1451,3 +1451,8 @@ RFC 074 personal assistant：
 - Raft home 单一规则：`$RAFT_HOME`（trim 后非空）优先于 `$SLOCK_HOME`；都未设时 `~/.slock` 已含 Raft 状态（agents/computer/machines/profiles/agent-state 任一存在）则用它，否则 `~/.raft`；只有 notice 文件的 `~/.slock` 不算。返回值规范化为绝对路径；`resolvePath` 拼接子路径。
 - 自定义 home 时，`listLegacyStatePaths` 报告默认根下已存在的 agents/machines/attachments（带 destination 与描述）供迁移提示；默认 home 时为空。
 - 非移植用例：上游「全仓源码不得硬编码默认 home」的源码扫描不适用于本移植（PARITY 已注明）。
+
+### daemon drivers/nodeHostLaunch
+
+- Node host 分类：先看 Electron（Electron 构建绝不是 SEA）；再跑 SEA 探针（注入的 execIsSea 或 seaProbe；`node:sea` 缺失/MODULE_NOT_FOUND/ERR_UNKNOWN_BUILTIN_MODULE 才是「非 SEA」证据，其它错误是「无法回答」→ unknown）；非 SEA 时 node 必须是正向判定（有 node runtime 信号），否则 unknown。
+- 启动解析：Electron → 同一 executable + `ELECTRON_RUN_AS_NODE=1` 且保留其余 env；纯 Node → executable 与 env 原样；SEA → 抛带 `node_host_unavailable`/hostKind 的具名能力错误（绝不回退 execPath）；unknown → 同样 fail-closed。
