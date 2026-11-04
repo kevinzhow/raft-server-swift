@@ -1332,3 +1332,7 @@ RFC 074 personal assistant：
 - Kimi Code OAuth key：默认 host 对（auth.kimi.com + api.kimi.com/coding/v1）映射 `oauth/kimi-code`；其他 host 对按 `{oauthHost,baseUrl}` 的 sha256 前 16 hex 生成 `oauth/kimi-code-env-<digest>`；storage name 拒绝空/以 `.` 开头/含路径分隔符的 key。
 - provider-list 投影：仅 `managed:kimi-code` 且 type=kimi 时有效；env `KIMI_CODE_BASE_URL`/`KIMI_CODE_OAUTH_HOST`（兼容 `KIMI_OAUTH_HOST`）覆盖配置；无覆盖且配置 key 匹配时保留配置 storage（非 file 记 `other`）；`KIMI_CODE_HOME` 或 `~/.kimi-code` 树下派生 credentialPath（credentials/<name>.json）与 lockTarget（oauth/<name>）。
 - `resolveKimiCodeAuth` 以 `provider list --json` 探针读取并投影，非 JSON 或无名 managed provider 返回 nil；附带 device headers 与 `device_id` 创建逻辑。
+
+### daemon runtimeAccountUsage/kimiCredentialLock
+
+- Kimi 刷新锁：`<target>.lock` 目录哨兵（sentinel 文件 `<target>` 预创建），stale 5s；有界重试（默认 12 次、0.5–1s 退避），拿不到锁返回 unavailable（reason 含 acquire 失败）且绝不运行回调；持锁期间每 max(stale/2,1s) 刷新 mtime，锁目录被删除或被他人以旧 mtime 接管时 handle 标记 compromised（不抛出）；释放后 `.lock` 目录消失，其他进程持锁时 `isHeld` 为 true、本方尝试被判 blocked。
