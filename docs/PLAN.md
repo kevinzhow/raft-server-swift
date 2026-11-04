@@ -294,3 +294,10 @@ daemon 180/180、socket 7/7 已完成；剩余唯一缺口是 route 的 6 个 pe
 3. 删除 cloak：`DELETE /api/channels/:id` 置 `deletedAt` 后，消息深链 404、thread 深链 404（已完成，`5f3ab05`）、search 结果排除、`/api/attachments/:id/url` 404（均已由 `DeletedChannelCloakTests` 验证）；保留搜索 marker 只在未删除频道。
 4. storage seam：`AttachmentStorage` protocol（put/get/delete/presignedURL）+ `FallbackServices.attachmentStorage` 注入，默认内存实现；测试用 fake 返回固定 URL。
 5. 验收：新增 `GuestChannelLifecycleTests`（archive 只读、删除 cloak、join 上限），先失败后实现；绿后锁 `guestRbac.api` 的对应 case。
+
+## 下一片（本轮结论）
+
+- `publicSearchServiceAccess.api` 仍 partial：已完成凭证/轮换/共享桶/失败关闭/key 截止；剩余 in-flight cap 与 IP limiter 顺序、index 有界分页两项可执行契约；Redis EVAL 适配器按未移植 Redis 基础设施裁决。
+- `productFeedback.api` 已完成提交面（`9570104`）；下一片补 reporter session/list/comments/close 与 attribution，随后 `productFeedback.multiApp.api`。
+- raftbench/read-mutations 等大集成轨道需先落数据模型与 route 骨架，再逐 case 锁定；不要以服务注入 spy 直接换取 locked。
+
