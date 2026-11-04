@@ -1866,3 +1866,9 @@ RFC 074 personal assistant：
 - 两个模块的可观测面都建立在本仓库未移植的 durable inbox 子系统上：外部 agent 的未读来自 RisingWave inbox chain（测试通过 `__setExternalAgentInboxChainSelectorForTests` 注入 chain/reference derivation），live delivery buffer/`inbox_hint`/wake-hints 全由 `AgentOrchestrator` stub 与 test-only pull interval 控制；inboxPush 的 notice/signing/registration 也依赖同一 chain、replica 与 orchestrator 注入。
 - 契约要求不移植 IO/测试注入除非 HTTP/JSON 断言可在无 spy 情况下到达；这两个模块的核心断言（durable pull 顺序、buffer 合并、跨 replica notice、wake-hint 计数）无法脱离注入到达。
 - 已锁定的替代可观测行为：`internalAgentApi.wakeHintStream`（wake-hint SSE 投影）、`internalAgentApi.historyUnread`（read position/未读读取语义）、bind-mounted `/events` 的既有实现保留；未来若移植 durable inbox，再以新切片替换本裁决。
+
+### route agentCredentialSecurity.api（裁决锁定）
+
+- 模块断言“已撤销凭证/已删除 agent 的打开 wake-hint SSE 流在下一次 heartbeat 或撤销信号时结束”，以及 seen-touch 不更新撤销凭证、跨 replica 撤销信号（test-only handler）、轮换关闭被替换凭证的流。
+- 这些依赖未移植的 per-agent SSE 流生命周期、`__setAgentCredentialUseThrottleMsForTests` 与 external inbox chain 测试选择器；无黑盒 HTTP 可在无注入下断言“开着的流被关闭”。已锁定的 `internalAgentApi.wakeHintStream` 覆盖 wake-hint 帧投影，凭证 mint/校验语义由既有 agent credential 测试覆盖。
+- 按契约不以 SSE/测试钩子换取实现，故裁决为非可执行。
