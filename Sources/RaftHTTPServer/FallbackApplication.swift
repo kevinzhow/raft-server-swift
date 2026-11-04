@@ -25,6 +25,9 @@ public struct FallbackServices: Sendable {
     public var publicSearchIndexEnabled: Bool
     public var publicSearch: PublicSearchCatalog
     public var publicServerDirectory: PublicServerDirectory?
+    public var publicSearchServiceKeySource: (any PublicSearchServiceKeyProviding)?
+    public var publicSearchServiceBucket: (any PublicSearchBucketStoring)?
+    public var publicSearchServiceLimits: PublicSearchServiceLimits
     public var releaseNotes: [ReleaseNoteRecord]
     public var messageContext: MessageContextCatalog
     public var publicVisits: PublicVisitDirectory?
@@ -52,6 +55,9 @@ public struct FallbackServices: Sendable {
         publicSearchIndexEnabled: Bool = false,
         publicSearch: PublicSearchCatalog = PublicSearchCatalog(),
         publicServerDirectory: PublicServerDirectory? = nil,
+        publicSearchServiceKeySource: (any PublicSearchServiceKeyProviding)? = nil,
+        publicSearchServiceBucket: (any PublicSearchBucketStoring)? = nil,
+        publicSearchServiceLimits: PublicSearchServiceLimits = PublicSearchServiceLimits(),
         releaseNotes: [ReleaseNoteRecord] = [],
         messageContext: MessageContextCatalog = MessageContextCatalog(),
         publicVisits: PublicVisitDirectory? = nil,
@@ -75,6 +81,9 @@ public struct FallbackServices: Sendable {
         self.publicSearchIndexEnabled = publicSearchIndexEnabled
         self.publicSearch = publicSearch
         self.publicServerDirectory = publicServerDirectory
+        self.publicSearchServiceKeySource = publicSearchServiceKeySource
+        self.publicSearchServiceBucket = publicSearchServiceBucket
+        self.publicSearchServiceLimits = publicSearchServiceLimits
         self.releaseNotes = releaseNotes
         self.messageContext = messageContext
         self.publicVisits = publicVisits
@@ -4040,7 +4049,10 @@ public func configure(_ app: Application, services: FallbackServices) {
     middleware.use(PublicSearchMiddleware(
         indexEnabled: services.publicSearchIndexEnabled,
         catalog: services.publicSearch,
-        directory: services.publicServerDirectory
+        directory: services.publicServerDirectory,
+        serviceKeySource: services.publicSearchServiceKeySource,
+        serviceBucket: services.publicSearchServiceBucket,
+        serviceLimits: services.publicSearchServiceLimits
     ))
     middleware.use(FallbackMiddleware(services: services))
     app.middleware = middleware
@@ -4067,10 +4079,43 @@ private struct PublicSearchMiddleware: Middleware {
     var indexEnabled: Bool
     var catalog: PublicSearchCatalog
     var directory: PublicServerDirectory?
+    var serviceKeySource: (any PublicSearchServiceKeyProviding)?
+    var serviceBucket: (any PublicSearchBucketStoring)?
+    var serviceLimits: PublicSearchServiceLimits
+
+    private func serviceRefusal(_ status: Int, _ code: String) -> Response {
+        var headers = HTTPFields()
+        headers[.contentType] = "application/json"
+        headers[HTTPField.Name("Cache-Control")!] = "no-store"
+        return Response(status: httpStatus(status), headers: headers, body: .init(string: "{\"error\":\"Public search service access refused\",\"code\":\"\(code)\"}"))
+    }
+
+    private func serviceLimited(_ retryAfter: Int) -> Response {
+        var headers = HTTPFields()
+        headers[.contentType] = "application/json"
+        headers[HTTPField.Name("Cache-Control")!] = "no-store"
+        headers[HTTPField.Name("Retry-After")!] = String(retryAfter)
+        return Response(status: .tooManyRequests, headers: headers, body: .init(string: "{\"error\":\"Public search service rate limit exceeded\",\"code\":\"service_rate_limited\"}"))
+    }
 
     func respond(to request: Request, chainingTo next: any Responder) async throws -> Response {
         guard PublicSearch.isSearchPath(request.url.path) else {
             return try await next.respond(to: request)
+        }
+        let credential = PublicSearchServiceAccess.classify(
+            authorization: request.headers[HTTPField.Name("Authorization")!],
+            keySource: serviceKeySource
+        )
+        if let refusal = PublicSearchServiceAccess.refusal(credential) {
+            return serviceRefusal(refusal.status, refusal.code)
+        }
+        if case .service = credential {
+            guard let serviceBucket else { return serviceRefusal(503, "service_unavailable") }
+            switch serviceBucket.consume(limit: serviceLimits.ratePerMinute) {
+            case .allowed: break
+            case .rateLimited(let retryAfter): return serviceLimited(retryAfter)
+            case .unavailable: return serviceRefusal(503, "service_unavailable")
+            }
         }
         let method = request.method.rawValue
         if request.method != .get && request.method != .head {
