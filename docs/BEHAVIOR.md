@@ -1487,3 +1487,10 @@ RFC 074 personal assistant：
 - 迁移代清理：`migrations/<migration>/<generation>` 含 `chunks`/`source-spool`/`extracting-*` 且最近活动（根与直接子项最大 mtime）早于 7 天 → 删除 bulk、保留 JSON 报告，返回释放字节。
 - 备份保留：每个 agent 的 `migration-workspace-backups/<agent>/<backup>` 按 mtime 降序，保留前 3 且 mtime ≥ 30 天 cutoff；其余删除并逐条上报 owner/kind(preexisting|migration)/ageDays/freedBytes。
 - footprint 分开统计 migrations / workspace backups / (cli-transport + agent-proxy-tokens)，并带 measure outcome；定时器初始 10 分钟后、此后每 24 小时跑一次，pass 不重叠（结束才重新 arm），stop 清定时器。
+
+### daemon runtimeNotificationState
+
+- 忙碌 stdin 通知状态：pending debt（自上次发送尝试起累计、与 inbox 长度无关，支持 add/remove/clearPending）与至多一个定时器分开管理；takePendingAndClearTimer 取走计数并清定时器；clear 同时清 pending/timer/fingerprint。
+- inbox notice fingerprint：按消息身份取集合键（seq 优先，否则 message_id/id），排序后用逗号连接（`s:11,s:9` 字典序），空集为空串；同计数但集合变化（读一条+新一条）产生不同 fingerprint。
+- 去重 memo：仅抑制**同 session** 且完全相同的已写 fingerprint（空指纹永不抑制）；recordNoticeWritten 记录贡献身份集合，filterUncontributedMessages 只过滤同 session 已贡献的已识别消息，pruneContributedToPending 让已消费行可再次出现。
+- failed-encode memo：仅抑制同 session 相同 fingerprint 的失败尝试（空不记）；成功写入清除失败 memo；clear 清空两类 memo。
