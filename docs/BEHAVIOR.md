@@ -1544,3 +1544,11 @@ RFC 074 personal assistant：
 - 诊断：fingerprint = lowercased、hex→`<hex>`、数字→`<num>`、空白归一后的 sha256 前 16 位；length bucket 0/<1k/1k-4k/4k-16k/16k+；InputTooLarge 附加 estimated/budget/context-limit/requested/message/completion/overage/model 计数（仅当 requested>limit 时 overage）。
 - ActivityDiagnostic：保留精确 class/reason（显式 errorClass 优先）、fingerprint、reasonProvenance，requiredAction 仅在非 none 时出现；不含原始文本。
 - 文案：login-required（builtin/pi/其余 runtime 名称）、start-timeout、input-too-large（grok/pi/builtin 指向 Reset Session & Restart，其余提示 compact）、billing-exhausted、plan-access（含模型名，非登录）。
+
+### daemon skillFrontmatter
+
+- SKILL.md frontmatter 只解析扁平 YAML 子集：`key: plain`（去 ` #` 尾注释）、双引号（`\"`/`\\` 反转义）、单引号（`''`→`'`）、literal `|`、folded `>` 及 `-`/`+` chomping 与显式缩进指示符（1–9；0/两位数视为非法并 fail closed）。
+- block scalar 保真：`|-` 无尾随换行、`|` 恰好一个、`|+` 每个尾部空行一个；folded 中单换行折为空格、k 个空行产生 k 个换行、更多缩进行保留两侧换行（前置空行叠加结构换行）；行首空行是内容。
+- 不支持语法（anchor/alias/tag/flow collection/复杂键/保留指示符 `@` `` ` `` `%`/序列项/未闭合引号/畸形 block header/嵌套 mapping）一律 fail closed 为空串；失败不影响其余键解析。
+- 结构层级仅由“可承载 key 的行”决定（注释、空行、无冒号行不参与），嵌套子键不会提升为顶层元数据；block body 中的 `key: value` 不被当作键；全部缩进的文档仍可解析。
+- CRLF 与 LF 解析结果一致；无 frontmatter 返回空 map；重复 key 后者覆盖。
