@@ -306,3 +306,11 @@ daemon 180/180、socket 7/7 已完成；剩余唯一缺口是 route 的 6 个 pe
 - index 分页语义（已实现 `indexBody(_:cursor:)`，索引页锁定）：每页最多 500 个候选 server 扫描、最多 75 条 entries（≈25 个有 entry 的 server）；`nextCursor` 为 32 位十六进制「下一个候选 server 偏移」+ `:done`；命中 500 扫描上限但无 entry 时也必须返回前向 cursor。实现放在 `PublicSearch.indexBody(_:cursor:)`，cursor 前缀即 server 偏移。
 - in-flight 槽位：内存 bucket 已有 acquire/release 原语；HTTP 接线需用 Vapor `AsyncMiddleware` 包裹在响应完成后 release，避免当前中间件重复进入导致的槽位泄漏；IP limiter 必须在 key lookup 之前、且与匿名桶分离。
 - Redis EVAL 适配器（原子 Lua + TTL 修复）按未移植 Redis 基础设施裁决，不实现。
+
+### 剩余 31 个 partial 分类（round 247 核查）
+
+- **大模块/多切片**：`internalAgentApi.send`(65)、`internalAgentApi.auth`(93)、`agents.api`(87)、`auth.api`(45)、`channels.membership.api`(39)、`internal.channelMembership.api`(43)、`channels.api`、`channelAdmin.api`、`oauth.api`、`integrations.api`、`agentRuntimeProviders.api`、`messageTranslations.api`、`productFeedback.api`/`multiApp`、`appAgentReminderMessages.api`、`serverMemberEvents.api`、`readMutations.api`、`channels.jointChannelAdmin.api`、`internalAgentKnowledge.api`、`attachmentUploadSessions.api`、`attestedSend.api`、`productFeedback.diagnostics` 已完成。
+- **外部服务/基础设施注入**：`slackBridge.api`（Slack 控制面）、`internalAgentApi.externalInboxPull`/`inboxPush`（durable inbox/RisingWave chain）、`messageTranslations`（OpenAI-compatible provider/ledger）、`agentCredentialSecurity`（SSE 流）、`internalAgentApi.crossReplicaWake`（已裁决）。
+- **socket 帧族**：`socketMembershipRevocation.api`（guest join/resume 可见性，需要新 WS 夹具）。
+- **可继续的小切片**：`internalAgentApi.selfCausedNoticeFreshness.api`（复用 send hold + 注意因果 actor）、`internalComputer.agentMigration`、`productFeedback.multiApp`（app registry 注入）、`publicSearchServiceAccess` 已锁定、`readMutationsResidueBoundary` 已锁定。
+- 策略：优先小切片锁定；大模块按数据模型→路由→case 分批推进，不以测试钩子换 locked。
