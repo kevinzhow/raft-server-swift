@@ -1383,3 +1383,8 @@ RFC 074 personal assistant：
 
 - agent start 的队列/查找单一边界：同一 agent 重复 enqueue 报 already queued；starting 集合与 queued 集合互斥（starting 中不能再 enqueue、queued 中不能 markStarting）；队列 age 取自不可变的 enqueuedAt（缺失为 0）。
 - 泵状态受容量门禁：active starts 达到 maxConcurrentStarts 时 blocked(capacity_full)，release 后对队首 ready；取消操作同时清 queue 与 lookup，`cancelAllQueued` 的 per-item 回调在持锁外执行且观察到清理前深度（避免 NSLock 非重入死锁）。
+
+### daemon activity/activitySink
+
+- 旧版 `agent:activity` 传输：新 fact 盖 clientSeq、producer_fact_id（`daemon_activity:<agent>:<launch|legacy>[:<daemonInstanceId>]:<seq>`）、observedAtMs 与 daemonInstanceId，并记录 `daemon.agent.activity.produced` trace（含 server_id/ap_present/correlation_id/entry_kinds）；非 fact/未知 detail kind 丢弃并记录 `daemon.agent.activity.dropped`（status error），不发帧也不产生 produced trace。
+- heartbeat 标记 isHeartbeat 且 fact id 省略 daemonInstanceId 段（legacy 命名空间）；probe reply 携带 probeId、无 observedAtMs；raw send 原样透传调用方 clientSeq（nil 则省略）并带 daemonInstanceId。
