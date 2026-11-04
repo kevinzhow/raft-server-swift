@@ -15906,6 +15906,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// `POST /api/computer/attach`. Mints a `sk_computer_*` principal for a
     /// server Computer. The gate is default-on; the slug resolves the Server in
     /// the body, and only owner/admin hold the manageMachines capability.
+    public func computersForTesting(serverId: String) -> [(id: String, machineId: String, name: String, userId: String, revoked: Bool)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return computers.filter { $0.serverId == serverId }.map {
+            ($0.id, $0.machineId ?? "", $0.name, computerAttachers[$0.machineId ?? ""] ?? "", $0.revokedAt != nil)
+        }
+    }
+
+    public func machineExistsForTesting(machineId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return machines.contains { $0.id == machineId }
+    }
+
     public func attachComputer(authorization: String?, body: String) -> HTTPReply {
         guard computerAttachEnabled() else {
             return Self.json(404, "{\"error\":\"Not found\",\"code\":\"not_found\"}")
@@ -15946,7 +15960,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         computers.append((id: computerId, serverId: serverId, name: name, apiKey: apiKey, machineId: machineId, revokedAt: nil, online: false, version: nil))
         computerAttachers[machineId] = userId
         lock.unlock()
-        return Self.json(201, "{\"apiKey\":\(jsonString(apiKey)),\"serverMachineId\":\(jsonString(machineId)),\"machineId\":\(jsonString(machineId)),\"serverId\":\(jsonString(serverId)),\"serverSlug\":\(jsonString(details.slug)),\"name\":\(jsonString(name)),\"resumed\":false}")
+        return Self.json(201, "{\"apiKey\":\(jsonString(apiKey)),\"serverMachineId\":\(jsonString(computerId)),\"machineId\":\(jsonString(machineId)),\"serverId\":\(jsonString(serverId)),\"serverSlug\":\(jsonString(details.slug)),\"name\":\(jsonString(name)),\"resumed\":false}")
     }
 
     /// `POST /api/computer/adopt-legacy`. One-time migration from a legacy

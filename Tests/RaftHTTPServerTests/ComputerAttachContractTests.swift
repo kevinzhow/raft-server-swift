@@ -164,7 +164,7 @@ private func attachPost(
             let rosterBody = (try? JSONSerialization.jsonObject(with: Data((roster.body.string ?? "").utf8))) as? [String: Any] ?? [:]
             let rosterRows = rosterBody["entries"] as? [[String: Any]] ?? []
             #expect(rosterRows.contains { row in
-                (row["daemonId"] as? String) == (first.body["serverMachineId"] as? String)
+                (row["daemonId"] as? String) == (first.body["machineId"] as? String)
                     && (row["machineName"] as? String) == "raft-computer"
                     && (row["hasFingerprint"] as? Bool) == false
             }, "the attached Computer appears in the adoption roster")

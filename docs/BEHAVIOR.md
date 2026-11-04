@@ -1739,3 +1739,11 @@ RFC 074 personal assistant：
 - transcript 元数据白名单归一：content 仅 `native_session_file|native_state_file`；source/bytes 必须非负整数且 ≤ MAX_SAFE_INTEGER；requestId 1–128 非空白字符；越界/错误类型/out-of-enum 直接丢弃，绝不强转。
 - `transcript_outcome` kind：必须有 reportId(UUID)、agentId(UUID)、requestId；agent 必须存在于本机器（否则 403 `agent_not_on_machine`）；bundleSizeBytes ≤ 2048（否则 400）；输出 objectKey `feedback-transcript-outcomes/{serverId}/{machineId}/{uuid}.json.gz`、bundleContentType=application/json、bundleContentEncoding=gzip、maxBytes=2048；outcome 不携带 transcript content label。
 - S3：所有新可选键取最大值仍能签名且 attestation 不超预算。
+
+### route computerAttach.api（锁定，含裁决）
+
+- `POST /api/computer/attach`：gate off 404；默认 mounted（随机 slug → 403 而非 404）；未认证 401；缺 serverSlug 或传 serverId → 400 `server_slug_required`；UUID 形式 serverSlug 按 slug 处理（不兼容 serverId 别名）。
+- 授权：非成员/未知 server 统一 403 `not_authorized`；普通成员 403 `requires_admin`；owner/admin 201；admin 提升后同请求成功。
+- 签发：`sk_computer_*`、serverMachineId=Computer id、machineId=关联 machines 行 id、serverId/slug、resumed=false；同 (server,user,name) 冲突 409 `COMPUTER_NAME_COLLISION` 且保留原 machine 链；跨用户同名允许并各自新 machine。
+- 普通 Computer 凭据访问 `/internal/computer/attachment/revoke` 被拒 401 `auth_policy_unregistered_path`，不吊销。
+- 裁决：上游“attach 不再启动已退役 mobile-download email journey”断言仅检查 DB onboardingEmailJourneys 行；本移植无该 journey 存储，HTTP 面无该副作用，故不重复 DB 探针。

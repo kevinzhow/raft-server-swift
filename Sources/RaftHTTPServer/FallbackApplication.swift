@@ -3050,6 +3050,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("internal", "computer", "attachment", "revoke") { _ -> Response in
+        var headers = HTTPFields()
+        headers[.contentType] = "application/json"
+        return Response(status: .unauthorized, headers: headers, body: .init(string: "{\"error\":\"Authentication policy not registered for this path\",\"code\":\"auth_policy_unregistered_path\"}"))
+    }
+
     app.post("internal", "computer", "runners", ":agentId", "credentials") { request -> Response in
         routeResponse(services.emailAccounts.computerMintRunnerCredential(
             authorization: request.headers[.authorization],
