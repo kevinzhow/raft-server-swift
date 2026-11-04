@@ -1296,3 +1296,9 @@ RFC 074 personal assistant：
 - guest 可读取频道内的 action-card 摘要消息（carrier 历史包含代表 card 的消息）。
 - guest 对 `POST /api/actions/:messageId/execute` 与新增的 `POST /api/actions/:messageId/mark-executed` 一律 403；`mark-executed` 由人类成员调用时把 card 置为 executed 并返回 `{kind:"action-card",state:"executed"}`，guest 不改变 card 状态。
 - Guest 归档频道保持只读：归档后离开 active 列表，但 guest 历史仍可读；搜索命中保留 `channelArchivedAt` 只读标记；`join` 返回 409；guest 发帖返回 403（成员发帖仍 409 `channel_archived`）。
+
+### daemon drivers/opencode.modelsAsync
+
+- OpenCode 模型列表的异步探针子进程与同步孪生行为一致：Windows 上同样经 PowerShell 解析可执行文件，按版本选择 `models` 参数（2.x ≥ 2.0.27 带 `--standalone`），listing 子进程使用 5s 预算、`HOME`/`NO_COLOR=1` 环境与 `shell:false`。
+- 失败映射一致：非零退出保留 status（无 error），timeout/spawn 失败携带 error；解析失败以 result 返回（status nil + 固定解析文案）而不抛错；`detectOpenCodeModelSource*` 区分 command failure（retryable error）、空成功（no_models）与 live 列表。
+- 取消语义：预取消以 ABORT_ERR 拒绝；listing 途中 abort 连同 cleanup 透传，detect 包装不吞掉 abort。

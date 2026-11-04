@@ -299,7 +299,7 @@ drivers/launchCurrent	daemon	locked	605dd85	non-executable black-box: spawns the
 drivers/managedMcpTools	daemon	locked	0e01b86	managed MCP Pi tools: absent without a runner credential, catalog snapshot frozen with config/assignment versions and proxied calls carrying the version fence and bearer auth, non-fatal bounded snapshot warnings, bounded remote error text with the truncation marker and tool-named empty fallback, transport and uncoded 5xx failures reading as outcome unknown while Raft-coded answers pass through, and newline-flattened remote names/descriptions that cannot forge prompt lines
 drivers/nodeHostLaunch	daemon	pending	-	auto-seed
 drivers/opencode.live	daemon	locked	61895fe	non-executable black-box: a live integration run against the real opencode CLI, which this port does not ship or drive
-drivers/opencode.modelsAsync	daemon	pending	-	auto-seed
+drivers/opencode.modelsAsync	daemon	locked	SLICE	OpenCode model listing async twin: resolves the same Windows executable, selects --standalone for 2.x>=2.0.27, maps nonzero exit to status and timeout/spawn failures to errors exactly like the sync path, returns Windows resolution failures as results, keeps command-failure/no_models/live detection distinct, passes the 5s budget plus HOME/NO_COLOR and no shell, and propagates pre-abort and mid-listing aborts with cleanup
 drivers/opencode	daemon	pending	-	auto-seed
 drivers/pi.compaction	daemon	pending	-	auto-seed
 drivers/pi.integration	daemon	locked	61895fe	non-executable black-box: a live integration run against the real pi runtime, which this port does not ship or drive
