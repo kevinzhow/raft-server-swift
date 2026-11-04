@@ -1501,3 +1501,10 @@ RFC 074 personal assistant：
 - flags 渲染：mention → "you were mentioned"；non_member_mention → 固定非成员回复指引文本；未知 flag 用 JSON 引号转义并截断 40 字符显示；third-party 分组 target 显示为 "Third-party app events"、过滤 dm flag 并追加 "fetch with raft message check"。
 - 格式化：snapshot 头区分 pending targets 与 suppressed-only targets；delta 头用 "pending your read across all conversations"（不用 unread），空行为 "Inbox update: no pending targets"；attention_hint 按 schema/trigger/scope/suggested_command/copy/copy_version/epoch_ms/thresholds 紧凑 JSON 输出。
 - 抑制计数为旁路参数：仅正整数有效（Infinity/小数/负数/NaN 丢弃），全部被抑制的 target 仍产生 pendingCount=0 的行；省略该参数与传空 map 结果一致。
+
+### daemon contextGeneration
+
+- RFC 072 §7.2 上下文代信号：spawn/compaction 写入新 `context-id`（`<transportDir>/context-generation`，JSON、0600、原子 rename）；resume 复用该 session 上次的 id（agent 级 `sessions.json` 表，最多 32 条，按 updatedAt 保新）。
+- 失败方向安全：写前先删旧文件；写/rename 失败清理 tmp 并把 generation 文件清掉（绝不留下可被 CLI 匹配的旧 id）；表写失败删除整表（宁丢表也不复用 compaction 前 id）。
+- 计划与发布分离：plan 只计算不落盘；bindToSession 在 runtime 报告的 session 与 resume 目标不一致时先发布新 id（继承本次 spawn 的 passiveAx gate），再绑定 session→id；compaction 后重新绑定。
+- `RUNTIME_REPORTS_COMPACTION` 为每个已注册 runtime 显式声明是否上报 compaction；configPassiveAx 仅显式 true 开启。
