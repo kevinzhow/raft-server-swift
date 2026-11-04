@@ -1321,3 +1321,8 @@ RFC 074 personal assistant：
 - runtime child 在 session 接管前被 guard 记录：stdout/stderr chunk、error、exit、close 按到达顺序保存（stdin error 也暂存，从不抛出）；hand-off 只回放一次，之后返回 nil。
 - 未在 10s 内接管的 child 被放弃：丢弃已缓存输出、保留 error/exit、记录 warning（含 `not taken over within 10000ms` 与 `errors=<code>`），发 SIGTERM，5s 后仍存活再发 SIGKILL；放弃后到达的输出不再保存，hand-off 得到 `abandoned` 文案而非部分回放。
 - 接管前输出超过 4MiB 也放弃（`exceeded`），不截断后伪装成完整回放。
+
+### daemon providerRequestFetch
+
+- provider 请求的被动诊断：等待时发 waiting，收到响应头后发 responding（2xx）或 failed（非 2xx，带 httpStatus）；transport 抛错时 failed，取消时 cancelled；observer 抛错不影响请求；requestId 全程唯一，provider 非法名归一为 `custom`。
+- 请求与响应原样透传：保留原始 body/options/signal，返回 transport 的同一响应对象（identity/metadata/未锁定 body 不变，可独立 clone 读取），诊断不含请求或响应正文。
