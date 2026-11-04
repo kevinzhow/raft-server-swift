@@ -246,11 +246,11 @@ agentProcessManager.claude	daemon	pending	-	auto-seed
 agentProcessManager.codex	daemon	pending	-	auto-seed
 agentProcessManager.feedbackTranscriptHonesty	daemon	pending	-	auto-seed
 agentProcessManager.grok	daemon	locked	ef39171	non-executable black-box: an integration run of AgentProcessManager with the Grok driver, fake child processes and MemoryTraceSink assertions; this port has no agent runtime process manager, Grok driver or trace sink
-agentProcessManager.residency	daemon	pending	-	auto-seed
+agentProcessManager.residency	daemon	locked	20d55a0	non-executable black-box: drives AgentProcessManager with fake child processes, lifecycle records and inbox state to prove no-process residency invariants and blast radius; this port has no agent runtime process manager to drive
 agentProcessManager.serverWake	daemon	pending	-	auto-seed
 agentProcessManager.sessionTranscript	daemon	pending	-	auto-seed
 agentProcessManager.spawnFailCooldown	daemon	locked	3370ccd	non-executable black-box: drives AgentProcessManager with fake child processes, daemon fetch stubs and lifecycle records to prove an active spawn-fail cooldown always carries a restart config; this port has no agent runtime process manager to drive
-agentProcessManager.systemPrompt	daemon	pending	-	auto-seed
+agentProcessManager.systemPrompt	daemon	locked	20d55a0	non-executable black-box: an integration run of AgentProcessManager prompt construction, restart and resume selection against the prompt fixture; this port has no agent runtime process manager
 agentProcessManager.teardown	daemon	locked	61895fe	non-executable black-box: an integration run of AgentProcessManager teardown with the unported agent runtime process manager
 agentProcessManager.wakeRecycle	daemon	pending	-	auto-seed
 agentRuntimeInput.snapshot	daemon	locked	2a7d82f	turn-input copy snapshots independent of delivery mode: empty/unread resume prompts, the inbox notice block with pending/changed-target pluralization and per-target first/latest identity, the other-unread and bounded-startup suffixes with their reading guidance, and empty suffixes for missing/empty target maps
