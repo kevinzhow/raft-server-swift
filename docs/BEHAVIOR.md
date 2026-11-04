@@ -1422,3 +1422,9 @@ RFC 074 personal assistant：
 - 扫描：递归汇总每个工作区目录的 fileCount、总字节与最新 mtime（含子目录自身 mtime），跳过 runtime-outcome outbox；`lastModified` 为带毫秒 ISO8601；displayPath 在用户 home 下显示 `~/…/`，否则绝对路径 + `/`，仅前缀相同不算 home（/home/alice2）。
 - 删除只接受合法一级子目录并递归删除；请求 `.`/空串时返回 false 且根目录与所有工作区保持不变。
 - initializeWorkspace 建目录、缺省写 MEMORY.md 与 seedFiles（已存在不覆盖）。
+
+### daemon processMemory
+
+- 进程内存采样：启动后 60s 首采、之后每 5 分钟采样并原子写 `<samplePath>`（0600）；最多每 30 分钟发一次 `daemon.process.memory`（attrs 在事件时读取 context，再并入样本的整 MB 字段）；写文件失败仅回调 onWriteError 不影响后续采样；stop 清定时器。
+- attrs 契约固定 keys（process_instance_id/agents_running/agents_in_process/uptime_ms/*_mb/lazy_schemas_* + 可选 swap_mb/service_*）；无 swap 时缺省；service 样本仅在 sampledAt 距今 0–15 分钟内携带（rss/heap 必须数字，可带 swap）。
+- Linux VmSwap 解析出 swapBytes（缺失即缺省）；Swift 无 V8 heap space，`old_space` 等取自进程 heap 数字（文档化替代，不是 V8 语义）。
