@@ -1336,3 +1336,7 @@ RFC 074 personal assistant：
 ### daemon runtimeAccountUsage/kimiCredentialLock
 
 - Kimi 刷新锁：`<target>.lock` 目录哨兵（sentinel 文件 `<target>` 预创建），stale 5s；有界重试（默认 12 次、0.5–1s 退避），拿不到锁返回 unavailable（reason 含 acquire 失败）且绝不运行回调；持锁期间每 max(stale/2,1s) 刷新 mtime，锁目录被删除或被他人以旧 mtime 接管时 handle 标记 compromised（不抛出）；释放后 `.lock` 目录消失，其他进程持锁时 `isHeld` 为 true、本方尝试被判 blocked。
+
+### daemon sessionCompactionFailureLedger
+
+- 每 agent 磁盘账本（`<agentsDir>/<agentId>/.raft/compaction-failures.json`，version/sessionId/model/count/updatedAtMs，绝不含会话内容）：同一 session+model 连续失败累加，达 3 次后 `needsReset` 返回计数（重启后仍生效）；不同 session id（Reset Session）、不同 model 或 `clear`（成功 compaction）后不再拒绝，damaged 文件读作无记录且下次失败从 1 重新计数；agent 之间互相独立。
