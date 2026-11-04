@@ -1632,3 +1632,11 @@ RFC 074 personal assistant：
 - `POST /api/auth/:provider/complete` 对 link-conflict completion 返回 409 `account_link_required`：`pendingLinkToken`、provider、email、expiresAt、`signInMethods{password,providers}`、returnTo；此路径在首次登录法律条款校验之前处理，不发 session、不写 identity。
 - provider 完成携带 `pendingLinkToken`：校验“当前 provider 身份所属账户 == pending link 账户”，不符 → 403 `pending_link_account_mismatch` 且不消费 completion code；相符 → 一次性消费 token、链接 pending provider identity、发 session，响应 `linkedProvider` 为 pending provider。
 - web 冲突 completion 的 `linkOnConflict` 通过签名 state 传递并在 verify 时还原。
+
+### route authPendingSocialLink.api（锁定）
+
+- Web 冲突：`linkOnConflict=1` 时 callback 建立“link 意图、无 userId”的 completion 并返回 code；`complete` 返回 409 `account_link_required`（pendingLinkToken/provider/email/expiresAt/signInMethods/returnTo），不发 session、不写 identity；未开启时保持旧错误重定向且不产生 completion。冲突 completion 的 userId 为空（旧服务端无法凭它登录）。
+- 密码完成：wrong password 401 `AUTH_INVALID_CREDENTIALS`（token 不消费）；account mismatch 403 `pending_link_account_mismatch`（不发 session）；成功链接 provider、一次消费 token、返回 `linkedProvider`；replay 410 `pending_link_expired`；cancel 幂等 204 且之后 410；expiresAt 过期 410。session 发放在链接后失败 → 500 且链接回滚、token 可重试；检查后被改密码 → 401、不链接、token 不消费。
+- provider 完成：携带 pendingLinkToken 时校验当前 provider 身份所属账户与 pending 账户一致；不一致 403 且不消费 completion；一致则链接 pending provider、发 session、`linkedProvider` 为 pending provider。
+- Mobile PKCE：start 支持 `linkOnConflict`；冲突且未 opt-in → callback 重定向 `error=account_conflict` 无 code；opt-in → callback 返回 handoff code，complete 校验 PKCE 后 409 `account_link_required`（含 returnUri），handoff 换为 pending token（replay 非 200/409）；另一已链接 provider 的 mobile complete 携带 pendingLinkToken 完成链接；密码登录完成同一 pending token。
+- 上游 12 条断言由 `PendingSocialLinkTests`/`PendingSocialLinkWebTests`/`PendingSocialLinkMobileTests` 覆盖。

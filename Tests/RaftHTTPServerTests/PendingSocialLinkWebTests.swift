@@ -48,6 +48,9 @@ private func providerProfile(_ sub: String, _ email: String, verified: Bool = tr
             let redirect = URLComponents(string: callback.headers[.location] ?? "")
             #expect(redirect?.queryItems?.first { $0.name == "error" }?.value == nil)
             let code = try #require(redirect?.queryItems?.first { $0.name == "code" }?.value)
+            let completionUserId = accounts.socialCompletionUserIdForTesting(provider: "google", code: code)
+            #expect(completionUserId != nil, "the conflict completion exists")
+            if let completionUserId { #expect(completionUserId == nil, "an older server cannot sign this completion in") }
             var headers = HTTPFields()
             headers[.contentType] = "application/json"
             let complete = try await client.send(.post, headers: headers, to: "/api/auth/google/complete") { request in
