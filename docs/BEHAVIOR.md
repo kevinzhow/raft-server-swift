@@ -1812,3 +1812,8 @@ RFC 074 personal assistant：
 - agent 侧：leave 只移除本 server projection 的 agent 成员，peer 成员不变；admin agent 可增删本 server 成员，peer server 人员 404（不可寻址）；rename/archive 传播到全部 projection，visibility 变更 403；普通 agent archive 403。
 - joint member listing：人类成员按各 projection 并集列出；同时参与两侧的人带 `servers`（own server 在前且 yours=true，再 peer），仅 own 的人不输出 servers（与旧行为一致），仅 peer 的人只列 peer。
 - 裁决：leave 用例中 orchestrator `purgeAgentInboxForChannelTree` 的 spy 断言属 orchestrator 注入，不移植；其成员移除的 HTTP/JSON 行为已覆盖。
+
+### route internalAgentApi.crossReplicaWake（裁决锁定）
+
+- 该模块断言 cross-replica 唤醒信号：orchestrator 的 `publishExternalWakeSignalCrossReplica` spy、打开的 SSE wake-hint 流读取、以及 replicaRouter 的 `handleReplicaMessage` 单元（通过 `__setExternalWakeSignalHandlerForTests`/`__setMachinePrincipalFenceHandlerForTests` 注入处理器）。这些是进程内服务/测试钩子与 SSE 管道行为，没有 HTTP 状态/JSON 黑盒断言；SSE wake-hint stream 与 replica router 属未移植的跨副本基础设施。
+- 其用户可见的“exhausted→wake”语义已由 `internalAgentApi.wakeHintStream` 模块锁定；本模块不新增运行时行为。
