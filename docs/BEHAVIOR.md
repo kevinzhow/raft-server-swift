@@ -1340,3 +1340,8 @@ RFC 074 personal assistant：
 ### daemon sessionCompactionFailureLedger
 
 - 每 agent 磁盘账本（`<agentsDir>/<agentId>/.raft/compaction-failures.json`，version/sessionId/model/count/updatedAtMs，绝不含会话内容）：同一 session+model 连续失败累加，达 3 次后 `needsReset` 返回计数（重启后仍生效）；不同 session id（Reset Session）、不同 model 或 `clear`（成功 compaction）后不再拒绝，damaged 文件读作无记录且下次失败从 1 重新计数；agent 之间互相独立。
+
+### daemon apps/reminder/inboxDefinition
+
+- system.reminder 的 due 通知项由 OS mint：itemId=`reminder:<uuid>:<revision>`、retention `until_explicit_ack`、primaryAction `run_command`/`reminder.ack`、actionCli `raft reminder ack --id <id 前 8> --revision <n>`；sourceRef 严格 `{kind:"reminder", id:UUID, revision:正整数}`，多余字段或 app 提供的 action 一律拒绝（invalid_source_ref / invalid_primary_action）。
+- 标题预览单行化：控制字符与空白折叠为单空格、trim，超过 120 字符时截断到 119 字符并追加可见 `…`（按 UTF-16 计宽，绝不切断代理对）；空标题为 nil；store 以 itemId 去重并保序。

@@ -262,7 +262,7 @@ apmStateMachine.contract	daemon	pending	-	auto-seed
 apps/cleaner/configReceiver	daemon	pending	-	auto-seed
 apps/cleaner/diskDelivery	daemon	locked	012be5a	non-executable black-box: an integration test of the system.cleaner app runtime composed with the daemon app registry, agent app inbox store, fake timers and a mocked statfs; this port has no daemon app registry/app inbox runtime to drive
 apps/cleaner/runtime	daemon	pending	-	auto-seed
-apps/reminder/inboxDefinition	daemon	pending	-	auto-seed
+apps/reminder/inboxDefinition	daemon	locked	SLICE	system.reminder inbox definition: OS-minted due item identity/action without message identity, strict source-ref validation rejecting extra fields and app-supplied actions, malformed UUID/revision rejection, and a single bounded preview line that collapses whitespace and truncates with a visible marker without splitting surrogate pairs
 apps/reminder/reminderCache	daemon	pending	-	auto-seed
 apps/reminder/runtime	daemon	pending	-	auto-seed
 chatBridgeRequest	daemon	pending	-	auto-seed
