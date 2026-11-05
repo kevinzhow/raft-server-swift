@@ -304,6 +304,9 @@ Generated knowledge corpus lives in `Sources/RaftHTTPServer/Generated/KnowledgeC
 ## EmailLogin split progress (2026-11-05)
 
 - `Sources/RaftHTTP/EmailLogin.swift`: 34,306 -> 21,257 lines (-13,049, -38%).
+  Behavior now lives in 13 extension files under `Sources/RaftHTTP/EmailLogin/`
+  (largest ~1.6k lines); `EmailLoginStatics`/`ActionCards`/`ManagedMCP` are
+  additionally split so no extension exceeds ~1.6k lines.
 - Moved 109 nested data-model declarations (1,171 lines) into
   `Sources/RaftHTTP/EmailLoginModels.swift`; moved 210 static helpers
   (2,567 lines) into `EmailLoginStatics.swift`. Both are behavior-preserving;

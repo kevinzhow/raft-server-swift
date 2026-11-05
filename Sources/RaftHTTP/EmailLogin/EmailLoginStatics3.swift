@@ -1,0 +1,762 @@
+import Crypto
+import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+import CoreFoundation
+
+
+
+// Extracted static helpers from EmailLogin.swift (behavior unchanged).
+
+
+
+extension EmailLoginDirectory {
+    static func feedbackUnavailableReason(
+        source: String,
+        appsJSON: String?,
+        environment: [String: String]
+    ) -> String {
+        if feedbackTrimmedBase(environment["HANDS_FEEDBACK_BASE_URL"]).isEmpty { return "base_url_missing" }
+        guard let appsJSON else {
+            return feedbackAppsParameterName(environment) == nil ? "apps_parameter_not_configured" : "apps_parameter_unread"
+        }
+        guard let parsed = try? JSONSerialization.jsonObject(with: Data(appsJSON.utf8)) else { return "apps_json_invalid" }
+        guard let record = parsed as? [String: Any] else { return "apps_json_not_object" }
+        guard let entry = record[source] else { return "source_entry_missing" }
+        let entryFields = ["app_slug", "app_id", "reporter_integration_id", "credential_revision", "client_key", "token"]
+        let missingEntry = entryFields.filter { feedbackStringField(entry, $0) == nil }
+        if !missingEntry.isEmpty { return "source_fields_missing:" + missingEntry.joined(separator: ",") }
+        let shared = record["shared"]
+        let sharedFields = ["reporter_id_secret", "route_subject_root", "cursor_secret"]
+        let missingShared = sharedFields.filter { feedbackStringField(shared, $0) == nil }
+        if !missingShared.isEmpty { return "shared_fields_missing:" + missingShared.joined(separator: ",") }
+        return "unknown"
+    }
+
+    static func feedbackMultiRouteEnvironment(
+        source: String,
+        appsJSON: String?,
+        environment: [String: String]
+    ) throws -> FeedbackRouteEnvironment {
+        let base = feedbackTrimmedBase(environment["HANDS_FEEDBACK_BASE_URL"])
+        let legacy = feedbackLegacyRouteEnvironment(environment)
+        guard !base.isEmpty else {
+            throw FeedbackRouteFailure.sourceUnavailable(source: source, reason: "base_url_missing")
+        }
+        func fallBackForWeb() throws -> FeedbackRouteEnvironment {
+            if source == "web" { return legacy }
+            throw FeedbackRouteFailure.sourceUnavailable(
+                source: source,
+                reason: feedbackUnavailableReason(source: source, appsJSON: appsJSON, environment: environment)
+            )
+        }
+        guard let appsJSON else { return try fallBackForWeb() }
+        guard let parsed = try? JSONSerialization.jsonObject(with: Data(appsJSON.utf8)) else {
+            return try fallBackForWeb()
+        }
+        guard let record = parsed as? [String: Any] else { return try fallBackForWeb() }
+        guard let entryObject = record[source] else { return try fallBackForWeb() }
+        let entry = FeedbackSourceEntry(
+            appSlug: feedbackStringField(entryObject, "app_slug") ?? "",
+            appId: feedbackStringField(entryObject, "app_id") ?? "",
+            reporterIntegrationId: feedbackStringField(entryObject, "reporter_integration_id") ?? "",
+            credentialRevision: feedbackStringField(entryObject, "credential_revision") ?? "",
+            clientKey: feedbackStringField(entryObject, "client_key") ?? "",
+            token: feedbackStringField(entryObject, "token") ?? ""
+        )
+        let shared = record["shared"]
+        let reporterIdSecret = feedbackStringField(shared, "reporter_id_secret") ?? ""
+        let routeSubjectRoot = feedbackStringField(shared, "route_subject_root") ?? ""
+        let cursorSecret = feedbackStringField(shared, "cursor_secret") ?? ""
+        guard !entry.appSlug.isEmpty, !entry.appId.isEmpty, !entry.reporterIntegrationId.isEmpty,
+              !entry.credentialRevision.isEmpty, !entry.clientKey.isEmpty, !entry.token.isEmpty,
+              !reporterIdSecret.isEmpty, !routeSubjectRoot.isEmpty, !cursorSecret.isEmpty
+        else {
+            return try fallBackForWeb()
+        }
+        let appCursorKey = feedbackBase64URL(Data(HMAC<SHA256>.authenticationCode(
+            for: Data("feedback-cursor-app:\(entry.appId)".utf8),
+            using: SymmetricKey(data: Data(cursorSecret.utf8))
+        )))
+        return FeedbackRouteEnvironment(
+            baseURL: base,
+            appSlug: entry.appSlug,
+            appId: entry.appId,
+            clientKey: entry.clientKey,
+            appToken: entry.token,
+            conversationToken: entry.token,
+            credentialRevision: entry.credentialRevision,
+            reporterIntegrationId: entry.reporterIntegrationId,
+            reporterIdSecret: reporterIdSecret,
+            routeSubjectKeyId: "v1",
+            routeSubjectRoot: routeSubjectRoot,
+            routeCommitmentScope: "multi",
+            cursorSecret: appCursorKey,
+            conversationSessionEnabled: environment["HANDS_FEEDBACK_CONVERSATION_SESSION_ENABLED"] == "true",
+            isMultiApp: true
+        )
+    }
+
+    static func feedbackSource(_ header: String) throws -> String {
+        let normalized = header.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.isEmpty { return "web" }
+        guard productFeedbackSources.contains(normalized) else { throw FeedbackRouteFailure.invalidSource }
+        return normalized
+    }
+
+    static func feedbackBase64URL(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    static func feedbackReporterId(userId: String, secret: String) -> String {
+        feedbackBase64URL(Data(HMAC<SHA256>.authenticationCode(
+            for: Data("raft-web-feedback:\(userId)".utf8),
+            using: SymmetricKey(data: Data(secret.utf8))
+        )))
+    }
+
+    static func feedbackRouteRootBytes(_ root: String) -> Data? {
+        guard root.range(of: "^[A-Za-z0-9_-]{43}$", options: .regularExpression) != nil else { return nil }
+        var padded = root.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while padded.count % 4 != 0 { padded += "=" }
+        guard let data = Data(base64Encoded: padded), data.count == 32,
+              feedbackBase64URL(data) == root
+        else { return nil }
+        return data
+    }
+
+    static func feedbackCanonicalUUID(_ value: String) -> Bool {
+        value.range(
+            of: "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            options: .regularExpression
+        ) != nil
+    }
+
+    static func feedbackRouteConfig(_ environment: FeedbackRouteEnvironment) throws -> FeedbackRouteConfig? {
+        let rootValid = feedbackRouteRootBytes(environment.routeSubjectRoot) != nil
+        let reporterIntegrationValid = feedbackCanonicalUUID(environment.reporterIntegrationId)
+            || environment.reporterIntegrationId == "legacy-feedback:\(environment.appId)"
+        let baseValid = !environment.baseURL.isEmpty
+        let appValid = feedbackCanonicalUUID(environment.appId)
+        let tokenValid = !environment.conversationToken.isEmpty
+        let revisionValid = !environment.credentialRevision.isEmpty
+        let secretValid = !environment.reporterIdSecret.isEmpty
+        let keyValid = environment.routeSubjectKeyId == "v1"
+        if !environment.isMultiApp {
+            // Legacy deployments without the route-subject env keep working
+            // without binding, exactly like the pre-multi-app port.
+            guard baseValid, appValid, tokenValid, revisionValid, reporterIntegrationValid,
+                  keyValid, rootValid, secretValid
+            else { return nil }
+        } else {
+            guard baseValid, appValid, tokenValid, revisionValid, reporterIntegrationValid,
+                  keyValid, secretValid
+            else { throw FeedbackRouteFailure.routeBinding(reason: "config_invalid") }
+            guard rootValid else { throw FeedbackRouteFailure.routeBinding(reason: "root_invalid") }
+        }
+        return FeedbackRouteConfig(
+            baseURL: environment.baseURL,
+            appId: environment.appId,
+            appToken: environment.conversationToken,
+            credentialRevision: environment.credentialRevision,
+            reporterIntegrationId: environment.reporterIntegrationId,
+            keyId: environment.routeSubjectKeyId,
+            root: environment.routeSubjectRoot,
+            commitmentLabel: environment.routeCommitmentScope == "multi"
+                ? Self.productFeedbackMultiCommitmentLabel
+                : Self.productFeedbackLegacyCommitmentLabel,
+            reporterIdSecret: environment.reporterIdSecret
+        )
+    }
+
+    static func feedbackRouteSubject(
+        config: FeedbackRouteConfig,
+        userId: String,
+        reporterId: String
+    ) -> String? {
+        guard let root = feedbackRouteRootBytes(config.root) else { return nil }
+        let coordinate = "v1\u{0}\(config.appId)\u{0}\(config.reporterIntegrationId)\u{0}\(reporterId)"
+        let mac = HMAC<SHA256>.authenticationCode(
+            for: Data("raft-feedback-route\u{0}\(coordinate)\u{0}\(userId)".utf8),
+            using: SymmetricKey(data: root)
+        )
+        return "rfr_v1_" + feedbackBase64URL(Data(mac))
+    }
+
+    static func feedbackUserBinding(userId: String, cursorKey: String) -> String {
+        feedbackBase64URL(Data(HMAC<SHA256>.authenticationCode(
+            for: Data("feedback-cursor-user:\(userId)".utf8),
+            using: SymmetricKey(data: Data(cursorKey.utf8))
+        )))
+    }
+
+    static func feedbackEncodeCursor(
+        route: String,
+        userId: String,
+        ticketId: String?,
+        handsCursor: String,
+        cursorKey: String
+    ) -> String? {
+        guard !handsCursor.isEmpty, handsCursor.utf8.count <= 2048 else { return nil }
+        let userBinding = feedbackUserBinding(userId: userId, cursorKey: cursorKey)
+        let ticketJSON = ticketId.map { jsonString($0) } ?? "null"
+        let payload = "{\"hands_cursor\":\(jsonString(handsCursor)),\"issued_at_ms\":\(Int(Date().timeIntervalSince1970 * 1000)),\"route\":\(jsonString(route)),\"ticket_id\":\(ticketJSON),\"user_binding\":\(jsonString(userBinding)),\"v\":1}"
+        let payloadBytes = Data(payload.utf8)
+        let mac = feedbackBase64URL(Data(HMAC<SHA256>.authenticationCode(
+            for: payloadBytes,
+            using: SymmetricKey(data: Data(cursorKey.utf8))
+        )))
+        return feedbackBase64URL(payloadBytes) + "." + mac
+    }
+
+    static func feedbackDecodeCursor(
+        _ token: String,
+        route: String,
+        userId: String,
+        ticketId: String?,
+        cursorKey: String
+    ) throws -> String {
+        func invalid() -> FeedbackRouteFailure { FeedbackRouteFailure.routeBinding(reason: "invalid_cursor") }
+        guard !token.isEmpty, token.utf8.count <= 4096, !cursorKey.isEmpty else { throw invalid() }
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { throw invalid() }
+        func decodeSegment(_ segment: String) -> Data? {
+            guard segment.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil else { return nil }
+            var padded = segment.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+            while padded.count % 4 != 0 { padded += "=" }
+            guard let data = Data(base64Encoded: padded), feedbackBase64URL(data) == segment else { return nil }
+            return data
+        }
+        guard let payloadBytes = decodeSegment(String(parts[0])),
+              let macBytes = decodeSegment(String(parts[1])),
+              let object = (try? JSONSerialization.jsonObject(with: payloadBytes)) as? [String: Any]
+        else { throw invalid() }
+        let expectedMAC = Data(HMAC<SHA256>.authenticationCode(
+            for: payloadBytes,
+            using: SymmetricKey(data: Data(cursorKey.utf8))
+        ))
+        guard macBytes == expectedMAC,
+              Set(object.keys) == ["hands_cursor", "issued_at_ms", "route", "ticket_id", "user_binding", "v"],
+              object["v"] as? Int == 1,
+              object["route"] as? String == route,
+              (object["ticket_id"] as? String) == ticketId,
+              object["user_binding"] as? String == feedbackUserBinding(userId: userId, cursorKey: cursorKey),
+              let handsCursor = object["hands_cursor"] as? String, !handsCursor.isEmpty,
+              handsCursor.utf8.count <= 2048,
+              let issuedAt = (object["issued_at_ms"] as? NSNumber)?.doubleValue
+        else { throw invalid() }
+        let now = Date().timeIntervalSince1970 * 1000
+        guard issuedAt <= now + 5 * 60 * 1000, now - issuedAt <= 24 * 60 * 60 * 1000 else { throw invalid() }
+        return handsCursor
+    }
+
+    static func jsonWithHeaders(_ status: Int, _ body: String, headers: [String: String]) -> HTTPReply {
+        var merged: [String: String] = [
+            "Content-Type": AppFallback.jsonContentType,
+            "Cache-Control": "no-store",
+            "Content-Length": String(body.utf8.count),
+        ]
+        for (key, value) in headers { merged[key] = value }
+        return HTTPReply(status: status, headers: merged, body: body)
+    }
+
+    static func feedbackPercentEncoded(_ value: String) -> String {
+        value.addingPercentEncoding(
+            withAllowedCharacters: CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        ) ?? value
+    }
+
+    static func validatedFeedbackDiagnostics(_ raw: String, appId: String) -> String? {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any],
+              Set(object.keys).isSubset(of: ["r2_key", "filename", "content_type", "size"]),
+              let r2Key = object["r2_key"] as? String,
+              let filename = object["filename"] as? String, filename == "diagnostics.zip",
+              let contentType = object["content_type"] as? String, contentType == "application/zip",
+              let size = (object["size"] as? NSNumber)?.intValue, object["size"] is NSNumber,
+              size > 0, size <= 200 * 1024 * 1024
+        else { return nil }
+        let escapedApp = NSRegularExpression.escapedPattern(for: appId)
+        let pattern = "^feedback/\(escapedApp)/presigned/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[A-Za-z0-9._-]+\\.zip$"
+        guard r2Key.range(of: pattern, options: .regularExpression) != nil else { return nil }
+        return serializeJSON(["r2_key": r2Key, "filename": filename, "content_type": contentType, "size": size])
+    }
+
+    static func multipartFields(body: String, contentType: String) -> [String: String]? {
+        guard let boundaryRange = contentType.range(of: "boundary=") else { return nil }
+        var boundary = String(contentType[boundaryRange.upperBound...])
+        boundary = boundary.split(separator: ";").first.map(String.init) ?? boundary
+        boundary = boundary.trimmingCharacters(in: CharacterSet(charactersIn: "\" \""))
+        guard !boundary.isEmpty else { return nil }
+        var fields: [String: String] = [:]
+        for part in body.components(separatedBy: "--\(boundary)") {
+            guard part.contains("name=\"") else { continue }
+            let segments = part.components(separatedBy: "\r\n\r\n")
+            guard segments.count >= 2 else { continue }
+            let header = segments[0]
+            guard let nameRange = header.range(of: "name=\"") else { continue }
+            let rest = header[nameRange.upperBound...]
+            guard let closing = rest.firstIndex(of: "\"") else { continue }
+            let name = String(rest[..<closing])
+            var value = segments[1]
+            if value.hasSuffix("\r\n") { value.removeLast() }
+            fields[name] = value
+        }
+        return fields.isEmpty ? nil : fields
+    }
+
+    static func parseDisplayLanguage(_ raw: Any) -> DisplayLanguage {
+        if raw is NSNull { return .value(nil) }
+        guard let string = raw as? String else {
+            return .invalid("displayLanguage must be a string or null")
+        }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return .value(nil) }
+        guard let normalized = normalizeDisplayLocale(trimmed) else {
+            return .invalid("displayLanguage must be a supported UI display locale")
+        }
+        return .value(normalized)
+    }
+
+    static func userJSON(_ account: Account) -> String {
+        let hash = sha256(account.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        let language = account.displayLanguage.map { jsonString($0) } ?? "null"
+        let provider = account.profileSetupProvider.map { jsonString($0) } ?? "null"
+        let displayName = jsonString(account.displayName ?? account.name)
+        let suggestedHandle = account.profileSetupSuggestedHandle.map { jsonString($0) } ?? "null"
+        let completedAt: String
+        if let completed = account.profileSetupCompletedAt {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            completedAt = jsonString(formatter.string(from: completed))
+        } else {
+            completedAt = "null"
+        }
+        let avatar = account.avatarUrl.map { jsonString($0) } ?? "null"
+        let share: String
+        if let value = account.shareUsageData {
+            share = value ? "true" : "false"
+        } else {
+            share = "null"
+        }
+        let preferredLanguage = account.preferredLanguage.map { jsonString($0) } ?? "null"
+        let preferredTimezone = account.preferredTimezone.map { jsonString($0) } ?? "null"
+        let preferredTimeFormat = account.preferredTimeFormat.map { jsonString($0) } ?? "null"
+        let preferredFontSize = account.preferredMessageBodyFontSize.map { jsonString($0) } ?? "null"
+        let referralSource = account.referralSource.map { jsonString($0) } ?? "null"
+        let referralOther = account.referralSourceOther.map { jsonString($0) } ?? "null"
+        let skippedAt: String
+        if let date = account.referralSourceSkippedAt {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            skippedAt = jsonString(formatter.string(from: date))
+        } else {
+            skippedAt = "null"
+        }
+        return "{\"id\":\(jsonString(account.id)),\"email\":\(jsonString(account.email)),\"name\":\(jsonString(account.name)),\"displayName\":\(displayName),\"gravatarHash\":\(jsonString(hash)),\"displayLanguage\":\(language),\"profileSetupCompletedAt\":\(completedAt),\"profileSetupSuggestedHandle\":\(suggestedHandle),\"profileSetupProvider\":\(provider),\"avatarUrl\":\(avatar),\"shareUsageData\":\(share),\"preferredLanguage\":\(preferredLanguage),\"preferredTimezone\":\(preferredTimezone),\"preferredTranslationMode\":\(jsonString(account.preferredTranslationMode)),\"autoTranslationEnabled\":\(account.autoTranslationEnabled),\"preferredTranslationDisplay\":\(jsonString(account.preferredTranslationDisplay)),\"preferredTimeFormat\":\(preferredTimeFormat),\"preferredMessageBodyFontSize\":\(preferredFontSize),\"referralSource\":\(referralSource),\"referralSourceOther\":\(referralOther),\"referralSourceSkippedAt\":\(skippedAt)}"
+    }
+
+    static func trimHyphens(_ value: String) -> String {
+        var text = value
+        while text.hasPrefix("-") { text.removeFirst() }
+        while text.hasSuffix("-") { text.removeLast() }
+        return text
+    }
+
+    static func randomHex(_ count: Int) -> String {
+        var bytes = [UInt8](repeating: 0, count: count)
+        for index in bytes.indices {
+            bytes[index] = UInt8.random(in: 0...255)
+        }
+        return bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func normalize(_ email: String) -> String {
+        email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    static func sha256(_ value: String) -> String {
+        sha256(Data(value.utf8))
+    }
+
+    static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func multipartFile(named name: String, contentType: String?, body: Data) -> Data? {
+        guard let boundary = boundaryParameter(contentType) else { return nil }
+        let delimiter = Data("--\(boundary)".utf8)
+        let headerBreak = Data("\r\n\r\n".utf8)
+        let crlf = Data("\r\n".utf8)
+        let marker = "name=\"\(name)\""
+        var remainder = body[body.startIndex...]
+        var parts: [Data] = []
+        while let range = remainder.range(of: delimiter) {
+            let piece = remainder[..<range.lowerBound]
+            if !piece.isEmpty { parts.append(Data(piece)) }
+            remainder = remainder[range.upperBound...]
+        }
+        if !remainder.isEmpty { parts.append(Data(remainder)) }
+        for var part in parts {
+            if part.starts(with: crlf) { part.removeFirst(crlf.count) }
+            guard let split = part.range(of: headerBreak) else { continue }
+            let headers = part[..<split.lowerBound]
+            var file = Data(part[split.upperBound...])
+            if file.count >= crlf.count, file.suffix(crlf.count) == crlf {
+                file.removeLast(crlf.count)
+            }
+            guard let headerText = String(data: Data(headers), encoding: .utf8), headerText.contains(marker) else { continue }
+            return file
+        }
+        return nil
+    }
+
+    static func boundaryParameter(_ contentType: String?) -> String? {
+        guard let contentType else { return nil }
+        for part in contentType.split(separator: ";") {
+            let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.lowercased().hasPrefix("boundary=") else { continue }
+            var value = String(trimmed.dropFirst("boundary=".count))
+            if value.hasPrefix("\""), value.hasSuffix("\""), value.count >= 2 {
+                value.removeFirst()
+                value.removeLast()
+            }
+            return value.isEmpty ? nil : value
+        }
+        return nil
+    }
+
+    static func isDesktopLoopback(_ returnUri: String) -> Bool {
+        guard let url = URL(string: returnUri),
+              url.scheme == "http",
+              url.host == "127.0.0.1",
+              url.user == nil,
+              url.password == nil,
+              url.query == nil,
+              url.path == "/auth/done",
+              let port = url.port,
+              (1024...65535).contains(port),
+              let fragment = url.fragment,
+              fragment.wholeMatch(of: /^state=[A-Za-z0-9_-]{16,256}$/) != nil
+        else { return false }
+        return url.absoluteString == returnUri || "\(url.absoluteString)" == returnUri
+    }
+
+    static func desktopNonce(from returnUri: String) -> String? {
+        guard isDesktopLoopback(returnUri), let fragment = URL(string: returnUri)?.fragment else { return nil }
+        return String(fragment.dropFirst("state=".count))
+    }
+
+    static func authorizationURL(provider: String, state: String) -> String {
+        switch provider {
+        case "github":
+            var components = URLComponents(string: "https://github.com/login/oauth/authorize")!
+            components.queryItems = [
+                URLQueryItem(name: "client_id", value: "configured"),
+                URLQueryItem(name: "redirect_uri", value: "http://127.0.0.1/api/auth/github/callback"),
+                URLQueryItem(name: "scope", value: "read:user user:email"),
+                URLQueryItem(name: "state", value: state),
+            ]
+            return components.string ?? ""
+        default:
+            var components = URLComponents(string: "https://accounts.google.com/o/oauth2/v2/auth")!
+            components.queryItems = [
+                URLQueryItem(name: "client_id", value: "configured"),
+                URLQueryItem(name: "redirect_uri", value: "http://127.0.0.1/api/auth/google/callback"),
+                URLQueryItem(name: "response_type", value: "code"),
+                URLQueryItem(name: "scope", value: "openid email profile"),
+                URLQueryItem(name: "state", value: state),
+            ]
+            return components.string ?? ""
+        }
+    }
+
+    static func pkceS256(_ verifier: String) -> String {
+        base64url(Data(SHA256.hash(data: Data(verifier.utf8))))
+    }
+
+    static func failureLocation(returnUri: String, provider: String, mode: String, error: String) -> String {
+        let pieces = returnUri.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+        let base = pieces[0]
+        let hash = pieces.count > 1 ? "#\(pieces[1])" : ""
+        let separator = base.contains("?") ? "&" : "?"
+        return "\(base)\(separator)provider=\(provider)&mode=\(mode)&error=\(error)\(hash)"
+    }
+
+    static func loopbackLocation(returnUri: String, provider: String, mode: String, code: String) -> String {
+        let pieces = returnUri.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+        let base = pieces[0]
+        let hash = pieces.count > 1 ? "#\(pieces[1])" : ""
+        let separator = base.contains("?") ? "&" : "?"
+        return "\(base)\(separator)provider=\(provider)&mode=\(mode)&code=\(code)\(hash)"
+    }
+
+    static func redirect(_ location: String, cookie: String? = nil) -> HTTPReply {
+        var headers = [
+            "X-Robots-Tag": AppFallback.robotsTag,
+            "Location": location,
+            "Content-Length": "0",
+        ]
+        if let cookie { headers["Set-Cookie"] = cookie }
+        return HTTPReply(status: 302, headers: headers, body: "")
+    }
+
+    static func isMobileUnsubscribeUserId(_ value: String) -> Bool {
+        value.wholeMatch(of: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.ignoresCase()) != nil
+    }
+
+    static func mobileAppUnsubscribeLocale(_ raw: String?) -> String {
+        let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if value == "zh-cn" || value == "zh" || value == "zh-hans" || value == "zh-hans-cn" { return "zh-cn" }
+        if value == "en" || value.hasPrefix("en-") { return "en" }
+        return "en"
+    }
+
+    static func mobileAppUnsubscribeSignature(payload: String, secret: String) -> String {
+        let key = SymmetricKey(data: Data(secret.utf8))
+        let message = Data("mobile-app-email-unsubscribe:v1:\(payload)".utf8)
+        return base64url(Data(HMAC<SHA256>.authenticationCode(for: message, using: key)))
+    }
+
+    static func mobileAppUnsubscribeCopy(_ locale: String) -> (htmlLang: String, confirmationTitle: String, confirmationHeading: String, confirmationBody: String, submit: String, successTitle: String, successHeading: String, successBody: String, invalidTitle: String, invalidHeading: String, invalidBody: String) {
+        if locale == "zh-cn" {
+            return (
+                "zh-CN",
+                "退订 Raft 移动端应用邮件",
+                "要退订移动端应用邮件吗？",
+                "Raft 将不再向你发送关于移动端应用的邮件。",
+                "退订",
+                "已退订",
+                "你已退订。",
+                "Raft 不会再向你发送移动端应用邮件。",
+                "退订链接无效",
+                "这个退订链接无效。",
+                "请使用 Raft 原始邮件中的链接。"
+            )
+        }
+        return (
+            "en",
+            "Unsubscribe from Raft mobile-app emails",
+            "Unsubscribe from mobile-app emails?",
+            "Raft will stop sending you emails about the mobile app.",
+            "Unsubscribe",
+            "Unsubscribed",
+            "You are unsubscribed.",
+            "Raft will no longer send you mobile-app emails.",
+            "Invalid unsubscribe link",
+            "This unsubscribe link is invalid.",
+            "Please use the link from the original Raft email."
+        )
+    }
+
+    static func mobileAppUnsubscribeInvalid() -> HTTPReply {
+        let copy = mobileAppUnsubscribeCopy("en")
+        let body = "<h1 style=\"margin:0 0 12px;font-size:22px;\">\(copy.invalidHeading)</h1><p style=\"margin:0;line-height:1.5;\">\(copy.invalidBody)</p>"
+        return mobileAppUnsubscribeHTML(status: 400, lang: copy.htmlLang, title: copy.invalidTitle, body: body)
+    }
+
+    static func mobileAppUnsubscribeHTML(status: Int = 200, lang: String, title: String, body: String) -> HTTPReply {
+        let page = """
+        <!doctype html>
+        <html lang="\(lang)">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>\(title)</title>
+        </head>
+        <body style="margin:0;padding:40px 20px;background:#fffaf0;color:#141111;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+          <main style="box-sizing:border-box;max-width:520px;margin:0 auto;padding:28px;background:#fff;border:2px solid #141111;border-radius:16px;box-shadow:4px 4px 0 #141111;">
+            \(body)
+          </main>
+        </body>
+        </html>
+        """
+        return HTTPReply(
+            status: status,
+            headers: [
+                "X-Robots-Tag": AppFallback.robotsTag,
+                "Cache-Control": "no-store",
+                "Referrer-Policy": "no-referrer",
+                "Content-Type": "text/html; charset=utf-8",
+            ],
+            body: page
+        )
+    }
+
+    static func formField(_ body: String, _ name: String) -> String? {
+        for pair in body.split(separator: "&", omittingEmptySubsequences: false) {
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            guard parts.first?.removingPercentEncoding == name || parts.first == name else { continue }
+            let raw = parts.count > 1 ? parts[1] : ""
+            return raw.replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? raw
+        }
+        return nil
+    }
+
+    static func urlQuery(_ value: String) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=+")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
+    static func base64url(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    static func base64urlDecode(_ value: String) -> Data? {
+        var padded = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while padded.count % 4 != 0 { padded.append("=") }
+        return Data(base64Encoded: padded)
+    }
+
+    static func text(_ status: Int, _ body: String) -> HTTPReply {
+        HTTPReply(
+            status: status,
+            headers: [
+                "X-Robots-Tag": AppFallback.robotsTag,
+                "Content-Type": "text/plain; charset=utf-8",
+                "Content-Length": String(Data(body.utf8).count),
+            ],
+            body: body
+        )
+    }
+
+    static func sealSuccessor(_ token: String) -> String {
+        let key = SymmetricKey(data: Data(SHA256.hash(data: Data("slock-session-refresh-rotation-receipt".utf8))))
+        if let sealed = try? AES.GCM.seal(Data(token.utf8), using: key) {
+            return sealed.ciphertext.base64EncodedString()
+        }
+        return sha256("sealed:\(token)")
+    }
+
+    static func token() -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        for index in bytes.indices {
+            bytes[index] = UInt8.random(in: 0...255)
+        }
+        return bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func verifyNativeAppleRequestToken(_ token: String, secret: String) -> NativeAppleRequestToken {
+        let parts = token.split(separator: ".").map(String.init)
+        guard parts.count == 3,
+              let headerData = base64urlDecode(parts[0]),
+              let header = try? JSONSerialization.jsonObject(with: headerData) as? [String: Any]
+        else { return .invalid }
+        guard header["alg"] as? String == "HS256" else { return .invalid }
+        let key = SymmetricKey(data: Data(secret.utf8))
+        let signing = Data("\(parts[0]).\(parts[1])".utf8)
+        let expected = Data(HMAC<SHA256>.authenticationCode(for: signing, using: key))
+        guard let given = base64urlDecode(parts[2]), given == expected else { return .invalid }
+        guard let payloadData = base64urlDecode(parts[1]),
+              let object = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any],
+              object["kind"] as? String == "native_apple_ios",
+              let requestId = object["requestId"] as? String, !requestId.isEmpty,
+              let mode = object["mode"] as? String, mode == "login" || mode == "link",
+              let challenge = object["codeChallenge"] as? String,
+              challenge.wholeMatch(of: /^[A-Za-z0-9_-]{32,256}$/) != nil,
+              (object["iss"] as? String) == "slock-native-apple-auth",
+              (object["aud"] as? String) == "native-apple-auth-request"
+        else { return .invalid }
+        let tokenUserId: String?
+        if object["userId"] == nil || object["userId"] is NSNull {
+            tokenUserId = nil
+        } else if let id = object["userId"] as? String, !id.isEmpty {
+            tokenUserId = id
+        } else {
+            return .invalid
+        }
+        let exp = (object["exp"] as? NSNumber)?.intValue ?? (object["exp"] as? Int) ?? 0
+        if exp < Int(Date().timeIntervalSince1970) { return .expired }
+        return .valid(NativeAppleRequestClaims(requestId: requestId, mode: mode, codeChallenge: challenge, userId: tokenUserId))
+    }
+
+    static func providerLabel(_ id: String) -> String {
+        switch id {
+        case "google": "Google"
+        case "github": "GitHub"
+        case "apple": "Apple"
+        default: id
+        }
+    }
+
+    static func sanitizeReturnTo(_ input: String?) -> String {
+        guard let input, input.hasPrefix("/"), !input.hasPrefix("//"), !input.contains("\\"), !input.contains("://") else {
+            return "/"
+        }
+        return input
+    }
+
+    static func returnToField(_ body: String) -> String? {
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return object["returnTo"] as? String
+    }
+
+    static func formFields(_ body: String) -> [String: String] {
+        var fields: [String: String] = [:]
+        for pair in body.split(separator: "&", omittingEmptySubsequences: false) {
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            let name = parts[0].removingPercentEncoding ?? parts[0]
+            let raw = parts.count > 1 ? parts[1] : ""
+            fields[name] = raw.removingPercentEncoding ?? raw
+        }
+        return fields
+    }
+
+    static func cookieValue(_ header: String?, name: String) -> String? {
+        guard let header else { return nil }
+        for part in header.split(separator: ";") {
+            let piece = part.trimmingCharacters(in: .whitespaces)
+            let halves = piece.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            guard halves.first == name else { continue }
+            let raw = halves.count > 1 ? halves[1] : ""
+            return raw.removingPercentEncoding ?? raw
+        }
+        return nil
+    }
+
+    static func socialCallbackURL(appURL: String, provider: String, mode: String, returnTo: String, error: String? = nil, code: String? = nil) -> String {
+        let base = appURL.hasSuffix("/") ? String(appURL.dropLast()) : appURL
+        var items = [
+            URLQueryItem(name: "auth_callback", value: "social"),
+            URLQueryItem(name: "provider", value: provider),
+            URLQueryItem(name: "mode", value: mode),
+            URLQueryItem(name: "returnTo", value: returnTo),
+        ]
+        if let code { items.append(URLQueryItem(name: "code", value: code)) }
+        if let error { items.append(URLQueryItem(name: "error", value: error)) }
+        var components = URLComponents(string: base) ?? URLComponents()
+        components.queryItems = items
+        return components.string ?? base
+    }
+
+    static func noContent() -> HTTPReply {
+        HTTPReply(
+            status: 204,
+            headers: [
+                "X-Robots-Tag": AppFallback.robotsTag,
+                "Content-Length": "0",
+            ],
+            body: ""
+        )
+    }
+
+    static func json(_ status: Int, _ body: String, cookie: String? = nil) -> HTTPReply {
+        var headers = [
+            "X-Robots-Tag": AppFallback.robotsTag,
+            "Content-Type": AppFallback.jsonContentType,
+            "Content-Length": String(Data(body.utf8).count),
+        ]
+        if let cookie { headers["Set-Cookie"] = cookie }
+        return HTTPReply(status: status, headers: headers, body: body)
+    }
+
+}

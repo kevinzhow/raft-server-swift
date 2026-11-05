@@ -1,0 +1,917 @@
+import Crypto
+import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+import CoreFoundation
+
+
+
+// Extracted static helpers from EmailLogin.swift (behavior unchanged).
+
+
+
+extension EmailLoginDirectory {
+
+    static func rfc5987Encode(_ value: String) -> String {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!#$&+-.^_`|~")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
+    static func evaluateAttestation(body: String, mode: String?, nodeEnv: String, verifier: ((String) -> Bool)?) -> (state: String, evidenceHash: String?) {
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        let raw = object?["attestation"] as? String
+        let evidence = (raw?.isEmpty == false && (raw?.count ?? 0) <= 4096) ? raw : nil
+        let enforce = nodeEnv == "production" || mode == "enforce" || (mode != nil && mode != "observe")
+        let verified = evidence != nil && verifier?(evidence!) == true
+        let hash = evidence.map { sha256($0) }
+        if enforce && !verified { return ("rejected", hash) }
+        if verified { return ("verified", hash) }
+        return (evidence == nil ? "missing" : "observed", hash)
+    }
+
+    static func parseEnrollmentRequest(_ body: String) -> (appId: String, protocolVersion: Int, appVersion: String, releaseChannel: String, appInstanceId: String, publicKey: String, nonce: String)? {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let appId = object["appId"] as? String,
+              appId == "ai.slock.desktop",
+              appId.wholeMatch(of: /^[a-z0-9]+(?:\.[a-z0-9-]+){2,7}$/) != nil,
+              ((object["protocolVersion"] as? NSNumber)?.intValue ?? object["protocolVersion"] as? Int) == 1,
+              let appVersion = object["appVersion"] as? String,
+              appVersion.wholeMatch(of: /^[A-Za-z0-9][A-Za-z0-9._+()-]{0,63}$/) != nil,
+              let releaseChannel = object["releaseChannel"] as? String,
+              releaseChannel == "development" || releaseChannel == "staging" || releaseChannel == "production",
+              let appInstanceId = object["appInstanceId"] as? String,
+              appInstanceId.wholeMatch(of: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/) != nil,
+              let publicKey = object["publicKey"] as? String,
+              canonicalBase64URL(publicKey, minBytes: 32, maxBytes: 128) != nil,
+              let nonce = object["nonce"] as? String,
+              canonicalBase64URL(nonce, minBytes: 32, maxBytes: 32) != nil
+        else { return nil }
+        return (appId, 1, appVersion, releaseChannel, appInstanceId, publicKey, nonce)
+    }
+
+    static func parseOpaqueCredential(_ value: String, prefix: String) -> (id: String, secret: String)? {
+        guard value.count <= 160 else { return nil }
+        let parts = value.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 3, parts[0] == prefix,
+              parts[1].wholeMatch(of: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/) != nil,
+              canonicalBase64URL(parts[2], minBytes: 32, maxBytes: 32) != nil
+        else { return nil }
+        return (parts[1], parts[2])
+    }
+
+    static func canonicalBase64URL(_ value: String, minBytes: Int, maxBytes: Int) -> Data? {
+        guard value.wholeMatch(of: /^[A-Za-z0-9_-]+$/) != nil,
+              let bytes = base64urlDecode(value),
+              (minBytes...maxBytes).contains(bytes.count),
+              base64url(bytes) == value
+        else { return nil }
+        return bytes
+    }
+
+    static func mintOpaqueCredential(prefix: String, id: String) -> (opaque: String, secretHash: String) {
+        var bytes = Data(count: 32)
+        for index in bytes.indices {
+            bytes[index] = UInt8.random(in: 0...255)
+        }
+        let secret = base64url(bytes)
+        return ("\(prefix).\(id).\(secret)", sha256(secret))
+    }
+
+    static func verifyEd25519(publicKeySPKI: String, transcript: Data, proof: String) -> Bool {
+        guard let signature = canonicalBase64URL(proof, minBytes: 64, maxBytes: 64),
+              let spki = canonicalBase64URL(publicKeySPKI, minBytes: 44, maxBytes: 44)
+        else { return false }
+        let prefix = Data([0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00])
+        guard spki.starts(with: prefix), spki.count == 44,
+              let key = try? Curve25519.Signing.PublicKey(rawRepresentation: spki.dropFirst(prefix.count))
+        else { return false }
+        return key.isValidSignature(signature, for: transcript)
+    }
+
+    static func sseFrame(_ event: StoredNativeNotificationEvent) -> String {
+        let data = "{\"body\":\(jsonString(event.body)),\"createdAt\":\(jsonString(iso8601(event.createdAt))),\"eventId\":\(jsonString(event.eventId)),\"serverId\":\(jsonString(event.serverId)),\"targetUri\":\(jsonString(event.targetUri)),\"title\":\(jsonString(event.title)),\"version\":1}"
+        return "event: native-notification.v1\nid: \(event.eventId)\ndata: \(data)\n\n"
+    }
+
+    static func empty(_ status: Int) -> HTTPReply {
+        HTTPReply(status: status, headers: ["Content-Length": "0"], body: "")
+    }
+
+    static func featureFlagClientFacts(_ object: [String: Any]) -> FeatureFlagClientFacts {
+        let osValues: Set<String> = ["android", "ios", "ohos"]
+        let buildTypes: Set<String> = ["release", "alpha", "debug"]
+        let os = (object["os"] as? String).flatMap { osValues.contains($0) ? $0 : nil }
+        let buildType = (object["buildType"] as? String).flatMap { buildTypes.contains($0) ? $0 : nil }
+        var buildNumber: Int?
+        if let raw = object["buildNumber"] {
+            if let string = raw as? String, string.range(of: "^[0-9]{1,15}$", options: .regularExpression) != nil {
+                buildNumber = Int(string)
+            } else if let number = raw as? NSNumber,
+                      String(cString: number.objCType) != "c",
+                      String(cString: number.objCType) != "B",
+                      number.doubleValue >= 0,
+                      number.doubleValue.rounded() == number.doubleValue,
+                      number.doubleValue <= Double(Int.max) {
+                buildNumber = number.intValue
+            }
+        }
+        return FeatureFlagClientFacts(os: os, buildNumber: buildNumber, buildType: buildType)
+    }
+
+    static func searchSnippet(_ content: String) -> String {
+        let compact = content.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        if compact.count <= 180 { return compact }
+        return String(compact.prefix(177)) + "..."
+    }
+
+    static func searchTokens(_ text: String) -> [String] {
+        var tokens: [String] = []
+        var latin = ""
+        func flush() {
+            let word = latin.lowercased()
+            latin = ""
+            guard word.contains(where: { $0.isLetter || $0.isNumber }) else { return }
+            tokens.append(word)
+        }
+        for scalar in text.unicodeScalars {
+            if isCJK(scalar) {
+                flush()
+                tokens.append(String(scalar))
+            } else if scalar.properties.isAlphabetic || scalar.properties.numericType != nil {
+                latin.unicodeScalars.append(scalar)
+            } else {
+                flush()
+            }
+        }
+        flush()
+        return tokens
+    }
+
+    static func isCJK(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x3400...0x9FFF, 0xF900...0xFAFF:
+            return true
+        default:
+            return false
+        }
+    }
+
+    static func tokenCounts(_ text: String) -> [String: Int] {
+        var counts: [String: Int] = [:]
+        for token in searchTokens(text) {
+            counts[token, default: 0] += 1
+        }
+        return counts
+    }
+
+    static func matchScore(_ counts: [String: Int], _ queryTokens: [String], requireAll: Bool) -> Int? {
+        var total = 0
+        for token in queryTokens {
+            let count = counts[token] ?? 0
+            if count == 0 {
+                if requireAll { return nil }
+                continue
+            }
+            total += count
+        }
+        return total > 0 ? total : nil
+    }
+
+    static func messageIdMatches(_ stored: String, _ given: String) -> Bool {
+        if ServerScope.isUUID(given) {
+            return stored.caseInsensitiveCompare(given) == .orderedSame
+        }
+        return stored.lowercased().hasPrefix(given.lowercased())
+    }
+
+    static func contextWindowSide(_ raw: String?) -> Int {
+        guard let raw, raw.wholeMatch(of: /^\d+$/) != nil, let value = Int(raw) else { return 15 }
+        return min(value, 15)
+    }
+
+    static func contextJSON(channelId: String, message: StoredHumanMessage, seq: Int, archived: Bool, canonical: String?, actionMetadata: String? = nil, messagesJSON: String? = nil, hasOlder: Bool = false, hasNewer: Bool = false, threadSummariesJSON: String = "") -> HTTPReply {
+        var messageJSON = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(message.content)),\"seq\":\(seq)"
+        if let actionMetadata {
+            messageJSON += ",\"actionMetadata\":\(actionMetadata)"
+        }
+        messageJSON += "}"
+        let renderedMessages = messagesJSON ?? messageJSON
+        var body = "{\"channelId\":\(jsonString(channelId)),\"targetMessageId\":\(jsonString(message.id)),\"hasOlder\":\(hasOlder ? "true" : "false"),\"hasNewer\":\(hasNewer ? "true" : "false"),\"messages\":[\(renderedMessages)]"
+        if let canonical {
+            body += ",\"canonicalTarget\":\(canonical)"
+        }
+        body += ",\"threadSummariesByParentMessageId\":{\(threadSummariesJSON)},\"historyLimited\":false,\"channelArchived\":\(archived ? "true" : "false")}"
+        return Self.json(200, body)
+    }
+
+    static func forwardTargetScore(_ query: String, _ candidate: String) -> Int {
+        if candidate.isEmpty { return 0 }
+        if candidate == query { return 400 }
+        if candidate.hasPrefix(query) { return 300 }
+        if candidate.range(of: " \(query)") != nil { return 250 }
+        if let range = candidate.range(of: query) {
+            let index = candidate.distance(from: candidate.startIndex, to: range.lowerBound)
+            return max(1, 150 - index)
+        }
+        return 0
+    }
+
+    static func forwardTargetJSON(
+        type: String,
+        channelType: String?,
+        id: String,
+        title: String,
+        subtitle: String,
+        avatarUrl: String?,
+        channelId: String?,
+        joined: Bool?,
+        dmExists: Bool?,
+        canForwardNow: Bool,
+        requiredAction: String?
+    ) -> String {
+        let channelTypeJSON = channelType.map { jsonString($0) } ?? "null"
+        let avatarJSON = avatarUrl.map { jsonString($0) } ?? "null"
+        let channelJSON = channelId.map { jsonString($0) } ?? "null"
+        let joinedJSON = joined.map { $0 ? "true" : "false" } ?? "null"
+        let dmJSON = dmExists.map { $0 ? "true" : "false" } ?? "null"
+        let requiredJSON = requiredAction.map { jsonString($0) } ?? "null"
+        return "{\"type\":\(jsonString(type)),\"channelType\":\(channelTypeJSON),\"id\":\(jsonString(id)),\"title\":\(jsonString(title)),\"subtitle\":\(jsonString(subtitle)),\"avatarUrl\":\(avatarJSON),\"channelId\":\(channelJSON),\"joined\":\(joinedJSON),\"dmExists\":\(dmJSON),\"canForwardNow\":\(canForwardNow ? "true" : "false"),\"requiredAction\":\(requiredJSON)}"
+    }
+
+    static func forwardMessageReply(message: StoredHumanMessage, record: StoredForwardRecord, outcome: String) -> HTTPReply {
+        let items = forwardItemsJSON(record.items)
+        var body = "{\"id\":\(jsonString(message.id)),\"messageType\":\"chat\",\"channelId\":\(jsonString(message.channelId)),\"content\":\(jsonString(message.content)),\"attachments\":[\(attachmentJSON(message.attachmentIds))]"
+        if let randomId = message.randomId {
+            body += ",\"randomId\":\(jsonString(randomId))"
+        }
+        body += ",\"actionMetadata\":{\"kind\":\"forwarded-bundle\",\"destinationTargetId\":\(jsonString(record.destinationTargetId)),\"forwardedItems\":[\(items)]}}"
+        var reply = json(200, body)
+        reply.headers["X-Raft-Forward-Outcome"] = outcome
+        return reply
+    }
+
+    static func forwardItemsJSON(_ items: [ForwardItemRecord]) -> String {
+        items.map { forwardItemJSON($0) }.joined(separator: ",")
+    }
+
+    static func forwardAttachmentSnapshotsJSON(_ snapshots: [ForwardAttachmentSnapshot]) -> String {
+        snapshots.map { snap in
+            let width = snap.width.map(String.init) ?? "null"
+            let height = snap.height.map(String.init) ?? "null"
+            return "{\"id\":\(jsonString(snap.id)),\"filename\":\(jsonString(snap.filename)),\"mimeType\":\(jsonString(snap.mimeType)),\"sizeBytes\":\(snap.sizeBytes),\"width\":\(width),\"height\":\(height)}"
+        }.joined(separator: ",")
+    }
+
+    static func forwardItemJSON(_ item: ForwardItemRecord) -> String {
+        let attachments = forwardAttachmentSnapshotsJSON(item.attachments)
+        let snapshotId = item.snapshotId.map { jsonString($0) } ?? "null"
+        let parent = item.sourceIsThreadParent ? "true" : "false"
+        let target = item.sourceTargetId.map { jsonString($0) } ?? "null"
+        let messageIdJSON = item.exposesPointers ? jsonString(item.sourceMessageId) : "null"
+        var body = "{\"sourceMessageId\":\(messageIdJSON),\"sourceIsThreadParent\":\(parent),\"contentSnapshot\":\(jsonString(item.contentSnapshot)),\"sourceAuthorSnapshot\":{\"uniqueName\":\(jsonString(item.sourceAuthorUniqueName))},\"sourceTargetId\":\(target)"
+        if !item.exposesPointers {
+            body += ",\"sourceMessageSeq\":null,\"sourceServerId\":null"
+        }
+        if let threadId = item.sourceThreadId {
+            body += ",\"sourceThreadId\":\(jsonString(threadId))"
+        }
+        if let parentChannelId = item.parentChannelId {
+            body += ",\"parentChannelId\":\(jsonString(parentChannelId))"
+        }
+        body += ",\"sourceTargetSnapshot\":{\"id\":\(snapshotId),\"type\":\(jsonString(item.snapshotType)),\"label\":\(jsonString(item.snapshotLabel)),\"labelVisibility\":\(jsonString(item.snapshotLabelVisibility))},\"attachmentSnapshots\":[\(attachments)],\"attachmentPolicy\":\(jsonString(item.attachmentPolicy)),\"provenanceState\":\(jsonString(item.provenanceState))}"
+        return body
+    }
+
+    static func scrubbedForwardItemJSON(_ item: ForwardItemRecord) -> String {
+        let attachments = forwardAttachmentSnapshotsJSON(item.attachments)
+        let parent = item.sourceIsThreadParent ? "true" : "false"
+        let type = item.snapshotType.isEmpty ? "channel" : item.snapshotType
+        return "{\"sourceMessageId\":null,\"sourceIsThreadParent\":\(parent),\"contentSnapshot\":\(jsonString(item.contentSnapshot)),\"sourceServerId\":null,\"sourceTargetId\":null,\"sourceThreadId\":null,\"parentChannelId\":null,\"sourceTargetSnapshot\":{\"id\":null,\"type\":\(jsonString(type)),\"label\":\"\",\"labelVisibility\":\"restricted\"},\"attachmentSnapshots\":[\(attachments)],\"attachmentPolicy\":\(jsonString(item.attachmentPolicy)),\"provenanceState\":\"original_unavailable\"}"
+    }
+
+    static func forwardDestinationIds(_ value: Any?) -> [String]? {
+        guard let rows = value as? [Any], !rows.isEmpty else { return nil }
+        var ids: [String] = []
+        var seen = Set<String>()
+        for row in rows {
+            guard let raw = row as? String else { return nil }
+            let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard ServerScope.isUUID(id) else { return nil }
+            if seen.insert(id).inserted {
+                ids.append(id)
+            }
+        }
+        if ids.isEmpty || ids.count > 10 { return nil }
+        return ids
+    }
+
+    static func forwardSourceIds(_ value: Any?) -> [String]? {
+        guard let rows = value as? [Any], !rows.isEmpty, rows.count <= 20 else { return nil }
+        var ids: [String] = []
+        for row in rows {
+            guard let raw = row as? String else { return nil }
+            let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard ServerScope.isUUID(id), !ids.contains(id) else { return nil }
+            ids.append(id)
+        }
+        return ids
+    }
+
+    static func pendingMentionExpiry() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: Date().addingTimeInterval(7 * 24 * 60 * 60))
+    }
+
+    static func mentionBindingConflict(_ mentions: [MentionInput]) -> Bool {
+        var byName: [String: String] = [:]
+        for mention in mentions where mention.type == "user" || mention.type == "agent" {
+            guard ServerScope.isUUID(mention.id), !mention.name.isEmpty else { continue }
+            let key = mention.name.lowercased()
+            let signature = "\(mention.type):\(mention.id)"
+            if let previous = byName[key], previous != signature { return true }
+            byName[key] = signature
+        }
+        return false
+    }
+
+    static func rawMentionHandles(_ content: String) -> [String] {
+        var handles: [String] = []
+        for match in content.matches(of: /(?:^|[^A-Za-z0-9_.-])@([A-Za-z0-9_.-]+)/) {
+            let handle = String(match.1)
+            if !handle.isEmpty, !handles.contains(handle) { handles.append(handle) }
+        }
+        return handles
+    }
+
+    static func mentionInputs(_ value: Any?) -> [MentionInput] {
+        guard let rows = value as? [Any] else { return [] }
+        return rows.compactMap { row in
+            guard let object = row as? [String: Any],
+                  let type = object["type"] as? String,
+                  let id = object["id"] as? String,
+                  let name = object["name"] as? String
+            else { return nil }
+            return MentionInput(type: type, id: id, name: name)
+        }
+    }
+
+    static func previewBase64URL(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    static func previewBase64URLDecode(_ value: String) -> Data? {
+        var base64 = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while base64.count % 4 != 0 { base64 += "=" }
+        return Data(base64Encoded: base64)
+    }
+
+    static func mentionDeliveryFields(handle: String, terminalCode: String?) -> String {
+        guard let terminalCode, terminalCode != "INSTRUMENT_FAILED" else {
+            return "\"targetHandle\":\(jsonString(handle)),\"outcome\":\"unknown\""
+        }
+        let category: String
+        switch terminalCode {
+        case "QUOTA_LIMITED":
+            category = "quota"
+        case "DELIVERY_REJECTED":
+            category = "runtime_error"
+        default:
+            category = "unclassified"
+        }
+        return "\"targetHandle\":\(jsonString(handle)),\"outcome\":\"lost\",\"reasonCategory\":\(jsonString(category))"
+    }
+
+    static func parsePageCursor(_ raw: String?) -> PageCursor {
+        guard let raw else { return .absent }
+        if raw == "0" { return .value(0) }
+        guard let parsed = Int(raw), parsed > 0 else { return .invalid }
+        return .value(parsed)
+    }
+
+    static func messagePageLimit(_ raw: String?) -> Int {
+        guard let raw, let parsed = Int(raw), parsed > 0 else { return 50 }
+        return min(parsed, 200)
+    }
+
+    static func parseDoneFrontier(_ raw: Any?) -> Int? {
+        guard let text = raw as? String, !text.isEmpty,
+              text == text.trimmingCharacters(in: .whitespacesAndNewlines),
+              text.count <= 19,
+              text.range(of: "^[1-9][0-9]*$", options: .regularExpression) != nil,
+              let value = Int(text), value > 0
+        else { return nil }
+        return value
+    }
+
+    static func inboxQueryParameters(_ query: String?) -> [String: String] {
+        guard let query, !query.isEmpty else { return [:] }
+        var result: [String: String] = [:]
+        for pair in query.split(separator: "&") {
+            let item = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            let name = String(item[0]).removingPercentEncoding ?? String(item[0])
+            let value = item.count == 2 ? (String(item[1]).removingPercentEncoding ?? String(item[1])) : ""
+            result[name] = value
+        }
+        return result
+    }
+
+    static func inertThirdPartyMentions(_ text: String) -> String {
+        text.replacingOccurrences(
+            of: "@([A-Za-z0-9_.-]+)",
+            with: "user:$1",
+            options: .regularExpression
+        )
+    }
+
+    static func validReactionEmoji(_ raw: String) -> String? {
+        let emoji = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if emoji.isEmpty || emoji.utf16.count > 16 || emoji.contains(where: \.isWhitespace) {
+            return nil
+        }
+        return emoji
+    }
+
+    static func encodeActorCursor(_ cursor: ActorCursor) -> String {
+        let json = "{\"principalId\":\(jsonString(cursor.principalId)),\"serverId\":\(jsonString(cursor.serverId)),\"messageId\":\(jsonString(cursor.messageId)),\"emoji\":\(jsonString(cursor.emoji)),\"discussionVersion\":\(cursor.discussionVersion),\"visibilityHash\":\(jsonString(cursor.visibilityHash)),\"actorKind\":\(jsonString(cursor.actorKind)),\"actorId\":\(jsonString(cursor.actorId))}"
+        var encoded = Data(json.utf8).base64EncodedString()
+        encoded = encoded.replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        return encoded
+    }
+
+    static func decodeActorCursor(_ raw: String) -> ActorCursor? {
+        if raw.isEmpty || raw.utf8.count > 2048 { return nil }
+        var base = raw.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        let remainder = base.count % 4
+        if remainder != 0 { base += String(repeating: "=", count: 4 - remainder) }
+        guard let data = Data(base64Encoded: base),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let principalId = object["principalId"] as? String,
+              let serverId = object["serverId"] as? String,
+              let messageId = object["messageId"] as? String,
+              let emoji = object["emoji"] as? String,
+              let visibilityHash = object["visibilityHash"] as? String,
+              let actorKind = object["actorKind"] as? String,
+              let actorId = object["actorId"] as? String,
+              actorKind == "user" || actorKind == "agent"
+        else { return nil }
+        let version: Int
+        if let number = object["discussionVersion"] as? NSNumber {
+            version = number.intValue
+        } else if let int = object["discussionVersion"] as? Int {
+            version = int
+        } else {
+            return nil
+        }
+        return ActorCursor(
+            principalId: principalId,
+            serverId: serverId,
+            messageId: messageId,
+            emoji: emoji,
+            discussionVersion: version,
+            visibilityHash: visibilityHash,
+            actorKind: actorKind,
+            actorId: actorId
+        )
+    }
+
+    static func utf16Ascending(_ lhs: String, _ rhs: String) -> Bool {
+        let left = Array(lhs.utf16)
+        let right = Array(rhs.utf16)
+        for index in 0..<min(left.count, right.count) where left[index] != right[index] {
+            return left[index] < right[index]
+        }
+        return left.count < right.count
+    }
+
+    static func messageIdHasShortPrefix(_ id: String, prefix: String) -> Bool {
+        let normalized = prefix.lowercased()
+        guard normalized.count == 8, let start = UInt64(normalized, radix: 16) else { return false }
+        let value = id.lowercased()
+        let lower = normalized + "-0000-0000-0000-000000000000"
+        guard value >= lower else { return false }
+        let next = start + 1
+        if next > 0xffff_ffff { return true }
+        let hex = String(next, radix: 16)
+        let upper = String(repeating: "0", count: 8 - hex.count) + hex + "-0000-0000-0000-000000000000"
+        return value < upper
+    }
+
+    static func reactionEmoji(_ body: String) -> String? {
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = object["emoji"] as? String
+        else { return nil }
+        let emoji = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if emoji.isEmpty || emoji.utf16.count > 16 || emoji.contains(where: \.isWhitespace) {
+            return nil
+        }
+        return emoji
+    }
+
+    static func appLoginExpiresAt(_ now: Date = Date()) -> Date {
+        now.addingTimeInterval(600)
+    }
+
+    static func appLoginRedirect(_ returnUri: String, requestId: String, query: String) -> String {
+        let separator = returnUri.contains("?") ? "&" : "?"
+        return "\(returnUri)\(separator)requestId=\(requestId)&\(query)"
+    }
+
+    static func iso8601(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+
+    static func deviceLoginEnabled(_ raw: String?) -> Bool {
+        guard let raw else { return true }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if value.isEmpty { return true }
+        return !(value == "0" || value == "false" || value == "no" || value == "off")
+    }
+
+    static func deviceSecret() -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        for index in bytes.indices {
+            bytes[index] = UInt8.random(in: 0...255)
+        }
+        let encoded = Data(bytes).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        return "dvc_\(encoded)"
+    }
+
+    static func deviceNotReady(_ code: String, status: Int) -> HTTPReply {
+        json(status, "{\"error\":\"Device authorization not ready\",\"code\":\(jsonString(code))}")
+    }
+
+    static func deviceUpdateFailed(_ code: String, status: Int) -> HTTPReply {
+        json(status, "{\"error\":\"Device authorization could not be updated\",\"code\":\(jsonString(code))}")
+    }
+
+    static func stagingCapability(_ value: Any?, into issues: inout [Issue]) -> String? {
+        guard let value else { return nil }
+        guard let text = value as? String else {
+            issues.append(Issue(path: "stagingSelfAccountCapability", message: "Expected string, received \(kind(value))"))
+            return nil
+        }
+        if text.count < 32 {
+            issues.append(Issue(path: "stagingSelfAccountCapability", message: "String must contain at least 32 character(s)"))
+            return nil
+        }
+        if text.count > 256 {
+            issues.append(Issue(path: "stagingSelfAccountCapability", message: "String must contain at most 256 character(s)"))
+            return nil
+        }
+        return text
+    }
+
+    static func retirementJSON(_ receipt: RetirementReceipt) -> HTTPReply {
+        let body = "{\"receipt\":{\"userId\":\(jsonString(receipt.userId)),\"actorUserId\":\(jsonString(receipt.actorUserId)),\"environment\":\(jsonString(receipt.environment)),\"terminalState\":\(jsonString(receipt.terminalState)),\"sessionsRevoked\":\(receipt.sessionsRevoked)}}"
+        return json(200, body)
+    }
+
+    static func parseConfiguredMobileReturnURIs(_ raw: String?) -> Set<String> {
+        guard let raw else { return [] }
+        var values: Set<String> = []
+        for part in raw.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "," || $0 == "\n" }) {
+            let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { values.insert(trimmed) }
+        }
+        return values
+    }
+
+    static func parse(_ body: String) -> Parsed {
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return .invalid([Issue(path: "", message: "Expected object, received string")])
+        }
+        var issues: [Issue] = []
+        let email = stringField(object["email"], path: "email", into: &issues)
+        let password = stringField(object["password"], path: "password", into: &issues)
+        if !issues.isEmpty { return .invalid(issues) }
+        let pendingLinkToken = object["pendingLinkToken"] as? String
+        return .request(Request(email: email ?? "", password: password ?? "", pendingLinkToken: pendingLinkToken))
+    }
+
+    static func channelFilesBase64URLEncode(_ value: String) -> String {
+        Data(value.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    static func channelFilesBase64URLDecode(_ value: String) -> String? {
+        var base64 = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while base64.count % 4 != 0 { base64 += "=" }
+        guard let data = Data(base64Encoded: base64) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func channelFilesLimit(_ raw: String?) -> Int {
+        guard let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let value = Double(raw), value.isFinite
+        else { return 500 }
+        return max(1, min(Int(value.rounded(.down)), 500))
+    }
+
+    static func channelFileMimeType(filename: String, stored: String?) -> String {
+        if let stored, !stored.isEmpty { return stored }
+        let ext = (filename as NSString).pathExtension.lowercased()
+        switch ext {
+        case "pdf": return "application/pdf"
+        case "png": return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "gif": return "image/gif"
+        case "webp": return "image/webp"
+        case "txt": return "text/plain"
+        case "html", "htm": return "text/html"
+        default: return "application/octet-stream"
+        }
+    }
+
+    static func attachmentJSON(_ ids: [String]) -> String {
+        ids.map { "{\"id\":\(jsonString($0))}" }.joined(separator: ",")
+    }
+
+    static func humanMessageJSON(_ message: StoredHumanMessage) -> HTTPReply {
+        let mentionJSON = message.mentions.map { mention in
+            "{\"type\":\(jsonString(mention.type)),\"id\":\(jsonString(mention.id)),\"name\":\(jsonString(mention.name))}"
+        }.joined(separator: ",")
+        var body = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(message.channelId)),\"content\":\(jsonString(message.content)),\"attachments\":[\(attachmentJSON(message.attachmentIds))],\"mentions\":[\(mentionJSON)]"
+        if let randomId = message.randomId {
+            body += ",\"randomId\":\(jsonString(randomId))"
+        }
+        body += "}"
+        return json(200, body)
+    }
+
+    static func appReferenceIds(_ content: String) -> [String] {
+        var ids: [String] = []
+        for match in content.matches(of: /<app:([a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)+)>/) {
+            let id = String(match.1)
+            if !ids.contains(id) { ids.append(id) }
+        }
+        return ids
+    }
+
+    static func parseOptionalIanaTimezone(_ value: Any?) -> String? {
+        guard let raw = value as? String else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed.count > 128 { return nil }
+        if trimmed != "UTC" && !trimmed.contains("/") { return nil }
+        if trimmed == "UTC" { return "UTC" }
+        guard let zone = TimeZone(identifier: trimmed) else { return nil }
+        let canonical = zone.identifier
+        if canonical != "UTC" && !canonical.contains("/") { return nil }
+        return canonical
+    }
+
+    static func humanMessageBodyIsValid(_ body: String) -> Bool {
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let channelId = object["channelId"] as? String,
+              ServerScope.isUUID(channelId)
+        else { return false }
+        if let attachments = object["attachmentIds"] {
+            guard let ids = attachments as? [Any] else { return false }
+            for id in ids {
+                guard let string = id as? String, ServerScope.isUUID(string) else { return false }
+            }
+        }
+        if object["asTask"] != nil {
+            guard object["asTask"] is Bool else { return false }
+        }
+        return true
+    }
+
+    static func featureFlagKey(_ value: Any) -> String? {
+        guard let string = value as? String else { return nil }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.wholeMatch(of: /^[a-z0-9][a-z0-9_.-]{0,127}$/) != nil else { return nil }
+        return trimmed
+    }
+
+    static func stringField(_ value: Any?, path: String, into issues: inout [Issue]) -> String? {
+        guard let value else {
+            issues.append(Issue(path: path, message: "Required"))
+            return nil
+        }
+        if let string = value as? String {
+            if string.isEmpty {
+                issues.append(Issue(path: path, message: "String must contain at least 1 character(s)"))
+                return nil
+            }
+            return string
+        }
+        issues.append(Issue(path: path, message: "Expected string, received \(kind(value))"))
+        return nil
+    }
+
+    static func kind(_ value: Any) -> String {
+        if value is NSNull { return "null" }
+        if value is String { return "string" }
+        if value is NSDictionary { return "object" }
+        if value is NSArray { return "array" }
+        if value is Bool { return "boolean" }
+        if value is NSNumber { return "number" }
+        return "object"
+    }
+
+    static func invalid(_ issues: [Issue]) -> HTTPReply {
+        bodyIssues(issues, error: "Invalid email login body", code: "email_login_body_invalid")
+    }
+
+    static func registerInvalid(_ issues: [Issue]) -> HTTPReply {
+        bodyIssues(issues, error: "Invalid email registration body", code: "email_register_body_invalid")
+    }
+
+    static func bodyIssues(_ issues: [Issue], error: String, code: String) -> HTTPReply {
+        let listed = issues.map {
+            "{\"path\":\(jsonString($0.path)),\"message\":\(jsonString($0.message))}"
+        }.joined(separator: ",")
+        return json(400, "{\"error\":\(jsonString(error)),\"code\":\(jsonString(code)),\"issues\":[\(listed)]}")
+    }
+
+    static func deviceContext(userAgent: String, country: String) -> [String: Any] {
+        var context: [String: Any] = [:]
+        if let range = userAgent.range(of: "Chrome/") {
+            let rest = userAgent[range.upperBound...]
+            let major = rest.prefix(while: { $0 != "." && !$0.isWhitespace })
+            context["$browser"] = "chrome"
+            if let version = Int(major) { context["$browser_version"] = version }
+        } else if userAgent.contains("Firefox/") {
+            context["$browser"] = "firefox"
+        } else if userAgent.contains("Safari/") {
+            context["$browser"] = "safari"
+        } else {
+            context["$browser"] = "unknown"
+        }
+        if userAgent.contains("Windows") {
+            context["$os"] = "windows"
+        } else if userAgent.contains("Mac OS X") {
+            context["$os"] = "macos"
+        } else if userAgent.contains("Android") {
+            context["$os"] = "android"
+        } else if userAgent.contains("iPhone") || userAgent.contains("iPad") {
+            context["$os"] = "ios"
+        } else if userAgent.contains("Linux") {
+            context["$os"] = "linux"
+        } else {
+            context["$os"] = "unknown"
+        }
+        context["$device_type"] = userAgent.contains("Mobile") ? "mobile" : "desktop"
+        let normalizedCountry = country.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if normalizedCountry.wholeMatch(of: /^[A-Z]{2}$/) != nil {
+            context["$country"] = normalizedCountry
+        }
+        return context
+    }
+
+    static func deprecatedRuntimeReply(_ runtime: String) -> HTTPReply {
+        Self.json(400, "{\"error\":\"Runtime is deprecated and cannot be selected: \(runtime)\"}")
+    }
+
+    static func runtimeConfigStructureError(_ config: [String: Any]) -> HTTPReply? {
+        if let model = config["model"] as? [String: Any],
+           model["kind"] as? String == "custom",
+           (model["name"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return Self.json(400, "{\"error\":\"runtimeConfig.model.name is required\"}")
+        }
+        guard let provider = config["provider"] as? [String: Any],
+              provider["kind"] as? String == "custom"
+        else { return nil }
+        let runtime = config["runtime"] as? String ?? ""
+        if runtime == "cursor" {
+            return Self.json(400, "{\"error\":\"runtimeConfig.provider is not supported for runtime: cursor\"}")
+        }
+        if (provider["apiKey"] as? String ?? "").isEmpty {
+            return Self.json(400, "{\"error\":\"runtimeConfig.provider.apiKey is required\"}")
+        }
+        return nil
+    }
+
+    static func validatedEnvVars(_ value: Any?) -> (env: [String: String]?, error: String?) {
+        guard let value, !(value is NSNull) else { return (nil, nil) }
+        guard let object = value as? [String: Any] else {
+            return (nil, "envVars must be an object")
+        }
+        var env: [String: String] = [:]
+        for (key, raw) in object {
+            guard let text = raw as? String else {
+                return (nil, "envVars keys and values must be strings")
+            }
+            guard key.wholeMatch(of: /^[A-Za-z_][A-Za-z0-9_]*$/) != nil else {
+                return (nil, "Invalid env var key \"\(key)\": must match [A-Za-z_][A-Za-z0-9_]*")
+            }
+            guard !key.contains("\0"), !text.contains("\0") else {
+                return (nil, "envVars keys and values must not contain null bytes")
+            }
+            env[key] = text
+        }
+        return (env, nil)
+    }
+
+    static func normalizeRuntimeConfig(_ raw: [String: Any]) -> [String: Any] {
+        var config = raw
+        if config["version"] == nil { config["version"] = 1 }
+        if config["mode"] == nil { config["mode"] = ["kind": "default"] }
+        if config["reasoningEffort"] == nil { config["reasoningEffort"] = NSNull() }
+        var userEnv: [String: String] = [:]
+        if let env = config["envVars"] as? [String: String] {
+            for (key, value) in env where !key.hasPrefix("ANTHROPIC_") {
+                userEnv[key] = value
+            }
+        }
+        config["envVars"] = userEnv
+        return config
+    }
+
+    static func derivedAgentEnvVars(_ config: [String: Any], userEnv: [String: String]) -> [String: String] {
+        var env = userEnv
+        if config["runtime"] as? String == "claude" {
+            if let provider = config["provider"] as? [String: Any], provider["kind"] as? String == "custom" {
+                if let apiUrl = provider["apiUrl"] as? String { env["ANTHROPIC_BASE_URL"] = apiUrl }
+                if let apiKey = provider["apiKey"] as? String { env["ANTHROPIC_API_KEY"] = apiKey }
+            }
+            if let model = config["model"] as? [String: Any], model["kind"] as? String == "custom",
+               let name = model["name"] as? String {
+                env["ANTHROPIC_CUSTOM_MODEL_OPTION"] = name
+            }
+        }
+        return env
+    }
+
+    static func privateJSON(_ body: String) -> HTTPReply {
+        HTTPReply(
+            status: 200,
+            headers: [
+                "X-Robots-Tag": AppFallback.robotsTag,
+                "Content-Type": AppFallback.jsonContentType,
+                "Cache-Control": "private, no-store",
+                "Content-Length": String(Data(body.utf8).count),
+            ],
+            body: body
+        )
+    }
+
+    static func serializeJSON(_ object: [String: Any]) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
+            return "{}"
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    static func redactedRuntimeConfigJSON(_ raw: String?) -> String? {
+        guard let raw, let data = raw.data(using: .utf8),
+              var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return raw }
+        if var provider = object["provider"] as? [String: Any], provider["apiKey"] != nil {
+            provider["apiKey"] = ""
+            object["provider"] = provider
+        }
+        guard let redacted = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
+            return raw
+        }
+        return String(decoding: redacted, as: UTF8.self)
+    }
+
+    static func agentModel(from runtimeConfigJSON: String?, external: Bool) -> String {
+        if external { return "external" }
+        guard let runtimeConfigJSON,
+              let config = (try? JSONSerialization.jsonObject(with: Data(runtimeConfigJSON.utf8))) as? [String: Any],
+              let model = config["model"] as? [String: Any]
+        else { return "" }
+        return (model["name"] as? String) ?? (model["id"] as? String) ?? ""
+    }
+
+    static func agentRuntimeJSON(
+        id: String,
+        name: String,
+        runtime: String,
+        runtimeConfigJSON: String,
+        envVarsJSON: String,
+        external: Bool,
+        includeEnvVars: Bool = true
+    ) -> String {
+        let config = (try? JSONSerialization.jsonObject(with: Data(runtimeConfigJSON.utf8))) as? [String: Any] ?? [:]
+        let model: String
+        if external {
+            model = "external"
+        } else {
+            model = (config["model"] as? [String: Any])?["name"] as? String
+                ?? (config["model"] as? [String: Any])?["id"] as? String
+                ?? ""
+        }
+        let env = includeEnvVars ? (envVarsJSON.isEmpty ? "{}" : envVarsJSON) : "null"
+        return "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"runtime\":\(jsonString(runtime)),\"model\":\(jsonString(model)),\"external\":\(external),\"machineId\":null,\"reasoningEffort\":null,\"envVars\":\(env),\"runtimeConfig\":\(runtimeConfigJSON.isEmpty ? "{}" : runtimeConfigJSON)}"
+    }
+
+}
