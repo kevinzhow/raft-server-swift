@@ -2042,3 +2042,10 @@ RFC 074 personal assistant：
 - 已覆盖：message-display settings、unread/visibility、read-all delegation、#all hide/restore、rename/description system messages、restore-list exclusion。
 - 本轮补齐：unfollow 线程保留在 Activity All 但 unread/mention 抑制，直接 @mention 仅在 parent-channel member 时 reactivation；Done/Unfollow/Restore 独立；Done frontier admission（required/unmappable/beyond-latest/int4 全部在写前校验，undone/read-all/thread-revive 同步）；>100 mixed-follow 分页；V1 write shapes + canonical refetch；omitted-frontier Done snapshot；`POST /api/channels/:id/resume-all-agents` 将 skipped start 报为 `{ok:false,reason:"start_in_flight"}` 而非计入 resumed。
 - 裁决排除：4 个 query-count/query-shape spy、2 个 SQL source-text regex spy、2 个 socket frame（channel:updated / versioned user-room events）、2 个 receiver push kill-switch / missing io mount。继承的窄差异：全局 read-all 同时抑制 scopes（`InboxDoneTests` 锁定）、empty-scope explicit frontier 保持 permissive（`InboxDoneTests`/`DeletedThreadDoneTests` 锁定）。
+
+### route internalAgentKnowledge.api（锁定）
+
+- GET `/internal/agent-api/knowledge`：capability(`knowledge`) → CLI source → topic/doc id/path alias → intent/reason（各自必需；raw payload 拒绝）→ query/header correlation ids（冲突 400）→ retrieval；返回 versioned doc + 可选 metadata-only event；not_found 带 actionable guidance/candidates/starter topics，且不泄露源注释；支持 imported doc ids、path alias、51 个 evidence-driven aliases、CLI overview 与 rename 分离、legacy nested `/`/`#` links、36 个 recipe slash slug。
+- GET `/internal/agent-api/knowledge/search`：scope 校验、词法 top-3 + relevance floor、non-English → `knowledge_language_unsupported` + `language_gate`、blind phrasing ranking、clean miss event；search 只接受支持的 scope，get 保持 exact-only；legacy `X-Slock-Client` 与 Manual compatibility 字段保留。
+- corpus 为嵌入的 81 docs（46 agent-knowledge + 35 recipes，含 `manual/recipes` prefix），docVersion 为 sanitized content 的 SHA-256 前 16 hex；telemetry 为 metadata-only in-memory seam（docId/docVersion/docState/query bytes，不存 body）。
+- 非 case-visible 简化：`knowledge:read` custom grant gate 未强制（public helper 不可达；24 cases 无 custom grant）、`knowledge_agent_missing` 以 `agentApiIdentity` 401 近似、telemetry 为内存而非 DB row、corpus 嵌入而非 SLOCK_KNOWLEDGE_ROOT。

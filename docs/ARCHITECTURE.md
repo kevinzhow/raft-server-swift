@@ -294,8 +294,8 @@ integrations, MCP, provider-connections, notifications/product-events and misc.
 ## Remaining parity work (2026-11-05, after 211/219 route modules locked)
 
 Locked executable route surface covers all feature collections plus the parity
-suites; still partial: `agents.api`, `channels.api`,
-`internal.attestedSend.api`, `internalAgentKnowledge.api`,
-`internalComputer.agentMigration`, `socketMembershipRevocation.api`. These need either a missing subsystem
+suites; still partial: `agents.api` and `socketMembershipRevocation.api`. These need either a missing subsystem
 (knowledge corpus, multi-app binding, P2 upload service, joint tasks) or a
 large acceptance matrix (agents/channels); they are tracked in `docs/PARITY.tsv`.
+
+Generated knowledge corpus lives in `Sources/RaftHTTPServer/Generated/KnowledgeCorpus.swift` (data-only, outside the Features line ceiling); regenerate from upstream `manual/agent-knowledge` + `manual/recipes` when the corpus changes.

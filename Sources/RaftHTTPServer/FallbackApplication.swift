@@ -230,6 +230,7 @@ public func configure(_ app: Application, services: FallbackServices) {
     TranslationFeature(services: services).register(routes: app)
     PublicFeature(services: services).register(routes: app)
     AuthFeature(services: services).register(routes: app)
+    KnowledgeFeature(services: services).register(routes: app)
     services.emailAccounts.onAgentReadUpdated = { serverId, channelId, agentId, maxReadSeq in
         services.emailAccounts.emitAgentScopeRead(
             serverId: serverId,
