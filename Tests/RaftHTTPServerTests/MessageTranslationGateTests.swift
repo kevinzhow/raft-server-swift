@@ -62,7 +62,7 @@ import VaporTesting
             let otherChannel = accounts.oauth.createChannel(serverId: otherServer, name: "other-room", creatorUserId: ownerId)
             let hidden = accounts.oauth.createMessageRecord(channelId: otherChannel, content: "你好 hidden", senderId: ownerId)
             let enabled = try await client.send(.post, headers: headers, to: "/api/message-translations:batch") { request in
-                request.body = .init(string: "{\"targetLanguage\":\"en\",\"mode\":\"auto\",\"messageIds\":[\"\(visible.id)\",\"\(hidden.id)\"]}")
+                request.body = .init(string: "{\"targetLanguage\":\"en\",\"mode\":\"manual\",\"messageIds\":[\"\(visible.id)\",\"\(hidden.id)\"]}")
             }
             #expect(enabled.status == .ok)
             let enabledBody = try JSONSerialization.jsonObject(with: Data((enabled.body.string ?? "").utf8)) as? [String: Any]

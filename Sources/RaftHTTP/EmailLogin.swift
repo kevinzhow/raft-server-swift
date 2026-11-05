@@ -18151,7 +18151,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         var results: [String] = []
         for id in ids {
-            guard let message = oauth.messageContent(id: id),
+            guard let message = oauth.messageTranslationMetadata(id: id),
                   let channel = oauth.channelInfo(id: message.channelId),
                   channel.serverId == serverId,
                   oauth.channelType(id: message.channelId) == "channel"
@@ -18161,8 +18161,23 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 continue
             }
             let source = Self.detectTranslationLanguage(message.content)
-            if source.language == target {
-                results.append("{\"messageId\":\(jsonString(id)),\"status\":\"skipped\",\"reason\":\"target_is_source\",\"sourceLanguage\":\(jsonString(source.language)),\"targetLanguage\":\(jsonString(target))}")
+            var skipReason: String?
+            if message.senderId == userId, mode == "auto" {
+                skipReason = "own_message"
+            } else if message.messageType == "system" || message.senderId == "system" {
+                skipReason = "system_message"
+            } else if Self.translationCodeOrLinkOnly(message.content) {
+                skipReason = "code_or_link_only"
+            } else if source.confidence < 50 {
+                skipReason = "low_confidence"
+            } else if source.language == target {
+                skipReason = "same_language"
+            }
+            if let skipReason {
+                if skipReason == "same_language" {
+                    messageTranslationLedger[id] = (status: "skipped", providerBilledChars: 0, targetLanguage: target, translatedContent: "")
+                }
+                results.append("{\"messageId\":\(jsonString(id)),\"status\":\"skipped\",\"skipReason\":\(jsonString(skipReason)),\"sourceLanguage\":\(jsonString(source.language)),\"targetLanguage\":\(jsonString(target))}")
                 continue
             }
             let translated = provider == "fake" ? "[\(target)] \(message.content)" : "[\(target)] \(message.content)"
@@ -18178,7 +18193,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let hasCJK = content.unicodeScalars.contains { scalar in
             (0x4E00...0x9FFF).contains(scalar.value) || (0x3040...0x30FF).contains(scalar.value)
         }
-        return hasCJK ? ("zh", 95) : ("en", 99)
+        if hasCJK { return ("zh", 95) }
+        let hasLetter = content.unicodeScalars.contains { CharacterSet.letters.contains($0) }
+        return hasLetter ? ("en", 99) : ("en", 20)
+    }
+
+    private static func translationCodeOrLinkOnly(_ content: String) -> Bool {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("```") && trimmed.hasSuffix("```") && trimmed.count >= 6 { return true }
+        let linkOnly = trimmed.split(whereSeparator: { $0.isWhitespace }).allSatisfy { token in
+            token.lowercased().hasPrefix("http://") || token.lowercased().hasPrefix("https://")
+        }
+        return !trimmed.isEmpty && linkOnly
     }
 
     private static func sha256Hex(_ data: Data) -> String {

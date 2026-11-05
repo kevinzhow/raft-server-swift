@@ -753,7 +753,9 @@ public final class OAuthLedger: @unchecked Sendable {
         id explicitId: String? = nil,
         seq explicitSeq: Int? = nil,
         createdAt: Date = Date(),
-        senderTimezone: String? = nil
+        senderTimezone: String? = nil,
+        senderType: String? = nil,
+        messageType: String? = nil
     ) -> (id: String, seq: Int) {
         lock.lock()
         defer { lock.unlock() }
@@ -767,7 +769,9 @@ public final class OAuthLedger: @unchecked Sendable {
             createdAt: createdAt,
             senderId: senderId,
             seq: seq,
-            senderTimezone: senderTimezone
+            senderTimezone: senderTimezone,
+            senderType: senderType,
+            messageType: messageType
         ))
         return (id, seq)
     }
@@ -1030,6 +1034,13 @@ public final class OAuthLedger: @unchecked Sendable {
             .filter { $0.channelId == channelId }
             .sorted { $0.seq < $1.seq }
             .map { HistoryMessage(id: $0.id, content: $0.content, senderId: $0.senderId, seq: $0.seq, createdAt: $0.createdAt, senderTimezone: $0.senderTimezone, senderType: $0.senderType, messageType: $0.messageType) }
+    }
+
+    public func messageTranslationMetadata(id: String) -> (channelId: String, content: String, senderId: String, senderType: String, messageType: String)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let message = channelMessages.first(where: { $0.id == id }) else { return nil }
+        return (message.channelId, message.content, message.senderId, message.senderType ?? "user", message.messageType ?? "chat")
     }
 
     public func messageContent(id: String) -> (channelId: String, content: String)? {
