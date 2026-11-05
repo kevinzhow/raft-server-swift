@@ -29257,6 +29257,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(200, "{\"id\":\(jsonString(hostChannelId)),\"name\":\(jsonString(name)),\"type\":\"joint\",\"targetServerSlug\":\(jsonString(targetServer.slug)),\"jointInvite\":{\"id\":\(jsonString(inviteId)),\"status\":\"pending\"},\"joined\":true}")
         }
+        lock.lock()
+        let collision = postableChannels.first { _, channel in
+            channel.serverId == serverId && channel.name == name && channel.deletedAt == nil
+                && (channel.kind == "channel" || channel.kind == "private")
+        }
+        if let collision {
+            let canUnarchive = collision.value.archived
+                && channelHumanRoles["\(collision.key)\n\(userId)"] == "admin"
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"A channel named #\(name) already exists\",\"canUnarchiveArchivedChannel\":\(canUnarchive)}")
+        }
+        lock.unlock()
         let description = object["description"] as? String
         let channelId = oauth.createChannel(
             serverId: serverId,

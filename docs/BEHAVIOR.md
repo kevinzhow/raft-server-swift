@@ -1979,3 +1979,11 @@ RFC 074 personal assistant：
 - action prepare：integration approval card 拒绝 `ACTION_TYPE_NOT_PREPARABLE`；DM thread target 支持 `agent:create` 卡片；integration app prepare 拒绝私有 IPv6 literal（需 unsafe override）、非 canonical scope/category，且不落卡。
 - 附件：id-less upload + unicode PDF 下载（RFC 5987 disposition）；activity ingest 接受 `raft-agent-activity-ingest.v1`，read gate，`transcript_path` 400，未知字段 strip 并报告。
 - 裁决排除：task-mine 常量查询数 spy、credential auth phase traces、transient owner secret wake（orchestrator）、assignment rollback/post-commit fan-out 注入、joint storage/forwarded snapshot 投影、abort 上游下载 socket。
+
+### route publicServer.api（锁定，含裁决）
+
+- rollout flag：关闭时 owner read/write 与 anonymous card/messages 全部 fail closed（404，flag-off 与不存在 slug body 字节一致），owner PATCH 不改变存储。
+- public-visibility：仅 owner 可 read/write（admin 403），read 返回 `publiclyVisible/publicGuestJoinEnabled/publicSearchEnabled/exposedChannels`；PATCH 打开后 anonymous card 立即可读，设置 `no-store`。
+- public Guest admission：owner-only，Public 未开时 PATCH 409；关闭 Public 时 `publicGuestJoinEnabled` 自动清零；guest invite 独立于 self-admission，Public 关闭仍可接受有效 email invite；member server list 投影 `publicPageLive` 为 `publiclyVisible && rollout/publicEnabled`。
+- public 页面仅暴露 guest-visible ordinary channels；匿名写路径不存在且不产生状态。
+- 裁决：仅排除 “evaluates the public-page gate once for all public servers” 的 query-count spy；其余 20/21 用例均有 HTTP/目录行为断言或既有 PublicVisits/PublicServerMessages 套件覆盖。
