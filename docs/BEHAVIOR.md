@@ -1925,3 +1925,11 @@ RFC 074 personal assistant：
 - GET /api/read-mutations/frontier：next/lastTerminal/snapshotUpper authority seq + admitted items；带 `scopeIds` 时返回 receiver-owned `scopes[].maxReadSeq`。
 - POST /api/channels/:id/conversation-read-all：feature flag 关闭 404 且 generic admission 不可绕过；开启后由 auth 推导 server/receiver，拒绝跨 server，返回 parent + followed thread bounded scopes 与 readStateVersion，不写他人 cursor。
 - 裁决：frontier 故障注入 503 为 route-service 注入；五个 compatibility route 的 202 pending / composite Done / claim-lease 语义依赖 sequencer 内部 claim/execute（HTTP 无法从公开面持有前驱 authority），不移植；其余 HTTP 语义已覆盖。
+
+### route messageTranslations.api（锁定，含裁决）
+
+- `POST /api/message-translations:batch`：auth+成员+server 翻译开关；provider 选择（fake/openai-compatible，显式选择视为已配置，生产仍校验 env key/model）；openai-compatible 仅 Pro server，否则 403 `LLM translation is not available for this server`；解析 targetLanguage（浏览器 locale canonicalize）、mode；不可见/跨 server/joint 断连 → not_found；joint canonical storage 通过调用者 server 的活动 local projection 解析。
+- 结果：translated 行含 contentHash/sourceLanguage/sourceConfidence/targetLanguage/translatedContent/provider/providerVersion/placeholderPolicyVersion；skip 规则 `own_message`（Auto）/`system_message`/`code_or_link_only`/`low_confidence`/`same_language`，same_language 写 billed=0 ledger，own-auto 不写；history 保持原文。
+- `GET/PATCH /api/auth/me`：翻译/显示偏好（language/timezone/mode/display/timeFormat/fontSize）round-trip、null 清空、非法 400；referralSource/other/skipped 记录。
+- `POST /api/public/servers/:slug/message-translations:batch`：匿名仅翻译仍在 guest-visible channel 或其 thread 的消息，private/撤销 → not_found，50 条分页，离开 public projection → 404，字段顺序稳定。
+- 裁决：trace span（translation.provider.call/batch.finished、disabled skip）、provider failpoint（transient/content-driven/manual retry/reserve）、placeholder mismatch 输出、split-by-source provider batch spy、agent receive-original（orchestrator）为注入/服务内部断言，不移植。
