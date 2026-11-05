@@ -2009,3 +2009,8 @@ RFC 074 personal assistant：
 
 - 可执行默认面：disabled P2 session create 返回 typed `403 UPLOAD_FORBIDDEN`；GET/DELETE/complete 对未知/malformed session 返回 `404 UPLOAD_SESSION_NOT_FOUND`；capabilities 返回 `directUploadEnabled:false`、null threshold/expiry、free 50MB / Pro 90MB legacy-safe limit；session 变更路径不会落到 broad attachment route。
 - 裁决排除（需注入 P2 fake service / dedicated limiter，本端口无该服务抽象）：enabled fake 的 legacy upload/computer download 短路、lifecycle、admission matrix、跨 actor/server non-disclosing、bad fake output、dedicated create limiter 429（6 个用例）。disabled/default 可执行面由 `UploadSessionTests` 覆盖。
+
+### route internalAgentApi.raftbench（锁定，含裁决）
+
+- 上游唯一用例是 staging-only synthetic-analysis 服务（`DEPLOYMENT_ENV` staging、Antiproton provider URL policy、加密 webhook secrets、`raftbenchConfigs/runs/serviceAgents` 表）；本端口未注册任何 `/internal/agent-api/raftbench/*` 或 push-webhook 路由，也未携带该外部 provider/加密密钥子系统。
+- 裁决：整模块作为 staging-only 外部服务集成排除（无本端口可执行 HTTP/本地数据面）；不移植 Antiproton provider 与 encrypted webhook secrets。若未来需要 raftbench，应按外部服务契约单独设计，不并入 agent-api。
