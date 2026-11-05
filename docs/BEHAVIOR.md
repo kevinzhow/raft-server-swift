@@ -1940,3 +1940,9 @@ RFC 074 personal assistant：
 - joint channel 仅在本 server 的 local projection active 且 caller agent 可读 roster 时列入；断连/不可读计入 uncheckedCount；不跨 server 匹配 namesake。
 - `GET /internal/agent-api/users/info`：同门禁，返回文本 membership 摘要、role 行与 skipped-roster 提示。
 - 裁决：reduced-matrix parity 用例（以完整 legacy server.info + 每频道 roster oracle 逐字段对比）与 built-in app conversations 用例（`#system.canary` app twin registry）不移植；前者是 oracle 对齐测试，后者依赖未移植的 built-in app 会话模型。
+
+### route appAgentReminderMessages.api（锁定，含裁决）
+
+- `POST /api/app-installation/agent-reminder-messages`：installation token 鉴权；仅官方 App + `agent_reminder_write` 可写（unsupported/foreign/deleted agent 404，bad token 401，bad body 400）；每个 agent 仅一个 agent-only `dm:@reminders` surface（dm channel、无 human identity），消息为 `senderId:"system"`、`senderType:"user"`、`messageType:"system"`、`systemSubtype:"agent.reminder_due"`、无 causal actor；以 `(clientId, agentId, idempotencyKey)` 幂等，replay 返回同一 messageId 且忽略新 text；soft-deleted surface 在下次写入时替换。
+- agent 侧：`dm:@reminders` history/search 映射到调用者自己的 surface，其他 agent 不可见；所有 reminder 发送变体 403 `DM_TARGET_NOT_SENDABLE`。
+- 裁决：orchestrator delivery 断言与 inbox notification fact 的表级断言、external-agent push-webhook、delivery-failure durability、trace span 为注入/服务内部断言，不移植；对应 HTTP 面已覆盖。
