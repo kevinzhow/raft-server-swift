@@ -249,7 +249,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var agentStatusAdopted: Set<String> = []
     private var agentStatusOccurredAt: [String: Date] = [:]
     private var agentActivityEventIds: [String: Set<String>] = [:]
-    private var agentThreadFollows: [String: AgentThreadFollowRecord] = [:]
+    private let threadFollowStore = ThreadFollowStore()
     private var agentIntegrationLogins: [String: AgentIntegrationLoginRecord] = [:]
     private var attachmentCommentRecords: [String: [AttachmentCommentRecord]] = [:]
     private var hostedUsage: [String: String] = [:]
@@ -18662,7 +18662,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         unfollowedAt: Date? = nil
     ) {
         lock.lock()
-        agentThreadFollows["\(serverId)\n\(agentId)\n\(threadChannelId)"] = AgentThreadFollowRecord(
+        threadFollowStore.upsert(AgentThreadFollowRecord(
             serverId: serverId,
             agentId: agentId,
             threadChannelId: threadChannelId,
@@ -18671,7 +18671,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             reason: reason,
             doneAt: nil,
             unfollowedAt: unfollowedAt
-        )
+        ))
         lock.unlock()
     }
 
@@ -18687,7 +18687,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         lock.lock()
-        let rows = agentThreadFollows.values
+        let rows = threadFollowStore.all()
             .filter { $0.serverId == agent.serverId && $0.agentId == agent.id && $0.unfollowedAt == nil }
             .filter { messageSearchVisibleLocked(messageChannelId: $0.threadChannelId, serverId: agent.serverId, viewer: .agent(agent.id)) }
             .sorted { $0.followedAt > $1.followedAt }
@@ -18749,11 +18749,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Thread not found\"}")
         }
-        let key = "\(agent.serverId)\n\(agent.id)\n\(resolved)"
-        if var record = agentThreadFollows[key] {
-            record.unfollowedAt = Date()
-            agentThreadFollows[key] = record
-        }
+        threadFollowStore.markUnfollowed(
+            serverId: agent.serverId,
+            agentId: agent.id,
+            threadChannelId: resolved,
+            at: Date()
+        )
         lock.unlock()
         return Self.json(200, "{\"ok\":true}")
     }
