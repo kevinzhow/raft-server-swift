@@ -18093,6 +18093,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     private func translationProviderAvailableInstance() -> Bool {
+        lock.lock()
+        let hasOverride = translationProviderOverride != nil
+        lock.unlock()
+        if hasOverride { return true }
         let environment = ProcessInfo.processInfo.environment
         switch translationProviderName() {
         case "fake":
@@ -18105,6 +18109,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let project = environment["TRANSLATION_GOOGLE_PROJECT_ID"] ?? ""
             let token = environment["TRANSLATION_GOOGLE_ACCESS_TOKEN"] ?? ""
             return !project.isEmpty && !token.isEmpty
+        case "openai-compatible":
+            let apiKey = environment["TRANSLATION_OPENAI_COMPATIBLE_API_KEY"] ?? ""
+            let model = environment["TRANSLATION_OPENAI_COMPATIBLE_MODEL"] ?? ""
+            return !apiKey.isEmpty && !model.isEmpty
         default:
             return false
         }
@@ -18135,6 +18143,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let provider = translationProviderName()
         guard translationProviderAvailableInstance() else {
             return Self.json(409, "{\"error\":\"Translation provider is not configured\"}")
+        }
+        if provider == "openai-compatible", oauth.serverProfile(id: serverId)?.plan != "pro" {
+            return Self.json(403, "{\"error\":\"LLM translation is not available for this server\"}")
         }
         let providerVersion = provider == "fake" ? "fake@v0+fake-v0" : "\(provider)@v0"
         lock.lock()

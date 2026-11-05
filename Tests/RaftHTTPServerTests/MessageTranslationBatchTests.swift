@@ -64,3 +64,45 @@ import VaporTesting
         }
     }
 }
+
+@Test func openAICompatibleProviderRequiresProServer() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111630"
+    let serverId = "33333333-3333-4333-8333-333333333673"
+    accounts.addAccount(id: ownerId, email: "translation-pro@test.invalid", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "translation-pro", name: "Translation Pro", ownerId: ownerId)
+    accounts.oauth.setServerTranslationEnabled(id: serverId, enabled: true)
+    let agentId = accounts.oauth.createAgent(serverId: serverId, name: "ProBot", creatorUserId: ownerId, runtime: "claude")
+    let channelId = accounts.oauth.createChannel(serverId: serverId, name: "translation-pro-room", creatorUserId: ownerId, type: "channel")
+    accounts.seedPostableChannelForTesting(serverId: serverId, channelId: channelId, name: "translation-pro-room", humanIds: [ownerId], agentIds: [agentId])
+    let messageId = accounts.addHumanMessageForTesting(channelId: channelId, senderId: agentId, content: "你好 gated translation", senderType: "agent")
+    let token = accounts.mintAccessTokenForTesting(userId: ownerId)
+    accounts.setTranslationProviderForTesting("openai-compatible")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            func batch() async throws -> (ClientResponse, [String: Any]) {
+                var headers = HTTPFields()
+                headers[.authorization] = "Bearer \(token)"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
+                headers[.contentType] = "application/json"
+                let data = try JSONSerialization.data(withJSONObject: ["targetLanguage": "en", "mode": "manual", "messageIds": [messageId]])
+                let response = try await client.send(.post, headers: headers, to: URI(string: "/api/message-translations:batch")) { request in
+                    request.body = .init(data: data)
+                }
+                return (response, (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:])
+            }
+            let denied = try await batch()
+            #expect(denied.0.status == .forbidden)
+            #expect(denied.1["error"] as? String == "LLM translation is not available for this server")
+
+            accounts.oauth.setServerPlan(id: serverId, plan: "pro")
+            let allowed = try await batch()
+            #expect(allowed.0.status == .ok)
+            let first = (allowed.1["results"] as? [[String: Any]])?.first
+            #expect(first?["status"] as? String == "translated")
+            #expect(first?["provider"] as? String == "openai-compatible")
+        }
+    }
+}
