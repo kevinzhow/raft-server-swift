@@ -5474,7 +5474,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard hideHumansFromMembers[serverId] == true else { return true }
         guard let targetRole = oauth.memberRole(serverId: serverId, userId: targetId) else { return false }
         let senderRole = oauth.memberRole(serverId: serverId, userId: senderId)
-        guard senderRole == "member" else { return true }
+        let senderIsAgent = oauth.agentRuntimeInfo(id: senderId)?.serverId == serverId
+        guard senderRole == "member" || senderIsAgent else { return true }
         if targetRole == "owner" || targetRole == "admin" { return true }
         for (id, channel) in postableChannels
         where channel.serverId == serverId && channel.deletedAt == nil && channel.memberIds.contains(senderId) {
@@ -5501,13 +5502,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             resolved.append(MentionInput(type: type, id: id, name: name))
         }
         var typedNames = Set<String>()
+        let senderIsAgent = oauth.agentRuntimeInfo(id: senderId)?.serverId == serverId
+        let hiddenDirectoryForSender = hideHumansFromMembers[serverId] == true
         for mention in typed where mention.type == "user" || mention.type == "agent" {
             guard ServerScope.isUUID(mention.id), !mention.name.isEmpty else { continue }
             typedNames.insert(mention.name.lowercased())
             if mention.type == "user" {
-                let hiddenDirectory = hideHumansFromMembers[serverId] == true
-                    && oauth.memberRole(serverId: serverId, userId: senderId) == "member"
-                if hiddenDirectory {
+                if hiddenDirectoryForSender {
                     guard mentionHumanVisibleLocked(serverId: serverId, senderId: senderId, targetId: mention.id) else { continue }
                 } else {
                     guard accounts.values.contains(where: { $0.id == mention.id }) else { continue }
@@ -5525,12 +5526,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             if !agentNames.contains(where: { $0.id == id }) { agentNames.append((id, agent.name)) }
         }
         var unresolved: [String] = []
-        for handle in Self.rawMentionHandles(content) where !typedNames.contains(handle.lowercased()) {
+        let hiddenDirectory = hiddenDirectoryForSender
+        var seenHandles = Set<String>()
+        for handle in Self.mentionHandlesOutsideCode(content)
+            where !typedNames.contains(handle.lowercased()) && seenHandles.insert(handle).inserted {
             let humanMatches = accounts.values.filter { account in
                 account.id != senderId
                     && (account.name.caseInsensitiveCompare(handle) == .orderedSame
                         || (account.displayName ?? "").caseInsensitiveCompare(handle) == .orderedSame)
-                    && mentionHumanVisibleLocked(serverId: serverId, senderId: senderId, targetId: account.id)
+                    && oauth.memberRole(serverId: serverId, userId: account.id) != nil
+                    && (!hiddenDirectory || mentionHumanVisibleLocked(serverId: serverId, senderId: senderId, targetId: account.id))
             }.map(\.id)
             let agentMatches = agentNames.filter { $0.name.caseInsensitiveCompare(handle) == .orderedSame }.map(\.id)
             let total = humanMatches.count + agentMatches.count
@@ -5553,8 +5558,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         for mention in mentions where mention.type == "user" || mention.type == "agent" {
             guard ServerScope.isUUID(mention.id) else { continue }
             let isMember = mention.type == "user"
-                ? channel.memberIds.contains(mention.id)
-                : oauth.channelAgentIds(channelId: channelId).contains(mention.id)
+                ? oauth.memberRole(serverId: channel.serverId, userId: mention.id) != nil
+                : oauth.agentRuntimeInfo(id: mention.id)?.serverId == channel.serverId
             guard isMember else { continue }
             guard !storedMentions.contains(where: {
                 $0.messageId == messageId && $0.targetType == mention.type && $0.targetId == mention.id
@@ -23134,6 +23139,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let reasons = cardHoldReasons.map(jsonString).joined(separator: ",")
             return Self.json(200, "{\"ok\":true,\"state\":\"held\",\"holdReasons\":[\(reasons)],\"heldMessages\":[],\"newMessageCount\":0,\"shownMessageCount\":0,\"omittedMessageCount\":0\(seenCardFields)}")
         }
+        let typedMentions = Self.mentionInputs(object["mentions"])
+        if v2, Self.mentionBindingConflict(typedMentions) {
+            return Self.json(400, "{\"error\":\"A mention handle is bound to more than one target\",\"code\":\"mention_binding_conflict\"}")
+        }
+        let mentionResolution = resolvedMessageMentions(
+            serverId: identity.serverId,
+            senderId: identity.agentId,
+            content: content,
+            typed: v2 ? typedMentions : [],
+            warnUnresolved: v2
+        )
         let messageId = UUID().uuidString.lowercased()
         lock.lock()
         appendHumanMessageLocked(StoredHumanMessage(
@@ -23170,17 +23186,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             )
         }
         lock.unlock()
-        let typedMentions = (object["mentions"] as? [[String: Any]]) ?? []
+        recordMemberMentionRows(messageId: messageId, channelId: channelId, mentions: mentionResolution.mentions)
         let report = sendMentionReport(
             content: content,
-            typedMentions: typedMentions,
+            typedMentions: (object["mentions"] as? [[String: Any]]) ?? [],
             v2: v2,
             channelId: channelId,
             serverId: identity.serverId,
             senderAgentId: identity.agentId,
             messageId: messageId
         )
-        let sent = "{\"ok\":true,\"state\":\"sent\",\"messageId\":\(jsonString(messageId)),\"messageSeq\":\(ownSeq),\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(content)),\"seq\":\(ownSeq)\(report.pendingJSON)\(report.unresolvedJSON)\(seenCardFields)}"
+        let unresolvedJSON = v2 && !mentionResolution.unresolved.isEmpty
+            ? ",\"unresolvedMentionHandles\":[" + mentionResolution.unresolved.map(jsonString).joined(separator: ",") + "]"
+            : ""
+        let sent = "{\"ok\":true,\"state\":\"sent\",\"messageId\":\(jsonString(messageId)),\"messageSeq\":\(ownSeq),\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(content)),\"seq\":\(ownSeq)\(report.pendingJSON)\(unresolvedJSON)\(seenCardFields)}"
         return Self.json(200, sent)
     }
 
@@ -27713,6 +27732,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let prefs = oauth.setCollapseLongMessages(channelId: channelId, userId: userId, collapse: collapse)
         return Self.json(200, "{\"collapseLongMessages\":\(prefs.collapseLongMessages),\"prefsVersion\":\(prefs.prefsVersion)}")
+    }
+
+    public func mentionsForTesting(messageId: String) -> [(targetType: String, targetId: String, handle: String)] {
+        lock.lock(); defer { lock.unlock() }
+        return storedMentions.filter { $0.messageId == messageId }.map { ($0.targetType, $0.targetId, $0.handle) }
     }
 
     public func addStoredMentionForTesting(
