@@ -1918,3 +1918,10 @@ RFC 074 personal assistant：
   - 已读边界覆盖该 notice → sent。
 - thread 与 channel 同规则（thread 的自造 lifecycle_thread 仍 hold，自造 created_summary 豁免）。
 - 裁决：allowlist 纯函数单元测试为 service 内部断言；legacy `/internal/agent/:id/send` machine-key 路径与 daemon 能力环境变量不在 HTTP 可执行范围；其余 send 语义已覆盖。
+
+### route readMutations.api（锁定，含裁决）
+
+- POST /api/read-mutations：authority 仅来自认证 principal；支持 `global_read_all`/`channel_read_all`（含私有频道 lost-access residue 且有自有 cursor 的情形），返回 201 ADMITTED + authoritySeq；精确 replay 200 ALREADY_ADMITTED（receiver cursor 已推进时 200 ALREADY_TERMINAL + ack），payload mismatch 409 `MUTATION_ID_PAYLOAD_MISMATCH`，nil UUID 400 `INVALID_MUTATION_ID`，无效/不可见 scope 404，公开入口 `done` 400；residue 边界只用 receiver-owned cursor，不泄漏 live seq。
+- GET /api/read-mutations/frontier：next/lastTerminal/snapshotUpper authority seq + admitted items；带 `scopeIds` 时返回 receiver-owned `scopes[].maxReadSeq`。
+- POST /api/channels/:id/conversation-read-all：feature flag 关闭 404 且 generic admission 不可绕过；开启后由 auth 推导 server/receiver，拒绝跨 server，返回 parent + followed thread bounded scopes 与 readStateVersion，不写他人 cursor。
+- 裁决：frontier 故障注入 503 为 route-service 注入；五个 compatibility route 的 202 pending / composite Done / claim-lease 语义依赖 sequencer 内部 claim/execute（HTTP 无法从公开面持有前驱 authority），不移植；其余 HTTP 语义已覆盖。
