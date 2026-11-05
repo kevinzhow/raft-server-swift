@@ -1,6 +1,6 @@
 # 复刻推进计划：功能纵向切片
 
-**状态**：已批准，2026-11-01；最近更新 2026-11-02。
+**状态**：已批准，2026-11-01；最近更新 2026-11-05。
 **目标**：等价复刻 `raft-source` tag `v1.21.23-source.1` 的 server 与 daemon。
 **规格**：上游 Node 测试里对外可见的状态码、JSON、响应头与套接字帧。
 
@@ -44,13 +44,13 @@
 
 | 指标 | 当前 | 里程碑 | 剩余 |
 | --- | --- | --- | --- |
-| route 模块 locked | 202 / 219（92.2%） | 132 / 219（60%）✅ | 任务表口径见下 |
-| route 用例 locked | 1490 / 2000（74.5%，可移植口径 67.1%）✅ | 800 / 2000（40%） | 已达标 |
+| route 模块 locked | 203 / 219（92.7%） | 132 / 219（60%）✅ | 任务表口径见下 |
+| route 用例 locked | 1535 / 2000（76.8%，可移植口径 69.2%）✅ | 800 / 2000（40%） | 已达标 |
 | socket 模块 | 7 / 7（100%） | 按 frame 组推进 | 0 个模块 |
 | daemon 模块 locked | 180 / 180（100%） | 90 / 180（50%）✅ | 0 个模块 |
 | daemon 用例 locked | 2616 / 2616（100%，可执行便携口径 ≈26.9%） | 1308 / 2616（50%）✅ | 已清零 |
-| 整体模块 | 389 / 406（95.8%） | 244 / 406（60%）✅ | 已达标 |
-| 整体用例 | 4114 / 4632（88.8%） | 1853 / 4632（40%）✅ | 已达标 |
+| 整体模块 | 390 / 406（96.1%） | 244 / 406（60%）✅ | 已达标 |
+| 整体用例 | 4167 / 4632（90.0%） | 1853 / 4632（40%）✅ | 已达标 |
 
 口径校准：daemon 的 locked 计入了 Node 运行时驱动/进程管理/trace 上传等**非可执行或明确排除**的集成轨道（约 1130 条用例，PARITY notes 逐条注明）；可执行便携用例仍为 ≈616 条（23.5%）。整体 locked 覆盖因此高于实际可执行移植比例，报告时须同时给出便携口径。
 
@@ -62,7 +62,7 @@
 
 ## 3.1 route 收尾队列（daemon/socket 已清零）
 
-daemon 180/180、socket 7/7 已完成；剩余唯一缺口是 route 的 6 个 pending 模块（158/219 模块，919/2000 用例）。按切片大小与依赖排序：
+daemon 180/180、socket 7/7 已完成；route 无 pending 模块，剩余 16 个 partial 模块。按切片大小与依赖排序（当前数字以 `make parity` 为准）：
 
 1. `appSetup.api`（6 例）——首要切片：`setupUrl/setupRevision` 声明与校验、GET `/api/integrations/clients/:clientId/setup`、PUT `/api/oauth/installations/:installationId/setup`（App 认证、revision CAS、幂等审计）、PATCH client 声明、marketplace install/uninstall 生命周期、agent integrations list 的 setup 投影、`integration:install_marketplace_app` 卡片的 setup 绑定与 `APP_SETUP_CHANGED` 冲突、`integration:register_app` 的 setupUrl/setupDescription 校验。需要补齐：安装行模型（现仅 message 级 install 卡）、`recordIntegrationAuditEvent` 等价物、agent list/app update/status 的 setup 投影。
 2. `agentAppAccess.api`（6 例）——OAuth access request 的 agent 授权、person revoke 粘滞、creator/owner/admin 管理面、app events 分页/过期/私有可见性、`pruneExpiredAgentAppEvents` 保留窗口、agent id 形式的 `requests/agent`。

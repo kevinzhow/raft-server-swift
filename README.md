@@ -8,7 +8,7 @@ The specification is observable behavior: HTTP status codes, JSON bodies, respon
 
 This is an active behavioral port, not a production deployment.
 
-- **885 Swift tests pass** across seven test targets.
+- **1771 Swift tests pass** across seven test targets.
 - The HTTP router currently registers **286 routes** covering auth, servers, channels/threads/DMs, messages, tasks, notifications, attachments, public pages, release notes, OAuth/OIDC, agents, push, and provider connections. Route-by-route completion is still in progress.
 - **The database is optional.** Without `DATABASE_URL` the process keeps the in-memory store and `/health` stays at `503 {"status":"error","detail":"database unreachable"}`; with `DATABASE_URL` (B2, PostgresNIO) `/health` runs `SELECT 1` and returns `200 {"status":"ok"}`.
 - The executable starts the Vapor HTTP app, the SwiftNIO `/daemon/connect` listener on `DAEMON_CONNECT_PORT` (default `8081`; `0` disables it), and the socket.io listener on `SOCKET_PORT` (default `8082`; `0` disables it). `RaftDaemon` performs the daemon-side handshake against that listener.
@@ -65,19 +65,19 @@ make parity                                                  # upstream coverage
 
 `make parity` reads `docs/PARITY.tsv` and prints how many upstream route/frame modules are `locked` and the weighted case coverage. Only a `locked` row with an existing commit counts, so the number cannot move without a landed slice.
 
-The full suite occasionally aborts with signal 6 or 11 under parallel execution; rerun it once before treating it as a failure. All 885 tests pass in a clean run.
+The full suite occasionally aborts with signal 6 or 11 under parallel execution; rerun it once before treating it as a failure. All 1771 tests pass in a clean run.
 
 ### Test suites
 
 | Target | Tests | Covers |
 | --- | --- | --- |
-| `RaftHTTPServerTests` | 723 | Route contracts through Vapor in-memory testing. |
-| `RaftDaemonClientTests` | 82 | Connect loop, daemon client, proxy selection, fetch timeouts, failure projection. |
-| `RaftHTTPTests` | 43 | Fallback/router, liveness, database health, version identity, CORS. |
+| `RaftHTTPServerTests` | 1106 | Route contracts through Vapor in-memory testing. |
+| `RaftDaemonClientTests` | 559 | Connect loop, daemon client, proxy selection, fetch timeouts, failure projection. |
+| `RaftHTTPTests` | 59 | Fallback/router, liveness, database health, version identity, CORS. |
 | `RaftConnectAuthTests` | 17 | Upgrade auth, rejection reasons, RFC 6455 handshake. |
 | `RaftMachineSocketTests` | 6 | Exact handshake bytes and `machine:context` frame. |
 | `RaftServerStartupTests` | 2 | Real process startup, HTTP health, `/daemon/connect`, socket.io, `RaftDaemon` handshake, and two independent `RaftServer` processes. |
-| `RaftRealtimeTests` | 12 | Engine.IO/Socket.IO frames, room joins, guest isolation, platform-scoped events, membership and family revocation. |
+| `RaftRealtimeTests` | 22 | Engine.IO/Socket.IO frames, room joins, guest isolation, platform-scoped events, membership and family revocation. |
 
 ## Run
 

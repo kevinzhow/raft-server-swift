@@ -1946,3 +1946,11 @@ RFC 074 personal assistant：
 - `POST /api/app-installation/agent-reminder-messages`：installation token 鉴权；仅官方 App + `agent_reminder_write` 可写（unsupported/foreign/deleted agent 404，bad token 401，bad body 400）；每个 agent 仅一个 agent-only `dm:@reminders` surface（dm channel、无 human identity），消息为 `senderId:"system"`、`senderType:"user"`、`messageType:"system"`、`systemSubtype:"agent.reminder_due"`、无 causal actor；以 `(clientId, agentId, idempotencyKey)` 幂等，replay 返回同一 messageId 且忽略新 text；soft-deleted surface 在下次写入时替换。
 - agent 侧：`dm:@reminders` history/search 映射到调用者自己的 surface，其他 agent 不可见；所有 reminder 发送变体 403 `DM_TARGET_NOT_SENDABLE`。
 - 裁决：orchestrator delivery 断言与 inbox notification fact 的表级断言、external-agent push-webhook、delivery-failure durability、trace span 为注入/服务内部断言，不移植；对应 HTTP 面已覆盖。
+
+### route auth.api（锁定，含裁决）
+
+- providers gate（含 Apple web/native platform gate）；Apple web/native login/link、nonce/audience/subject/email/verification mismatch、owner-bound one-time completion、legal handoff。
+- register：reserved handle、legal acceptance append-only/current、stale versions、case-sensitive uniqueness、duplicate pending handles、invite source、staging registration opt-in、retirement。
+- login：stable credential/body codes；profile：current-password code、displayLanguage normalize/clear/reject、shareUsageData true/false/null、gravatar、avatar upload+oversize。
+- web/desktop/mobile OAuth：loopback state+PKCE、one-time complete、mobile legal retry/handoff、return URI allowlist/legacy fallback、cancel/exchange failure/invalid state/expiry/PKCE mismatch、explicit link contract、durable refresh replay one-successor/malformed binding。
+- 裁决：2 个 login trace credential-leak 用例使用 MemoryTraceSink（tracer 注入），不移植；其余 HTTP 行为均有 Swift acceptance 断言。
