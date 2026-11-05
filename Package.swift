@@ -5,6 +5,7 @@ let package = Package(
     name: "raft-server-swift",
     products: [
         .library(name: "RaftConnectAuth", targets: ["RaftConnectAuth"]),
+        .library(name: "RaftShared", targets: ["RaftShared"]),
         .library(name: "RaftDaemonClient", targets: ["RaftDaemonClient"]),
         .library(name: "RaftHTTP", targets: ["RaftHTTP"]),
         .library(name: "RaftHTTPServer", targets: ["RaftHTTPServer"]),
@@ -53,8 +54,12 @@ let package = Package(
             ]
         ),
         .target(
+            name: "RaftShared"
+        ),
+        .target(
             name: "RaftHTTP",
             dependencies: [
+                "RaftShared",
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "PostgresNIO", package: "postgres-nio"),
             ]
@@ -86,7 +91,7 @@ let package = Package(
         ),
         .testTarget(
             name: "RaftHTTPTests",
-            dependencies: ["RaftHTTP"]
+            dependencies: ["RaftHTTP", "RaftShared"]
         ),
         .testTarget(
             name: "RaftHTTPServerTests",

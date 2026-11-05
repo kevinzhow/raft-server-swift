@@ -1,6 +1,7 @@
 import CoreFoundation
 import Foundation
 
+
 /// Canonical JSON tree used by new feature controllers and services.
 ///
 /// Existing handlers still build JSON strings; new code should construct a
@@ -87,26 +88,5 @@ public enum JSONValue: Encodable, Sendable, Equatable {
         let intValue: Int? = nil
         init?(stringValue: String) { self.stringValue = stringValue }
         init?(intValue: Int) { return nil }
-    }
-}
-
-public extension HTTPReply {
-    /// JSON reply with stable `Content-Type`, `Cache-Control` and
-    /// `Content-Length` headers. `extraHeaders` may not override those keys.
-    static func jsonValue(
-        _ status: Int,
-        _ value: JSONValue,
-        extraHeaders: [String: String] = [:]
-    ) -> HTTPReply {
-        let body = (try? value.string()) ?? "{}"
-        var headers: [String: String] = [
-            "Content-Type": "application/json; charset=utf-8",
-            "Cache-Control": "no-store",
-            "Content-Length": String(body.utf8.count),
-        ]
-        for (key, headerValue) in extraHeaders {
-            if headers[key] == nil { headers[key] = headerValue }
-        }
-        return HTTPReply(status: status, headers: headers, body: body)
     }
 }

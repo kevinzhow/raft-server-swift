@@ -1,6 +1,7 @@
 import Foundation
 import HTTPTypes
 import RaftHTTP
+import RaftShared
 import Testing
 
 @Test func canonicalJSONValueEncodesSortedObjectsAndTypedScalars() throws {

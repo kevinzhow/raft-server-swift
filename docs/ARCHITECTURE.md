@@ -285,7 +285,7 @@ constant to make the check pass.
 | R2 canonical JSON | foundation done | `Sources/RaftHTTP/Support/JSONValue.swift` + `HTTPReply.jsonValue` + `Tests/RaftHTTPTests/JSONValueTests.swift`; feature handlers migrate as they are rewritten |
 | R3 store/lock split | started | `Stores/ProductEventStore.swift` owns product/client events + client-event idempotency behind its own lock; target next: AuthStore, ChannelStore, TaskStore, ReadCursorStore, FeedbackStore |
 | R4 guardrails | done | `scripts/check_architecture.py`, `make architecture`: EmailLogin line ratchet (31,656), Features <= 1,200 lines, ForTesting warning baseline 243 |
-| R5 shared contracts | pending | target `Sources/RaftShared` for DTOs/capability/error contracts; migrate feature-by-feature |
+| R5 shared contracts | started | `Sources/RaftShared` target added; canonical `JSONValue` moved there, `HTTPReply.jsonValue` stays in RaftHTTP; next: capability/error-code contracts and feature DTOs |
 
 Remaining composition-root route families: internal agent-api, internal agent/computer/machine,
 integrations, MCP, provider-connections, notifications/product-events and misc.
