@@ -6841,6 +6841,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return taskRecords.first { $0.messageId == messageId }?.taskNumber
     }
 
+    public func messageChannelIdForTesting(messageId: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return humanMessageRows.first { $0.id == messageId }?.channelId
+    }
+
     public func messageSeqForTesting(messageId: String) -> Int? {
         lock.lock(); defer { lock.unlock() }
         return humanMessageRows.first { $0.id == messageId }?.seq
@@ -27732,6 +27737,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let prefs = oauth.setCollapseLongMessages(channelId: channelId, userId: userId, collapse: collapse)
         return Self.json(200, "{\"collapseLongMessages\":\(prefs.collapseLongMessages),\"prefsVersion\":\(prefs.prefsVersion)}")
+    }
+
+    public func channelCardRevisionForTesting(channelId: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return channelCardSnapshotLocked(channelId: channelId)?.rev
     }
 
     public func mentionsForTesting(messageId: String) -> [(targetType: String, targetId: String, handle: String)] {
