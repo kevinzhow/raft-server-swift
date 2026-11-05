@@ -73,3 +73,44 @@ private func agentIdlessMultipart(channelId: String, filename: String, content: 
         }
     }
 }
+
+@Test func agentApiAttachmentDownloadServesUnicodePDFFilenames() async throws {
+    let accounts = EmailLoginDirectory()
+    let serverId = "33333333-3333-4333-8333-000001022002"
+    let ownerId = "11111111-1111-4111-8111-000001022002"
+    accounts.addAccount(id: ownerId, email: "unicode-upload-owner@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "unicode-upload", name: "Unicode Upload", ownerId: ownerId)
+    let channel = accounts.oauth.createChannel(serverId: serverId, name: "unicode-upload-room", creatorUserId: ownerId)
+    accounts.addPostableChannel(serverId: serverId, channelId: channel, memberId: ownerId, name: "unicode-upload-room")
+    accounts.oauth.addChannelHuman(channelId: channel, userId: ownerId)
+    let agent = accounts.oauth.createAgent(serverId: serverId, name: "unicode-upload-agent", runtime: "codex")
+    accounts.oauth.addChannelAgent(channelId: channel, agentId: agent)
+    let key = accounts.mintAgentCredential(agentId: agent, scopes: ["read", "send"], name: "unicode")
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            let filename = "résumé-资料.pdf"
+            let multipart = agentIdlessMultipart(channelId: channel, filename: filename, content: "%PDF-1.4 unicode", mimeType: "application/pdf")
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(key)"
+            headers[.contentType] = multipart.contentType
+            let upload = try await client.send(.post, headers: headers, to: "/internal/agent-api/upload") { request in
+                request.body = .init(data: multipart.body)
+            }
+            #expect(upload.status == .ok)
+            let uploaded = (try JSONSerialization.jsonObject(with: Data((upload.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            let id = try #require(uploaded["id"] as? String)
+            #expect(uploaded["filename"] as? String == filename)
+
+            var downloadHeaders = HTTPFields()
+            downloadHeaders[.authorization] = "Bearer \(key)"
+            let download = try await client.get(URI(string: "/internal/agent-api/attachments/\(id)"), headers: downloadHeaders)
+            #expect(download.status == .ok)
+            let disposition = download.headers[HTTPField.Name("Content-Disposition")!] ?? ""
+            #expect(disposition.contains("filename*=UTF-8''"), Comment(rawValue: disposition))
+            #expect(disposition.contains("r%C3%A9sum%C3%A9"))
+        }
+    }
+}

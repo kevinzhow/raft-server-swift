@@ -597,6 +597,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             body: String(decoding: bytes, as: UTF8.self)
         )
         reply.headers["Cache-Control"] = "private, no-store"
+        reply.headers["Content-Disposition"] = "attachment; filename=\"\(attachment.filename)\"; filename*=UTF-8''\(Self.rfc5987Encode(attachment.filename))"
         return reply
     }
 
