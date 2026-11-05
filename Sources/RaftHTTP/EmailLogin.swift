@@ -126,54 +126,54 @@ public struct ClientEventRecord: Sendable {
 /// A missing account and a wrong password share one 401, and neither issues a session.
 
 public final class EmailLoginDirectory: @unchecked Sendable {
-    private let lock = NSLock()
-    private var accounts: [String: Account] = [:]
-    private let authProfileStore = AuthProfileStore()
-    private var analyticsIds: [String: String] = [:]
-    private let productEventStore = ProductEventStore()
-    private var sessions: [String: LiveSession] = [:]
-    private var rotationReceipts: [String: RotationReceipt] = [:]
+    let lock = NSLock()
+    var accounts: [String: Account] = [:]
+    let authProfileStore = AuthProfileStore()
+    var analyticsIds: [String: String] = [:]
+    let productEventStore = ProductEventStore()
+    var sessions: [String: LiveSession] = [:]
+    var rotationReceipts: [String: RotationReceipt] = [:]
     /// Plain refresh tokens are one-time; the predecessor hash still resolves
     /// to its family so a legacy logout can revoke the successor.
-    private var predecessorFamilies: [String: String] = [:]
-    private var revokedFamilies: Set<String> = []
-    private var sessionFamilies: [String: SessionFamily] = [:]
-    private var retirementReceipts: [String: RetirementReceipt] = [:]
-    private var accessTokens: [String: String] = [:]
-    private var accessTokenFamilies: [String: String] = [:]
+    var predecessorFamilies: [String: String] = [:]
+    var revokedFamilies: Set<String> = []
+    var sessionFamilies: [String: SessionFamily] = [:]
+    var retirementReceipts: [String: RetirementReceipt] = [:]
+    var accessTokens: [String: String] = [:]
+    var accessTokenFamilies: [String: String] = [:]
 
-    private var emailVerifications = 0
-    private var humanMessageRows: [StoredHumanMessage] = []
-    private var channelAttachments: [String: ChannelAttachment] = [:]
-    private var recordedChannelMessageEvents: [ChannelMessageEvent] = []
-    private var forwardedBundles: [String: [ForwardedSource]] = [:]
-    private var forwardRecords: [String: StoredForwardRecord] = [:]
-    private var messageReactions: [StoredReaction] = []
-    private var reactionViewerVersions: [String: Int] = [:]
-    private var reactionDiscussionVersions: [String: Int] = [:]
-    private var serverAgents: [String: ServerAgent] = [:]
-    private var storedMentions: [StoredMention] = []
-    private var channelAgentMembers: [String: Set<String>] = [:]
-    private var machineKeys: [String: (serverId: String, agentId: String)] = [:]
-    private let inboxFactStore = InboxFactStore()
-    private var storedAgentDeliveries: [(agentId: String, messageId: String, channelType: String)] = []
+    var emailVerifications = 0
+    var humanMessageRows: [StoredHumanMessage] = []
+    var channelAttachments: [String: ChannelAttachment] = [:]
+    var recordedChannelMessageEvents: [ChannelMessageEvent] = []
+    var forwardedBundles: [String: [ForwardedSource]] = [:]
+    var forwardRecords: [String: StoredForwardRecord] = [:]
+    var messageReactions: [StoredReaction] = []
+    var reactionViewerVersions: [String: Int] = [:]
+    var reactionDiscussionVersions: [String: Int] = [:]
+    var serverAgents: [String: ServerAgent] = [:]
+    var storedMentions: [StoredMention] = []
+    var channelAgentMembers: [String: Set<String>] = [:]
+    var machineKeys: [String: (serverId: String, agentId: String)] = [:]
+    let inboxFactStore = InboxFactStore()
+    var storedAgentDeliveries: [(agentId: String, messageId: String, channelType: String)] = []
     /// RFC 074 assistant link: agent id -> owner user id.
-    private var assistantOwners: [String: String] = [:]
-    private var agentCredentials: [String: AgentCredential] = [:]
-    private var agentMachineIds: [String: String] = [:]
-    private var agentRuntimeProfiles: [String: AgentRuntimeProfileFact] = [:]
-    private var activeAgentMigrations: [String: AgentMigrationFact] = [:]
-    private var latestComputerReleaseForTesting: (version: String, notesJSON: String)?
-    private var machineBroadcastPoliciesForTesting: [String: String] = [:]
-    private var agentMigrationServers: Set<String> = []
-    private var hostedMigrationServers: Set<String> = []
-    private var hostedRuntimeServers: Set<String> = []
-    private var hostedProviderTokenOverride: String?
-    private var hostedMigrations: [String: HostedMigrationRecord] = [:]
-    private var appLoginRequests: [String: AppLoginRequest] = [:]
+    var assistantOwners: [String: String] = [:]
+    var agentCredentials: [String: AgentCredential] = [:]
+    var agentMachineIds: [String: String] = [:]
+    var agentRuntimeProfiles: [String: AgentRuntimeProfileFact] = [:]
+    var activeAgentMigrations: [String: AgentMigrationFact] = [:]
+    var latestComputerReleaseForTesting: (version: String, notesJSON: String)?
+    var machineBroadcastPoliciesForTesting: [String: String] = [:]
+    var agentMigrationServers: Set<String> = []
+    var hostedMigrationServers: Set<String> = []
+    var hostedRuntimeServers: Set<String> = []
+    var hostedProviderTokenOverride: String?
+    var hostedMigrations: [String: HostedMigrationRecord] = [:]
+    var appLoginRequests: [String: AppLoginRequest] = [:]
 
 
-    private var machineMigrations: [String: MachineMigrationRecord] = [:]
+    var machineMigrations: [String: MachineMigrationRecord] = [:]
     /// Test seam for the frozen-generation cancel dispatch to a Computer.
     public var agentMigrationCancelDispatch: (@Sendable (_ machineId: String, _ role: String, _ migrationRef: String, _ transportGeneration: String, _ stopAgent: Bool) -> Void)?
     /// Capabilities reported by each Computer for migration admission.
@@ -221,11 +221,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Live model ids a Computer advertises for a runtime (v2 field-pointing).
     public var agentRuntimeModelsForMachine: (@Sendable (_ machineId: String, _ runtime: String) -> [String]?)?
 
-    private func builtinCatalogFailureReply() -> HTTPReply {
+    func builtinCatalogFailureReply() -> HTTPReply {
         Self.json(409, "{\"code\":\"builtin_catalog_unavailable\",\"error\":\"The target Computer's Built-in model catalog is unavailable. Retry after the Computer reconnects.\"}")
     }
 
-    private func builtinModelCheck(machineId: String?, config: [String: Any]) -> BuiltinModelCatalogResult? {
+    func builtinModelCheck(machineId: String?, config: [String: Any]) -> BuiltinModelCatalogResult? {
         guard let machineId,
               (config["runtime"] as? String) == "builtin",
               let model = config["model"] as? [String: Any],
@@ -234,21 +234,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else { return nil }
         return check(machineId, modelId)
     }
-    private var hostedRuntimes: [String: (provider: String, model: String?, state: String, retryNeedsModel: Bool, createdAt: Date)] = [:]
-    private var grokRuntimeServers: Set<String> = []
-    private var remoteUpgradeDisabledServers: Set<String> = []
-    private var agentStatusAdopted: Set<String> = []
-    private var agentStatusOccurredAt: [String: Date] = [:]
-    private var agentActivityEventIds: [String: Set<String>] = [:]
-    private let threadFollowStore = ThreadFollowStore()
-    private var agentIntegrationLogins: [String: AgentIntegrationLoginRecord] = [:]
-    private var attachmentCommentRecords: [String: [AttachmentCommentRecord]] = [:]
-    private var hostedUsage: [String: String] = [:]
-    private var hostedModelPickerServers: Set<String> = []
-    private var hostedModels: [String: HostedModelState] = [:]
-    private var agentConnectionOrigin = "http://localhost:3000"
-    private let agentConnectionLock = NSLock()
-    private var agentConnectionProviderStorage: (@Sendable (AgentConnectionProviderRequest) -> AgentConnectionProviderResult)?
+    var hostedRuntimes: [String: (provider: String, model: String?, state: String, retryNeedsModel: Bool, createdAt: Date)] = [:]
+    var grokRuntimeServers: Set<String> = []
+    var remoteUpgradeDisabledServers: Set<String> = []
+    var agentStatusAdopted: Set<String> = []
+    var agentStatusOccurredAt: [String: Date] = [:]
+    var agentActivityEventIds: [String: Set<String>] = [:]
+    let threadFollowStore = ThreadFollowStore()
+    var agentIntegrationLogins: [String: AgentIntegrationLoginRecord] = [:]
+    var attachmentCommentRecords: [String: [AttachmentCommentRecord]] = [:]
+    var hostedUsage: [String: String] = [:]
+    var hostedModelPickerServers: Set<String> = []
+    var hostedModels: [String: HostedModelState] = [:]
+    var agentConnectionOrigin = "http://localhost:3000"
+    let agentConnectionLock = NSLock()
+    var agentConnectionProviderStorage: (@Sendable (AgentConnectionProviderRequest) -> AgentConnectionProviderResult)?
 
     /// Provider relay for `github` account connections. Production wires this to
     /// the hosted runtime provider; tests replace it with a deterministic stub.
@@ -267,69 +267,69 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
     /// Raft's own default for hosted agents; naming it always follows the provider default.
-    private static let hostedDefaultModel = "deepseek-flash"
+    static let hostedDefaultModel = "deepseek-flash"
 
-    private var agentArchiveRecords: [String: AgentArchiveRecord] = [:]
-    private var postableChannels: [String: PostableChannel] = [:]
-    private var threadOrder: [String] = []
-    private var serverMemberRoles: [String: String] = [:]
-    private var hideHumansFromMembers: [String: Bool] = [:]
-    private var serverMemberStatuses: [String: String] = [:]
-    private var membershipAgreementAudits: [(
+    var agentArchiveRecords: [String: AgentArchiveRecord] = [:]
+    var postableChannels: [String: PostableChannel] = [:]
+    var threadOrder: [String] = []
+    var serverMemberRoles: [String: String] = [:]
+    var hideHumansFromMembers: [String: Bool] = [:]
+    var serverMemberStatuses: [String: String] = [:]
+    var membershipAgreementAudits: [(
         serverId: String, subjectId: String, actorUserId: String,
         source: String, agreementId: String?, agreementVersion: Int?
     )] = []
-    private var jointProjections: [JointChannelLink] = []
-    private var serverMemberEvents: [ServerMemberEvent] = []
-    private var deletedServerIds: Set<String> = []
-    private var sidebarReadAllEnabled = false
-    private var translationProviderOverride: String?
-    private var appAgentReminderLedger: [String: String] = [:]
-    private var agentReminderSurfaceChannels: [String: String] = [:]
-    private var handsFeedbackUpstreamHandler: ((URLRequest) -> (status: Int, headers: [String: String], body: Data))?
-    private var handsConversationSessionEnabledForTesting: Bool?
-    private var handsConversationAppTokenOverride: String?
-    private var productFeedbackReporterSessionCache: [String: (token: String, expiresAt: Date)] = [:]
+    var jointProjections: [JointChannelLink] = []
+    var serverMemberEvents: [ServerMemberEvent] = []
+    var deletedServerIds: Set<String> = []
+    var sidebarReadAllEnabled = false
+    var translationProviderOverride: String?
+    var appAgentReminderLedger: [String: String] = [:]
+    var agentReminderSurfaceChannels: [String: String] = [:]
+    var handsFeedbackUpstreamHandler: ((URLRequest) -> (status: Int, headers: [String: String], body: Data))?
+    var handsConversationSessionEnabledForTesting: Bool?
+    var handsConversationAppTokenOverride: String?
+    var productFeedbackReporterSessionCache: [String: (token: String, expiresAt: Date)] = [:]
     /// SecureString-shaped `HANDS_FEEDBACK_APPS` payload for `product_feedback_multi_app`.
     /// Production reads this from SSM; the port takes it from `setHandsFeedbackAppsForTesting`.
-    private var handsFeedbackAppsJSONForTesting: String?
+    var handsFeedbackAppsJSONForTesting: String?
     /// Overlay for the legacy `HANDS_FEEDBACK_*` view, so a test can reproduce the
     /// deploy environment without mutating the process environment.
-    private var handsFeedbackLegacyEnvironmentForTesting: [String: String]?
-    private var handsFeedbackWarningSinkForTesting: ((String) -> Void)?
-    private var productFeedbackRouteBindingSuccesses: [String: Date] = [:]
-    private var productFeedbackRouteCommitments: [String: Data] = [:]
-    private var productFeedbackRouteVerifiedCommitments: Set<String> = []
-    private var messageTranslationLedger: [String: (status: String, providerBilledChars: Int, targetLanguage: String, translatedContent: String)] = [:]
-    private var agentChannelJoinedAt: [String: Date] = [:]
-    private var agentChannelPosted: Set<String> = []
-    private var taskWriteHolds: [String: (seen: Int, latest: Int)] = [:]
-    private var readMutationRecords: [String: ReadMutationRecord] = [:]
-    private var readMutationAuthoritySeq: [String: Int] = [:]
-    private var readMutationOrder: [String] = []
-    private var readMutationAcks: [String: (scopeId: String, throughSeq: Int)] = [:]
-    private var userChannelReadCursorsForTesting: [String: Int] = [:]
-    private var jointInvites: [(
+    var handsFeedbackLegacyEnvironmentForTesting: [String: String]?
+    var handsFeedbackWarningSinkForTesting: ((String) -> Void)?
+    var productFeedbackRouteBindingSuccesses: [String: Date] = [:]
+    var productFeedbackRouteCommitments: [String: Data] = [:]
+    var productFeedbackRouteVerifiedCommitments: Set<String> = []
+    var messageTranslationLedger: [String: (status: String, providerBilledChars: Int, targetLanguage: String, translatedContent: String)] = [:]
+    var agentChannelJoinedAt: [String: Date] = [:]
+    var agentChannelPosted: Set<String> = []
+    var taskWriteHolds: [String: (seen: Int, latest: Int)] = [:]
+    var readMutationRecords: [String: ReadMutationRecord] = [:]
+    var readMutationAuthoritySeq: [String: Int] = [:]
+    var readMutationOrder: [String] = []
+    var readMutationAcks: [String: (scopeId: String, throughSeq: Int)] = [:]
+    var userChannelReadCursorsForTesting: [String: Int] = [:]
+    var jointInvites: [(
         id: String, hostServerId: String, hostChannelId: String,
         targetServerId: String, targetChannelId: String,
         targetOwnerId: String, status: String
     )] = []
-    private var composerResourceServers: Set<String> = []
-    private var installedServerApps: [String: Set<String>] = [:]
-    private var socialCompletions: [SocialCompletion] = []
-    private var pendingSocialLinks: [String: PendingSocialLink] = [:]
-    private var mobileRequests: [String: MobileOAuthRequest] = [:]
-    private var providerExchanges = 0
-    private var consumedHandoffs: Set<String> = []
-    private var deviceGrants: [String: DeviceGrant] = [:]
-    private var deviceUserCodes: [String: String] = [:]
-    private var mobileAppEmailContactsByKey: [String: MobileAppEmailContact] = [:]
-    private var storedMobileAppEmailJourneys: [MobileAppEmailJourney] = []
-    private var nativeNotificationEvents: [StoredNativeNotificationEvent] = []
-    private var nextNativeNotificationSeq = 0
-    private var nativeEnrollmentGrants: [StoredEnrollmentGrant] = []
-    private var nativeNotificationDevices: [StoredNotificationDevice] = []
-    private var nativeNotificationCredentials: [StoredNotificationCredential] = []
+    var composerResourceServers: Set<String> = []
+    var installedServerApps: [String: Set<String>] = [:]
+    var socialCompletions: [SocialCompletion] = []
+    var pendingSocialLinks: [String: PendingSocialLink] = [:]
+    var mobileRequests: [String: MobileOAuthRequest] = [:]
+    var providerExchanges = 0
+    var consumedHandoffs: Set<String> = []
+    var deviceGrants: [String: DeviceGrant] = [:]
+    var deviceUserCodes: [String: String] = [:]
+    var mobileAppEmailContactsByKey: [String: MobileAppEmailContact] = [:]
+    var storedMobileAppEmailJourneys: [MobileAppEmailJourney] = []
+    var nativeNotificationEvents: [StoredNativeNotificationEvent] = []
+    var nextNativeNotificationSeq = 0
+    var nativeEnrollmentGrants: [StoredEnrollmentGrant] = []
+    var nativeNotificationDevices: [StoredNotificationDevice] = []
+    var nativeNotificationCredentials: [StoredNotificationCredential] = []
     public var mobileProviderProfile: MobileProviderProfile?
     /// Exchanged web provider profile. The form-post callback stores a completion and does not link an identity.
     public var webProviderProfile: MobileProviderProfile?
@@ -359,101 +359,101 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public var handsFeedbackAppSlugOverride: String?
     public var handsFeedbackAppTokenOverride: String?
     public var providerConnectionsEnabledServers: Set<String> = []
-    private var providerConnections: [ProviderConnection] = []
-    private var providerAssignments: [ProviderAssignment] = []
+    var providerConnections: [ProviderConnection] = []
+    var providerAssignments: [ProviderAssignment] = []
     /// Share artifacts store the uploaded PNG bytes and the intrinsic size read
     /// from the IHDR chunk, because the public page advertises the real image
     /// dimensions and the PNG route serves the same bytes the user selected.
 
-    private var shareArtifacts: [String: ShareArtifactRecord] = [:]
-    private var timezoneObservations: [String: TimezoneObservation] = [:]
-    private var serverLabsState: [String: ServerLabsState] = [:]
-    private var serverInvites: [(id: String, serverId: String, email: String, role: String, tokenHash: String?)] = []
-    private var serverSwitcherOrders: [String: (ids: [String], version: Int)] = [:]
-    private var serverOnboardingSettings: [String: (agentId: String?, greeting: Bool)] = [:]
-    private var userOnboardingSettings: [String: UserOnboarding] = [:]
-    private var serverNotificationPrefs: [String: (muted: Bool, mentionsOnly: Bool, mode: String, version: Int)] = [:]
-    private var setupPhases: [String: String] = [:]
-    private var setupHandoffs: Set<String> = []
-    private var guestRoleServers: Set<String> = []
-    private var computers: [(id: String, serverId: String, name: String, apiKey: String, machineId: String?, revokedAt: Date?, online: Bool, version: String?)] = []
-    private var computerAttachers: [String: String] = [:]
-    private var runtimeAccountUsage: [String: (json: String, staleAfter: Date)] = [:]
-    private var runtimeAccountUsageRefreshAt: [String: Date] = [:]
-    private var machineRuntimeModels: [String: [String: (models: [(id: String, label: String)], updatedAt: Date)]] = [:]
-    private var proSeats: [String: Int] = [:]
-    private var joinLinks: [String: JoinLinkRecord] = [:]
-    private var usageLimitAttentionServers: Set<String> = []
-    private var systemAttentionIncidents: [SystemAttentionIncident] = []
-    private var systemAttentionReceipts: [String: SystemAttentionReceipt] = [:]
-    private var hostedAgents: Set<String> = []
-    private var threadFollows: [String: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String)] = [:]
-    private var threadUnfollows: [String: ThreadUnfollowRecord] = [:]
-    private var threadFollowStarts: [String: Date] = [:]
-    private var threadFollowerRemovals: [String: (serverId: String, threadChannelId: String, agentId: String)] = [:]
-    private var staleThreadFollowerUndoTokens: Set<String> = []
-    private var channelReadVersions: [String: Int] = [:]
-    private var agentChannelReadCursors: [String: (seq: Int, version: Int)] = [:]
+    var shareArtifacts: [String: ShareArtifactRecord] = [:]
+    var timezoneObservations: [String: TimezoneObservation] = [:]
+    var serverLabsState: [String: ServerLabsState] = [:]
+    var serverInvites: [(id: String, serverId: String, email: String, role: String, tokenHash: String?)] = []
+    var serverSwitcherOrders: [String: (ids: [String], version: Int)] = [:]
+    var serverOnboardingSettings: [String: (agentId: String?, greeting: Bool)] = [:]
+    var userOnboardingSettings: [String: UserOnboarding] = [:]
+    var serverNotificationPrefs: [String: (muted: Bool, mentionsOnly: Bool, mode: String, version: Int)] = [:]
+    var setupPhases: [String: String] = [:]
+    var setupHandoffs: Set<String> = []
+    var guestRoleServers: Set<String> = []
+    var computers: [(id: String, serverId: String, name: String, apiKey: String, machineId: String?, revokedAt: Date?, online: Bool, version: String?)] = []
+    var computerAttachers: [String: String] = [:]
+    var runtimeAccountUsage: [String: (json: String, staleAfter: Date)] = [:]
+    var runtimeAccountUsageRefreshAt: [String: Date] = [:]
+    var machineRuntimeModels: [String: [String: (models: [(id: String, label: String)], updatedAt: Date)]] = [:]
+    var proSeats: [String: Int] = [:]
+    var joinLinks: [String: JoinLinkRecord] = [:]
+    var usageLimitAttentionServers: Set<String> = []
+    var systemAttentionIncidents: [SystemAttentionIncident] = []
+    var systemAttentionReceipts: [String: SystemAttentionReceipt] = [:]
+    var hostedAgents: Set<String> = []
+    var threadFollows: [String: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String)] = [:]
+    var threadUnfollows: [String: ThreadUnfollowRecord] = [:]
+    var threadFollowStarts: [String: Date] = [:]
+    var threadFollowerRemovals: [String: (serverId: String, threadChannelId: String, agentId: String)] = [:]
+    var staleThreadFollowerUndoTokens: Set<String> = []
+    var channelReadVersions: [String: Int] = [:]
+    var agentChannelReadCursors: [String: (seq: Int, version: Int)] = [:]
     /// Test-only override of `SLOCK_ATTESTED_SEND_MODE`; process environment is
     /// global state and parallel suites must not race on it.
-    private var sendFreshnessModeOverride: String?
+    var sendFreshnessModeOverride: String?
     /// Serializes the freshness gate with the commit it protects, so two
     /// concurrent first replies cannot both pass the gate before either lands.
-    private let sendFreshnessCommitLock = NSLock()
-    private var attestedSendEventRecords: [AttestedSendEventRecord] = []
-    private var agentSendActivityRecords: [String: [(title: String, text: String, producerFactId: String?)]] = [:]
+    let sendFreshnessCommitLock = NSLock()
+    var attestedSendEventRecords: [AttestedSendEventRecord] = []
+    var agentSendActivityRecords: [String: [(title: String, text: String, producerFactId: String?)]] = [:]
     /// Test seam for the daemon capability that makes legacy receive-ack a
     /// volatile delivery ack instead of a usability checkpoint.
-    private var machineModelSeenCapabilityForTesting: Set<String> = []
+    var machineModelSeenCapabilityForTesting: Set<String> = []
     // Human read frontiers live in the ledger alongside the message rows. The
     // directory keeps no parallel cursor store.
-    private var agentActivities: [String: (activity: String, detail: String)] = [:]
-    private var announcements: [(id: String, title: String, pages: [String], startsAt: Date, expiresAt: Date?, status: String, publishedAt: Date?, imageId: String?, audienceServerIds: [String])] = []
-    private var announcementImageAssets: [String: AnnouncementImageAsset] = [:]
-    private var announcementImageStorageAvailable = true
+    var agentActivities: [String: (activity: String, detail: String)] = [:]
+    var announcements: [(id: String, title: String, pages: [String], startsAt: Date, expiresAt: Date?, status: String, publishedAt: Date?, imageId: String?, audienceServerIds: [String])] = []
+    var announcementImageAssets: [String: AnnouncementImageAsset] = [:]
+    var announcementImageStorageAvailable = true
 
-    private var announcementDismissals: Set<String> = []
-    private var inboxDoneScopes: Set<String> = []
-    private var inboxDoneAt: [String: Date] = [:]
+    var announcementDismissals: Set<String> = []
+    var inboxDoneScopes: Set<String> = []
+    var inboxDoneAt: [String: Date] = [:]
     /// Canonical Done frontier captured at admission, per `userId\nscopeId`.
-    private var inboxDoneFrontiers: [String: Int] = [:]
-    private var inboxResiduesForTesting: Set<String> = []
-    private var guestVisibleChannels: [String: Bool] = [:]
-    private var guestJoinableChannels: [String: Bool] = [:]
-    private var readReceiptsServers: Set<String> = []
-    private var channelHumanRoles: [String: String] = [:]
-    private var channelAuthorityRevisions: [String: Int] = [:]
-    private var sidebarModes: [String: (channel: String, joint: String, dm: String, pinned: String, channelTabs: [String], agentTabs: [String])] = [:]
-    private var sidebarSections: [String: (sections: [(id: String, name: String, emoji: String?, sortMode: String)], order: [String], placements: [(kind: String, id: String, sectionId: String, position: Int)], version: Int)] = [:]
-    private var sidebarPinnedRefs: [String: (refs: [(kind: String, id: String)], channelIds: [String], agentIds: [String], version: Int)] = [:]
-    private var reminderRecords: [ReminderRecord] = []
-    private var reminderEvents: [ReminderEvent] = []
-    private var taskRecords: [TaskRecord] = []
-    private var pushRegistrations: [PushRegistration] = []
+    var inboxDoneFrontiers: [String: Int] = [:]
+    var inboxResiduesForTesting: Set<String> = []
+    var guestVisibleChannels: [String: Bool] = [:]
+    var guestJoinableChannels: [String: Bool] = [:]
+    var readReceiptsServers: Set<String> = []
+    var channelHumanRoles: [String: String] = [:]
+    var channelAuthorityRevisions: [String: Int] = [:]
+    var sidebarModes: [String: (channel: String, joint: String, dm: String, pinned: String, channelTabs: [String], agentTabs: [String])] = [:]
+    var sidebarSections: [String: (sections: [(id: String, name: String, emoji: String?, sortMode: String)], order: [String], placements: [(kind: String, id: String, sectionId: String, position: Int)], version: Int)] = [:]
+    var sidebarPinnedRefs: [String: (refs: [(kind: String, id: String)], channelIds: [String], agentIds: [String], version: Int)] = [:]
+    var reminderRecords: [ReminderRecord] = []
+    var reminderEvents: [ReminderEvent] = []
+    var taskRecords: [TaskRecord] = []
+    var pushRegistrations: [PushRegistration] = []
     public var fcmPushAvailable = true
     public var webPushEnabled = true
-    private var webPushSubscriptions: [WebPushSubscription] = []
-    private var machines: [MachineRecord] = []
-    private var machineStatusVersions: [String: Int] = [:]
-    private var machineOnline: [String: Bool] = [:]
-    private var agentCredentialUseThrottleOverrideMs: Int?
-    private var wakeStreamHeartbeatOverrideMs: Int?
-    private var agentLastSeenAt: [String: Date] = [:]
-    private var feedbackLocatorRecords: [FeedbackLocatorRecord] = []
-    private var managedMCPServers: [ManagedMCPServerRecord] = []
-    private var managedMCPAssignments: [String: [String: (enabled: Bool, allowedTools: [String]?)]] = [:]
-    private var actionCardRecords: [String: ActionCardRecord] = [:]
-    private var marketplaceInstallCards: [String: MarketplaceInstallCard] = [:]
-    private var integrationRegisterCards: [String: IntegrationRegisterCard] = [:]
-    private var agentApiSendReceipts: [String: AgentApiSendReceipt] = [:]
-    private var pendingActionMessageEvents: [(agentId: String, messageId: String, content: String)] = []
-    private var agentGrantSets: [String: Set<String>] = [:]
-    private var appConfigOverrides: [String: [String: [String: Any]]] = [:]
-    private var appConfigRevisions: [String: [String: Int]] = [:]
-    private var agentIntegrationGrants: [String: Bool] = [:]
-    private var agentAudienceStatusOverrides: [String: String] = [:]
-    private var agentAttachmentBytes: [String: Data] = [:]
-    private var agentAttachmentPresign: (@Sendable (String, Int, String, String) throws -> String)?
+    var webPushSubscriptions: [WebPushSubscription] = []
+    var machines: [MachineRecord] = []
+    var machineStatusVersions: [String: Int] = [:]
+    var machineOnline: [String: Bool] = [:]
+    var agentCredentialUseThrottleOverrideMs: Int?
+    var wakeStreamHeartbeatOverrideMs: Int?
+    var agentLastSeenAt: [String: Date] = [:]
+    var feedbackLocatorRecords: [FeedbackLocatorRecord] = []
+    var managedMCPServers: [ManagedMCPServerRecord] = []
+    var managedMCPAssignments: [String: [String: (enabled: Bool, allowedTools: [String]?)]] = [:]
+    var actionCardRecords: [String: ActionCardRecord] = [:]
+    var marketplaceInstallCards: [String: MarketplaceInstallCard] = [:]
+    var integrationRegisterCards: [String: IntegrationRegisterCard] = [:]
+    var agentApiSendReceipts: [String: AgentApiSendReceipt] = [:]
+    var pendingActionMessageEvents: [(agentId: String, messageId: String, content: String)] = []
+    var agentGrantSets: [String: Set<String>] = [:]
+    var appConfigOverrides: [String: [String: [String: Any]]] = [:]
+    var appConfigRevisions: [String: [String: Int]] = [:]
+    var agentIntegrationGrants: [String: Bool] = [:]
+    var agentAudienceStatusOverrides: [String: String] = [:]
+    var agentAttachmentBytes: [String: Data] = [:]
+    var agentAttachmentPresign: (@Sendable (String, Int, String, String) throws -> String)?
 
     public func setAgentAttachmentPresignForTesting(_ handler: (@Sendable (String, Int, String, String) throws -> String)?) {
         lock.lock()
@@ -488,19 +488,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
 
-    private static let agentAttachmentUnavailableMessage = "Attachment is unavailable."
-    private static let agentAttachmentUnavailableNextAction = "If this value came from a feedback report, do not use its artifactId here. Use the reportId with the Raft Feedback Admin integration instead: run `raft integration invoke --service \"Raft Feedback Admin\" --action download_feedback_transcript --param id=REPORT_ID --output PATH`."
+    static let agentAttachmentUnavailableMessage = "Attachment is unavailable."
+    static let agentAttachmentUnavailableNextAction = "If this value came from a feedback report, do not use its artifactId here. Use the reportId with the Raft Feedback Admin integration instead: run `raft integration invoke --service \"Raft Feedback Admin\" --action download_feedback_transcript --param id=REPORT_ID --output PATH`."
 
-    private func agentAttachmentUnavailableReply() -> HTTPReply {
+    func agentAttachmentUnavailableReply() -> HTTPReply {
         let error = Self.agentAttachmentUnavailableMessage + " " + Self.agentAttachmentUnavailableNextAction
         return Self.json(404, "{\"error\":\(jsonString(error)),\"code\":\"ATTACHMENT_UNAVAILABLE\",\"suggestedNextAction\":\(jsonString(Self.agentAttachmentUnavailableNextAction))}")
     }
 
-    private func agentAttachmentUnavailableURLReply() -> HTTPReply {
+    func agentAttachmentUnavailableURLReply() -> HTTPReply {
         Self.json(409, "{\"error\":\"This Server's file storage cannot mint download URLs.\",\"code\":\"download_url_unavailable\",\"suggestedNextAction\":\"Download the attachment bytes instead: GET /internal/agent-api/attachments/:attachmentId (`raft attachment view --id <attachmentId> --output <path>`).\"}")
     }
 
-    private func agentVisibleAttachment(agentId: String, serverId: String, attachmentId: String) -> ChannelAttachment? {
+    func agentVisibleAttachment(agentId: String, serverId: String, attachmentId: String) -> ChannelAttachment? {
         lock.lock()
         defer { lock.unlock() }
         guard let attachment = channelAttachments[attachmentId],
@@ -514,7 +514,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return visible ? attachment : nil
     }
 
-    private func agentAttachmentIdentity(authorization: String?) -> (agentId: String, serverId: String)? {
+    func agentAttachmentIdentity(authorization: String?) -> (agentId: String, serverId: String)? {
         switch feedbackLocatorIdentity(authorization: authorization, capability: "read") {
         case .refused: return nil
         case .success(let agentId, let serverId): return (agentId, serverId)
@@ -686,16 +686,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// One committed agent-api send per (server, agent, idempotencyKey).
 
 
-    private var externalPushWebhooks: [String: (url: String, secret: String)] = [:]
-    private var agentStatusProtocolAdoptedAt: [String: Date] = [:]
-    private var agentCursorPullState: [String: (lastPulledAt: Date, pendingAcks: Int)] = [:]
-    private var agentProviderPositions: [String: (provider: String, state: String, providerAgentId: String?, syncPending: Bool, lastErrorCode: String?, lastErrorAt: Date?, activatedAt: Date?)] = [:]
+    var externalPushWebhooks: [String: (url: String, secret: String)] = [:]
+    var agentStatusProtocolAdoptedAt: [String: Date] = [:]
+    var agentCursorPullState: [String: (lastPulledAt: Date, pendingAcks: Int)] = [:]
+    var agentProviderPositions: [String: (provider: String, state: String, providerAgentId: String?, syncPending: Bool, lastErrorCode: String?, lastErrorAt: Date?, activatedAt: Date?)] = [:]
 
     /// Production throttle for credential-use writes.
     public static let agentCredentialUseDefaultThrottleMs = 60_000
-    private var deletedMachineWorkspaces: Set<String> = []
-    private let realtimeEmitterLock = NSLock()
-    private var realtimeEmitterStorage: (@Sendable (String, String, String?) -> Void)?
+    var deletedMachineWorkspaces: Set<String> = []
+    let realtimeEmitterLock = NSLock()
+    var realtimeEmitterStorage: (@Sendable (String, String, String?) -> Void)?
     /// `MOBILE_APP_EMAIL_UNSUBSCRIBE_SECRET`, or `JWT_SECRET`. The test harness uses `test-jwt-secret`.
     public var mobileAppEmailUnsubscribeSecret: String = "test-jwt-secret"
     /// Cancels one scheduled mobile-app lifecycle email. Unset means there is no provider call to make.
@@ -736,7 +736,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public var nativeNotificationNodeEnv: String = "development"
     /// Test seam for signed-app attestation. A nil verifier never accepts evidence.
     public var nativeNotificationAttestationVerifier: (@Sendable (String) -> Bool)?
-    private var appleLoginPlatforms: Set<String> = []
+    var appleLoginPlatforms: Set<String> = []
 
     /// Raw `MOBILE_OAUTH_RETURN_URI`. A non-empty parsed list replaces the defaults.
     public var mobileOAuthReturnURI: String?
@@ -746,11 +746,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public var releaseBranch: String?
     /// Raw `SLOCK_DEVICE_LOGIN_ENABLED`. Unset or empty keeps device login on. `false`, `0`, `no`, and `off` turn it off.
     public var deviceLoginGate: String?
-    private var linkedIdentities: [LinkedIdentity] = []
-    private var featureFlagRecords: [String: FeatureFlagRecord] = [
+    var linkedIdentities: [LinkedIdentity] = []
+    var featureFlagRecords: [String: FeatureFlagRecord] = [
         "attachment_comments_v0": FeatureFlagRecord(key: "attachment_comments_v0", defaultEnabled: true),
     ]
-    private var featureFlagRuleRecords: [FeatureFlagRuleRecord] = []
+    var featureFlagRuleRecords: [FeatureFlagRuleRecord] = []
 
 
 
@@ -761,7 +761,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     public init() {}
 
-    private var experimentalSurfacesDisabledForTesting: Bool?
+    var experimentalSurfacesDisabledForTesting: Bool?
 
     /// Operator kill switch for `/internal/agent-api` and `/internal/computer`.
     /// `SLOCK_EXPERIMENTAL_SURFACES_DISABLED=true` disables them; tests may
@@ -1104,7 +1104,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// Caller holds `lock`.
-    private func notificationSessionLocked(_ authorization: String?) -> (userId: String, familyId: String)? {
+    func notificationSessionLocked(_ authorization: String?) -> (userId: String, familyId: String)? {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
         let token = String(authorization.dropFirst("Bearer ".count))
         guard let userId = accessTokens[token],
@@ -1218,7 +1218,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// Caller holds `lock`. A revoked device cannot authenticate, even if its credential row is still open.
-    private func nativePrincipalLocked(_ authorization: String?) -> (userId: String, familyId: String, credentialId: String, deviceId: String, publicKey: String)? {
+    func nativePrincipalLocked(_ authorization: String?) -> (userId: String, familyId: String, credentialId: String, deviceId: String, publicKey: String)? {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
         let token = String(authorization.dropFirst("Bearer ".count))
         guard let parsed = Self.parseOpaqueCredential(token, prefix: "rnc1") else { return nil }
@@ -1237,7 +1237,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// Caller holds `lock`. Revoked devices are `revoked`. A live unexpired credential on a live family is `active`.
-    private func nativeDeviceStatusLocked(_ device: StoredNotificationDevice, now: Date) -> String {
+    func nativeDeviceStatusLocked(_ device: StoredNotificationDevice, now: Date) -> String {
         if let revokedAt = device.revokedAt, revokedAt <= now { return "revoked" }
         let active = nativeNotificationCredentials.contains { credential in
             credential.deviceId == device.id
@@ -1251,7 +1251,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return active ? "active" : "inactive"
     }
 
-    private func liveNativeCredentialLocked(userId: String) -> Bool {
+    func liveNativeCredentialLocked(userId: String) -> Bool {
         let now = Date()
         return nativeNotificationCredentials.contains { credential in
             credential.userId == userId
@@ -2583,7 +2583,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
     /// Moves `pending_provider` to `provider_processing` before any Apple call. A past row expiry and a link-owner mismatch are decided before that claim.
-    private func claimNativeApple(
+    func claimNativeApple(
         requestId: String,
         mode: String,
         codeChallenge: String,
@@ -2614,7 +2614,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// A previously linked Apple subject can supply the verified email Apple omits on a later login.
-    private func storedAppleIdentity(subject: String) -> (userId: String, email: String)? {
+    func storedAppleIdentity(subject: String) -> (userId: String, email: String)? {
         lock.lock()
         defer { lock.unlock() }
         guard let row = linkedIdentities.first(where: { $0.provider == "apple" && $0.providerUserId == subject }) else {
@@ -2625,7 +2625,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return (row.userId, email)
     }
 
-    private func failNativeAppleIfProcessing(requestId: String) {
+    func failNativeAppleIfProcessing(requestId: String) {
         lock.lock()
         defer { lock.unlock() }
         guard var request = mobileRequests[requestId], request.status == "provider_processing" else { return }
@@ -2633,7 +2633,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         mobileRequests[requestId] = request
     }
 
-    private func finishNativeApple(requestId: String, email: String, subject: String, loginUserId: String?) -> (handoff: String, mode: String)? {
+    func finishNativeApple(requestId: String, email: String, subject: String, loginUserId: String?) -> (handoff: String, mode: String)? {
         lock.lock()
         defer { lock.unlock() }
         guard var request = mobileRequests[requestId], request.status == "provider_processing" else { return nil }
@@ -2681,7 +2681,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return openedMobileOAuth(provider: provider, mode: "link", returnUri: returnUri, challenge: challenge, userId: userId)
     }
 
-    private func openedMobileOAuth(provider: String, mode: String, returnUri: String, challenge: String, userId: String?, linkOnConflict: Bool = false) -> HTTPReply {
+    func openedMobileOAuth(provider: String, mode: String, returnUri: String, challenge: String, userId: String?, linkOnConflict: Bool = false) -> HTTPReply {
         let id = UUID().uuidString.lowercased()
         let nonce = Self.randomHex(16)
         let desktopNonce = Self.desktopNonce(from: returnUri)
@@ -3105,7 +3105,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
 
-    private func featureFlagRules(key: String, stage: String) -> [FeatureFlagRuleRecord] {
+    func featureFlagRules(key: String, stage: String) -> [FeatureFlagRuleRecord] {
         featureFlagRuleRecords
             .filter { $0.key == key && $0.stage == stage }
             .sorted { lhs, rhs in
@@ -3114,11 +3114,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
     }
 
-    private func featureFlagRuleReply(key: String, rule: FeatureFlagRuleRecord, stage: String) -> HTTPReply {
+    func featureFlagRuleReply(key: String, rule: FeatureFlagRuleRecord, stage: String) -> HTTPReply {
         Self.json(200, "{\"evaluations\":[{\"key\":\(jsonString(key)),\"enabled\":\(rule.decision == "allow"),\"reason\":\(jsonString(stage + "_rule"))}]}")
     }
 
-    private func evaluateFeatureFlagKey(
+    func evaluateFeatureFlagKey(
         key: String,
         userId: String,
         serverId: String?,
@@ -3279,7 +3279,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
     /// A public channel is searchable by anyone on the server. A thread follows its parent, and a deleted parent hides the thread. Archived channels stay searchable.
-    private func messageSearchVisibleLocked(messageChannelId: String, serverId: String?, viewer: SearchViewer) -> Bool {
+    func messageSearchVisibleLocked(messageChannelId: String, serverId: String?, viewer: SearchViewer) -> Bool {
         func isMember(_ id: String, _ channel: PostableChannel) -> Bool {
             switch viewer {
             case .user(let userId):
@@ -3914,7 +3914,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// Whether a stored mention is still a pending sender-side action.
-    private func pendingAgentMentionLocked(_ mention: StoredMention, agentId: String) -> Bool {
+    func pendingAgentMentionLocked(_ mention: StoredMention, agentId: String) -> Bool {
         guard mention.senderId == agentId,
               mention.notifiedAt == nil,
               !mention.notifiableAtSend,
@@ -3926,7 +3926,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return true
     }
 
-    private func pendingAgentMentionServer(agentId: String) -> String? {
+    func pendingAgentMentionServer(agentId: String) -> String? {
         oauth.agentRuntimeInfo(id: agentId)?.serverId
     }
 
@@ -4037,7 +4037,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// `add` authority is participant-scoped: an agent that only has read
     /// access to a public channel is not a channel member for this action.
-    private func mentionSenderStillInChannelLocked(channelId: String, agentId: String) -> Bool {
+    func mentionSenderStillInChannelLocked(channelId: String, agentId: String) -> Bool {
         guard let channel = postableChannels[channelId] else { return false }
         return channel.memberIds.contains(agentId) || oauth.channelAgentIds(channelId: channelId).contains(agentId)
     }
@@ -4131,7 +4131,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// A removed channel member can no longer add someone through a mention they sent earlier.
-    private func senderStillInChannelLocked(channelId: String, userId: String) -> Bool {
+    func senderStillInChannelLocked(channelId: String, userId: String) -> Bool {
         guard let stored = postableChannels[channelId] else { return false }
         if stored.kind == "thread", let parentId = stored.parentChannelId, let parent = postableChannels[parentId] {
             return parent.memberIds.contains(userId)
@@ -4140,7 +4140,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// Public channels are readable by any signed-in user. Private surfaces and their threads require membership.
-    private func mentionTargetCanReadLocked(channelId: String, targetType: String, targetId: String) -> Bool {
+    func mentionTargetCanReadLocked(channelId: String, targetType: String, targetId: String) -> Bool {
         guard let stored = postableChannels[channelId] else { return false }
         let surface: PostableChannel
         let surfaceId: String
@@ -4711,7 +4711,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.forwardMessageReply(message: message, record: record, outcome: "success")
     }
 
-    private func forwardContextLocked(source: PendingForwardSource, selectedThreads: Set<String>) -> ForwardSourceContext {
+    func forwardContextLocked(source: PendingForwardSource, selectedThreads: Set<String>) -> ForwardSourceContext {
         if source.channelKind == "thread" {
             let parent = source.parentChannelId.flatMap { postableChannels[$0] }
             let publicParent = parent?.kind == "channel"
@@ -4762,7 +4762,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// A viewer who cannot read the source still sees the forward, with the pointers removed.
 
-    private func forwardMetadataJSONLocked(messageId: String, userId: String, serverId: String?) -> String? {
+    func forwardMetadataJSONLocked(messageId: String, userId: String, serverId: String?) -> String? {
         guard let record = forwardRecords[messageId] else { return nil }
         let rendered = record.items.map { item in
             forwardItemReadableLocked(item, userId: userId, serverId: serverId)
@@ -4772,7 +4772,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return "{\"kind\":\"forwarded-bundle\",\"forwardedItems\":[\(rendered)]}"
     }
 
-    private func forwardItemReadableLocked(_ item: ForwardItemRecord, userId: String, serverId: String?) -> Bool {
+    func forwardItemReadableLocked(_ item: ForwardItemRecord, userId: String, serverId: String?) -> Bool {
         guard let targetId = item.sourceTargetId, let serverId else { return false }
         guard let channel = postableChannels[targetId], channel.serverId == serverId, channel.deletedAt == nil else { return false }
         if channel.kind == "channel" { return true }
@@ -4789,7 +4789,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// A batch keeps one result per distinct destination. A denial or conflict stays inside that result.
-    private func forwardToMany(object: [String: Any], sourceIds: [String], note: String, authorization: String?, serverId: String) -> HTTPReply {
+    func forwardToMany(object: [String: Any], sourceIds: [String], note: String, authorization: String?, serverId: String) -> HTTPReply {
         guard let destinations = Self.forwardDestinationIds(object["destinationChannelIds"]) else {
             return Self.json(400, "{\"error\":\"Destination channel and full source message ids are required\"}")
         }
@@ -4839,7 +4839,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
     /// `POST /api/v2/messages`. The message is always nested. A stopped agent DM adds `agent_stopped`.
-    private func v2HumanSend(_ reply: HTTPReply, channelId: String, mentions: [MentionInput], unresolvedMentionHandles: [String] = []) -> HTTPReply {
+    func v2HumanSend(_ reply: HTTPReply, channelId: String, mentions: [MentionInput], unresolvedMentionHandles: [String] = []) -> HTTPReply {
         guard reply.status == 200,
               let data = reply.body.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -4863,7 +4863,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// A DM delivery to a stopped agent is dropped as `wake_suppressed` and reported to the v2 sender as `agent_stopped`.
-    private func stoppedAgentDeliveryWarningJSON(channelId: String, messageId: String) -> String {
+    func stoppedAgentDeliveryWarningJSON(channelId: String, messageId: String) -> String {
         lock.lock()
         defer { lock.unlock() }
         guard let channel = postableChannels[channelId],
@@ -4910,7 +4910,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// Outsider mentions on a new human send are returned beside the message, not inside it.
-    private func withPendingMentionActions(_ reply: HTTPReply, channelId: String, mentions: [MentionInput]) -> HTTPReply {
+    func withPendingMentionActions(_ reply: HTTPReply, channelId: String, mentions: [MentionInput]) -> HTTPReply {
         guard reply.status == 200,
               let data = reply.body.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -4921,7 +4921,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"message\":\(reply.body),\"pendingMentionActions\":[\(actions)]}")
     }
 
-    private func pendingMentionActionsJSON(channelId: String, messageId: String, mentions: [MentionInput]) -> String {
+    func pendingMentionActionsJSON(channelId: String, messageId: String, mentions: [MentionInput]) -> String {
         lock.lock()
         defer { lock.unlock() }
         let channel = postableChannels[channelId]
@@ -4979,7 +4979,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
     /// Caller holds the directory lock.
-    private func mentionHumanVisibleLocked(serverId: String, senderId: String, targetId: String) -> Bool {
+    func mentionHumanVisibleLocked(serverId: String, senderId: String, targetId: String) -> Bool {
         if targetId == senderId { return true }
         guard hideHumansFromMembers[serverId] == true else { return true }
         guard let targetRole = oauth.memberRole(serverId: serverId, userId: targetId) else { return false }
@@ -4995,7 +4995,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return false
     }
 
-    private func resolvedMessageMentions(
+    func resolvedMessageMentions(
         serverId: String,
         senderId: String,
         content: String,
@@ -5061,7 +5061,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return (resolved, unresolved)
     }
 
-    private func recordMemberMentionRows(messageId: String, channelId: String, mentions: [MentionInput]) {
+    func recordMemberMentionRows(messageId: String, channelId: String, mentions: [MentionInput]) {
         lock.lock()
         defer { lock.unlock() }
         guard let channel = postableChannels[channelId] else { return }
@@ -5181,7 +5181,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Test seam for the HTML preview body. Nil means the object is missing.
     public var attachmentPreviewBody: (@Sendable (_ attachmentId: String) -> String?)?
 
-    private func attachmentPreviewSecret() -> SymmetricKey {
+    func attachmentPreviewSecret() -> SymmetricKey {
         let raw = ProcessInfo.processInfo.environment["JWT_SECRET"] ?? "raft-test-preview-secret"
         return SymmetricKey(data: Data(raw.utf8))
     }
@@ -5211,7 +5211,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return payloadPart + "." + Self.previewBase64URL(Data(signature))
     }
 
-    private func validateAttachmentPreviewToken(
+    func validateAttachmentPreviewToken(
         _ token: String,
         attachmentId: String,
         serverId: String
@@ -5373,7 +5373,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func canManageThreadLocked(serverId: String, thread: PostableChannel, userId: String) -> Bool {
+    func canManageThreadLocked(serverId: String, thread: PostableChannel, userId: String) -> Bool {
         if oauth.memberRole(serverId: serverId, userId: userId) == "owner" || oauth.memberRole(serverId: serverId, userId: userId) == "admin" {
             return true
         }
@@ -5474,7 +5474,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// A thread is readable only through its parent's current visibility.
-    private func threadParentVisibleLocked(threadId: String, userId: String) -> Bool {
+    func threadParentVisibleLocked(threadId: String, userId: String) -> Bool {
         guard let thread = postableChannels[threadId], thread.kind == "thread" else { return false }
         guard let parentId = thread.parentChannelId else { return true }
         guard let parent = postableChannels[parentId] else { return false }
@@ -5808,7 +5808,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// One canonical thread per parent message: newest reply, then reply count,
     /// then creation order and id. Historical duplicates must not split reads.
-    private func canonicalThreadLocked(parentChannelId: String, parentMessageId: String) -> (id: String, channel: PostableChannel)? {
+    func canonicalThreadLocked(parentChannelId: String, parentMessageId: String) -> (id: String, channel: PostableChannel)? {
         let orderIndex = Dictionary(uniqueKeysWithValues: threadOrder.enumerated().map { ($1, $0) })
         let candidates = postableChannels.filter { _, candidate in
             candidate.kind == "thread"
@@ -6234,7 +6234,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
     /// Summaries for threads whose parent message is on this page. Newest three non-system replies, oldest of those first.
-    private func threadSummariesJSONLocked(parentChannelId: String, parentIds: [String]) -> String {
+    func threadSummariesJSONLocked(parentChannelId: String, parentIds: [String]) -> String {
         let parents = Set(parentIds)
         var parts: [String] = []
         for (threadId, thread) in postableChannels {
@@ -6253,7 +6253,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// Mentions a reader can see: notifiable at send, or later notified.
-    private func visibleMentionJSONLocked(messageId: String) -> String {
+    func visibleMentionJSONLocked(messageId: String) -> String {
         storedMentions.filter { row in
             row.messageId == messageId && (row.notifiableAtSend || row.notifiedAt != nil)
         }.map { row in
@@ -6742,7 +6742,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
-    private static let doneFrontierInt4Limit = 2_147_483_647
+    static let doneFrontierInt4Limit = 2_147_483_647
 
     /// Canonical `throughActivitySeq`: a decimal string in (0, Int64.max] with no
     /// leading zero. Anything else is DONE_FRONTIER_REQUIRED.
@@ -6750,7 +6750,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Resolves the Done frontier for a scope. An explicit frontier must be
     /// canonical and inside the int4 authority; an omitted frontier snapshots
     /// the latest activity. The persisted frontier is the admission snapshot.
-    private func resolveDoneFrontier(object: [String: Any], scopeId: String) -> (reply: HTTPReply?, frontier: Int?) {
+    func resolveDoneFrontier(object: [String: Any], scopeId: String) -> (reply: HTTPReply?, frontier: Int?) {
         if let space = object["frontierSpace"], !(space is NSNull) {
             guard let value = space as? String, value == "storage" else {
                 return (Self.json(400, "{\"code\":\"DONE_FRONTIER_UNMAPPABLE\",\"error\":\"frontierSpace must be storage\"}"), nil)
@@ -6990,9 +6990,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return id
     }
 
-    private static let selfCausedFreshnessExemptSubtypes: Set<String> = ["task.created_summary"]
+    static let selfCausedFreshnessExemptSubtypes: Set<String> = ["task.created_summary"]
 
-    private func isSelfCausedFreshnessExemptLocked(_ message: StoredHumanMessage, agentId: String) -> Bool {
+    func isSelfCausedFreshnessExemptLocked(_ message: StoredHumanMessage, agentId: String) -> Bool {
         message.messageType == "system"
             && message.causalActorType == "agent"
             && message.causalActorId == agentId
@@ -7293,7 +7293,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
 
-    private func inboxMessageDetails(
+    func inboxMessageDetails(
         scopeId: String,
         history: [OAuthLedger.HistoryMessage],
         humans: [StoredHumanMessage]
@@ -7318,7 +7318,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return details
     }
 
-    private func senderName(senderId: String) -> String {
+    func senderName(senderId: String) -> String {
         if let agent = oauth.agentRuntimeInfo(id: senderId) { return agent.name }
         lock.lock()
         let name = accounts.values.first { $0.id == senderId }?.name
@@ -7362,7 +7362,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Pending, content-free wake hints for one agent, ordered by server seq.
     /// Callers hold the directory lock. The peek route and the SSE stream share
     /// this projection so both surfaces agree on the hint set and ordering.
-    private func pendingWakeHintRowsLocked(
+    func pendingWakeHintRowsLocked(
         agentId: String,
         agent: OAuthLedger.AgentRuntimeInfo,
         sinceSeq: Int?,
@@ -7460,7 +7460,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// At most this many channel rows per conversation in one pull. The pull
     /// advances each conversation's cursor, and `has_more` says whether
     /// another call has anything left.
-    private static let agentInboxPullCap = 5
+    static let agentInboxPullCap = 5
 
     public func agentThirdPartyEvents(authorization: String?) -> HTTPReply {
         switch agentReadCredential(authorization) {
@@ -7600,7 +7600,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
 
-    private func agentReadCredential(_ authorization: String?) -> AgentRead {
+    func agentReadCredential(_ authorization: String?) -> AgentRead {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
             return .failure(Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}"))
         }
@@ -7684,7 +7684,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
-    private func recordAttestedSendEvent(
+    func recordAttestedSendEvent(
         _ eventType: String,
         agentId: String,
         messageId: String?,
@@ -7706,13 +7706,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func recordAgentSendActivity(agentId: String, title: String, text: String, producerFactId: String?) {
+    func recordAgentSendActivity(agentId: String, title: String, text: String, producerFactId: String?) {
         lock.lock()
         agentSendActivityRecords[agentId, default: []].append((title: title, text: text, producerFactId: producerFactId))
         lock.unlock()
     }
 
-    private func recordServerMemberEvent(serverId: String, eventType: String, subjectType: String, subjectId: String, provenanceJSON: String) {
+    func recordServerMemberEvent(serverId: String, eventType: String, subjectType: String, subjectId: String, provenanceJSON: String) {
         serverMemberEvents.append(ServerMemberEvent(
             serverId: serverId, eventType: eventType, subjectType: subjectType,
             subjectId: subjectId, provenanceJSON: provenanceJSON, deliveryQueued: true
@@ -7775,7 +7775,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         mutateMessageReaction(messageId: messageId, body: body, authorization: authorization, serverId: serverId, remove: true)
     }
 
-    private func mutateMessageReaction(messageId: String, body: String, authorization: String?, serverId: String?, remove: Bool) -> HTTPReply {
+    func mutateMessageReaction(messageId: String, body: String, authorization: String?, serverId: String?, remove: Bool) -> HTTPReply {
         let userId: String
         switch authorize(authorization) {
         case .rejected:
@@ -8069,7 +8069,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"discussion\":\(discussion),\"discussionVersion\":\(currentVersion),\"actors\":[\(actorJSON)],\"nextCursor\":\(cursorJSON)}")
     }
 
-    private func writeAgentReactionLocked(message: StoredHumanMessage, agentId: String, emoji: String, serverId: String, remove: Bool) -> String {
+    func writeAgentReactionLocked(message: StoredHumanMessage, agentId: String, emoji: String, serverId: String, remove: Bool) -> String {
         let changed: Bool
         if remove {
             let before = messageReactions.count
@@ -8087,13 +8087,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return finishReactionLocked(message: message, actorId: agentId, serverId: serverId)
     }
 
-    private func noteDiscussionChangeLocked(messageId: String, emoji: String) {
+    func noteDiscussionChangeLocked(messageId: String, emoji: String) {
         let key = "\(messageId)\n\(emoji)"
         reactionDiscussionVersions[key] = (reactionDiscussionVersions[key] ?? 0) + 1
     }
 
     /// On #all, a member of a hidden human directory sees only themself. Agents stay visible. Owners are not hidden.
-    private func reactionActorVisibilityLocked(channelId: String, requesterId: String) -> (humans: Set<String>, agents: Set<String>, hash: String) {
+    func reactionActorVisibilityLocked(channelId: String, requesterId: String) -> (humans: Set<String>, agents: Set<String>, hash: String) {
         guard let channel = postableChannels[channelId] else { return ([], [], "") }
         let requesterRole = serverMemberRoles["\(channel.serverId)\n\(requesterId)"]
             ?? oauth.memberRole(serverId: channel.serverId, userId: requesterId)
@@ -8110,7 +8110,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return (humans, agents, hash)
     }
 
-    private func finishReactionLocked(message: StoredHumanMessage, actorId: String, serverId: String?, viewerJSON: String? = nil) -> String {
+    func finishReactionLocked(message: StoredHumanMessage, actorId: String, serverId: String?, viewerJSON: String? = nil) -> String {
         let reactions = reactionJSONLocked(messageId: message.id)
         let senderName = accounts.values.first { $0.id == message.senderId }?.name ?? "Unknown user"
         let httpMetadata = forwardedBundleJSONLocked(messageId: message.id, userId: actorId, serverId: serverId, scrub: false)
@@ -8134,7 +8134,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return bodyJSON
     }
 
-    private func emitRealtime(_ room: String, _ event: String, _ payload: String?) {
+    func emitRealtime(_ room: String, _ event: String, _ payload: String?) {
         realtimeEmitterLock.lock()
         let emitter = realtimeEmitterStorage
         realtimeEmitterLock.unlock()
@@ -8142,7 +8142,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// The HTTP body keeps a forwarded source the viewer can read. The channel broadcast always strips it.
-    private func forwardedBundleJSONLocked(messageId: String, userId: String, serverId: String?, scrub: Bool) -> String? {
+    func forwardedBundleJSONLocked(messageId: String, userId: String, serverId: String?, scrub: Bool) -> String? {
         guard let items = forwardedBundles[messageId], !items.isEmpty else { return nil }
         let rendered = items.map { item -> String in
             let readable = !scrub && viewerCanReadForwardedSourceLocked(item, userId: userId, serverId: serverId)
@@ -8155,7 +8155,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return "{\"kind\":\"forwarded-bundle\",\"forwardedItems\":[\(rendered)]}"
     }
 
-    private func viewerCanReadForwardedSourceLocked(_ item: ForwardedSource, userId: String, serverId: String?) -> Bool {
+    func viewerCanReadForwardedSourceLocked(_ item: ForwardedSource, userId: String, serverId: String?) -> Bool {
         guard item.sourceServerId == serverId,
               let channel = postableChannels[item.sourceTargetId],
               channel.serverId == serverId
@@ -8171,7 +8171,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// A short id counts only messages this user can see. Hidden private rows with the same prefix stay out of the match.
     /// A joint guest resolves the canonical message through that server's local projection.
-    private func resolveReactionTargetLocked(messageId: String, userId: String, serverId: String?) -> ReactionTarget {
+    func resolveReactionTargetLocked(messageId: String, userId: String, serverId: String?) -> ReactionTarget {
         if MessageContext.isShortId(messageId) {
             let matches = humanMessageRows.filter {
                 Self.messageIdHasShortPrefix($0.id, prefix: messageId) && reactionMessageVisibleLocked($0, userId: userId, serverId: serverId)
@@ -8198,7 +8198,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return .missing
     }
 
-    private func jointLocalChannelIdLocked(canonicalChannelId: String, serverId: String?, userId: String) -> String? {
+    func jointLocalChannelIdLocked(canonicalChannelId: String, serverId: String?, userId: String) -> String? {
         guard let serverId else { return nil }
         return jointProjections.first { link in
             link.canonicalChannelId == canonicalChannelId
@@ -8208,7 +8208,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// Members of every local projection of one joint channel. Nil when this channel is not joint.
-    private func jointRosterLocked(channelId: String) -> Set<String>? {
+    func jointRosterLocked(channelId: String) -> Set<String>? {
         let canonical = jointProjections.first { $0.localChannelId == channelId }?.canonicalChannelId
             ?? (jointProjections.contains { $0.canonicalChannelId == channelId } ? channelId : nil)
         guard let canonical else { return nil }
@@ -8221,7 +8221,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// Public channels are visible to any authenticated user on the server. Private, DM, and thread rows require membership.
     /// A deleted channel is not visible, so the reaction route answers 404 before the archive check.
-    private func reactionMessageVisibleLocked(_ message: StoredHumanMessage, userId: String, serverId: String?) -> Bool {
+    func reactionMessageVisibleLocked(_ message: StoredHumanMessage, userId: String, serverId: String?) -> Bool {
         guard let channel = postableChannels[message.channelId],
               channel.serverId == serverId,
               channel.deletedAt == nil
@@ -8231,7 +8231,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// The caller's own emojis, ordered by UTF-16 code units, plus the version that advances only when a row changes.
-    private func reactionViewerJSONLocked(messageId: String, userId: String, serverId: String) -> String {
+    func reactionViewerJSONLocked(messageId: String, userId: String, serverId: String) -> String {
         let version = reactionViewerVersions["\(messageId)\n\(userId)"] ?? 0
         let emojis = messageReactions
             .filter { $0.messageId == messageId && $0.reactorType == "user" && $0.reactorId == userId }
@@ -8246,7 +8246,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// Node `parseReactionEmoji`: a trimmed string, at most 16 UTF-16 code units, with no whitespace.
 
-    private func reactionJSONLocked(messageId: String) -> String {
+    func reactionJSONLocked(messageId: String) -> String {
         var order: [String] = []
         var buckets: [String: (ids: [String], names: [String])] = [:]
         for row in messageReactions where row.messageId == messageId {
@@ -8285,7 +8285,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// Appends one message row and stamps its server-wide sequence.
     @discardableResult
-    private func appendHumanMessageLocked(_ message: StoredHumanMessage, seq explicitSeq: Int? = nil) -> Int {
+    func appendHumanMessageLocked(_ message: StoredHumanMessage, seq explicitSeq: Int? = nil) -> Int {
         var stored = message
         stored.seq = explicitSeq ?? (humanMessageRows.count + 1)
         humanMessageRows.append(stored)
@@ -8305,7 +8305,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return stored.seq
     }
 
-    private func storeHumanMessage(channelId: String, senderId: String, content: String, randomId: String?, attachmentIds: [String], senderTimezone: String? = nil, mentions: [MentionInput] = []) -> (reply: HTTPReply, created: Bool) {
+    func storeHumanMessage(channelId: String, senderId: String, content: String, randomId: String?, attachmentIds: [String], senderTimezone: String? = nil, mentions: [MentionInput] = []) -> (reply: HTTPReply, created: Bool) {
         lock.lock()
         if let randomId, let existing = humanMessageRows.first(where: { $0.senderId == senderId && $0.randomId == randomId }) {
             if existing.channelId != channelId {
@@ -8377,7 +8377,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// Replay accepts only the stored ids, positions, and uploader. It does not write.
-    private func attachmentOrderMatches(message: StoredHumanMessage, attachmentIds: [String], uploaderId: String) -> Bool {
+    func attachmentOrderMatches(message: StoredHumanMessage, attachmentIds: [String], uploaderId: String) -> Bool {
         guard message.attachmentIds.count == attachmentIds.count else { return false }
         for (index, id) in attachmentIds.enumerated() {
             guard message.attachmentIds[index] == id,
@@ -8414,7 +8414,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         ))
     }
 
-    private func identitiesJSONLocked(userId: String) -> (identities: String, passwordConfigured: Bool) {
+    func identitiesJSONLocked(userId: String) -> (identities: String, passwordConfigured: Bool) {
         let rows = authProfileStore.identities(userId: userId).map { row in
             "{\"provider\":\(jsonString(row.provider)),\"providerEmail\":\(jsonString(row.providerEmail))}"
         }.joined(separator: ",")
@@ -8528,7 +8528,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
-    private static let appLoginReturnUris: Set<String> = [
+    static let appLoginReturnUris: Set<String> = [
         "raft://login/callback",
         "raft-debug://login/callback",
     ]
@@ -8572,12 +8572,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(201, "{\"requestId\":\(jsonString(requestId)),\"loginUrl\":\(jsonString(loginUrl)),\"expiresAt\":\(jsonString(Self.iso8601(expiresAt)))}")
     }
 
-    private func appLoginActor(_ authorization: String?) -> String? {
+    func appLoginActor(_ authorization: String?) -> String? {
         if case .user(let id) = authorize(authorization) { return id }
         return nil
     }
 
-    private func appLoginRequestLocked(_ requestId: String) -> AppLoginRequest? {
+    func appLoginRequestLocked(_ requestId: String) -> AppLoginRequest? {
         appLoginRequests[requestId]
     }
 
@@ -8692,7 +8692,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func authenticate(_ request: Request) -> HTTPReply {
+    func authenticate(_ request: Request) -> HTTPReply {
         let email = Self.normalize(request.email)
         lock.lock()
         var pendingLink: PendingSocialLink?
@@ -9004,12 +9004,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
 
-    private func deviceSurfaceDisabled() -> HTTPReply? {
+    func deviceSurfaceDisabled() -> HTTPReply? {
         if Self.deviceLoginEnabled(deviceLoginGate) { return nil }
         return Self.json(404, "{\"error\":\"Device login is not enabled\",\"code\":\"device_login_disabled\"}")
     }
 
-    private func deviceVerification(userCode: String) -> (uri: String, complete: String)? {
+    func deviceVerification(userCode: String) -> (uri: String, complete: String)? {
         let trimmed = appURL.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return nil }
         let base = trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
@@ -9019,7 +9019,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return (uri, "\(uri)?user_code=\(encoded)")
     }
 
-    private func makeUserCode() -> String {
+    func makeUserCode() -> String {
         let alphabet = Array("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
         var chars = ""
         for _ in 0..<8 {
@@ -9032,7 +9032,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
     /// Opens one session family. The caller already holds `lock`.
-    private func openSessionLocked(userId: String) -> (accessToken: String, refreshToken: String) {
+    func openSessionLocked(userId: String) -> (accessToken: String, refreshToken: String) {
         let familyId = UUID().uuidString.lowercased()
         sessionFamilies[familyId] = SessionFamily(userId: userId, revokedAt: nil)
         let accessToken = Self.token()
@@ -9044,7 +9044,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// Retirement auth keeps the access token after the account is retired. A missing bearer is the invalid-token body.
-    private func retirementActor(_ authorization: String?) -> String? {
+    func retirementActor(_ authorization: String?) -> String? {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
         let token = String(authorization.dropFirst("Bearer ".count))
         lock.lock()
@@ -9058,7 +9058,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
 
-    private func refreshLocked(refreshToken: String, attemptId: String?, installationId: String?) -> RefreshOutcome {
+    func refreshLocked(refreshToken: String, attemptId: String?, installationId: String?) -> RefreshOutcome {
         if let attemptId, let installationId {
             return durableRefreshLocked(refreshToken: refreshToken, attemptId: attemptId, installationId: installationId)
         }
@@ -9075,7 +9075,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return .rotated(IssuedRefresh(accessToken: accessToken, userId: live.userId), successor)
     }
 
-    private func durableRefreshLocked(refreshToken: String, attemptId: String, installationId: String) -> RefreshOutcome {
+    func durableRefreshLocked(refreshToken: String, attemptId: String, installationId: String) -> RefreshOutcome {
         let hash = Self.sha256(refreshToken)
         if let live = sessions.removeValue(forKey: refreshToken) {
             if revokedFamilies.contains(live.familyId) {
@@ -9109,8 +9109,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
 
-    private static let socialProviders: Set<String> = ["google", "github", "apple"]
-    private static let defaultMobileReturnURIs: Set<String> = [
+    static let socialProviders: Set<String> = ["google", "github", "apple"]
+    static let defaultMobileReturnURIs: Set<String> = [
         "raft://oauth/callback",
         "raft-alpha://oauth/callback",
         "raft-beta://oauth/callback",
@@ -9119,7 +9119,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     ]
 
     /// Primary env wins when it parses to at least one URI. Otherwise the legacy list replaces the defaults. An empty parse falls through.
-    private func configuredMobileReturnURIs() -> Set<String> {
+    func configuredMobileReturnURIs() -> Set<String> {
         let primary = Self.parseConfiguredMobileReturnURIs(mobileOAuthReturnURI)
         if !primary.isEmpty { return primary }
         let legacy = Self.parseConfiguredMobileReturnURIs(mobileOAuthAllowedReturnURIs)
@@ -9164,7 +9164,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func guestCanSeeScopeLocked(_ scopeId: String) -> Bool {
+    func guestCanSeeScopeLocked(_ scopeId: String) -> Bool {
         if postableChannels[scopeId]?.kind == "thread",
            let parentId = postableChannels[scopeId]?.parentChannelId {
             return guestVisibleChannels[parentId] ?? true
@@ -9426,7 +9426,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// Visibility projection for callers that already hold the directory lock.
-    private func visibleAttachmentUnlocked(userId: String, serverId: String?, attachment: ChannelAttachment) -> Bool {
+    func visibleAttachmentUnlocked(userId: String, serverId: String?, attachment: ChannelAttachment) -> Bool {
         let effectiveChannelId = attachment.messageId.flatMap { messageId in
             humanMessageRows.first { $0.id == messageId }?.channelId
         } ?? attachment.channelId
@@ -9439,7 +9439,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return oauth.memberRole(serverId: serverId, userId: userId) != nil
     }
 
-    private func visibleAttachment(userId: String, serverId: String?, attachment: ChannelAttachment) -> Bool {
+    func visibleAttachment(userId: String, serverId: String?, attachment: ChannelAttachment) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         // A linked attachment follows its message into a joint canonical
@@ -9478,7 +9478,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// A probe on a channel the caller cannot currently read. Missing and
     /// hidden answer the same way; receiver-owned residue is acknowledged
     /// with a distinct 403 so the caller can clear Activity.
-    private func channelProbeAccessLocked(channelId: String, serverId: String, userId: String) -> ChannelProbeAccess {
+    func channelProbeAccessLocked(channelId: String, serverId: String, userId: String) -> ChannelProbeAccess {
         guard let channel = postableChannels[channelId], channel.serverId == serverId else { return .hidden }
         if channel.kind == "channel"
             || channel.memberIds.contains(userId)
@@ -9764,17 +9764,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
 
-    private static let rejected = json(401, "{\"code\":\"AUTH_INVALID_CREDENTIALS\",\"error\":\"Invalid email or password\"}")
-    private static let missingAuthorization = json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
-    private static let invalidToken = json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
-    private static let wrongPassword = json(401, "{\"code\":\"AUTH_CURRENT_PASSWORD_INCORRECT\",\"error\":\"Current password is incorrect\"}")
-    private static let linkAuthRequired = json(401, "{\"code\":\"auth_required\",\"error\":\"Authentication is required to link an account\"}")
-    private static let linkMismatch = json(403, "{\"code\":\"link_user_mismatch\",\"error\":\"Social auth link does not match the authenticated user\"}")
-    private static let mobileLinkMismatch = json(403, "{\"code\":\"link_user_mismatch\",\"error\":\"Mobile OAuth link request does not match the authenticated user\"}")
-    private static let legalObject = "{\"termsVersion\":\"\(termsVersion)\",\"privacyVersion\":\"\(privacyVersion)\",\"termsUrl\":\"\(termsURL)\",\"privacyUrl\":\"\(privacyURL)\"}"
-    private static let legalRequired = json(422, "{\"error\":\"LEGAL_ACCEPTANCE_REQUIRED\",\"legal\":\(legalObject)}")
-    private static let returnURINotAllowed = json(400, "{\"code\":\"return_uri_not_allowed\",\"error\":\"Mobile OAuth return URI is not allowed\"}")
-    private static let termsChanged = json(409, "{\"error\":\"TERMS_CHANGED\",\"legal\":\(legalObject)}")
+    static let rejected = json(401, "{\"code\":\"AUTH_INVALID_CREDENTIALS\",\"error\":\"Invalid email or password\"}")
+    static let missingAuthorization = json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+    static let invalidToken = json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+    static let wrongPassword = json(401, "{\"code\":\"AUTH_CURRENT_PASSWORD_INCORRECT\",\"error\":\"Current password is incorrect\"}")
+    static let linkAuthRequired = json(401, "{\"code\":\"auth_required\",\"error\":\"Authentication is required to link an account\"}")
+    static let linkMismatch = json(403, "{\"code\":\"link_user_mismatch\",\"error\":\"Social auth link does not match the authenticated user\"}")
+    static let mobileLinkMismatch = json(403, "{\"code\":\"link_user_mismatch\",\"error\":\"Mobile OAuth link request does not match the authenticated user\"}")
+    static let legalObject = "{\"termsVersion\":\"\(termsVersion)\",\"privacyVersion\":\"\(privacyVersion)\",\"termsUrl\":\"\(termsURL)\",\"privacyUrl\":\"\(privacyURL)\"}"
+    static let legalRequired = json(422, "{\"error\":\"LEGAL_ACCEPTANCE_REQUIRED\",\"legal\":\(legalObject)}")
+    static let returnURINotAllowed = json(400, "{\"code\":\"return_uri_not_allowed\",\"error\":\"Mobile OAuth return URI is not allowed\"}")
+    static let termsChanged = json(409, "{\"error\":\"TERMS_CHANGED\",\"legal\":\(legalObject)}")
 
 
     /// The user id behind a live access token. A missing or unknown bearer is nil.
@@ -9930,7 +9930,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
 
-    private func agentAuthority(_ authorization: String?, agentId: String) -> AgentAuthority {
+    func agentAuthority(_ authorization: String?, agentId: String) -> AgentAuthority {
         guard let userId = sessionUserId(authorization: authorization) else {
             return .denied(Self.json(401, "{\"error\":\"Unauthorized\"}"))
         }
@@ -9946,7 +9946,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return .denied(Self.json(403, "{\"error\":\"Forbidden\"}"))
     }
 
-    private static let deprecatedAgentRuntimes: Set<String> = ["kimi", "gemini", "antigravity", "copilot"]
+    static let deprecatedAgentRuntimes: Set<String> = ["kimi", "gemini", "antigravity", "copilot"]
 
     /// The upstream server capability matrix for the two lifecycle verbs this
     /// file answers: members hold `controlAgentRuntime`, only owner/admin hold
@@ -9955,7 +9955,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// Resolve the caller against a live agent of `serverId`, or the exact
     /// refusal the upstream route answers before it touches runtime state.
-    private func agentLifecycleActor(
+    func agentLifecycleActor(
         _ authorization: String?,
         agentId: String,
         serverId: String,
@@ -9986,10 +9986,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// whether a hosted provider is usable for this server; the answer never
     /// exposes the deployment token or the provider base URL.
 
-    private var attachedComputers: [String: AttachedComputer] = [:]
-    private var computerAttachEnabledOverride: Bool?
-    private var scopeAttestationSecretOverride: String??
-    private var deploymentEnvironmentOverride: String??
+    var attachedComputers: [String: AttachedComputer] = [:]
+    var computerAttachEnabledOverride: Bool?
+    var scopeAttestationSecretOverride: String??
+    var deploymentEnvironmentOverride: String??
 
     public func setScopeAttestationSecretForTesting(_ secret: String?) {
         lock.lock()
@@ -10009,7 +10009,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func computerAttachEnabled() -> Bool {
+    func computerAttachEnabled() -> Bool {
         lock.lock()
         let override = computerAttachEnabledOverride
         lock.unlock()
@@ -10547,7 +10547,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return agentCredentials.count
     }
 
-    private func recordAgentCredentialUse(token: String) {
+    func recordAgentCredentialUse(token: String) {
         let now = Date()
         lock.lock()
         guard var credential = agentCredentials[token], credential.revokedAt == nil else {
@@ -10893,7 +10893,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// The assistant link is live only while the flag is on and the owner is
     /// still a member of the agent's Server.
-    private func assistantOwnerFor(agentId: String, serverId: String) -> String? {
+    func assistantOwnerFor(agentId: String, serverId: String) -> String? {
         lock.lock()
         let owner = assistantOwners[agentId]
         lock.unlock()
@@ -10902,13 +10902,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return owner
     }
 
-    private func assistantOwnerRaw(_ agentId: String) -> String? {
+    func assistantOwnerRaw(_ agentId: String) -> String? {
         lock.lock()
         defer { lock.unlock() }
         return assistantOwners[agentId]
     }
 
-    private func assistantIsInRegularChannel(serverId: String, agentId: String) -> Bool {
+    func assistantIsInRegularChannel(serverId: String, agentId: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         for (id, channel) in postableChannels {
@@ -10974,11 +10974,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"assistantOf\":{\"userId\":\(jsonString(userId))}}")
     }
 
-    private func assistantReadRefusal() -> HTTPReply {
+    func assistantReadRefusal() -> HTTPReply {
         Self.json(403, "{\"code\":\"assistant_not_enabled\",\"error\":\"Assistant ownership is not enabled for this agent\"}")
     }
 
-    private func assistantReadOwner(_ authorization: String?) -> (agentId: String, serverId: String, ownerId: String)? {
+    func assistantReadOwner(_ authorization: String?) -> (agentId: String, serverId: String, ownerId: String)? {
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted,
               let owner = assistantOwnerFor(agentId: agent.id, serverId: agent.serverId)
@@ -10986,7 +10986,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return (agent.id, agent.serverId, owner)
     }
 
-    private func ownerCanSeeChannelLocked(ownerId: String, channel: PostableChannel) -> Bool {
+    func ownerCanSeeChannelLocked(ownerId: String, channel: PostableChannel) -> Bool {
         if channel.kind == "channel" || channel.kind == "joint" { return true }
         return channel.memberIds.contains(ownerId)
     }
@@ -11205,7 +11205,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"migration\":null}")
     }
 
-    private func machineMigrationStatusJSON(_ migration: MachineMigrationRecord) -> String {
+    func machineMigrationStatusJSON(_ migration: MachineMigrationRecord) -> String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         func timestamp(_ date: Date?) -> String {
@@ -11343,7 +11343,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func hostedProviderConfigured() -> Bool {
+    func hostedProviderConfigured() -> Bool {
         lock.lock()
         let override = hostedProviderTokenOverride
         lock.unlock()
@@ -11353,7 +11353,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private func hostedProviderAvailable(serverId: String) -> Bool {
+    func hostedProviderAvailable(serverId: String) -> Bool {
         lock.lock()
         let flagged = hostedRuntimeServers.contains(serverId)
         lock.unlock()
@@ -11467,11 +11467,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func migrationError(_ status: Int, _ code: String, _ message: String) -> HTTPReply {
+    func migrationError(_ status: Int, _ code: String, _ message: String) -> HTTPReply {
         Self.json(status, "{\"error\":\(jsonString(message)),\"code\":\(jsonString(code)),\"details\":{\"failureReason\":\(jsonString(code))}}")
     }
 
-    private func migrationStatusJSON(_ migration: HostedMigrationRecord) -> String {
+    func migrationStatusJSON(_ migration: HostedMigrationRecord) -> String {
         let source = migration.sourceMachineId.map(jsonString) ?? "null"
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -11482,14 +11482,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return "{\"migrationRef\":\(jsonString(migration.supportRef)),\"agentId\":\(jsonString(migration.agentId)),\"state\":\(jsonString(migration.state)),\"revision\":\(migration.revision),\"sourceMachineId\":\(source),\"targetKind\":\"hosted\",\"targetMachineId\":null,\"provider\":\"antiproton\",\"failureReason\":null,\"abortReason\":null,\"transportErrorCode\":null,\"transportErrorMessage\":null,\"readyAt\":null,\"flippedAt\":null,\"arrivedAt\":null,\"completedAt\":null,\"abortedAt\":null,\"canceledAt\":\(canceledAt),\"cancelReason\":\(cancelReason),\"cancelNeedsAttention\":false,\"cancelDispatchAttempts\":\(migration.cancelDispatchAttempts),\"cancelLastDispatchAt\":\(cancelLastDispatchAt),\"cancelErrorCode\":\(cancelErrorCode),\"cancelErrorMessage\":null}"
     }
 
-    private func migrationUpdatedJSON(_ migration: HostedMigrationRecord) -> String {
+    func migrationUpdatedJSON(_ migration: HostedMigrationRecord) -> String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let now = jsonString(formatter.string(from: Date()))
         return "{\"agentId\":\(jsonString(migration.agentId)),\"migrationRef\":\(jsonString(migration.supportRef)),\"state\":\(jsonString(migration.state)),\"revision\":\(migration.revision),\"authority\":\"source\",\"disposition\":null,\"needsAttention\":false,\"dispatchAttempts\":0,\"attentionDeadlineAt\":null,\"sourceAcknowledgedAt\":null,\"targetAcknowledgedAt\":null,\"targetOutcome\":null,\"canceledAt\":null,\"updatedAt\":\(now)}"
     }
 
-    private func migrationUpdatedJSON(_ migration: MachineMigrationRecord) -> String {
+    func migrationUpdatedJSON(_ migration: MachineMigrationRecord) -> String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let now = jsonString(formatter.string(from: Date()))
@@ -11615,7 +11615,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// Hides where a turn came from when the viewer cannot see the source
     /// channel or DM. The trigger's own text must not survive the projection.
-    private func redactedAgentTurnSummaries(_ json: String, userId: String) -> String {
+    func redactedAgentTurnSummaries(_ json: String, userId: String) -> String {
         guard var object = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any],
               var summaries = object["summaries"] as? [[String: Any]]
         else { return json }
@@ -11645,7 +11645,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.serializeJSON(object) ?? json
     }
 
-    private func agentSurfaceFailureReply(_ result: AgentSurfaceResult, action: String) -> HTTPReply? {
+    func agentSurfaceFailureReply(_ result: AgentSurfaceResult, action: String) -> HTTPReply? {
         switch result {
         case .ok:
             return nil
@@ -11748,7 +11748,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"agentId\":\(jsonString(agentId)),\"mode\":\"default\",\"scopes\":[\("\(grants.map { jsonString($0) }.joined(separator: ","))")],\"revision\":0}")
     }
 
-    private func agentWorkspaceAuthority(
+    func agentWorkspaceAuthority(
         authorization: String?,
         serverId: String,
         agentId: String
@@ -11859,7 +11859,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"archive\":\(archiveViewJSON(updated, agentId: agentId))}")
     }
 
-    private func archiveViewJSON(_ record: AgentArchiveRecord, agentId: String) -> String {
+    func archiveViewJSON(_ record: AgentArchiveRecord, agentId: String) -> String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         lock.lock()
@@ -12077,7 +12077,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(202, "{\"ok\":true,\"status\":\"accepted\"}")
     }
 
-    private func startMachineMigration(
+    func startMachineMigration(
         info: OAuthLedger.AgentManagementInfo,
         userId: String,
         serverId: String,
@@ -12333,7 +12333,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true,\"state\":\"transfer_complete\"}")
     }
 
-    private func computerMachineId(_ authorization: String?) -> String? {
+    func computerMachineId(_ authorization: String?) -> String? {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
         let key = String(authorization.dropFirst("Bearer ".count))
         lock.lock()
@@ -12343,7 +12343,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// Terminal migration failure codes a Computer may report over
     /// `transport-lost`; anything else collapses to the generic reason.
-    private static let migrationTerminalFailureCodes: Set<String> = [
+    static let migrationTerminalFailureCodes: Set<String> = [
         "MIGRATION_TRANSPORT_LOST",
         "MIGRATION_OBJECT_STORE_BUNDLE_TOO_LARGE",
         "MIGRATION_OBJECT_STORE_MANIFEST_TOO_LARGE",
@@ -12358,17 +12358,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         "MIGRATION_CONTROL_MANIFEST_INVALID",
         "MIGRATION_CONTROL_MANIFEST_TOO_LARGE",
     ]
-    private static let migrationSourceArchiveMaxAttempts = 12
-    private static let migrationSourceArchiveMovedCodes: Set<String> = [
+    static let migrationSourceArchiveMaxAttempts = 12
+    static let migrationSourceArchiveMovedCodes: Set<String> = [
         "MIGRATION_WORKSPACE_ARCHIVE_AGENT_RUNNING",
         "MIGRATION_WORKSPACE_ARCHIVE_NEWER_OWNER",
     ]
     /// A `starting` row is observed, not re-dispatched, inside this window.
-    private static let migrationAutoStartLease: TimeInterval = 30
+    static let migrationAutoStartLease: TimeInterval = 30
 
 
 
-    private func migrationTargetViewJSON(_ record: MachineMigrationRecord, targetMachineId: String) -> String {
+    func migrationTargetViewJSON(_ record: MachineMigrationRecord, targetMachineId: String) -> String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         func timestamp(_ date: Date?) -> String {
@@ -12382,15 +12382,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return "{\"migrationRef\":\(jsonString(record.supportRef)),\"agentId\":\(jsonString(record.agentId)),\"state\":\(jsonString(record.state)),\"migrationGeneration\":\(jsonString(record.transportGeneration)),\"sourceMachineId\":\(jsonString(record.sourceMachineId)),\"targetMachineId\":\(jsonString(targetMachineId)),\"canDriveTargetImport\":true,\"failureReason\":\(failureReason),\"transportErrorCode\":\(transportErrorCode),\"transportErrorMessage\":\(transportErrorMessage),\"autoStartFailureStage\":\(autoStartFailureStage),\"autoStartFailureCode\":\(autoStartFailureCode),\"completedAt\":\(timestamp(record.completedAt))}"
     }
 
-    private func migrationTargetReply(_ record: MachineMigrationRecord) -> HTTPReply {
+    func migrationTargetReply(_ record: MachineMigrationRecord) -> HTTPReply {
         Self.json(200, "{\"ok\":true,\"migration\":\(migrationTargetViewJSON(record, targetMachineId: record.targetMachineId))}")
     }
 
-    private func isAgentHeldByTarget(_ record: MachineMigrationRecord) -> Bool {
+    func isAgentHeldByTarget(_ record: MachineMigrationRecord) -> Bool {
         agentMachineIds[record.agentId] == record.targetMachineId
     }
 
-    private func migrationGeneration(from body: String) -> String? {
+    func migrationGeneration(from body: String) -> String? {
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
               let generation = object["migrationGeneration"] as? String, !generation.isEmpty
         else { return nil }
@@ -12489,7 +12489,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// Record a failed source-archive attempt. Deliberately does not bump
     /// `revision`: source cleanup is independent of the transfer state machine.
-    private func recordSourceArchiveFailure(migrationRef: String, code rawCode: String) {
+    func recordSourceArchiveFailure(migrationRef: String, code rawCode: String) {
         let code = rawCode.range(of: "^[A-Za-z0-9_:.-]{1,160}$", options: .regularExpression) != nil
             ? rawCode
             : "MIGRATION_SOURCE_WORKSPACE_ARCHIVE_FAILED"
@@ -12512,7 +12512,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         machineMigrations[migrationRef] = record
     }
 
-    private func recordAutoStartFailure(migrationRef: String, stage: String, code: String) -> HTTPReply {
+    func recordAutoStartFailure(migrationRef: String, stage: String, code: String) -> HTTPReply {
         lock.lock()
         guard var record = machineMigrations[migrationRef] else {
             lock.unlock()
@@ -12538,7 +12538,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Phase 1 of the arrival callback: cheap validity check plus the input the
     /// source archive dispatch needs. The callback is idempotent once the
     /// authoritative archive is recorded and the target holds the agent.
-    private func migrationArrivalContext(
+    func migrationArrivalContext(
         machineId: String,
         migrationRef: String,
         generation: String
@@ -12571,7 +12571,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         ))
     }
 
-    private func recordMigrationArchiveConfirmed(migrationRef: String) {
+    func recordMigrationArchiveConfirmed(migrationRef: String) {
         lock.lock()
         defer { lock.unlock() }
         guard var current = machineMigrations[migrationRef], current.sourceWorkspaceArchivedAt == nil else { return }
@@ -12584,7 +12584,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Phase 3: transition `arriving` to `starting`, or observe/reclaim an
     /// already-starting row so a replayed arrival callback is not a second
     /// transition.
-    private func migrationArrivalTransition(
+    func migrationArrivalTransition(
         machineId: String,
         migrationRef: String,
         generation: String,
@@ -12645,7 +12645,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// Phase 4: completion means the agent runs on the target. Source cleanup is
     /// tracked separately and never gates this transition.
-    private func completeMigrationAutoStart(migrationRef: String) -> HTTPReply {
+    func completeMigrationAutoStart(migrationRef: String) -> HTTPReply {
         lock.lock()
         guard var completed = machineMigrations[migrationRef] else {
             lock.unlock()
@@ -12939,7 +12939,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true,\"advanced\":true,\"prepDeadlineAt\":\(deadline)}")
     }
 
-    private func startHostedMigration(
+    func startHostedMigration(
         info: OAuthLedger.AgentManagementInfo,
         userId: String,
         serverId: String,
@@ -13204,7 +13204,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
 
-    private func onboardingAdoptionState(
+    func onboardingAdoptionState(
         serverId: String,
         agentId: String
     ) -> (agent: OAuthLedger.AgentRuntimeInfo, role: String, changes: [OnboardingAdoptionChange])? {
@@ -13231,7 +13231,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return (agent, role, changes)
     }
 
-    private func onboardingAdoptionJSON(
+    func onboardingAdoptionJSON(
         canAdopt: Bool,
         changes: [OnboardingAdoptionChange],
         appliedChanges: [OnboardingAdoptionChange]? = nil,
@@ -13573,7 +13573,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// owner/admin/creator authority, an existing hosted runtime, and an
     /// active provision. Returns the agent id or the reply to send.
 
-    private func hostedModelGuard(
+    func hostedModelGuard(
         authorization: String?,
         serverId: String,
         agentId: String,
@@ -13604,7 +13604,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return .allowed(agentId)
     }
 
-    private func hostedModelView(_ state: HostedModelState, picker: Bool) -> String {
+    func hostedModelView(_ state: HostedModelState, picker: Bool) -> String {
         let models = state.models.map { model in
             "{\"id\":\(jsonString(model.id)),\"label\":\(jsonString(model.label)),\"provider\":\(jsonString(model.provider))}"
         }.joined(separator: ",")
@@ -13701,7 +13701,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private static let agentConnectionProviders: Set<String> = ["github"]
+    static let agentConnectionProviders: Set<String> = ["github"]
 
     static let agentConnectionIDPattern = "^[A-Za-z0-9_.~-]{1,200}$"
 
@@ -13709,7 +13709,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
 
-    private func agentConnectionProviderCall(
+    func agentConnectionProviderCall(
         method: String,
         action: String,
         provider: String,
@@ -13727,7 +13727,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         ))
     }
 
-    private func loadAgentForConnection(
+    func loadAgentForConnection(
         authorization: String?,
         serverId: String,
         agentId: String,
@@ -13761,7 +13761,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
 
-    private func connectionMemberIdentity(serverId: String, userId: String) -> (name: String, displayName: String)? {
+    func connectionMemberIdentity(serverId: String, userId: String) -> (name: String, displayName: String)? {
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else { return nil }
         lock.lock()
         let account = accounts.values.first { $0.id == userId }
@@ -13770,14 +13770,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return (account.name, account.name)
     }
 
-    private func connectionUserJSON(serverId: String, userId: String) -> String {
+    func connectionUserJSON(serverId: String, userId: String) -> String {
         let identity = connectionMemberIdentity(serverId: serverId, userId: userId)
         let name = identity.map { jsonString($0.name) } ?? "null"
         let displayName = identity.map { jsonString($0.displayName) } ?? "null"
         return "{\"id\":\(jsonString(userId)),\"name\":\(name),\"displayName\":\(displayName)}"
     }
 
-    private func connectionStatusJSON(
+    func connectionStatusJSON(
         _ parsed: HostedConnectionStatusRecord,
         provider: String,
         serverId: String,
@@ -13811,7 +13811,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
 
-    private func redactProviderMessage(_ message: String?) -> String? {
+    func redactProviderMessage(_ message: String?) -> String? {
         guard let message else { return nil }
         var value = message
         for pattern in [
@@ -13824,7 +13824,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return value
     }
 
-    private func agentConnectionProviderFailure(_ result: AgentConnectionProviderResult, thisServer: Bool = true) -> HTTPReply {
+    func agentConnectionProviderFailure(_ result: AgentConnectionProviderResult, thisServer: Bool = true) -> HTTPReply {
         switch result {
         case .unavailable:
             return Self.json(502, "{\"error\":\"The provider could not complete the request\",\"code\":\"agent_connection_provider_error\",\"providerCode\":null,\"providerMessage\":null,\"providerStatus\":null}")
@@ -13844,7 +13844,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// A 404 from the provider may mean the connections route is missing
     /// (unsupported) or that the provider no longer knows the agent. Only the
     /// agent lookup can tell them apart.
-    private func agentConnection404Reply(
+    func agentConnection404Reply(
         provider: String,
         agentId: String,
         body: String,
@@ -13864,12 +13864,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
-    private func agentConnectionMissingReply(providerMessage: String?) -> HTTPReply {
+    func agentConnectionMissingReply(providerMessage: String?) -> HTTPReply {
         let message = redactProviderMessage(providerMessage)
         return Self.json(409, "{\"error\":\"This agent no longer exists at its provider; connections are unavailable. Recreate the agent.\",\"code\":\"agent_connection_agent_missing_at_provider\",\"providerMessage\":\(message.map(jsonString) ?? "null")}")
     }
 
-    private func agentConnectionStatus404Reply(provider: String, agentId: String) -> HTTPReply {
+    func agentConnectionStatus404Reply(provider: String, agentId: String) -> HTTPReply {
         let lookup = agentConnectionProviderCall(method: "GET", action: "agentLookup", provider: provider, agentId: agentId)
         switch lookup {
         case .response(let status, _) where (200..<300).contains(status):
@@ -13881,11 +13881,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
-    private func pendingInvalidReply(providerCode: String? = nil, message: String? = nil) -> HTTPReply {
+    func pendingInvalidReply(providerCode: String? = nil, message: String? = nil) -> HTTPReply {
         Self.json(404, "{\"error\":\"The connection link expired or is invalid; start again\",\"code\":\"agent_connection_pending_invalid\",\"providerCode\":\(providerCode.map(jsonString) ?? "null"),\"providerMessage\":\(redactProviderMessage(message).map(jsonString) ?? "null")}")
     }
 
-    private func agentConnectionStatusFailure(_ result: AgentConnectionProviderResult, provider: String, agentId: String, serverId: String, userId: String, role: String) -> HTTPReply {
+    func agentConnectionStatusFailure(_ result: AgentConnectionProviderResult, provider: String, agentId: String, serverId: String, userId: String, role: String) -> HTTPReply {
         switch result {
         case .response(let status, let body) where (200..<300).contains(status):
             guard let parsed = Self.parseConnectionStatus(body) else {
@@ -14353,17 +14353,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     static let machineAPIKeyPrefix = "sk_machine_"
     static let computerAPIKeyPrefix = "sk_computer_"
-    private static let computerAPIKeyPrefixLength = 16
+    static let computerAPIKeyPrefixLength = 16
 
 
 
 
 
-    private static let onboardingSteps: Set<String> = [
+    static let onboardingSteps: Set<String> = [
         "add-computer", "create-agent", "invite-teammates", "join-community", "notifications",
     ]
 
-    private func onboardingJSON(serverId: String, userId: String) -> String {
+    func onboardingJSON(serverId: String, userId: String) -> String {
         lock.lock()
         let server = serverOnboardingSettings[serverId] ?? (agentId: nil, greeting: true)
         let user = userOnboardingSettings["\(serverId)\n\(userId)"] ?? UserOnboarding()
@@ -14470,7 +14470,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, onboardingJSON(serverId: serverId, userId: userId))
     }
 
-    private func serverNotificationJSON(_ prefs: (muted: Bool, mentionsOnly: Bool, mode: String, version: Int)) -> String {
+    func serverNotificationJSON(_ prefs: (muted: Bool, mentionsOnly: Bool, mode: String, version: Int)) -> String {
         "{\"serverPushMuted\":\(prefs.muted),\"serverPushMentionsOnly\":\(prefs.mentionsOnly),\"serverPushMode\":\(jsonString(prefs.mode)),\"prefsVersion\":\(prefs.version)}"
     }
 
@@ -14563,7 +14563,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"machine\":\(machine),\"apiKey\":\(jsonString(apiKey))}")
     }
 
-    private static let runtimeFormSchemas: [String: String] = [
+    static let runtimeFormSchemas: [String: String] = [
         "builtin": "builtin-pi.create.v3",
         "claude": "claude.create.v1",
         "codex": "codex.create.v1",
@@ -14578,11 +14578,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     ]
 
     /// Runtimes that still publish a v1 form definition.
-    private static let runtimeFormV1Runtimes: Set<String> = ["builtin", "claude", "cursor", "kimi-sdk"]
+    static let runtimeFormV1Runtimes: Set<String> = ["builtin", "claude", "cursor", "kimi-sdk"]
 
     /// Runtimes whose released form only exists at protocol v2; v1 clients
     /// must see them as having no form at all.
-    private static let runtimeFormV2Only: Set<String> = [
+    static let runtimeFormV2Only: Set<String> = [
         "pi", "opencode", "gemini", "codex", "grok", "antigravity", "kimi",
     ]
 
@@ -14824,7 +14824,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
 
-    private func runtimeProbeResolution(machineId: String, runtimeId: String, refresh: Bool) -> RuntimeProbeResolution {
+    func runtimeProbeResolution(machineId: String, runtimeId: String, refresh: Bool) -> RuntimeProbeResolution {
         Self.resolveRuntimeModelProbe(
             machineId: machineId,
             runtimeId: runtimeId,
@@ -14841,7 +14841,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
 
-    private func builtinModelSource(protocolVersion: Int, expected: String) -> HTTPReply {
+    func builtinModelSource(protocolVersion: Int, expected: String) -> HTTPReply {
         let mode = builtinCatalogMode
         if mode == "legacy" {
             return Self.json(409, "{\"error\":\"This Computer is too old to prove which Built-in models it supports. Upgrade the Computer before selecting or starting this model.\",\"code\":\"builtin_catalog_capability_required\",\"daemonVersion\":\"1.0.17\",\"computerVersion\":\"1.0.17\",\"recovery\":\"upgrade_required\"}")
@@ -14865,7 +14865,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
-    private func liveBuiltinGroups(bundled: String) -> String {
+    func liveBuiltinGroups(bundled: String) -> String {
         lock.lock()
         let models = machines.isEmpty ? [] : Array(machineRuntimeModels.values.flatMap { $0["builtin"]?.models ?? [] })
         lock.unlock()
@@ -14874,7 +14874,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return "{\"deepseek\":[\(options)]}"
     }
 
-    private static let grokBundledModels: [RuntimeModelProbeModel] = [
+    static let grokBundledModels: [RuntimeModelProbeModel] = [
         RuntimeModelProbeModel(
             id: "grok-4.5",
             label: "Grok 4.5",
@@ -14999,13 +14999,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
-    private func canInspectRuntimeAccountUsage(serverId: String, userId: String, attacher: String?) -> Bool {
+    func canInspectRuntimeAccountUsage(serverId: String, userId: String, attacher: String?) -> Bool {
         if attacher == userId { return true }
         let role = oauth.memberRole(serverId: serverId, userId: userId)
         return role == "owner" || role == "admin"
     }
 
-    private static let runtimeAccountUsageProviders: Set<String> = ["claude", "codex", "kimi", "grok"]
+    static let runtimeAccountUsageProviders: Set<String> = ["claude", "codex", "kimi", "grok"]
 
     public func machineRuntimeOptions(authorization: String?, serverId: String, machineId: String, includeRuntimeFormV2: Bool = false) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
@@ -15246,7 +15246,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, serverSystemNotificationsBody(generatedAt: generatedAt, notifications: notifications))
     }
 
-    private func serverSystemNotificationsBody(generatedAt: Date, notifications: [String]) -> String {
+    func serverSystemNotificationsBody(generatedAt: Date, notifications: [String]) -> String {
         "{\"contractVersion\":\"server-system-notifications-v1\",\"generatedAt\":\(jsonString(Self.isoString(generatedAt))),\"snapshotMode\":\"replace\",\"clientState\":{\"read\":\"none\",\"dismiss\":\"local_by_notification_id\"},\"notifications\":[\(notifications.joined(separator: ","))]}"
     }
 
@@ -15332,7 +15332,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         systemAttentionReceipt(authorization: authorization, serverId: serverId, incidentId: incidentId, dismiss: true)
     }
 
-    private func systemAttentionReceipt(
+    func systemAttentionReceipt(
         authorization: String?,
         serverId: String,
         incidentId: String,
@@ -15368,7 +15368,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
-    private func systemAttentionBody(generatedAt: Date, notifications: [String]) -> String {
+    func systemAttentionBody(generatedAt: Date, notifications: [String]) -> String {
         let unseen = notifications.reduce(0) { count, notification in
             count + (notification.contains("\"seenAt\":null") ? 1 : 0)
         }
@@ -15596,7 +15596,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         )
     }
 
-    private func adoptLegacyComputerByRawKey(userId: String, rawKey: String, requestedName: String?) -> HTTPReply {
+    func adoptLegacyComputerByRawKey(userId: String, rawKey: String, requestedName: String?) -> HTTPReply {
         // The legacy auth middleware accepts both prefixes, so a real daemon in
         // the wild may still be running on either one.
         guard rawKey.hasPrefix("sk_machine_") || rawKey.hasPrefix("sk_daemon_") else {
@@ -15617,7 +15617,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         )
     }
 
-    private func adoptLegacyComputerByRoster(
+    func adoptLegacyComputerByRoster(
         userId: String,
         serverSlug: String,
         legacyMachineId: String,
@@ -15653,7 +15653,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         )
     }
 
-    private func adoptLegacyComputerByDaemonId(
+    func adoptLegacyComputerByDaemonId(
         userId: String,
         serverSlug: String,
         daemonId: String,
@@ -15686,7 +15686,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         )
     }
 
-    private func adoptMatchedLegacyMachine(
+    func adoptMatchedLegacyMachine(
         userId: String,
         machineId: String,
         requestedName: String?,
@@ -15847,7 +15847,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return computers.first { $0.machineId == machineId && $0.revokedAt == nil }?.apiKey
     }
 
-    private func computerCredentialValid(_ authorization: String?) -> Bool {
+    func computerCredentialValid(_ authorization: String?) -> Bool {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return false }
         let key = String(authorization.dropFirst("Bearer ".count))
         lock.lock()
@@ -15857,7 +15857,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// Resolves the Computer behind a `sk_computer_*` bearer to its attached
     /// machine. A revoked, unknown or machine-unlinked credential yields nil.
-    private func computerRunnerContext(_ authorization: String?) -> (computerId: String, serverId: String, machineId: String)? {
+    func computerRunnerContext(_ authorization: String?) -> (computerId: String, serverId: String, machineId: String)? {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
         let apiKey = String(authorization.dropFirst("Bearer ".count))
         lock.lock()
@@ -16660,7 +16660,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     public static let sharePNGData = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=") ?? Data()
 
-    private func humanUnreadCount(channelId: String, userId: String) -> Int {
+    func humanUnreadCount(channelId: String, userId: String) -> Int {
         lock.lock()
         defer { lock.unlock() }
         let rows = humanMessageRows.filter { $0.channelId == channelId }
@@ -16685,7 +16685,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.privateJSON("[\(entries)]")
     }
 
-    private static let timezoneAliases: [String: String] = [
+    static let timezoneAliases: [String: String] = [
         "US/Pacific": "America/Los_Angeles",
         "US/Eastern": "America/New_York",
         "US/Central": "America/Chicago",
@@ -16774,7 +16774,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return nil
     }
 
-    private func canMachineServeAgent(machineId: String, agent: OAuthLedger.AgentRuntimeInfo) -> Bool {
+    func canMachineServeAgent(machineId: String, agent: OAuthLedger.AgentRuntimeInfo) -> Bool {
         lock.lock()
         let bound = agentMachineIds[agent.id]
         let machineServer = machines.first { $0.id == machineId }?.serverId
@@ -16792,7 +16792,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
 
-    private static let scopeAttestationMaxChars = 16 * 1024
+    static let scopeAttestationMaxChars = 16 * 1024
 
     public func machineScopeAttestation(authorization: String?, body: String) -> HTTPReply {
         guard let machineId = machineIdForCredential(authorization: authorization) else {
@@ -17126,7 +17126,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
 
-    private func sanitizedServerOrder(userId: String, requested: [String]?) -> [String] {
+    func sanitizedServerOrder(userId: String, requested: [String]?) -> [String] {
         let memberIds = Set(oauth.serverIdsForMember(userId: userId))
         let stored = serverSwitcherOrders[userId]?.ids ?? []
         let base = requested ?? stored
@@ -17268,12 +17268,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return messageTranslationLedger[messageId]
     }
 
-    private func translationProviderName() -> String {
+    func translationProviderName() -> String {
         lock.lock(); let override = translationProviderOverride; lock.unlock()
         return override ?? (ProcessInfo.processInfo.environment["TRANSLATION_PROVIDER"] ?? "")
     }
 
-    private func translationProviderAvailableInstance() -> Bool {
+    func translationProviderAvailableInstance() -> Bool {
         lock.lock()
         let hasOverride = translationProviderOverride != nil
         lock.unlock()
@@ -18325,7 +18325,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         ).enabled
     }
 
-    private static let attachmentCommentsDisabledReply = json(403, "{\"error\":\"Attachment comments are not enabled on this server\",\"code\":\"attachment_comments_disabled\"}")
+    static let attachmentCommentsDisabledReply = json(403, "{\"error\":\"Attachment comments are not enabled on this server\",\"code\":\"attachment_comments_disabled\"}")
 
     /// `GET /api/attachments/comments/counts`. Batch chip counts; only
     /// attachments the caller can read are counted.
@@ -18411,14 +18411,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// emitted to viewers who may see the scoped comment.
     /// Attachment projection with the scoped comment count; a viewer who cannot
     /// use attachment comments always observes zero, never a hint.
-    private func messageAttachmentsJSONLocked(_ ids: [String], commentsVisible: Bool) -> String {
+    func messageAttachmentsJSONLocked(_ ids: [String], commentsVisible: Bool) -> String {
         ids.map { id -> String in
             let count = commentsVisible ? (attachmentCommentRecords[id]?.count ?? 0) : 0
             return "{\"id\":\(jsonString(id)),\"commentCount\":\(count)}"
         }.joined(separator: ",")
     }
 
-    private func commentRefJSONLocked(messageId: String) -> String? {
+    func commentRefJSONLocked(messageId: String) -> String? {
         for (attachmentId, records) in attachmentCommentRecords {
             guard let record = records.first(where: { $0.id == messageId }),
                   let hostMessageId = record.hostMessageId,
@@ -18878,7 +18878,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"messageId\":\(jsonString(message.id)),\"deliveries\":[\(deliveries)]}")
     }
 
-    private func jointLocalChannelIdForAgentLocked(canonicalChannelId: String, serverId: String, agentId: String) -> String? {
+    func jointLocalChannelIdForAgentLocked(canonicalChannelId: String, serverId: String, agentId: String) -> String? {
         jointProjections.first { link in
             link.canonicalChannelId == canonicalChannelId
                 && link.serverId == serverId
@@ -19069,7 +19069,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func seatLimitMessageLocked(serverId: String) -> String? {
+    func seatLimitMessageLocked(serverId: String) -> String? {
         guard let seats = proSeats[serverId] else { return nil }
         let used = oauth.memberIdsWithRoles(serverId: serverId).filter { $0.role != "guest" }.count
         guard used >= seats else { return nil }
@@ -19194,7 +19194,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return inviteInfoJSON(profile: profile, message: message)
     }
 
-    private func inviteInfoJSON(profile: OAuthLedger.ServerProfile, message: String?) -> HTTPReply {
+    func inviteInfoJSON(profile: OAuthLedger.ServerProfile, message: String?) -> HTTPReply {
         let messageJSON = message.map(jsonString) ?? "null"
         let hidden = hideHumansFromMembers[profile.id] == true
         let memberCount = hidden ? 0 : oauth.memberRoles(serverId: profile.id).count
@@ -19329,7 +19329,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func joinLinkJSON(_ link: JoinLinkRecord) -> String {
+    func joinLinkJSON(_ link: JoinLinkRecord) -> String {
         let expiresAt = link.expiresAt.map { jsonString(Self.isoString($0)) } ?? "null"
         let revokedAt = link.revokedAt.map { jsonString(Self.isoString($0)) } ?? "null"
         let maxUses = link.maxUses.map(String.init) ?? "null"
@@ -19444,7 +19444,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
-    private func setupProjectionJSON(serverId: String, userId: String, role: String) -> String {
+    func setupProjectionJSON(serverId: String, userId: String, role: String) -> String {
         lock.lock()
         let phase = setupPhases["\(serverId)\n\(userId)"] ?? "not_started"
         lock.unlock()
@@ -19697,7 +19697,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
 
-    private func sidebarHumanDMChannelId(peerId: String, userId: String, serverId: String) -> String? {
+    func sidebarHumanDMChannelId(peerId: String, userId: String, serverId: String) -> String? {
         oauth.channelsForServer(serverId: serverId, userId: userId, includeArchived: true)
             .first {
                 $0.type == "dm"
@@ -19707,7 +19707,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }?.id
     }
 
-    private func sidebarPinnedChannel(
+    func sidebarPinnedChannel(
         id: String,
         serverId: String,
         userId: String
@@ -20097,7 +20097,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
 
-    private func taskChannelAccess(serverId: String, channelId: String, userId: String) -> TaskChannelAccess {
+    func taskChannelAccess(serverId: String, channelId: String, userId: String) -> TaskChannelAccess {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return .missing
         }
@@ -20112,7 +20112,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
 
-    private func taskJSON(_ task: TaskRecord) -> String {
+    func taskJSON(_ task: TaskRecord) -> String {
         let assignee = task.assigneeId.map { jsonString($0) } ?? "null"
         let assigneeType = task.assigneeType.map { jsonString($0) } ?? "null"
         let claimed = task.claimedAt.map { jsonString(ISO8601DateFormatter().string(from: $0)) } ?? "null"
@@ -20120,14 +20120,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
 
-    private static let labDefinitions: [(key: String, name: String, description: String, state: String)] = [
+    static let labDefinitions: [(key: String, name: String, description: String, state: String)] = [
         ("open_lab", "Open Lab", "Available", "open"),
         ("paused_lab", "Paused Lab", "Paused", "paused"),
         ("draft_lab", "Draft Lab", "Hidden", "draft"),
         ("retired_lab", "Retired Lab", "Historical", "retired"),
     ]
 
-    private func labsJSON(serverId: String, userId: String, role: String, state: ServerLabsState) -> String {
+    func labsJSON(serverId: String, userId: String, role: String, state: ServerLabsState) -> String {
         let labs = Self.labDefinitions
             .filter { $0.state == "open" || $0.state == "paused" }
             .map { lab -> String in
@@ -20201,7 +20201,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"applied\":\(applied),\"accessEnabled\":\(state.accessEnabled),\"version\":\(state.version),\"labs\":\(labsOnlyJSON(json))}")
     }
 
-    private func labsOnlyJSON(_ labs: String) -> String {
+    func labsOnlyJSON(_ labs: String) -> String {
         guard let range = labs.range(of: "\"labs\":[") else { return "[]" }
         let suffix = labs[range.upperBound...]
         guard let end = suffix.lastIndex(of: "]") else { return "[]" }
@@ -20598,7 +20598,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, taskJSON(task))
     }
 
-    private func archivedChannelReply(_ channelId: String) -> HTTPReply? {
+    func archivedChannelReply(_ channelId: String) -> HTTPReply? {
         guard oauth.channelArchivedAt(id: channelId) != nil else { return nil }
         return Self.json(409, "{\"error\":\"This channel is archived\",\"code\":\"channel_archived\"}")
     }
@@ -20660,7 +20660,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Self-service join of a visible plain channel. Private and joint channels
     /// are invitation-only, archived channels refuse writes, and the join posts
     /// a system notice that is born-read for the joining agent.
-    private func joinPublicChannelForAgent(agentId: String, serverId: String, channelId: String) -> HTTPReply {
+    func joinPublicChannelForAgent(agentId: String, serverId: String, channelId: String) -> HTTPReply {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
@@ -20702,7 +20702,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// Self-service leave. The virtual #all audience cannot be left; a private
     /// or joint channel with no humans and no agents left is soft-deleted.
-    private func leaveChannelForAgent(agentId: String, serverId: String, channelId: String) -> HTTPReply {
+    func leaveChannelForAgent(agentId: String, serverId: String, channelId: String) -> HTTPReply {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             return Self.json(404, "{\"error\":\"Channel not found\"}")
         }
@@ -20774,7 +20774,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
-    private func agentCredentialAgent(_ authorization: String?) -> (agentId: String, scopes: [String])? {
+    func agentCredentialAgent(_ authorization: String?) -> (agentId: String, scopes: [String])? {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
         let token = String(authorization.dropFirst("Bearer ".count))
         lock.lock()
@@ -20784,14 +20784,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return (credential.agentId, Array(credential.scopes))
     }
 
-    private func agentCapabilityDenied(_ error: String) -> HTTPReply {
+    func agentCapabilityDenied(_ error: String) -> HTTPReply {
         Self.json(403, "{\"error\":\(jsonString(error)),\"code\":\"server_role_required\",\"currentRole\":\"member\",\"suggestedNextAction\":\"Ask a server owner or admin to grant the capability; your role is member.\"}")
     }
 
     /// Identity for the agent channel/server management routes: an
     /// `sk_agent_*` credential must carry the scopes, a legacy machine key uses
     /// the path agent id.
-    private func agentWriterAndRole(
+    func agentWriterAndRole(
         authorization: String?,
         legacyAgentId: String?,
         scopes: [String]
@@ -20821,7 +20821,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return nil
     }
 
-    private func agentAndRole(_ authorization: String?, scopes: [String]) -> (agent: OAuthLedger.AgentRuntimeInfo, role: String?)? {
+    func agentAndRole(_ authorization: String?, scopes: [String]) -> (agent: OAuthLedger.AgentRuntimeInfo, role: String?)? {
         lock.lock()
         let token = authorization?.hasPrefix("Bearer ") == true ? String(authorization!.dropFirst("Bearer ".count)) : ""
         let credential = agentCredentials[token]
@@ -20920,7 +20920,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name)),\"description\":\(descriptionJSON),\"type\":\(jsonString(updatedType))}")
     }
 
-    private var memberAttentionJSON: String {
+    var memberAttentionJSON: String {
         ",\"attention\":{\"stillArrives\":[\"Followed threads still notify this member unless they unfollow them.\"],\"threadBoundary\":\"Removing this member does not unfollow existing thread follows. Private channel/thread content still requires current parent access.\",\"manageCommand\":\"Use raft thread unfollow to manage thread follows.\"}"
     }
 
@@ -21249,7 +21249,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func agentCapabilityDenial(_ authorization: String?, required: String) -> HTTPReply? {
+    func agentCapabilityDenial(_ authorization: String?, required: String) -> HTTPReply? {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
         let token = String(authorization.dropFirst("Bearer ".count))
         lock.lock()
@@ -21260,7 +21260,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\",\"requiredCapability\":\(jsonString(required))}")
     }
 
-    private func agentGrantDenial(agentId: String, scope: String) -> HTTPReply? {
+    func agentGrantDenial(agentId: String, scope: String) -> HTTPReply? {
         lock.lock()
         let grants = agentGrantSets[agentId]
         lock.unlock()
@@ -21269,21 +21269,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
 
-    private func agentCredentialIdentity(authorization: String?, capability: String) -> (agentId: String, serverId: String)? {
+    func agentCredentialIdentity(authorization: String?, capability: String) -> (agentId: String, serverId: String)? {
         guard case .success(let agentId, let serverId) = feedbackLocatorIdentity(authorization: authorization, capability: capability) else {
             return nil
         }
         return (agentId, serverId)
     }
 
-    private func agentCredentialScopes(authorization: String?) -> [String]? {
+    func agentCredentialScopes(authorization: String?) -> [String]? {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
         let token = String(authorization.dropFirst("Bearer ".count))
         lock.lock(); defer { lock.unlock() }
         return agentCredentials[token].map { Array($0.scopes) }
     }
 
-    private func feedbackLocatorIdentity(
+    func feedbackLocatorIdentity(
         authorization: String?,
         capability: String
     ) -> FeedbackLocatorIdentityResult {
@@ -21306,7 +21306,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return .success(agentId: credential.agentId, serverId: agent.serverId)
     }
 
-    private func feedbackLocatorFailure(_ status: Int, _ reason: String) -> HTTPReply {
+    func feedbackLocatorFailure(_ status: Int, _ reason: String) -> HTTPReply {
         Self.json(status, "{\"status\":\"failed\",\"reason_code\":\(jsonString(reason))}")
     }
 
@@ -21506,11 +21506,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return id
     }
 
-    private func managedMCPUnavailable(_ record: ManagedMCPServerRecord) -> Bool {
+    func managedMCPUnavailable(_ record: ManagedMCPServerRecord) -> Bool {
         record.authMode == "oauth" && record.oauthStatus != "connected"
     }
 
-    private func managedMCPTools(_ record: ManagedMCPServerRecord) -> [(name: String, schemaJSON: String)] {
+    func managedMCPTools(_ record: ManagedMCPServerRecord) -> [(name: String, schemaJSON: String)] {
         guard let data = record.toolCatalogJSON.data(using: .utf8),
               let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
         else { return [] }
@@ -21588,9 +21588,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     // MARK: - Action cards (`POST /internal/agent-api/prepare-action`, `POST /api/actions/:id/execute`)
 
-    private static let appConfigSchemaJSON = "{\"enabled\":{\"type\":\"boolean\"},\"threshold_bytes\":{\"type\":\"integer\",\"minimum\":4096,\"maximum\":1073741824},\"interval_seconds\":{\"type\":\"integer\",\"minimum\":900,\"maximum\":604800}}"
+    static let appConfigSchemaJSON = "{\"enabled\":{\"type\":\"boolean\"},\"threshold_bytes\":{\"type\":\"integer\",\"minimum\":4096,\"maximum\":1073741824},\"interval_seconds\":{\"type\":\"integer\",\"minimum\":900,\"maximum\":604800}}"
 
-    private func appConfigReply(agentId: String, appId: String) -> HTTPReply? {
+    func appConfigReply(agentId: String, appId: String) -> HTTPReply? {
         guard appId == "system.cleaner" else { return nil }
         lock.lock()
         let revision = appConfigRevisions[agentId]?[appId] ?? 0
@@ -21616,11 +21616,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
 
-    private func appConfigError(_ status: Int, error: String, code: String) -> HTTPReply {
+    func appConfigError(_ status: Int, error: String, code: String) -> HTTPReply {
         Self.json(status, "{\"error\":\(jsonString(error)),\"errorCode\":\(jsonString(code))}")
     }
 
-    private func featureFlagEnabledForServer(_ key: String, serverId: String) -> Bool {
+    func featureFlagEnabledForServer(_ key: String, serverId: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         guard let flag = featureFlagRecords[key], flag.enabled, !flag.killSwitch else { return false }
@@ -21633,7 +21633,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return flag.defaultEnabled
     }
 
-    private var marketplaceReviewerOverride: Set<String>?
+    var marketplaceReviewerOverride: Set<String>?
 
     public func setMarketplaceReviewerIdsForTesting(_ ids: Set<String>?) {
         lock.lock()
@@ -21641,7 +21641,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func marketplaceReviewerIds() -> Set<String> {
+    func marketplaceReviewerIds() -> Set<String> {
         lock.lock()
         let override = marketplaceReviewerOverride
         lock.unlock()
@@ -21869,7 +21869,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
     /// Callers hold the directory lock.
-    private func resolveDMPeerLocked(serverId: String, agentId: String, name rawName: String, kind rawKind: String?) -> DMPeerResolution {
+    func resolveDMPeerLocked(serverId: String, agentId: String, name rawName: String, kind rawKind: String?) -> DMPeerResolution {
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         let kind = rawKind?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if let kind, kind != "agent", kind != "human" {
@@ -21909,7 +21909,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// Callers hold the directory lock.
-    private func dmChannelIdLocked(serverId: String, agentId: String, peerId: String) -> String? {
+    func dmChannelIdLocked(serverId: String, agentId: String, peerId: String) -> String? {
         postableChannels.first { _, channel in
             channel.serverId == serverId
                 && channel.kind == "dm"
@@ -21919,7 +21919,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }?.key
     }
 
-    private func dmPeerFailure(_ resolution: DMPeerResolution) -> HTTPReply? {
+    func dmPeerFailure(_ resolution: DMPeerResolution) -> HTTPReply? {
         switch resolution {
         case .ambiguous(let name):
             return Self.json(409, "{\"error\":\"More than one DM peer is named \(name). Address it as dm:@\(name)~agent or dm:@\(name)~human.\",\"code\":\"DM_TARGET_AMBIGUOUS\",\"suggestedNextAction\":\"Retry with dm:@\(name)~agent for the agent or dm:@\(name)~human for the human.\"}")
@@ -21940,7 +21940,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// Callers hold `lock`. The DM peer card exists only when the peer has a
     /// profile description or a timezone on their latest message.
-    private func peerCardJSONLocked(channelId: String, agentId: String) -> String? {
+    func peerCardJSONLocked(channelId: String, agentId: String) -> String? {
         guard let channel = postableChannels[channelId] else { return nil }
         let baseId: String
         if channel.kind == "dm" {
@@ -21966,7 +21966,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// Callers hold `lock`.
-    private func channelCardSnapshotLocked(channelId: String) -> AgentChannelCardSnapshot? {
+    func channelCardSnapshotLocked(channelId: String) -> AgentChannelCardSnapshot? {
         guard let channel = postableChannels[channelId], channel.kind != "dm" else { return nil }
         let cardId: String
         if channel.kind == "thread", let parentId = channel.parentChannelId {
@@ -21992,14 +21992,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func sendFreshnessModeValue() -> String {
+    func sendFreshnessModeValue() -> String {
         let configured = sendFreshnessModeOverride
             ?? ProcessInfo.processInfo.environment["SLOCK_ATTESTED_SEND_MODE"]
             ?? "on"
         return configured.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
-    private func sendFreshnessInterfaceEnabled(serverId: String, agentId: String) -> Bool {
+    func sendFreshnessInterfaceEnabled(serverId: String, agentId: String) -> Bool {
         let mode = sendFreshnessModeValue()
         switch mode {
         case "on", "force", "1", "true":
@@ -22026,7 +22026,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// The conversation identity the agent sees for the target, so held
     /// messages keep a reply target instead of being dropped by clients.
     /// Callers hold `lock`.
-    private func heldConversationIdentityLocked(channelId: String, agentId: String) -> String {
+    func heldConversationIdentityLocked(channelId: String, agentId: String) -> String {
         guard let channel = postableChannels[channelId] else {
             return "{\"channel_id\":\(jsonString(channelId)),\"channel_type\":\"channel\",\"channel_name\":\"\"}"
         }
@@ -22066,7 +22066,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// One held-context message envelope: the legacy camelCase fields plus the
     /// agent-facing snake_case identity and sender fields. Callers hold `lock`.
-    private func heldFreshnessMessageJSONLocked(
+    func heldFreshnessMessageJSONLocked(
         seq: Int,
         message: StoredHumanMessage,
         conversationIdentity: String
@@ -22689,7 +22689,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Resolution of authored handles into the sender-only mention facts the
     /// send response reports: pending actions for a non-member agent (v1) and
     /// unresolved authored handles (v2). Hidden humans stay cloaked.
-    private func sendMentionReport(
+    func sendMentionReport(
         content: String,
         typedMentions: [[String: Any]],
         v2: Bool,
@@ -22759,14 +22759,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
 
-    private func channelIdForReceipt(_ messageId: String) -> String? {
+    func channelIdForReceipt(_ messageId: String) -> String? {
         lock.lock()
         defer { lock.unlock() }
         return humanMessageRows.first { $0.id == messageId }?.channelId
     }
 
 
-    private func agentTaskAuth(authorization: String?, legacyAgentId: String?) -> AgentTaskAuthResult {
+    func agentTaskAuth(authorization: String?, legacyAgentId: String?) -> AgentTaskAuthResult {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
             return .refused(Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}"))
         }
@@ -22794,7 +22794,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// Write routes accept both an `sk_agent_*` credential and the legacy
     /// machine key plus path agent id.
-    private func agentTaskWriter(_ authorization: String?, legacyAgentId: String?) -> (agentId: String, serverId: String)? {
+    func agentTaskWriter(_ authorization: String?, legacyAgentId: String?) -> (agentId: String, serverId: String)? {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
         let token = String(authorization.dropFirst("Bearer ".count))
         lock.lock()
@@ -22813,7 +22813,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return nil
     }
 
-    private func agentTaskChannel(serverId: String, agentId: String, reference: String) -> String? {
+    func agentTaskChannel(serverId: String, agentId: String, reference: String) -> String? {
         let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         lock.lock()
@@ -22854,7 +22854,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"tasks\":[\(rows)]}")
     }
 
-    private func taskWriteFreshnessHold(agentId: String, channelId: String, seenUpToSeq: Int?, actionKey: String) -> HTTPReply? {
+    func taskWriteFreshnessHold(agentId: String, channelId: String, seenUpToSeq: Int?, actionKey: String) -> HTTPReply? {
         guard let seen = seenUpToSeq else { return nil }
         lock.lock()
         let key = "\(agentId)\n\(channelId)\n\(actionKey)"
@@ -23275,8 +23275,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, taskJSON(task))
     }
 
-    private var agentInboxAvailableForTesting: Bool?
-    private var removedServerMembers: Set<String> = []
+    var agentInboxAvailableForTesting: Bool?
+    var removedServerMembers: Set<String> = []
 
     public func setAgentInboxAvailableForTesting(_ value: Bool?) {
         lock.lock()
@@ -23478,7 +23478,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"view\":\(jsonString(view)),\"items\":[\(items)],\"totals\":{\"conversations\":\(totals.conversations),\"dms\":\(totals.dms),\"mentions\":\(totals.mentions)},\"hasMore\":\(hasMore),\"nextBeforeSeq\":\(nextJSON)}")
     }
 
-    private func agentHistoryThread(parentId: String, anchorMessageId: String) -> String? {
+    func agentHistoryThread(parentId: String, anchorMessageId: String) -> String? {
         for (id, channel) in postableChannels {
             guard channel.kind == "thread" else { continue }
             guard channel.parentChannelId == parentId else { continue }
@@ -23489,7 +23489,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return nil
     }
 
-    private func agentHistoryThreadById(parentId: String, suffix: String) -> String? {
+    func agentHistoryThreadById(parentId: String, suffix: String) -> String? {
         for (id, channel) in postableChannels {
             guard channel.kind == "thread" else { continue }
             guard channel.parentChannelId == parentId else { continue }
@@ -23500,7 +23500,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return nil
     }
 
-    private func agentHistoryThreadByAnchorPrefix(parentId: String, suffix: String) -> String? {
+    func agentHistoryThreadByAnchorPrefix(parentId: String, suffix: String) -> String? {
         for (id, channel) in postableChannels {
             guard channel.kind == "thread" else { continue }
             guard channel.parentChannelId == parentId else { continue }
@@ -23511,7 +23511,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return nil
     }
 
-    private func actionCardTarget(serverId: String, agentId: String, target: String) -> (local: String, storage: String)? {
+    func actionCardTarget(serverId: String, agentId: String, target: String) -> (local: String, storage: String)? {
         guard target.hasPrefix("#") else { return nil }
         let name = String(target.dropFirst())
         lock.lock()
@@ -23543,7 +23543,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
 
-    private func marketplaceInstallActionJSON(_ card: MarketplaceInstallCard, includeDraftHint: Bool = true) -> String {
+    func marketplaceInstallActionJSON(_ card: MarketplaceInstallCard, includeDraftHint: Bool = true) -> String {
         let scopes = card.scopes.map(jsonString).joined(separator: ",")
         let draftHint = includeDraftHint
             ? ",\"draftHint\":\(jsonString("\(card.agentName) requested \(card.clientName), which is public in the Raft Marketplace but is not installed on this Server. Installing is a Server owner/admin action; the Agent cannot install it automatically."))"
@@ -23552,7 +23552,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return "{\"type\":\"integration:install_marketplace_app\",\"clientId\":\(jsonString(card.clientRecordId)),\"clientKey\":\(jsonString(card.clientKey)),\"clientName\":\(jsonString(card.clientName)),\"clientNameSha256\":\(jsonString(card.clientNameSha256)),\"agentId\":\(jsonString(card.agentId)),\"agentName\":\(jsonString(card.agentName)),\"scopes\":[\(scopes)],\"setupUrl\":\(setupUrl),\"setupRevision\":\(card.setupRevision)\(draftHint)}"
     }
 
-    private func marketplaceInstallPresentationJSON(_ card: MarketplaceInstallCard) -> String {
+    func marketplaceInstallPresentationJSON(_ card: MarketplaceInstallCard) -> String {
         var items: [String] = []
         items.append("{\"key\":\"clientId\",\"value\":\(jsonString(card.clientRecordId))}")
         items.append("{\"key\":\"clientKey\",\"value\":\(jsonString(card.clientKey))}")
@@ -23567,7 +23567,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return "{\"title\":\(jsonString("Install \(card.clientName) on this Server")),\"confirmLabel\":\"Install App\",\"genericApprovalAllowed\":true,\"displayItems\":[\(items.joined(separator: ","))],\"warning\":\(jsonString(warning)),\"riskLevel\":\"elevated\"}"
     }
 
-    private func marketplaceInstallMetadataJSON(_ card: MarketplaceInstallCard) -> String {
+    func marketplaceInstallMetadataJSON(_ card: MarketplaceInstallCard) -> String {
         let executedAt = card.state == "executed" ? jsonString(ISO8601DateFormatter().string(from: Date())) : "null"
         let executedBy = card.executedByUserId.map(jsonString) ?? "null"
         let result = card.resultJSON ?? "null"
@@ -23575,7 +23575,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// The message projection of every prepared card, keyed by message id.
-    private func actionCardMetadataLocked(messageId: String) -> String? {
+    func actionCardMetadataLocked(messageId: String) -> String? {
         if let card = marketplaceInstallCards[messageId] {
             return marketplaceInstallMetadataJSON(card)
         }
@@ -23585,7 +23585,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return nil
     }
 
-    private func integrationRegisterActionJSON(_ card: IntegrationRegisterCard) -> String {
+    func integrationRegisterActionJSON(_ card: IntegrationRegisterCard) -> String {
         var fields: [String] = [
             "\"type\":\"integration:register_app\"",
             "\"name\":\(jsonString(card.name))",
@@ -23603,7 +23603,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return "{" + fields.joined(separator: ",") + "}"
     }
 
-    private func integrationRegisterPresentationJSON(_ card: IntegrationRegisterCard) -> String {
+    func integrationRegisterPresentationJSON(_ card: IntegrationRegisterCard) -> String {
         var items: [String] = [
             "{\"key\":\"name\",\"value\":\(jsonString(card.name))}",
         ]
@@ -23618,13 +23618,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return "{\"title\":\(jsonString("Register Connected App \(card.name)")),\"confirmLabel\":\"Register App\",\"genericApprovalAllowed\":true,\"displayItems\":[\(items.joined(separator: ","))],\"warning\":\"The requesting agent becomes the initial app owner. No client secret is stored in this card.\",\"riskLevel\":\"elevated\"}"
     }
 
-    private func integrationRegisterMetadataJSON(_ card: IntegrationRegisterCard) -> String {
+    func integrationRegisterMetadataJSON(_ card: IntegrationRegisterCard) -> String {
         let executedBy = card.executedByUserId.map(jsonString) ?? "null"
         let result = card.resultJSON ?? "null"
         return "{\"kind\":\"action-card\",\"sourceServerId\":\(jsonString(card.serverId)),\"targetServerName\":\(jsonString(actionCardServerName(card.serverId))),\"action\":\(integrationRegisterActionJSON(card)),\"presentation\":\(integrationRegisterPresentationJSON(card)),\"state\":\(jsonString(card.state)),\"executedByUserId\":\(executedBy),\"result\":\(result)}"
     }
 
-    private func prepareIntegrationRegisterCard(
+    func prepareIntegrationRegisterCard(
         serverId: String,
         agent: OAuthLedger.AgentRuntimeInfo,
         name: String,
@@ -23676,7 +23676,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
 
-    private func executeIntegrationRegisterCard(
+    func executeIntegrationRegisterCard(
         _ card: IntegrationRegisterCard,
         userId: String,
         serverId: String,
@@ -23735,7 +23735,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"messageId\":\(jsonString(card.messageId)),\"metadata\":\(integrationRegisterMetadataJSON(updated))}")
     }
 
-    private static let oauthClientCategories: Set<String> = [
+    static let oauthClientCategories: Set<String> = [
         "AI & Automation", "Communication", "Productivity & Collaboration",
         "Developer Tools", "Data & Analytics", "Business Ops",
         "Infrastructure", "Content & Creative", "Other",
@@ -23810,7 +23810,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(201, "{\"status\":\"prepared\",\"actionCardMessageId\":\(jsonString(messageId)),\"action\":\(action)}")
     }
 
-    private func prepareMarketplaceInstallCard(
+    func prepareMarketplaceInstallCard(
         serverId: String,
         agent: OAuthLedger.AgentRuntimeInfo,
         client: [String: Any],
@@ -23860,7 +23860,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return messageId
     }
 
-    private func executeMarketplaceInstallCard(
+    func executeMarketplaceInstallCard(
         _ card: MarketplaceInstallCard,
         userId: String,
         serverId: String,
@@ -23922,7 +23922,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"messageId\":\(jsonString(card.messageId)),\"metadata\":\(marketplaceInstallMetadataJSON(updated))}")
     }
 
-    private func prepareAgentCreateCard(
+    func prepareAgentCreateCard(
         identity: (agentId: String, serverId: String),
         target: String,
         action: [String: Any]
@@ -24014,7 +24014,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(201, "{\"messageId\":\(jsonString(messageId)),\"metadata\":\(metadata)}")
     }
 
-    private func prepareIntegrationActionCard(
+    func prepareIntegrationActionCard(
         identity: (agentId: String, serverId: String), target: String, action: [String: Any]
     ) -> HTTPReply? {
         guard let type = action["type"] as? String,
@@ -24212,13 +24212,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return idempotentReply
     }
 
-    private func actionCardServerName(_ serverId: String) -> String {
+    func actionCardServerName(_ serverId: String) -> String {
         oauth.serverProfile(id: serverId)?.name ?? "this Server"
     }
 
     /// Writes the durable result reply into the card's thread, records the
     /// preparer's unread mention fact, and queues the external-agent event.
-    private func postActionCardReply(
+    func postActionCardReply(
         card: ActionCardRecord,
         confirmerUserId: String,
         success: Bool,
@@ -24372,7 +24372,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return actionCardRecords[messageId]?.state
     }
 
-    private func actionCardWriteAuthorization(userId: String, card: ActionCardRecord) -> HTTPReply? {
+    func actionCardWriteAuthorization(userId: String, card: ActionCardRecord) -> HTTPReply? {
         guard oauth.memberRole(serverId: card.serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
@@ -24509,7 +24509,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     // MARK: - Managed MCP control plane (`/api/mcp/*`)
 
 
-    private func managedMCPControlAuth(authorization: String?, serverId: String) -> ManagedMCPControlAuth {
+    func managedMCPControlAuth(authorization: String?, serverId: String) -> ManagedMCPControlAuth {
         guard let userId = sessionUserId(authorization: authorization) else {
             return .refused(Self.json(401, "{\"error\":\"Unauthorized\"}"))
         }
@@ -24521,7 +24521,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
 
-    private func managedMCPServerJSON(_ record: ManagedMCPServerRecord) -> String {
+    func managedMCPServerJSON(_ record: ManagedMCPServerRecord) -> String {
         let names = record.credentialHeaderNames.sorted().map(jsonString).joined(separator: ",")
         let provider = record.provider.map(jsonString) ?? "null"
         let authMode = record.authMode.map(jsonString) ?? "null"
@@ -24529,7 +24529,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return "{\"id\":\(jsonString(record.id)),\"name\":\(jsonString(record.name)),\"provider\":\(provider),\"authMode\":\(authMode),\"oauthStatus\":\(oauthStatus),\"endpointUrl\":\(jsonString(Self.managedMCPEndpointSanitized(record.endpointUrl))),\"hasCredentials\":\(!record.credentialHeaders.isEmpty),\"credentialHeaderNames\":[\(names)],\"assignment\":null}"
     }
 
-    private func managedMCPAgentJSON(agentId: String, serverId: String) -> String {
+    func managedMCPAgentJSON(agentId: String, serverId: String) -> String {
         guard let agent = oauth.agentRuntimeInfo(id: agentId) else { return "null" }
         return "{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName))}"
     }
@@ -24804,7 +24804,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// History anchors accept a sequence number, a full message UUID, or the
     /// 8-character short id. `pagination` keeps decimal values as seqs even at
     /// short-id width; `around` is a locator and prefers the short id first.
-    private func resolveHistoryAnchor(
+    func resolveHistoryAnchor(
         channelId: String,
         anchor: String,
         channelRef: String,
@@ -24851,8 +24851,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return notFound()
     }
 
-    private var readPositionSettleMs: Int = 2000
-    private var deferredUnreadAdvance: [String: Int] = [:]
+    var readPositionSettleMs: Int = 2000
+    var deferredUnreadAdvance: [String: Int] = [:]
 
     public func setReadPositionSettleForTesting(_ milliseconds: Int) {
         lock.lock(); readPositionSettleMs = milliseconds; lock.unlock()
@@ -25378,7 +25378,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true,\"added\":{\"userIds\":[\("\(array(addedUsers))")],\"agentIds\":[\("\(array(addedAgents))")]},\"alreadyMembers\":{\"userIds\":[\("\(array(alreadyUsers))")],\"agentIds\":[\("\(array(alreadyAgents))")]}}")
     }
 
-    private func recordBatchMembershipNotice(channelId: String, name: String) {
+    func recordBatchMembershipNotice(channelId: String, name: String) {
         lock.lock()
         appendHumanMessageLocked(StoredHumanMessage(
             id: UUID().uuidString.lowercased(),
@@ -25392,7 +25392,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func accountsForInvite(userId: String, serverId: String, channelId: String) {
+    func accountsForInvite(userId: String, serverId: String, channelId: String) {
         lock.lock()
         postableChannels[channelId, default: PostableChannel(serverId: serverId, memberIds: [])].memberIds.insert(userId)
         lock.unlock()
@@ -25596,7 +25596,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
-    private func threadMemberMutationReply(_ channelId: String) -> HTTPReply? {
+    func threadMemberMutationReply(_ channelId: String) -> HTTPReply? {
         lock.lock()
         let kind = postableChannels[channelId]?.kind ?? oauth.channelType(id: channelId)
         lock.unlock()
@@ -25604,7 +25604,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(400, "{\"error\":\"Thread members are managed with follow/unfollow\"}")
     }
 
-    private func channelActorCanSee(channelId: String, userId: String) -> Bool {
+    func channelActorCanSee(channelId: String, userId: String) -> Bool {
         lock.lock()
         let postable = postableChannels[channelId]
         lock.unlock()
@@ -25616,7 +25616,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// Guests may only see channels they explicitly joined; a hidden public
     /// channel must stay cloaked for the guest role.
-    private func guestDeniedHiddenChannel(channelId: String, serverId: String, userId: String) -> Bool {
+    func guestDeniedHiddenChannel(channelId: String, serverId: String, userId: String) -> Bool {
         guard oauth.memberRole(serverId: serverId, userId: userId) == "guest" else { return false }
         return !oauth.channelHumanIds(channelId: channelId).contains(userId)
     }
@@ -25965,9 +25965,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return lastTaskServerWarning
     }
 
-    private static let tasksServerResponseWarnBytes = 8 * 1024 * 1024
+    static let tasksServerResponseWarnBytes = 8 * 1024 * 1024
 
-    private func taskServerReply(_ body: String, serverId: String, newShape: Bool) -> HTTPReply {
+    func taskServerReply(_ body: String, serverId: String, newShape: Bool) -> HTTPReply {
         let bytes = Data(body.utf8).count
         if newShape, bytes > Self.tasksServerResponseWarnBytes {
             let warning = "[tasks/server] paginated/summary response for server \(serverId) is \(bytes) bytes"
@@ -26069,7 +26069,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return taskServerReply("{\"tasks\":[\("\(items)")],\"next_cursor\":\(cursorJSON)}", serverId: serverId, newShape: true)
     }
 
-    private func orderedTasks(
+    func orderedTasks(
         serverId: String,
         userId: String,
         status: String?
@@ -26094,7 +26094,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
     }
 
-    private func legacyTasksBody(serverId: String, userId: String, status: String?) -> String {
+    func legacyTasksBody(serverId: String, userId: String, status: String?) -> String {
         let ordered = orderedTasks(serverId: serverId, userId: userId, status: status)
         let items = ordered.map { entry in
             fullTaskJSON(entry.task, channelName: entry.channelName, channelType: entry.channelType)
@@ -26104,12 +26104,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
 
-    private func fullTaskJSON(_ task: TaskRecord, channelName: String, channelType: String) -> String {
+    func fullTaskJSON(_ task: TaskRecord, channelName: String, channelType: String) -> String {
         let description = task.description.map { jsonString($0) } ?? "null"
         return "{\"id\":\(jsonString(task.id)),\"channelId\":\(jsonString(task.channelId)),\"channelName\":\(jsonString(channelName)),\"channelType\":\(jsonString(channelType)),\"title\":\(jsonString(task.title)),\"description\":\(description),\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber),\"messageId\":\(jsonString(task.messageId)),\"revision\":\(task.revision)}"
     }
 
-    private func summaryTaskJSON(_ task: TaskRecord, channelName: String, channelType: String) -> String {
+    func summaryTaskJSON(_ task: TaskRecord, channelName: String, channelType: String) -> String {
         let descriptionBytes = task.description.map { Data($0.utf8).count } ?? 0
         let hasDescription = task.description != nil && !(task.description ?? "").isEmpty
         let formatter = ISO8601DateFormatter()
@@ -26150,11 +26150,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
 
-    private var taskEvents: [(taskId: String, eventType: String, actorType: String)] = []
-    private var lastTaskServerWarning: String?
-    private var lastTaskServerQuery: String?
-    private var agentApiIdempotencyKeys: [AgentApiIdempotencyRecord] = []
-    private var assigneeChangeEvents: [(
+    var taskEvents: [(taskId: String, eventType: String, actorType: String)] = []
+    var lastTaskServerWarning: String?
+    var lastTaskServerQuery: String?
+    var agentApiIdempotencyKeys: [AgentApiIdempotencyRecord] = []
+    var assigneeChangeEvents: [(
         taskId: String, assigneeId: String?, assigneeType: String?,
         previousAssigneeId: String?, previousAssigneeType: String?,
         actorType: String, actorId: String
@@ -26181,11 +26181,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
 
-    private static let agentApiIdempotencyTTL: TimeInterval = 24 * 60 * 60
+    static let agentApiIdempotencyTTL: TimeInterval = 24 * 60 * 60
 
 
 
-    private func agentApiIdempotencyReply(agentId: String, route: String, object: [String: Any]) -> HTTPReply? {
+    func agentApiIdempotencyReply(agentId: String, route: String, object: [String: Any]) -> HTTPReply? {
         let rawKey = (object["idempotencyKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !rawKey.isEmpty else { return nil }
         let fingerprint = Self.agentApiRequestFingerprint(object)
@@ -26206,7 +26206,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return nil
     }
 
-    private func storeAgentApiIdempotency(agentId: String, route: String, object: [String: Any], reply: HTTPReply) {
+    func storeAgentApiIdempotency(agentId: String, route: String, object: [String: Any], reply: HTTPReply) {
         guard reply.status == 200 || reply.status == 201 else { return }
         let rawKey = (object["idempotencyKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !rawKey.isEmpty else { return }
@@ -26320,7 +26320,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return taskEvents.filter { $0.taskId == taskId }.map { ($0.eventType, $0.actorType) }
     }
 
-    private func closeOrphanTasksLocked(channelId: String, now: Date) {
+    func closeOrphanTasksLocked(channelId: String, now: Date) {
         for index in taskRecords.indices where taskRecords[index].channelId == channelId {
             let status = taskRecords[index].status
             guard status != "done", status != "closed", status != "cancelled" else { continue }
@@ -26370,7 +26370,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.reminderListJSON(remindersFor(visibleAgentIds))
     }
 
-    private func remindersFor(_ agentIds: Set<String>) -> [ReminderRecord] {
+    func remindersFor(_ agentIds: Set<String>) -> [ReminderRecord] {
         lock.lock()
         defer { lock.unlock() }
         return reminderRecords.filter { agentIds.contains($0.ownerAgentId) }
@@ -26387,7 +26387,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     @discardableResult
-    private func appendReminderEventLocked(
+    func appendReminderEventLocked(
         _ reminder: ReminderRecord, type: String, actorType: String, actorId: String? = nil,
         fireAt: Date? = nil
     ) -> ReminderRecord {
@@ -26462,7 +26462,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
-    private func mutateAppReminder(
+    func mutateAppReminder(
         reminderId: String, ownerAgentId: String, expectedVersion: Int, type: String,
         mutate: (inout ReminderRecord) -> Void
     ) -> ReminderMutationOutcome {
@@ -26538,20 +26538,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         oauth.memberRoles(serverId: serverId)
     }
 
-    private static let remindersMovedReply = json(409, "{\"error\":\"Reminders are managed by the Reminder App now\",\"code\":\"reminders_moved_to_app\"}")
+    static let remindersMovedReply = json(409, "{\"error\":\"Reminders are managed by the Reminder App now\",\"code\":\"reminders_moved_to_app\"}")
 
-    private func legacyReminderWritesMoved(serverId: String) -> Bool {
+    func legacyReminderWritesMoved(serverId: String) -> Bool {
         featureFlagEnabledForServer("reminder_app", serverId: serverId)
     }
 
-    private func legacyReminderMachine(_ authorization: String?) -> (machineId: String, serverId: String)? {
+    func legacyReminderMachine(_ authorization: String?) -> (machineId: String, serverId: String)? {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
         let key = String(authorization.dropFirst("Bearer ".count))
         guard let machine = machineCredential(apiKey: key) else { return nil }
         return (machine.machineId, machine.serverId)
     }
 
-    private func reminderAgentOnServer(_ agentId: String, serverId: String) -> OAuthLedger.AgentRuntimeInfo? {
+    func reminderAgentOnServer(_ agentId: String, serverId: String) -> OAuthLedger.AgentRuntimeInfo? {
         guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
             return nil
         }
@@ -26631,7 +26631,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
-    private func reminderMutationReply(_ outcome: ReminderMutationOutcome, reminderId: String, ownerAgentId: String) -> HTTPReply {
+    func reminderMutationReply(_ outcome: ReminderMutationOutcome, reminderId: String, ownerAgentId: String) -> HTTPReply {
         switch outcome {
         case .notFound:
             return Self.json(404, "{\"error\":\"Reminder not found\"}")
@@ -27066,7 +27066,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return (oauth.channelServerId(channelId) ?? "", muteFromSeq)
     }
 
-    private func agentMessageSuppressedLocked(_ message: StoredHumanMessage, agentId: String) -> Bool {
+    func agentMessageSuppressedLocked(_ message: StoredHumanMessage, agentId: String) -> Bool {
         let prefs = oauth.notificationPrefs(channelId: message.channelId, userId: agentId)
         guard prefs.activityMuted, let from = prefs.muteFromSeq, message.seq >= from else {
             return false
@@ -27383,7 +27383,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// Synchronous context gathering for the resume handler; the async method
     /// only awaits the dispatch callback.
-    private func resumeAllAgentsContext(
+    func resumeAllAgentsContext(
         userId: String,
         serverId: String,
         channelId: String,
@@ -27567,7 +27567,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// A targeted announcement is only visible inside one of its servers; the
     /// audience itself is never echoed to the client.
-    private func announcementVisibleLocked(
+    func announcementVisibleLocked(
         _ announcement: (id: String, title: String, pages: [String], startsAt: Date, expiresAt: Date?, status: String, publishedAt: Date?, imageId: String?, audienceServerIds: [String]),
         userId: String,
         serverId: String?
@@ -27636,8 +27636,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
 
-    private var externalAvatarAssets: [String: ExternalAvatarAsset] = [:]
-    private var externalAvatarStorageAvailable = true
+    var externalAvatarAssets: [String: ExternalAvatarAsset] = [:]
+    var externalAvatarStorageAvailable = true
 
     public func addExternalAvatarForTesting(
         id: String,
@@ -28148,7 +28148,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func agentUserPageValues(limit: String?, offset: String?) -> (limit: Int, offset: Int)? {
+    func agentUserPageValues(limit: String?, offset: String?) -> (limit: Int, offset: Int)? {
         if let limit, Int(limit) == nil { return nil }
         if let offset, Int(offset) == nil { return nil }
         let resolvedLimit = limit.flatMap(Int.init) ?? 50
@@ -28157,7 +28157,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return (resolvedLimit, resolvedOffset)
     }
 
-    private func agentUserChannelsPayload(identity: (agentId: String, serverId: String), name: String, limit: String?, offset: String?) -> (text: String, json: String, status: Int)? {
+    func agentUserChannelsPayload(identity: (agentId: String, serverId: String), name: String, limit: String?, offset: String?) -> (text: String, json: String, status: Int)? {
         let normalized = name.hasPrefix("@") ? String(name.dropFirst()) : name
         guard !normalized.isEmpty else { return nil }
         guard let page = agentUserPageValues(limit: limit, offset: offset) else { return nil }
@@ -29051,7 +29051,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true,\"unbound\":\(unbound)}")
     }
 
-    private func pushPrincipal(_ authorization: String?) -> (userId: String, familyId: String?)? {
+    func pushPrincipal(_ authorization: String?) -> (userId: String, familyId: String?)? {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
         let token = String(authorization.dropFirst("Bearer ".count))
         lock.lock()
@@ -29171,1737 +29171,5 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
 
 
-    // MARK: - Product feedback apps, sources and route binding
 
-    /// Feature flag key from `productFeedbackApps.ts`.
-    public static let productFeedbackMultiAppFlag = "product_feedback_multi_app"
-
-    /// Trusted client sources; anything else is an invalid request.
-    static let productFeedbackSources: Set<String> = ["web", "ios", "android", "ohos"]
-
-    static let productFeedbackLegacyCommitmentLabel = "hands-feedback-route-subject:v1"
-    static let productFeedbackMultiCommitmentLabel = "hands-feedback-route-subject:multi:v1"
-
-
-
-
-
-    // MARK: Public test seams
-
-    /// Installs the SecureString-shaped `HANDS_FEEDBACK_APPS` JSON. Production
-    /// reads this from SSM; the port has no AWS client, so the composition root
-    /// (or a test) supplies the payload.
-    public func setHandsFeedbackAppsForTesting(_ appsJSON: String?) {
-        lock.lock()
-        handsFeedbackAppsJSONForTesting = appsJSON
-        productFeedbackReporterSessionCache.removeAll()
-        productFeedbackRouteBindingSuccesses.removeAll()
-        productFeedbackRouteVerifiedCommitments.removeAll()
-        lock.unlock()
-    }
-
-    /// Overlays the legacy `HANDS_FEEDBACK_*` environment view for a test.
-    public func setHandsFeedbackLegacyEnvironmentForTesting(_ values: [String: String]?) {
-        lock.lock()
-        handsFeedbackLegacyEnvironmentForTesting = values
-        productFeedbackReporterSessionCache.removeAll()
-        productFeedbackRouteBindingSuccesses.removeAll()
-        productFeedbackRouteVerifiedCommitments.removeAll()
-        lock.unlock()
-    }
-
-    /// Operator log sink (upstream uses `console.warn`). Tests install one to
-    /// assert the fixed reason codes without reading process output.
-    public func setHandsFeedbackWarningSinkForTesting(_ sink: ((String) -> Void)?) {
-        lock.lock()
-        handsFeedbackWarningSinkForTesting = sink
-        lock.unlock()
-    }
-
-    /// Labels committed into `integrationSecretCommitments` by route binding.
-    public func productFeedbackRouteCommitmentLabelsForTesting() -> [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return productFeedbackRouteCommitments.keys.sorted()
-    }
-
-    public func resetProductFeedbackRouteBindingCacheForTesting() {
-        lock.lock()
-        productFeedbackRouteBindingSuccesses.removeAll()
-        productFeedbackRouteVerifiedCommitments.removeAll()
-        productFeedbackRouteCommitments.removeAll()
-        lock.unlock()
-    }
-
-    // MARK: Configuration resolution
-
-    private func feedbackWarn(_ message: String) {
-        lock.lock()
-        let sink = handsFeedbackWarningSinkForTesting
-        lock.unlock()
-        if let sink {
-            sink(message)
-        } else {
-            print(message)
-        }
-    }
-
-    static let feedbackTimingNames: Set<String> = [
-        "hands_auth", "hands_preflight", "hands_commit", "hands_postcommit",
-        "hands_list", "hands_session_mint", "hands_session_verify",
-    ]
-
-
-
-    private func handsFeedbackSend(_ request: URLRequest) -> (Int, [String: String], Data) {
-        lock.lock()
-        let injected = handsFeedbackUpstreamHandler
-        lock.unlock()
-        if let injected { return injected(request) }
-        let semaphore = DispatchSemaphore(value: 0)
-        final class Box: @unchecked Sendable { var status = 0; var headers: [String: String] = [:]; var body = Data() }
-        let box = Box()
-        URLSession.shared.dataTask(with: request) { data, response, _ in
-            if let http = response as? HTTPURLResponse {
-                box.status = http.statusCode
-                for (key, value) in http.allHeaderFields {
-                    box.headers[String(describing: key)] = String(describing: value)
-                }
-            }
-            box.body = data ?? Data()
-            semaphore.signal()
-        }.resume()
-        _ = semaphore.wait(timeout: .now() + 12)
-        return (box.status, box.headers, box.body)
-    }
-
-    private func feedbackLegacyEnvironmentLocked() -> [String: String] {
-        var environment = ProcessInfo.processInfo.environment
-        if let overlay = handsFeedbackLegacyEnvironmentForTesting {
-            for (key, value) in overlay { environment[key] = value }
-        }
-        if let handsFeedbackBaseURLOverride { environment["HANDS_FEEDBACK_BASE_URL"] = handsFeedbackBaseURLOverride }
-        if let handsFeedbackAppIdOverride { environment["HANDS_FEEDBACK_APP_ID"] = handsFeedbackAppIdOverride }
-        if let handsFeedbackAppSlugOverride { environment["HANDS_FEEDBACK_APP_SLUG"] = handsFeedbackAppSlugOverride }
-        if let handsFeedbackAppTokenOverride { environment["HANDS_FEEDBACK_APP_TOKEN"] = handsFeedbackAppTokenOverride }
-        if let handsConversationSessionEnabledForTesting {
-            environment["HANDS_FEEDBACK_CONVERSATION_SESSION_ENABLED"] = handsConversationSessionEnabledForTesting ? "true" : "false"
-        }
-        if let handsConversationAppTokenOverride {
-            environment["HANDS_FEEDBACK_CONVERSATION_APP_TOKEN"] = handsConversationAppTokenOverride
-        }
-        return environment
-    }
-
-
-
-
-
-    /// Mirrors `productFeedbackUnavailableReason`; fixed codes and field names only.
-
-
-    private func feedbackRouteEnvironment(source: String, userId: String) throws -> FeedbackRouteEnvironment {
-        guard Self.productFeedbackSources.contains(source) else { throw FeedbackRouteFailure.invalidSource }
-        lock.lock()
-        let environment = feedbackLegacyEnvironmentLocked()
-        let appsJSON = handsFeedbackAppsJSONForTesting
-        lock.unlock()
-        let multiEnabled = evaluateFeatureFlagKey(
-            key: Self.productFeedbackMultiAppFlag,
-            userId: userId,
-            serverId: nil,
-            platform: nil,
-            client: FeatureFlagClientFacts(os: nil, buildNumber: nil, buildType: nil)
-        ).enabled
-        if !multiEnabled { return Self.feedbackLegacyRouteEnvironment(environment) }
-        return try Self.feedbackMultiRouteEnvironment(source: source, appsJSON: appsJSON, environment: environment)
-    }
-
-    /// Trusted client source; unknown values are invalid before any configuration.
-
-    // MARK: Route binding
-
-
-
-
-
-
-
-    /// `ensureProductFeedbackRouteBinding`: reporter id, root commitment and one
-    /// `PUT .../reporter-feedback/route-subject`, cached for five minutes.
-    private func ensureFeedbackRouteBinding(
-        userId: String,
-        environment: FeedbackRouteEnvironment
-    ) throws -> String {
-        let fallbackReporterId = environment.reporterIdSecret.isEmpty
-            ? handsReporterId(userId)
-            : Self.feedbackReporterId(userId: userId, secret: environment.reporterIdSecret)
-        guard let config = try Self.feedbackRouteConfig(environment) else { return fallbackReporterId }
-        let reporterId = Self.feedbackReporterId(userId: userId, secret: config.reporterIdSecret)
-        let rootBytes = Self.feedbackRouteRootBytes(config.root) ?? Data()
-        let commitment = Data(SHA256.hash(data: Data(config.commitmentLabel.utf8) + Data([0]) + rootBytes))
-        lock.lock()
-        if let existing = productFeedbackRouteCommitments[config.commitmentLabel] {
-            if existing != commitment {
-                lock.unlock()
-                throw FeedbackRouteFailure.routeBinding(reason: "root_commitment_mismatch")
-            }
-        } else {
-            productFeedbackRouteCommitments[config.commitmentLabel] = commitment
-        }
-        let now = Date()
-        let cacheKey = "\(config.appId)|\(config.credentialRevision)|\(config.commitmentLabel)|\(reporterId)"
-        if let cached = productFeedbackRouteBindingSuccesses[cacheKey], cached > now {
-            lock.unlock()
-            return reporterId
-        }
-        lock.unlock()
-        guard let subject = Self.feedbackRouteSubject(config: config, userId: userId, reporterId: reporterId) else {
-            throw FeedbackRouteFailure.routeBinding(reason: "route_subject_invalid")
-        }
-        var request = URLRequest(url: URL(string: "\(config.baseURL)/api/apps/\(config.appId)/reporter-feedback/route-subject")!)
-        request.httpMethod = "PUT"
-        request.timeoutInterval = 4
-        request.setValue("Bearer \(config.appToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(reporterId, forHTTPHeaderField: "X-Hands-Reporter-Id")
-        request.httpBody = Data("{\"route_subject\":\(jsonString(subject))}".utf8)
-        func bindingReason(_ status: Int) -> String {
-            status == 0 ? "request_failed" : "hands_status_\(status)"
-        }
-        func submitBinding() -> (Int, [String: String], Data) {
-            handsFeedbackSend(request)
-        }
-        var (status, _, body) = submitBinding()
-        if status == 0 || (500...599).contains(status) {
-            (status, _, body) = submitBinding()
-        }
-        guard status == 200 || status == 201 else {
-            throw FeedbackRouteFailure.routeBinding(reason: bindingReason(status))
-        }
-        guard let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
-              Set(object.keys) == ["changed", "subject_version"],
-              let changed = object["changed"] as? Bool,
-              object["subject_version"] as? String == "v1",
-              (status == 201) == changed
-        else {
-            throw FeedbackRouteFailure.routeBinding(reason: "hands_unexpected_body")
-        }
-        lock.lock()
-        productFeedbackRouteBindingSuccesses[cacheKey] = Date().addingTimeInterval(300)
-        lock.unlock()
-        return reporterId
-    }
-
-    // MARK: Reporter session / bearer
-
-    private func feedbackBearer(
-        userId: String,
-        reporterId: String,
-        environment: FeedbackRouteEnvironment
-    ) throws -> String {
-        let conversationToken = environment.conversationToken.isEmpty
-            ? environment.appToken
-            : environment.conversationToken
-        guard !environment.baseURL.isEmpty, !conversationToken.isEmpty else {
-            throw FeedbackRouteFailure.configuration
-        }
-        guard environment.conversationSessionEnabled else {
-            return conversationToken
-        }
-        let cacheKey = "\(environment.appId)|\(environment.credentialRevision)|\(userId)"
-        lock.lock()
-        if let cached = productFeedbackReporterSessionCache[cacheKey], cached.expiresAt > Date().addingTimeInterval(5) {
-            lock.unlock()
-            return cached.token
-        }
-        lock.unlock()
-        var request = URLRequest(url: URL(string: "\(environment.baseURL)/api/apps/\(environment.appId)/reporter-feedback/session")!)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 10
-        request.setValue("Bearer \(conversationToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(reporterId, forHTTPHeaderField: "X-Hands-Reporter-Id")
-        request.httpBody = Data("{\"scopes\":[\"feedback:comment\",\"feedback:read\"]}".utf8)
-        let (status, _, body) = handsFeedbackSend(request)
-        guard status == 200 || status == 201,
-              let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
-              let token = object["session_token"] as? String, !token.isEmpty
-        else {
-            throw FeedbackRouteFailure.configuration
-        }
-        let expires = (object["expires_at"] as? NSNumber)?.doubleValue ?? Date().addingTimeInterval(30).timeIntervalSince1970
-        lock.lock()
-        productFeedbackReporterSessionCache[cacheKey] = (token, Date(timeIntervalSince1970: expires))
-        lock.unlock()
-        return token
-    }
-
-    // MARK: Cursors
-
-
-
-
-    // MARK: Conversation plumbing
-
-    private func feedbackHandsRequest(
-        environment: FeedbackRouteEnvironment,
-        method: String,
-        path: String,
-        bearer: String,
-        reporterId: String,
-        headers: [String: String] = [:],
-        body: Data? = nil
-    ) -> (status: Int, headers: [String: String], body: Data) {
-        var request = URLRequest(url: URL(string: "\(environment.baseURL)\(path)")!)
-        request.httpMethod = method
-        request.timeoutInterval = 10
-        request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
-        request.setValue(reporterId, forHTTPHeaderField: "X-Hands-Reporter-Id")
-        for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
-        request.httpBody = body
-        return handsFeedbackSend(request)
-    }
-
-    private func feedbackJSONReply(
-        status: Int,
-        body: String,
-        elapsed: Date? = nil,
-        upstreamHeaders: [String: String] = [:],
-        retryAfter: String? = nil
-    ) -> HTTPReply {
-        var headers: [String: String] = [
-            "Content-Type": AppFallback.jsonContentType,
-            "Cache-Control": "no-store",
-            "Content-Length": String(body.utf8.count),
-        ]
-        if let elapsed {
-            headers["Server-Timing"] = Self.feedbackTimingHeader(
-                elapsedMs: Date().timeIntervalSince(elapsed) * 1000,
-                upstreamHeaders: upstreamHeaders
-            )
-        }
-        if let retryAfter { headers["Retry-After"] = retryAfter }
-        return HTTPReply(status: status, headers: headers, body: body)
-    }
-
-    /// `sendConversationError` + upstream outcome mapping for conversation calls.
-    private func feedbackConversationReply(
-        status: Int,
-        upstreamHeaders: [String: String],
-        body: Data,
-        elapsed: Date? = nil
-    ) -> HTTPReply {
-        switch status {
-        case 200, 201:
-            return feedbackJSONReply(
-                status: status,
-                body: String(decoding: body, as: UTF8.self),
-                elapsed: elapsed,
-                upstreamHeaders: upstreamHeaders
-            )
-        case 400:
-            return Self.json(400, "{\"error\":\"Invalid feedback request\",\"code\":\"feedback_invalid\"}")
-        case 404:
-            return Self.json(404, "{\"error\":\"Feedback ticket not found\",\"code\":\"feedback_not_found\"}")
-        case 409:
-            return Self.json(409, "{\"error\":\"This comment retry does not match the original submission\",\"code\":\"feedback_comment_conflict\"}")
-        case 429:
-            let retryAfter = upstreamHeaders.first { $0.key.lowercased() == "retry-after" }?.value ?? "60"
-            return Self.jsonWithHeaders(
-                429,
-                "{\"error\":\"Too many feedback requests. Please try again later.\",\"code\":\"feedback_rate_limited\"}",
-                headers: ["Retry-After": retryAfter]
-            )
-        case 401, 403:
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_integration_unavailable\"}")
-        default:
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-    }
-
-
-    private func feedbackSourceInvalidReply() -> HTTPReply {
-        Self.json(400, "{\"error\":\"Invalid feedback request\",\"code\":\"feedback_invalid\"}")
-    }
-
-    private func feedbackAvailabilityReply(_ failure: FeedbackRouteFailure) -> HTTPReply {
-        switch failure {
-        case .invalidSource:
-            return feedbackSourceInvalidReply()
-        case .sourceUnavailable(let source, let reason):
-            feedbackWarn("[product-feedback] source unavailable (\(source): \(reason))")
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_integration_unavailable\"}")
-        case .routeBinding(let reason):
-            feedbackWarn("[product-feedback] route binding failed (\(reason))")
-            return Self.jsonWithHeaders(
-                503,
-                "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_integration_unavailable\"}",
-                headers: ["Retry-After": "5"]
-            )
-        case .configuration:
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_integration_unavailable\"}")
-        }
-    }
-
-    public func setHandsConversationForTesting(enabled: Bool, appToken: String?) {
-        lock.lock()
-        handsConversationSessionEnabledForTesting = enabled
-        handsConversationAppTokenOverride = appToken
-        productFeedbackReporterSessionCache.removeAll()
-        lock.unlock()
-    }
-
-    public func productFeedbackTickets(
-        authorization: String?,
-        clientKindHeader: String = "",
-        cursor: String? = nil
-    ) -> HTTPReply {
-        let listStartedAt = Date()
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        lock.lock()
-        let verified = accounts.values.first { $0.id == userId }?.emailVerified == true
-        lock.unlock()
-        guard verified else {
-            return Self.json(403, "{\"error\":\"Email verification required\",\"code\":\"account_unverified\"}")
-        }
-        let source: String
-        do {
-            source = try Self.feedbackSource(clientKindHeader)
-        } catch {
-            return feedbackSourceInvalidReply()
-        }
-        let environment: FeedbackRouteEnvironment
-        do {
-            environment = try feedbackRouteEnvironment(source: source, userId: userId)
-        } catch let failure as FeedbackRouteFailure {
-            return feedbackAvailabilityReply(failure)
-        } catch {
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_integration_unavailable\"}")
-        }
-        let conversationToken = environment.conversationToken.isEmpty
-            ? environment.appToken
-            : environment.conversationToken
-        guard !environment.baseURL.isEmpty, !conversationToken.isEmpty else {
-            return Self.json(404, "{\"error\":\"Not found\"}")
-        }
-        let reporterId: String
-        do {
-            reporterId = try ensureFeedbackRouteBinding(userId: userId, environment: environment)
-        } catch let failure as FeedbackRouteFailure {
-            return feedbackAvailabilityReply(failure)
-        } catch {
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let bearer: String
-        do {
-            bearer = try feedbackBearer(userId: userId, reporterId: reporterId, environment: environment)
-        } catch {
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        var handsCursor: String?
-        if let cursor, !cursor.isEmpty {
-            guard !environment.cursorSecret.isEmpty else { return feedbackSourceInvalidReply() }
-            do {
-                handsCursor = try Self.feedbackDecodeCursor(
-                    cursor,
-                    route: "ticket_list",
-                    userId: userId,
-                    ticketId: nil,
-                    cursorKey: environment.cursorSecret
-                )
-            } catch {
-                return feedbackSourceInvalidReply()
-            }
-        }
-        var path = "/api/apps/\(environment.appId)/reporter-feedback?limit=50"
-        if let handsCursor {
-            path += "&cursor=" + Self.feedbackPercentEncoded(handsCursor)
-        }
-        let (status, headers, body) = feedbackHandsRequest(
-            environment: environment,
-            method: "GET",
-            path: path,
-            bearer: bearer,
-            reporterId: reporterId
-        )
-        guard status == 200 else {
-            return feedbackConversationReply(status: status, upstreamHeaders: headers, body: body)
-        }
-        var replyBody = String(decoding: body, as: UTF8.self)
-        if !environment.cursorSecret.isEmpty,
-           let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
-           let next = object["next_cursor"] as? String, !next.isEmpty,
-           let encoded = Self.feedbackEncodeCursor(
-               route: "ticket_list",
-               userId: userId,
-               ticketId: nil,
-               handsCursor: next,
-               cursorKey: environment.cursorSecret
-           ) {
-            var rewritten = object
-            rewritten["next_cursor"] = encoded
-            if let data = try? JSONSerialization.data(withJSONObject: rewritten, options: [.sortedKeys]) {
-                replyBody = String(decoding: data, as: UTF8.self)
-            }
-        }
-        return feedbackJSONReply(
-            status: 200,
-            body: replyBody,
-            elapsed: listStartedAt,
-            upstreamHeaders: headers
-        )
-    }
-
-
-    private func handsReporterId(_ userId: String) -> String {
-        let secret = handsFeedbackBaseURLOverride ?? ProcessInfo.processInfo.environment["HANDS_FEEDBACK_REPORTER_ID_SECRET"] ?? "reporter-id-secret"
-        let digest = SHA256.hash(data: Data("\(userId):\(secret)".utf8))
-        return Self.feedbackBase64URL(Data(digest))
-    }
-
-    private func feedbackConversationRejectedReply(authorization: String?) -> HTTPReply? {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        lock.lock()
-        let verified = accounts.values.first { $0.id == userId }?.emailVerified == true
-        lock.unlock()
-        guard verified else {
-            return Self.json(403, "{\"error\":\"Email verification required\",\"code\":\"account_unverified\"}")
-        }
-        return nil
-    }
-
-    public func closeProductFeedbackTicket(
-        authorization: String?,
-        ticketId: String,
-        body: String,
-        clientKindHeader: String = ""
-    ) -> HTTPReply {
-        if let rejected = feedbackConversationRejectedReply(authorization: authorization) { return rejected }
-        let userId = sessionUserId(authorization: authorization)!
-        guard Self.feedbackCanonicalUUID(ticketId) else {
-            return Self.json(404, "{\"error\":\"Feedback ticket not found\",\"code\":\"feedback_not_found\"}")
-        }
-        let reason = ((try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any])?["reason"] as? String
-        guard reason == "completed" || reason == "no_longer_needed" else {
-            return Self.json(400, "{\"error\":\"Feedback close reason is invalid\",\"code\":\"feedback_invalid\"}")
-        }
-        let source: String
-        do { source = try Self.feedbackSource(clientKindHeader) } catch { return feedbackSourceInvalidReply() }
-        let environment: FeedbackRouteEnvironment
-        do {
-            environment = try feedbackRouteEnvironment(source: source, userId: userId)
-        } catch let failure as FeedbackRouteFailure {
-            return feedbackAvailabilityReply(failure)
-        } catch {
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let reporterId: String
-        do {
-            reporterId = try ensureFeedbackRouteBinding(userId: userId, environment: environment)
-        } catch let failure as FeedbackRouteFailure {
-            return feedbackAvailabilityReply(failure)
-        } catch {
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let bearer: String
-        do {
-            bearer = try feedbackBearer(userId: userId, reporterId: reporterId, environment: environment)
-        } catch {
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let (status, headers, upstreamBody) = feedbackHandsRequest(
-            environment: environment,
-            method: "POST",
-            path: "/api/apps/\(environment.appId)/reporter-feedback/\(ticketId)/close",
-            bearer: bearer,
-            reporterId: reporterId,
-            headers: ["Content-Type": "application/json"],
-            body: Data(body.utf8)
-        )
-        return feedbackConversationReply(status: status, upstreamHeaders: headers, body: upstreamBody)
-    }
-
-    public func replyProductFeedbackTicket(
-        authorization: String?,
-        ticketId: String,
-        contentType: String,
-        body: String,
-        clientKindHeader: String = ""
-    ) -> HTTPReply {
-        if let rejected = feedbackConversationRejectedReply(authorization: authorization) { return rejected }
-        let userId = sessionUserId(authorization: authorization)!
-        guard Self.feedbackCanonicalUUID(ticketId) else {
-            return Self.json(404, "{\"error\":\"Feedback ticket not found\",\"code\":\"feedback_not_found\"}")
-        }
-        for part in body.components(separatedBy: "Content-Disposition: form-data") {
-            guard part.contains("filename=\"") else { continue }
-            let lower = part.lowercased()
-            let allowed = lower.contains("content-type: image/png") || lower.contains("content-type: image/jpeg")
-                || lower.contains("content-type: image/webp") || lower.contains("content-type: image/gif")
-            if !allowed {
-                return Self.json(400, "{\"error\":\"Only image attachments are supported\",\"code\":\"feedback_attachment_type_invalid\"}")
-            }
-        }
-        let source: String
-        do { source = try Self.feedbackSource(clientKindHeader) } catch { return feedbackSourceInvalidReply() }
-        let environment: FeedbackRouteEnvironment
-        do {
-            environment = try feedbackRouteEnvironment(source: source, userId: userId)
-        } catch let failure as FeedbackRouteFailure {
-            return feedbackAvailabilityReply(failure)
-        } catch {
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let reporterId: String
-        do {
-            reporterId = try ensureFeedbackRouteBinding(userId: userId, environment: environment)
-        } catch let failure as FeedbackRouteFailure {
-            return feedbackAvailabilityReply(failure)
-        } catch {
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let bearer: String
-        do {
-            bearer = try feedbackBearer(userId: userId, reporterId: reporterId, environment: environment)
-        } catch {
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let (status, headers, upstreamBody) = feedbackHandsRequest(
-            environment: environment,
-            method: "POST",
-            path: "/api/apps/\(environment.appId)/reporter-feedback/\(ticketId)/comments",
-            bearer: bearer,
-            reporterId: reporterId,
-            headers: ["Content-Type": contentType],
-            body: Data(body.utf8)
-        )
-        return feedbackConversationReply(status: status, upstreamHeaders: headers, body: upstreamBody)
-    }
-
-    /// `GET /api/product-feedback/tickets/:ticketId`.
-    public func productFeedbackTicket(
-        authorization: String?,
-        ticketId: String,
-        clientKindHeader: String = "",
-        commentLimit: Int = 50,
-        commentCursor: String? = nil
-    ) -> HTTPReply {
-        let startedAt = Date()
-        if let rejected = feedbackConversationRejectedReply(authorization: authorization) { return rejected }
-        let userId = sessionUserId(authorization: authorization)!
-        guard Self.feedbackCanonicalUUID(ticketId) else {
-            return Self.json(404, "{\"error\":\"Feedback ticket not found\",\"code\":\"feedback_not_found\"}")
-        }
-        guard commentLimit >= 1, commentLimit <= 100 else {
-            return Self.json(400, "{\"error\":\"Invalid feedback request\",\"code\":\"feedback_invalid\"}")
-        }
-        let source: String
-        do { source = try Self.feedbackSource(clientKindHeader) } catch { return feedbackSourceInvalidReply() }
-        let environment: FeedbackRouteEnvironment
-        do {
-            environment = try feedbackRouteEnvironment(source: source, userId: userId)
-        } catch let failure as FeedbackRouteFailure {
-            return feedbackAvailabilityReply(failure)
-        } catch {
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let reporterId: String
-        do {
-            reporterId = try ensureFeedbackRouteBinding(userId: userId, environment: environment)
-        } catch let failure as FeedbackRouteFailure {
-            return feedbackAvailabilityReply(failure)
-        } catch {
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let bearer: String
-        do {
-            bearer = try feedbackBearer(userId: userId, reporterId: reporterId, environment: environment)
-        } catch {
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        var handsCursor: String?
-        if let commentCursor, !commentCursor.isEmpty {
-            guard !environment.cursorSecret.isEmpty else { return feedbackSourceInvalidReply() }
-            do {
-                handsCursor = try Self.feedbackDecodeCursor(
-                    commentCursor,
-                    route: "ticket_comments",
-                    userId: userId,
-                    ticketId: ticketId,
-                    cursorKey: environment.cursorSecret
-                )
-            } catch {
-                return feedbackSourceInvalidReply()
-            }
-        }
-        var path = "/api/apps/\(environment.appId)/reporter-feedback/\(ticketId)?comment_limit=\(commentLimit)"
-        if let handsCursor {
-            path += "&comment_cursor=" + Self.feedbackPercentEncoded(handsCursor)
-        }
-        let (status, headers, body) = feedbackHandsRequest(
-            environment: environment,
-            method: "GET",
-            path: path,
-            bearer: bearer,
-            reporterId: reporterId
-        )
-        guard status == 200 else {
-            return feedbackConversationReply(status: status, upstreamHeaders: headers, body: body)
-        }
-        var replyBody = String(decoding: body, as: UTF8.self)
-        if !environment.cursorSecret.isEmpty,
-           let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
-           let next = object["next_comment_cursor"] as? String, !next.isEmpty,
-           let encoded = Self.feedbackEncodeCursor(
-               route: "ticket_comments",
-               userId: userId,
-               ticketId: ticketId,
-               handsCursor: next,
-               cursorKey: environment.cursorSecret
-           ) {
-            var rewritten = object
-            rewritten["next_comment_cursor"] = encoded
-            if let data = try? JSONSerialization.data(withJSONObject: rewritten, options: [.sortedKeys]) {
-                replyBody = String(decoding: data, as: UTF8.self)
-            }
-        }
-        return feedbackJSONReply(status: 200, body: replyBody, elapsed: startedAt, upstreamHeaders: headers)
-    }
-
-    /// `GET /api/product-feedback/tickets/:ticketId/attachments/:attachmentId`.
-    public func productFeedbackAttachment(
-        authorization: String?,
-        ticketId: String,
-        attachmentId: String,
-        clientKindHeader: String = ""
-    ) -> HTTPReply {
-        if let rejected = feedbackConversationRejectedReply(authorization: authorization) { return rejected }
-        let userId = sessionUserId(authorization: authorization)!
-        guard Self.feedbackCanonicalUUID(ticketId), Self.feedbackCanonicalUUID(attachmentId) else {
-            return Self.json(404, "{\"error\":\"Feedback ticket not found\",\"code\":\"feedback_not_found\"}")
-        }
-        let source: String
-        do { source = try Self.feedbackSource(clientKindHeader) } catch { return feedbackSourceInvalidReply() }
-        let environment: FeedbackRouteEnvironment
-        do {
-            environment = try feedbackRouteEnvironment(source: source, userId: userId)
-        } catch let failure as FeedbackRouteFailure {
-            return feedbackAvailabilityReply(failure)
-        } catch {
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let reporterId: String
-        do {
-            reporterId = try ensureFeedbackRouteBinding(userId: userId, environment: environment)
-        } catch let failure as FeedbackRouteFailure {
-            return feedbackAvailabilityReply(failure)
-        } catch {
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let bearer: String
-        do {
-            bearer = try feedbackBearer(userId: userId, reporterId: reporterId, environment: environment)
-        } catch {
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let (status, headers, body) = feedbackHandsRequest(
-            environment: environment,
-            method: "GET",
-            path: "/api/apps/\(environment.appId)/reporter-feedback/\(ticketId)/attachments/\(attachmentId)",
-            bearer: bearer,
-            reporterId: reporterId
-        )
-        guard status == 200 else {
-            return feedbackConversationReply(status: status, upstreamHeaders: headers, body: body)
-        }
-        let contentType = headers.first { $0.key.lowercased() == "content-type" }?.value ?? "application/octet-stream"
-        let disposition = headers.first { $0.key.lowercased() == "content-disposition" }?.value
-        var responseHeaders: [String: String] = [
-            "Content-Type": contentType,
-            "Content-Length": String(body.count),
-            "X-Content-Type-Options": "nosniff",
-            "Cache-Control": "private, no-store",
-        ]
-        if let disposition { responseHeaders["Content-Disposition"] = disposition }
-        return HTTPReply(status: 200, headers: responseHeaders, body: String(decoding: body, as: UTF8.self))
-    }
-
-    // MARK: Seams shared with existing tests
-
-    public func setHandsFeedbackForTesting(baseURL: String?, appId: String?, appToken: String?, appSlug: String? = nil) {
-        lock.lock()
-        handsFeedbackBaseURLOverride = baseURL
-        handsFeedbackAppIdOverride = appId
-        handsFeedbackAppSlugOverride = appSlug
-        handsFeedbackAppTokenOverride = appToken
-        productFeedbackReporterSessionCache.removeAll()
-        productFeedbackRouteBindingSuccesses.removeAll()
-        productFeedbackRouteVerifiedCommitments.removeAll()
-        lock.unlock()
-    }
-
-    public func setHandsFeedbackUpstreamForTesting(_ handler: ((URLRequest) -> (status: Int, headers: [String: String], body: Data))?) {
-        lock.lock(); handsFeedbackUpstreamHandler = handler; lock.unlock()
-    }
-
-    public func submitProductFeedback(authorization: String?, contentType: String, body: String, serverId: String = "", clientKindHeader: String = "") -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        let feedbackStartedAt = Date()
-        lock.lock()
-        let verified = accounts.values.first { $0.id == userId }?.emailVerified == true
-        lock.unlock()
-        guard verified else {
-            return Self.json(403, "{\"error\":\"Email verification required\",\"code\":\"account_unverified\"}")
-        }
-        guard let fields = Self.multipartFields(body: body, contentType: contentType),
-              let submissionId = fields["submission_id"],
-              submissionId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil,
-              let type = fields["type"], ["idea", "problem"].contains(type),
-              let message = fields["message"], !message.isEmpty
-        else {
-            return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
-        }
-        if let rawMetadata = fields["metadata"], !rawMetadata.isEmpty {
-            guard let metadata = (try? JSONSerialization.jsonObject(with: Data(rawMetadata.utf8))) as? [String: Any] else {
-                return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
-            }
-            let nativeKinds = ["ios", "android", "macos", "windows", "linux"]
-            if let clientKind = metadata["client_kind"] as? String, nativeKinds.contains(clientKind) {
-                let platform = metadata["platform"] as? String ?? ""
-                if platform != clientKind || metadata["browser"] != nil {
-                    return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
-                }
-            }
-            if let metadataKind = metadata["client_kind"] as? String,
-               !Self.productFeedbackSources.contains(metadataKind) {
-                return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
-            }
-        }
-        var metadataObject: [String: Any] = [:]
-        if let rawMetadata = fields["metadata"],
-           let parsed = (try? JSONSerialization.jsonObject(with: Data(rawMetadata.utf8))) as? [String: Any] {
-            metadataObject = parsed
-        }
-        if let reportId = fields["feedback_report_id"], !reportId.isEmpty {
-            guard reportId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
-                return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
-            }
-            metadataObject["feedback_report_id"] = reportId.lowercased()
-            metadataObject["surface"] = "agent.report_issue"
-        }
-        let trustedClientKind: String
-        do {
-            trustedClientKind = try Self.feedbackSource(clientKindHeader)
-        } catch {
-            return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
-        }
-        if let metadataKind = metadataObject["client_kind"] as? String, metadataKind != trustedClientKind {
-            return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
-        }
-        let clientKind = metadataObject["client_kind"] as? String
-        if let clientKind, Self.productFeedbackSources.contains(clientKind), clientKind != "web" {
-            var forwarded: [String: Any] = [
-                "client_kind": clientKind,
-                "platform": metadataObject["platform"] as? String ?? clientKind,
-                "product_type": clientKind,
-                "feedback_type": type,
-                "contact_consent": fields["may_contact"] == "true",
-            ]
-            for key in ["client_version", "locale", "os_version"] {
-                if let value = metadataObject[key] { forwarded[key] = value }
-            }
-            metadataObject = forwarded
-        } else {
-            for key in ["browser", "viewport", "web_version", "userId", "reporterId", "baseUrl", "appToken"] {
-                metadataObject.removeValue(forKey: key)
-            }
-        }
-        if ServerScope.isUUID(serverId),
-           let profile = oauth.serverProfile(id: serverId),
-           oauth.memberRole(serverId: serverId, userId: userId) != nil,
-           !profile.slug.isEmpty {
-            lock.lock()
-            let handle = accounts.values.first { $0.id == userId }?.name ?? ""
-            lock.unlock()
-            metadataObject["reporter_attribution"] = [
-                "v": 1,
-                "server_id": serverId,
-                "server_slug": profile.slug,
-                "user_id": userId,
-                "handle": handle,
-            ]
-        }
-        lock.lock()
-        let environment = feedbackLegacyEnvironmentLocked()
-        let appsJSON = handsFeedbackAppsJSONForTesting
-        lock.unlock()
-        guard handsFeedbackConfigured || environment["HANDS_FEEDBACK_BASE_URL"] != nil else {
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_not_configured\"}")
-        }
-        let multiEnabled = evaluateFeatureFlagKey(
-            key: Self.productFeedbackMultiAppFlag,
-            userId: userId,
-            serverId: nil,
-            platform: nil,
-            client: FeatureFlagClientFacts(os: nil, buildNumber: nil, buildType: nil)
-        ).enabled
-        let routeEnvironment: FeedbackRouteEnvironment
-        if multiEnabled {
-            do {
-                routeEnvironment = try Self.feedbackMultiRouteEnvironment(
-                    source: trustedClientKind,
-                    appsJSON: appsJSON,
-                    environment: environment
-                )
-            } catch let failure as FeedbackRouteFailure {
-                return feedbackAvailabilityReply(failure)
-            } catch {
-                return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_integration_unavailable\"}")
-            }
-        } else {
-            routeEnvironment = Self.feedbackLegacyRouteEnvironment(environment)
-        }
-        let reporterId: String
-        do {
-            reporterId = try ensureFeedbackRouteBinding(userId: userId, environment: routeEnvironment)
-        } catch let failure as FeedbackRouteFailure {
-            return feedbackAvailabilityReply(failure)
-        } catch {
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        var presignedJSON: String?
-        if let rawDiagnostics = fields["diagnostics"], !rawDiagnostics.isEmpty {
-            guard let native = clientKind, ["android", "ios", "ohos"].contains(native),
-                  let diagnostics = Self.validatedFeedbackDiagnostics(rawDiagnostics, appId: routeEnvironment.appId)
-            else {
-                return Self.json(400, "{\"error\":\"Invalid feedback diagnostics\",\"code\":\"feedback_diagnostics_invalid\"}")
-            }
-            presignedJSON = "[\("\(diagnostics)")]"
-        }
-        let appSlug = routeEnvironment.appSlug.isEmpty ? routeEnvironment.appId : routeEnvironment.appSlug
-        guard !routeEnvironment.baseURL.isEmpty, !appSlug.isEmpty else {
-            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_not_configured\"}")
-        }
-        let boundary = "raft-boundary-\(UUID().uuidString.lowercased())"
-        var multipart = Data()
-        func appendField(_ name: String, _ value: String) {
-            multipart.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8))
-        }
-        appendField("type", type)
-        appendField("message", message)
-        appendField("submission_id", submissionId)
-        appendField("metadata", Self.serializeJSON(metadataObject))
-        if let contact = fields["may_contact"] { appendField("may_contact", contact) }
-        if let presignedJSON { appendField("presigned", presignedJSON) }
-        multipart.append(Data("--\(boundary)--\r\n".utf8))
-        var request = URLRequest(url: URL(string: "\(routeEnvironment.baseURL)/public/v2/apps/\(appSlug)/feedback")!)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 10
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        let bearerToken = routeEnvironment.appToken.isEmpty ? environment["HANDS_FEEDBACK_APP_TOKEN"] ?? "" : routeEnvironment.appToken
-        if !bearerToken.isEmpty {
-            request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
-        }
-        if !routeEnvironment.clientKey.isEmpty {
-            request.setValue(routeEnvironment.clientKey, forHTTPHeaderField: "X-Hands-Client-Key")
-        }
-        if !routeEnvironment.reporterIdSecret.isEmpty {
-            request.setValue(reporterId, forHTTPHeaderField: "X-Hands-Reporter-Id")
-        }
-        request.httpBody = multipart
-        let upstreamStatus: Int
-        var upstreamHeaders: [String: String] = [:]
-        let upstreamBody: Data
-        lock.lock()
-        let injectedUpstream = handsFeedbackUpstreamHandler
-        lock.unlock()
-        if let injectedUpstream {
-            let result = injectedUpstream(request)
-            upstreamStatus = result.status
-            upstreamHeaders = result.headers
-            upstreamBody = result.body
-        } else {
-            let semaphore = DispatchSemaphore(value: 0)
-            final class UpstreamBox: @unchecked Sendable {
-                var status = 0
-                var headers: [String: String] = [:]
-                var body = Data()
-            }
-            let upstream = UpstreamBox()
-            URLSession.shared.dataTask(with: request) { data, response, _ in
-                if let http = response as? HTTPURLResponse {
-                    upstream.status = http.statusCode
-                    for (key, value) in http.allHeaderFields {
-                        upstream.headers[String(describing: key)] = String(describing: value)
-                    }
-                }
-                upstream.body = data ?? Data()
-                semaphore.signal()
-            }.resume()
-            _ = semaphore.wait(timeout: .now() + 12)
-            upstreamStatus = upstream.status
-            upstreamHeaders = upstream.headers
-            upstreamBody = upstream.body
-        }
-        let upstreamJSON = (try? JSONSerialization.jsonObject(with: upstreamBody)) as? [String: Any] ?? [:]
-        let upstreamCode = upstreamJSON["code"] as? String
-        if upstreamStatus == 201 || upstreamStatus == 200 {
-            let id = upstreamJSON["id"] as? String ?? UUID().uuidString.lowercased()
-            let status = upstreamJSON["status"] as? String ?? "open"
-            let body = "{\"id\":\(jsonString(id)),\"status\":\(jsonString(status))}"
-            var headers: [String: String] = [
-                "Content-Type": AppFallback.jsonContentType,
-                "Cache-Control": "no-store",
-                "Content-Length": String(body.utf8.count),
-            ]
-            headers["Server-Timing"] = Self.feedbackTimingHeader(
-                elapsedMs: Date().timeIntervalSince(feedbackStartedAt) * 1000,
-                upstreamHeaders: upstreamHeaders
-            )
-            return HTTPReply(status: 201, headers: headers, body: body)
-        }
-        if upstreamStatus == 409 {
-            return Self.json(409, "{\"error\":\"This submission was already sent\",\"code\":\"feedback_submission_conflict\"}")
-        }
-        if upstreamStatus == 400, presignedJSON != nil,
-           let upstreamCode, ["presigned_invalid", "presigned_not_found", "presigned_size_mismatch"].contains(upstreamCode) {
-            return Self.json(400, "{\"error\":\"The diagnostics upload was rejected\",\"code\":\"feedback_diagnostics_rejected\"}")
-        }
-        if upstreamStatus == 400 {
-            return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
-        }
-        if upstreamStatus == 401 || upstreamStatus == 403 {
-            let upstreamError = Self.feedbackUpstreamError(upstreamJSON["error"] as? String)
-            return Self.json(503, "{\"error\":\"Feedback integration is temporarily unavailable\",\"code\":\"feedback_integration_unavailable\",\"upstream_status\":\(upstreamStatus),\"upstream_error\":\(jsonString(upstreamError))}")
-        }
-        if upstreamStatus == 413 {
-            return Self.json(413, "{\"error\":\"Feedback attachment is too large\",\"code\":\"feedback_attachment_too_large\"}")
-        }
-        if upstreamStatus == 429 {
-            let retryAfter = upstreamHeaders.first { $0.key.lowercased() == "retry-after" }?.value ?? "60"
-            return HTTPReply(status: 429, headers: ["Content-Type": AppFallback.jsonContentType, "Cache-Control": "no-store", "Retry-After": retryAfter], body: "{\"error\":\"Feedback is rate limited\",\"code\":\"feedback_rate_limited\"}")
-        }
-        return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-    }
-
-
-
-    /// `POST /api/product-events/onboarding-wizard`.
-    public func recordOnboardingWizard(authorization: String?, serverId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let serverEnabled = oauth.serverAnalyticsAllowed(id: serverId), serverEnabled else {
-            return Self.json(204, "")
-        }
-        lock.lock()
-        let shareUsageData = accounts.values.first(where: { $0.id == userId })?.shareUsageData
-        lock.unlock()
-        if shareUsageData == false {
-            return Self.json(204, "")
-        }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let eventType = object["eventType"] as? String, !eventType.isEmpty,
-              let rawMetadata = object["metadata"] as? [String: Any]
-        else {
-            return Self.json(400, "{\"error\":\"Invalid product event\"}")
-        }
-        let stepId = rawMetadata["step_id"] as? String ?? ""
-        if eventType == "onboarding_wizard.step_shown", stepId == "enable-notifications" {
-            return Self.json(400, "{\"error\":\"Only tracked onboarding wizard steps are accepted\"}")
-        }
-        let allowedKeys = ["step_id", "wizard_version", "session_id", "action", "result", "reason"]
-        var sanitized: [String: Any] = [:]
-        for key in allowedKeys {
-            if let value = rawMetadata[key] as? String { sanitized[key] = value }
-        }
-        if let latency = rawMetadata["latency_ms"] as? Double {
-            sanitized["latency_ms"] = Int(latency)
-        } else if let latency = rawMetadata["latency_ms"] as? Int {
-            sanitized["latency_ms"] = latency
-        }
-        let metadataJSON: String
-        if let data = try? JSONSerialization.data(withJSONObject: sanitized, options: [.sortedKeys]) {
-            metadataJSON = String(decoding: data, as: UTF8.self)
-        } else {
-            metadataJSON = "{}"
-        }
-        let record = RecordedProductEvent(
-            subjectType: "onboarding_wizard",
-            subjectId: serverId,
-            eventType: eventType,
-            actorType: "human",
-            actorId: userId,
-            source: "web",
-            idempotencyKey: object["idempotencyKey"] as? String,
-            metadataJSON: metadataJSON
-        )
-        productEventStore.append(record)
-        return Self.json(204, "")
-    }
-
-    private func authorize(_ authorization: String?) -> Auth {
-        guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return .rejected(Self.missingAuthorization)
-        }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        let id = accessTokens[token]
-        let family = accessTokenFamilies[token]
-        let familyRevoked = family.map { revokedFamilies.contains($0) } ?? false
-        lock.unlock()
-        guard let id, !familyRevoked else { return .rejected(Self.invalidToken) }
-        return .user(id)
-    }
-
-
-    /// Shipped UI catalogs only. Region tags collapse inside `en` and `zh-cn`; `zh-TW` and `fr` do not.
-    static func normalizeDisplayLocale(_ raw: String) -> String? {
-        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if value.isEmpty { return nil }
-        if value == "en" || value.hasPrefix("en-") { return "en" }
-        if value == "zh-cn" || value == "zh" || value == "zh-hans" || value == "zh-hans-cn" { return "zh-cn" }
-        return nil
-    }
-
-
-
-    private static let reservedAgentNames: Set<String> = [
-        "all", "human", "humans", "agent", "agents", "here", "idle", "busy", "system", "reminders",
-    ]
-
-    /// Final handles stay unclaimed until profile setup. The stored name is `pending_` plus 20 hex characters.
-    static func pendingHandle(taken: Set<String>) -> String {
-        for _ in 0..<10 {
-            let handle = "pending_\(randomHex(10))"
-            if !taken.contains(handle) { return handle }
-        }
-        return "pending_\(randomHex(10))"
-    }
-
-    static func slugifyUserName(_ seed: String) -> String {
-        let lowered = seed.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        var normalized = ""
-        for scalar in lowered.unicodeScalars {
-            let value = scalar.value
-            let allowed = (value >= 97 && value <= 122) || (value >= 48 && value <= 57) || value == 95 || value == 45
-            normalized.append(allowed ? Character(scalar) : "-")
-        }
-        normalized = trimHyphens(normalized)
-        let prefixed = normalized.first?.isLetter == true ? normalized : "user-\(normalized)"
-        var compact = ""
-        var previousHyphen = false
-        for character in prefixed {
-            if character == "-" {
-                if previousHyphen { continue }
-                previousHyphen = true
-            } else {
-                previousHyphen = false
-            }
-            compact.append(character)
-        }
-        compact = trimHyphens(compact)
-        let fallback = compact.isEmpty ? "user-account" : compact
-        return fallback.count >= 5 ? fallback : "\(fallback)-user"
-    }
-
-    static func availableUserName(seed: String, taken: Set<String>) -> String {
-        let base = slugifyUserName(seed)
-        if !taken.contains(base) { return base }
-        for suffix in 1..<100 {
-            let candidate = "\(base)-\(suffix + 1)"
-            if !taken.contains(candidate) { return candidate }
-        }
-        return "\(base)-\(randomHex(2))"
-    }
-
-
-
-    /// `dm:@reminders` names an agent's private reminder conversation, so the handle is reserved.
-    static func isReservedAgentName(_ name: String) -> Bool {
-        var normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalized.hasPrefix("@") { normalized.removeFirst() }
-        return reservedAgentNames.contains(normalized.lowercased())
-    }
-
-
-    private static let maxProfileAvatarBytes = 5 * 1024 * 1024
-
-    public static func sha256Hex(_ value: String) -> String {
-        sha256(value)
-    }
-
-
-
-
-
-    static func refreshAttempt(_ header: String?) -> String? {
-        guard let header else { return nil }
-        let trimmed = header.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.wholeMatch(of: /^arf_[0-9a-f]{16}$/) != nil else { return nil }
-        return trimmed
-    }
-
-    static func refreshInstallation(_ header: String?) -> String? {
-        guard let header else { return nil }
-        let trimmed = header.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.wholeMatch(of: /^ari_[0-9a-f]{32}$/) != nil else { return nil }
-        return trimmed
-    }
-
-    public static func signSocialAuthState(_ state: SocialAuthState) -> String {
-        let header = base64url(Data("{\"alg\":\"HS256\",\"typ\":\"JWT\"}".utf8))
-        var payload: [String: Any] = [
-            "provider": state.provider,
-            "mode": state.mode,
-            "nonce": state.nonce,
-            "kind": state.kind,
-            "mobileRequestId": state.mobileRequestId,
-            "iss": "slock-social-auth",
-            "aud": "social-auth-state",
-            "exp": Int(Date().timeIntervalSince1970) + 600,
-        ]
-        if let desktopNonce = state.desktopNonce {
-            payload["desktopNonce"] = desktopNonce
-        }
-        if let returnTo = state.returnTo {
-            payload["returnTo"] = returnTo
-        }
-        if let linkUserId = state.linkUserId {
-            payload["linkUserId"] = linkUserId
-        }
-        if state.linkOnConflict {
-            payload["linkOnConflict"] = true
-        }
-        let encoded = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
-        let body = base64url(encoded)
-        let mac = Data(HMAC<SHA256>.authenticationCode(for: Data("\(header).\(body)".utf8), using: stateKey))
-        return "\(header).\(body).\(base64url(mac))"
-    }
-
-    public static func verifySocialAuthState(_ token: String) -> SocialAuthState? {
-        let parts = token.split(separator: ".").map(String.init)
-        guard parts.count == 3 else { return nil }
-        let signing = Data("\(parts[0]).\(parts[1])".utf8)
-        let expected = Data(HMAC<SHA256>.authenticationCode(for: signing, using: stateKey))
-        guard let given = base64urlDecode(parts[2]), given == expected else { return nil }
-        guard let payload = base64urlDecode(parts[1]),
-              let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
-              let provider = object["provider"] as? String,
-              let mode = object["mode"] as? String,
-              let nonce = object["nonce"] as? String,
-              let kind = object["kind"] as? String,
-              let requestId = object["mobileRequestId"] as? String,
-              (object["iss"] as? String) == "slock-social-auth",
-              (object["aud"] as? String) == "social-auth-state"
-        else { return nil }
-        let exp = (object["exp"] as? NSNumber)?.intValue ?? (object["exp"] as? Int) ?? 0
-        if exp < Int(Date().timeIntervalSince1970) { return nil }
-        return SocialAuthState(
-            provider: provider,
-            mode: mode,
-            nonce: nonce,
-            kind: kind,
-            mobileRequestId: requestId,
-            desktopNonce: object["desktopNonce"] as? String,
-            returnTo: object["returnTo"] as? String,
-            linkUserId: object["linkUserId"] as? String,
-            linkOnConflict: object["linkOnConflict"] as? Bool ?? false
-        )
-    }
-
-    private static let stateKey = SymmetricKey(data: Data(SHA256.hash(data: Data("slock-social-auth-state".utf8))))
-
-
-
-
-
-
-
-
-
-
-
-    private func verifyMobileAppEmailUnsubscribeToken(_ token: String) -> (userId: String, locale: String)? {
-        guard !token.isEmpty, token.count <= 512 else { return nil }
-        let parts = token.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
-        guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
-        let expected = Self.mobileAppUnsubscribeSignature(payload: parts[0], secret: mobileAppEmailUnsubscribeSecret)
-        guard parts[1] == expected else { return nil }
-        guard let data = Self.base64urlDecode(parts[0]),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object.keys.sorted().joined(separator: ",") == "locale,sub,typ,v"
-        else { return nil }
-        let version = (object["v"] as? NSNumber)?.intValue ?? (object["v"] as? Int)
-        guard version == 1,
-              (object["typ"] as? String) == "mobile-app-email-unsubscribe",
-              let userId = object["sub"] as? String,
-              Self.isMobileUnsubscribeUserId(userId),
-              let locale = object["locale"] as? String,
-              locale == "en" || locale == "zh-cn"
-        else { return nil }
-        return (userId, locale)
-    }
-
-    /// `GET /api/email/mobile-app/unsubscribe`. A valid token shows the confirmation page and writes nothing.
-    public func mobileAppEmailUnsubscribePage(token: String?) -> HTTPReply {
-        guard let token, let identity = verifyMobileAppEmailUnsubscribeToken(token) else {
-            return Self.mobileAppUnsubscribeInvalid()
-        }
-        let copy = Self.mobileAppUnsubscribeCopy(identity.locale)
-        let action = "/api/email/mobile-app/unsubscribe?token=\(Self.urlQuery(token))&source=visible"
-        let body = "<h1 style=\"margin:0 0 12px;font-size:22px;\">\(copy.confirmationHeading)</h1><p style=\"margin:0 0 20px;line-height:1.5;\">\(copy.confirmationBody)</p><form method=\"post\" action=\"\(action)\"><input type=\"hidden\" name=\"List-Unsubscribe\" value=\"One-Click\"><button type=\"submit\" style=\"cursor:pointer;padding:10px 16px;border:2px solid #141111;border-radius:8px;background:#fe7da8;color:#141111;font:inherit;font-weight:700;box-shadow:2px 2px 0 #141111;\">\(copy.submit)</button></form>"
-        return Self.mobileAppUnsubscribeHTML(lang: copy.htmlLang, title: copy.confirmationTitle, body: body)
-    }
-
-    /// `POST /api/email/mobile-app/unsubscribe`. One-click is an empty 200. A visible submit is the success page.
-    public func mobileAppEmailUnsubscribeSubmit(token: String?, source: String?, body: String) -> HTTPReply {
-        guard let token, let identity = verifyMobileAppEmailUnsubscribeToken(token),
-              Self.formField(body, "List-Unsubscribe") == "One-Click"
-        else { return Self.mobileAppUnsubscribeInvalid() }
-        recordMobileAppEmailOptOut(userId: identity.userId)
-        let copy = Self.mobileAppUnsubscribeCopy(identity.locale)
-        if source == "visible" {
-            let page = "<h1 style=\"margin:0 0 12px;font-size:22px;\">\(copy.successHeading)</h1><p style=\"margin:0;line-height:1.5;\">\(copy.successBody)</p>"
-            return Self.mobileAppUnsubscribeHTML(lang: copy.htmlLang, title: copy.successTitle, body: page)
-        }
-        return Self.text(200, "")
-    }
-
-    private func recordMobileAppEmailOptOut(userId: String) {
-        lock.lock()
-        guard let account = accounts.values.first(where: { $0.id == userId }) else {
-            lock.unlock()
-            return
-        }
-        let email = Self.normalize(account.email)
-        guard !email.isEmpty else {
-            lock.unlock()
-            return
-        }
-        let audienceId = "mobile-app-lifecycle"
-        mobileAppEmailContactsByKey["\(audienceId)\n\(email)"] = MobileAppEmailContact(
-            userId: userId,
-            email: email,
-            audienceId: audienceId,
-            status: "unsubscribed",
-            optedOutAt: Date()
-        )
-        let emailIds = storedMobileAppEmailJourneys.compactMap { row -> String? in
-            guard row.journeyKey == "first_computer_mobile_app_48h",
-                  row.day1Status == "scheduled",
-                  let emailId = row.day1EmailId,
-                  !emailId.isEmpty,
-                  row.userId == userId || Self.normalize(row.email) == email
-            else { return nil }
-            return emailId
-        }
-        let cancel = cancelMobileAppEmail
-        lock.unlock()
-        for emailId in emailIds {
-            cancel?(emailId)
-        }
-        guard !emailIds.isEmpty else { return }
-        lock.lock()
-        let canceledAt = Date()
-        for index in storedMobileAppEmailJourneys.indices {
-            let row = storedMobileAppEmailJourneys[index]
-            guard row.journeyKey == "first_computer_mobile_app_48h",
-                  row.day1Status == "scheduled",
-                  let emailId = row.day1EmailId,
-                  emailIds.contains(emailId),
-                  row.userId == userId || Self.normalize(row.email) == email
-            else { continue }
-            storedMobileAppEmailJourneys[index].day1Status = "skipped"
-            storedMobileAppEmailJourneys[index].suppressedReason = "unsubscribed"
-            storedMobileAppEmailJourneys[index].canceledAt = canceledAt
-        }
-        lock.unlock()
-    }
-
-
-
-
-
-
-
-
-
-
-
-    private static let appleNotConfigured = json(404, "{\"code\":\"provider_not_configured\",\"error\":\"Apple sign-in is not configured\"}")
-    private static let nativeAppleInvalidRequest = json(400, "{\"code\":\"invalid_request\",\"error\":\"Native Apple sign-in requires the iOS platform and app environment\"}")
-    private static let nativeAppleInvalidCredential = json(400, "{\"code\":\"native_apple_invalid_credential\",\"error\":\"Apple sign-in credential was invalid\"}")
-    private static let nativeAppleAuthRequired = json(401, "{\"code\":\"auth_required\",\"error\":\"Apple account linking requires authentication\"}")
-    private static let nativeAppleLinkMismatch = json(403, "{\"code\":\"link_user_mismatch\",\"error\":\"Apple account linking does not match the authenticated user\"}")
-    private static let nativeAppleRequestExpired = json(410, "{\"code\":\"native_apple_request_expired\",\"error\":\"Apple sign-in request expired\"}")
-    private static let nativeAppleRequestConsumed = json(410, "{\"code\":\"native_apple_request_consumed\",\"error\":\"Apple sign-in request was already used\"}")
-
-
-
-
-    private func nativeAppleAvailable() -> Bool {
-        lock.lock()
-        let configured = !nativeAppleClientId.isEmpty && !nativeAppleClientSecret.isEmpty
-        let gate = appleLoginPlatforms.contains("mobile")
-        lock.unlock()
-        return configured && gate
-    }
-
-    public static func signNativeAppleRequestToken(secret: String, requestId: String, mode: String, codeChallenge: String, expiresAt: Date, userId: String? = nil) -> String {
-        let header = base64url(Data("{\"alg\":\"HS256\",\"typ\":\"JWT\"}".utf8))
-        var payload: [String: Any] = [
-            "kind": "native_apple_ios",
-            "requestId": requestId,
-            "mode": mode,
-            "codeChallenge": codeChallenge,
-            "iss": "slock-native-apple-auth",
-            "aud": "native-apple-auth-request",
-            "exp": Int(expiresAt.timeIntervalSince1970),
-        ]
-        if let userId { payload["userId"] = userId }
-        let encoded = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
-        let body = base64url(encoded)
-        let key = SymmetricKey(data: Data(secret.utf8))
-        let mac = Data(HMAC<SHA256>.authenticationCode(for: Data("\(header).\(body)".utf8), using: key))
-        return "\(header).\(body).\(base64url(mac))"
-    }
-
-
-    private func parseAppleIdentity(_ token: String) -> AppleIdentityClaims? {
-        let parts = token.split(separator: ".").map(String.init)
-        guard parts.count == 3,
-              let headerData = Self.base64urlDecode(parts[0]),
-              let header = try? JSONSerialization.jsonObject(with: headerData) as? [String: Any],
-              header["alg"] as? String == "RS256",
-              let payloadData = Self.base64urlDecode(parts[1]),
-              let object = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any],
-              object["iss"] as? String == "https://appleid.apple.com",
-              object["aud"] as? String == nativeAppleClientId,
-              let subject = object["sub"] as? String, !subject.isEmpty,
-              let nonce = object["nonce"] as? String, !nonce.isEmpty
-        else { return nil }
-        let exp = (object["exp"] as? NSNumber)?.intValue ?? (object["exp"] as? Int) ?? 0
-        if exp < Int(Date().timeIntervalSince1970) { return nil }
-        let rawEmail = (object["email"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        if rawEmail.isEmpty {
-            return AppleIdentityClaims(subject: subject, nonce: nonce, email: nil)
-        }
-        let verified: Bool
-        if let flag = object["email_verified"] as? Bool {
-            verified = flag
-        } else if let flag = object["email_verified"] as? String {
-            verified = flag == "true"
-        } else {
-            verified = false
-        }
-        guard verified else { return nil }
-        return AppleIdentityClaims(subject: subject, nonce: nonce, email: rawEmail)
-    }
-
-    private func mobileAppleAvailable() -> Bool {
-        lock.lock()
-        let configured = configuredSocialAuthProviders.contains("apple")
-        let allowed = appleLoginPlatforms.contains("mobile")
-        lock.unlock()
-        return configured && allowed
-    }
-
-    private func webProviderAvailable(_ provider: String) -> Bool {
-        lock.lock()
-        let configured = configuredSocialAuthProviders.contains(provider)
-        let allowed = appleLoginPlatforms.contains("web")
-        lock.unlock()
-        guard configured else { return false }
-        if provider == "apple" { return allowed }
-        return true
-    }
-
-    private func webAuthorizationURL(provider: String, state: String, nonce: String) -> String {
-        guard provider == "apple" else {
-            return Self.authorizationURL(provider: provider, state: state)
-        }
-        let base = serverURL.hasSuffix("/") ? String(serverURL.dropLast()) : serverURL
-        var components = URLComponents(string: "https://appleid.apple.com/auth/authorize")!
-        components.queryItems = [
-            URLQueryItem(name: "client_id", value: appleClientId),
-            URLQueryItem(name: "redirect_uri", value: "\(base)/api/auth/apple/callback"),
-            URLQueryItem(name: "response_type", value: "code"),
-            URLQueryItem(name: "response_mode", value: "form_post"),
-            URLQueryItem(name: "scope", value: "email"),
-            URLQueryItem(name: "state", value: state),
-            URLQueryItem(name: "nonce", value: nonce),
-        ]
-        return components.string ?? ""
-    }
-
-    private func stateCookie(provider: String, nonce: String) -> String {
-        let encoded = nonce.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? nonce
-        var parts = [
-            "slock_\(provider)_oauth_nonce=\(encoded)",
-            "Path=/api/auth/\(provider)/callback",
-            "Max-Age=600",
-            "HttpOnly",
-            "SameSite=\(provider == "apple" ? "None" : "Lax")",
-        ]
-        if provider == "apple" || serverURL.hasPrefix("https://") {
-            parts.append("Secure")
-        }
-        return parts.joined(separator: "; ")
-    }
-
-
-
-
-
-
-
-
-}
-
-/// One stored agent runtime profile row: the machine it runs on plus any
-/// pending migration release state. The delete-machine path treats these as
-/// the authority on which Computers may still be removed.
-public struct AgentRuntimeProfileFact: Sendable, Equatable {
-    public var agentId: String
-    public var machineId: String
-    public var baselineMachineId: String?
-    public var pendingBeforeMachineId: String?
-    public var pendingAfterMachineId: String?
-    public var migrationStatus: String?
-    public var pendingKind: String?
-    public var pendingReleaseNotesUrl: String?
-
-    public init(
-        agentId: String,
-        machineId: String,
-        baselineMachineId: String? = nil,
-        pendingBeforeMachineId: String? = nil,
-        pendingAfterMachineId: String? = nil,
-        migrationStatus: String? = nil,
-        pendingKind: String? = nil,
-        pendingReleaseNotesUrl: String? = nil
-    ) {
-        self.agentId = agentId
-        self.machineId = machineId
-        self.baselineMachineId = baselineMachineId
-        self.pendingBeforeMachineId = pendingBeforeMachineId
-        self.pendingAfterMachineId = pendingAfterMachineId
-        self.migrationStatus = migrationStatus
-        self.pendingKind = pendingKind
-        self.pendingReleaseNotesUrl = pendingReleaseNotesUrl
-    }
-}
-
-/// Outcome of a target-side agent start attempt during migration arrival.
-public enum MachineMigrationAgentStartOutcome: Sendable, Equatable {
-    /// The daemon accepted the launch; the migration completes.
-    case dispatched
-    /// A gate (for example a held wake lock) suppressed the launch; the
-    /// migration stays in `starting` so the arrival callback can retry.
-    case skipped(String)
-}
-
-/// Outcome of an agent start dispatch (for example a resume-all prompt).
-public enum AgentStartDispatchOutcome: Sendable, Equatable {
-    /// The daemon accepted the start and will run the agent.
-    case dispatched
-    /// A gate (for example a held wake lock) suppressed the start.
-    case skipped(String)
-}
-
-/// Outcome of the Built-in model catalog check for a target Computer.
-public enum BuiltinModelCatalogResult: Sendable, Equatable {
-    case supported
-    case modelAbsent
-    case catalogUnavailable
-}
-
-/// Result of one machine-backed agent surface read.
-public enum AgentSurfaceResult: Sendable, Equatable {
-    case ok(String)
-    case machineUnassigned
-    case machineOffline
-    case machineTimeout
-}
-
-/// A code-shaped source-archive failure reported by the source Computer.
-public struct MachineMigrationArchiveFailure: Error, Sendable, Equatable {
-    public let code: String
-
-    public init(code: String) {
-        self.code = code
-    }
-}
-
-/// Test-observable mirror of the in-memory machine migration row.
-public struct MachineMigrationStateSnapshot: Sendable, Equatable {
-    public var state: String
-    public var revision: Int
-    public var agentId: String
-    public var sourceMachineId: String
-    public var targetMachineId: String
-    public var transportGeneration: String
-    public var flippedAt: Date?
-    public var arrivedAt: Date?
-    public var completedAt: Date?
-    public var updatedAt: Date
-    public var failureReason: String?
-    public var transportErrorCode: String?
-    public var transportErrorMessage: String?
-    public var autoStartFailureStage: String?
-    public var autoStartFailureCode: String?
-    public var sourceWorkspaceArchivedAt: Date?
-    public var sourceWorkspaceArchiveAttempts: Int
-    public var sourceWorkspaceArchiveLastError: String?
-    public var sourceWorkspaceArchiveRetryAt: Date?
-    public var sourceWorkspaceArchiveAbandonedAt: Date?
-    public var cancelDisposition: String?
-    public var cancelSourceAck: String?
-    public var cancelTargetAck: String?
-    public var cancelSourceAckAt: Date?
-    public var cancelTargetAckAt: Date?
-    public var canceledAt: Date?
-    public var transportTeardownAt: Date?
-}
-
-/// One agent migration row. Terminal rows stay behind as history after the
-/// source Computer is deleted.
-public struct AgentMigrationFact: Sendable, Equatable {
-    public var agentId: String
-    public var sourceMachineId: String
-    public var targetMachineId: String
-    public var state: String
-
-    public init(agentId: String, sourceMachineId: String, targetMachineId: String, state: String) {
-        self.agentId = agentId
-        self.sourceMachineId = sourceMachineId
-        self.targetMachineId = targetMachineId
-        self.state = state
-    }
-}
-
-/// One probed runtime model with its optional reasoning metadata.
-public struct RuntimeModelProbeModel: Sendable, Equatable {
-    public var id: String
-    public var label: String
-    public var supportedReasoningEfforts: [String]?
-    public var defaultReasoningEffort: String?
-
-    public init(
-        id: String,
-        label: String,
-        supportedReasoningEfforts: [String]? = nil,
-        defaultReasoningEffort: String? = nil
-    ) {
-        self.id = id
-        self.label = label
-        self.supportedReasoningEfforts = supportedReasoningEfforts
-        self.defaultReasoningEffort = defaultReasoningEffort
-    }
-}
-
-/// The Computer's answer to a runtime model probe.
-public enum RuntimeModelProbeOutcome: Sendable, Equatable {
-    case live(models: [RuntimeModelProbeModel], default: String?)
-    case models(models: [RuntimeModelProbeModel], default: String?)
-    case missingConfig
-    case noModels
-    case unsupported
-    case error(code: String, retryable: Bool)
-    case failed
-}
-
-/// One agent (runner) thread follow row.
-public struct AgentThreadFollowRecord: Sendable, Equatable {
-    public var serverId: String
-    public var agentId: String
-    public var threadChannelId: String
-    public var parentMessageId: String
-    public var followedAt: Date
-    public var reason: String
-    public var doneAt: Date?
-    public var unfollowedAt: Date?
-
-    public init(
-        serverId: String,
-        agentId: String,
-        threadChannelId: String,
-        parentMessageId: String,
-        followedAt: Date,
-        reason: String,
-        doneAt: Date? = nil,
-        unfollowedAt: Date? = nil
-    ) {
-        self.serverId = serverId
-        self.agentId = agentId
-        self.threadChannelId = threadChannelId
-        self.parentMessageId = parentMessageId
-        self.followedAt = followedAt
-        self.reason = reason
-        self.doneAt = doneAt
-        self.unfollowedAt = unfollowedAt
-    }
-}
-
-/// One agent login into a server integration service.
-public struct AgentIntegrationLoginRecord: Sendable, Equatable {
-    public var serverId: String
-    public var agentId: String
-    public var clientId: String
-    public var scopes: [String]
-    public var loggedInAt: Date
-
-    public init(serverId: String, agentId: String, clientId: String, scopes: [String], loggedInAt: Date) {
-        self.serverId = serverId
-        self.agentId = agentId
-        self.clientId = clientId
-        self.scopes = scopes
-        self.loggedInAt = loggedInAt
-    }
-}
-
-/// One attachment comment row.
-public struct AttachmentCommentRecord: Sendable, Equatable {
-    public var id: String
-    public var attachmentId: String
-    public var content: String
-    public var anchorJSON: String?
-    public var senderId: String
-    public var senderType: String
-    public var createdAt: Date
-    public var threadChannelId: String?
-    public var hostMessageId: String?
-    public var hostChannelId: String?
-
-    public init(
-        id: String,
-        attachmentId: String,
-        content: String,
-        anchorJSON: String?,
-        senderId: String,
-        senderType: String,
-        createdAt: Date,
-        threadChannelId: String? = nil,
-        hostMessageId: String? = nil,
-        hostChannelId: String? = nil
-    ) {
-        self.id = id
-        self.attachmentId = attachmentId
-        self.content = content
-        self.anchorJSON = anchorJSON
-        self.senderId = senderId
-        self.senderType = senderType
-        self.createdAt = createdAt
-        self.threadChannelId = threadChannelId
-        self.hostMessageId = hostMessageId
-        self.hostChannelId = hostChannelId
-    }
 }

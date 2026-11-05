@@ -41,7 +41,7 @@ FEATURES_RELATIVE = Path("Sources/RaftHTTPServer/Features")
 # Recorded on 2026-11-05 from the tree that introduced this guardrail.
 # The line ceiling is a ratchet: lower it when a slice shrinks the file, never
 # raise it to make a check pass.
-EMAIL_LOGIN_LINE_BASELINE = 30907
+EMAIL_LOGIN_LINE_BASELINE = 29175
 EMAIL_LOGIN_FOR_TESTING_BASELINE = 243
 EMAIL_LOGIN_PRIVATE_FUNC_FOR_TESTING_BASELINE = 0
 
