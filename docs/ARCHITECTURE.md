@@ -299,3 +299,13 @@ suites; still partial: `agents.api` and `socketMembershipRevocation.api`. These 
 large acceptance matrix (agents/channels); they are tracked in `docs/PARITY.tsv`.
 
 Generated knowledge corpus lives in `Sources/RaftHTTPServer/Generated/KnowledgeCorpus.swift` (data-only, outside the Features line ceiling); regenerate from upstream `manual/agent-knowledge` + `manual/recipes` when the corpus changes.
+
+
+## EmailLogin split progress (2026-11-05)
+
+- `Sources/RaftHTTP/EmailLogin.swift`: 34,306 -> 33,249 lines.
+- Moved 109 nested data-model declarations (1,171 lines) into
+  `Sources/RaftHTTP/EmailLoginModels.swift` with no behavior change; the model
+  file is data-only. Next split candidates are the self-contained feature
+  blocks (feedback multi-app, agent migration, agent skills/activity, attested
+  send, channel activity), then R3 domain stores.

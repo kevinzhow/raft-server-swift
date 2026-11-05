@@ -172,82 +172,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var hostedMigrations: [String: HostedMigrationRecord] = [:]
     private var appLoginRequests: [String: AppLoginRequest] = [:]
 
-    private struct AppLoginRequest {
-        var id: String
-        var returnUri: String
-        var codeChallenge: String
-        var status: String
-        var code: String?
-        var userId: String?
-        var expiresAt: Date
-        var consumedAt: Date?
-    }
 
-    private struct HostedMigrationRecord {
-        var agentId: String
-        var serverId: String
-        var supportRef: String
-        var revision: Int
-        var state: String
-        var sourceMachineId: String?
-        var canceledAt: Date?
-        var cancelReason: String?
-        var cancelDispatchAttempts: Int = 0
-        var cancelLastDispatchAt: Date?
-        var cancelErrorCode: String?
-    }
-    private struct MachineMigrationRecord {
-        var agentId: String
-        var serverId: String
-        var supportRef: String
-        var revision: Int
-        var state: String
-        var sourceMachineId: String
-        var targetMachineId: String
-        var transportGeneration: String
-        var transportProvider: String = "object_store"
-        var transportSessionId: String = ""
-        var sourceTokenHash: String = ""
-        var targetTokenHash: String = ""
-        var manifestJSON: String?
-        var manifestChunks: [Int: (sha256: String, sizeBytes: Int)] = [:]
-        var chunkReceipts: [Int: String] = [:]
-        var failureReason: String?
-        var transportErrorCode: String?
-        var transportErrorMessage: String?
-        var transportLostAt: Date?
-        var transportTeardownAt: Date?
-        var canceledAt: Date?
-        var cancelReason: String?
-        var cancelDispatchAttempts: Int = 0
-        var cancelLastDispatchAt: Date?
-        var cancelErrorCode: String?
-        var cancelGeneration: String?
-        var cancelTransportGeneration: String?
-        var cancelDisposition: String?
-        var cancelSourceAck: String?
-        var cancelTargetAck: String?
-        var cancelSourceAckAt: Date?
-        var cancelTargetAckAt: Date?
-        var quiesceReceiptJSON: String?
-        var progressJSON: String?
-        /// Generation consumed by the transition into the current state; lets a
-        /// replayed flip/arrive present the generation it was issued with.
-        var previousTransportGeneration: String?
-        var flippedAt: Date?
-        var arrivedAt: Date?
-        var completedAt: Date?
-        var updatedAt: Date = Date()
-        var sourceWorkspaceArchivedAt: Date?
-        var sourceWorkspaceArchiveAttempts: Int = 0
-        var sourceWorkspaceArchiveLastError: String?
-        var sourceWorkspaceArchiveRetryAt: Date?
-        var sourceWorkspaceArchiveAbandonedAt: Date?
-        var autoStartFailureStage: String?
-        var autoStartFailureCode: String?
-        var arrivalReportPath: String?
-        var arrivalReportSha256: String?
-    }
     private var machineMigrations: [String: MachineMigrationRecord] = [:]
     /// Test seam for the frozen-generation cancel dispatch to a Computer.
     public var agentMigrationCancelDispatch: (@Sendable (_ machineId: String, _ role: String, _ migrationRef: String, _ transportGeneration: String, _ stopAgent: Bool) -> Void)?
@@ -340,30 +265,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
-    private struct HostedModelState {
-        var models: [(id: String, label: String, provider: String)]
-        var defaultModel: String?
-        var defaultLabel: String?
-        var model: String?
-        var label: String?
-        var source: String
-        var locked: Bool
-    }
 
     /// Raft's own default for hosted agents; naming it always follows the provider default.
     private static let hostedDefaultModel = "deepseek-flash"
-    private struct AgentArchiveRecord {
-        var serverId: String
-        var machineId: String?
-        var machineName: String
-        var archivedAt: Date
-        var archivedByUserId: String
-        /// `on_computer`, `deleted`, or `unknown` when the agent cannot own a Computer workspace.
-        var workspaceState: String
-        var pendingOp: String?
-        var lastErrorCode: String?
-        var lastErrorAt: Date?
-    }
 
     private var agentArchiveRecords: [String: AgentArchiveRecord] = [:]
     private var postableChannels: [String: PostableChannel] = [:]
@@ -376,14 +280,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         source: String, agreementId: String?, agreementVersion: Int?
     )] = []
     private var jointProjections: [JointChannelLink] = []
-    private struct ServerMemberEvent {
-        var serverId: String
-        var eventType: String
-        var subjectType: String
-        var subjectId: String
-        var provenanceJSON: String
-        var deliveryQueued: Bool
-    }
     private var serverMemberEvents: [ServerMemberEvent] = []
     private var deletedServerIds: Set<String> = []
     private var sidebarReadAllEnabled = false
@@ -408,16 +304,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var agentChannelJoinedAt: [String: Date] = [:]
     private var agentChannelPosted: Set<String> = []
     private var taskWriteHolds: [String: (seen: Int, latest: Int)] = [:]
-    private struct ReadMutationRecord {
-        var mutationId: String
-        var serverId: String
-        var principalId: String
-        var kind: String
-        var scopeId: String?
-        var fingerprint: String
-        var authoritySeq: Int
-        var state: String
-    }
     private var readMutationRecords: [String: ReadMutationRecord] = [:]
     private var readMutationAuthoritySeq: [String: Int] = [:]
     private var readMutationOrder: [String] = []
@@ -478,13 +364,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Share artifacts store the uploaded PNG bytes and the intrinsic size read
     /// from the IHDR chunk, because the public page advertises the real image
     /// dimensions and the PNG route serves the same bytes the user selected.
-    private struct ShareArtifactRecord {
-        var bytes: Data
-        var width: Int
-        var height: Int
-        var serverId: String
-        var createdAt: Date
-    }
 
     private var shareArtifacts: [String: ShareArtifactRecord] = [:]
     private var timezoneObservations: [String: TimezoneObservation] = [:]
@@ -509,16 +388,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var systemAttentionReceipts: [String: SystemAttentionReceipt] = [:]
     private var hostedAgents: Set<String> = []
     private var threadFollows: [String: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String)] = [:]
-    private struct ThreadUnfollowRecord {
-        var serverId: String
-        var userId: String
-        var threadChannelId: String
-        var parentMessageId: String
-        var unfollowedAt: Date
-        var latestMessageId: String
-        var replyCount: Int
-        var frozenMessages: [(id: String, content: String)]
-    }
     private var threadUnfollows: [String: ThreadUnfollowRecord] = [:]
     private var threadFollowStarts: [String: Date] = [:]
     private var threadFollowerRemovals: [String: (serverId: String, threadChannelId: String, agentId: String)] = [:]
@@ -531,12 +400,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Serializes the freshness gate with the commit it protects, so two
     /// concurrent first replies cannot both pass the gate before either lands.
     private let sendFreshnessCommitLock = NSLock()
-    private struct AttestedSendEventRecord {
-        var eventType: String
-        var agentId: String
-        var messageId: String?
-        var metadataJSON: String
-    }
     private var attestedSendEventRecords: [AttestedSendEventRecord] = []
     private var agentSendActivityRecords: [String: [(title: String, text: String, producerFactId: String?)]] = [:]
     /// Test seam for the daemon capability that makes legacy receive-ack a
@@ -549,12 +412,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var announcementImageAssets: [String: AnnouncementImageAsset] = [:]
     private var announcementImageStorageAvailable = true
 
-    private struct AnnouncementImageAsset {
-        var id: String
-        var announcementId: String
-        var contentType: String
-        var bytes: Data
-    }
     private var announcementDismissals: Set<String> = []
     private var inboxDoneScopes: Set<String> = []
     private var inboxDoneAt: [String: Date] = [:]
@@ -822,103 +679,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return reply
     }
 
-    private struct ActionCardRecord {
-        var messageId: String
-        var serverId: String
-        var requesterAgentId: String
-        var storageChannelId: String
-        var localCarrierChannelId: String
-        var actionType: String
-        var channelName: String?
-        var visibility: String
-        var state: String
-        var executedByUserId: String?
-    }
 
     /// A prepared Marketplace install card. The action payload is rebuilt from
     /// this record on every read, so the message projection never carries a
     /// stale canonical action.
-    private struct MarketplaceInstallCard {
-        var messageId: String
-        var serverId: String
-        var clientRecordId: String
-        var clientKey: String
-        var clientName: String
-        var clientNameSha256: String
-        var agentId: String
-        var agentName: String
-        var scopes: [String]
-        var storageChannelId: String
-        var localCarrierChannelId: String
-        var state: String
-        var executedByUserId: String?
-        var resultJSON: String?
-        var setupUrl: String? = nil
-        var setupRevision: Int = 1
-    }
 
     /// A prepared `integration:register_app` card. The initial client secret
     /// is created at execution time and never lands in card state.
-    private struct IntegrationRegisterCard {
-        var messageId: String
-        var serverId: String
-        var agentId: String
-        var agentName: String
-        var storageChannelId: String
-        var localCarrierChannelId: String
-        var name: String
-        var clientKey: String?
-        var homepageUrl: String?
-        var returnUrl: String
-        var agentManifestUrl: String?
-        var setupUrl: String?
-        var setupDescription: String?
-        var scopes: [String]
-        var state: String
-        var executedByUserId: String?
-        var resultJSON: String?
-    }
 
     /// One committed agent-api send per (server, agent, idempotencyKey).
-    private struct AgentApiSendReceipt {
-        var messageId: String
-        var messageSeq: Int
-        var target: String
-        var content: String
-        var attachmentIds: [String]
-    }
 
-    private struct ManagedMCPServerRecord {
-        var id: String
-        var serverId: String
-        var name: String
-        var provider: String?
-        var authMode: String?
-        var oauthStatus: String?
-        var endpointUrl: String
-        var toolCatalogJSON: String
-        var catalogVersion: Int
-        var credentialHeaderNames: [String] = []
-        var credentialHeaders: [String: String] = [:]
-    }
 
-    private struct FeedbackLocatorRecord {
-        var serverId: String
-        var producerAgentId: String
-        var reportId: String
-        var receiptId: String
-        var capturedAt: Date
-        var runtime: String
-        var nativeStatus: String
-        var nativeLookupMethod: String
-        var nativeLocatorKind: String
-        var hasServedExact: Bool
-        var servedExactSha256: [String]
-        var routeBasis: String?
-        var routeTarget: String?
-        var payloadSha256: String
-        var createdAt: Date
-    }
     private var externalPushWebhooks: [String: (url: String, secret: String)] = [:]
     private var agentStatusProtocolAdoptedAt: [String: Date] = [:]
     private var agentCursorPullState: [String: (lastPulledAt: Date, pendingAcks: Int)] = [:]
@@ -985,24 +756,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     ]
     private var featureFlagRuleRecords: [FeatureFlagRuleRecord] = []
 
-    private struct FeatureFlagRecord {
-        var key: String
-        var enabled = true
-        var killSwitch = false
-        var defaultEnabled = false
-    }
 
-    private struct FeatureFlagRuleRecord {
-        var key: String
-        var stage: String
-        var decision: String
-        var values: [String]
-        var clientOs: [String]?
-        var minClientBuild: Int?
-        var clientBuildTypes: [String]?
-        var priority = 0
-        var createdAt = Date()
-    }
 
     public static let termsVersion = "2026-05-12"
     public static let privacyVersion = "2026-05-12"
@@ -1437,60 +1191,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return key.isValidSignature(signature, for: transcript)
     }
 
-    private struct StoredEnrollmentGrant {
-        var id: String
-        var userId: String
-        var sessionFamilyId: String
-        var secretHash: String
-        var appId: String
-        var protocolVersion: Int
-        var appVersion: String
-        var releaseChannel: String
-        var appInstanceId: String
-        var publicKey: String
-        var nonce: String
-        var attestationState: String
-        var expiresAt: Date
-        var createdAt: Date
-        var consumedAt: Date?
-    }
 
-    private struct StoredNotificationDevice {
-        var id: String
-        var userId: String
-        var appId: String
-        var appVersion: String
-        var releaseChannel: String
-        var appInstanceId: String
-        var publicKey: String = ""
-        var revokedAt: Date? = nil
-    }
 
-    private struct StoredNotificationCredential {
-        var id: String
-        var deviceId: String
-        var userId: String
-        var sessionFamilyId: String
-        var secretHash: String
-        var scope: String
-        var expiresAt: Date
-        var revokedAt: Date? = nil
-    }
 
-    private struct StoredNativeNotificationEvent {
-        var eventId: String
-        var streamSeq: Int
-        var recipientUserId: String
-        var eventKey: String
-        var serverId: String
-        var channelId: String
-        var messageId: String
-        var title: String
-        var body: String
-        var targetUri: String
-        var createdAt: Date
-        var expiresAt: Date
-    }
 
     public enum NativeStreamOpen: Sendable {
         case closed(HTTPReply)
@@ -1867,17 +1570,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// A provider callback already exchanged. The raw code is what `POST /:provider/complete` spends.
-    private struct PendingSocialLink {
-        var token: String
-        var provider: String
-        var providerUserId: String
-        var email: String
-        var returnTo: String?
-        var returnUri: String?
-        var expiresAt: Date
-        var consumed: Bool = false
-        var cancelled: Bool = false
-    }
 
     /// Test seam: the conflict handler creates these; the login/provider
     /// completion paths spend them once.
@@ -2965,14 +2657,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, response)
     }
 
-    private enum NativeAppleClaim {
-        case missing
-        case authRequired
-        case userMismatch
-        case expired
-        case consumed
-        case claimed(String)
-    }
 
     /// Moves `pending_provider` to `provider_processing` before any Apple call. A past row expiry and a link-owner mismatch are decided before that claim.
     private func claimNativeApple(
@@ -3495,11 +3179,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private struct FeatureFlagClientFacts {
-        var os: String?
-        var buildNumber: Int?
-        var buildType: String?
-    }
 
     private static func featureFlagClientFacts(_ object: [String: Any]) -> FeatureFlagClientFacts {
         let osValues: Set<String> = ["android", "ios", "ohos"]
@@ -3694,10 +3373,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private enum SearchViewer {
-        case user(String)
-        case agent(String)
-    }
 
     /// A public channel is searchable by anyone on the server. A thread follows its parent, and a deleted parent hides the thread. Archived channels stay searchable.
     private func messageSearchVisibleLocked(messageChannelId: String, serverId: String?, viewer: SearchViewer) -> Bool {
@@ -5759,62 +5434,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
-    private struct ForwardAttachmentSnapshot {
-        var id: String
-        var filename: String
-        var mimeType: String
-        var sizeBytes: Int
-        var width: Int?
-        var height: Int?
-    }
 
-    private struct ForwardSourceContext {
-        var bundleSourceId: String
-        var sourceTargetId: String?
-        var sourceThreadId: String?
-        var parentChannelId: String?
-        var sourceIsThreadParent: Bool
-        var snapshotId: String?
-        var snapshotType: String
-        var snapshotLabel: String
-        var snapshotLabelVisibility: String
-    }
 
-    private struct ForwardItemRecord {
-        var sourceMessageId: String
-        var exposesPointers: Bool
-        var sourceAuthorUniqueName: String
-        var sourceIsThreadParent: Bool
-        var contentSnapshot: String
-        var sourceTargetId: String?
-        var sourceThreadId: String?
-        var parentChannelId: String?
-        var snapshotId: String?
-        var snapshotType: String
-        var snapshotLabel: String
-        var snapshotLabelVisibility: String
-        var provenanceState: String
-        var attachments: [ForwardAttachmentSnapshot]
-        var attachmentPolicy: String
-    }
 
-    private struct StoredForwardRecord {
-        var sourceIds: [String]
-        var items: [ForwardItemRecord]
-        var destinationTargetId: String
-    }
 
-    private struct PendingForwardSource {
-        var messageId: String
-        var content: String
-        var createdAt: Date
-        var channelId: String
-        var channelKind: String
-        var channelName: String
-        var parentChannelId: String?
-        var senderId: String
-        var attachments: [ChannelAttachment]
-    }
 
     /// Stored forwarded-bundle metadata. The reaction route projects it for the HTTP body and the channel broadcast.
     public func setForwardedBundle(messageId: String, items: [ForwardedSource]) {
@@ -6946,16 +6569,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     /// Missing, zero, or non-numeric limits are 50. A positive limit is capped at 200. The page is the newest rows.
-    private enum PageCursor: Equatable {
-        case absent
-        case value(Int)
-        case invalid
-
-        var value: Int? {
-            if case .value(let value) = self { return value }
-            return nil
-        }
-    }
 
     private static func parsePageCursor(_ raw: String?) -> PageCursor {
         guard let raw else { return .absent }
@@ -8035,37 +7648,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         )
     }
 
-    private struct InboxRow {
-        var scopeId: String
-        var kind: String
-        var channelType: String
-        var parentChannelId: String?
-        var parentChannelType: String?
-        var lastMessageId: String
-        var lastActivityAt: Date
-        var searchText: String
-        var unreadCount: Int
-        var firstUnreadMessageId: String?
-        var firstMentionMessageId: String?
-        var hasMention: Bool
-        var isFollowing: Bool
-        var isDM: Bool
-    }
 
-    private struct InboxGroup {
-        var channelId: String
-        var channelName: String
-        var channelType: String
-        var count: Int
-        var lastActivityAt: Date
-    }
 
-    private struct InboxMessageDetail {
-        var content: String
-        var senderId: String
-        var seq: Int
-        var createdAt: Date
-    }
 
     private func inboxMessageDetails(
         scopeId: String,
@@ -8391,10 +7975,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
-    private enum AgentRead {
-        case failure(HTTPReply)
-        case success(String)
-    }
 
     private func agentReadCredential(_ authorization: String?) -> AgentRead {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
@@ -8960,22 +8540,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return channel.memberIds.contains(userId)
     }
 
-    private enum ReactionTarget {
-        case message(StoredHumanMessage, PostableChannel, String)
-        case ambiguous
-        case missing
-    }
 
-    private struct ActorCursor {
-        var principalId: String
-        var serverId: String
-        var messageId: String
-        var emoji: String
-        var discussionVersion: Int
-        var visibilityHash: String
-        var actorKind: String
-        var actorId: String
-    }
 
     private static func validReactionEmoji(_ raw: String) -> String? {
         let emoji = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -9900,54 +9465,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, Self.userJSON(snapshot))
     }
 
-    private struct MobileOAuthRequest {
-        var id: String
-        var provider: String
-        var mode: String
-        var status: String
-        var codeChallenge: String
-        var returnUri: String
-        var nonce: String
-        var expiresAt: Date
-        var handoffCode: String? = nil
-        var codeHash: String? = nil
-        var profileEmail: String? = nil
-        var profileUserId: String? = nil
-        var profileName: String? = nil
-        var userId: String? = nil
-        var linkOnConflict: Bool = false
-        var intendedAction: String = "login"
-    }
 
-    private struct LiveSession {
-        var userId: String
-        var familyId: String
-    }
 
-    private struct SessionFamily {
-        var userId: String
-        var revokedAt: Date?
-        var revokedReason: String?
-        var revokeCapabilityNonce: String?
-        var capabilityRetainUntil: Date?
-    }
 
-    private struct RetirementReceipt {
-        var userId: String
-        var actorUserId: String
-        var environment: String
-        var terminalState: String
-        var sessionsRevoked: Int
-    }
 
-    private struct DeviceGrant {
-        var deviceCode: String
-        var userCode: String
-        var status: String
-        var approvedByUserId: String?
-        var expiresAt: Date
-        var clientName: String?
-    }
 
     private static func deviceLoginEnabled(_ raw: String?) -> Bool {
         guard let raw else { return true }
@@ -10044,25 +9565,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return json(200, body)
     }
 
-    private struct RotationReceipt {
-        var attemptId: String
-        var installationId: String
-        var userId: String
-        var familyId: String
-        var successor: String
-        var ciphertext: String
-        var expiresAt: Date
-    }
 
-    private struct IssuedRefresh {
-        var accessToken: String
-        var userId: String
-    }
 
-    private enum RefreshOutcome {
-        case rejected
-        case rotated(IssuedRefresh, String)
-    }
 
     private func refreshLocked(refreshToken: String, attemptId: String?, installationId: String?) -> RefreshOutcome {
         if let attemptId, let installationId {
@@ -10113,24 +9617,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return .rotated(IssuedRefresh(accessToken: accessToken, userId: receipt.userId), receipt.successor)
     }
 
-    private struct SocialCompletion {
-        var provider: String
-        var code: String
-        var mode: String
-        var intendedAction: String
-        var email: String
-        var returnTo: String
-        var userId: String?
-        var providerUserId: String?
-        var linkOnConflict: Bool = false
-    }
 
-    private struct LinkedIdentity {
-        var userId: String
-        var provider: String
-        var providerUserId: String
-        var providerEmail: String? = nil
-    }
 
     private static let socialProviders: Set<String> = ["google", "github", "apple"]
     private static let defaultMobileReturnURIs: Set<String> = [
@@ -10160,50 +9647,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return values
     }
 
-    private struct Account {
-        var id: String
-        var email: String
-        var passwordHash: String
-        var passwordCredentialEstablishedAt: Date? = Date()
-        var displayLanguage: String?
-        var name: String
-        var displayName: String? = nil
-        var profileSetupSuggestedHandle: String?
-        var profileSetupProvider: String? = nil
-        var profileSetupCompletedAt: Date? = nil
-        var avatarUrl: String? = nil
-        var description: String? = nil
-        var shareUsageData: Bool? = nil
-        var emailVerified: Bool = false
-        var stagingSelfAccountCapabilityHash: String? = nil
-        var retiredAt: Date? = nil
-        var preferredLanguage: String? = nil
-        var preferredTimezone: String? = nil
-        var preferredTranslationMode: String = "off"
-        var autoTranslationEnabled: Bool = false
-        var preferredTranslationDisplay: String = "translated"
-        var preferredTimeFormat: String? = nil
-        var preferredMessageBodyFontSize: String? = nil
-        var referralSource: String? = nil
-        var referralSourceOther: String? = nil
-        var referralSourceSkippedAt: Date? = nil
-    }
 
-    private struct Request {
-        var email: String
-        var password: String
-        var pendingLinkToken: String? = nil
-    }
 
-    private struct Issue {
-        var path: String
-        var message: String
-    }
 
-    private enum Parsed {
-        case request(Request)
-        case invalid([Issue])
-    }
 
     private static func parse(_ body: String) -> Parsed {
         guard let data = body.data(using: .utf8),
@@ -10219,138 +9665,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return .request(Request(email: email ?? "", password: password ?? "", pendingLinkToken: pendingLinkToken))
     }
 
-    private struct JointChannelLink {
-        var localChannelId: String
-        var canonicalChannelId: String
-        var serverId: String
-        var status: String = "active"
-    }
 
-    private struct PostableChannel {
-        var serverId: String
-        var memberIds: Set<String>
-        var kind: String = "channel"
-        var agentId: String? = nil
-        var parentChannelId: String? = nil
-        var parentMessageId: String? = nil
-        var archived: Bool = false
-        var deletedAt: Date? = nil
-        var name: String = ""
-    }
 
-    private struct StoredMention {
-        var id: String
-        var messageId: String
-        var channelId: String
-        var senderId: String
-        var targetType: String
-        var targetId: String
-        var handle: String
-        var notifiableAtSend: Bool
-        var createdAt: Date = Date()
-        var notifiedAt: Date?
-        var notifiedByType: String?
-        var notifiedById: String?
-        var notifiedAction: String?
-        var terminalCode: String? = nil
-    }
 
-    private struct AgentCredential {
-        var id: String = UUID().uuidString.lowercased()
-        var agentId: String
-        var scopes: Set<String>
-        var name: String
-        var createdAt: Date = Date()
-        var lastUsedAt: Date?
-        var revokedAt: Date?
-    }
 
-    private struct MentionInput {
-        var type: String
-        var id: String
-        var name: String
-    }
 
-    private struct ServerAgent {
-        var id: String
-        var serverId: String
-        var name: String
-        var avatarUrl: String?
-        var status: String = "inactive"
-    }
 
-    private struct JoinLinkRecord {
-        var id: String
-        var token: String
-        var serverId: String
-        var role: String
-        var createdAt: Date
-        var expiresAt: Date?
-        var maxUses: Int?
-        var useCount: Int
-        var revokedAt: Date?
-    }
 
-    private struct SystemAttentionIncident {
-        var id: String
-        var serverId: String
-        var machineId: String
-        var provider: String
-        var windowKey: String
-        var activationGeneration: Int
-        var affectedAgentIds: [String]
-        var activatedAt: Date
-        var lastObservedAt: Date
-        var resetsAt: Date?
-        var state: String
-    }
 
-    private struct SystemAttentionReceipt {
-        var seenAt: Date?
-        var dismissedAt: Date?
-    }
 
-    private struct StoredReaction {
-        var messageId: String
-        var emoji: String
-        var reactorId: String
-        var reactorType: String
-    }
 
-    private struct StoredMessageMention: Equatable {
-        var type: String
-        var id: String
-        var name: String
-    }
 
-    private struct StoredHumanMessage {
-        var id: String
-        var channelId: String
-        var senderId: String
-        var content: String
-        /// Server-wide message sequence. Assigned when the row is appended.
-        var seq: Int = 0
-        var randomId: String?
-        var attachmentIds: [String] = []
-        var messageType: String = "chat"
-        var senderType: String = "user"
-        var createdAt: Date = Date()
-        var actionKind: String? = nil
-        var taskStatus: String? = nil
-        var taskNumber: Int? = nil
-        var taskAssigneeType: String? = nil
-        var taskAssigneeId: String? = nil
-        var taskClaimedAt: String? = nil
-        var taskCompletedAt: String? = nil
-        var senderTimezone: String? = nil
-        var externalMessageId: String? = nil
-        var externalProvider: String? = nil
-        var externalSenderName: String? = nil
-        var systemSubtype: String? = nil
-        var causalActorType: String? = nil
-        var causalActorId: String? = nil
-        var mentions: [StoredMessageMention] = []
-    }
 
     public func removeChannelMemberForTesting(channelId: String, userId: String) {
         oauth.removeChannelHuman(channelId: channelId, userId: userId)
@@ -10713,11 +10038,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
-    private enum ChannelProbeAccess {
-        case allowed
-        case residue
-        case hidden
-    }
 
     /// A probe on a channel the caller cannot currently read. Missing and
     /// hidden answer the same way; receiver-owned residue is acknowledged
@@ -10987,22 +10307,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
-    private struct ChannelAttachment {
-        var id: String
-        var channelId: String
-        var uploaderId: String
-        var filename: String
-        var messageId: String?
-        var messagePosition: Int?
-        var mimeType: String? = nil
-        var sizeBytes: Int? = nil
-        var width: Int? = nil
-        var height: Int? = nil
-        var uploaderType: String = "user"
-        var createdAt: Date = Date()
-        var thumbnailKey: String? = nil
-        var storageKey: String? = nil
-    }
 
     public struct ChannelMessageEvent: Equatable, Sendable {
         public var room: String
@@ -11128,10 +10432,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private static let returnURINotAllowed = json(400, "{\"code\":\"return_uri_not_allowed\",\"error\":\"Mobile OAuth return URI is not allowed\"}")
     private static let termsChanged = json(409, "{\"error\":\"TERMS_CHANGED\",\"legal\":\(legalObject)}")
 
-    private enum Auth {
-        case user(String)
-        case rejected(HTTPReply)
-    }
 
     /// The user id behind a live access token. A missing or unknown bearer is nil.
     public func sessionUserId(authorization: String?) -> String? {
@@ -11319,10 +10619,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return context
     }
 
-    private enum AgentAuthority {
-        case allowed(userId: String, role: String, info: OAuthLedger.AgentManagementInfo)
-        case denied(HTTPReply)
-    }
 
     private func agentAuthority(_ authorization: String?, agentId: String) -> AgentAuthority {
         guard let userId = sessionUserId(authorization: authorization) else {
@@ -11345,34 +10641,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// The upstream server capability matrix for the two lifecycle verbs this
     /// file answers: members hold `controlAgentRuntime`, only owner/admin hold
     /// `deleteAgents`; the human creator always holds the acting authority.
-    private enum AgentLifecycleCapability {
-        case controlRuntime
-        case deleteAgent
 
-        var denialMessage: String {
-            switch self {
-            case .controlRuntime:
-                return "The `controlAgentRuntime` capability or human creator authority is required to control agents"
-            case .deleteAgent:
-                return "The `deleteAgents` capability or human creator authority is required to delete agents"
-            }
-        }
-
-        func granted(role: String, isCreator: Bool) -> Bool {
-            switch self {
-            case .controlRuntime:
-                return role != "guest" || isCreator
-            case .deleteAgent:
-                return role == "owner" || role == "admin" || isCreator
-            }
-        }
-    }
-
-    private struct AgentLifecycleActor {
-        var userId: String
-        var role: String
-        var info: OAuthLedger.AgentManagementInfo
-    }
 
     /// Resolve the caller against a live agent of `serverId`, or the exact
     /// refusal the upstream route answers before it touches runtime state.
@@ -11427,13 +10696,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// `GET /api/agent-runtime-providers/:kind`. Owners and admins can ask
     /// whether a hosted provider is usable for this server; the answer never
     /// exposes the deployment token or the provider base URL.
-    private struct AttachedComputer {
-        let id: String
-        let serverId: String
-        let userId: String
-        let name: String
-        let apiKey: String
-    }
 
     private var attachedComputers: [String: AttachedComputer] = [:]
     private var computerAttachEnabledOverride: Bool?
@@ -14164,12 +13426,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// to `starting`, then dispatch the target start. An archive failure after
     /// the flip is recorded for the background retry and does not fail the
     /// migration; a failed/suppressed start keeps the arrival retryable.
-    private struct MigrationArrivalContext {
-        var supportRef: String
-        var sourceMachineId: String
-        var agentId: String
-        var archiveCallback: (@Sendable (_ machineId: String, _ migrationRef: String, _ agentId: String) async throws -> Void)?
-    }
 
     /// Phase 1 of the arrival callback: cheap validity check plus the input the
     /// source archive dispatch needs. The callback is idempotent once the
@@ -14839,11 +14095,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private struct OnboardingAdoptionChange {
-        var field: String
-        var before: String?
-        var after: String?
-    }
 
     private func onboardingAdoptionState(
         serverId: String,
@@ -15213,10 +14464,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Shared guard for the hosted model reads and writes: agent membership,
     /// owner/admin/creator authority, an existing hosted runtime, and an
     /// active provision. Returns the agent id or the reply to send.
-    private enum HostedModelGuardResult {
-        case allowed(String)
-        case refused(HTTPReply)
-    }
 
     private func hostedModelGuard(
         authorization: String?,
@@ -15354,28 +14601,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         value.range(of: agentConnectionIDPattern, options: .regularExpression) != nil
     }
 
-    private enum AgentConnectionLoadResult {
-        case loaded(agentId: String, userId: String, role: String)
-        case refused(HTTPReply)
-    }
 
-    private struct HostedConnectionConnectorRecord {
-        var id: String
-        var account: String
-        var creatorRaftUserId: String?
-        var createdAt: String?
-        var current: Bool
-    }
 
-    private struct HostedConnectionStatusRecord {
-        var connected: Bool
-        var account: String?
-        var connectedAt: String?
-        var connectedBy: String?
-        var scopes: [String]
-        var connectorId: String?
-        var connectors: [HostedConnectionConnectorRecord]
-    }
 
     private func agentConnectionProviderCall(
         method: String,
@@ -16079,11 +15306,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             .replacingOccurrences(of: "-", with: "")
     }
 
-    private struct UserOnboarding {
-        var reminderOptOut = false
-        var dismissed: [String: Date] = [:]
-        var currentStep: String?
-    }
 
     private static let onboardingSteps: Set<String> = [
         "add-computer", "create-agent", "invite-teammates", "join-community", "notifications",
@@ -16546,10 +15768,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
-    private enum RuntimeProbeResolution {
-        case live(models: [RuntimeModelProbeModel], default: String?)
-        case notLive(reason: String)
-    }
 
     private static func resolveRuntimeModelProbe(
         machineId: String,
@@ -18019,19 +17237,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
-    private struct MachineRecord {
-        var id: String
-        var serverId: String
-        var userId: String
-        var name: String
-        var description: String?
-        var apiKey: String?
-        var apiKeyFingerprint: String? = nil
-        var legacyKeyMigratedAt: Date? = nil
-        var hostname: String? = nil
-        var lastSeenAt: Date? = nil
-        var runtimes: [String] = []
-    }
 
     /// `sha256(apiKey)` hex, first 16 characters — the wire identity the legacy
     /// daemon also writes into its local `owner.json`, so the roster picker and
@@ -21730,11 +20935,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
-    private enum SidebarPinnedChannelResolution {
-        case missing
-        case channel((kind: String, id: String))
-        case dm((kind: String, id: String), legacyId: String)
-    }
 
     private func sidebarHumanDMChannelId(peerId: String, userId: String, serverId: String) -> String? {
         oauth.channelsForServer(serverId: serverId, userId: userId, includeArchived: true)
@@ -22135,11 +21335,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return ids
     }
 
-    private enum TaskChannelAccess {
-        case readOnly
-        case write
-        case missing
-    }
 
     private func taskChannelAccess(serverId: String, channelId: String, userId: String) -> TaskChannelAccess {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
@@ -22154,10 +21349,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     private static let validTaskStatuses: Set<String> = ["todo", "in_progress", "in_review", "done", "cancelled"]
 
-    private enum TaskStatusFilterResult {
-        case valid(String?)
-        case invalid(HTTPReply)
-    }
 
     private static func taskStatusFilter(_ rawQuery: String?) -> TaskStatusFilterResult {
         guard let rawQuery else { return .valid(nil) }
@@ -22180,12 +21371,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return "{\"id\":\(jsonString(task.id)),\"channelId\":\(jsonString(task.channelId)),\"messageId\":\(jsonString(task.messageId)),\"title\":\(jsonString(task.title)),\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber),\"claimedById\":\(assignee),\"claimedByType\":\(assigneeType),\"claimedAt\":\(claimed),\"revision\":\(task.revision)\(task.requiresResourceReceipt ? ",\"requiresResourceReceipt\":true" : "")}"
     }
 
-    private struct ServerLabsState {
-        var accessEnabled = false
-        var version = 0
-        var enrolled: Set<String> = []
-        var updatedAt: [String: Date] = [:]
-    }
 
     private static let labDefinitions: [(key: String, name: String, description: String, state: String)] = [
         ("open_lab", "Open Lab", "Available", "open"),
@@ -23387,10 +22572,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(403, "{\"error\":\"missing required scope\",\"requiredScope\":\(jsonString(scope)),\"reason\":\"missing_scope\"}")
     }
 
-    private enum FeedbackLocatorIdentityResult {
-        case success(agentId: String, serverId: String)
-        case refused(HTTPReply)
-    }
 
     private func agentCredentialIdentity(authorization: String?, capability: String) -> (agentId: String, serverId: String)? {
         guard case .success(let agentId, let serverId) = feedbackLocatorIdentity(authorization: authorization, capability: capability) else {
@@ -23999,12 +23180,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return appConfigReply(agentId: agent.id, appId: appId) ?? appConfigError(404, error: "Unknown app", code: "RAP_APP_CONFIG_APP_UNKNOWN")
     }
 
-    private enum DMPeerResolution {
-        case resolved(peerId: String, peerKind: String, name: String)
-        case ambiguous(String)
-        case invalidKind(String, String)
-        case notFound
-    }
 
     /// Callers hold the directory lock.
     private func resolveDMPeerLocked(serverId: String, agentId: String, name rawName: String, kind rawKind: String?) -> DMPeerResolution {
@@ -24075,55 +23250,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// `allowlist` enables it only for the listed server/agent ids (or `*`).
     /// The channel card an agent sees for a send target: a thread shows its
     /// parent channel's card, a DM has none.
-    private struct AgentChannelCardSnapshot {
-        let id: String
-        let name: String
-        let type: String
-        let description: String?
-        let archived: Bool
-
-        var json: String {
-            let descriptionJSON = description.map(jsonString) ?? "null"
-            return "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"type\":\(jsonString(type)),\"description\":\(descriptionJSON),\"archived\":\(archived)}"
-        }
-
-        var rev: String {
-            Self.rev(name: name, type: type, archived: archived, description: description)
-        }
-
-        /// `channelCardRev` from the shared projector: `v1:` plus two FNV-1a
-        /// 32-bit hashes over the fixed-order JSON tuple of what the card
-        /// shows, with the description whitespace-collapsed.
-        static func rev(name: String, type: String?, archived: Bool, description: String?) -> String {
-            let visibility: String
-            let trimmedType = type?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if trimmedType == "joint" {
-                visibility = "joint"
-            } else if trimmedType == "private" || trimmedType == "dm" {
-                visibility = "private"
-            } else {
-                visibility = "public"
-            }
-            let displayed = (description ?? "")
-                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-                .trimmingCharacters(in: .whitespaces)
-            let text = "[" + jsonString(name) + "," + jsonString(visibility) + ","
-                + (archived ? "true" : "false") + "," + jsonString(displayed) + "]"
-            let first = fnv1a32(text, seed: 0x811c_9dc5)
-            let second = fnv1a32(text, seed: 0x050c_5d1f)
-            return String(format: "v1:%08x%08x", first, second)
-        }
-
-        /// JS `charCodeAt` hashes UTF-16 code units, not UTF-8 bytes.
-        private static func fnv1a32(_ text: String, seed: UInt32) -> UInt32 {
-            var hash = seed
-            for unit in text.utf16 {
-                hash ^= UInt32(unit)
-                hash = hash &* 0x0100_0193
-            }
-            return hash
-        }
-    }
 
     /// Callers hold `lock`. The DM peer card exists only when the peer has a
     /// profile description or a timezone on their latest message.
@@ -25001,10 +24127,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return humanMessageRows.first { $0.id == messageId }?.channelId
     }
 
-    private enum AgentTaskAuthResult {
-        case ok(agentId: String, serverId: String)
-        case refused(HTTPReply)
-    }
 
     private func agentTaskAuth(authorization: String?, legacyAgentId: String?) -> AgentTaskAuthResult {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
@@ -25524,18 +24646,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private struct AgentInboxRow {
-        var target: String
-        var kind: String
-        var lastReadSeq: Int
-        var unread: Int
-        var mentions: Int
-        var latestSeq: Int
-        var activitySeq: Int
-        var latestSenderName: String
-        var latestAt: Date?
-        var joinedAt: Date
-    }
 
     private static func isoMillis(_ date: Date) -> String {
         let formatter = ISO8601DateFormatter()
@@ -26842,10 +25952,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     // MARK: - Managed MCP control plane (`/api/mcp/*`)
 
-    private enum ManagedMCPControlAuth {
-        case ok(userId: String, role: String)
-        case refused(HTTPReply)
-    }
 
     private func managedMCPControlAuth(authorization: String?, serverId: String) -> ManagedMCPControlAuth {
         guard let userId = sessionUserId(authorization: authorization) else {
@@ -28525,33 +27631,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return "{\"channelId\":\(jsonString(task.channelId)),\"channelName\":\(jsonString(channelName)),\"channelType\":\(jsonString(channelType)),\"claimedAt\":\(claimed),\"claimedById\":\(assignee),\"claimedByName\":\(claimedByName),\"claimedByType\":\(assigneeType),\"completedAt\":\(completed),\"createdAt\":\(createdAt),\"createdById\":\(createdById),\"createdByName\":\(createdByName),\"createdByType\":\(createdByType),\"descriptionBytes\":\(descriptionBytes),\"hasDescription\":\(hasDescription),\"id\":\(jsonString(task.id)),\"isLegacy\":false,\"messageId\":\(jsonString(task.messageId)),\"readOnlyReason\":null,\"revision\":\(task.revision),\"source\":\"tasks\",\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber),\"title\":\(jsonString(task.title)),\"updatedAt\":\(updated)}"
     }
 
-    private struct TaskRecord {
-        var id: String
-        var channelId: String
-        var title: String
-        var description: String?
-        var status: String
-        var taskNumber: Int
-        var messageId: String
-        var createdAt: Date
-        var completedAt: Date? = nil
-        var updatedAt: Date? = nil
-        var creatorId: String? = nil
-        var assigneeId: String? = nil
-        var assigneeType: String? = nil
-        var claimedAt: Date? = nil
-        var revision: Int = 0
-        var closedAt: Date? = nil
-        /// False for a pre-thread v0 orphan: the row has no host message, so the
-        /// agent surface cannot address it.
-        var hasHostMessage: Bool = true
-        var amendedAt: Date? = nil
-        var amendedByType: String? = nil
-        var amendedByName: String? = nil
-        var superseded: Bool = false
-        var requiresResourceReceipt: Bool = false
-        var resourceReceiptJSON: String? = nil
-    }
 
     private var taskEvents: [(taskId: String, eventType: String, actorType: String)] = []
     private var lastTaskServerWarning: String?
@@ -28583,15 +27662,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private struct AgentApiIdempotencyRecord {
-        var agentId: String
-        var route: String
-        var key: String
-        var fingerprint: String
-        var status: Int
-        var responseBody: String
-        var createdAt: Date
-    }
 
     private static let agentApiIdempotencyTTL: TimeInterval = 24 * 60 * 60
 
@@ -28816,33 +27886,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"reminders\":[\("\(items)")]}")
     }
 
-    private struct ReminderRecord {
-        var id: String
-        var serverId: String
-        var ownerAgentId: String
-        var title: String
-        var fireAt: Date
-        var status: String = "scheduled"
-        var version: Int = 1
-        var notes: String? = nil
-        var recurrenceJSON: String? = nil
-        var channelId: String? = nil
-        var threadId: String? = nil
-        var createdAt: Date = Date()
-        var updatedAt: Date = Date()
-    }
 
-    private struct ReminderEvent {
-        var reminderId: String
-        var serverId: String
-        var ownerAgentId: String
-        var type: String
-        var version: Int
-        var actorType: String
-        var actorId: String?
-        var createdAt: Date
-        var fireAt: Date?
-    }
 
     public enum ReminderMutationOutcome: Sendable {
         case ok(version: Int)
@@ -29858,11 +28902,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true,\"maxReadSeq\":\(seq),\"readStateVersion\":\(version)}")
     }
 
-    private struct ResumeAllAgentsContext {
-        var targets: [String]
-        var dispatch: (@Sendable (_ agentId: String, _ resumePrompt: String?) async throws -> AgentStartDispatchOutcome)?
-        var error: HTTPReply?
-    }
 
     /// Synchronous context gathering for the resume handler; the async method
     /// only awaits the dispatch callback.
@@ -30061,10 +29100,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             && oauth.memberRole(serverId: serverId, userId: userId) != nil
     }
 
-    private enum AnnouncementContext {
-        case success(String?)
-        case failure(HTTPReply)
-    }
 
     /// `server_id` must appear at most once and be a UUID; a duplicate or a
     /// malformed value never degrades into an unscoped answer.
@@ -30139,13 +29174,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    private struct ExternalAvatarAsset {
-        var id: String
-        var contentType: String
-        var bytes: Data
-        var sourceDigest: String
-        var active: Bool
-    }
 
     private var externalAvatarAssets: [String: ExternalAvatarAsset] = [:]
     private var externalAvatarStorageAvailable = true
@@ -31696,10 +30724,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true}")
     }
 
-    private struct WebPushSubscription: Sendable {
-        var userId: String
-        var endpoint: String
-    }
 
     public struct PushRegistration: Sendable {
         public var installationId: String
@@ -31714,12 +30738,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         public var revokeCapability: String
     }
 
-    private struct ProviderAssignment {
-        var connectionId: String
-        var serverId: String
-        var agentId: String
-        var computerName: String?
-    }
 
     private static func providerConnectionLabel(_ id: String) -> String {
         switch id {
@@ -31740,20 +30758,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return "{\"id\":\(jsonString(connection.id)),\"name\":\(jsonString(connection.name)),\"providerId\":\(jsonString(connection.providerId)),\"authMethod\":\"api_key\",\"endpointUrl\":\(endpoint),\"supportsImageInput\":\(connection.supportsImageInput),\"enabled\":true,\"status\":\(jsonString(connection.status)),\"configVersion\":\(connection.configVersion),\"credentialVersion\":\(connection.credentialVersion),\"hasCredential\":\(connection.hasCredential),\"assignedAgentCount\":0,\"latestVerified\":null,\"lastCheckedAt\":null,\"lastErrorCategory\":null,\"createdAt\":\(jsonString(ISO8601DateFormatter().string(from: connection.createdAt))),\"updatedAt\":\(jsonString(ISO8601DateFormatter().string(from: connection.updatedAt)))}"
     }
 
-    private struct ProviderConnection {
-        var id: String
-        var serverId: String
-        var name: String
-        var providerId: String
-        var endpointUrl: String?
-        var supportsImageInput: Bool
-        var status: String
-        var configVersion: Int
-        var credentialVersion: Int
-        var hasCredential: Bool
-        var createdAt: Date
-        var updatedAt: Date
-    }
 
     // MARK: - Product feedback apps, sources and route binding
 
@@ -31766,51 +30770,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private static let productFeedbackLegacyCommitmentLabel = "hands-feedback-route-subject:v1"
     private static let productFeedbackMultiCommitmentLabel = "hands-feedback-route-subject:multi:v1"
 
-    private struct FeedbackSourceEntry {
-        var appSlug: String
-        var appId: String
-        var reporterIntegrationId: String
-        var credentialRevision: String
-        var clientKey: String
-        var token: String
-    }
 
-    private struct FeedbackRouteEnvironment {
-        var baseURL: String
-        var appSlug: String
-        var appId: String
-        var clientKey: String
-        var appToken: String
-        var conversationToken: String
-        var credentialRevision: String
-        var reporterIntegrationId: String
-        var reporterIdSecret: String
-        var routeSubjectKeyId: String
-        var routeSubjectRoot: String
-        var routeCommitmentScope: String
-        var cursorSecret: String
-        var conversationSessionEnabled: Bool
-        var isMultiApp: Bool
-    }
 
-    private struct FeedbackRouteConfig {
-        var baseURL: String
-        var appId: String
-        var appToken: String
-        var credentialRevision: String
-        var reporterIntegrationId: String
-        var keyId: String
-        var root: String
-        var commitmentLabel: String
-        var reporterIdSecret: String
-    }
 
-    private enum FeedbackRouteFailure: Error {
-        case invalidSource
-        case sourceUnavailable(source: String, reason: String)
-        case configuration
-        case routeBinding(reason: String)
-    }
 
     // MARK: Public test seams
 
@@ -33227,10 +32189,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return .user(id)
     }
 
-    private enum DisplayLanguage {
-        case value(String?)
-        case invalid(String)
-    }
 
     /// Shipped UI catalogs only. Region tags collapse inside `en` and `zh-cn`; `zh-TW` and `fr` do not.
     static func normalizeDisplayLocale(_ raw: String) -> String? {
@@ -33820,24 +32778,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private static let nativeAppleRequestExpired = json(410, "{\"code\":\"native_apple_request_expired\",\"error\":\"Apple sign-in request expired\"}")
     private static let nativeAppleRequestConsumed = json(410, "{\"code\":\"native_apple_request_consumed\",\"error\":\"Apple sign-in request was already used\"}")
 
-    private struct NativeAppleRequestClaims {
-        var requestId: String
-        var mode: String
-        var codeChallenge: String
-        var userId: String?
-    }
 
-    private enum NativeAppleRequestToken {
-        case valid(NativeAppleRequestClaims)
-        case expired
-        case invalid
-    }
 
-    private struct AppleIdentityClaims {
-        var subject: String
-        var nonce: String
-        var email: String?
-    }
 
     private func nativeAppleAvailable() -> Bool {
         lock.lock()
