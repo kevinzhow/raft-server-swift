@@ -24807,6 +24807,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"messageId\":\(jsonString(card.messageId)),\"metadata\":\(integrationRegisterMetadataJSON(updated))}")
     }
 
+    private static let oauthClientCategories: Set<String> = [
+        "AI & Automation", "Communication", "Productivity & Collaboration",
+        "Developer Tools", "Data & Analytics", "Business Ops",
+        "Infrastructure", "Content & Creative", "Other",
+        "Productivity", "Dev Tools", "Storage", "Scheduling",
+        "Business & Operations", "Infrastructure & Operations",
+    ]
+
     public func agentIntegrationAppPrepare(authorization: String?, body: String) -> HTTPReply {
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
@@ -24833,6 +24841,25 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let homepageUrl = (object["homepageUrl"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let agentManifestUrl = (object["agentManifestUrl"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let scopes = ((object["scopes"] as? [Any]) ?? []).compactMap { $0 as? String }
+        let allowedScopes: Set<String> = [
+            "openid", "profile", "email", "offline_access", "identity",
+            "agent:read", "agent:send", "agent:tasks", "agent:channels",
+        ]
+        if scopes.contains(where: { !allowedScopes.contains($0) }) {
+            return Self.json(400, "{\"error\":\"Scope is not allowed for this service\",\"errorCode\":\"INVALID_SCOPE\"}")
+        }
+        if let category = object["category"] as? String, !Self.oauthClientCategories.contains(category) {
+            return Self.json(400, "{\"error\":\"Category is not allowed\",\"errorCode\":\"INVALID_CATEGORY\"}")
+        }
+        if object["unsafeDemoUrlOverride"] as? Bool != true {
+            for raw in [homepageUrl, returnUrl].compactMap({ $0 }) {
+                guard let url = URL(string: raw), let host = url.host else { continue }
+                let privateHost = host == "::1" || host.hasPrefix("fc") || host.hasPrefix("fd") || host.hasPrefix("fe80:")
+                if privateHost {
+                    return Self.json(400, "{\"error\":\"Unsafe demo URL requires the override\",\"errorCode\":\"UNSAFE_DEMO_URL_REQUIRES_OVERRIDE\"}")
+                }
+            }
+        }
         let messageId = prepareIntegrationRegisterCard(
             serverId: agent.serverId,
             agent: agent,
@@ -25001,6 +25028,26 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(201, "{\"messageId\":\(jsonString(messageId)),\"metadata\":\(metadata)}")
         }
+        let rawScopes = (action["scopes"] as? [Any])?.compactMap { $0 as? String } ?? []
+        let allowedScopes: Set<String> = [
+            "openid", "profile", "email", "offline_access", "identity",
+            "agent:read", "agent:send", "agent:tasks", "agent:channels",
+        ]
+        if rawScopes.contains(where: { !allowedScopes.contains($0) }) {
+            return Self.json(400, "{\"error\":\"Scope is not allowed for this service\",\"errorCode\":\"INVALID_SCOPE\"}")
+        }
+        if let category = action["category"] as? String, !Self.oauthClientCategories.contains(category) {
+            return Self.json(400, "{\"error\":\"Category is not allowed\",\"errorCode\":\"INVALID_CATEGORY\"}")
+        }
+        if action["unsafeDemoUrlOverride"] as? Bool != true {
+            for key in ["homepageUrl", "returnUrl"] {
+                guard let raw = action[key] as? String, let url = URL(string: raw), let host = url.host else { continue }
+                let privateHost = host == "::1" || host.hasPrefix("fc") || host.hasPrefix("fd") || host.hasPrefix("fe80:")
+                if privateHost {
+                    return Self.json(400, "{\"error\":\"Unsafe demo URL requires the override\",\"errorCode\":\"UNSAFE_DEMO_URL_REQUIRES_OVERRIDE\"}")
+                }
+            }
+        }
         guard let name = (action["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty,
               let returnUrl = (action["returnUrl"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !returnUrl.isEmpty
         else {
@@ -25024,7 +25071,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             returnUrl: returnUrl,
             agentManifestUrl: (action["agentManifestUrl"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
             setupUrl: setupUrl, setupDescription: setupDescription,
-            scopes: (action["scopes"] as? [Any])?.compactMap { $0 as? String } ?? [],
+            scopes: rawScopes,
             target: resolved
         )
         lock.lock()
@@ -25050,6 +25097,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         if let reply = prepareIntegrationActionCard(identity: identity, target: target, action: action) {
             return reply
+        }
+        if let type = action["type"] as? String, type.hasPrefix("integration:") {
+            return Self.json(400, "{\"error\":\"Integration approval cards must be prepared with the raft integration commands\",\"errorCode\":\"ACTION_TYPE_NOT_PREPARABLE\"}")
         }
         guard (action["type"] as? String) == "channel:create",
               let channelName = action["name"] as? String
