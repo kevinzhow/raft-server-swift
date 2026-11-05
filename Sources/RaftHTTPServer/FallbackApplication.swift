@@ -218,6 +218,10 @@ private func parseShareArtifactMultipart(data: Data, boundary: String) -> (chann
 
 public func configure(_ app: Application, services: FallbackServices) {
     let internalSurface = InternalSurfaceBox()
+    FeedbackFeature(services: services).register(routes: app)
+    TranslationFeature(services: services).register(routes: app)
+    PublicFeature(services: services).register(routes: app)
+    AuthFeature(services: services).register(routes: app)
     services.emailAccounts.onAgentReadUpdated = { serverId, channelId, agentId, maxReadSeq in
         services.emailAccounts.emitAgentScopeRead(
             serverId: serverId,
@@ -357,19 +361,6 @@ public func configure(_ app: Application, services: FallbackServices) {
             authorization: request.headers[.authorization],
             body: request.body.string ?? ""
         ))
-    }
-    app.get("api", "public", "servers", ":slug") { request -> Response in
-        let slug = request.parameters.get("slug") ?? ""
-        let country = request.headers[HTTPField.Name("CloudFront-Viewer-Country")!]
-        let region = request.headers[HTTPField.Name("CloudFront-Viewer-Country-Region")!]
-        let gpc = request.headers[HTTPField.Name("Sec-GPC")!]
-        if let directory = services.publicVisits {
-            return routeResponse(directory.page(slug: slug, country: country, region: region, gpc: gpc))
-        }
-        if let directory = services.publicServerDirectory {
-            return routeResponse(directory.publicCard(slug: slug))
-        }
-        return routeResponse(PublicVisits.pageReply(found: false, mode: nil))
     }
     app.get("api", "mcp", "servers") { request -> Response in
         routeResponse(services.emailAccounts.listManagedMCPServers(
@@ -560,53 +551,6 @@ public func configure(_ app: Application, services: FallbackServices) {
     }
     app.get("api", "integrations", "marketplace", ":clientId", "install", "app-notifications") { request -> Response in
         routeResponse(IntegrationRoutes.marketplaceAppNotifications(clientId: request.parameters.get("clientId") ?? ""))
-    }
-    app.get("api", "public", "servers", ":slug", "channels", ":channelId", "messages") { request -> Response in
-        let channelId = request.parameters.get("channelId") ?? ""
-        guard let window = publicMessageWindow(request.url.query) else {
-            return routeResponse(PublicVisits.pageReply(found: false, mode: nil))
-        }
-        if let directory = services.publicVisits, ServerScope.isUUID(channelId) {
-            return routeResponse(directory.channelMessages(
-                slug: request.parameters.get("slug") ?? "",
-                channelId: channelId,
-                limit: window.limit,
-                beforeMessageId: window.before
-            ))
-        }
-        return routeResponse(PublicServerMessages.channel(channelId: channelId))
-    }
-    app.get("api", "public", "servers", ":slug", "attachments", ":attachmentId") { request -> Response in
-        let attachmentId = request.parameters.get("attachmentId") ?? ""
-        let client = request.remoteAddress?.host ?? "unknown"
-        if !services.publicAttachmentBudget.allow(ip: client) {
-            return routeResponse(PublicAttachments.tooMany())
-        }
-        guard let directory = services.publicVisits else {
-            return routeResponse(PublicAttachments.missing(attachmentId: attachmentId))
-        }
-        return routeResponse(directory.publicAttachment(
-            slug: request.parameters.get("slug") ?? "",
-            attachmentId: attachmentId,
-            forceDownload: desktopQuery(request.url.query, "download") == "1",
-            inlineDisposition: desktopQuery(request.url.query, "disposition") == "inline",
-            frameAncestors: services.corsOrigins
-        ))
-    }
-    app.get("api", "public", "servers", ":slug", "threads", ":threadChannelId", "messages") { request -> Response in
-        let threadId = request.parameters.get("threadChannelId") ?? ""
-        guard let window = publicMessageWindow(request.url.query) else {
-            return routeResponse(PublicVisits.pageReply(found: false, mode: nil))
-        }
-        if let directory = services.publicVisits, ServerScope.isUUID(threadId) {
-            return routeResponse(directory.threadMessages(
-                slug: request.parameters.get("slug") ?? "",
-                threadId: threadId,
-                limit: window.limit,
-                beforeMessageId: window.before
-            ))
-        }
-        return routeResponse(PublicServerMessages.thread(threadChannelId: threadId))
     }
     app.post("api", "read-mutations") { request -> Response in
         routeResponse(services.emailAccounts.postReadMutation(
@@ -2853,13 +2797,6 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
-    app.post("api", "message-translations:batch") { request -> Response in
-        routeResponse(services.emailAccounts.batchTranslateMessages(
-            authorization: request.headers[.authorization],
-            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-            body: request.body.string ?? "{}"
-        ))
-    }
     app.get("api", "servers", ":id", "translation-settings") { request -> Response in
         routeResponse(services.emailAccounts.serverTranslationSettings(
             authorization: request.headers[.authorization],
@@ -2935,9 +2872,6 @@ public func configure(_ app: Application, services: FallbackServices) {
             serverId: request.parameters.get("id") ?? "",
             linkId: request.parameters.get("linkId") ?? ""
         ))
-    }
-    app.get("api", "auth", "invite-info") { request -> Response in
-        routeResponse(services.emailAccounts.inviteInfo(token: desktopQuery(request.url.query, "token")))
     }
     app.get("api", "servers", ":id", "invites") { request -> Response in
         routeResponse(services.emailAccounts.listServerInvites(
@@ -3501,20 +3435,6 @@ public func configure(_ app: Application, services: FallbackServices) {
         }
         return routeResponse(directory.readVisibility(serverId: id, authorization: request.headers[.authorization]))
     }
-    app.post("api", "public", "servers", ":slug", "message-translations:batch") { request -> Response in
-        let client = request.remoteAddress?.host ?? "unknown"
-        if !services.publicTranslationBudget.allow(ip: client) {
-            return routeResponse(PublicTranslations.tooMany())
-        }
-        let slug = request.parameters.get("slug") ?? ""
-        return routeResponse(PublicTranslations.reply(
-            body: request.body.string ?? "",
-            gate: services.publicVisits?.translationGate(slug: slug),
-            translator: services.publicVisits.map { visits in
-                { ids, target in visits.publicTranslationResults(slug: slug, targetLanguage: target, messageIds: ids) }
-            }
-        ))
-    }
     app.post("api", "oauth", "authorize", "human") { request -> Response in
         routeResponse(services.emailAccounts.oauth.issueHumanAuthorization(
             session: services.emailAccounts.oauthSession(authorization: request.headers[.authorization]),
@@ -3635,41 +3555,6 @@ public func configure(_ app: Application, services: FallbackServices) {
             authorization: request.headers[.authorization],
             serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
             body: request.body.string ?? ""
-        ))
-    }
-    app.post("api", "app-installation", "agent-reminder-messages") { request -> Response in
-        routeResponse(services.emailAccounts.appAgentReminderMessage(
-            authorization: request.headers[.authorization],
-            body: request.body.string ?? ""
-        ))
-    }
-    app.post("api", "product-feedback", "tickets", ":ticketId", "close") { request -> Response in
-        routeResponse(services.emailAccounts.closeProductFeedbackTicket(
-            authorization: request.headers[.authorization],
-            ticketId: request.parameters.get("ticketId") ?? "",
-            body: request.body.string ?? "{}"
-        ))
-    }
-    app.post("api", "product-feedback", "tickets", ":ticketId", "comments") { request -> Response in
-        routeResponse(services.emailAccounts.replyProductFeedbackTicket(
-            authorization: request.headers[.authorization],
-            ticketId: request.parameters.get("ticketId") ?? "",
-            contentType: request.headers[.contentType] ?? "",
-            body: request.body.string ?? ""
-        ))
-    }
-    app.get("api", "product-feedback", "tickets") { request -> Response in
-        routeResponse(services.emailAccounts.productFeedbackTickets(authorization: request.headers[.authorization]))
-    }
-    app.post("api", "product-feedback") { request -> Response in
-        routeResponse(services.emailAccounts.submitProductFeedback(
-            authorization: request.headers[.authorization],
-            contentType: request.headers[.contentType] ?? "",
-            body: request.body.string ?? "",
-            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-            clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!]
-                ?? request.headers[HTTPField.Name("X-Slock-Client-Kind")!]
-                ?? ""
         ))
     }
     app.get("api", "product-events", "config") { request -> Response in
@@ -3870,203 +3755,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             ))
         }
     }
-    app.post("api", "auth", "mobile", "oauth", "apple", "native", "start") { request -> Response in
-        routeResponse(services.emailAccounts.startNativeApple(
-            body: request.body.string ?? "",
-            authorization: request.headers[.authorization]
-        ))
-    }
-    app.post("api", "auth", "mobile", "oauth", "apple", "native", "authorize") { request async -> Response in
-        let reply = await services.emailAccounts.authorizeNativeApple(
-            body: request.body.string ?? "",
-            authorization: request.headers[.authorization]
-        )
-        return routeResponse(reply)
-    }
-    app.post("api", "auth", "mobile", "oauth", "start") { request -> Response in
-        return routeResponse(services.emailAccounts.startMobileOAuth(body: request.body.string ?? ""))
-    }
-    app.post("api", "auth", "mobile", "oauth", ":provider", "link", "start") { request -> Response in
-        return routeResponse(services.emailAccounts.startMobileOAuthLink(
-            provider: request.parameters.get("provider") ?? "",
-            body: request.body.string ?? "",
-            authorization: request.headers[.authorization]
-        ))
-    }
-    app.post("api", "auth", "mobile", "oauth", ":provider", "link", "complete") { request -> Response in
-        return routeResponse(services.emailAccounts.completeMobileOAuthLink(
-            provider: request.parameters.get("provider") ?? "",
-            body: request.body.string ?? "",
-            authorization: request.headers[.authorization]
-        ))
-    }
-    app.get("api", "auth", ":provider", "start") { request in
-        routeResponse(services.emailAccounts.startWebOAuth(
-            provider: request.parameters.get("provider") ?? "",
-            returnTo: desktopQuery(request.url.query, "returnTo"),
-            linkOnConflict: desktopQuery(request.url.query, "linkOnConflict") == "1"
-        ))
-    }
-    app.post("api", "auth", ":provider", "link", "start") { request -> Response in
-        routeResponse(services.emailAccounts.startWebOAuthLink(
-            provider: request.parameters.get("provider") ?? "",
-            body: request.body.string ?? "",
-            authorization: request.headers[.authorization]
-        ))
-    }
-    app.post("api", "auth", ":provider", "callback") { request -> Response in
-        routeResponse(services.emailAccounts.webOAuthCallback(
-            provider: request.parameters.get("provider") ?? "",
-            body: request.body.string ?? "",
-            cookie: request.headers[.cookie]
-        ))
-    }
-    app.get("api", "auth", ":provider", "callback") { request -> Response in
-        return routeResponse(services.emailAccounts.mobileOAuthCallback(
-            provider: request.parameters.get("provider") ?? "",
-            code: desktopQuery(request.url.query, "code"),
-            state: desktopQuery(request.url.query, "state"),
-            providerError: desktopQuery(request.url.query, "error")
-        ))
-    }
-    app.post("api", "auth", "mobile", "oauth", "complete") { request -> Response in
-        return routeResponse(services.emailAccounts.completeMobileOAuth(body: request.body.string ?? ""))
-    }
-    app.post("api", "auth", ":provider", "complete") { request -> Response in
-        return routeResponse(services.emailAccounts.completeSocial(
-            provider: request.parameters.get("provider") ?? "",
-            body: request.body.string ?? "",
-            userAgent: request.headers[.userAgent],
-            acceptLanguage: request.headers[.acceptLanguage],
-            authorization: request.headers[.authorization]
-        ))
-    }
-    app.post("api", "auth", "device", "authorize") { request -> Response in
-        return routeResponse(services.emailAccounts.authorizeDevice(body: request.body.string ?? ""))
-    }
-    app.post("api", "auth", "device", "approve") { request -> Response in
-        return routeResponse(services.emailAccounts.approveDevice(
-            body: request.body.string ?? "",
-            authorization: request.headers[.authorization]
-        ))
-    }
-    app.post("api", "auth", "device", "token") { request -> Response in
-        return routeResponse(services.emailAccounts.pollDeviceToken(body: request.body.string ?? ""))
-    }
-    app.post("api", "auth", "staging-self-account", "retire") { request -> Response in
-        return routeResponse(services.emailAccounts.retireStagingSelfAccount(
-            body: request.body.string ?? "",
-            authorization: request.headers[.authorization]
-        ))
-    }
-    app.post("api", "auth", "register") { request -> Response in
-        return routeResponse(services.emailAccounts.register(
-            body: request.body.string ?? "",
-            userAgent: request.headers[.userAgent],
-            acceptLanguage: request.headers[.acceptLanguage]
-        ))
-    }
-    app.post("api", "auth", "refresh") { request -> Response in
-        return routeResponse(services.emailAccounts.refresh(
-            body: request.body.string ?? "",
-            attemptHeader: request.headers[HTTPField.Name("X-Slock-Auth-Refresh-Attempt-Id")!],
-            installationHeader: request.headers[HTTPField.Name("X-Slock-Auth-Installation-Id")!]
-        ))
-    }
-    app.post("api", "auth", "logout") { request -> Response in
-        return routeResponse(services.emailAccounts.logout(body: request.body.string ?? ""))
-    }
-    app.get("api", "auth", "identities") { request -> Response in
-        routeResponse(services.emailAccounts.authIdentities(
-            authorization: request.headers[.authorization]
-        ))
-    }
-    app.delete("api", "auth", "identities", ":provider") { request -> Response in
-        routeResponse(services.emailAccounts.unlinkAuthIdentity(
-            authorization: request.headers[.authorization],
-            provider: request.parameters.get("provider") ?? ""
-        ))
-    }
-    app.post("api", "auth", "reset-password") { request -> Response in
-        routeResponse(services.emailAccounts.resetPassword(
-            body: request.body.string ?? ""
-        ))
-    }
-    app.post("api", "auth", "pending-link", "cancel") { request -> Response in
-        routeResponse(services.emailAccounts.cancelPendingSocialLink(body: request.body.string ?? "{}"))
-    }
-    app.post("api", "auth", "login") { request -> Response in
-        return routeResponse(services.emailAccounts.login(body: request.body.string ?? ""))
-    }
-    app.post("api", "auth", "app-login", "start") { request -> Response in
-        routeResponse(services.emailAccounts.appLoginStart(body: request.body.string ?? "{}"))
-    }
-    app.get("api", "auth", "app-login", "requests", ":requestId") { request -> Response in
-        routeResponse(services.emailAccounts.appLoginDescribe(
-            authorization: request.headers[.authorization],
-            requestId: request.parameters.get("requestId") ?? ""
-        ))
-    }
-    app.post("api", "auth", "app-login", "requests", ":requestId", "approve") { request -> Response in
-        routeResponse(services.emailAccounts.appLoginApprove(
-            authorization: request.headers[.authorization],
-            requestId: request.parameters.get("requestId") ?? ""
-        ))
-    }
-    app.post("api", "auth", "app-login", "requests", ":requestId", "deny") { request -> Response in
-        routeResponse(services.emailAccounts.appLoginDeny(
-            authorization: request.headers[.authorization],
-            requestId: request.parameters.get("requestId") ?? ""
-        ))
-    }
-    app.post("api", "auth", "app-login", "complete") { request -> Response in
-        routeResponse(services.emailAccounts.appLoginComplete(body: request.body.string ?? "{}"))
-    }
-    app.get("api", "auth", "providers") { request in
-        routeResponse(services.emailAccounts.authProviders(platform: desktopQuery(request.url.query, "platform")))
-    }
-    app.get("api", "auth", "me") { request -> Response in
-        return routeResponse(services.emailAccounts.me(authorization: request.headers[.authorization]))
-    }
     app.on(.post, "api", "auth", "me", "avatar", maxBodySize: "6mb") { request async throws -> Response in
         let data = try await request.body.collect() ?? Data()
         return routeResponse(services.emailAccounts.uploadAvatar(
             authorization: request.headers[.authorization],
             contentType: request.headers[.contentType],
             body: data
-        ))
-    }
-    app.post("api", "auth", "me", "complete-profile") { request -> Response in
-        routeResponse(services.emailAccounts.completeProfile(
-            authorization: request.headers[.authorization],
-            body: request.body.string ?? ""
-        ))
-    }
-    app.post("api", "auth", "me", "timezone-observation") { request -> Response in
-        return routeResponse(services.emailAccounts.observeTimezone(
-            authorization: request.headers[.authorization],
-            body: request.body.string ?? ""
-        ))
-    }
-    app.patch("api", "auth", "me") { request -> Response in
-        return routeResponse(services.emailAccounts.patch(
-            authorization: request.headers[.authorization],
-            body: request.body.string ?? ""
-        ))
-    }
-    app.post("api", "auth", "accept-invite") { request -> Response in
-        if let directory = services.publicServerDirectory {
-            let reply = directory.acceptInvite(
-                authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
-            )
-            if reply.status != 404 {
-                return routeResponse(reply)
-            }
-        }
-        return routeResponse(services.emailAccounts.acceptInvite(
-            authorization: request.headers[.authorization],
-            body: request.body.string ?? ""
         ))
     }
     app.patch("api", "servers", ":id", "public-guest-join") { request -> Response in
