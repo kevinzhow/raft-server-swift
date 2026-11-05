@@ -83,7 +83,8 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 agentId: request.parameters.get("id") ?? "",
-                surface: "activity-log"
+                surface: "activity-log",
+                query: request.url.query
             ))
         }
         app.get("api", "agents", ":id", "activity-summaries") { request -> Response in
@@ -91,7 +92,8 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 agentId: request.parameters.get("id") ?? "",
-                surface: "activity-summaries"
+                surface: "activity-summaries",
+                query: request.url.query
             ))
         }
         app.get("api", "agents", ":id", "agent-dms") { request -> Response in
@@ -395,11 +397,16 @@ public struct NotificationsFeature: RouteCollection, Sendable {
             ))
         }
         app.get("api", "agents", ":id", "skills") { request -> Response in
-            routeResponse(services.emailAccounts.agentPrivateSurface(
+            let hasReplayHeaders = request.headers[HTTPField.Name("X-Raft-Replica-Replay")!] != nil
+                || request.headers[HTTPField.Name("X-Raft-Replica-Replay-Machine")!] != nil
+                || request.headers[HTTPField.Name("X-Raft-Replica-Replay-Timestamp")!] != nil
+                || request.headers[HTTPField.Name("X-Raft-Replica-Replay-Signature")!] != nil
+            return routeResponse(services.emailAccounts.agentPrivateSurface(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 agentId: request.parameters.get("id") ?? "",
-                surface: "skills"
+                surface: "skills",
+                hasReplayHeaders: hasReplayHeaders
             ))
         }
         app.post("api", "agents", ":id", "start") { request -> Response in
@@ -424,14 +431,16 @@ public struct NotificationsFeature: RouteCollection, Sendable {
             routeResponse(services.emailAccounts.agentWorkspaceFiles(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                agentId: request.parameters.get("id") ?? ""
+                agentId: request.parameters.get("id") ?? "",
+                query: request.url.query
             ))
         }
         app.get("api", "agents", ":id", "workspace-files", "read") { request -> Response in
-            routeResponse(services.emailAccounts.agentWorkspaceFiles(
+            routeResponse(services.emailAccounts.agentWorkspaceRead(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                agentId: request.parameters.get("id") ?? ""
+                agentId: request.parameters.get("id") ?? "",
+                query: request.url.query
             ))
         }
         app.get("api", "agents", "archived") { request -> Response in

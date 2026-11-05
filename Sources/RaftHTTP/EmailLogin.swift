@@ -272,6 +272,43 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Returns `.dispatched` when the daemon accepted the resume prompt and
     /// `.skipped(reason)` when a gate (for example a held wake lock) suppressed it.
     public var agentStartDispatch: (@Sendable (_ agentId: String, _ resumePrompt: String?) async throws -> AgentStartDispatchOutcome)?
+    /// Recent activity-log entries for one agent, serialized as the HTTP body.
+    public var agentActivityLogProvider: (@Sendable (_ agentId: String, _ limit: Int?) -> AgentSurfaceResult)?
+    /// Turn summaries plus the next cursor; the handler redacts triggers the
+    /// viewer cannot see.
+    public var agentActivitySummariesProvider: (@Sendable (_ agentId: String, _ limit: Int, _ beforeEndedAt: Int?, _ beforeId: String?) -> AgentSurfaceResult)?
+    /// `{"global":[...],"workspace":[...]}` skills body for one agent.
+    public var agentSkillsProvider: (@Sendable (_ agentId: String) -> AgentSurfaceResult)?
+    /// Whether the agent's Computer connection is owned by this replica.
+    public var agentHasMachineLocally: (@Sendable (_ agentId: String) -> Bool)?
+    /// File-tree JSON array for one agent workspace directory.
+    public var agentWorkspaceTreeProvider: (@Sendable (_ agentId: String, _ dirPath: String?, _ includeHidden: Bool) -> AgentSurfaceResult)?
+    /// One workspace file read body.
+    public var agentWorkspaceReadProvider: (@Sendable (_ agentId: String, _ path: String?) -> AgentSurfaceResult)?
+    /// Human Start control dispatch (`control: "human_start"`).
+    public var agentStartControlDispatch: (@Sendable (_ agentId: String, _ control: String) -> Void)?
+    /// Human Reset dispatch (`terminalControl: "human_reset"`).
+    public var agentResetDispatch: (@Sendable (_ agentId: String, _ mode: String, _ terminalControl: String) -> Void)?
+    /// Terminal-breaker lift on a PATCH, with whether a runtime value really changed.
+    public var agentConfigLiftDispatch: (@Sendable (_ agentId: String, _ runtimeValuesChanged: Bool) -> Void)?
+    /// Asks the target Computer whether its Built-in model catalog lists a preset.
+    public var builtinModelCatalogCheck: (@Sendable (_ machineId: String, _ modelId: String) -> BuiltinModelCatalogResult)?
+    /// Live model ids a Computer advertises for a runtime (v2 field-pointing).
+    public var agentRuntimeModelsForMachine: (@Sendable (_ machineId: String, _ runtime: String) -> [String]?)?
+
+    private func builtinCatalogFailureReply() -> HTTPReply {
+        Self.json(409, "{\"code\":\"builtin_catalog_unavailable\",\"error\":\"The target Computer's Built-in model catalog is unavailable. Retry after the Computer reconnects.\"}")
+    }
+
+    private func builtinModelCheck(machineId: String?, config: [String: Any]) -> BuiltinModelCatalogResult? {
+        guard let machineId,
+              (config["runtime"] as? String) == "builtin",
+              let model = config["model"] as? [String: Any],
+              let modelId = model["id"] as? String,
+              let check = builtinModelCatalogCheck
+        else { return nil }
+        return check(machineId, modelId)
+    }
     private var hostedRuntimes: [String: (provider: String, model: String?, state: String, retryNeedsModel: Bool, createdAt: Date)] = [:]
     private var grokRuntimeServers: Set<String> = []
     private var remoteUpgradeDisabledServers: Set<String> = []
@@ -6316,6 +6353,23 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return id
     }
 
+    public func setServerOnboardingAgentForTesting(serverId: String, agentId: String?) {
+        lock.lock()
+        let greeting = serverOnboardingSettings[serverId]?.greeting ?? true
+        serverOnboardingSettings[serverId] = (agentId: agentId, greeting: greeting)
+        lock.unlock()
+    }
+
+    public func setMachineMigrationStateForTesting(migrationRef: String, state: String) {
+        lock.lock()
+        if var record = machineMigrations[migrationRef] {
+            record.state = state
+            record.updatedAt = Date()
+            machineMigrations[migrationRef] = record
+        }
+        lock.unlock()
+    }
+
     public func userChannelReadCursorForTesting(userId: String, channelId: String) -> Int? {
         lock.lock(); defer { lock.unlock() }
         return userChannelReadCursorsForTesting["\(userId)\n\(channelId)"]
@@ -11510,6 +11564,23 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard !reservedHandles.contains(trimmedName.lowercased()) else {
             return Self.json(400, "{\"error\":\"This username is reserved. Choose another name.\"}")
         }
+        let onboardingRequest = object["onboarding"] as? Bool == true
+        if onboardingRequest {
+            guard role == "owner" || role == "admin" else {
+                return Self.json(403, "{\"error\":\"Only server owners and admins can create the onboarding agent\"}")
+            }
+            lock.lock()
+            let existingOnboardingAgentId = serverOnboardingSettings[serverId]?.agentId
+            lock.unlock()
+            if let existingOnboardingAgentId {
+                return Self.json(409, "{\"error\":\"Onboarding agent already exists\",\"onboardingAgentId\":\(jsonString(existingOnboardingAgentId))}")
+            }
+            if oauth.serverAgents(serverId: serverId).contains(where: {
+                !$0.deleted && $0.name.caseInsensitiveCompare("Cindy") == .orderedSame
+            }) {
+                return Self.json(409, "{\"error\":\"Cindy agent already exists\"}")
+            }
+        }
         let duplicate = oauth.serverAgents(serverId: serverId).contains {
             !$0.deleted && $0.name.caseInsensitiveCompare(trimmedName) == .orderedSame
         }
@@ -11540,6 +11611,35 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             hostedProvider = provider
         }
         let rawConfig = object["runtimeConfig"] as? [String: Any] ?? [:]
+        if let formRef = object["formDefinitionRef"] as? [String: Any],
+           (formRef["protocolVersion"] as? Int) == 2,
+           let formValues = object["formValues"] as? [String: Any],
+           let providerId = formValues["providerId"] as? String,
+           providerId.hasPrefix("connection:") {
+            let connectionId = String(providerId.dropFirst("connection:".count))
+            guard ServerScope.isUUID(connectionId) else {
+                return Self.json(400, "{\"error\":\"Invalid provider connection id\",\"issues\":[{\"pointer\":\"/formValues/providerId\",\"code\":\"provider_connection_id_invalid\"}]}")
+            }
+            lock.lock()
+            let exists = providerConnections.contains {
+                $0.id == connectionId && $0.serverId == serverId
+            }
+            lock.unlock()
+            guard exists else {
+                return Self.json(409, "{\"error\":\"Provider connection is not available\",\"issues\":[{\"pointer\":\"/formValues/providerId\",\"code\":\"provider_connection_unavailable\"}]}")
+            }
+        }
+        if let formRef = object["formDefinitionRef"] as? [String: Any],
+           (formRef["protocolVersion"] as? Int) == 2,
+           let formValues = object["formValues"] as? [String: Any],
+           let machineId = object["machineId"] as? String,
+           let runtimeId = formRef["runtimeId"] as? String,
+           let model = formValues["model"] as? String,
+           !model.isEmpty,
+           let models = agentRuntimeModelsForMachine?(machineId, runtimeId),
+           !models.contains(model) {
+            return Self.json(400, "{\"error\":\"The selected model is not available on this Computer\",\"issues\":[{\"pointer\":\"/formValues/model\",\"code\":\"model_not_available\"}]}")
+        }
         if let legacyRuntime = object["runtime"] as? String,
            Self.deprecatedAgentRuntimes.contains(legacyRuntime) {
             return Self.deprecatedRuntimeReply(legacyRuntime)
@@ -11577,17 +11677,39 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let userEnv = (config["envVars"] as? [String: String]) ?? [:]
             envVars = Self.derivedAgentEnvVars(config, userEnv: userEnv)
         }
+        if onboardingRequest {
+            var onboardingEnv = (config["envVars"] as? [String: String]) ?? [:]
+            onboardingEnv["SLOCK_ONBOARDING_MEMORY_SEED"] = "first-cindy"
+            config["envVars"] = onboardingEnv
+            envVars = Self.derivedAgentEnvVars(config, userEnv: onboardingEnv)
+        }
+        let effectiveName = onboardingRequest ? "Cindy" : name
         let runtime = external ? "external" : (config["runtime"] as? String ?? "managed")
+        if let machineId = object["machineId"] as? String,
+           builtinModelCheck(machineId: machineId, config: config) == .catalogUnavailable {
+            return builtinCatalogFailureReply()
+        }
         let configJSON = Self.serializeJSON(config)
         let envJSON = external ? "null" : Self.serializeJSON(envVars)
         let agentId = oauth.createAgent(
             serverId: serverId,
-            name: name,
+            name: effectiveName,
+            displayName: onboardingRequest ? "Cindy" : nil,
+            avatarUrl: onboardingRequest ? "pixel:mug" : nil,
+            description: onboardingRequest ? "Onboarding Assistant" : nil,
             creatorUserId: userId,
             runtime: runtime,
             runtimeConfigJSON: configJSON,
             envVarsJSON: envJSON
         )
+        if onboardingRequest {
+            oauth.setAgentRole(serverId: serverId, agentId: agentId, role: "admin")
+            lock.lock()
+            let greeting = serverOnboardingSettings[serverId]?.greeting ?? true
+            serverOnboardingSettings[serverId] = (agentId: agentId, greeting: greeting)
+            lock.unlock()
+            emitRealtime("server:\(serverId)", "agent:updated", "{\"agentId\":\(jsonString(agentId))}")
+        }
         if let machineId = object["machineId"] as? String, !machineId.isEmpty {
             lock.lock()
             agentMachineIds[agentId] = machineId
@@ -11606,7 +11728,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let responseConfigJSON = Self.redactedRuntimeConfigJSON(configJSON)
         let runtimeJSON = Self.agentRuntimeJSON(
             id: agentId,
-            name: name,
+            name: effectiveName,
             runtime: runtime,
             runtimeConfigJSON: responseConfigJSON ?? configJSON,
             envVarsJSON: envJSON,
@@ -11622,7 +11744,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             includeEnvVars: false
         )
         emitRealtime("server:\(serverId)", "agent:created", "{\"agent\":\(broadcastJSON)}")
-        var created = String(runtimeJSON.dropLast()) + ",\"creator\":\(creator)"
+        let createdAgent = oauth.agentRuntimeInfo(id: agentId)
+        let createdDisplayName = createdAgent?.displayName ?? effectiveName
+        let createdDescription = createdAgent?.description
+        let createdAvatar = createdAgent?.avatarUrl
+        let createdRole = oauth.agentRole(serverId: serverId, agentId: agentId) ?? "member"
+        var created = String(runtimeJSON.dropLast()) + ",\"creator\":\(creator)" + ",\"displayName\":\(jsonString(createdDisplayName)),\"description\":\(createdDescription.map(jsonString) ?? "null"),\"avatarUrl\":\(createdAvatar.map(jsonString) ?? "null"),\"serverRole\":\(jsonString(createdRole))"
         if let hostedProvider {
             created += ",\"hostedRuntime\":{\"kind\":\(jsonString(hostedProvider)),\"state\":\"provisioning\"}"
         }
@@ -12120,6 +12247,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
                 return Self.json(400, "{\"error\":\"Invalid Agent update\"}")
             }
+            let previousConfigSnapshot = info.runtimeConfigJSON.flatMap {
+                try? JSONSerialization.jsonObject(with: Data($0.utf8))
+            } as? [String: Any] ?? [:]
+            let previousModelValue = Self.agentModel(from: info.runtimeConfigJSON, external: info.runtime == "external")
+            let previousEffortValue = previousConfigSnapshot["reasoningEffort"] as? String
+            let previousRuntimeValue = info.runtime
             if let restartMode = object["restartMode"] as? String,
                restartMode != "restart", restartMode != "session" {
                 return Self.json(400, "{\"error\":\"Invalid restart mode: \(restartMode)\"}")
@@ -12221,6 +12354,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 configChanged = true
             }
             if configChanged {
+                if let machineId = agentMachineIds[info.id],
+                   builtinModelCheck(machineId: machineId, config: config) == .catalogUnavailable {
+                    return builtinCatalogFailureReply()
+                }
                 if config["version"] == nil { config["version"] = 1 }
                 if config["mode"] == nil { config["mode"] = ["kind": "default"] }
                 if config["reasoningEffort"] == nil { config["reasoningEffort"] = NSNull() }
@@ -12242,6 +12379,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let effortValue = config["reasoningEffort"]
             let effortJSON = effortValue is NSNull || effortValue == nil ? "null" : jsonString(effortValue as? String ?? "")
             let effectiveRole = oauth.agentRole(serverId: info.serverId, agentId: info.id) ?? "member"
+            // RFC 071 §5: only a real runtime value change lifts the terminal breaker.
+            let nextEffort = config["reasoningEffort"] as? String
+            let runtimeValuesChanged = model != previousModelValue
+                || runtimeForResponse != previousRuntimeValue
+                || nextEffort != previousEffortValue
+            agentConfigLiftDispatch?(agentId, runtimeValuesChanged)
             return Self.json(200, "{\"id\":\(jsonString(info.id)),\"name\":\(jsonString(info.name)),\"displayName\":\(displayNameJSON),\"model\":\(jsonString(model)),\"runtime\":\(jsonString(runtimeForResponse)),\"reasoningEffort\":\(effortJSON),\"description\":\(descriptionJSON),\"avatarUrl\":\(avatarJSON),\"serverRole\":\(jsonString(effectiveRole)),\"runtimeConfig\":\(Self.redactedRuntimeConfigJSON(runtimeConfigJSON ?? latest?.runtimeConfigJSON) ?? "null"),\"envVars\":\(envVarsJSON ?? "null")}")
         }
     }
@@ -13066,7 +13209,83 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return id
     }
 
-    public func agentPrivateSurface(authorization: String?, serverId: String, agentId: String, surface: String) -> HTTPReply {
+    private static func agentSurfaceQueryInt(_ query: String?, _ name: String) -> Int? {
+        guard let query, !query.isEmpty else { return nil }
+        for pair in query.split(separator: "&") {
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            let key = String(parts[0]).removingPercentEncoding ?? String(parts[0])
+            guard key == name, parts.count == 2 else { continue }
+            let raw = String(parts[1]).removingPercentEncoding ?? String(parts[1])
+            return Int(raw)
+        }
+        return nil
+    }
+
+    private static func agentSurfaceQueryString(_ query: String?, _ name: String) -> String? {
+        guard let query, !query.isEmpty else { return nil }
+        for pair in query.split(separator: "&") {
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            let key = String(parts[0]).removingPercentEncoding ?? String(parts[0])
+            guard key == name else { continue }
+            let raw = parts.count > 1 ? String(parts[1]) : ""
+            return (raw.removingPercentEncoding ?? raw)
+        }
+        return nil
+    }
+
+    /// Hides where a turn came from when the viewer cannot see the source
+    /// channel or DM. The trigger's own text must not survive the projection.
+    private func redactedAgentTurnSummaries(_ json: String, userId: String) -> String {
+        guard var object = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any],
+              var summaries = object["summaries"] as? [[String: Any]]
+        else { return json }
+        for index in summaries.indices {
+            guard var trigger = summaries[index]["trigger"] as? [String: Any],
+                  let channelId = trigger["channelId"] as? String
+            else { continue }
+            let target = trigger["target"] as? String ?? ""
+            lock.lock()
+            let kind = postableChannels[channelId]?.kind ?? oauth.channelType(id: channelId)
+            let isMember = postableChannels[channelId]?.memberIds.contains(userId) ?? false
+            lock.unlock()
+            if kind == "dm" || target.hasPrefix("dm:") {
+                summaries[index]["trigger"] = ["hidden": "dm"]
+            } else if kind == "channel" {
+                continue
+            } else if kind == "private" || kind == "thread" {
+                if !isMember {
+                    summaries[index]["trigger"] = ["hidden": "private_channel"]
+                }
+            } else {
+                summaries[index]["trigger"] = ["hidden": "private_channel"]
+            }
+            trigger = [:]
+        }
+        object["summaries"] = summaries
+        return Self.serializeJSON(object) ?? json
+    }
+
+    private func agentSurfaceFailureReply(_ result: AgentSurfaceResult, action: String) -> HTTPReply? {
+        switch result {
+        case .ok:
+            return nil
+        case .machineUnassigned:
+            return Self.json(409, "{\"code\":\"machine_unassigned\",\"error\":\"Agent has no connected machine\"}")
+        case .machineOffline:
+            return Self.json(409, "{\"code\":\"machine_offline\",\"error\":\"Failed to send \(action) request to daemon\"}")
+        case .machineTimeout:
+            return Self.json(504, "{\"code\":\"daemon_timeout\",\"error\":\"\(action) request timed out\"}")
+        }
+    }
+
+    public func agentPrivateSurface(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        surface: String,
+        query: String? = nil,
+        hasReplayHeaders: Bool = false
+    ) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
@@ -13080,13 +13299,51 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         switch surface {
         case "activity-log":
-            return Self.json(200, "[]")
+            guard let provider = agentActivityLogProvider else {
+                return Self.json(200, "[]")
+            }
+            let result = provider(agentId, Self.agentSurfaceQueryInt(query, "limit"))
+            if let failure = agentSurfaceFailureReply(result, action: "Activity log") { return failure }
+            guard case .ok(let body) = result else { return Self.json(200, "[]") }
+            return Self.json(200, body)
+        case "activity-summaries":
+            guard let provider = agentActivitySummariesProvider else {
+                return Self.json(200, "{\"summaries\":[],\"next\":null}")
+            }
+            let limit = min(max(Self.agentSurfaceQueryInt(query, "limit") ?? 30, 1), 50)
+            var beforeEndedAt: Int?
+            var beforeId: String?
+            if let before = Self.agentSurfaceQueryString(query, "before") {
+                let parts = before.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+                beforeEndedAt = Int(parts.count > 0 ? String(parts[0]) : "")
+                beforeId = parts.count > 1 ? String(parts[1]) : nil
+            }
+            let result = provider(agentId, limit, beforeEndedAt, beforeId)
+            if let failure = agentSurfaceFailureReply(result, action: "Activity summaries") { return failure }
+            guard case .ok(let body) = result else {
+                return Self.json(200, "{\"summaries\":[],\"next\":null}")
+            }
+            return Self.json(200, redactedAgentTurnSummaries(body, userId: userId))
         case "skills":
-            return Self.json(200, "{\"global\":[],\"workspace\":[]}")
+            if hasReplayHeaders {
+                return Self.json(400, "{\"code\":\"invalid_replica_replay_signature\",\"machineAffinityRoute\":\"owner_not_local\",\"error\":\"Invalid internal replay signature\"}")
+            }
+            if let isLocal = agentHasMachineLocally, !isLocal(agentId) {
+                return Self.json(409, "{\"code\":\"machine_offline\",\"machineAffinityRoute\":\"owner_missing\",\"error\":\"Machine is offline — the agent's Computer is not connected to this replica\"}")
+            }
+            guard let provider = agentSkillsProvider else {
+                return Self.json(200, "{\"global\":[],\"workspace\":[]}")
+            }
+            let result = provider(agentId)
+            if let failure = agentSurfaceFailureReply(result, action: "Skills list") { return failure }
+            guard case .ok(let body) = result else {
+                return Self.json(200, "{\"global\":[],\"workspace\":[]}")
+            }
+            return Self.json(200, body)
         case "activity":
             return Self.json(200, "{\"activity\":\"idle\",\"detail\":\"\"}")
         default:
-            return Self.json(200, "{\"summaries\":[],\"nextCursor\":null}")
+            return Self.json(200, "{\"summaries\":[],\"next\":null}")
         }
     }
 
@@ -13111,22 +13368,75 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"agentId\":\(jsonString(agentId)),\"mode\":\"default\",\"scopes\":[\("\(grants.map { jsonString($0) }.joined(separator: ","))")],\"revision\":0}")
     }
 
-    public func agentWorkspaceFiles(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
+    private func agentWorkspaceAuthority(
+        authorization: String?,
+        serverId: String,
+        agentId: String
+    ) -> (reply: HTTPReply?, info: OAuthLedger.AgentManagementInfo?) {
         guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+            return (Self.json(401, "{\"error\":\"Unauthorized\"}"), nil)
         }
         let info = oauth.agentManagementInfo(id: agentId)
         let ownerServerId = info?.serverId ?? agentArchiveRecords[agentId]?.serverId
         guard ownerServerId == serverId else {
-            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+            return (Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}"), nil)
         }
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+            return (Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}"), nil)
         }
         guard role == "owner" || role == "admin" || info?.creatorUserId == userId else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            return (Self.json(403, "{\"error\":\"Forbidden\"}"), nil)
         }
-        return Self.json(503, "{\"code\":\"daemon_offline\",\"error\":\"Agent has no connected machine\"}")
+        return (nil, info)
+    }
+
+    public func agentWorkspaceFiles(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        query: String? = nil
+    ) -> HTTPReply {
+        let authority = agentWorkspaceAuthority(authorization: authorization, serverId: serverId, agentId: agentId)
+        if let reply = authority.reply { return reply }
+        guard let provider = agentWorkspaceTreeProvider else {
+            return Self.json(503, "{\"code\":\"daemon_offline\",\"error\":\"Agent has no connected machine\"}")
+        }
+        let dirPath = Self.agentSurfaceQueryString(query, "dirPath")
+        let includeHidden = ["1", "true"].contains((Self.agentSurfaceQueryString(query, "includeHidden") ?? "").lowercased())
+        switch provider(agentId, dirPath, includeHidden) {
+        case .ok(let files):
+            return Self.json(200, "{\"files\":\(files)}")
+        case .machineUnassigned:
+            return Self.json(409, "{\"code\":\"machine_unassigned\",\"error\":\"Agent has no connected machine\"}")
+        case .machineOffline:
+            return Self.json(409, "{\"error\":\"Agent has no connected machine\",\"code\":\"machine_offline\"}")
+        case .machineTimeout:
+            return Self.json(504, "{\"error\":\"Workspace file tree request timed out\",\"code\":\"daemon_timeout\"}")
+        }
+    }
+
+    public func agentWorkspaceRead(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        query: String? = nil
+    ) -> HTTPReply {
+        let authority = agentWorkspaceAuthority(authorization: authorization, serverId: serverId, agentId: agentId)
+        if let reply = authority.reply { return reply }
+        let path = Self.agentSurfaceQueryString(query, "path")
+        guard let provider = agentWorkspaceReadProvider else {
+            return Self.json(503, "{\"code\":\"daemon_offline\",\"error\":\"Agent has no connected machine\"}")
+        }
+        switch provider(agentId, path) {
+        case .ok(let body):
+            return Self.json(200, body)
+        case .machineUnassigned:
+            return Self.json(409, "{\"code\":\"machine_unassigned\",\"error\":\"Agent has no connected machine\"}")
+        case .machineOffline:
+            return Self.json(409, "{\"error\":\"Agent file read failed\",\"code\":\"machine_offline\"}")
+        case .machineTimeout:
+            return Self.json(504, "{\"error\":\"Workspace file read request timed out\",\"code\":\"daemon_timeout\"}")
+        }
     }
 
     public func agentArchiveWorkspaceAction(authorization: String?, serverId: String, agentId: String, body: String) -> HTTPReply {
@@ -13355,6 +13665,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             guard online else {
                 return Self.json(409, "{\"error\":\"Machine is offline\",\"code\":\"machine_offline\",\"machineAffinityRoute\":\"owner_missing\"}")
             }
+            agentStartControlDispatch?(agentId, "human_start")
             return Self.json(200, "{\"ok\":true}")
         }
         if action == "stop" {
@@ -13382,6 +13693,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if info.runtime == "external" {
             return Self.json(400, "{\"error\":\"External agents do not use Raft-managed runtime lifecycle\"}")
         }
+        agentResetDispatch?(agentId, mode, "human_reset")
         return Self.json(202, "{\"ok\":true,\"status\":\"accepted\"}")
     }
 
@@ -13444,6 +13756,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         guard plan != "free" else {
             return Self.json(403, "{\"error\":\"Agent migration requires the Pro plan.\",\"code\":\"MIGRATION_PRO_PLAN_REQUIRED\",\"details\":{\"failureReason\":\"MIGRATION_PRO_PLAN_REQUIRED\"}}")
+        }
+        let migrationConfig = info.runtimeConfigJSON.flatMap {
+            try? JSONSerialization.jsonObject(with: Data($0.utf8))
+        } as? [String: Any] ?? [:]
+        if builtinModelCheck(machineId: targetMachineId, config: migrationConfig) == .catalogUnavailable {
+            return builtinCatalogFailureReply()
         }
         let sessionId: String
         if let provisioner {
@@ -14337,12 +14655,38 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 return Self.json(400, "{\"error\":\"External agents cannot be assigned to a Computer\"}")
             }
             guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-                  let machineId = object["machineId"] as? String, !machineId.isEmpty
+                  object.keys.contains("machineId")
             else {
                 return Self.json(400, "{\"error\":\"machineId is required\"}")
             }
+            var machineId: String?
+            if let raw = object["machineId"], !(raw is NSNull) {
+                guard let value = raw as? String, !value.isEmpty else {
+                    return Self.json(400, "{\"error\":\"machineId must be a Computer id or null\"}")
+                }
+                machineId = value
+            }
+            if let machineId {
+                let config = info.runtimeConfigJSON.flatMap {
+                    try? JSONSerialization.jsonObject(with: Data($0.utf8))
+                } as? [String: Any] ?? [:]
+                if builtinModelCheck(machineId: machineId, config: config) == .catalogUnavailable {
+                    return builtinCatalogFailureReply()
+                }
+            }
             lock.lock()
-            agentMachineIds[agentId] = machineId
+            let active = machineMigrations.values.contains {
+                $0.agentId == agentId && !["canceled_pre_flip", "completed", "aborted", "failed"].contains($0.state)
+            } || hostedMigrations[agentId] != nil
+            if active {
+                lock.unlock()
+                return Self.json(409, "{\"code\":\"MIGRATION_ALREADY_IN_PROGRESS\",\"error\":\"Agent already has an active migration\"}")
+            }
+            if let machineId {
+                agentMachineIds[agentId] = machineId
+            } else {
+                agentMachineIds.removeValue(forKey: agentId)
+            }
             lock.unlock()
             return Self.json(200, "{\"ok\":true}")
         }
@@ -33770,6 +34114,21 @@ public enum AgentStartDispatchOutcome: Sendable, Equatable {
     case dispatched
     /// A gate (for example a held wake lock) suppressed the start.
     case skipped(String)
+}
+
+/// Outcome of the Built-in model catalog check for a target Computer.
+public enum BuiltinModelCatalogResult: Sendable, Equatable {
+    case supported
+    case modelAbsent
+    case catalogUnavailable
+}
+
+/// Result of one machine-backed agent surface read.
+public enum AgentSurfaceResult: Sendable, Equatable {
+    case ok(String)
+    case machineUnassigned
+    case machineOffline
+    case machineTimeout
 }
 
 /// A code-shaped source-archive failure reported by the source Computer.

@@ -2049,3 +2049,17 @@ RFC 074 personal assistant：
 - GET `/internal/agent-api/knowledge/search`：scope 校验、词法 top-3 + relevance floor、non-English → `knowledge_language_unsupported` + `language_gate`、blind phrasing ranking、clean miss event；search 只接受支持的 scope，get 保持 exact-only；legacy `X-Slock-Client` 与 Manual compatibility 字段保留。
 - corpus 为嵌入的 81 docs（46 agent-knowledge + 35 recipes，含 `manual/recipes` prefix），docVersion 为 sanitized content 的 SHA-256 前 16 hex；telemetry 为 metadata-only in-memory seam（docId/docVersion/docState/query bytes，不存 body）。
 - 非 case-visible 简化：`knowledge:read` custom grant gate 未强制（public helper 不可达；24 cases 无 custom grant）、`knowledge_agent_missing` 以 `agentApiIdentity` 401 近似、telemetry 为内存而非 DB row、corpus 嵌入而非 SLOCK_KNOWLEDGE_ROOT。
+
+### route agents.api（锁定，含裁决）
+
+- 已覆盖：identity/discovery、create/runtime config/validation、server roles、external runtime guard、runtime forms v2、onboarding identity adoption、avatar limit、start/reset、migration cancel。
+- 本轮补齐：
+  - skills surface + typed failures（`{global,workspace}`、409 `machine_offline` owner_missing/daemon offline、504 `daemon_timeout`、伪造 replay header 400 `invalid_replica_replay_signature`）；
+  - workspace-files tree/read（`dirPath/includeHidden` 转发、`machine_unassigned`/`machine_offline`/read 504 精确消息）；
+  - activity-log / activity-summaries（entry 透传、`limit`/`before`、private/DM trigger redaction、`next` 保留）；
+  - onboarding Cindy（固定 identity/admin/`first-cindy` seed/server onboardingAgentId、重复与同名 409 不覆盖）；
+  - Built-in preset catalog matrix（create/assign/model-change/migrate 调 catalog seam；model-absent 持久化；unavailable → 409 `builtin_catalog_unavailable` 零写入）；
+  - assign-machine vs active migration（409 `MIGRATION_ALREADY_IN_PROGRESS`、terminal 后可分配、`machineId:null` unassign）；
+  - RFC 071 Start/Reset breaker（`human_start`/`human_reset` dispatch、PATCH lift 的 `runtimeValuesChanged`）；
+  - v2 field-pointing（`connection` → `/formValues/providerId`；unknown live model → `/formValues/model`）。
+- 裁决排除：trace acceptance/runtime trace rows、CDN avatar fetch、client-abort socket release、creator-removal DB fence、trace-phase restore、trace-event skill failure rows、valid-signature replica replay-loop routing、unknown-throw workspace fail-closed 500（无 throwing seam）；以及未重审的 case 1780 owner-no-preflight migrate transport-message/preflight 细节（其 admission/lease/provisioning 面已由 `MachineMigrationTransportTests`/`HostedMigration*` 覆盖）。
