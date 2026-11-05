@@ -4467,7 +4467,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if resolutionIds.isEmpty {
             return Self.json(400, "{\"error\":\"resolutionIds must include at least one id\"}")
         }
-        lock.lock()
         var results: [String] = []
         for id in resolutionIds {
             guard let index = storedMentions.firstIndex(where: { $0.id == id }),
@@ -8203,6 +8202,14 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             .map { ($0.subjectType, $0.subjectId, $0.provenanceJSON, $0.deliveryQueued) }
     }
 
+    public func setJointProjectionStatusForTesting(localChannelId: String, serverId: String, status: String) {
+        lock.lock()
+        if let index = jointProjections.firstIndex(where: { $0.localChannelId == localChannelId && $0.serverId == serverId }) {
+            jointProjections[index].status = status
+        }
+        lock.unlock()
+    }
+
     public func setAgentChannelJoinedAtForTesting(agentId: String, channelId: String, at: Date) {
         lock.lock()
         agentChannelJoinedAt["\(channelId)\n\(agentId)"] = at
@@ -9890,6 +9897,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var localChannelId: String
         var canonicalChannelId: String
         var serverId: String
+        var status: String = "active"
     }
 
     private struct PostableChannel {
@@ -18148,14 +18156,30 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"LLM translation is not available for this server\"}")
         }
         let providerVersion = provider == "fake" ? "fake@v0+fake-v0" : "\(provider)@v0"
-        lock.lock()
         var results: [String] = []
         for id in ids {
-            guard let message = oauth.messageTranslationMetadata(id: id),
-                  let channel = oauth.channelInfo(id: message.channelId),
+            guard let message = oauth.messageTranslationMetadata(id: id) else {
+                results.append("{\"messageId\":\(jsonString(id)),\"status\":\"not_found\",\"targetLanguage\":\(jsonString(target))}")
+                continue
+            }
+            lock.lock()
+            let jointLocal = jointProjections.first {
+                $0.canonicalChannelId == message.channelId
+                    && $0.serverId == serverId
+                    && $0.status == "active"
+            }?.localChannelId
+            lock.unlock()
+            let resolvedChannelId: String? = {
+                if let channel = oauth.channelInfo(id: message.channelId), channel.serverId == serverId {
+                    return message.channelId
+                }
+                return jointLocal
+            }()
+            guard let resolvedChannelId,
+                  let channel = oauth.channelInfo(id: resolvedChannelId),
                   channel.serverId == serverId,
-                  oauth.channelType(id: message.channelId) == "channel"
-                      || oauth.isChannelParticipant(channelId: message.channelId, userId: userId)
+                  oauth.channelType(id: resolvedChannelId) == "channel"
+                      || oauth.isChannelParticipant(channelId: resolvedChannelId, userId: userId)
             else {
                 results.append("{\"messageId\":\(jsonString(id)),\"status\":\"not_found\",\"targetLanguage\":\(jsonString(target))}")
                 continue
@@ -18182,10 +18206,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
             let translated = provider == "fake" ? "[\(target)] \(message.content)" : "[\(target)] \(message.content)"
             let hash = Self.sha256Hex(Data(message.content.utf8))
+            lock.lock()
             messageTranslationLedger[id] = (status: "translated", providerBilledChars: message.content.count, targetLanguage: target, translatedContent: translated)
+            lock.unlock()
             results.append("{\"messageId\":\(jsonString(id)),\"status\":\"translated\",\"contentHash\":\(jsonString(hash)),\"sourceLanguage\":\(jsonString(source.language)),\"sourceConfidence\":\(source.confidence),\"targetLanguage\":\(jsonString(target)),\"translatedContent\":\(jsonString(translated)),\"provider\":\(jsonString(provider)),\"providerVersion\":\(jsonString(providerVersion)),\"placeholderPolicyVersion\":\"placeholder-v0\"}")
         }
-        lock.unlock()
         return Self.json(200, "{\"results\":[\("\(results.joined(separator: ","))")]}")
     }
 

@@ -180,3 +180,66 @@ import VaporTesting
         }
     }
 }
+
+@Test func translationResolvesActiveJointProjectionsAndHidesInvisibleMessages() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111633"
+    let guestId = "11111111-1111-4111-8111-111111111634"
+    let hostServerId = "33333333-3333-4333-8333-333333333675"
+    let guestServerId = "33333333-3333-4333-8333-333333333676"
+    let storageServerId = "33333333-3333-4333-8333-333333333677"
+    accounts.addAccount(id: ownerId, email: "joint-translation-host@test.invalid", password: "password123")
+    accounts.addAccount(id: guestId, email: "joint-translation-guest@test.invalid", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.markEmailVerified(userId: guestId)
+    accounts.oauth.addOwnedServer(id: hostServerId, slug: "joint-translation-host", name: "Joint Translation Host", ownerId: ownerId)
+    accounts.oauth.addOwnedServer(id: guestServerId, slug: "joint-translation-guest", name: "Joint Translation Guest", ownerId: guestId)
+    accounts.oauth.addOwnedServer(id: storageServerId, slug: "joint-translation-storage", name: "Joint Translation Storage", ownerId: ownerId)
+    accounts.oauth.setServerTranslationEnabled(id: guestServerId, enabled: true)
+    let hostProjection = accounts.oauth.createChannel(serverId: hostServerId, name: "joint-translation", creatorUserId: ownerId, type: "joint")
+    let guestProjection = accounts.oauth.createChannel(serverId: guestServerId, name: "joint-translation", creatorUserId: guestId, type: "joint")
+    let canonical = accounts.oauth.createChannel(serverId: storageServerId, name: "joint-storage-translation", creatorUserId: ownerId)
+    accounts.oauth.addChannelHuman(channelId: hostProjection, userId: ownerId)
+    accounts.oauth.addChannelHuman(channelId: guestProjection, userId: guestId)
+    accounts.addJointChannelProjection(localChannelId: hostProjection, canonicalChannelId: canonical, serverId: hostServerId)
+    accounts.addJointChannelProjection(localChannelId: guestProjection, canonicalChannelId: canonical, serverId: guestServerId)
+    let visibleMessage = accounts.oauth.createMessageRecord(channelId: canonical, content: "你好 joint translation", senderId: ownerId)
+    let guestToken = accounts.mintAccessTokenForTesting(userId: guestId)
+    accounts.setTranslationProviderForTesting("fake")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            func batch(_ ids: [String]) async throws -> [String: Any] {
+                var headers = HTTPFields()
+                headers[.authorization] = "Bearer \(guestToken)"
+                headers[HTTPField.Name("X-Server-Id")!] = guestServerId
+                headers[.contentType] = "application/json"
+                let data = try JSONSerialization.data(withJSONObject: ["targetLanguage": "en", "mode": "manual", "messageIds": ids])
+                let response = try await client.send(.post, headers: headers, to: URI(string: "/api/message-translations:batch")) { request in
+                    request.body = .init(data: data)
+                }
+                return (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            }
+            let visible = try await batch([visibleMessage.id])
+            let visibleRow = (visible["results"] as? [[String: Any]])?.first
+            #expect(visibleRow?["status"] as? String == "translated")
+            #expect(visibleRow?["targetLanguage"] as? String == "en")
+
+            accounts.setJointProjectionStatusForTesting(localChannelId: guestProjection, serverId: guestServerId, status: "disconnected")
+            let disconnectedMessage = accounts.oauth.createMessageRecord(channelId: canonical, content: "你好 disconnected joint", senderId: ownerId)
+            let disconnected = try await batch([disconnectedMessage.id])
+            let rows = disconnected["results"] as? [[String: Any]] ?? []
+            #expect(rows.count == 1)
+            #expect(rows.first?["messageId"] as? String == disconnectedMessage.id)
+            #expect(rows.first?["status"] as? String == "not_found")
+
+            let privateChannel = accounts.oauth.createChannel(serverId: guestServerId, name: "translation-private", creatorUserId: guestId, type: "private")
+            accounts.oauth.addChannelHuman(channelId: privateChannel, userId: ownerId)
+            let privateMessage = accounts.oauth.createMessageRecord(channelId: privateChannel, content: "private translation source", senderId: ownerId)
+            let hidden = try await batch([privateMessage.id, "00000000-0000-0000-0000-000000000000"])
+            let hiddenRows = hidden["results"] as? [[String: Any]] ?? []
+            #expect(hiddenRows.count == 2)
+            #expect(hiddenRows.allSatisfy { ($0["status"] as? String) == "not_found" })
+        }
+    }
+}
