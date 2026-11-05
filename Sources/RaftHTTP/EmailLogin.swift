@@ -18566,9 +18566,35 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let events = object["events"] as? [[String: Any]]
-        else {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid activity ingest\",\"code\":\"activity_invalid\"}")
+        }
+        if object["schema"] as? String == "raft-agent-activity-ingest.v1" {
+            guard let events = object["events"] as? [[String: Any]] else {
+                return Self.json(400, "{\"error\":\"Invalid activity ingest\",\"code\":\"activity_invalid\"}")
+            }
+            let allowed: Set<String> = [
+                "eventId", "hookEventName", "toolName", "toolInput", "truncated",
+                "tool_use_id", "exit_code", "ok", "subagent",
+            ]
+            var ignored: Set<String> = []
+            for event in events {
+                for key in event.keys where !allowed.contains(key) {
+                    if key == "transcript_path" {
+                        return Self.json(400, "{\"error\":\"transcript_path is not accepted\",\"code\":\"transcript_path_forbidden\"}")
+                    }
+                    ignored.insert(key)
+                }
+            }
+            let dropped = (object["dropped"] as? NSNumber)?.intValue ?? 0
+            var fields = ""
+            if !ignored.isEmpty {
+                let names = ignored.sorted().map(jsonString).joined(separator: ",")
+                fields = ",\"ignoredFields\":[\(names)]"
+            }
+            return Self.json(200, "{\"ok\":true,\"acceptedCount\":\(events.count),\"rejectedCount\":0,\"droppedCount\":\(dropped)\(fields)}")
+        }
+        guard let events = object["events"] as? [[String: Any]] else {
             return Self.json(400, "{\"error\":\"Invalid activity ingest\",\"code\":\"activity_invalid\"}")
         }
         let standardStatuses: Set<String> = ["working", "thinking", "online", "error", "offline"]
