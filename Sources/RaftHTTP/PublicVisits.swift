@@ -360,6 +360,38 @@ public final class PublicVisitDirectory: @unchecked Sendable {
         )
     }
 
+    public func publicTranslationResults(slug: String, targetLanguage: String, messageIds: [String]) -> [[String: String]] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let server = servers[slug], let messages = history[slug] else {
+            return messageIds.map { ["messageId": $0, "status": "not_found", "targetLanguage": targetLanguage] }
+        }
+        let byId = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
+        return messageIds.map { id in
+            guard let message = byId[id] else {
+                return ["messageId": id, "status": "not_found", "targetLanguage": targetLanguage]
+            }
+            let visibleChannel = server.guestChannelIds.contains(message.channelId.lowercased())
+                || server.threads[message.channelId.lowercased()].map { server.guestChannelIds.contains($0.parentChannelId) } == true
+            guard visibleChannel, !server.archivedChannelIds.contains(message.channelId.lowercased()) else {
+                return ["messageId": id, "status": "not_found", "targetLanguage": targetLanguage]
+            }
+            let source = PublicTranslations.detectSourceLanguage(message.content)
+            if source == targetLanguage {
+                return ["messageId": id, "status": "skipped", "reason": "target_is_source", "sourceLanguage": source, "targetLanguage": targetLanguage]
+            }
+            return [
+                "messageId": id,
+                "status": "translated",
+                "sourceLanguage": source,
+                "targetLanguage": targetLanguage,
+                "translatedContent": "[\(targetLanguage)] \(message.content)",
+                "provider": "fake",
+                "providerVersion": "fake@v0+fake-v0",
+            ]
+        }
+    }
+
     public func setServerCard(
         slug: String,
         guestJoinEnabled: Bool? = nil,

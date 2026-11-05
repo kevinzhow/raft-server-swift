@@ -34,7 +34,11 @@ public enum PublicTranslations {
         }
     }
 
-    public static func reply(body: String, gate: Gate?) -> HTTPReply {
+    public static func reply(
+        body: String,
+        gate: Gate?,
+        translator: (([String], String) -> [[String: String]])? = nil
+    ) -> HTTPReply {
         guard let request = parse(body) else {
             return json(400, "{\"error\":\"Invalid public translation request\"}")
         }
@@ -49,8 +53,19 @@ public enum PublicTranslations {
         if gate.llmUnavailable {
             return json(403, "{\"error\":\"LLM translation is not available for this server\"}")
         }
-        let results = request.messageIds.map { id in
-            "{\"messageId\":\(jsonString(id)),\"status\":\"not_found\",\"targetLanguage\":\(jsonString(request.targetLanguage))}"
+        let rows = translator?(request.messageIds, request.targetLanguage) ?? request.messageIds.map { id in
+            ["messageId": id, "status": "not_found", "targetLanguage": request.targetLanguage]
+        }
+        let leadingKeys = ["messageId", "status", "targetLanguage"]
+        let results = rows.map { row -> String in
+            var parts: [String] = []
+            for key in leadingKeys {
+                if let value = row[key] { parts.append("\(jsonString(key)):\(jsonString(value))") }
+            }
+            for key in row.keys.sorted() where !leadingKeys.contains(key) {
+                if let value = row[key] { parts.append("\(jsonString(key)):\(jsonString(value))") }
+            }
+            return "{\(parts.joined(separator: ","))}"
         }.joined(separator: ",")
         return json(200, "{\"results\":[\(results)]}")
     }
@@ -77,6 +92,13 @@ public enum PublicTranslations {
         }
         guard messageIds.count <= 200 else { return nil }
         return Request(targetLanguage: normalized, mode: mode, messageIds: messageIds)
+    }
+
+    static func detectSourceLanguage(_ content: String) -> String {
+        let hasCJK = content.unicodeScalars.contains { scalar in
+            (0x4E00...0x9FFF).contains(scalar.value) || (0x3040...0x30FF).contains(scalar.value)
+        }
+        return hasCJK ? "zh" : "en"
     }
 
     static func normalizeLanguage(_ language: String) -> String? {

@@ -3478,7 +3478,10 @@ public func configure(_ app: Application, services: FallbackServices) {
         let slug = request.parameters.get("slug") ?? ""
         return routeResponse(PublicTranslations.reply(
             body: request.body.string ?? "",
-            gate: services.publicVisits?.translationGate(slug: slug)
+            gate: services.publicVisits?.translationGate(slug: slug),
+            translator: services.publicVisits.map { visits in
+                { ids, target in visits.publicTranslationResults(slug: slug, targetLanguage: target, messageIds: ids) }
+            }
         ))
     }
     app.post("api", "oauth", "authorize", "human") { request -> Response in
