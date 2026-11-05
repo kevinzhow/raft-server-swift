@@ -355,11 +355,24 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         app.post("api", "channels", ":channelId", "leave") { request -> Response in
-            routeResponse(services.emailAccounts.leaveChannel(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: request.parameters.get("channelId") ?? ""
-            ))
+            let authorization = request.headers[.authorization]
+            let serverId = request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+            let channelId = request.parameters.get("channelId") ?? ""
+            let reply = services.emailAccounts.leaveChannel(
+                authorization: authorization,
+                serverId: serverId,
+                channelId: channelId
+            )
+            if reply.status == 200,
+               let hub = services.realtime,
+               let userId = services.emailAccounts.sessionUserId(authorization: authorization) {
+                hub.leaveUserRooms(
+                    userId: userId,
+                    serverId: serverId,
+                    rooms: services.emailAccounts.realtimeChannelRoomIds(channelId: channelId)
+                )
+            }
+            return routeResponse(reply)
         }
 
         app.post("api", "channels", ":channelId", "members", "batch") { request -> Response in
@@ -407,12 +420,23 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         app.delete("api", "channels", ":channelId", "members", "user", ":memberId") { request -> Response in
-            routeResponse(services.emailAccounts.removeChannelHuman(
+            let serverId = request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+            let channelId = request.parameters.get("channelId") ?? ""
+            let memberId = request.parameters.get("memberId") ?? ""
+            let reply = services.emailAccounts.removeChannelHuman(
                 authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: request.parameters.get("channelId") ?? "",
-                memberId: request.parameters.get("memberId") ?? ""
-            ))
+                serverId: serverId,
+                channelId: channelId,
+                memberId: memberId
+            )
+            if reply.status == 200, let hub = services.realtime {
+                hub.leaveUserRooms(
+                    userId: memberId,
+                    serverId: serverId,
+                    rooms: services.emailAccounts.realtimeChannelRoomIds(channelId: channelId)
+                )
+            }
+            return routeResponse(reply)
         }
 
         app.delete("api", "channels", ":channelId", "members", "agent", ":agentId") { request -> Response in

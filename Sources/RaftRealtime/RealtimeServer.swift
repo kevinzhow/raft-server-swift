@@ -8,6 +8,17 @@ public protocol RealtimeAuthorizing: Sendable {
     func sessionFamilyId(forAccessToken token: String) -> String?
     func serverRole(serverId: String, userId: String) -> String?
     func visibleChannelIds(serverId: String, userId: String) -> [String]
+    /// `sync:resume` catch-up body (`{messages,currentSeq,hasMore}`), or nil
+    /// when the viewer cannot read the server.
+    func syncResumePayload(serverId: String, userId: String, lastSeq: Int, limit: Int) -> String?
+}
+
+public extension RealtimeAuthorizing {
+    /// Providers that do not implement reconnect replay keep the socket quiet
+    /// instead of failing the event handler.
+    func syncResumePayload(serverId: String, userId: String, lastSeq: Int, limit: Int) -> String? {
+        nil
+    }
 }
 
 public final class RealtimeHub: @unchecked Sendable {
@@ -76,6 +87,21 @@ public final class RealtimeHub: @unchecked Sendable {
         let frame = socketIOEventFrame("server:membership-removed", payloadJSON: payload)
         for session in targets {
             session.sendAndClose(frame)
+        }
+    }
+
+    /// Drop one user's subscriptions to the given rooms (a channel plus its
+    /// child thread rooms) after a membership change. Only sockets attached to
+    /// the same server are touched.
+    public func leaveUserRooms(userId: String, serverId: String?, rooms: [String]) {
+        guard !rooms.isEmpty else { return }
+        lock.lock()
+        let targets = sessions.values.filter { session in
+            session.userId == userId && (serverId == nil || session.serverId == serverId)
+        }
+        lock.unlock()
+        for session in targets {
+            session.leave(rooms)
         }
     }
 
@@ -326,6 +352,20 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler, @unchecked
         case "leave:channel":
             guard array.count > 1, let channelId = array[1] as? String else { return }
             session.leave("channel:\(channelId)")
+        case "sync:resume":
+            guard let serverId = session.serverId,
+                  array.count > 1,
+                  let payload = array[1] as? [String: Any],
+                  let lastSeq = (payload["lastSeq"] as? NSNumber)?.intValue ?? (payload["lastSeq"] as? Int),
+                  lastSeq > 0
+            else { return }
+            guard let body = auth.syncResumePayload(
+                serverId: serverId,
+                userId: userId,
+                lastSeq: lastSeq,
+                limit: socketResumeLimit
+            ) else { return }
+            session.send(socketIOEventFrame("sync:resume:response", payloadJSON: body))
         default:
             break
         }
@@ -407,6 +447,13 @@ final class SocketIOSession: @unchecked Sendable {
     func leave(_ room: String) {
         lock.lock()
         rooms.remove(room)
+        lock.unlock()
+    }
+
+    func leave(_ leavingRooms: [String]) {
+        guard !leavingRooms.isEmpty else { return }
+        lock.lock()
+        rooms.subtract(leavingRooms)
         lock.unlock()
     }
 

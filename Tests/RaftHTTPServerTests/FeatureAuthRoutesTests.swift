@@ -8,7 +8,7 @@ import VaporTesting
 
 /// Every `method path` pair the auth slice owns. This is the complete list of
 /// `app.get/post/patch/delete/on("api", "auth", ...)` registrations in
-/// `FallbackApplication.configure` at extraction time (36 routes).
+/// `FallbackApplication.configure` at extraction time (38 routes).
 private let expectedAuthRoutes: [(HTTPRequest.Method, String)] = [
     (.get, "GET /api/auth/invite-info"),
     (.post, "POST /api/auth/mobile/oauth/apple/native/start"),
@@ -27,6 +27,8 @@ private let expectedAuthRoutes: [(HTTPRequest.Method, String)] = [
     (.post, "POST /api/auth/device/token"),
     (.post, "POST /api/auth/staging-self-account/retire"),
     (.post, "POST /api/auth/register"),
+    (.post, "POST /api/auth/verify-email"),
+    (.post, "POST /api/auth/resend-verification"),
     (.post, "POST /api/auth/refresh"),
     (.post, "POST /api/auth/logout"),
     (.get, "GET /api/auth/identities"),
@@ -65,8 +67,8 @@ private let expectedAuthRoutes: [(HTTPRequest.Method, String)] = [
 
         // The list is authoritative: reject an accidental duplicate or gap in
         // the table itself before comparing it to the router.
-        #expect(expectedAuthRoutes.count == 36)
-        #expect(expected.count == 36)
+        #expect(expectedAuthRoutes.count == 38)
+        #expect(expected.count == 38)
 
         // One route per table entry, and no route outside `/api/auth/...`.
         #expect(app.routes.all.count == expected.count)

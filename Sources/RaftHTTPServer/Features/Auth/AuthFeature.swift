@@ -23,6 +23,21 @@ public struct AuthFeature: RouteCollection, Sendable {
     /// Synchronous mount for `configure`, whose call sites are not `async`.
     public func register(routes: any RoutesBuilder) {
         let app = routes
+        // `verify-email` and `resend-verification` are literal siblings of the
+        // `:provider` auth routes, so they mount from the same `api/auth` group.
+        let auth = routes.grouped("api", "auth")
+        auth.post("verify-email") { request async throws -> Response in
+            // An empty or malformed body falls back to a nil token so the
+            // missing-token branch still answers the upstream 400.
+            let body = (try? await request.content.decode(VerifyEmailRequest.self)) ?? VerifyEmailRequest()
+            return try authVerificationResponse(services.emailAccounts.verifyEmail(token: body.token))
+        }
+        auth.post("resend-verification") { request async throws -> Response in
+            return try authVerificationResponse(services.emailAccounts.resendVerificationEmail(
+                authorization: request.headers[.authorization]
+            ))
+        }
+
         app.get("api", "auth", "invite-info") { request -> Response in
             routeResponse(services.emailAccounts.inviteInfo(token: desktopQuery(request.url.query, "token")))
         }
@@ -241,4 +256,29 @@ private func desktopQuery(_ query: String?, _ name: String) -> String? {
         return raw.removingPercentEncoding ?? raw
     }
     return nil
+}
+
+/// Encodes one typed verification result with `JSONEncoder` into the same
+/// header/body shape the rest of the auth surface publishes.
+private func authVerificationResponse(_ result: AuthVerificationResult) throws -> Response {
+    let status: Int
+    let payload: Data
+    switch result {
+    case .verified, .sent:
+        status = 200
+        payload = try JSONEncoder().encode(OkResponse())
+    case .failure(let failure):
+        status = Int(failure.status)
+        payload = try JSONEncoder().encode(AuthErrorResponse(error: failure.message))
+    }
+    let reply = HTTPReply(
+        status: status,
+        headers: [
+            "X-Robots-Tag": AppFallback.robotsTag,
+            "Content-Type": AppFallback.jsonContentType,
+            "Content-Length": String(payload.count),
+        ],
+        body: String(decoding: payload, as: UTF8.self)
+    )
+    return routeResponse(reply)
 }

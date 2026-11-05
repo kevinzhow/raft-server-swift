@@ -58,6 +58,10 @@ public func parseSocketHandshakeAuth(_ data: Data) -> Result<SocketHandshakeAuth
 
 public let socketNotServerMemberMessage = "Not a member of this server"
 
+/// `RESUME_LIMIT` in `socket/index.ts`: the most messages one `sync:resume`
+/// replay may carry before the client is told `hasMore`.
+public let socketResumeLimit = 500
+
 /// Every channel type goes through the access check on `join:channel`.
 public func requiresSocketChannelAccessCheck(_ channelType: String) -> Bool {
     true

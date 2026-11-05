@@ -5,11 +5,14 @@ The target layering is described in ``docs/ARCHITECTURE.md``. This script
 enforces the part of it that can be measured today:
 
 1. ``Sources/RaftHTTP/EmailLogin.swift`` must not grow past its recorded
-   baseline (31,656 lines). Shrinking is always allowed; the baseline constant
-   is a ratchet and may only be lowered.
+   baseline (1,201 lines, the stored state + nested types + ``init`` residue).
+   Shrinking is always allowed; the baseline constant is a ratchet and may only
+   be lowered.
 2. Every Swift file under ``Sources/RaftHTTPServer/Features/`` must stay at or
    below 1,200 lines. A missing directory is reported as zero files.
-3. ``ForTesting`` markers in ``EmailLogin.swift`` are warnings, not failures:
+3. Every Swift file under ``Sources/RaftHTTP/EmailLogin/`` must stay at or
+   below 1,600 lines. A missing directory is reported as zero files.
+4. ``ForTesting`` markers in ``EmailLogin.swift`` are warnings, not failures:
    the recorded baseline is 243 markers and 0 ``private func …ForTesting``.
    New seams belong in the test-only ``TestSupport`` target (see R5 in
    ``docs/ARCHITECTURE.md``).
@@ -36,17 +39,21 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 EMAIL_LOGIN_RELATIVE = Path("Sources/RaftHTTP/EmailLogin.swift")
+EMAIL_LOGIN_EXTENSIONS_RELATIVE = Path("Sources/RaftHTTP/EmailLogin")
 FEATURES_RELATIVE = Path("Sources/RaftHTTPServer/Features")
 
 # Recorded on 2026-11-05 from the tree that introduced this guardrail.
 # The line ceiling is a ratchet: lower it when a slice shrinks the file, never
 # raise it to make a check pass.
-EMAIL_LOGIN_LINE_BASELINE = 21258
+EMAIL_LOGIN_LINE_BASELINE = 1201
 EMAIL_LOGIN_FOR_TESTING_BASELINE = 243
 EMAIL_LOGIN_PRIVATE_FUNC_FOR_TESTING_BASELINE = 0
 
 # A feature file larger than this must split along upstream route groups.
 FEATURE_FILE_LINE_LIMIT = 1_200
+
+# A domain extension file larger than this must split along its domain again.
+EMAIL_LOGIN_EXTENSION_LINE_LIMIT = 1_600
 
 # ``ForTesting`` is almost always a suffix (``mintAccessTokenForTesting``), so a
 # word-boundary prefix match would miss nearly every marker.
@@ -143,6 +150,53 @@ def check_feature_file_ceilings(root: Path) -> dict:
     }
 
 
+def check_email_login_extension_ceilings(root: Path) -> dict:
+    directory = root / EMAIL_LOGIN_EXTENSIONS_RELATIVE
+    files: list[dict] = []
+    if directory.is_dir():
+        for path in sorted(directory.rglob("*.swift")):
+            if not path.is_file():
+                continue
+            lines = count_lines(path)
+            files.append(
+                {
+                    "path": str(path.relative_to(root)),
+                    "lines": lines,
+                    "limit": EMAIL_LOGIN_EXTENSION_LINE_LIMIT,
+                    "status": "fail" if lines > EMAIL_LOGIN_EXTENSION_LINE_LIMIT else "pass",
+                }
+            )
+    violations = [entry for entry in files if entry["status"] == "fail"]
+    present = directory.is_dir()
+    if not present:
+        message = f"{EMAIL_LOGIN_EXTENSIONS_RELATIVE} does not exist yet (0 extension files)"
+    elif not files:
+        message = (
+            f"{EMAIL_LOGIN_EXTENSIONS_RELATIVE} exists but has no .swift files "
+            "(0 extension files)"
+        )
+    else:
+        largest = max(entry["lines"] for entry in files)
+        message = (
+            f"{len(files)} EmailLogin extension {plural(len(files), 'file')}, "
+            f"largest {largest:,} / {EMAIL_LOGIN_EXTENSION_LINE_LIMIT:,} lines"
+        )
+        if violations:
+            message += f"; {len(violations)} over the limit"
+    return {
+        "id": "email-login-extension-ceiling",
+        "title": "EmailLogin/*.swift line ceiling",
+        "status": "fail" if violations else "pass",
+        "severity": "error",
+        "path": str(EMAIL_LOGIN_EXTENSIONS_RELATIVE),
+        "directory_present": present,
+        "limit": EMAIL_LOGIN_EXTENSION_LINE_LIMIT,
+        "files": files,
+        "violations": violations,
+        "message": message,
+    }
+
+
 def check_email_login_test_seams(root: Path) -> dict:
     path = root / EMAIL_LOGIN_RELATIVE
     if not path.is_file():
@@ -193,6 +247,7 @@ def evaluate(root: Path) -> dict:
     checks = [
         check_email_login_ceiling(root),
         check_feature_file_ceilings(root),
+        check_email_login_extension_ceilings(root),
         check_email_login_test_seams(root),
     ]
     warnings = [warning for check in checks for warning in check.get("warnings", [])]
@@ -204,7 +259,7 @@ def evaluate(root: Path) -> dict:
         if entries:
             violations.extend(
                 f"{entry['path']}: {entry['lines']:,} lines exceeds the "
-                f"{FEATURE_FILE_LINE_LIMIT:,}-line feature limit"
+                f"{entry.get('limit', FEATURE_FILE_LINE_LIMIT):,}-line limit"
                 for entry in entries
             )
         else:
@@ -224,6 +279,7 @@ def evaluate(root: Path) -> dict:
         "baselines": {
             "email_login_lines": EMAIL_LOGIN_LINE_BASELINE,
             "feature_file_line_limit": FEATURE_FILE_LINE_LIMIT,
+            "email_login_extension_line_limit": EMAIL_LOGIN_EXTENSION_LINE_LIMIT,
             "email_login_for_testing_markers": EMAIL_LOGIN_FOR_TESTING_BASELINE,
             "email_login_private_func_for_testing": EMAIL_LOGIN_PRIVATE_FUNC_FOR_TESTING_BASELINE,
         },

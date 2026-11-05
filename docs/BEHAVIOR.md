@@ -2063,3 +2063,9 @@ RFC 074 personal assistant：
   - RFC 071 Start/Reset breaker（`human_start`/`human_reset` dispatch、PATCH lift 的 `runtimeValuesChanged`）；
   - v2 field-pointing（`connection` → `/formValues/providerId`；unknown live model → `/formValues/model`）。
 - 裁决排除：trace acceptance/runtime trace rows、CDN avatar fetch、client-abort socket release、creator-removal DB fence、trace-phase restore、trace-event skill failure rows、valid-signature replica replay-loop routing、unknown-throw workspace fail-closed 500（无 throwing seam）；以及未重审的 case 1780 owner-no-preflight migrate transport-message/preflight 细节（其 admission/lease/provisioning 面已由 `MachineMigrationTransportTests`/`HostedMigration*` 覆盖）。
+
+### route socketMembershipRevocation.api（锁定）
+
+- `Tests/RaftHTTPServerTests/SocketMembershipRevocationTests.swift` 以黑盒 socket + HTTP 锁定访客可见性：guest 仅收到 `guestVisible` 且非 `#all` 常规频道的 live `message:new` / `task:*` 帧，hidden 频道即使显式 `join:channel` 也不可达；`sync:resume` 只回放可见频道与可见 parent 下已 follow 的 thread，hidden 频道及其 thread 被过滤（断言同一响应内的 `messages` 集合）。
+- 成员变更回收房间：private channel 成员移除、`POST /api/channels/:id/leave`、server 成员移除/离开成功后，`leaveUserRooms` 取消该用户的 `channel:<id>` 及同 parent 的全部 thread 房间；HTTP 已拒绝的成员不再收到旧 socket 广播，server 成员移除仍先发 `server:membership-removed` 再关闭连接。
+- 接线：`RealtimeAuthorizing` 新增 `syncResumePayload` 默认 nil seam，`LedgerRealtimeAuth` 走 `realtimeSyncMessagesPayload`（`socketResumeLimit = 500`、`currentSeq`/`hasMore`）；`realtimeVisibleChannelIds` 统一 channel 可见性；`revokeServerMembershipResources` 在 server 离开/移除后级联清理 channel membership，并只删除 private/DM parent 的 thread follows（public parent 的 follow 保留，与 `ThreadRemovalScopeTests` 一致）。

@@ -245,8 +245,9 @@ lock, and owner, and no file needs to be 31k lines.
 
 | Check | Rule | Failure |
 | --- | --- | --- |
-| `email-login-ceiling` | `Sources/RaftHTTP/EmailLogin.swift` must stay at or below its recorded baseline of **31,656 lines** | New line count > baseline. Lowering the file is always allowed; the baseline constant may then be lowered, never raised. |
+| `email-login-ceiling` | `Sources/RaftHTTP/EmailLogin.swift` must stay at or below its recorded baseline of **1,201 lines** (stored state + nested types + `init`) | New line count > baseline. Lowering the file is always allowed; the baseline constant may then be lowered, never raised. |
 | `feature-file-ceiling` | Every `.swift` file under `Sources/RaftHTTPServer/Features/` ≤ **1,200 lines** | Any file over the limit. A missing `Features/` directory is reported as zero files, not an error. |
+| `email-login-extension-ceiling` | Every `.swift` file under `Sources/RaftHTTP/EmailLogin/` ≤ **1,600 lines** | Any file over the limit, reported per file. A missing directory is reported as zero files, not an error. |
 | `email-login-test-seams` | `ForTesting` markers in `EmailLogin.swift` may not grow beyond the recorded **243**; `private func …ForTesting` baseline is **0** | **Warning only** (exit code unchanged). Migration to `TestSupport` is R5. |
 
 Usage:
@@ -284,34 +285,70 @@ constant to make the check pass.
 | R1 route extraction | done for auth, feedback, public, translations, servers, channels, messaging, OAuth/OIDC, internal agent-api, internal admin, integrations, notifications/misc | `Sources/RaftHTTPServer/Features/` (12 collections, ~500 route registrations moved); `configure()` 4,520 -> 667 lines (only policy catch-alls + wiring); per-feature registration tests |
 | R2 canonical JSON | foundation done | `Sources/RaftHTTP/Support/JSONValue.swift` + `HTTPReply.jsonValue` + `Tests/RaftHTTPTests/JSONValueTests.swift`; feature handlers migrate as they are rewritten |
 | R3 store/lock split | started | `Stores/ProductEventStore.swift` owns product/client events + idempotency; `Stores/AuthProfileStore.swift` owns linked identities, password-reset tokens and legal acceptances. `Stores/ThreadFollowStore.swift` owns agent thread-follow rows and `Stores/InboxFactStore.swift` owns inbox facts. Target next: ChannelStore, TaskStore, ReadCursorStore |
-| R4 guardrails | done | `scripts/check_architecture.py`, `make architecture`: EmailLogin line ratchet (33,700; reset for the multi-app, attested-send and migration slices; these blocks are candidates for dedicated files in R3), Features <= 1,200 lines, ForTesting warning baseline 243 |
+| R4 guardrails | done | `scripts/check_architecture.py`, `make architecture`: EmailLogin line ratchet (1,201 after the verbatim domain split), Features <= 1,200 lines, EmailLogin/*.swift <= 1,600 lines, ForTesting warning baseline 243 |
 | R5 shared contracts | started | `Sources/RaftShared` target added; canonical `JSONValue` moved there, `HTTPReply.jsonValue` stays in RaftHTTP; next: capability/error-code contracts and feature DTOs |
 
 Remaining composition-root route families: internal agent-api, internal agent/computer/machine,
 integrations, MCP, provider-connections, notifications/product-events and misc.
 
 
-## Remaining parity work (2026-11-05, after 211/219 route modules locked)
+## Remaining parity work (2026-11-06, 219/219 route modules locked)
 
-Locked executable route surface covers all feature collections plus the parity
-suites; still partial: `agents.api` and `socketMembershipRevocation.api`. These need either a missing subsystem
-(knowledge corpus, multi-app binding, P2 upload service, joint tasks) or a
-large acceptance matrix (agents/channels); they are tracked in `docs/PARITY.tsv`.
+All 219 route modules (2000/2000 cases), 7/7 socket modules and 180/180 daemon
+modules are locked in `docs/PARITY.tsv`; no pending or partial module remains.
+The remaining work is converting the ledger's noted non-executable exclusions
+(staging raftbench, real-PG rails, external integrations) into executable
+coverage where feasible, plus the R3-R5 architecture refactors below.
 
 Generated knowledge corpus lives in `Sources/RaftHTTPServer/Generated/KnowledgeCorpus.swift` (data-only, outside the Features line ceiling); regenerate from upstream `manual/agent-knowledge` + `manual/recipes` when the corpus changes.
 
 
 ## EmailLogin split progress (2026-11-05)
 
-- `Sources/RaftHTTP/EmailLogin.swift`: 34,306 -> 21,257 lines (-13,049, -38%).
-  Behavior now lives in 13 extension files under `Sources/RaftHTTP/EmailLogin/`
-  (largest ~1.6k lines); `EmailLoginStatics`/`ActionCards`/`ManagedMCP` are
-  additionally split so no extension exceeds ~1.6k lines.
-- Moved 109 nested data-model declarations (1,171 lines) into
-  `Sources/RaftHTTP/EmailLoginModels.swift`; moved 210 static helpers
-  (2,567 lines) into `EmailLoginStatics.swift`. Both are behavior-preserving;
-  instance handlers/stores remain in EmailLogin. The prop-free feedback
-  multi-app/test-seam tail was moved into `EmailLogin/EmailLogin+FeedbackMultiApp.swift`
-  and `EmailLogin+TestSeams.swift` (1,751 lines). Next split candidates are the
-  remaining prop-free handler regions, the static-helper file by domain, then
-  R3 domain stores.
+- `Sources/RaftHTTP/EmailLogin.swift`: 34,306 -> 1,201 lines (-33,105, -97%).
+  The residue is the class shell only: stored properties, nested types and
+  `init` (762 lines), the 438 lines of nested structs/enums/computed vars that
+  stayed with the class, and the closing brace.
+- All 748 instance/static `func` members (20,057 lines) moved **verbatim** into
+  19 domain extension files under `Sources/RaftHTTP/EmailLogin/`, each
+  `extension EmailLoginDirectory { … }` and each at or below 1,600 lines. The
+  split is contiguous by domain, so every file is cohesive:
+
+  | File | Lines | Domain |
+  | --- | --- | --- |
+  | `EmailLogin+AttachmentsMobile.swift` | 579 | agent attachments, native notifications, mobile email |
+  | `EmailLogin+AuthCore.swift` | 736 | social completion, register, device, refresh, logout |
+  | `EmailLogin+OAuthFlows.swift` | 1,047 | OAuth providers/flows, feature flags |
+  | `EmailLogin+SearchMentions.swift` | 1,506 | search, mentions, human message create |
+  | `EmailLogin+MessageSend.swift` | 717 | v2 send, migration receipt DM, mention actions, attachment preview/download |
+  | `EmailLogin+ThreadsAndInbox.swift` | 1,231 | threads, inbox, wake hints, third-party events |
+  | `EmailLogin+ReactionsRealtime.swift` | 863 | reactions, realtime emit, human message store |
+  | `EmailLogin+AuthIdentitiesProfile.swift` | 1,437 | auth identities/login/profile/attachments/channel files/product events |
+  | `EmailLogin+Agents1.swift` | 1,047 | agent authority, create/list/patch, assistant |
+  | `EmailLogin+Agents2.swift` | 1,226 | agent migration status, DM/workspace, agent surface |
+  | `EmailLogin+AgentMigrations1.swift` | 927 | machine migration control/chunks |
+  | `EmailLogin+AgentMigrations2.swift` | 906 | migration arrival, hosted migration |
+  | `EmailLogin+MachinesAndRuntime1.swift` | 968 | machines, hosted runtime, connections |
+  | `EmailLogin+MachinesAndRuntime2.swift` | 985 | runtime forms, runtime model probes |
+  | `EmailLogin+ComputersUsage1.swift` | 1,442 | computers, usage, attestations |
+  | `EmailLogin+ComputersUsage2.swift` | 1,461 | server order/profile/members, agent send |
+  | `EmailLogin+IntegrationsAndAccess.swift` | 1,487 | integrations, agent app access, attachment comments, agent profile, join links/invites |
+  | `EmailLogin+ServerMembersAndTasks1.swift` | 853 | server member roles/removal/delete, sidebar |
+  | `EmailLogin+ServerMembersAndTasks2.swift` | 829 | tasks/labs/metrics, channel join, agent API |
+
+- Pre-existing extension files from earlier slices (`EmailLoginStatics1-3`,
+  `EmailLogin+ActionCards1-3`, `EmailLogin+ManagedMCP1-4`,
+  `EmailLogin+FeedbackLocators`, `EmailLogin+FeedbackMultiApp`,
+  `EmailLogin+TestSeams`) are unchanged; all 33 files in the directory are now
+  under the new 1,600-line ceiling (largest `EmailLogin+ManagedMCP1.swift` at
+  1,572).
+- Earlier slices moved 109 nested data-model declarations (1,171 lines) into
+  `Sources/RaftHTTP/EmailLoginModels.swift` and 210 static helpers (2,567 lines)
+  into `EmailLoginStatics.swift`.
+- The class has zero `private`/`fileprivate` members and zero file-private
+  top-level helpers, so moved members still resolve across files in the module.
+  Verified: concatenating the moved chunks in original order reproduces the
+  original body byte-for-byte, and the untouched head (top-level structs, class
+  header, stored properties, `init`) is byte-identical.
+- Next: continue R3 by extracting domain stores (state + its own lock) out of
+  the directory; the split just made the candidate domains explicit.

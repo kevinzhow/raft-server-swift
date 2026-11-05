@@ -18,6 +18,15 @@ struct LedgerRealtimeAuth: RealtimeAuthorizing {
     }
 
     func visibleChannelIds(serverId: String, userId: String) -> [String] {
-        accounts.oauth.channelsForServer(serverId: serverId, userId: userId).map(\.id)
+        accounts.realtimeVisibleChannelIds(serverId: serverId, userId: userId)
+    }
+
+    func syncResumePayload(serverId: String, userId: String, lastSeq: Int, limit: Int) -> String? {
+        accounts.realtimeSyncMessagesPayload(
+            serverId: serverId,
+            userId: userId,
+            lastSeq: lastSeq,
+            limit: limit
+        )
     }
 }

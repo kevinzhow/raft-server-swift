@@ -233,6 +233,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 serverId: serverId
             )
             if reply.status == 200, let userId {
+                services.emailAccounts.revokeServerMembershipResources(serverId: serverId, userId: userId)
                 services.realtime?.removeServerMembership(serverId: serverId, userId: userId)
             }
             return routeResponse(reply)
@@ -267,6 +268,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 memberId: memberId
             )
             if reply.status == 200 {
+                services.emailAccounts.revokeServerMembershipResources(serverId: serverId, userId: memberId)
                 services.realtime?.removeServerMembership(serverId: serverId, userId: memberId)
             }
             return routeResponse(reply)
