@@ -2036,3 +2036,9 @@ RFC 074 personal assistant：
 - flip：已 arriving/completed 且 holder 正确时幂等；stale generation 409 不改 holder；holder-moved 409 `migration_source_machine_mismatch`；source-machine drive 404。
 - post-flip cancel：freeze `canceled_post_flip`/`post_flip_target_authoritative`，target `cleaned` ack 409 `migration_cancel_outcome_mismatch` 且不能 terminalize；ack 记录 per-role outcome/time/revision。
 - 裁决：case 2 的 resumable transport-token/quiescence ordering 与既有已锁定的 simplified resumable contract 冲突（既有 `MigrationTransportChunksTests`/`MigrationControlBodyLimitTests`/`MigrationCancelAckTests` 发送无 token/上游 body 并期望成功），按既有 contract 排除该上游顺序断言；case 13 的 `drainAgentMigrationRemediation` 后台 worker drain 为 worker/outbox 内部（HTTP-observable 部分已覆盖）；case 10 的 `agents.sessionId == null` 在本端口无 native-session 模型，以 holder=machineId 投影断言。
+
+### route channels.api（锁定，含裁决）
+
+- 已覆盖：message-display settings、unread/visibility、read-all delegation、#all hide/restore、rename/description system messages、restore-list exclusion。
+- 本轮补齐：unfollow 线程保留在 Activity All 但 unread/mention 抑制，直接 @mention 仅在 parent-channel member 时 reactivation；Done/Unfollow/Restore 独立；Done frontier admission（required/unmappable/beyond-latest/int4 全部在写前校验，undone/read-all/thread-revive 同步）；>100 mixed-follow 分页；V1 write shapes + canonical refetch；omitted-frontier Done snapshot；`POST /api/channels/:id/resume-all-agents` 将 skipped start 报为 `{ok:false,reason:"start_in_flight"}` 而非计入 resumed。
+- 裁决排除：4 个 query-count/query-shape spy、2 个 SQL source-text regex spy、2 个 socket frame（channel:updated / versioned user-room events）、2 个 receiver push kill-switch / missing io mount。继承的窄差异：全局 read-all 同时抑制 scopes（`InboxDoneTests` 锁定）、empty-scope explicit frontier 保持 permissive（`InboxDoneTests`/`DeletedThreadDoneTests` 锁定）。

@@ -8,7 +8,7 @@ import VaporTesting
 
 /// Every `method path` pair the channels slice owns. This is the complete list
 /// of `app.get/post/patch/delete("api", "channels", ...)` registrations in
-/// `FallbackApplication.configure` at extraction time (53 routes).
+/// `FallbackApplication.configure` at extraction time (54 routes).
 private let expectedChannelsRoutes: [(HTTPRequest.Method, String)] = [
     (.post, "POST /api/channels/:channelId/archive"),
     (.post, "POST /api/channels/:channelId/unarchive"),
@@ -40,6 +40,7 @@ private let expectedChannelsRoutes: [(HTTPRequest.Method, String)] = [
     (.post, "POST /api/channels/dm"),
     (.get, "GET /api/channels/dm"),
     (.get, "GET /api/channels/:channelId"),
+    (.post, "POST /api/channels/:channelId/resume-all-agents"),
     (.post, "POST /api/channels/:channelId/read"),
     (.post, "POST /api/channels/:channelId/read-all"),
     (.post, "POST /api/channels/:channelId/unread"),
@@ -82,8 +83,8 @@ private let expectedChannelsRoutes: [(HTTPRequest.Method, String)] = [
 
         // The table is authoritative: reject an accidental duplicate or gap in
         // the table itself before comparing it to the router.
-        #expect(expectedChannelsRoutes.count == 53)
-        #expect(expected.count == 53)
+        #expect(expectedChannelsRoutes.count == 54)
+        #expect(expected.count == 54)
 
         // One route per table entry, and no route outside `/api/channels...`.
         #expect(app.routes.all.count == expected.count)

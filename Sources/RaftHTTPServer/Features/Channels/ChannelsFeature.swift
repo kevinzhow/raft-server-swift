@@ -286,6 +286,15 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
 
+        app.post("api", "channels", ":channelId", "resume-all-agents") { request async -> Response in
+            routeResponse(await services.emailAccounts.resumeAllAgents(
+                authorization: request.headers[.authorization],
+                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                channelId: request.parameters.get("channelId") ?? "",
+                body: request.body.string ?? "{}"
+            ))
+        }
+
         app.post("api", "channels", ":channelId", "read") { request -> Response in
             routeResponse(services.emailAccounts.updateChannelReadState(
                 authorization: request.headers[.authorization],

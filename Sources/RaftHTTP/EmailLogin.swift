@@ -268,6 +268,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Ask the source Computer to archive the migrated-away workspace. Throws
     /// `MachineMigrationArchiveFailure` with a code-shaped cause on failure.
     public var machineMigrationArchiveSourceWorkspace: (@Sendable (_ machineId: String, _ migrationRef: String, _ agentId: String) async throws -> Void)?
+    /// Agent start dispatch used by `POST /api/channels/:id/resume-all-agents`.
+    /// Returns `.dispatched` when the daemon accepted the resume prompt and
+    /// `.skipped(reason)` when a gate (for example a held wake lock) suppressed it.
+    public var agentStartDispatch: (@Sendable (_ agentId: String, _ resumePrompt: String?) async throws -> AgentStartDispatchOutcome)?
     private var hostedRuntimes: [String: (provider: String, model: String?, state: String, retryNeedsModel: Bool, createdAt: Date)] = [:]
     private var grokRuntimeServers: Set<String> = []
     private var remoteUpgradeDisabledServers: Set<String> = []
@@ -517,6 +521,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var announcementDismissals: Set<String> = []
     private var inboxDoneScopes: Set<String> = []
     private var inboxDoneAt: [String: Date] = [:]
+    /// Canonical Done frontier captured at admission, per `userId\nscopeId`.
+    private var inboxDoneFrontiers: [String: Int] = [:]
     private var inboxResiduesForTesting: Set<String> = []
     private var guestVisibleChannels: [String: Bool] = [:]
     private var guestJoinableChannels: [String: Bool] = [:]
@@ -4737,6 +4743,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                         && oauth.agentRuntimeInfo(id: mention.id)?.serverId == serverId
                 }
                 if valid {
+                    let suppressionKey = "\(serverId ?? "")\n\(mention.id)\n\(channelId)"
+                    if threadUnfollows[suppressionKey] != nil {
+                        // A direct mention reactivates a suppressed thread only for
+                        // a member of the parent channel. An outsider mention stays
+                        // hidden; it must not resurrect the follow.
+                        guard channel.parentChannelId.flatMap({ postableChannels[$0] })?.memberIds.contains(mention.id) == true else {
+                            continue
+                        }
+                        threadUnfollows.removeValue(forKey: suppressionKey)
+                    }
                     threadFollows["\(serverId ?? "")\n\(mention.id)\n\(channelId)"] = (
                         serverId: serverId ?? "",
                         userId: mention.id,
@@ -6240,6 +6256,66 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Fixture seam: the unfollow suppression row an HTTP unfollow would write,
+    /// without depending on a prior follow or on frozen messages.
+    public func unfollowThreadForTesting(
+        serverId: String,
+        userId: String,
+        threadChannelId: String,
+        parentMessageId: String,
+        latestMessageId: String? = nil
+    ) {
+        lock.lock()
+        let key = "\(serverId)\n\(userId)\n\(threadChannelId)"
+        threadFollows.removeValue(forKey: key)
+        threadFollowStarts.removeValue(forKey: key)
+        threadUnfollows[key] = ThreadUnfollowRecord(
+            serverId: serverId,
+            userId: userId,
+            threadChannelId: threadChannelId,
+            parentMessageId: parentMessageId,
+            unfollowedAt: Date(),
+            latestMessageId: latestMessageId ?? parentMessageId,
+            replyCount: 0,
+            frozenMessages: []
+        )
+        lock.unlock()
+    }
+
+    public func threadUnfollowSuppressedForTesting(serverId: String, userId: String, threadChannelId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return threadUnfollows["\(serverId)\n\(userId)\n\(threadChannelId)"] != nil
+    }
+
+    public func inboxDoneFrontierForTesting(userId: String, scopeId: String) -> Int? {
+        lock.lock()
+        defer { lock.unlock() }
+        return inboxDoneFrontiers["\(userId)\n\(scopeId)"]
+    }
+
+    public func mentionNotificationStateForTesting(messageId: String, targetId: String) -> (notifiableAtSend: Bool, notified: Bool)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let row = storedMentions.first(where: { $0.messageId == messageId && $0.targetId == targetId }) else { return nil }
+        return (row.notifiableAtSend, row.notifiedAt != nil)
+    }
+
+    @discardableResult
+    public func addHumanMessageWithSeqForTesting(channelId: String, senderId: String, content: String, seq: Int) -> String {
+        let id = UUID().uuidString.lowercased()
+        lock.lock()
+        _ = appendHumanMessageLocked(StoredHumanMessage(
+            id: id,
+            channelId: channelId,
+            senderId: senderId,
+            content: content,
+            randomId: nil
+        ), seq: seq)
+        lock.unlock()
+        return id
+    }
+
     public func userChannelReadCursorForTesting(userId: String, channelId: String) -> Int? {
         lock.lock(); defer { lock.unlock() }
         return userChannelReadCursorsForTesting["\(userId)\n\(channelId)"]
@@ -7318,6 +7394,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         inboxDoneScopes.remove("\(userId)\n\(channelId)")
         inboxDoneAt.removeValue(forKey: "\(userId)\n\(channelId)")
+        inboxDoneFrontiers.removeValue(forKey: "\(userId)\n\(channelId)")
         lock.unlock()
         _ = serverId
         return Self.json(200, "{\"ok\":true}")
@@ -7341,9 +7418,57 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         inboxDoneScopes.remove("\(userId)\n\(threadId)")
         inboxDoneAt.removeValue(forKey: "\(userId)\n\(threadId)")
+        inboxDoneFrontiers.removeValue(forKey: "\(userId)\n\(threadId)")
         lock.unlock()
         _ = serverId
         return Self.json(200, "{\"ok\":true}")
+    }
+
+    private static let doneFrontierInt4Limit = 2_147_483_647
+
+    /// Canonical `throughActivitySeq`: a decimal string in (0, Int64.max] with no
+    /// leading zero. Anything else is DONE_FRONTIER_REQUIRED.
+    private static func parseDoneFrontier(_ raw: Any?) -> Int? {
+        guard let text = raw as? String, !text.isEmpty,
+              text == text.trimmingCharacters(in: .whitespacesAndNewlines),
+              text.count <= 19,
+              text.range(of: "^[1-9][0-9]*$", options: .regularExpression) != nil,
+              let value = Int(text), value > 0
+        else { return nil }
+        return value
+    }
+
+    /// Resolves the Done frontier for a scope. An explicit frontier must be
+    /// canonical and inside the int4 authority; an omitted frontier snapshots
+    /// the latest activity. The persisted frontier is the admission snapshot.
+    private func resolveDoneFrontier(object: [String: Any], scopeId: String) -> (reply: HTTPReply?, frontier: Int?) {
+        if let space = object["frontierSpace"], !(space is NSNull) {
+            guard let value = space as? String, value == "storage" else {
+                return (Self.json(400, "{\"code\":\"DONE_FRONTIER_UNMAPPABLE\",\"error\":\"frontierSpace must be storage\"}"), nil)
+            }
+        }
+        // An explicit frontier is validated whenever the key is present; JSON
+        // null is an invalid frontier, not an omitted one.
+        let explicit = object.keys.contains("throughActivitySeq")
+        var frontier = 0
+        if explicit {
+            guard let parsed = Self.parseDoneFrontier(object["throughActivitySeq"]) else {
+                return (Self.json(400, "{\"code\":\"DONE_FRONTIER_REQUIRED\",\"error\":\"throughActivitySeq must be a canonical positive decimal string\"}"), nil)
+            }
+            frontier = parsed
+        }
+        let latest = oauth.channelUnreadInfo(channelId: scopeId, userId: "").latestSeq ?? 0
+        if !explicit { frontier = latest }
+        guard frontier <= Self.doneFrontierInt4Limit else {
+            return (Self.json(409, "{\"code\":\"DONE_FRONTIER_ABOVE_INT4_AUTHORITY\",\"error\":\"Done frontier exceeds the int4 authority\"}"), nil)
+        }
+        // Keep the existing permissive contract for scopes with no real activity;
+        // elsewhere an explicit frontier beyond the latest is rejected before any
+        // write, so a rejected Done never admits a mutation.
+        if explicit, latest > 0, frontier > latest {
+            return (Self.json(409, "{\"code\":\"DONE_FRONTIER_BEYOND_LATEST\",\"error\":\"Done frontier is beyond the latest activity\"}"), nil)
+        }
+        return (nil, frontier)
     }
 
     public func channelInboxDone(authorization: String?, serverId: String?, body: String) -> HTTPReply {
@@ -7355,14 +7480,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(400, "{\"error\":\"Invalid inbox done request\"}")
         }
+        let resolution = resolveDoneFrontier(object: object, scopeId: channelId)
+        if let reply = resolution.reply { return reply }
+        guard let frontier = resolution.frontier else {
+            return Self.json(400, "{\"code\":\"DONE_FRONTIER_REQUIRED\",\"error\":\"throughActivitySeq must be a canonical positive decimal string\"}")
+        }
         lock.lock()
         let isThread = postableChannels[channelId]?.kind == "thread"
         if isThread {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Inbox scope not found\"}")
         }
-        inboxDoneScopes.insert("\(userId)\n\(channelId)")
-        inboxDoneAt["\(userId)\n\(channelId)"] = Date()
+        let key = "\(userId)\n\(channelId)"
+        inboxDoneScopes.insert(key)
+        inboxDoneAt[key] = Date()
+        inboxDoneFrontiers[key] = frontier
         lock.unlock()
         _ = serverId
         return Self.json(200, "{\"ok\":true}")
@@ -7377,11 +7509,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(400, "{\"error\":\"Invalid inbox done request\"}")
         }
-        if object.keys.contains("throughActivitySeq") {
-            let raw = object["throughActivitySeq"]
-            if raw is NSNull || (raw as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
-                return Self.json(400, "{\"code\":\"DONE_FRONTIER_REQUIRED\",\"error\":\"throughActivitySeq is required when supplied\"}")
-            }
+        let resolution = resolveDoneFrontier(object: object, scopeId: threadId)
+        if let reply = resolution.reply { return reply }
+        guard let frontier = resolution.frontier else {
+            return Self.json(400, "{\"code\":\"DONE_FRONTIER_REQUIRED\",\"error\":\"throughActivitySeq must be a canonical positive decimal string\"}")
         }
         lock.lock()
         guard let thread = postableChannels[threadId],
@@ -7420,8 +7551,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(404, "{\"error\":\"Inbox scope not found\"}")
         }
-        inboxDoneScopes.insert("\(userId)\n\(threadId)")
-        inboxDoneAt["\(userId)\n\(threadId)"] = Date()
+        let key = "\(userId)\n\(threadId)"
+        inboxDoneScopes.insert(key)
+        inboxDoneAt[key] = Date()
+        inboxDoneFrontiers[key] = frontier
         lock.unlock()
         _ = serverId
         return Self.json(200, "{\"ok\":true}")
@@ -7442,6 +7575,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             inboxDoneScopes.insert("\(userId)\n\(scopeId)")
             inboxDoneAt["\(userId)\n\(scopeId)"] = Date()
             let latest = oauth.channelUnreadInfo(channelId: scopeId, userId: userId).latestSeq ?? 0
+            inboxDoneFrontiers["\(userId)\n\(scopeId)"] = latest
             oauth.setChannelReadCursor(channelId: scopeId, userId: userId, seq: latest)
             let key = "\(scopeId)\n\(userId)"
             channelReadVersions[key] = (channelReadVersions[key] ?? 0) + 1
@@ -7658,15 +7792,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                     && ($0.notifiableAtSend || $0.notifiedAt != nil)
             }
             let unreadInfo = oauth.channelUnreadInfo(channelId: scopeId, userId: userId)
-            let unread = unreadInfo.unreadCount
-            let firstUnread = oauth.firstUnreadMessageId(channelId: scopeId, userId: userId)
-            let firstMention = scopeMentions
+            // An unfollowed thread is an explicit attention opt-out: it stays in
+            // Activity All but never contributes unread, mention, or followed
+            // state until a direct mention reactivates the follow.
+            let suppressed = unfollows["\(serverId ?? "")\n\(userId)\n\(scopeId)"] != nil
+            let unread = suppressed ? 0 : unreadInfo.unreadCount
+            let firstUnread = suppressed ? nil : oauth.firstUnreadMessageId(channelId: scopeId, userId: userId)
+            let firstMention = suppressed ? nil : scopeMentions
                 .map { (messageId: $0.messageId, seq: detailMap[$0.messageId]?.seq ?? 0) }
                 .filter { $0.seq > unreadInfo.maxReadSeq }
                 .min { $0.seq < $1.seq }?.messageId
             let lastMessageId = fact.messageId
             let detail = detailMap[lastMessageId]
-            let isFollowing = follows["\(serverId ?? "")\n\(userId)\n\(scopeId)"] != nil
+            let isFollowing = !suppressed && follows["\(serverId ?? "")\n\(userId)\n\(scopeId)"] != nil
             let parentType = parentChannelId.flatMap { postable[$0]?.kind ?? oauth.channelType(id: $0) }
             rows.append(InboxRow(
                 scopeId: scopeId,
@@ -7683,7 +7821,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 unreadCount: unread,
                 firstUnreadMessageId: firstUnread,
                 firstMentionMessageId: firstMention,
-                hasMention: !scopeMentions.isEmpty,
+                hasMention: !suppressed && !scopeMentions.isEmpty,
                 isFollowing: isFollowing,
                 isDM: type == "dm" || (isThread && postable[parentChannelId ?? ""]?.kind == "dm")
             ))
@@ -7729,7 +7867,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         where mention.targetType == "user" && mention.targetId == userId
             && (mention.notifiableAtSend || mention.notifiedAt != nil)
             && !rows.contains(where: { $0.scopeId == mention.channelId })
-            && !doneScopes.contains("\(userId)\n\(mention.channelId)") {
+            && !doneScopes.contains("\(userId)\n\(mention.channelId)")
+            && unfollows["\(serverId ?? "")\n\(userId)\n\(mention.channelId)"] == nil {
             let scopeId = mention.channelId
             guard let channel = postable[scopeId] else { continue }
             if let serverId, channel.serverId != serverId { continue }
@@ -9053,6 +9192,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let sequence = appendHumanMessageLocked(stored)
         if postableChannels[channelId]?.kind == "thread" {
             inboxDoneScopes = inboxDoneScopes.filter { !$0.hasSuffix("\n\(channelId)") }
+            inboxDoneFrontiers = inboxDoneFrontiers.filter { !$0.key.hasSuffix("\n\(channelId)") }
         }
         // One read-cursor store: the ledger's per-user frontier. Sending is
         // reading your own message, so the sender never counts it as unread.
@@ -29374,6 +29514,105 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"ok\":true,\"maxReadSeq\":\(seq),\"readStateVersion\":\(version)}")
     }
 
+    private struct ResumeAllAgentsContext {
+        var targets: [String]
+        var dispatch: (@Sendable (_ agentId: String, _ resumePrompt: String?) async throws -> AgentStartDispatchOutcome)?
+        var error: HTTPReply?
+    }
+
+    /// Synchronous context gathering for the resume handler; the async method
+    /// only awaits the dispatch callback.
+    private func resumeAllAgentsContext(
+        userId: String,
+        serverId: String,
+        channelId: String,
+        requestedAgentIds: Set<String>?
+    ) -> ResumeAllAgentsContext {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let channel = postableChannels[channelId], channel.serverId == serverId else {
+            return ResumeAllAgentsContext(targets: [], dispatch: nil, error: Self.json(404, "{\"error\":\"Channel not found\"}"))
+        }
+        let readable = channel.kind == "channel"
+            || channel.memberIds.contains(userId)
+            || oauth.isChannelParticipant(channelId: channelId, userId: userId)
+        guard readable else {
+            return ResumeAllAgentsContext(targets: [], dispatch: nil, error: Self.json(404, "{\"error\":\"Channel not found\"}"))
+        }
+        let channelAgentIds = Array(channelAgentMembers[channelId] ?? []).sorted()
+        let targets = requestedAgentIds.map { requested in channelAgentIds.filter { requested.contains($0) } } ?? channelAgentIds
+        return ResumeAllAgentsContext(targets: targets, dispatch: agentStartDispatch, error: nil)
+    }
+
+    /// `POST /api/channels/:id/resume-all-agents`. Sends an optional resume
+    /// prompt to every agent in the channel (or the explicit `agentIds` subset)
+    /// and reports an agent whose start was skipped instead of counting it
+    /// resumed.
+    public func resumeAllAgents(
+        authorization: String?,
+        serverId: String,
+        channelId: String,
+        body: String
+    ) async -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        let object: [String: Any]
+        if body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            object = [:]
+        } else if let parsed = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] {
+            object = parsed
+        } else {
+            return Self.json(400, "{\"error\":\"Invalid resume request\"}")
+        }
+        let prompt = object["prompt"] as? String
+        var requestedAgentIds: Set<String>?
+        if let raw = object["agentIds"], !(raw is NSNull) {
+            guard let ids = raw as? [String] else {
+                return Self.json(400, "{\"error\":\"agentIds must be an array of agent ids\"}")
+            }
+            requestedAgentIds = Set(ids)
+        }
+        let context = resumeAllAgentsContext(
+            userId: userId,
+            serverId: serverId,
+            channelId: channelId,
+            requestedAgentIds: requestedAgentIds
+        )
+        if let error = context.error { return error }
+        var results: [String] = []
+        var started = 0
+        for agentId in context.targets {
+            var dispatched = false
+            var skipReason: String?
+            if let dispatch = context.dispatch {
+                do {
+                    switch try await dispatch(agentId, prompt) {
+                    case .dispatched:
+                        dispatched = true
+                    case .skipped:
+                        skipReason = "start_in_flight"
+                    }
+                } catch {
+                    skipReason = "start_failed"
+                }
+            } else {
+                dispatched = true
+            }
+            if dispatched { started += 1 }
+            if let skipReason {
+                results.append("{\"agentId\":\(jsonString(agentId)),\"ok\":false,\"reason\":\(jsonString(skipReason))}")
+            } else {
+                results.append("{\"agentId\":\(jsonString(agentId)),\"ok\":true}")
+            }
+        }
+        let allStarted = started == context.targets.count
+        return Self.json(200, "{\"ok\":\(allStarted ? "true" : "false"),\"started\":\(started),\"total\":\(context.targets.count),\"results\":[\(results.joined(separator: ","))]}")
+    }
+
     public func markChannelReadAll(authorization: String?, serverId: String, channelId: String, body: String = "{}") -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -33522,6 +33761,14 @@ public enum MachineMigrationAgentStartOutcome: Sendable, Equatable {
     case dispatched
     /// A gate (for example a held wake lock) suppressed the launch; the
     /// migration stays in `starting` so the arrival callback can retry.
+    case skipped(String)
+}
+
+/// Outcome of an agent start dispatch (for example a resume-all prompt).
+public enum AgentStartDispatchOutcome: Sendable, Equatable {
+    /// The daemon accepted the start and will run the agent.
+    case dispatched
+    /// A gate (for example a held wake lock) suppressed the start.
     case skipped(String)
 }
 
