@@ -322,6 +322,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
     private var serverMemberEvents: [ServerMemberEvent] = []
     private var deletedServerIds: Set<String> = []
+    private var sidebarReadAllEnabled = false
     private var agentChannelJoinedAt: [String: Date] = [:]
     private var agentChannelPosted: Set<String> = []
     private var taskWriteHolds: [String: (seen: Int, latest: Int)] = [:]
@@ -6172,6 +6173,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return id
     }
 
+    public func addThreadFollowForTesting(serverId: String, userId: String, threadChannelId: String, parentMessageId: String) {
+        lock.lock()
+        threadFollows["\(serverId)\n\(userId)\n\(threadChannelId)"] = (
+            serverId: serverId, userId: userId,
+            threadChannelId: threadChannelId, parentMessageId: parentMessageId
+        )
+        lock.unlock()
+    }
+
+    public func userChannelReadCursorForTesting(userId: String, channelId: String) -> Int? {
+        lock.lock(); defer { lock.unlock() }
+        return userChannelReadCursorsForTesting["\(userId)\n\(channelId)"]
+    }
+
     public func threadFollowerIdsForTesting(threadChannelId: String) -> [String] {
         lock.lock()
         defer { lock.unlock() }
@@ -8173,6 +8188,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             serverId: serverId, eventType: eventType, subjectType: subjectType,
             subjectId: subjectId, provenanceJSON: provenanceJSON, deliveryQueued: true
         ))
+    }
+
+    public func setSidebarReadAllEnabledForTesting(_ enabled: Bool) {
+        lock.lock(); sidebarReadAllEnabled = enabled; lock.unlock()
     }
 
     public func serverMemberEventsForTesting(serverId: String, eventType: String?) -> [(subjectType: String, subjectId: String, provenanceJSON: String, deliveryQueued: Bool)] {
@@ -28832,6 +28851,48 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         userChannelReadCursorsForTesting["\(userId)\n\(channelId)"] = seq
         lock.unlock()
+    }
+
+    public func conversationReadAll(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        let enabled = sidebarReadAllEnabled
+        lock.unlock()
+        guard enabled else {
+            return Self.json(404, "{\"error\":\"Not found\"}")
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil,
+              let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId
+        else {
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        lock.lock()
+        let hasAccess = postableChannels[channelId]?.memberIds.contains(userId) == true
+            || oauth.channelHumanIds(channelId: channelId).contains(userId)
+            || oauth.channelType(id: channelId) == "channel"
+        guard hasAccess else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        }
+        var scopeIds = [channelId]
+        for (_, follow) in threadFollows where follow.userId == userId && follow.parentMessageId != "" {
+            guard let parentRow = humanMessageRows.first(where: { $0.id == follow.parentMessageId }),
+                  parentRow.channelId == channelId
+            else { continue }
+            if !scopeIds.contains(follow.threadChannelId) { scopeIds.append(follow.threadChannelId) }
+        }
+        let rows = scopeIds.map { scope -> String in
+            let latest = humanMessageRows.filter { $0.channelId == scope }.map(\.seq).max() ?? 0
+            let key = "\(userId)\n\(scope)"
+            let previous = userChannelReadCursorsForTesting[key] ?? 0
+            let version = previous + 1
+            userChannelReadCursorsForTesting[key] = max(previous, latest)
+            return "{\"scopeId\":\(jsonString(scope)),\"maxReadSeq\":\(latest),\"readStateVersion\":\(version)}"
+        }.joined(separator: ",")
+        lock.unlock()
+        return Self.json(200, "{\"serverId\":\(jsonString(serverId)),\"scopes\":[\(rows)]}")
     }
 
     public func postReadMutation(authorization: String?, serverId: String, body: String) -> HTTPReply {

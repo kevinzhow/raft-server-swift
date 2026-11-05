@@ -118,3 +118,70 @@ import VaporTesting
         }
     }
 }
+
+@Test func conversationReadAllDerivesReceiverAndReturnsBoundedScopes() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111624"
+    let otherId = "11111111-1111-4111-8111-111111111625"
+    let serverId = "33333333-3333-4333-8333-333333333668"
+    let foreignServerId = "33333333-3333-4333-8333-333333333669"
+    accounts.addAccount(id: ownerId, email: "conversation-owner@test.invalid", password: "password123")
+    accounts.addAccount(id: otherId, email: "conversation-other@test.invalid", password: "x")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.markEmailVerified(userId: otherId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "conversation-reads", name: "Conversation Reads", ownerId: ownerId)
+    accounts.oauth.addOwnedServer(id: foreignServerId, slug: "conversation-foreign", name: "Other Conversation Server", ownerId: ownerId)
+    let parentId = accounts.oauth.createChannel(serverId: serverId, name: "conversation-parent", creatorUserId: ownerId, type: "channel")
+    accounts.oauth.addChannelHuman(channelId: parentId, userId: ownerId)
+    let parentMessage = accounts.addHumanMessageForTesting(channelId: parentId, senderId: otherId, content: "parent")
+    let threadId = accounts.oauth.createThreadChannel(parentChannelId: parentId, parentMessageId: parentMessage)
+    accounts.addThreadFollowForTesting(serverId: serverId, userId: ownerId, threadChannelId: threadId, parentMessageId: parentMessage)
+    _ = accounts.addHumanMessageForTesting(channelId: threadId, senderId: otherId, content: "reply")
+    let token = accounts.mintAccessTokenForTesting(userId: ownerId)
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            func headers(_ server: String) -> HTTPFields {
+                var headers = HTTPFields()
+                headers[.authorization] = "Bearer \(token)"
+                headers[HTTPField.Name("X-Server-Id")!] = server
+                headers[.contentType] = "application/json"
+                return headers
+            }
+            let endpoint = "/api/channels/\(parentId)/conversation-read-all"
+            let disabled = try await client.post(URI(string: endpoint), headers: headers(serverId)) { _ in }
+            #expect(disabled.status == .notFound)
+
+            var genericHeaders = headers(serverId)
+            genericHeaders[.contentType] = "application/json"
+            let genericBody = try JSONSerialization.data(withJSONObject: ["mutationId": UUID().uuidString, "kind": "conversation_read_all", "scopeId": parentId])
+            let generic = try await client.post(URI(string: "/api/read-mutations"), headers: genericHeaders) { request in
+                request.body = .init(data: genericBody)
+            }
+            #expect(generic.status == .badRequest)
+            let frontier = try await client.get(URI(string: "/api/read-mutations/frontier"), headers: headers(serverId))
+            let frontierBody = (try? JSONSerialization.jsonObject(with: Data((frontier.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            #expect((frontierBody["items"] as? [Any])?.isEmpty == true)
+
+            accounts.setSidebarReadAllEnabledForTesting(true)
+            let crossServer = try await client.post(URI(string: endpoint), headers: headers(foreignServerId)) { _ in }
+            #expect(crossServer.status == .notFound)
+
+            let body = try JSONSerialization.data(withJSONObject: ["receiver": ["kind": "human", "id": otherId]])
+            let response = try await client.post(URI(string: endpoint), headers: headers(serverId)) { request in
+                request.body = .init(data: body)
+            }
+            #expect(response.status == .ok)
+            let json = (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            #expect(json["serverId"] as? String == serverId)
+            let scopes = json["scopes"] as? [[String: Any]] ?? []
+            let pairs = scopes.compactMap { scope -> String? in
+                guard let id = scope["scopeId"] as? String, let max = scope["maxReadSeq"] as? Int else { return nil }
+                return "\(id):\(max)"
+            }.sorted()
+            #expect(pairs == ["\(parentId):1", "\(threadId):2"].sorted())
+            #expect(scopes.allSatisfy { ($0["readStateVersion"] as? Int ?? 0) > 0 })
+            #expect(accounts.userChannelReadCursorForTesting(userId: otherId, channelId: parentId) == nil)
+        }
+    }
+}
