@@ -138,3 +138,40 @@ private func fieldValue(_ body: String, _ name: String) -> String? {
         }
     }
 }
+
+@Test func feedbackWebhookIsGoneAndUnconfiguredNativeFailsClosed() async throws {
+    let fixture = SubmitFixture()
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: fixture.accounts))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.contentType] = "application/json"
+            let webhook = try await client.send(.post, headers: headers, to: URI(string: "/api/internal/hands-feedback/webhook")) { request in
+                request.body = .init(string: "{}")
+            }
+            #expect(webhook.status == .notFound)
+
+            fixture.accounts.setHandsFeedbackForTesting(baseURL: nil, appId: nil, appToken: nil)
+            let fields: [String: String] = [
+                "type": "problem",
+                "message": "Native attribution should fail closed when spoofed.",
+                "submission_id": "66666666-6666-4666-8666-666666666666",
+                "may_contact": "false",
+                "metadata": "{\"client_kind\":\"ios\",\"platform\":\"ios\",\"client_version\":\"1.0.0\"}",
+            ]
+            let trusted = try await submitForm(client, fixture, fields, clientKind: "ios")
+            #expect(trusted.status == .serviceUnavailable)
+            #expect(trusted.body["code"] as? String == "feedback_not_configured")
+
+            let spoofedFields: [String: String] = [
+                "type": "problem",
+                "message": "Spoof.",
+                "submission_id": "66666666-6666-4666-8666-666666666667",
+                "metadata": "{\"client_kind\":\"ios\",\"platform\":\"web\",\"browser\":\"SpoofBrowser\"}",
+            ]
+            let spoofed = try await submitForm(client, fixture, spoofedFields, clientKind: "ios")
+            #expect(spoofed.status == .badRequest)
+            #expect(spoofed.body["code"] as? String == "feedback_invalid")
+        }
+    }
+}
