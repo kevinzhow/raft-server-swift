@@ -30349,6 +30349,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
            let parsed = (try? JSONSerialization.jsonObject(with: Data(rawMetadata.utf8))) as? [String: Any] {
             metadataObject = parsed
         }
+        if let reportId = fields["feedback_report_id"], !reportId.isEmpty {
+            guard reportId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
+                return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
+            }
+            metadataObject["feedback_report_id"] = reportId.lowercased()
+            metadataObject["surface"] = "agent.report_issue"
+        }
         let clientKind = metadataObject["client_kind"] as? String
         if let clientKind, ["ios", "android", "macos", "windows", "linux", "ohos"].contains(clientKind) {
             var forwarded: [String: Any] = [

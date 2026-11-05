@@ -175,3 +175,68 @@ private func fieldValue(_ body: String, _ name: String) -> String? {
         }
     }
 }
+
+@Test func agentReportIssueCarriesCanonicalFeedbackReportId() async throws {
+    let fixture = SubmitFixture()
+    fixture.accounts.setHandsFeedbackForTesting(baseURL: "https://hands.test", appId: "raft-web", appToken: "t", appSlug: "raft-web")
+    final class Capture: @unchecked Sendable { var bodies: [String] = [] }
+    let capture = Capture()
+    fixture.accounts.setHandsFeedbackUpstreamForTesting { request in
+        capture.bodies.append(String(decoding: request.httpBody ?? Data(), as: UTF8.self))
+        return (201, Data("{\"id\":\"ticket-report\",\"status\":\"open\"}".utf8))
+    }
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: fixture.accounts))
+        try await app.testing { client in
+            let base: [String: String] = [
+                "type": "problem", "message": "Issue report for Helper",
+                "may_contact": "false",
+            ]
+            var rejectedFields = base
+            rejectedFields["submission_id"] = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+            rejectedFields["feedback_report_id"] = "report-1"
+            let rejected = try await submitForm(client, fixture, rejectedFields)
+            #expect(rejected.status == .badRequest)
+            #expect(rejected.body["code"] as? String == "feedback_invalid")
+
+            var acceptedFields = base
+            acceptedFields["submission_id"] = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+            acceptedFields["feedback_report_id"] = "0d9b2c4e-6f1a-4b3c-9d8e-7f6a5b4c3d2e"
+            let accepted = try await submitForm(client, fixture, acceptedFields)
+            #expect(accepted.status == .created)
+            let metadata = fieldValue(capture.bodies.last ?? "", "metadata") ?? ""
+            #expect(metadata.contains("0d9b2c4e-6f1a-4b3c-9d8e-7f6a5b4c3d2e"))
+            #expect(metadata.contains("agent.report_issue"))
+        }
+    }
+}
+
+@Test func nativeAttributionForwardsProductTypeForIOSAndAndroid() async throws {
+    for kind in ["ios", "android"] {
+        let fixture = SubmitFixture()
+        fixture.accounts.setHandsFeedbackForTesting(baseURL: "https://hands.test", appId: "raft-web", appToken: "t", appSlug: "raft-web")
+        final class Capture: @unchecked Sendable { var bodies: [String] = [] }
+        let capture = Capture()
+        fixture.accounts.setHandsFeedbackUpstreamForTesting { request in
+            capture.bodies.append(String(decoding: request.httpBody ?? Data(), as: UTF8.self))
+            return (201, Data("{\"id\":\"ticket-native\",\"status\":\"open\"}".utf8))
+        }
+        try await withApp { app in
+            configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: fixture.accounts))
+            try await app.testing { client in
+                let fields: [String: String] = [
+                    "type": "problem",
+                    "message": "Native \(kind) feedback should reach Hands.",
+                    "submission_id": kind == "ios" ? "88888888-8888-4888-8888-888888888888" : "99999999-9999-4999-8999-999999999999",
+                    "may_contact": "false",
+                    "metadata": "{\"client_kind\":\"\(kind)\",\"platform\":\"\(kind)\",\"client_version\":\"1.0.0\"}",
+                ]
+                let result = try await submitForm(client, fixture, fields, clientKind: kind)
+                #expect(result.status == .created)
+                let metadata = fieldValue(capture.bodies.last ?? "", "metadata") ?? ""
+                #expect(metadata.contains("\"product_type\":\"\(kind)\""))
+                #expect(metadata.contains("\"feedback_type\":\"problem\""))
+            }
+        }
+    }
+}
