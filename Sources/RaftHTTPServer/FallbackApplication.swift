@@ -942,6 +942,21 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.get("internal", "agent-api", "users", ":name", "channels") { request -> Response in
+        let name = request.parameters.get("name") ?? ""
+        var limit: String?
+        var offset: String?
+        if let components = URLComponents(string: "http://internal/?\(request.url.query ?? "")") {
+            limit = components.queryItems?.first { $0.name == "limit" }?.value
+            offset = components.queryItems?.first { $0.name == "offset" }?.value
+        }
+        return routeResponse(services.emailAccounts.agentUserChannels(
+            authorization: request.headers[.authorization],
+            name: name,
+            limit: limit,
+            offset: offset
+        ))
+    }
     app.get("internal", "agent-api") { request -> Response in
         routeResponse(services.emailAccounts.agentApiIdentity(
             authorization: request.headers[.authorization]
