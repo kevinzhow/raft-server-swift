@@ -23192,6 +23192,29 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let reasons = cardHoldReasons.map(jsonString).joined(separator: ",")
             return Self.json(200, "{\"ok\":true,\"state\":\"held\",\"holdReasons\":[\(reasons)],\"heldMessages\":[],\"newMessageCount\":0,\"shownMessageCount\":0,\"omittedMessageCount\":0\(seenCardFields)\(seenPeerCardFields)}")
         }
+        lock.lock()
+        if let threadChannel = postableChannels[channelId], threadChannel.kind == "thread",
+           let parentChannelId = threadChannel.parentChannelId,
+           let parentMessageId = threadChannel.parentMessageId {
+            threadFollows["\(identity.serverId)\n\(identity.agentId)\n\(channelId)"] = (
+                serverId: identity.serverId,
+                userId: identity.agentId,
+                threadChannelId: channelId,
+                parentMessageId: parentMessageId
+            )
+            let parentSender = oauth.historyMessages(channelId: parentChannelId).first { $0.id == parentMessageId }?.senderId
+                ?? humanMessageRows.first { $0.id == parentMessageId }?.senderId
+            if let parentSender, parentSender != "system",
+               oauth.memberRole(serverId: identity.serverId, userId: parentSender) != nil {
+                threadFollows["\(identity.serverId)\n\(parentSender)\n\(channelId)"] = (
+                    serverId: identity.serverId,
+                    userId: parentSender,
+                    threadChannelId: channelId,
+                    parentMessageId: parentMessageId
+                )
+            }
+        }
+        lock.unlock()
         let typedMentions = Self.mentionInputs(object["mentions"])
         if v2, Self.mentionBindingConflict(typedMentions) {
             return Self.json(400, "{\"error\":\"A mention handle is bound to more than one target\",\"code\":\"mention_binding_conflict\"}")
