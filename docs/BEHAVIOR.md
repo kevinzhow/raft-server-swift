@@ -1964,3 +1964,10 @@ RFC 074 personal assistant：
 - `POST .../:id/close`：canonical UUID 才触达 Hands，转发 reason + `x-hands-reporter-id`，200 透传；非 canonical 404 `feedback_not_found` 且零上游流量。
 - `POST .../:id/comments`：multipart 附件在任何 Hands/session 流量前校验，仅 image/png|jpeg|webp|gif，否则 400 `feedback_attachment_type_invalid`。
 - 裁决：contact 格式化纯函数（无 HTTP 入口）、close 的结构化 console 日志、joint-storage pseudo-server row model（本端口无 server.kind；同 channels.joint.api 先例）为排除项；其余 17/20 用例有 Swift acceptance 断言或实现可达证据。
+
+### route oauth.api（锁定，含裁决）
+
+- discovery 公开 Raft scopes 且隐藏 reserved/legacy；token endpoint 接受 client_secret_post、legacy camelCase 与 Basic，并接受 legacy `slock_secret_` 前缀 client secret（通过 token endpoint 以 Basic 验证，legacy 行拒绝 raft 形状 secret）；过期 human code 拒绝且不审计 raw code；malformed request id 在 lookup 前拒绝。
+- installation/principal credentials 互相拒绝；app client 只发现精确 Server 上的 active installation；userinfo 要求 current member，picture 仅 Raft-uploaded avatar；serverinfo 返回 access-token server、live profile、coarse paid tier 闭词表、删除 server fail closed、agent serverinfo null avatar 语义。
+- lookup/authorization email scope 拒绝与 grandfather 精确元组；retired built-in client 全链路 fail closed；Marketplace/global lookup 安装约束；agent request/inbound scopes/resource 约束；third-party event provenance/durable rebuild/ack/cold-start/managed daemon/并发去重/unbound 拒绝。
+- 裁决：2 个 random/Cindy pixel-avatar renderer 用例是上游 unit-only PRNG fixture（无 HTTP 断言），不移植；1 个 token unexpected-exchange log/audit redaction 用例依赖日志 sink，不移植。

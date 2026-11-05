@@ -1488,6 +1488,16 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Seeds a legacy-shaped secret hash so HTTP client authentication can be
+    /// exercised without exposing the private client store.
+    public func setClientSecretForTesting(clientRecordId: String, secret: String) {
+        lock.lock()
+        if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
+            clients[index].secretHash = sha256(secret)
+        }
+        lock.unlock()
+    }
+
     public func createClient(
         serverId: String,
         createdByUserId: String,
