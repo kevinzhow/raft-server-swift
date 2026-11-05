@@ -327,6 +327,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var appAgentReminderLedger: [String: String] = [:]
     private var agentReminderSurfaceChannels: [String: String] = [:]
     private var handsFeedbackUpstreamHandler: ((URLRequest) -> (status: Int, body: Data))?
+    private var handsConversationSessionEnabledForTesting: Bool?
+    private var handsConversationAppTokenOverride: String?
+    private var productFeedbackReporterSessionCache: [String: (token: String, expiresAt: Date)] = [:]
     private var messageTranslationLedger: [String: (status: String, providerBilledChars: Int, targetLanguage: String, translatedContent: String)] = [:]
     private var agentChannelJoinedAt: [String: Date] = [:]
     private var agentChannelPosted: Set<String> = []
@@ -30091,6 +30094,88 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// `POST /api/product-feedback`. The upstream proxy is not ported; the
     /// route still enforces the auth, form, and configuration contract.
+    public func setHandsConversationForTesting(enabled: Bool, appToken: String?) {
+        lock.lock()
+        handsConversationSessionEnabledForTesting = enabled
+        handsConversationAppTokenOverride = appToken
+        productFeedbackReporterSessionCache.removeAll()
+        lock.unlock()
+    }
+
+    public func productFeedbackTickets(authorization: String?) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        lock.lock()
+        let verified = accounts.values.first { $0.id == userId }?.emailVerified == true
+        let enabled = handsConversationSessionEnabledForTesting
+            ?? (ProcessInfo.processInfo.environment["HANDS_FEEDBACK_CONVERSATION_SESSION_ENABLED"] == "true")
+        let appToken = handsConversationAppTokenOverride
+            ?? ProcessInfo.processInfo.environment["HANDS_FEEDBACK_CONVERSATION_APP_TOKEN"] ?? ""
+        let base = handsFeedbackBaseURLOverride
+            ?? ProcessInfo.processInfo.environment["HANDS_FEEDBACK_BASE_URL"] ?? ""
+        lock.unlock()
+        guard verified else {
+            return Self.json(403, "{\"error\":\"Email verification required\",\"code\":\"account_unverified\"}")
+        }
+        guard enabled, !base.isEmpty, !appToken.isEmpty else {
+            return Self.json(404, "{\"error\":\"Not found\"}")
+        }
+        let baseTrimmed = base.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        func send(_ request: URLRequest) -> (Int, Data) {
+            lock.lock()
+            let injected = handsFeedbackUpstreamHandler
+            lock.unlock()
+            if let injected { return injected(request) }
+            let semaphore = DispatchSemaphore(value: 0)
+            final class Box: @unchecked Sendable { var status = 0; var body = Data() }
+            let box = Box()
+            URLSession.shared.dataTask(with: request) { data, response, _ in
+                if let http = response as? HTTPURLResponse { box.status = http.statusCode }
+                box.body = data ?? Data()
+                semaphore.signal()
+            }.resume()
+            _ = semaphore.wait(timeout: .now() + 12)
+            return (box.status, box.body)
+        }
+        lock.lock()
+        var cached = productFeedbackReporterSessionCache[userId]
+        lock.unlock()
+        if cached == nil || cached!.expiresAt <= Date() {
+            var mint = URLRequest(url: URL(string: "\(baseTrimmed)/reporter-feedback/session")!)
+            mint.httpMethod = "POST"
+            mint.timeoutInterval = 10
+            mint.setValue("Bearer \(appToken)", forHTTPHeaderField: "Authorization")
+            mint.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            mint.httpBody = Data("{}".utf8)
+            let (status, body) = send(mint)
+            guard status == 201 || status == 200,
+                  let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+                  let sessionToken = object["session_token"] as? String,
+                  !sessionToken.isEmpty
+            else {
+                return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
+            }
+            let expires = (object["expires_at"] as? NSNumber)?.doubleValue ?? Date().addingTimeInterval(30).timeIntervalSince1970
+            cached = (sessionToken, Date(timeIntervalSince1970: expires))
+            lock.lock()
+            productFeedbackReporterSessionCache[userId] = cached
+            lock.unlock()
+        }
+        guard let cached else {
+            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
+        }
+        var list = URLRequest(url: URL(string: "\(baseTrimmed)/reporter-feedback?limit=50")!)
+        list.httpMethod = "GET"
+        list.timeoutInterval = 10
+        list.setValue("Bearer \(cached.token)", forHTTPHeaderField: "Authorization")
+        let (status, body) = send(list)
+        guard status == 200 else {
+            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
+        }
+        return HTTPReply(status: 200, headers: ["Content-Type": AppFallback.jsonContentType, "Cache-Control": "no-store", "Content-Length": String(body.count)], body: String(decoding: body, as: UTF8.self))
+    }
+
     public func setHandsFeedbackForTesting(baseURL: String?, appId: String?, appToken: String?, appSlug: String? = nil) {
         lock.lock()
         handsFeedbackBaseURLOverride = baseURL

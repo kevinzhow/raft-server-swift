@@ -81,3 +81,53 @@ import VaporTesting
         }
     }
 }
+
+@Test func productFeedbackTicketsReusesOneReporterSession() async throws {
+    let accounts = EmailLoginDirectory()
+    let userId = "11111111-1111-4111-8111-111111111644"
+    accounts.addAccount(id: userId, email: "feedback-tickets@test.invalid", password: "password123")
+    accounts.markEmailVerified(userId: userId)
+    let token = accounts.mintAccessTokenForTesting(userId: userId)
+    accounts.setHandsFeedbackForTesting(baseURL: "https://hands.test", appId: "raft-web", appToken: "t", appSlug: "raft-web")
+    accounts.setHandsConversationForTesting(enabled: true, appToken: "hands_conversation_test")
+    final class Capture: @unchecked Sendable {
+        var mintCount = 0
+        var listCount = 0
+        var listAuthorizations: [String] = []
+    }
+    let capture = Capture()
+    accounts.setHandsFeedbackUpstreamForTesting { request in
+        let url = request.url?.absoluteString ?? ""
+        if url.hasSuffix("/reporter-feedback/session") {
+            capture.mintCount += 1
+            return (201, Data("{\"session_token\":\"hrps_v1_api-test-session\",\"expires_at\":\(Int(Date().timeIntervalSince1970) + 30),\"reporter_integration_id\":\"legacy\",\"scopes\":[\"feedback:read\"]}".utf8))
+        }
+        if url.contains("/reporter-feedback?") {
+            capture.listCount += 1
+            capture.listAuthorizations.append(request.value(forHTTPHeaderField: "Authorization") ?? "")
+            return (200, Data("{\"tickets\":[],\"next_cursor\":null,\"unread_total\":0}".utf8))
+        }
+        return (404, Data("{}".utf8))
+    }
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(token)"
+            for _ in 0..<2 {
+                let response = try await client.get(URI(string: "/api/product-feedback/tickets"), headers: headers)
+                #expect(response.status == .ok)
+                let body = (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+                #expect(body["tickets"] as? [Any] != nil)
+                #expect(body["next_cursor"] is NSNull)
+                #expect(body["unread_total"] as? Int == 0)
+            }
+            #expect(capture.mintCount == 1)
+            #expect(capture.listCount == 2)
+            #expect(capture.listAuthorizations.allSatisfy { $0 == "Bearer hrps_v1_api-test-session" })
+
+            let anonymous = try await client.get(URI(string: "/api/product-feedback/tickets"))
+            #expect(anonymous.status == .unauthorized)
+        }
+    }
+}
