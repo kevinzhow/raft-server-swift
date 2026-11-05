@@ -6130,7 +6130,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     @discardableResult
-    public func addHumanMessageForTesting(channelId: String, senderId: String, content: String, messageType: String = "chat", senderType: String = "user") -> String {
+    public func addHumanMessageForTesting(channelId: String, senderId: String, content: String, messageType: String = "chat", senderType: String = "user", senderTimezone: String? = nil) -> String {
         let id = UUID().uuidString.lowercased()
         lock.lock()
         appendHumanMessageLocked(StoredHumanMessage(
@@ -6140,7 +6140,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             content: content,
             randomId: nil,
             messageType: messageType,
-            senderType: senderType
+            senderType: senderType,
+            senderTimezone: senderTimezone
         ))
         lock.unlock()
         return id
@@ -9720,6 +9721,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var profileSetupProvider: String? = nil
         var profileSetupCompletedAt: Date? = nil
         var avatarUrl: String? = nil
+        var description: String? = nil
         var shareUsageData: Bool? = nil
         var emailVerified: Bool = false
         var stagingSelfAccountCapabilityHash: String? = nil
@@ -22619,6 +22621,33 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
+    /// Callers hold `lock`. The DM peer card exists only when the peer has a
+    /// profile description or a timezone on their latest message.
+    private func peerCardJSONLocked(channelId: String, agentId: String) -> String? {
+        guard let channel = postableChannels[channelId] else { return nil }
+        let baseId: String
+        if channel.kind == "dm" {
+            baseId = channelId
+        } else if channel.kind == "thread", let parentId = channel.parentChannelId,
+                  postableChannels[parentId]?.kind == "dm" {
+            baseId = parentId
+        } else {
+            return nil
+        }
+        guard let peerId = oauth.channelHumanIds(channelId: baseId).first(where: { $0 != agentId }),
+              let account = accounts.values.first(where: { $0.id == peerId })
+        else { return nil }
+        let timezone = humanMessageRows.last {
+            $0.channelId == baseId && $0.senderId == peerId && ($0.senderTimezone?.isEmpty == false)
+        }?.senderTimezone
+        let description = account.description?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (description?.isEmpty == false) || timezone != nil else { return nil }
+        var fields = "\"kind\":\"human\",\"name\":\(jsonString(account.name))"
+        if let description, !description.isEmpty { fields += ",\"description\":\(jsonString(description))" }
+        if let timezone { fields += ",\"timezone\":\(jsonString(timezone))" }
+        return "{\(fields)}"
+    }
+
     /// Callers hold `lock`.
     private func channelCardSnapshotLocked(channelId: String) -> AgentChannelCardSnapshot? {
         guard let channel = postableChannels[channelId], channel.kind != "dm" else { return nil }
@@ -23030,6 +23059,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         // version its model context saw is checked. Never seen holds the send
         // once; an older version sends and returns the current card.
         var seenCardFields = ""
+        var seenPeerCardFields = ""
         var cardHoldReasons: [String] = []
         if let seenCards = object["seenCards"] as? [String: Any], !withheldMode {
             lock.lock()
@@ -23043,6 +23073,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 } else {
                     seenCardFields = ",\"channelCard\":\(snapshot.json)"
                     cardHoldReasons.append("channel_card")
+                }
+            }
+            if let rawPeer = seenCards["peer"] {
+                lock.lock()
+                let peerCard = peerCardJSONLocked(channelId: channelId, agentId: identity.agentId)
+                lock.unlock()
+                if let peerCard, !(rawPeer is String) {
+                    seenPeerCardFields = ",\"peerCard\":\(peerCard)"
+                    cardHoldReasons.append("peer_card")
                 }
             }
         }
@@ -23135,6 +23174,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                     response += ",\"holdReasons\":[\(reasons)]"
                 }
                 response += seenCardFields
+                response += seenPeerCardFields
                 response += "}"
                 return Self.json(200, response)
             }
@@ -23142,7 +23182,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         if holdForCards {
             let reasons = cardHoldReasons.map(jsonString).joined(separator: ",")
-            return Self.json(200, "{\"ok\":true,\"state\":\"held\",\"holdReasons\":[\(reasons)],\"heldMessages\":[],\"newMessageCount\":0,\"shownMessageCount\":0,\"omittedMessageCount\":0\(seenCardFields)}")
+            return Self.json(200, "{\"ok\":true,\"state\":\"held\",\"holdReasons\":[\(reasons)],\"heldMessages\":[],\"newMessageCount\":0,\"shownMessageCount\":0,\"omittedMessageCount\":0\(seenCardFields)\(seenPeerCardFields)}")
         }
         let typedMentions = Self.mentionInputs(object["mentions"])
         if v2, Self.mentionBindingConflict(typedMentions) {
@@ -23204,7 +23244,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let unresolvedJSON = v2 && !mentionResolution.unresolved.isEmpty
             ? ",\"unresolvedMentionHandles\":[" + mentionResolution.unresolved.map(jsonString).joined(separator: ",") + "]"
             : ""
-        let sent = "{\"ok\":true,\"state\":\"sent\",\"messageId\":\(jsonString(messageId)),\"messageSeq\":\(ownSeq),\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(content)),\"seq\":\(ownSeq)\(report.pendingJSON)\(unresolvedJSON)\(seenCardFields)}"
+        let sent = "{\"ok\":true,\"state\":\"sent\",\"messageId\":\(jsonString(messageId)),\"messageSeq\":\(ownSeq),\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(content)),\"seq\":\(ownSeq)\(report.pendingJSON)\(unresolvedJSON)\(seenCardFields)\(seenPeerCardFields)}"
         return Self.json(200, sent)
     }
 
@@ -25488,6 +25528,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let description = info.description.map(jsonString) ?? "null"
             return ",\"channel_card\":{\"id\":\(jsonString(cardId)),\"name\":\(jsonString(info.name)),\"type\":\(jsonString(type)),\"description\":\(description),\"archived\":\(archived)}"
         }()
+        let peerCard: String = {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let card = peerCardJSONLocked(channelId: channelId, agentId: agent.id) else { return "" }
+            return ",\"peer_card\":\(card)"
+        }()
         let messages = oauth.historyMessages(channelId: channelId)
         let pageLimit = min(max(Int(limit ?? "") ?? 50, 1), 100)
         // `consume=false`: return the page without marking it read, for reads
@@ -25680,7 +25726,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return row + "}"
         }.joined(separator: ",")
         let modelSeenJSON = modelSeenSeq.map(String.init) ?? "null"
-        return Self.json(200, "{\"messages\":[\(json)],\"has_more\":\(hasMore),\"has_older\":\(hasOlder),\"has_newer\":\(hasNewer),\"last_read_seq\":\(priorSeq),\"model_seen_up_to_seq\":\(modelSeenJSON),\"target\":\(jsonString(canonicalTarget ?? reference))\(consumptionScope.map { ",\"consumption_scope\":\($0)" } ?? "")\(channelCard)}")
+        return Self.json(200, "{\"messages\":[\(json)],\"has_more\":\(hasMore),\"has_older\":\(hasOlder),\"has_newer\":\(hasNewer),\"last_read_seq\":\(priorSeq),\"model_seen_up_to_seq\":\(modelSeenJSON),\"target\":\(jsonString(canonicalTarget ?? reference))\(consumptionScope.map { ",\"consumption_scope\":\($0)" } ?? "")\(channelCard)\(peerCard)}")
     }
 
     public func agentChannelMembershipFromMachine(authorization: String?, agentId: String, channelId: String, join: Bool) -> HTTPReply {
@@ -27737,6 +27783,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let prefs = oauth.setCollapseLongMessages(channelId: channelId, userId: userId, collapse: collapse)
         return Self.json(200, "{\"collapseLongMessages\":\(prefs.collapseLongMessages),\"prefsVersion\":\(prefs.prefsVersion)}")
+    }
+
+    public func setAccountDescriptionForTesting(userId: String, description: String?) {
+        lock.lock()
+        if let index = accounts.values.firstIndex(where: { $0.id == userId }) {
+            var account = accounts.values[index]
+            account.description = description
+            accounts.values[index] = account
+        }
+        lock.unlock()
+    }
+
+    public func seedDMForTesting(serverId: String, humanUserId: String, agentId: String, name: String = "dm") -> String {
+        let channelId = oauth.createDirectChannel(serverId: serverId, firstUserId: humanUserId, secondUserId: agentId)
+        addPostableChannel(serverId: serverId, channelId: channelId, memberId: agentId, kind: "dm", name: name)
+        addPostableChannel(serverId: serverId, channelId: channelId, memberId: humanUserId, kind: "dm", name: name)
+        oauth.addChannelHuman(channelId: channelId, userId: humanUserId)
+        return channelId
     }
 
     public func channelCardRevisionForTesting(channelId: String) -> String? {
