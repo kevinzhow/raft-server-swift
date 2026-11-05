@@ -262,3 +262,53 @@ private func draftSend(_ client: any Client, _ key: String, _ target: String, _ 
         }
     }
 }
+
+@Test func withheldReviewerContextExposesOnlyStateAndCount() async throws {
+    var fixture = FreshnessFixture()
+    fixture.seed()
+    let accounts = fixture.accounts
+    let baseline = fixture.human("baseline")
+    accounts.markAgentLegacyReadForTesting(agentId: fixture.agentId, channelId: fixture.channelId, seq: baseline.seq)
+    let poison = "peer reviewer verdict: REQUEST CHANGES at 2042-08-09T10:11:12.000Z"
+    _ = fixture.human(poison)
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            func send(_ body: [String: Any]) async throws -> (ClientResponse, [String: Any]) {
+                var headers = HTTPFields()
+                headers[.authorization] = "Bearer \(fixture.key)"
+                headers[.contentType] = "application/json"
+                let data = try JSONSerialization.data(withJSONObject: body)
+                let response = try await client.send(.post, headers: headers, to: URI(string: "/internal/agent-api/send")) { request in
+                    request.body = .init(data: data)
+                }
+                return (response, (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:])
+            }
+            let held = try await send([
+                "target": "#\(fixture.channelName)", "content": "my independent verdict",
+                "seenUpToSeq": baseline.seq, "freshnessContextMode": "withheld", "draftReholdCount": 99,
+            ])
+            #expect(held.0.status == .ok)
+            #expect(held.1["state"] as? String == "held")
+            #expect(held.1["freshnessContextMode"] as? String == "withheld")
+            #expect(held.1["withheldMessageCount"] as? Int == 1)
+            let serialized = String(decoding: try JSONSerialization.data(withJSONObject: held.1), as: UTF8.self)
+            #expect(!serialized.contains("peer reviewer"))
+            #expect(!serialized.contains("REQUEST CHANGES"))
+            #expect(!serialized.contains("2042-08-09"))
+            #expect(accounts.agentReadCursorForTesting(agentId: fixture.agentId, channelId: fixture.channelId) == baseline.seq)
+
+            let continued = try await send([
+                "target": "#\(fixture.channelName)", "content": "my independent verdict",
+                "sendDraft": true, "continueAnyway": true, "seenUpToSeq": baseline.seq,
+                "freshnessContextMode": "withheld",
+            ])
+            #expect(continued.0.status == .ok)
+            #expect(continued.1["state"] as? String == "sent")
+            #expect(continued.1["seenUpToSeq"] == nil)
+            let serializedContinued = String(decoding: try JSONSerialization.data(withJSONObject: continued.1), as: UTF8.self)
+            #expect(!serializedContinued.contains("peer reviewer"))
+            #expect(accounts.messageCountForTesting(channelId: fixture.channelId) == 3)
+        }
+    }
+}

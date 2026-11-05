@@ -181,3 +181,48 @@ import VaporTesting
         }
     }
 }
+
+@Test func v2IdempotentReplayKeepsDurableMentionFactsAndOmitsUnresolved() async throws {
+    let accounts = EmailLoginDirectory()
+    let serverId = "33333333-3333-4333-8333-000001107301"
+    let ownerId = "11111111-1111-4111-8111-000001107301"
+    accounts.addAccount(id: ownerId, email: "replay-owner@test.invalid", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "mention-replay", name: "Mention Replay", ownerId: ownerId)
+    let agentId = accounts.oauth.createAgent(serverId: serverId, name: "ReplayBot", creatorUserId: ownerId, runtime: "claude")
+    let channelId = accounts.oauth.createChannel(serverId: serverId, name: "replay-room", creatorUserId: ownerId, type: "channel")
+    accounts.seedPostableChannelForTesting(serverId: serverId, channelId: channelId, name: "replay-room", humanIds: [ownerId], agentIds: [agentId])
+    let key = accounts.mintAgentCredential(agentId: agentId, scopes: ["send", "read"], name: "replay")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(key)"
+            headers[.contentType] = "application/json"
+            let request: [String: Any] = [
+                "target": "#replay-room", "content": "self mention @ReplayBot",
+                "mentions": [["type": "agent", "id": agentId, "name": "ReplayBot"]],
+                "idempotencyKey": "v2-durable-mention-replay",
+            ]
+            func call() async throws -> [String: Any] {
+                let data = try JSONSerialization.data(withJSONObject: request)
+                let response = try await client.send(.post, headers: headers, to: URI(string: "/internal/agent-api/v2/send")) { req in
+                    req.body = .init(data: data)
+                }
+                return (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            }
+            let first = try await call()
+            #expect(first["state"] as? String == "sent")
+            let messageId = try #require(first["messageId"] as? String)
+            let facts = accounts.mentionsForTesting(messageId: messageId)
+            #expect(facts.map { "\($0.targetType):\($0.targetId)" } == ["agent:\(agentId)"])
+
+            let replay = try await call()
+            #expect(replay["state"] as? String == "sent")
+            #expect(replay["messageId"] as? String == messageId)
+            #expect(replay["unresolvedMentionHandles"] == nil)
+            #expect(accounts.mentionsForTesting(messageId: messageId).count == 1)
+            #expect(accounts.messageCountForTesting(channelId: channelId) == 1)
+        }
+    }
+}

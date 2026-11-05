@@ -99,3 +99,42 @@ import VaporTesting
         }
     }
 }
+
+@Test func anywayAndIdempotentRetryAreNotHeldForTheCard() async throws {
+    let accounts = EmailLoginDirectory()
+    let serverId = "33333333-3333-4333-8333-000001109003"
+    let ownerId = "11111111-1111-4111-8111-000001109003"
+    accounts.addAccount(id: ownerId, email: "card-anyway@test.invalid", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "card-anyway", name: "Card Anyway", ownerId: ownerId)
+    let agentId = accounts.oauth.createAgent(serverId: serverId, name: "CardAnywayBot", creatorUserId: ownerId, runtime: "claude")
+    let channelId = accounts.oauth.createChannel(serverId: serverId, name: "anyway-room", creatorUserId: ownerId, type: "channel")
+    accounts.seedPostableChannelForTesting(serverId: serverId, channelId: channelId, name: "anyway-room", humanIds: [ownerId], agentIds: [agentId])
+    let key = accounts.mintAgentCredential(agentId: agentId, scopes: ["send", "read"], name: "anyway")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            func send(_ body: [String: Any]) async throws -> [String: Any] {
+                var headers = HTTPFields()
+                headers[.authorization] = "Bearer \(key)"
+                headers[.contentType] = "application/json"
+                let data = try JSONSerialization.data(withJSONObject: body)
+                let response = try await client.send(.post, headers: headers, to: URI(string: "/internal/agent-api/v2/send")) { request in
+                    request.body = .init(data: data)
+                }
+                return (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            }
+            let anyway = try await send(["target": "#anyway-room", "content": "anyway", "sendDraft": true, "continueAnyway": true, "seenCards": ["channel": NSNull()]])
+            #expect(anyway["state"] as? String == "sent")
+            #expect((anyway["channelCard"] as? [String: Any])?["id"] as? String == channelId)
+            #expect(anyway["channelCardChanged"] == nil)
+
+            let idempotencyKey = UUID().uuidString
+            let original = try await send(["target": "#anyway-room", "content": "once", "idempotencyKey": idempotencyKey, "seenUpToSeq": anyway["messageSeq"] as? Int ?? 0])
+            #expect(original["state"] as? String == "sent")
+            let retry = try await send(["target": "#anyway-room", "content": "once", "idempotencyKey": idempotencyKey, "seenUpToSeq": anyway["messageSeq"] as? Int ?? 0, "seenCards": ["channel": NSNull()]])
+            #expect(retry["state"] as? String == "sent")
+            #expect(retry["messageId"] as? String == original["messageId"] as? String)
+        }
+    }
+}

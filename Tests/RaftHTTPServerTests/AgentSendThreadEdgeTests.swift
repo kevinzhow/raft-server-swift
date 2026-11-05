@@ -89,3 +89,21 @@ private func edgeSend(_ client: any Client, key: String, target: String, content
         }
     }
 }
+
+@Test func threadReplyRequiresParentChannelMembership() async throws {
+    var fixture = ThreadEdgeFixture()
+    fixture.seed()
+    let accounts = fixture.accounts
+    let outsiderId = accounts.oauth.createAgent(serverId: fixture.serverId, name: "ThreadOutsider", creatorUserId: fixture.ownerId, runtime: "claude")
+    let outsiderKey = accounts.mintAgentCredential(agentId: outsiderId, scopes: ["send", "read"], name: "thread-outsider")
+    let parent = accounts.addHumanMessageForTesting(channelId: fixture.channelId, senderId: fixture.ownerId, content: "members only thread parent")
+    let parentSeq = accounts.messageSeqForTesting(messageId: parent) ?? 0
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            let denied = try await edgeSend(client, key: outsiderKey, target: "#\(fixture.channelName):\(parent.prefix(8))", content: "should not send", seen: parentSeq)
+            #expect(denied.0.status == .forbidden)
+            #expect(((denied.1["error"] as? String) ?? "").contains("not a member of the parent channel"))
+        }
+    }
+}
