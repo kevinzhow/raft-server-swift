@@ -312,3 +312,36 @@ private func draftSend(_ client: any Client, _ key: String, _ target: String, _ 
         }
     }
 }
+
+@Test func heldContextCarriesChannelAndThreadIdentity() async throws {
+    var fixture = FreshnessFixture()
+    fixture.seed()
+    let accounts = fixture.accounts
+    let baseline = fixture.human("baseline")
+    _ = fixture.human("fresh one")
+    _ = fixture.human("fresh two")
+    let parent = fixture.human("thread parent")
+    let threadId = accounts.oauth.createThreadChannel(parentChannelId: fixture.channelId, parentMessageId: parent.id)
+    accounts.addThreadChannel(serverId: fixture.serverId, threadChannelId: threadId, parentChannelId: fixture.channelId, parentMessageId: parent.id, memberId: fixture.agentId)
+    _ = accounts.addHumanMessageForTesting(channelId: threadId, senderId: fixture.ownerId, content: "thread reply")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            let channelHeld = try await freshnessSend(client, fixture.key, "#\(fixture.channelName)", "stale channel draft", seen: baseline.seq)
+            #expect(channelHeld["state"] as? String == "held")
+            let channelRows = channelHeld["heldMessages"] as? [[String: Any]] ?? []
+            #expect(channelRows.count == 3)
+            #expect(channelRows.allSatisfy { ($0["channel_type"] as? String) == "channel" && ($0["channel_name"] as? String) == fixture.channelName })
+
+            let threadHeld = try await freshnessSend(client, fixture.key, "#\(fixture.channelName):\(parent.id.prefix(8))", "stale thread reply", seen: parent.seq)
+            #expect(threadHeld["state"] as? String == "held")
+            let threadRows = threadHeld["heldMessages"] as? [[String: Any]] ?? []
+            #expect(!threadRows.isEmpty)
+            #expect(threadRows.allSatisfy {
+                ($0["channel_type"] as? String) == "thread"
+                    && ($0["parent_channel_type"] as? String) == "channel"
+                    && ($0["parent_channel_name"] as? String) == fixture.channelName
+            })
+        }
+    }
+}
