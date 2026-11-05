@@ -29026,7 +29026,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                     continue
                 }
             }
-            let role = (type == "channel" || type == "private") && channel.name != "all" ? subjectServerRole : nil
+            let role: String? = {
+                guard (type == "channel" || type == "private"), channel.name != "all" else { return nil }
+                lock.lock()
+                let channelRole = channelHumanRoles["\(channel.id)\n\(subject.id)"]
+                lock.unlock()
+                return channelRole == "admin" ? "admin" : "member"
+            }()
             let roleJSON = role.map(jsonString) ?? "null"
             rows.append("{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"joined\":\(channel.joined),\"channelRole\":\(roleJSON)}")
         }

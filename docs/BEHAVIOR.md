@@ -1933,3 +1933,10 @@ RFC 074 personal assistant：
 - `GET/PATCH /api/auth/me`：翻译/显示偏好（language/timezone/mode/display/timeFormat/fontSize）round-trip、null 清空、非法 400；referralSource/other/skipped 记录。
 - `POST /api/public/servers/:slug/message-translations:batch`：匿名仅翻译仍在 guest-visible channel 或其 thread 的消息，private/撤销 → not_found，50 条分页，离开 public projection → 404，字段顺序稳定。
 - 裁决：trace span（translation.provider.call/batch.finished、disabled skip）、provider failpoint（transient/content-driven/manual retry/reserve）、placeholder mismatch 输出、split-by-source provider batch spy、agent receive-original（orchestrator）为注入/服务内部断言，不移植。
+
+### route internalAgentApi.userChannels（锁定，含裁决）
+
+- `GET /internal/agent-api/users/:name/channels`：能力门禁 `channels` → `read`，再要求 `channel:read`/`server:read`（typed capability/missing_scope）；名称精确大小写敏感、`@` 前缀兼容；未知/目录隐藏（非 server owner/admin agent）→ 404 `user_not_found`；分页默认 50、最大 200、非法 → 400 `agent_api_contract_invalid`；返回 subject 的 memberships（id/name/type/joined/channelRole，其中 channelRole 仅 channel/private 非 #all 且按 subject 自己的 channel role）、uncheckedCount、page。
+- joint channel 仅在本 server 的 local projection active 且 caller agent 可读 roster 时列入；断连/不可读计入 uncheckedCount；不跨 server 匹配 namesake。
+- `GET /internal/agent-api/users/info`：同门禁，返回文本 membership 摘要、role 行与 skipped-roster 提示。
+- 裁决：reduced-matrix parity 用例（以完整 legacy server.info + 每频道 roster oracle 逐字段对比）与 built-in app conversations 用例（`#system.canary` app twin registry）不移植；前者是 oracle 对齐测试，后者依赖未移植的 built-in app 会话模型。

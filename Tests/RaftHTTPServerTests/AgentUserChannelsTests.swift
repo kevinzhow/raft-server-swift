@@ -63,6 +63,10 @@ import VaporTesting
             #expect(pageInfo?["offset"] as? Int == 0)
             let memberships = page.1["memberships"] as? [[String: Any]] ?? []
             #expect(memberships.contains { $0["id"] as? String == channelId })
+            accounts.setChannelHumanRoleForTesting(channelId: channelId, userId: subjectId, role: "admin")
+            let promoted = try await call(key, "user-channels-subject")
+            let promotedRows = promoted.1["memberships"] as? [[String: Any]] ?? []
+            #expect(promotedRows.first { $0["id"] as? String == channelId }?["channelRole"] as? String == "admin")
 
             accounts.setHideHumansFromMembers(serverId: serverId, hidden: true)
             let hidden = try await call(key, "user-channels-subject")
@@ -79,6 +83,72 @@ import VaporTesting
             let infoText = info.body.string ?? ""
             #expect(infoText.contains("#user-channels-room"))
             #expect(!infoText.lowercased().contains("admin"))
+        }
+    }
+}
+
+@Test func userChannelsJoinActiveJointProjectionsOnly() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerA = "11111111-1111-4111-8111-111111111637"
+    let scout = "11111111-1111-4111-8111-111111111638"
+    let mem = "11111111-1111-4111-8111-111111111639"
+    let alice = "11111111-1111-4111-8111-111111111640"
+    let serverA = "33333333-3333-4333-8333-333333333679"
+    let serverB = "33333333-3333-4333-8333-333333333680"
+    for (id, email) in [(ownerA, "uc-owner@test.invalid"), (scout, "scout@test.invalid"), (mem, "mem@test.invalid"), (alice, "alice@test.invalid")] {
+        accounts.addAccount(id: id, email: email, password: "password123")
+        accounts.markEmailVerified(userId: id)
+    }
+    accounts.oauth.addOwnedServer(id: serverA, slug: "uc-a", name: "UC A", ownerId: ownerA)
+    accounts.oauth.addOwnedServer(id: serverB, slug: "uc-b", name: "UC B", ownerId: alice)
+    accounts.oauth.addMember(serverId: serverA, userId: scout, role: "member")
+    accounts.oauth.addMember(serverId: serverA, userId: mem, role: "member")
+    let local = accounts.oauth.createChannel(serverId: serverA, name: "joint-local", creatorUserId: ownerA, type: "joint")
+    let peer = accounts.oauth.createChannel(serverId: serverB, name: "joint-local", creatorUserId: alice, type: "joint")
+    let canonical = accounts.oauth.createChannel(serverId: serverA, name: "joint-storage", creatorUserId: ownerA)
+    for user in [scout, mem] { accounts.oauth.addChannelHuman(channelId: local, userId: user) }
+    accounts.oauth.addChannelHuman(channelId: peer, userId: alice)
+    accounts.addJointChannelProjection(localChannelId: local, canonicalChannelId: canonical, serverId: serverA)
+    accounts.addJointChannelProjection(localChannelId: peer, canonicalChannelId: canonical, serverId: serverB)
+    let adminAgent = accounts.oauth.createAgent(serverId: serverA, name: "UCAdmin", creatorUserId: ownerA, runtime: "claude")
+    let memberAgent = accounts.oauth.createAgent(serverId: serverA, name: "UCMember", creatorUserId: ownerA, runtime: "claude")
+    accounts.oauth.addChannelAgent(channelId: local, agentId: adminAgent)
+    _ = memberAgent
+    let adminKey = accounts.mintAgentCredential(agentId: adminAgent, scopes: ["channels", "read", "channel:read", "server:read"], name: "uc-admin")
+    let memberKey = accounts.mintAgentCredential(agentId: memberAgent, scopes: ["channels", "read", "channel:read", "server:read"], name: "uc-member")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            func call(_ key: String, _ name: String) async throws -> [String: Any] {
+                var headers = HTTPFields()
+                headers[.authorization] = "Bearer \(key)"
+                let encoded = name.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? name
+                let response = try await client.get(URI(string: "/internal/agent-api/users/\(encoded)/channels?limit=200"), headers: headers)
+                return (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            }
+            let scoutRows = try await call(adminKey, "scout")
+            let memberships = scoutRows["memberships"] as? [[String: Any]] ?? []
+            #expect(memberships.contains { $0["id"] as? String == local && ($0["type"] as? String) == "joint" })
+            #expect(!memberships.contains { $0["id"] as? String == peer })
+            #expect((scoutRows["uncheckedCount"] as? Int ?? 0) == 0)
+
+            let memRead = try await call(memberKey, "scout")
+            let memRows = memRead["memberships"] as? [[String: Any]] ?? []
+            #expect(!memRows.contains { $0["id"] as? String == local })
+            #expect((memRead["uncheckedCount"] as? Int ?? 0) >= 1)
+
+            accounts.setJointProjectionStatusForTesting(localChannelId: local, serverId: serverA, status: "disconnected")
+            let disconnected = try await call(adminKey, "mem")
+            let disconnectedRows = disconnected["memberships"] as? [[String: Any]] ?? []
+            #expect(!disconnectedRows.contains { $0["id"] as? String == local })
+            #expect((disconnected["uncheckedCount"] as? Int ?? 0) >= 1)
+
+            accounts.oauth.addChannelHuman(channelId: local, userId: mem)
+            accounts.setJointProjectionStatusForTesting(localChannelId: local, serverId: serverA, status: "active")
+            accounts.setChannelHumanRoleForTesting(channelId: local, userId: mem, role: "admin")
+            let memRowsActive = try await call(adminKey, "mem")
+            let memMemberships = memRowsActive["memberships"] as? [[String: Any]] ?? []
+            #expect(memMemberships.contains { $0["id"] as? String == local })
         }
     }
 }
