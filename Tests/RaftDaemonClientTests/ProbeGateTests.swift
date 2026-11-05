@@ -57,6 +57,11 @@ private struct ProbeCrash: Error {}
         return try await pending.wait()
     }
     async let first = gate.run("runtime_models:cursor", task)
+    // Wait until the first run is actually registered and started; launching the
+    // joiners before that races the gate's start path and can schedule a second
+    // run (the assertion targets coalescing of overlapping requests, not start
+    // ordering).
+    while counter.starts == 0 { await Task.yield() }
     async let second = gate.run("runtime_models:cursor", task)
     async let third = gate.run("runtime_models:cursor", task)
     try await Task.sleep(nanoseconds: 20_000_000)

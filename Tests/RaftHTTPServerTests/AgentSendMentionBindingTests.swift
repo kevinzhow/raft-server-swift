@@ -140,3 +140,44 @@ import VaporTesting
         }
     }
 }
+
+@Test func agentSendLinksAttachmentsOnceAndRejectsReuse() async throws {
+    let accounts = EmailLoginDirectory()
+    let serverId = "33333333-3333-4333-8333-000001107201"
+    let ownerId = "11111111-1111-4111-8111-000001107201"
+    accounts.addAccount(id: ownerId, email: "attach-owner@test.invalid", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "attach-send", name: "Attach Send", ownerId: ownerId)
+    let agentId = accounts.oauth.createAgent(serverId: serverId, name: "AttachBot", creatorUserId: ownerId, runtime: "claude")
+    let channelId = accounts.oauth.createChannel(serverId: serverId, name: "attach-room", creatorUserId: ownerId, type: "channel")
+    accounts.seedPostableChannelForTesting(serverId: serverId, channelId: channelId, name: "attach-room", humanIds: [ownerId], agentIds: [agentId])
+    let key = accounts.mintAgentCredential(agentId: agentId, scopes: ["send", "read"], name: "attach")
+    accounts.addChannelAttachmentForTesting(channelId: channelId, id: "44444444-4444-4444-8444-000001107201", uploaderId: agentId, filename: "linked.txt")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            func send(_ content: String, attachments: [String]) async throws -> (ClientResponse, [String: Any]) {
+                var headers = HTTPFields()
+                headers[.authorization] = "Bearer \(key)"
+                headers[.contentType] = "application/json"
+                let data = try JSONSerialization.data(withJSONObject: ["target": "#attach-room", "content": content, "attachmentIds": attachments])
+                let response = try await client.send(.post, headers: headers, to: URI(string: "/internal/agent-api/send")) { request in
+                    request.body = .init(data: data)
+                }
+                return (response, (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:])
+            }
+            let attachmentId = "44444444-4444-4444-8444-000001107201"
+            let sent = try await send("message with attachment", attachments: [attachmentId])
+            #expect(sent.0.status == .ok)
+            let messageId = try #require(sent.1["messageId"] as? String)
+            #expect(accounts.messageAttachmentIdsForTesting(messageId: messageId) == [attachmentId])
+
+            let before = accounts.messageCountForTesting(channelId: channelId)
+            let reused = try await send("should not be persisted", attachments: [attachmentId])
+            #expect(reused.0.status == .badRequest)
+            #expect(reused.1["code"] as? String == "attachment_already_linked")
+            #expect(((reused.1["error"] as? String) ?? "").contains("Re-upload the file"))
+            #expect(accounts.messageCountForTesting(channelId: channelId) == before)
+        }
+    }
+}

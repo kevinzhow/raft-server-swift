@@ -6812,6 +6812,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return storedMentions.first { $0.id == id }?.notifiedAction
     }
 
+    public func messageAttachmentIdsForTesting(messageId: String) -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        return humanMessageRows.first { $0.id == messageId }?.attachmentIds ?? []
+    }
+
     public func setMessageAttachmentIdsForTesting(messageId: String, attachmentIds: [String]) {
         lock.lock()
         if let index = humanMessageRows.firstIndex(where: { $0.id == messageId }) {
@@ -23241,15 +23246,35 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         )
         let messageId = UUID().uuidString.lowercased()
         lock.lock()
+        var seenAttachmentIds = Set<String>()
+        for id in attachmentIds {
+            if seenAttachmentIds.contains(id) {
+                lock.unlock()
+                return Self.json(400, "{\"error\":\"Attachment \(id) was requested more than once. Send each attachment ID exactly once.\",\"code\":\"attachment_duplicate\"}")
+            }
+            seenAttachmentIds.insert(id)
+            guard let row = channelAttachments[id], row.channelId == channelId, row.uploaderId == identity.agentId else {
+                lock.unlock()
+                return Self.json(400, "{\"error\":\"Attachment \(id) is not available for this sender. Re-upload the file and send the new attachment ID.\",\"code\":\"attachment_not_found\"}")
+            }
+            if row.messageId != nil {
+                lock.unlock()
+                return Self.json(400, "{\"error\":\"Attachment \(id) is already attached to another message. Re-upload the file and send the new attachment ID.\",\"code\":\"attachment_already_linked\"}")
+            }
+        }
         appendHumanMessageLocked(StoredHumanMessage(
             id: messageId,
             channelId: channelId,
             senderId: identity.agentId,
             content: content,
             randomId: nil,
+            attachmentIds: attachmentIds,
             messageType: "chat",
             senderType: "agent"
         ))
+        for id in attachmentIds {
+            channelAttachments[id]?.messageId = messageId
+        }
         let ownSeq = humanMessageRows.last?.seq ?? humanMessageRows.count
         // Sending is not reading: the cursor may pass the own message only when
         // no message from someone else below it is still unhanded.
