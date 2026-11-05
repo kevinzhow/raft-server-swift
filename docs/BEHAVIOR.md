@@ -1999,3 +1999,8 @@ RFC 074 personal assistant：
 - membership/visibility 规则、member add/remove、hidden human directory、saved private membership、batch add 由既有 `ChannelVisibilityTests`/`ChannelMember*`/`HiddenHumanDirectoryTests`/`SavedPrivateMembershipTests`/`ChannelMembersBatchTests` 覆盖。
 - 本轮补齐：DM list 的 `lastMessagePreview`/`lastMessageSenderName`（按 sender id 解析 human/agent，system sender 为 null）；新建 user DM 只对 passive peer 进入 `hiddenDmIds`，复用既有 DM 不重新隐藏；hidden directory 下已知 user id 仍不能开新 DM（self 与既有 DM 例外，404 `DM target not found`）；message payload 携带权威 `senderMembershipStatus`（active/removed/left）；private creator leave 后从列表与 detail 全部消失；从 #all 移除 agent 不写 membership notice。
 - 裁决排除：DM list query-phase spy、batch fixed-query-count spy、human-add notice-persistence 失败回滚（fault-injected DB failure）、self join/leave 的 socket `channel:members-updated` 帧（socket surface 单独模块）。
+
+### route channelAdmin.api（锁定，含裁决）
+
+- 可执行黑盒面：archived-name collision 的 `canUnarchiveArchivedChannel` 投影（本轮补齐）、human channel admin 的 local-role 管理与 server-only 边界、archived channels 除 unarchive 外拒绝所有 membership/metadata 变更、agent channel admin 仅使用既有 management actions 且不获得 visibility/role API。
+- 裁决排除（非黑盒 HTTP 断言/未移植子系统）：creator bootstrap 的 DB 行角色断言、action-card `channel:create` 的源码扫描断言、human/agent add-member 的源码锁序断言、mention add 的源码 authority 断言（4）、membership 系统消息的 DB 列断言（causal actor/subtype）、agent rename `channel.rename` 的 DB 行断言、channel-role outbox retry/dead-letter（service/DB outbox 内部，注入 attempt counter）。上述行为等价面由 `ChannelMember*`/`ArchivedWriteSurfaceTests`/`ChannelRenameSystemMessageTests`/`AgentChannelManagementTests` 覆盖。
