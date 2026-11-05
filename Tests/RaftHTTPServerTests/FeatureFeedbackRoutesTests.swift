@@ -5,7 +5,7 @@ import Testing
 import Vapor
 import VaporTesting
 
-/// The feedback slice must expose its five upstream route pairs without the
+/// The feedback slice must expose its seven upstream route pairs without the
 /// full `configure(_:services:)` mount. This locks the collection's own
 /// registration contract; end-to-end behavior stays with the existing
 /// product-feedback route tests once the Lead mounts it.
@@ -27,6 +27,8 @@ struct FeatureFeedbackRoutesTests {
                 (.post, "api/product-feedback/tickets/:ticketId/close"),
                 (.post, "api/product-feedback/tickets/:ticketId/comments"),
                 (.get, "api/product-feedback/tickets"),
+                (.get, "api/product-feedback/tickets/:ticketId"),
+                (.get, "api/product-feedback/tickets/:ticketId/attachments/:attachmentId"),
                 (.post, "api/product-feedback"),
             ]
 

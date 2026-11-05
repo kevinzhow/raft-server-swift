@@ -29,7 +29,8 @@ public func register(routes: any RoutesBuilder) {
             routeResponse(services.emailAccounts.closeProductFeedbackTicket(
                 authorization: request.headers[.authorization],
                 ticketId: request.parameters.get("ticketId") ?? "",
-                body: request.body.string ?? "{}"
+                body: request.body.string ?? "{}",
+                clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? ""
             ))
         }
         routes.post("api", "product-feedback", "tickets", ":ticketId", "comments") { request -> Response in
@@ -37,11 +38,32 @@ public func register(routes: any RoutesBuilder) {
                 authorization: request.headers[.authorization],
                 ticketId: request.parameters.get("ticketId") ?? "",
                 contentType: request.headers[.contentType] ?? "",
-                body: request.body.string ?? ""
+                body: request.body.string ?? "",
+                clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? ""
             ))
         }
         routes.get("api", "product-feedback", "tickets") { request -> Response in
-            routeResponse(services.emailAccounts.productFeedbackTickets(authorization: request.headers[.authorization]))
+            routeResponse(services.emailAccounts.productFeedbackTickets(
+                authorization: request.headers[.authorization],
+                clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? "",
+                cursor: try? request.query.get(String.self, at: "cursor")
+            ))
+        }
+        routes.get("api", "product-feedback", "tickets", ":ticketId") { request -> Response in
+            routeResponse(services.emailAccounts.productFeedbackTicket(
+                authorization: request.headers[.authorization],
+                ticketId: request.parameters.get("ticketId") ?? "",
+                clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? "",
+                commentCursor: try? request.query.get(String.self, at: "comment_cursor")
+            ))
+        }
+        routes.get("api", "product-feedback", "tickets", ":ticketId", "attachments", ":attachmentId") { request -> Response in
+            routeResponse(services.emailAccounts.productFeedbackAttachment(
+                authorization: request.headers[.authorization],
+                ticketId: request.parameters.get("ticketId") ?? "",
+                attachmentId: request.parameters.get("attachmentId") ?? "",
+                clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? ""
+            ))
         }
         routes.post("api", "product-feedback") { request -> Response in
             routeResponse(services.emailAccounts.submitProductFeedback(

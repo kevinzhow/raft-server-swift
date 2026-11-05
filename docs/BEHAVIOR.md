@@ -2014,3 +2014,9 @@ RFC 074 personal assistant：
 
 - 上游唯一用例是 staging-only synthetic-analysis 服务（`DEPLOYMENT_ENV` staging、Antiproton provider URL policy、加密 webhook secrets、`raftbenchConfigs/runs/serviceAgents` 表）；本端口未注册任何 `/internal/agent-api/raftbench/*` 或 push-webhook 路由，也未携带该外部 provider/加密密钥子系统。
 - 裁决：整模块作为 staging-only 外部服务集成排除（无本端口可执行 HTTP/本地数据面）；不移植 Antiproton provider 与 encrypted webhook secrets。若未来需要 raftbench，应按外部服务契约单独设计，不并入 agent-api。
+
+### route productFeedback.multiApp.api（锁定，含裁决）
+
+- `product_feedback_multi_app` flag on 时，`HANDS_FEEDBACK_APPS`（SecureString JSON）提供 shared reporter secret/route root/cursor secret 与 per-source（ios/android）app_slug/app_id/reporter_integration_id/credential_revision/client_key/token；trusted `X-Raft-Client-Kind` 选择 source，mobile 无/缺配置 → 503 `feedback_integration_unavailable` 且零 Hands 流量；web 回退 legacy app；flag off 完全忽略 apps JSON。
+- per-source：submit/list/ticket/close/comments/attachments 全部走 `/api/apps/<appId>/reporter-feedback/...` 并使用该 source 的 token/client key；route-subject binding `PUT /api/apps/<appId>/reporter-feedback/route-subject`（Bearer deploy token + X-Hands-Reporter-Id）；cursor 为 HMAC 签名并绑定 app，Android cursor 在 iOS 上 400 且不触达 Hands；跨 source ticket id 均 404 `feedback_not_found`。
+- 裁决排除：SSM 读取/DB `integrationSecretCommitments` 持久化（测试 seam/内存 commitment 代替）、route subject 的 AES-GCM 封装（opaque HMAC 代替）、conversation breaker 半开窗口与 session receipt 细节、warning sink 默认 stdout 而非 stderr；上游 7/7 断言由 `ProductFeedbackMultiAppTests` 与生产 handler 覆盖。
