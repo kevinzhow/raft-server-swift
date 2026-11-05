@@ -131,3 +131,78 @@ private func freshnessSend(_ client: any Client, _ key: String, _ target: String
         }
     }
 }
+
+@Test func staleDraftHoldsWithEnvelopeAndSendDraftCommits() async throws {
+    var fixture = FreshnessFixture()
+    fixture.seed()
+    let accounts = fixture.accounts
+    let baseline = fixture.human("baseline")
+    accounts.markAgentLegacyReadForTesting(agentId: fixture.agentId, channelId: fixture.channelId, seq: baseline.seq)
+    let fresh = fixture.human("fresh unread before agent-api send")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            let held = try await freshnessSend(client, fixture.key, "#\(fixture.channelName)", "agent-api draft", seen: baseline.seq)
+            #expect(held["state"] as? String == "held")
+            #expect(held["outcome"] as? String == "held")
+            #expect(held["subtype"] as? String == "freshness")
+            #expect(held["reason"] as? String == "newer_messages_available")
+            #expect(((held["producerFactId"] as? String) ?? "").hasPrefix("freshness_decision_fact:"))
+            #expect(held["available_actions"] as? [String] == ["check_messages", "send_draft", "send_anyway"])
+            #expect(held["newMessageCount"] as? Int == 1)
+            #expect(held["shownMessageCount"] as? Int == 1)
+            #expect(held["omittedMessageCount"] as? Int == 0)
+            #expect((held["heldMessages"] as? [[String: Any]])?.first?["id"] as? String == fresh.id)
+            #expect(held["seenUpToSeq"] as? Int == fresh.seq)
+            #expect(held["pendingMentionActions"] == nil)
+            #expect(accounts.agentReadCursorForTesting(agentId: fixture.agentId, channelId: fixture.channelId) == fresh.seq)
+
+            let committed = try await draftSend(client, fixture.key, "#\(fixture.channelName)", "agent-api draft", seen: fresh.seq)
+            #expect(committed["state"] as? String == "sent")
+            let messageId = try #require(committed["messageId"] as? String)
+            #expect(accounts.messageCountForTesting(channelId: fixture.channelId) == 3)
+            #expect(accounts.messageAttachmentIdsForTesting(messageId: messageId).isEmpty)
+        }
+    }
+}
+
+@Test func firstTouchWithoutBoundaryReturnsBoundedContext() async throws {
+    var fixture = FreshnessFixture()
+    fixture.seed()
+    let accounts = fixture.accounts
+    accounts.setSendFreshnessModeForTesting("force")
+    var latest = 0
+    for index in 1...5 {
+        latest = fixture.human("history message \(index)").seq
+    }
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(fixture.key)"
+            headers[.contentType] = "application/json"
+            let data = try JSONSerialization.data(withJSONObject: ["target": "#\(fixture.channelName)", "content": "draft without boundary"])
+            let response = try await client.send(.post, headers: headers, to: URI(string: "/internal/agent-api/send")) { request in
+                request.body = .init(data: data)
+            }
+            let held = (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            #expect(held["state"] as? String == "held")
+            #expect(held["newMessageCount"] as? Int == 3)
+            #expect(held["shownMessageCount"] as? Int == 3)
+            #expect(held["omittedMessageCount"] as? Int == 0)
+            #expect((held["heldMessages"] as? [[String: Any]])?.compactMap { $0["content"] as? String } == ["history message 3", "history message 4", "history message 5"])
+            #expect(held["seenUpToSeq"] as? Int == latest)
+        }
+    }
+}
+
+private func draftSend(_ client: any Client, _ key: String, _ target: String, _ content: String, seen: Int) async throws -> [String: Any] {
+    var headers = HTTPFields()
+    headers[.authorization] = "Bearer \(key)"
+    headers[.contentType] = "application/json"
+    let data = try JSONSerialization.data(withJSONObject: ["target": target, "content": content, "sendDraft": true, "seenUpToSeq": seen])
+    let response = try await client.send(.post, headers: headers, to: URI(string: "/internal/agent-api/send")) { request in
+        request.body = .init(data: data)
+    }
+    return (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+}
