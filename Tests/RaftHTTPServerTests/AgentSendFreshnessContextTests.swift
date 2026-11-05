@@ -341,7 +341,80 @@ private func draftSend(_ client: any Client, _ key: String, _ target: String, _ 
                 ($0["channel_type"] as? String) == "thread"
                     && ($0["parent_channel_type"] as? String) == "channel"
                     && ($0["parent_channel_name"] as? String) == fixture.channelName
+                    && ($0["sender_name"] as? String) == "freshness-owner"
             })
+        }
+    }
+}
+
+@Test func heldContextOnDMNamesTheAgentFacingPeer() async throws {
+    var fixture = FreshnessFixture()
+    fixture.seed()
+    let accounts = fixture.accounts
+    let dmId = accounts.seedDMForTesting(serverId: fixture.serverId, humanUserId: fixture.ownerId, agentId: fixture.agentId)
+    let baseline = accounts.addHumanMessageForTesting(channelId: dmId, senderId: fixture.ownerId, content: "dm baseline")
+    let baselineSeq = accounts.messageSeqForTesting(messageId: baseline) ?? 0
+    let fresh = accounts.addHumanMessageForTesting(channelId: dmId, senderId: fixture.ownerId, content: "dm fresh the agent has not seen")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            let held = try await freshnessSend(client, fixture.key, "dm:@freshness-owner", "stale dm draft", seen: baselineSeq)
+            #expect(held["state"] as? String == "held")
+            let rows = held["heldMessages"] as? [[String: Any]] ?? []
+            #expect(rows.map { $0["id"] as? String } == [fresh])
+            #expect(rows.allSatisfy { ($0["channel_type"] as? String) == "dm" && ($0["channel_name"] as? String) == "freshness-owner" })
+        }
+    }
+}
+
+@Test func heldResponseCarriesTrueSkippedCountAndBeforeAnchor() async throws {
+    var fixture = FreshnessFixture()
+    fixture.seed()
+    let accounts = fixture.accounts
+    let baseline = fixture.human("skip baseline")
+    let noiseChannel = accounts.oauth.createChannel(serverId: fixture.serverId, name: "skip-noise", creatorUserId: fixture.ownerId, type: "channel")
+    var planted: [(id: String, seq: Int)] = []
+    for index in 1...5 {
+        for spacer in 0..<3 {
+            _ = accounts.addHumanMessageForTesting(channelId: noiseChannel, senderId: fixture.ownerId, content: "seq spacer \(index)-\(spacer)")
+        }
+        planted.append(fixture.human("skip fact \(index)"))
+    }
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            let held = try await freshnessSend(client, fixture.key, "#\(fixture.channelName)", "stale reply", seen: baseline.seq)
+            #expect(held["state"] as? String == "held")
+            #expect(held["newMessageCount"] as? Int == 5)
+            #expect(held["shownMessageCount"] as? Int == 3)
+            #expect(held["omittedMessageCount"] as? Int == 2)
+            #expect(held["firstShownSeq"] as? Int == planted[2].seq)
+            #expect(held["neverShownRange"] == nil)
+            #expect(held["neverShownCount"] == nil)
+            #expect(planted[1].seq - planted[0].seq + 1 > 2)
+        }
+    }
+}
+
+@Test func heldContextOnJointChannelUsesLocalProjectionName() async throws {
+    var fixture = FreshnessFixture()
+    fixture.seed()
+    let accounts = fixture.accounts
+    let canonicalId = accounts.oauth.createChannel(serverId: fixture.serverId, name: "joint-canonical", creatorUserId: fixture.ownerId, type: "joint")
+    let localId = accounts.oauth.createChannel(serverId: fixture.serverId, name: "joint-local-name", creatorUserId: fixture.ownerId, type: "joint")
+    accounts.addJointChannelProjection(localChannelId: localId, canonicalChannelId: canonicalId, serverId: fixture.serverId)
+    accounts.seedPostableChannelForTesting(serverId: fixture.serverId, channelId: localId, name: "joint-local-name", humanIds: [fixture.ownerId], agentIds: [fixture.agentId])
+    let baseline = accounts.addHumanMessageForTesting(channelId: canonicalId, senderId: fixture.ownerId, content: "joint baseline")
+    let baselineSeq = accounts.messageSeqForTesting(messageId: baseline) ?? 0
+    let fresh = accounts.addHumanMessageForTesting(channelId: canonicalId, senderId: fixture.ownerId, content: "joint fresh")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            let held = try await freshnessSend(client, fixture.key, "#joint-local-name", "stale joint draft", seen: baselineSeq)
+            #expect(held["state"] as? String == "held")
+            let rows = held["heldMessages"] as? [[String: Any]] ?? []
+            #expect(rows.map { $0["id"] as? String } == [fresh])
+            #expect(rows.allSatisfy { ($0["channel_type"] as? String) == "channel" && ($0["channel_name"] as? String) == "joint-local-name" })
         }
     }
 }

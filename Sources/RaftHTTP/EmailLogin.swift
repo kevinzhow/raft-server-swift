@@ -23115,8 +23115,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if freshnessEnabled, (requestedSendFreshness || forcedFreshness), !isContinueAnyway {
             lock.lock()
             let conversation = postableChannels[channelId]
+            let storageChannelId = jointProjections.first { $0.localChannelId == channelId }?.canonicalChannelId ?? channelId
             let rows = humanMessageRows.compactMap { message -> (seq: Int, message: StoredHumanMessage)? in
-                guard message.channelId == channelId else { return nil }
+                guard message.channelId == storageChannelId else { return nil }
                 return (message.seq, message)
             }
             let latestFromOthers = rows.last { $0.message.senderId != identity.agentId }?.seq ?? 0
