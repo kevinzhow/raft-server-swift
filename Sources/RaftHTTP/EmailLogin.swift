@@ -28983,6 +28983,65 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    private func agentUserPageValues(limit: String?, offset: String?) -> (limit: Int, offset: Int)? {
+        if let limit, Int(limit) == nil { return nil }
+        if let offset, Int(offset) == nil { return nil }
+        let resolvedLimit = limit.flatMap(Int.init) ?? 50
+        let resolvedOffset = offset.flatMap(Int.init) ?? 0
+        guard (1...200).contains(resolvedLimit), resolvedOffset >= 0 else { return nil }
+        return (resolvedLimit, resolvedOffset)
+    }
+
+    private func agentUserChannelsPayload(identity: (agentId: String, serverId: String), name: String, limit: String?, offset: String?) -> (text: String, json: String, status: Int)? {
+        let normalized = name.hasPrefix("@") ? String(name.dropFirst()) : name
+        guard !normalized.isEmpty else { return nil }
+        guard let page = agentUserPageValues(limit: limit, offset: offset) else { return nil }
+        lock.lock()
+        let hidden = hideHumansFromMembers[identity.serverId] ?? false
+        lock.unlock()
+        let callerAgentRole = oauth.agentRole(serverId: identity.serverId, agentId: identity.agentId) ?? "member"
+        guard let subject = accounts.values.first(where: { $0.name == normalized }) else { return nil }
+        if hidden, callerAgentRole != "owner", callerAgentRole != "admin" { return nil }
+        let subjectServerRole = oauth.memberRole(serverId: identity.serverId, userId: subject.id)
+        guard let subjectServerRole else { return nil }
+        var unchecked = 0
+        lock.lock()
+        let postableSnapshot = postableChannels
+        let jointSnapshot = jointProjections
+        lock.unlock()
+        let callerReadsRoster: (String) -> Bool = { [self] channelId in
+            if postableSnapshot[channelId]?.memberIds.contains(identity.agentId) == true { return true }
+            return oauth.channelAgentIds(channelId: channelId).contains(identity.agentId)
+        }
+        let channels = oauth.channelsForServer(serverId: identity.serverId, userId: subject.id, includeArchived: false)
+        var rows: [String] = []
+        for channel in channels {
+            let type = oauth.channelType(id: channel.id) ?? channel.type
+            if type == "joint" {
+                guard let link = jointSnapshot.first(where: { $0.localChannelId == channel.id && $0.serverId == identity.serverId }),
+                      link.status == "active",
+                      callerReadsRoster(channel.id)
+                else {
+                    unchecked += 1
+                    continue
+                }
+            }
+            let role = (type == "channel" || type == "private") && channel.name != "all" ? subjectServerRole : nil
+            let roleJSON = role.map(jsonString) ?? "null"
+            rows.append("{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"joined\":\(channel.joined),\"channelRole\":\(roleJSON)}")
+        }
+        let pageRows = Array(rows.dropFirst(page.offset).prefix(page.limit))
+        let json = "{\"kind\":\"human\",\"name\":\(jsonString(subject.name)),\"uncheckedCount\":\(unchecked),\"memberships\":[\("\(pageRows.joined(separator: ","))")],\"page\":{\"total\":\(rows.count),\"offset\":\(page.offset),\"limit\":\(page.limit)}}"
+        var text = pageRows.map { row -> String in
+            let name = (try? JSONSerialization.jsonObject(with: Data(row.utf8)) as? [String: Any])?["name"] as? String ?? ""
+            return "#\(name)"
+        }.joined(separator: "\n")
+        if unchecked > 0 {
+            text += (text.isEmpty ? "" : "\n") + "Skipped \(unchecked) visible channel roster checks because the server rejected them."
+        }
+        return (text, json, 200)
+    }
+
     public func agentUserChannels(authorization: String?, name: String, limit: String?, offset: String?) -> HTTPReply {
         guard let identity = agentCredentialIdentity(authorization: authorization, capability: "channels") else {
             return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
@@ -28994,43 +29053,34 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         for required in ["channel:read", "server:read"] where !scopes.contains(required) {
             return Self.json(403, "{\"error\":\"missing required scope\",\"requiredScope\":\(jsonString(required)),\"reason\":\"missing_scope\"}")
         }
-        let limitValue = limit.flatMap(Int.init)
-        let offsetValue = offset.flatMap(Int.init)
-        if let limit, limitValue == nil { return Self.json(400, "{\"error\":\"limit must be an integer\",\"code\":\"agent_api_contract_invalid\"}") }
-        if let offset, offsetValue == nil { return Self.json(400, "{\"error\":\"offset must be an integer\",\"code\":\"agent_api_contract_invalid\"}") }
-        let resolvedLimit = limitValue ?? 50
-        let resolvedOffset = offsetValue ?? 0
-        guard (1...200).contains(resolvedLimit), resolvedOffset >= 0 else {
+        guard agentUserPageValues(limit: limit, offset: offset) != nil else {
             return Self.json(400, "{\"error\":\"Invalid page window\",\"code\":\"agent_api_contract_invalid\"}")
         }
+        guard let payload = agentUserChannelsPayload(identity: identity, name: name, limit: limit, offset: offset) else {
+            return Self.json(404, "{\"error\":\"User not found or not visible\",\"code\":\"user_not_found\"}")
+        }
+        return Self.json(payload.status, payload.json)
+    }
+
+    public func agentUserInfo(authorization: String?, name: String, limit: String?, offset: String?) -> HTTPReply {
+        guard let identity = agentCredentialIdentity(authorization: authorization, capability: "channels") else {
+            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        }
+        guard agentCredentialScopes(authorization: authorization)?.contains("read") == true else {
+            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\",\"requiredCapability\":\"read\"}")
+        }
+        let scopes = agentCredentialScopes(authorization: authorization) ?? []
+        for required in ["channel:read", "server:read"] where !scopes.contains(required) {
+            return Self.json(403, "{\"error\":\"missing required scope\",\"requiredScope\":\(jsonString(required)),\"reason\":\"missing_scope\"}")
+        }
         let normalized = name.hasPrefix("@") ? String(name.dropFirst()) : name
-        guard !normalized.isEmpty else {
+        if normalized.isEmpty || agentUserPageValues(limit: limit, offset: offset) == nil {
+            return Self.json(400, "{\"error\":\"User not found or not visible\",\"code\":\"user_not_found\"}")
+        }
+        guard let payload = agentUserChannelsPayload(identity: identity, name: name, limit: limit, offset: offset) else {
             return Self.json(404, "{\"error\":\"User not found or not visible\",\"code\":\"user_not_found\"}")
         }
-        lock.lock()
-        let hidden = hideHumansFromMembers[identity.serverId] ?? false
-        lock.unlock()
-        let callerAgentRole = oauth.agentRole(serverId: identity.serverId, agentId: identity.agentId) ?? "member"
-        guard let subject = accounts.values.first(where: { $0.name == normalized }) else {
-            return Self.json(404, "{\"error\":\"User not found or not visible\",\"code\":\"user_not_found\"}")
-        }
-        if hidden, callerAgentRole != "owner", callerAgentRole != "admin" {
-            return Self.json(404, "{\"error\":\"User not found or not visible\",\"code\":\"user_not_found\"}")
-        }
-        guard oauth.memberRole(serverId: identity.serverId, userId: subject.id) != nil else {
-            return Self.json(404, "{\"error\":\"User not found or not visible\",\"code\":\"user_not_found\"}")
-        }
-        let subjectServerRole = oauth.memberRole(serverId: identity.serverId, userId: subject.id) ?? "member"
-        let channels = oauth.channelsForServer(serverId: identity.serverId, userId: subject.id, includeArchived: false)
-        let rows = channels.map { channel -> String in
-            let type = oauth.channelType(id: channel.id) ?? channel.type
-            let role = (type == "channel" || type == "private") && channel.name != "all" ? subjectServerRole : nil
-            let roleJSON = role.map(jsonString) ?? "null"
-            return "{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"joined\":\(channel.joined),\"channelRole\":\(roleJSON)}"
-        }
-        let page = Array(rows.dropFirst(resolvedOffset).prefix(resolvedLimit))
-        let total = rows.count
-        return Self.json(200, "{\"kind\":\"human\",\"name\":\(jsonString(subject.name)),\"uncheckedCount\":0,\"memberships\":[\("\(page.joined(separator: ","))")],\"page\":{\"total\":\(total),\"offset\":\(resolvedOffset),\"limit\":\(resolvedLimit)}}")
+        return HTTPReply(status: 200, headers: ["Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store"], body: payload.text)
     }
 
     public func conversationReadAll(authorization: String?, serverId: String, channelId: String) -> HTTPReply {

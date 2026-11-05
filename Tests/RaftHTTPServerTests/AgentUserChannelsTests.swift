@@ -70,6 +70,15 @@ import VaporTesting
             accounts.oauth.setAgentRole(serverId: serverId, agentId: agentId, role: "admin")
             let admin = try await call(key, "user-channels-subject")
             #expect(admin.0.status == .ok)
+
+            var infoHeaders = HTTPFields()
+            infoHeaders[.authorization] = "Bearer \(key)"
+            let encodedInfo = "user-channels-subject".addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "user-channels-subject"
+            let info = try await client.get(URI(string: "/internal/agent-api/users/info?name=\(encodedInfo)"), headers: infoHeaders)
+            #expect(info.status == .ok)
+            let infoText = info.body.string ?? ""
+            #expect(infoText.contains("#user-channels-room"))
+            #expect(!infoText.lowercased().contains("admin"))
         }
     }
 }
