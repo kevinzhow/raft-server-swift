@@ -44,17 +44,17 @@
 
 | 指标 | 当前 | 里程碑 | 剩余 |
 | --- | --- | --- | --- |
-| route 模块 locked | 203 / 219（92.7%） | 132 / 219（60%）✅ | 任务表口径见下 |
-| route 用例 locked | 1535 / 2000（76.8%，可移植口径 69.2%）✅ | 800 / 2000（40%） | 已达标 |
+| route 模块 locked | 204 / 219（93.2%） | 132 / 219（60%）✅ | 任务表口径见下 |
+| route 用例 locked | 1555 / 2000（77.8%，可移植口径 70.2%）✅ | 800 / 2000（40%） | 已达标 |
 | socket 模块 | 7 / 7（100%） | 按 frame 组推进 | 0 个模块 |
 | daemon 模块 locked | 180 / 180（100%） | 90 / 180（50%）✅ | 0 个模块 |
 | daemon 用例 locked | 2616 / 2616（100%，可执行便携口径 ≈26.9%） | 1308 / 2616（50%）✅ | 已清零 |
-| 整体模块 | 390 / 406（96.1%） | 244 / 406（60%）✅ | 已达标 |
-| 整体用例 | 4167 / 4632（90.0%） | 1853 / 4632（40%）✅ | 已达标 |
+| 整体模块 | 391 / 406（96.3%） | 244 / 406（60%）✅ | 已达标 |
+| 整体用例 | 4187 / 4632（90.4%） | 1853 / 4632（40%）✅ | 已达标 |
 
 口径校准：daemon 的 locked 计入了 Node 运行时驱动/进程管理/trace 上传等**非可执行或明确排除**的集成轨道（约 1130 条用例，PARITY notes 逐条注明）；可执行便携用例仍为 ≈616 条（23.5%）。整体 locked 覆盖因此高于实际可执行移植比例，报告时须同时给出便携口径。
 
-最近锁定的模块：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api`、`servers.api`、`internalAgentApi.agentStatus`、`internalAgentApi.senderMentionDeliveries`、`internalAgentApi.attachmentComments`、`tasks.realtimeProjection.api`、`computerAdopt.api`、`internalComputer.preflight`、`internalComputer.runners`、`mobileDownload`、`desktopDownload`、`publicVisits.api`、`notifications.api`、`productEvents.api`、`shareArtifacts.api`、`internalAgentApi.registryParity`、`errorResponse.dmTarget`、`internalAgentApi.wakeHintStream`、`internalComputer.agentMigrationControl.bodyLimit.api`、`internalAgentApi.mentionActions`、`attachmentPreviewBridge.api`、`internalAgentApi.inboxEligibility`、`providerConnections.api`、`agentMigrationReceiptDm.api`、`announcements.api`、`auth.api`；另有 21 个"无可执行黑盒断言"模块按 PARITY 口径 locked（见下方校准说明）；`attachmentComments.api` 已完成全组并锁定。剩余用例高度集中在 `internalAgentApi.auth`（93）、`agents.api`（87）、`internalAgentApi.send`（65）、`auth.api`（45）、`internal.channelMembership.api`（43）；下一片按第 4 节执行顺序 2–5 推进（`internalAgentApi.auth` 剩余组或下一个 pending 小模块）。
+最近锁定的模块：`messages.api`、`channels.threads.api`、`channels.inbox.api`、`attachments.api`、`servers.api`、`internalAgentApi.agentStatus`、`internalAgentApi.senderMentionDeliveries`、`internalAgentApi.attachmentComments`、`tasks.realtimeProjection.api`、`computerAdopt.api`、`internalComputer.preflight`、`internalComputer.runners`、`mobileDownload`、`desktopDownload`、`publicVisits.api`、`notifications.api`、`productEvents.api`、`shareArtifacts.api`、`internalAgentApi.registryParity`、`errorResponse.dmTarget`、`internalAgentApi.wakeHintStream`、`internalComputer.agentMigrationControl.bodyLimit.api`、`internalAgentApi.mentionActions`、`attachmentPreviewBridge.api`、`internalAgentApi.inboxEligibility`、`providerConnections.api`、`agentMigrationReceiptDm.api`、`announcements.api`、`auth.api`、`productFeedback.api`；另有 21 个"无可执行黑盒断言"模块按 PARITY 口径 locked（见下方校准说明）；`attachmentComments.api` 已完成全组并锁定。剩余用例高度集中在 `internalAgentApi.auth`（93）、`agents.api`（87）、`internalAgentApi.send`（65）、`auth.api`（45）、`internal.channelMembership.api`（43）；下一片按第 4 节执行顺序 2–5 推进（`internalAgentApi.auth` 剩余组或下一个 pending 小模块）。
 
 ### 切片边界即检查点
 
