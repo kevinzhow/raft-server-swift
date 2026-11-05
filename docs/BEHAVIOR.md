@@ -2004,3 +2004,8 @@ RFC 074 personal assistant：
 
 - 可执行黑盒面：archived-name collision 的 `canUnarchiveArchivedChannel` 投影（本轮补齐）、human channel admin 的 local-role 管理与 server-only 边界、archived channels 除 unarchive 外拒绝所有 membership/metadata 变更、agent channel admin 仅使用既有 management actions 且不获得 visibility/role API。
 - 裁决排除（非黑盒 HTTP 断言/未移植子系统）：creator bootstrap 的 DB 行角色断言、action-card `channel:create` 的源码扫描断言、human/agent add-member 的源码锁序断言、mention add 的源码 authority 断言（4）、membership 系统消息的 DB 列断言（causal actor/subtype）、agent rename `channel.rename` 的 DB 行断言、channel-role outbox retry/dead-letter（service/DB outbox 内部，注入 attempt counter）。上述行为等价面由 `ChannelMember*`/`ArchivedWriteSurfaceTests`/`ChannelRenameSystemMessageTests`/`AgentChannelManagementTests` 覆盖。
+
+### route attachmentUploadSessions.api（锁定，含裁决）
+
+- 可执行默认面：disabled P2 session create 返回 typed `403 UPLOAD_FORBIDDEN`；GET/DELETE/complete 对未知/malformed session 返回 `404 UPLOAD_SESSION_NOT_FOUND`；capabilities 返回 `directUploadEnabled:false`、null threshold/expiry、free 50MB / Pro 90MB legacy-safe limit；session 变更路径不会落到 broad attachment route。
+- 裁决排除（需注入 P2 fake service / dedicated limiter，本端口无该服务抽象）：enabled fake 的 legacy upload/computer download 短路、lifecycle、admission matrix、跨 actor/server non-disclosing、bad fake output、dedicated create limiter 429（6 个用例）。disabled/default 可执行面由 `UploadSessionTests` 覆盖。
