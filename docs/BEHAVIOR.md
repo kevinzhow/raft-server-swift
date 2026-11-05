@@ -1987,3 +1987,9 @@ RFC 074 personal assistant：
 - public Guest admission：owner-only，Public 未开时 PATCH 409；关闭 Public 时 `publicGuestJoinEnabled` 自动清零；guest invite 独立于 self-admission，Public 关闭仍可接受有效 email invite；member server list 投影 `publicPageLive` 为 `publiclyVisible && rollout/publicEnabled`。
 - public 页面仅暴露 guest-visible ordinary channels；匿名写路径不存在且不产生状态。
 - 裁决：仅排除 “evaluates the public-page gate once for all public servers” 的 query-count spy；其余 20/21 用例均有 HTTP/目录行为断言或既有 PublicVisits/PublicServerMessages 套件覆盖。
+
+### route internal.channelMembership.api（锁定，含裁决）
+
+- agent 自助 join/leave/unfollow、server info runtimeContext、archived/private channel 隐藏、#all leave refusal、thread unfollow target 校验；agent 管理面 create/update/member add/remove/role/capability denial exact payload；channel archive/unarchive 权限与写恢复；reactions cloak；task parent membership；`?status` filter。
+- 覆盖证据：`AgentMembershipRouteTests`、`AgentChannelManagementTests`、`AgentChannelCapabilityTests`、`ChannelArchiveTests`、`AgentReactionContractTests`、`TaskChannelMembershipTests`、`AgentServerInfoTests`。
+- 裁决排除（非可执行/非本端口子系统）：5 个 legacy agent long-poll receive 用例（transport 未移植，其中 3 个为 trace/timeout 断言）、10 个 `CLI e2e: slock …` 用例（Node CLI 不随本端口发布，每项 HTTP 行为已有直接 HTTP mirror）、2 个 joint channel/task 投影用例（joint 模型未移植）、1 个 human-add DB fault-injection rollback 用例（注入 DB 失败后回滚，无黑盒 HTTP 路径）。
