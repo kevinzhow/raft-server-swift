@@ -8093,6 +8093,19 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func markAgentLegacyReadForTesting(agentId: String, channelId: String, seq: Int) {
+        lock.lock()
+        let key = "\(channelId)\n\(agentId)"
+        let previous = agentChannelReadCursors[key] ?? (seq: 0, version: 0)
+        agentChannelReadCursors[key] = (max(previous.seq, seq), previous.version + 1)
+        lock.unlock()
+    }
+
+    public func agentReadCursorForTesting(agentId: String, channelId: String) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        return agentChannelReadCursors["\(channelId)\n\(agentId)"]?.seq ?? 0
+    }
+
     public func setAgentChannelJoinedAtForTesting(agentId: String, channelId: String, at: Date) {
         lock.lock()
         agentChannelJoinedAt["\(channelId)\n\(agentId)"] = at
