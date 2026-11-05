@@ -183,7 +183,7 @@ private func fieldValue(_ body: String, _ name: String) -> String? {
     let capture = Capture()
     fixture.accounts.setHandsFeedbackUpstreamForTesting { request in
         capture.bodies.append(String(decoding: request.httpBody ?? Data(), as: UTF8.self))
-        return (201, Data("{\"id\":\"ticket-report\",\"status\":\"open\"}".utf8))
+        return (201, [:], Data("{\"id\":\"ticket-report\",\"status\":\"open\"}".utf8))
     }
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: fixture.accounts))
@@ -219,7 +219,7 @@ private func fieldValue(_ body: String, _ name: String) -> String? {
         let capture = Capture()
         fixture.accounts.setHandsFeedbackUpstreamForTesting { request in
             capture.bodies.append(String(decoding: request.httpBody ?? Data(), as: UTF8.self))
-            return (201, Data("{\"id\":\"ticket-native\",\"status\":\"open\"}".utf8))
+            return (201, [:], Data("{\"id\":\"ticket-native\",\"status\":\"open\"}".utf8))
         }
         try await withApp { app in
             configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: fixture.accounts))
@@ -237,6 +237,92 @@ private func fieldValue(_ body: String, _ name: String) -> String? {
                 #expect(metadata.contains("\"product_type\":\"\(kind)\""))
                 #expect(metadata.contains("\"feedback_type\":\"problem\""))
             }
+        }
+    }
+}
+
+@Test func trustedClientKindHeaderMustMatchNativeMetadata() async throws {
+    let fixture = SubmitFixture()
+    fixture.accounts.setHandsFeedbackForTesting(baseURL: "https://hands.test", appId: "raft-web", appToken: "t", appSlug: "raft-web")
+    var upstreamCalls = 0
+    fixture.accounts.setHandsFeedbackUpstreamForTesting { _ in
+        upstreamCalls += 1
+        return (201, [:], Data("{\"id\":\"ticket\",\"status\":\"open\"}".utf8))
+    }
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: fixture.accounts))
+        try await app.testing { client in
+            let base: [String: String] = [
+                "type": "problem", "message": "Native attribution.",
+                "submission_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "metadata": "{\"client_kind\":\"ios\",\"platform\":\"ios\"}",
+            ]
+            let absent = try await submitForm(client, fixture, base, clientKind: nil)
+            #expect(absent.status == .badRequest)
+            #expect(absent.body["code"] as? String == "feedback_invalid")
+            let mismatched = try await submitForm(client, fixture, base, clientKind: "android")
+            #expect(mismatched.status == .badRequest)
+            #expect(upstreamCalls == 0)
+
+            fixture.accounts.setHandsFeedbackForTesting(baseURL: nil, appId: nil, appToken: nil)
+            let trusted = try await submitForm(client, fixture, base, clientKind: "ios")
+            #expect(trusted.status == .serviceUnavailable)
+            #expect(trusted.body["code"] as? String == "feedback_not_configured")
+        }
+    }
+}
+
+@Test func feedbackProjectsUpstreamErrorsAndSanitizesTiming() async throws {
+    let fixture = SubmitFixture()
+    fixture.accounts.setHandsFeedbackForTesting(baseURL: "https://hands.test", appId: "raft-web", appToken: "t", appSlug: "raft-web")
+    fixture.accounts.setHandsFeedbackUpstreamForTesting { _ in
+        (403, ["Server-Timing": "hands_auth;dur=10.0, hands_preflight;dur=20.0, ticket_id;dur=1, hands_list;desc=secret;dur=2"], Data("{\"error\":\"trusted reporter identity requires feedback:write permission for this app\",\"secret\":\"must not be projected\"}".utf8))
+    }
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: fixture.accounts))
+        try await app.testing { client in
+            let fields: [String: String] = [
+                "type": "problem", "message": "Error projection.",
+                "submission_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            ]
+            let denied = try await submitForm(client, fixture, fields)
+            #expect(denied.status == .serviceUnavailable)
+            #expect(denied.body["code"] as? String == "feedback_integration_unavailable")
+            #expect(denied.body["upstream_status"] as? Int == 403)
+            #expect(denied.body["upstream_error"] as? String == "trusted reporter identity requires feedback:write permission for this app")
+            let serialized = String(decoding: try JSONSerialization.data(withJSONObject: denied.body), as: UTF8.self)
+            #expect(!serialized.contains("secret"))
+        }
+    }
+
+    let timingFixture = SubmitFixture()
+    timingFixture.accounts.setHandsFeedbackForTesting(baseURL: "https://hands.test", appId: "raft-web", appToken: "t", appSlug: "raft-web")
+    timingFixture.accounts.setHandsFeedbackUpstreamForTesting { _ in
+        (201, ["Server-Timing": "hands_auth;dur=10.0, hands_preflight;dur=20.0, hands_commit;dur=30.0, hands_postcommit;dur=40.0, ticket_id;dur=1, hands_list;desc=secret;dur=2"], Data("{\"id\":\"ticket-timing\",\"status\":\"open\"}".utf8))
+    }
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: timingFixture.accounts))
+        try await app.testing { client in
+            let fields: [String: String] = [
+                "type": "problem", "message": "Timing.",
+                "submission_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            ]
+            let payload = form(fields)
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(timingFixture.token)"
+            headers[.contentType] = payload.contentType
+            let response = try await client.send(.post, headers: headers, to: URI(string: "/api/product-feedback")) { request in
+                request.body = .init(string: payload.body)
+            }
+            #expect(response.status == .created)
+            let timing = response.headers[HTTPField.Name("Server-Timing")!] ?? ""
+            #expect(timing.hasPrefix("raft_feedback_hands;dur="))
+            #expect(timing.contains("hands_auth;dur=10.0"))
+            #expect(timing.contains("hands_preflight;dur=20.0"))
+            #expect(timing.contains("hands_commit;dur=30.0"))
+            #expect(timing.contains("hands_postcommit;dur=40.0"))
+            #expect(!timing.contains("ticket_id"))
+            #expect(!timing.contains("secret"))
         }
     }
 }

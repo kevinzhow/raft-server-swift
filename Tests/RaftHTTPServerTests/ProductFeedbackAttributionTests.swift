@@ -21,7 +21,7 @@ import VaporTesting
     let capture = Capture()
     accounts.setHandsFeedbackUpstreamForTesting { request in
         capture.bodies.append(String(decoding: request.httpBody ?? Data(), as: UTF8.self))
-        return (201, Data("{\"id\":\"ticket-1\",\"status\":\"open\"}".utf8))
+        return (201, [:], Data("{\"id\":\"ticket-1\",\"status\":\"open\"}".utf8))
     }
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
@@ -100,14 +100,14 @@ import VaporTesting
         let url = request.url?.absoluteString ?? ""
         if url.hasSuffix("/reporter-feedback/session") {
             capture.mintCount += 1
-            return (201, Data("{\"session_token\":\"hrps_v1_api-test-session\",\"expires_at\":\(Int(Date().timeIntervalSince1970) + 30),\"reporter_integration_id\":\"legacy\",\"scopes\":[\"feedback:read\"]}".utf8))
+            return (201, [:], Data("{\"session_token\":\"hrps_v1_api-test-session\",\"expires_at\":\(Int(Date().timeIntervalSince1970) + 30),\"reporter_integration_id\":\"legacy\",\"scopes\":[\"feedback:read\"]}".utf8))
         }
         if url.contains("/reporter-feedback?") {
             capture.listCount += 1
             capture.listAuthorizations.append(request.value(forHTTPHeaderField: "Authorization") ?? "")
-            return (200, Data("{\"tickets\":[],\"next_cursor\":null,\"unread_total\":0}".utf8))
+            return (200, ["Server-Timing": "hands_session_verify;dur=1.0, hands_list;dur=2.0"], Data("{\"tickets\":[],\"next_cursor\":null,\"unread_total\":0}".utf8))
         }
-        return (404, Data("{}".utf8))
+        return (404, [:], Data("{}".utf8))
     }
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
@@ -121,6 +121,9 @@ import VaporTesting
                 #expect(body["tickets"] as? [Any] != nil)
                 #expect(body["next_cursor"] is NSNull)
                 #expect(body["unread_total"] as? Int == 0)
+                let timing = response.headers[HTTPField.Name("Server-Timing")!] ?? ""
+                #expect(timing.contains("hands_session_verify;dur=1.0"))
+                #expect(timing.contains("hands_list;dur=2.0"))
             }
             #expect(capture.mintCount == 1)
             #expect(capture.listCount == 2)
@@ -146,14 +149,14 @@ import VaporTesting
         let url = request.url?.absoluteString ?? ""
         capture.urls.append(url)
         if url.hasSuffix("/reporter-feedback/session") {
-            return (201, Data("{\"session_token\":\"hrps_v1_api-test-session\",\"expires_at\":\(Int(Date().timeIntervalSince1970) + 30)}".utf8))
+            return (201, [:], Data("{\"session_token\":\"hrps_v1_api-test-session\",\"expires_at\":\(Int(Date().timeIntervalSince1970) + 30)}".utf8))
         }
         if url.hasSuffix("/close") {
             capture.closeBody = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
             capture.reporterId = request.value(forHTTPHeaderField: "x-hands-reporter-id") ?? ""
-            return (200, Data("{\"id\":\"33333333-3333-4333-8333-333333333333\",\"status\":\"closed\",\"closure_reason\":\"completed\",\"duplicate_of_ticket_id\":null,\"updated_at\":1700000000030,\"changed\":true}".utf8))
+            return (200, [:], Data("{\"id\":\"33333333-3333-4333-8333-333333333333\",\"status\":\"closed\",\"closure_reason\":\"completed\",\"duplicate_of_ticket_id\":null,\"updated_at\":1700000000030,\"changed\":true}".utf8))
         }
-        return (404, Data("{}".utf8))
+        return (404, [:], Data("{}".utf8))
     }
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
@@ -201,6 +204,60 @@ import VaporTesting
             #expect(reply.status == .badRequest)
             let replyJSON = (try? JSONSerialization.jsonObject(with: Data((reply.body.string ?? "").utf8))) as? [String: Any] ?? [:]
             #expect(replyJSON["code"] as? String == "feedback_attachment_type_invalid")
+        }
+    }
+}
+
+
+@Test func attributionIsOmittedWhenTheClaimedServerWasDeleted() async throws {
+    let accounts = EmailLoginDirectory()
+    let userId = "11111111-1111-4111-8111-111111111646"
+    let serverId = "33333333-3333-4333-8333-333333333686"
+    accounts.addAccount(id: userId, email: "feedback-deleted-server@test.invalid", password: "password123")
+    accounts.markEmailVerified(userId: userId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "deleted-server", name: "Deleted Server", ownerId: userId)
+    accounts.oauth.deleteServer(id: serverId)
+    let token = accounts.mintAccessTokenForTesting(userId: userId)
+    accounts.setHandsFeedbackForTesting(baseURL: "https://hands.test", appId: "raft-web", appToken: "t", appSlug: "raft-web")
+    final class Capture: @unchecked Sendable { var bodies: [String] = [] }
+    let capture = Capture()
+    accounts.setHandsFeedbackUpstreamForTesting { request in
+        capture.bodies.append(String(decoding: request.httpBody ?? Data(), as: UTF8.self))
+        return (201, [:], Data("{\"id\":\"ticket-deleted-server\",\"status\":\"open\"}".utf8))
+    }
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            let boundary = "deleted-server-boundary"
+            let body = """
+            --\(boundary)\r
+            Content-Disposition: form-data; name="type"\r
+            \r
+            problem\r
+            --\(boundary)\r
+            Content-Disposition: form-data; name="message"\r
+            \r
+            Deleted server attribution.\r
+            --\(boundary)\r
+            Content-Disposition: form-data; name="submission_id"\r
+            \r
+            dddddddd-dddd-4ddd-8ddd-dddddddddddd\r
+            --\(boundary)\r
+            Content-Disposition: form-data; name="metadata"\r
+            \r
+            {}\r
+            --\(boundary)--\r
+            """
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(token)"
+            headers[.contentType] = "multipart/form-data; boundary=\(boundary)"
+            headers[HTTPField.Name("X-Server-Id")!] = serverId
+            let response = try await client.send(.post, headers: headers, to: URI(string: "/api/product-feedback")) { request in
+                request.body = .init(string: body)
+            }
+            #expect(response.status == .created)
+            #expect(capture.bodies.count == 1)
+            #expect(capture.bodies.last?.contains("reporter_attribution") == false)
         }
     }
 }

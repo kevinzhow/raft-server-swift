@@ -326,7 +326,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var translationProviderOverride: String?
     private var appAgentReminderLedger: [String: String] = [:]
     private var agentReminderSurfaceChannels: [String: String] = [:]
-    private var handsFeedbackUpstreamHandler: ((URLRequest) -> (status: Int, body: Data))?
+    private var handsFeedbackUpstreamHandler: ((URLRequest) -> (status: Int, headers: [String: String], body: Data))?
     private var handsConversationSessionEnabledForTesting: Bool?
     private var handsConversationAppTokenOverride: String?
     private var productFeedbackReporterSessionCache: [String: (token: String, expiresAt: Date)] = [:]
@@ -30103,9 +30103,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func productFeedbackTickets(authorization: String?) -> HTTPReply {
+        let listStartedAt = Date()
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
+        let feedbackStartedAt = Date()
         lock.lock()
         let verified = accounts.values.first { $0.id == userId }?.emailVerified == true
         let enabled = handsConversationSessionEnabledForTesting
@@ -30122,21 +30124,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Not found\"}")
         }
         let baseTrimmed = base.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        func send(_ request: URLRequest) -> (Int, Data) {
-            lock.lock()
-            let injected = handsFeedbackUpstreamHandler
-            lock.unlock()
-            if let injected { return injected(request) }
-            let semaphore = DispatchSemaphore(value: 0)
-            final class Box: @unchecked Sendable { var status = 0; var body = Data() }
-            let box = Box()
-            URLSession.shared.dataTask(with: request) { data, response, _ in
-                if let http = response as? HTTPURLResponse { box.status = http.statusCode }
-                box.body = data ?? Data()
-                semaphore.signal()
-            }.resume()
-            _ = semaphore.wait(timeout: .now() + 12)
-            return (box.status, box.body)
+        func send(_ request: URLRequest) -> (Int, [String: String], Data) {
+            handsFeedbackSend(request)
         }
         lock.lock()
         var cached = productFeedbackReporterSessionCache[userId]
@@ -30148,7 +30137,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             mint.setValue("Bearer \(appToken)", forHTTPHeaderField: "Authorization")
             mint.setValue("application/json", forHTTPHeaderField: "Content-Type")
             mint.httpBody = Data("{}".utf8)
-            let (status, body) = send(mint)
+            let (status, _, body) = send(mint)
             guard status == 201 || status == 200,
                   let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
                   let sessionToken = object["session_token"] as? String,
@@ -30169,11 +30158,51 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         list.httpMethod = "GET"
         list.timeoutInterval = 10
         list.setValue("Bearer \(cached.token)", forHTTPHeaderField: "Authorization")
-        let (status, body) = send(list)
+        let (status, headers, body) = send(list)
         guard status == 200 else {
             return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
         }
-        return HTTPReply(status: 200, headers: ["Content-Type": AppFallback.jsonContentType, "Cache-Control": "no-store", "Content-Length": String(body.count)], body: String(decoding: body, as: UTF8.self))
+        return HTTPReply(status: 200, headers: [
+            "Content-Type": AppFallback.jsonContentType,
+            "Cache-Control": "no-store",
+            "Content-Length": String(body.count),
+            "Server-Timing": Self.feedbackTimingHeader(
+                elapsedMs: Date().timeIntervalSince(listStartedAt) * 1000,
+                upstreamHeaders: headers
+            ),
+        ], body: String(decoding: body, as: UTF8.self))
+    }
+
+    private static let feedbackTimingNames: Set<String> = [
+        "hands_auth", "hands_preflight", "hands_commit", "hands_postcommit",
+        "hands_list", "hands_session_mint", "hands_session_verify",
+    ]
+
+    private static func feedbackTimingHeader(elapsedMs: Double, upstreamHeaders: [String: String]) -> String {
+        let clamped = min(max(elapsedMs, 0), 60_000)
+        var parts = [String(format: "raft_feedback_hands;dur=%.1f", clamped)]
+        let raw = upstreamHeaders.first { $0.key.lowercased() == "server-timing" }?.value ?? ""
+        var seen = Set<String>()
+        for piece in raw.split(separator: ",") {
+            let value = piece.trimmingCharacters(in: .whitespaces)
+            guard let match = value.wholeMatch(of: /^([a-z_]+);dur=(\d+(?:\.\d+)?)$/),
+                  feedbackTimingNames.contains(String(match.1)),
+                  !seen.contains(String(match.1)),
+                  let duration = Double(match.2), duration >= 0, duration <= 60_000
+            else { continue }
+            seen.insert(String(match.1))
+            parts.append(String(format: "%@;dur=%.1f", String(match.1), duration))
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    private static func feedbackUpstreamError(_ raw: String?) -> String {
+        guard var text = raw else { return "" }
+        text = text.map { character in
+            character.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7f } ? " " : character
+        }.reduce(into: "") { $0.append($1) }
+        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(text.prefix(256))
     }
 
     private func handsFeedbackSessionToken(userId: String) -> String? {
@@ -30193,7 +30222,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         mint.setValue("Bearer \(appToken)", forHTTPHeaderField: "Authorization")
         mint.setValue("application/json", forHTTPHeaderField: "Content-Type")
         mint.httpBody = Data("{}".utf8)
-        let (status, body) = handsFeedbackSend(mint)
+        let (status, _, body) = handsFeedbackSend(mint)
         guard (status == 201 || status == 200),
               let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
               let token = object["session_token"] as? String, !token.isEmpty
@@ -30206,21 +30235,26 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return token
     }
 
-    private func handsFeedbackSend(_ request: URLRequest) -> (Int, Data) {
+    private func handsFeedbackSend(_ request: URLRequest) -> (Int, [String: String], Data) {
         lock.lock()
         let injected = handsFeedbackUpstreamHandler
         lock.unlock()
         if let injected { return injected(request) }
         let semaphore = DispatchSemaphore(value: 0)
-        final class Box: @unchecked Sendable { var status = 0; var body = Data() }
+        final class Box: @unchecked Sendable { var status = 0; var headers: [String: String] = [:]; var body = Data() }
         let box = Box()
         URLSession.shared.dataTask(with: request) { data, response, _ in
-            if let http = response as? HTTPURLResponse { box.status = http.statusCode }
+            if let http = response as? HTTPURLResponse {
+                box.status = http.statusCode
+                for (key, value) in http.allHeaderFields {
+                    box.headers[String(describing: key)] = String(describing: value)
+                }
+            }
             box.body = data ?? Data()
             semaphore.signal()
         }.resume()
         _ = semaphore.wait(timeout: .now() + 12)
-        return (box.status, box.body)
+        return (box.status, box.headers, box.body)
     }
 
     private func handsReporterId(_ userId: String) -> String {
@@ -30250,7 +30284,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(handsReporterId(userId), forHTTPHeaderField: "x-hands-reporter-id")
         request.httpBody = Data(body.utf8)
-        let (status, upstreamBody) = handsFeedbackSend(request)
+        let (status, _, upstreamBody) = handsFeedbackSend(request)
         guard status == 200 else {
             return Self.json(status == 404 ? 404 : 503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
         }
@@ -30284,7 +30318,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         request.setValue(handsReporterId(userId), forHTTPHeaderField: "x-hands-reporter-id")
         request.httpBody = Data(body.utf8)
-        let (status, upstreamBody) = handsFeedbackSend(request)
+        let (status, _, upstreamBody) = handsFeedbackSend(request)
         guard status == 200 || status == 201 else {
             return Self.json(status == 404 ? 404 : 503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
         }
@@ -30300,14 +30334,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    public func setHandsFeedbackUpstreamForTesting(_ handler: ((URLRequest) -> (status: Int, body: Data))?) {
+    public func setHandsFeedbackUpstreamForTesting(_ handler: ((URLRequest) -> (status: Int, headers: [String: String], body: Data))?) {
         lock.lock(); handsFeedbackUpstreamHandler = handler; lock.unlock()
     }
 
-    public func submitProductFeedback(authorization: String?, contentType: String, body: String, serverId: String = "") -> HTTPReply {
+    public func submitProductFeedback(authorization: String?, contentType: String, body: String, serverId: String = "", clientKindHeader: String = "") -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
+        let feedbackStartedAt = Date()
         lock.lock()
         let verified = accounts.values.first { $0.id == userId }?.emailVerified == true
         lock.unlock()
@@ -30355,6 +30390,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
             metadataObject["feedback_report_id"] = reportId.lowercased()
             metadataObject["surface"] = "agent.report_issue"
+        }
+        let trustedClientKind = {
+            let normalized = clientKindHeader.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return normalized.isEmpty ? "web" : normalized
+        }()
+        if let metadataKind = metadataObject["client_kind"] as? String, metadataKind != trustedClientKind {
+            return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
         }
         let clientKind = metadataObject["client_kind"] as? String
         if let clientKind, ["ios", "android", "macos", "windows", "linux", "ohos"].contains(clientKind) {
@@ -30424,6 +30466,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         request.httpBody = multipart
         let upstreamStatus: Int
+        var upstreamHeaders: [String: String] = [:]
         let upstreamBody: Data
         lock.lock()
         let injectedUpstream = handsFeedbackUpstreamHandler
@@ -30431,21 +30474,29 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if let injectedUpstream {
             let result = injectedUpstream(request)
             upstreamStatus = result.status
+            upstreamHeaders = result.headers
             upstreamBody = result.body
         } else {
             let semaphore = DispatchSemaphore(value: 0)
             final class UpstreamBox: @unchecked Sendable {
                 var status = 0
+                var headers: [String: String] = [:]
                 var body = Data()
             }
             let upstream = UpstreamBox()
             URLSession.shared.dataTask(with: request) { data, response, _ in
-                if let http = response as? HTTPURLResponse { upstream.status = http.statusCode }
+                if let http = response as? HTTPURLResponse {
+                    upstream.status = http.statusCode
+                    for (key, value) in http.allHeaderFields {
+                        upstream.headers[String(describing: key)] = String(describing: value)
+                    }
+                }
                 upstream.body = data ?? Data()
                 semaphore.signal()
             }.resume()
             _ = semaphore.wait(timeout: .now() + 12)
             upstreamStatus = upstream.status
+            upstreamHeaders = upstream.headers
             upstreamBody = upstream.body
         }
         let upstreamJSON = (try? JSONSerialization.jsonObject(with: upstreamBody)) as? [String: Any] ?? [:]
@@ -30453,7 +30504,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if upstreamStatus == 201 || upstreamStatus == 200 {
             let id = upstreamJSON["id"] as? String ?? UUID().uuidString.lowercased()
             let status = upstreamJSON["status"] as? String ?? "open"
-            return Self.json(201, "{\"id\":\(jsonString(id)),\"status\":\(jsonString(status))}")
+            let body = "{\"id\":\(jsonString(id)),\"status\":\(jsonString(status))}"
+            var headers: [String: String] = [
+                "Content-Type": AppFallback.jsonContentType,
+                "Cache-Control": "no-store",
+                "Content-Length": String(body.utf8.count),
+            ]
+            headers["Server-Timing"] = Self.feedbackTimingHeader(
+                elapsedMs: Date().timeIntervalSince(feedbackStartedAt) * 1000,
+                upstreamHeaders: upstreamHeaders
+            )
+            return HTTPReply(status: 201, headers: headers, body: body)
         }
         if upstreamStatus == 409 {
             return Self.json(409, "{\"error\":\"This submission was already sent\",\"code\":\"feedback_submission_conflict\"}")
@@ -30464,6 +30525,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         if upstreamStatus == 400 {
             return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
+        }
+        if upstreamStatus == 401 || upstreamStatus == 403 {
+            let upstreamError = Self.feedbackUpstreamError(upstreamJSON["error"] as? String)
+            return Self.json(503, "{\"error\":\"Feedback integration is temporarily unavailable\",\"code\":\"feedback_integration_unavailable\",\"upstream_status\":\(upstreamStatus),\"upstream_error\":\(jsonString(upstreamError))}")
+        }
+        if upstreamStatus == 413 {
+            return Self.json(413, "{\"error\":\"Feedback attachment is too large\",\"code\":\"feedback_attachment_too_large\"}")
+        }
+        if upstreamStatus == 429 {
+            let retryAfter = upstreamHeaders.first { $0.key.lowercased() == "retry-after" }?.value ?? "60"
+            return HTTPReply(status: 429, headers: ["Content-Type": AppFallback.jsonContentType, "Cache-Control": "no-store", "Retry-After": retryAfter], body: "{\"error\":\"Feedback is rate limited\",\"code\":\"feedback_rate_limited\"}")
         }
         return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
     }

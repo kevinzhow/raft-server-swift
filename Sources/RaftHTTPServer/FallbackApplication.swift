@@ -3666,7 +3666,10 @@ public func configure(_ app: Application, services: FallbackServices) {
             authorization: request.headers[.authorization],
             contentType: request.headers[.contentType] ?? "",
             body: request.body.string ?? "",
-            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+            clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!]
+                ?? request.headers[HTTPField.Name("X-Slock-Client-Kind")!]
+                ?? ""
         ))
     }
     app.get("api", "product-events", "config") { request -> Response in
