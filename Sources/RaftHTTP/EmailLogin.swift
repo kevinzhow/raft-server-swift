@@ -30176,6 +30176,121 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return HTTPReply(status: 200, headers: ["Content-Type": AppFallback.jsonContentType, "Cache-Control": "no-store", "Content-Length": String(body.count)], body: String(decoding: body, as: UTF8.self))
     }
 
+    private func handsFeedbackSessionToken(userId: String) -> String? {
+        lock.lock()
+        let appToken = handsConversationAppTokenOverride
+            ?? ProcessInfo.processInfo.environment["HANDS_FEEDBACK_CONVERSATION_APP_TOKEN"] ?? ""
+        let base = handsFeedbackBaseURLOverride
+            ?? ProcessInfo.processInfo.environment["HANDS_FEEDBACK_BASE_URL"] ?? ""
+        var cached = productFeedbackReporterSessionCache[userId]
+        lock.unlock()
+        guard !base.isEmpty, !appToken.isEmpty else { return nil }
+        if let cached, cached.expiresAt > Date() { return cached.token }
+        let baseTrimmed = base.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var mint = URLRequest(url: URL(string: "\(baseTrimmed)/reporter-feedback/session")!)
+        mint.httpMethod = "POST"
+        mint.timeoutInterval = 10
+        mint.setValue("Bearer \(appToken)", forHTTPHeaderField: "Authorization")
+        mint.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        mint.httpBody = Data("{}".utf8)
+        let (status, body) = handsFeedbackSend(mint)
+        guard (status == 201 || status == 200),
+              let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+              let token = object["session_token"] as? String, !token.isEmpty
+        else { return nil }
+        let expires = (object["expires_at"] as? NSNumber)?.doubleValue ?? Date().addingTimeInterval(30).timeIntervalSince1970
+        cached = (token, Date(timeIntervalSince1970: expires))
+        lock.lock()
+        productFeedbackReporterSessionCache[userId] = cached
+        lock.unlock()
+        return token
+    }
+
+    private func handsFeedbackSend(_ request: URLRequest) -> (Int, Data) {
+        lock.lock()
+        let injected = handsFeedbackUpstreamHandler
+        lock.unlock()
+        if let injected { return injected(request) }
+        let semaphore = DispatchSemaphore(value: 0)
+        final class Box: @unchecked Sendable { var status = 0; var body = Data() }
+        let box = Box()
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            if let http = response as? HTTPURLResponse { box.status = http.statusCode }
+            box.body = data ?? Data()
+            semaphore.signal()
+        }.resume()
+        _ = semaphore.wait(timeout: .now() + 12)
+        return (box.status, box.body)
+    }
+
+    private func handsReporterId(_ userId: String) -> String {
+        let secret = handsFeedbackBaseURLOverride ?? ProcessInfo.processInfo.environment["HANDS_FEEDBACK_REPORTER_ID_SECRET"] ?? "reporter-id-secret"
+        let digest = SHA256.hash(data: Data("\(userId):\(secret)".utf8))
+        return Data(digest).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    public func closeProductFeedbackTicket(authorization: String?, ticketId: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard ticketId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
+            return Self.json(404, "{\"error\":\"Feedback not found\",\"code\":\"feedback_not_found\"}")
+        }
+        guard let session = handsFeedbackSessionToken(userId: userId) else {
+            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
+        }
+        let base = (handsFeedbackBaseURLOverride ?? ProcessInfo.processInfo.environment["HANDS_FEEDBACK_BASE_URL"] ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var request = URLRequest(url: URL(string: "\(base)/reporter-feedback/\(ticketId)/close")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("Bearer \(session)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(handsReporterId(userId), forHTTPHeaderField: "x-hands-reporter-id")
+        request.httpBody = Data(body.utf8)
+        let (status, upstreamBody) = handsFeedbackSend(request)
+        guard status == 200 else {
+            return Self.json(status == 404 ? 404 : 503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
+        }
+        return HTTPReply(status: 200, headers: ["Content-Type": AppFallback.jsonContentType, "Cache-Control": "no-store", "Content-Length": String(upstreamBody.count)], body: String(decoding: upstreamBody, as: UTF8.self))
+    }
+
+    public func replyProductFeedbackTicket(authorization: String?, ticketId: String, contentType: String, body: String) -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        guard ticketId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
+            return Self.json(404, "{\"error\":\"Feedback not found\",\"code\":\"feedback_not_found\"}")
+        }
+        for part in body.components(separatedBy: "Content-Disposition: form-data") {
+            guard part.contains("filename=\"") else { continue }
+            let lower = part.lowercased()
+            let allowed = lower.contains("content-type: image/png") || lower.contains("content-type: image/jpeg")
+                || lower.contains("content-type: image/webp") || lower.contains("content-type: image/gif")
+            if !allowed {
+                return Self.json(400, "{\"error\":\"Only image attachments are supported\",\"code\":\"feedback_attachment_type_invalid\"}")
+            }
+        }
+        guard let session = handsFeedbackSessionToken(userId: userId) else {
+            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
+        }
+        let base = (handsFeedbackBaseURLOverride ?? ProcessInfo.processInfo.environment["HANDS_FEEDBACK_BASE_URL"] ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var request = URLRequest(url: URL(string: "\(base)/reporter-feedback/\(ticketId)/comments")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("Bearer \(session)", forHTTPHeaderField: "Authorization")
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        request.setValue(handsReporterId(userId), forHTTPHeaderField: "x-hands-reporter-id")
+        request.httpBody = Data(body.utf8)
+        let (status, upstreamBody) = handsFeedbackSend(request)
+        guard status == 200 || status == 201 else {
+            return Self.json(status == 404 ? 404 : 503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
+        }
+        return HTTPReply(status: status, headers: ["Content-Type": AppFallback.jsonContentType, "Cache-Control": "no-store", "Content-Length": String(upstreamBody.count)], body: String(decoding: upstreamBody, as: UTF8.self))
+    }
+
     public func setHandsFeedbackForTesting(baseURL: String?, appId: String?, appToken: String?, appSlug: String? = nil) {
         lock.lock()
         handsFeedbackBaseURLOverride = baseURL

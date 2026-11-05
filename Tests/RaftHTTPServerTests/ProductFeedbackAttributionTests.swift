@@ -131,3 +131,76 @@ import VaporTesting
         }
     }
 }
+
+@Test func productFeedbackClosesCanonicalTicketsAndRejectsNonImageReplies() async throws {
+    let accounts = EmailLoginDirectory()
+    let userId = "11111111-1111-4111-8111-111111111645"
+    accounts.addAccount(id: userId, email: "feedback-close@test.invalid", password: "password123")
+    accounts.markEmailVerified(userId: userId)
+    let token = accounts.mintAccessTokenForTesting(userId: userId)
+    accounts.setHandsFeedbackForTesting(baseURL: "https://hands.test", appId: "raft-web", appToken: "t", appSlug: "raft-web")
+    accounts.setHandsConversationForTesting(enabled: true, appToken: "hands_conversation_test")
+    final class Capture: @unchecked Sendable { var urls: [String] = []; var closeBody: String = ""; var reporterId: String = "" }
+    let capture = Capture()
+    accounts.setHandsFeedbackUpstreamForTesting { request in
+        let url = request.url?.absoluteString ?? ""
+        capture.urls.append(url)
+        if url.hasSuffix("/reporter-feedback/session") {
+            return (201, Data("{\"session_token\":\"hrps_v1_api-test-session\",\"expires_at\":\(Int(Date().timeIntervalSince1970) + 30)}".utf8))
+        }
+        if url.hasSuffix("/close") {
+            capture.closeBody = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
+            capture.reporterId = request.value(forHTTPHeaderField: "x-hands-reporter-id") ?? ""
+            return (200, Data("{\"id\":\"33333333-3333-4333-8333-333333333333\",\"status\":\"closed\",\"closure_reason\":\"completed\",\"duplicate_of_ticket_id\":null,\"updated_at\":1700000000030,\"changed\":true}".utf8))
+        }
+        return (404, Data("{}".utf8))
+    }
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            let ticketId = "33333333-3333-4333-8333-333333333333"
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(token)"
+            headers[.contentType] = "application/json"
+            let closed = try await client.send(.post, headers: headers, to: URI(string: "/api/product-feedback/tickets/\(ticketId)/close")) { request in
+                request.body = .init(string: "{\"reason\":\"completed\"}")
+            }
+            #expect(closed.status == .ok)
+            let closedBody = (try? JSONSerialization.jsonObject(with: Data((closed.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            #expect(closedBody["status"] as? String == "closed")
+            #expect(capture.closeBody == "{\"reason\":\"completed\"}")
+            #expect(capture.reporterId.range(of: "^[A-Za-z0-9_-]{16,200}$", options: .regularExpression) != nil)
+
+            let invalid = try await client.send(.post, headers: headers, to: URI(string: "/api/product-feedback/tickets/not-a-uuid/close")) { request in
+                request.body = .init(string: "{\"reason\":\"completed\"}")
+            }
+            #expect(invalid.status == .notFound)
+            let invalidBody = (try? JSONSerialization.jsonObject(with: Data((invalid.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            #expect(invalidBody["code"] as? String == "feedback_not_found")
+            #expect(!capture.urls.contains { $0.contains("not-a-uuid") })
+
+            let boundary = "reply-boundary"
+            let replyBody = """
+            --\(boundary)\r
+            Content-Disposition: form-data; name="body"\r
+            \r
+            Here is the requested reproduction.\r
+            --\(boundary)\r
+            Content-Disposition: form-data; name="attachments"; filename="notes.txt"\r
+            Content-Type: text/plain\r
+            \r
+            private\r
+            --\(boundary)--\r
+            """
+            var replyHeaders = HTTPFields()
+            replyHeaders[.authorization] = "Bearer \(token)"
+            replyHeaders[.contentType] = "multipart/form-data; boundary=\(boundary)"
+            let reply = try await client.send(.post, headers: replyHeaders, to: URI(string: "/api/product-feedback/tickets/\(ticketId)/comments")) { request in
+                request.body = .init(string: replyBody)
+            }
+            #expect(reply.status == .badRequest)
+            let replyJSON = (try? JSONSerialization.jsonObject(with: Data((reply.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            #expect(replyJSON["code"] as? String == "feedback_attachment_type_invalid")
+        }
+    }
+}
