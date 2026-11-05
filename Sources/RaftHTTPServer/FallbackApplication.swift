@@ -3637,6 +3637,12 @@ public func configure(_ app: Application, services: FallbackServices) {
             body: request.body.string ?? ""
         ))
     }
+    app.post("api", "app-installation", "agent-reminder-messages") { request -> Response in
+        routeResponse(services.emailAccounts.appAgentReminderMessage(
+            authorization: request.headers[.authorization],
+            body: request.body.string ?? ""
+        ))
+    }
     app.post("api", "product-feedback") { request -> Response in
         routeResponse(services.emailAccounts.submitProductFeedback(
             authorization: request.headers[.authorization],

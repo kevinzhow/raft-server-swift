@@ -324,6 +324,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var deletedServerIds: Set<String> = []
     private var sidebarReadAllEnabled = false
     private var translationProviderOverride: String?
+    private var appAgentReminderLedger: [String: String] = [:]
+    private var agentReminderSurfaceChannels: [String: String] = [:]
     private var messageTranslationLedger: [String: (status: String, providerBilledChars: Int, targetLanguage: String, translatedContent: String)] = [:]
     private var agentChannelJoinedAt: [String: Date] = [:]
     private var agentChannelPosted: Set<String> = []
@@ -29046,6 +29048,60 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             text += (text.isEmpty ? "" : "\n") + "Skipped \(unchecked) visible channel roster checks because the server rejected them."
         }
         return (text, json, 200)
+    }
+
+    public func appAgentReminderMessage(authorization: String?, body: String) -> HTTPReply {
+        guard let access = oauth.appInstallationAccess(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Invalid installation credential\"}")
+        }
+        guard access.official, access.groups.contains("agent_reminder_write") else {
+            return Self.json(403, "{\"error\":\"Agent reminder write is not authorized for this app\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let agentId = object["agentId"] as? String, ServerScope.isUUID(agentId),
+              let key = object["idempotencyKey"] as? String, (1...200).contains(key.count),
+              let text = object["text"] as? String, (1...8000).contains(text.count)
+        else {
+            return Self.json(400, "{\"error\":\"Invalid agent reminder request\"}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == access.serverId else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        let ledgerKey = "\(access.clientId)\n\(agentId)\n\(key)"
+        lock.lock()
+        if let existing = appAgentReminderLedger[ledgerKey] {
+            lock.unlock()
+            return Self.json(200, "{\"created\":false,\"messageId\":\(jsonString(existing)),\"surface\":{\"channelType\":\"dm\",\"channelName\":\"reminders\",\"target\":\"dm:@reminders\"}}")
+        }
+        var channelId = agentReminderSurfaceChannels[agentId]
+        lock.unlock()
+        if channelId == nil {
+            let createdChannel = oauth.createChannel(serverId: access.serverId, name: "reminders", creatorUserId: agentId, type: "dm")
+            oauth.addChannelAgent(channelId: createdChannel, agentId: agentId)
+            lock.lock()
+            postableChannels[createdChannel] = PostableChannel(serverId: access.serverId, memberIds: [agentId], kind: "dm", name: "reminders")
+            agentReminderSurfaceChannels[agentId] = createdChannel
+            lock.unlock()
+            channelId = createdChannel
+        }
+        guard let channelId else { return Self.json(500, "{\"error\":\"reminder surface unavailable\"}") }
+        let message = oauth.createMessageRecord(
+            channelId: channelId,
+            content: text,
+            senderId: "system",
+            senderType: "user",
+            messageType: "system",
+            systemSubtype: "agent.reminder_due"
+        )
+        lock.lock()
+        appAgentReminderLedger[ledgerKey] = message.id
+        lock.unlock()
+        return Self.json(200, "{\"created\":true,\"messageId\":\(jsonString(message.id)),\"surface\":{\"channelType\":\"dm\",\"channelName\":\"reminders\",\"target\":\"dm:@reminders\"}}")
+    }
+
+    public func agentReminderSurfaceForTesting(agentId: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return agentReminderSurfaceChannels[agentId]
     }
 
     public func agentUserChannels(authorization: String?, name: String, limit: String?, offset: String?) -> HTTPReply {

@@ -78,6 +78,7 @@ public final class OAuthLedger: @unchecked Sendable {
     private var tokens: [AccessToken] = []
     private var installations: [Installation] = []
     private var installationTokens: [InstallationToken] = []
+    private var officialAppClientIds: Set<String> = []
 
     public init() {}
 
@@ -755,7 +756,10 @@ public final class OAuthLedger: @unchecked Sendable {
         createdAt: Date = Date(),
         senderTimezone: String? = nil,
         senderType: String? = nil,
-        messageType: String? = nil
+        messageType: String? = nil,
+        systemSubtype: String? = nil,
+        causalActorType: String? = nil,
+        causalActorId: String? = nil
     ) -> (id: String, seq: Int) {
         lock.lock()
         defer { lock.unlock() }
@@ -771,7 +775,10 @@ public final class OAuthLedger: @unchecked Sendable {
             seq: seq,
             senderTimezone: senderTimezone,
             senderType: senderType,
-            messageType: messageType
+            messageType: messageType,
+            systemSubtype: systemSubtype,
+            causalActorType: causalActorType,
+            causalActorId: causalActorId
         ))
         return (id, seq)
     }
@@ -1034,6 +1041,31 @@ public final class OAuthLedger: @unchecked Sendable {
             .filter { $0.channelId == channelId }
             .sorted { $0.seq < $1.seq }
             .map { HistoryMessage(id: $0.id, content: $0.content, senderId: $0.senderId, seq: $0.seq, createdAt: $0.createdAt, senderTimezone: $0.senderTimezone, senderType: $0.senderType, messageType: $0.messageType) }
+    }
+
+    public func markOfficialAppForTesting(clientRecordId: String) {
+        lock.lock(); officialAppClientIds.insert(clientRecordId); lock.unlock()
+    }
+
+    public func setClientOutboundGroupsForTesting(clientRecordId: String, groups: [String]) {
+        lock.lock()
+        if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
+            clients[index].outboundGroups = groups
+        }
+        lock.unlock()
+    }
+
+    public func reminderMessageMetadata(id: String) -> (channelId: String, senderId: String, senderType: String, messageType: String, systemSubtype: String?, causalActorId: String?)? {
+        lock.lock(); defer { lock.unlock() }
+        guard let message = channelMessages.first(where: { $0.id == id }) else { return nil }
+        return (message.channelId, message.senderId, message.senderType ?? "user", message.messageType ?? "chat", message.systemSubtype, message.causalActorId)
+    }
+
+    public func appInstallationAccess(authorization: String?) -> (serverId: String, clientId: String, groups: [String], official: Bool)? {
+        lock.lock(); defer { lock.unlock() }
+        guard let raw = bearerToken(authorization), let credential = installationCredentialLocked(raw) else { return nil }
+        let official = officialAppClientIds.contains(credential.clientId)
+        return (credential.serverId, credential.clientId, credential.groups, official)
     }
 
     public func messageTranslationMetadata(id: String) -> (channelId: String, content: String, senderId: String, senderType: String, messageType: String)? {
@@ -1339,6 +1371,9 @@ public final class OAuthLedger: @unchecked Sendable {
         var senderTimezone: String? = nil
         var senderType: String? = nil
         var messageType: String? = nil
+        var systemSubtype: String? = nil
+        var causalActorType: String? = nil
+        var causalActorId: String? = nil
     }
 
     public func addMember(serverId: String, userId: String, role: String) {
