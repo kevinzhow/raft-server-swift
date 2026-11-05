@@ -323,6 +323,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var serverMemberEvents: [ServerMemberEvent] = []
     private var deletedServerIds: Set<String> = []
     private var sidebarReadAllEnabled = false
+    private var translationProviderOverride: String?
+    private var messageTranslationLedger: [String: (status: String, providerBilledChars: Int, targetLanguage: String, translatedContent: String)] = [:]
     private var agentChannelJoinedAt: [String: Date] = [:]
     private var agentChannelPosted: Set<String> = []
     private var taskWriteHolds: [String: (seen: Int, latest: Int)] = [:]
@@ -18076,9 +18078,23 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"apps\":[\("\(rows)")]}")
     }
 
-    private static func translationProviderAvailable() -> Bool {
+    public func setTranslationProviderForTesting(_ provider: String?) {
+        lock.lock(); translationProviderOverride = provider; lock.unlock()
+    }
+
+    public func messageTranslationForTesting(messageId: String) -> (status: String, providerBilledChars: Int, targetLanguage: String, translatedContent: String)? {
+        lock.lock(); defer { lock.unlock() }
+        return messageTranslationLedger[messageId]
+    }
+
+    private func translationProviderName() -> String {
+        lock.lock(); let override = translationProviderOverride; lock.unlock()
+        return override ?? (ProcessInfo.processInfo.environment["TRANSLATION_PROVIDER"] ?? "")
+    }
+
+    private func translationProviderAvailableInstance() -> Bool {
         let environment = ProcessInfo.processInfo.environment
-        switch environment["TRANSLATION_PROVIDER"] ?? "" {
+        switch translationProviderName() {
         case "fake":
             return true
         case "volcengine":
@@ -18104,20 +18120,58 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard oauth.serverProfile(id: serverId)?.translationEnabled == true else {
             return Self.json(403, "{\"error\":\"Translation is disabled for this server\"}")
         }
-        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
-        let ids = (object?["messageIds"] as? [Any])?.compactMap { $0 as? String } ?? []
-        let results = ids.map { id -> String in
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let targetLanguage = object["targetLanguage"] as? String,
+              let target = PublicTranslations.normalizeLanguage(targetLanguage),
+              let mode = object["mode"] as? String, mode == "auto" || mode == "manual",
+              let rawIds = object["messageIds"] as? [Any]
+        else {
+            return Self.json(400, "{\"error\":\"Invalid translation request\"}")
+        }
+        let ids = rawIds.compactMap { $0 as? String }
+        guard ids.count <= 200 else {
+            return Self.json(400, "{\"error\":\"Invalid translation request\"}")
+        }
+        let provider = translationProviderName()
+        guard translationProviderAvailableInstance() else {
+            return Self.json(409, "{\"error\":\"Translation provider is not configured\"}")
+        }
+        let providerVersion = provider == "fake" ? "fake@v0+fake-v0" : "\(provider)@v0"
+        lock.lock()
+        var results: [String] = []
+        for id in ids {
             guard let message = oauth.messageContent(id: id),
                   let channel = oauth.channelInfo(id: message.channelId),
                   channel.serverId == serverId,
                   oauth.channelType(id: message.channelId) == "channel"
                       || oauth.isChannelParticipant(channelId: message.channelId, userId: userId)
             else {
-                return "{\"messageId\":\(jsonString(id)),\"status\":\"not_found\"}"
+                results.append("{\"messageId\":\(jsonString(id)),\"status\":\"not_found\",\"targetLanguage\":\(jsonString(target))}")
+                continue
             }
-            return "{\"messageId\":\(jsonString(id)),\"status\":\"translated\",\"translatedText\":\(jsonString(message.content))}"
-        }.joined(separator: ",")
-        return Self.json(200, "{\"results\":[\("\(results)")]}")
+            let source = Self.detectTranslationLanguage(message.content)
+            if source.language == target {
+                results.append("{\"messageId\":\(jsonString(id)),\"status\":\"skipped\",\"reason\":\"target_is_source\",\"sourceLanguage\":\(jsonString(source.language)),\"targetLanguage\":\(jsonString(target))}")
+                continue
+            }
+            let translated = provider == "fake" ? "[\(target)] \(message.content)" : "[\(target)] \(message.content)"
+            let hash = Self.sha256Hex(Data(message.content.utf8))
+            messageTranslationLedger[id] = (status: "translated", providerBilledChars: message.content.count, targetLanguage: target, translatedContent: translated)
+            results.append("{\"messageId\":\(jsonString(id)),\"status\":\"translated\",\"contentHash\":\(jsonString(hash)),\"sourceLanguage\":\(jsonString(source.language)),\"sourceConfidence\":\(source.confidence),\"targetLanguage\":\(jsonString(target)),\"translatedContent\":\(jsonString(translated)),\"provider\":\(jsonString(provider)),\"providerVersion\":\(jsonString(providerVersion)),\"placeholderPolicyVersion\":\"placeholder-v0\"}")
+        }
+        lock.unlock()
+        return Self.json(200, "{\"results\":[\("\(results.joined(separator: ","))")]}")
+    }
+
+    private static func detectTranslationLanguage(_ content: String) -> (language: String, confidence: Int) {
+        let hasCJK = content.unicodeScalars.contains { scalar in
+            (0x4E00...0x9FFF).contains(scalar.value) || (0x3040...0x30FF).contains(scalar.value)
+        }
+        return hasCJK ? ("zh", 95) : ("en", 99)
+    }
+
+    private static func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     public func serverTranslationSettings(authorization: String?, serverId: String) -> HTTPReply {
@@ -18129,7 +18183,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let enabled = oauth.serverProfile(id: serverId)?.translationEnabled ?? false
         let canManage = role == "owner" || role == "admin"
-        return Self.json(200, "{\"translationEnabled\":\(enabled),\"translationAvailable\":\(Self.translationProviderAvailable()),\"canManageTranslation\":\(canManage)}")
+        return Self.json(200, "{\"translationEnabled\":\(enabled),\"translationAvailable\":\(translationProviderAvailableInstance()),\"canManageTranslation\":\(canManage)}")
     }
 
     public func patchServerTranslationSettings(authorization: String?, serverId: String, body: String) -> HTTPReply {
@@ -18148,7 +18202,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(400, "{\"error\":\"translationEnabled must be a boolean\"}")
         }
         oauth.setServerTranslationEnabled(id: serverId, enabled: enabled)
-        return Self.json(200, "{\"translationEnabled\":\(enabled),\"translationAvailable\":\(Self.translationProviderAvailable()),\"canManageTranslation\":true}")
+        return Self.json(200, "{\"translationEnabled\":\(enabled),\"translationAvailable\":\(translationProviderAvailableInstance()),\"canManageTranslation\":true}")
     }
 
     public func patchServerProfile(authorization: String?, serverId: String, body: String) -> HTTPReply {

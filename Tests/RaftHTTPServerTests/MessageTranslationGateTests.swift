@@ -54,6 +54,7 @@ import VaporTesting
             #expect(unauthenticated.status == .unauthorized)
 
             accounts.oauth.setServerTranslationEnabled(id: serverId, enabled: true)
+            accounts.setTranslationProviderForTesting("fake")
             let channel = accounts.oauth.createChannel(serverId: serverId, name: "translation-room", creatorUserId: ownerId)
             let visible = accounts.oauth.createMessageRecord(channelId: channel, content: "你好 visible", senderId: ownerId)
             let otherServer = "33333333-3333-4333-8333-333333333576"
