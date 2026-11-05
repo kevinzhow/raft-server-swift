@@ -21946,7 +21946,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return .refused(Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\",\"requiredCapability\":\(jsonString(capability))}"))
         }
         guard let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else {
-            return .refused(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
+            return .refused(Self.json(401, "{\"error\":\"Invalid agent credential\",\"code\":\"auth_required\"}"))
         }
         return .success(agentId: credential.agentId, serverId: agent.serverId)
     }

@@ -418,3 +418,31 @@ private func draftSend(_ client: any Client, _ key: String, _ target: String, _ 
         }
     }
 }
+
+@Test func heldContextOnDMThreadNamesTheParentPeer() async throws {
+    var fixture = FreshnessFixture()
+    fixture.seed()
+    let accounts = fixture.accounts
+    let dmId = accounts.seedDMForTesting(serverId: fixture.serverId, humanUserId: fixture.ownerId, agentId: fixture.agentId)
+    let parent = accounts.addHumanMessageForTesting(channelId: dmId, senderId: fixture.ownerId, content: "dm thread parent")
+    let parentSeq = accounts.messageSeqForTesting(messageId: parent) ?? 0
+    let threadId = accounts.oauth.createThreadChannel(parentChannelId: dmId, parentMessageId: parent)
+    accounts.addThreadChannel(serverId: fixture.serverId, threadChannelId: threadId, parentChannelId: dmId, parentMessageId: parent, memberId: fixture.agentId)
+    let reply = accounts.addHumanMessageForTesting(channelId: threadId, senderId: fixture.ownerId, content: "dm thread reply")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            let target = "dm:@freshness-owner:\(parent.prefix(8))"
+            let held = try await freshnessSend(client, fixture.key, target, "stale dm thread reply", seen: parentSeq)
+            #expect(held["state"] as? String == "held")
+            let rows = held["heldMessages"] as? [[String: Any]] ?? []
+            #expect(rows.map { $0["id"] as? String } == [reply])
+            #expect(rows.allSatisfy {
+                ($0["channel_type"] as? String) == "thread"
+                    && ($0["parent_channel_type"] as? String) == "dm"
+                    && ($0["parent_channel_name"] as? String) == "freshness-owner"
+                    && ($0["sender_name"] as? String) == "freshness-owner"
+            })
+        }
+    }
+}

@@ -138,3 +138,43 @@ import VaporTesting
         }
     }
 }
+
+@Test func threadSendAcceptsTheParentCardVersion() async throws {
+    let accounts = EmailLoginDirectory()
+    let serverId = "33333333-3333-4333-8333-000001109004"
+    let ownerId = "11111111-1111-4111-8111-000001109004"
+    accounts.addAccount(id: ownerId, email: "card-thread@test.invalid", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "card-thread", name: "Card Thread", ownerId: ownerId)
+    let agentId = accounts.oauth.createAgent(serverId: serverId, name: "CardThreadBot", creatorUserId: ownerId, runtime: "claude")
+    let channelId = accounts.oauth.createChannel(serverId: serverId, name: "card-thread-room", creatorUserId: ownerId, type: "channel")
+    accounts.seedPostableChannelForTesting(serverId: serverId, channelId: channelId, name: "card-thread-room", humanIds: [ownerId], agentIds: [agentId])
+    let key = accounts.mintAgentCredential(agentId: agentId, scopes: ["send", "read"], name: "card-thread")
+    let parent = accounts.addHumanMessageForTesting(channelId: channelId, senderId: ownerId, content: "thread root")
+    let parentSeq = accounts.messageSeqForTesting(messageId: parent) ?? 0
+    let rev = accounts.channelCardRevisionForTesting(channelId: channelId) ?? ""
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            func send(_ body: [String: Any]) async throws -> [String: Any] {
+                var headers = HTTPFields()
+                headers[.authorization] = "Bearer \(key)"
+                headers[.contentType] = "application/json"
+                let data = try JSONSerialization.data(withJSONObject: body)
+                let response = try await client.send(.post, headers: headers, to: URI(string: "/internal/agent-api/v2/send")) { request in
+                    request.body = .init(data: data)
+                }
+                return (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            }
+            let target = "#card-thread-room:\(parent.prefix(8))"
+            let unseen = try await send(["target": target, "content": "in thread", "seenUpToSeq": parentSeq, "seenCards": ["channel": NSNull()]])
+            #expect(unseen["state"] as? String == "held")
+            #expect(unseen["holdReasons"] as? [String] == ["channel_card"])
+            #expect((unseen["channelCard"] as? [String: Any])?["id"] as? String == channelId)
+
+            let seen = try await send(["target": target, "content": "in thread", "seenUpToSeq": parentSeq, "seenCards": ["channel": rev]])
+            #expect(seen["state"] as? String == "sent")
+            #expect(seen["channelCard"] == nil)
+        }
+    }
+}

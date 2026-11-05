@@ -81,3 +81,54 @@ import VaporTesting
         }
     }
 }
+
+@Test func hiddenTypedMentionAndDeletedAgentFailClosed() async throws {
+    let accounts = EmailLoginDirectory()
+    let serverId = "33333333-3333-4333-8333-000001111003"
+    let ownerId = "11111111-1111-4111-8111-000001111003"
+    let hiddenId = "11111111-1111-4111-8111-000001111004"
+    accounts.addAccount(id: ownerId, email: "hidden-owner@test.invalid", password: "password123")
+    accounts.addAccount(id: hiddenId, email: "hidden-human@test.invalid", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.markEmailVerified(userId: hiddenId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "hidden-send", name: "Hidden Send", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: hiddenId, role: "member")
+    let agentId = accounts.oauth.createAgent(serverId: serverId, name: "HiddenSendBot", creatorUserId: ownerId, runtime: "claude")
+    let channelId = accounts.oauth.createChannel(serverId: serverId, name: "hidden-send-room", creatorUserId: ownerId, type: "channel")
+    accounts.seedPostableChannelForTesting(serverId: serverId, channelId: channelId, name: "hidden-send-room", humanIds: [ownerId], agentIds: [agentId])
+    accounts.setHideHumansFromMembers(serverId: serverId, hidden: true)
+    let key = accounts.mintAgentCredential(agentId: agentId, scopes: ["send", "read"], name: "hidden")
+    let hiddenName = "hidden-human"
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            func send(_ body: [String: Any]) async throws -> (ClientResponse, [String: Any]) {
+                var headers = HTTPFields()
+                headers[.authorization] = "Bearer \(key)"
+                headers[.contentType] = "application/json"
+                let data = try JSONSerialization.data(withJSONObject: body)
+                let response = try await client.send(.post, headers: headers, to: URI(string: "/internal/agent-api/v2/send")) { request in
+                    request.body = .init(data: data)
+                }
+                return (response, (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:])
+            }
+            let typed = try await send([
+                "target": "#hidden-send-room", "content": "hidden human @\(hiddenName)",
+                "mentions": [["type": "user", "id": hiddenId, "name": hiddenName]],
+                "seenUpToSeq": 0,
+            ])
+            #expect(typed.1["state"] as? String == "sent")
+            #expect(typed.1["pendingMentionActions"] == nil)
+            #expect(typed.1["unresolvedMentionHandles"] == nil)
+            #expect(accounts.mentionsForTesting(messageId: typed.1["messageId"] as? String ?? "").isEmpty)
+
+            let raw = try await send(["target": "#hidden-send-room", "content": "hidden human raw @\(hiddenName)", "seenUpToSeq": typed.1["messageSeq"] as? Int ?? 0])
+            #expect(raw.1["unresolvedMentionHandles"] as? [String] == ["@\(hiddenName)"])
+
+            accounts.oauth.deleteAgent(id: agentId)
+            let deleted = try await send(["target": "#hidden-send-room", "content": "deleted agent", "seenUpToSeq": raw.1["messageSeq"] as? Int ?? 0])
+            #expect(deleted.0.status == .unauthorized)
+            #expect(deleted.1["error"] as? String == "Invalid agent credential")
+        }
+    }
+}
