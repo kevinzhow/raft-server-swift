@@ -155,7 +155,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var storedMentions: [StoredMention] = []
     private var channelAgentMembers: [String: Set<String>] = [:]
     private var machineKeys: [String: (serverId: String, agentId: String)] = [:]
-    private var storedInboxFacts: [StoredInboxFact] = []
+    private let inboxFactStore = InboxFactStore()
     private var storedAgentDeliveries: [(agentId: String, messageId: String, channelType: String)] = []
     /// RFC 074 assistant link: agent id -> owner user id.
     private var assistantOwners: [String: String] = [:]
@@ -7157,7 +7157,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         let wanted = Set(receiverIds)
-        return storedInboxFacts.filter { $0.messageId == messageId && wanted.contains($0.receiverId) }.map {
+        return inboxFactStore.all().filter { $0.messageId == messageId && wanted.contains($0.receiverId) }.map {
             InboxFact(
                 receiverType: $0.receiverType,
                 receiverId: $0.receiverId,
@@ -7333,7 +7333,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(404, "{\"error\":\"Inbox scope not found\"}")
         }
         if thread.deletedAt != nil {
-            let ownedFacts = storedInboxFacts.filter {
+            let ownedFacts = inboxFactStore.all().filter {
                 $0.receiverType == "user" && $0.receiverId == userId && $0.channelId == threadId
             }
             let followed = threadFollows["\(serverId ?? "")\n\(userId)\n\(threadId)"] != nil
@@ -7369,7 +7369,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")
         }
         lock.lock()
-        var scopeIds = Set(storedInboxFacts.filter { $0.receiverId == userId && $0.serverId == serverId }.compactMap(\.channelId))
+        var scopeIds = Set(inboxFactStore.all().filter { $0.receiverId == userId && $0.serverId == serverId }.compactMap(\.channelId))
         scopeIds.formUnion(threadFollows.values.filter { $0.serverId == serverId && $0.userId == userId }.map(\.threadChannelId))
         var scopeRows: [String] = []
         for scopeId in scopeIds.sorted() {
@@ -7388,7 +7388,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public func inboxFactsForTesting(messageId: String) -> [(receiverType: String, receiverId: String, personalMention: Bool, unreadEligible: Bool)] {
         lock.lock()
         defer { lock.unlock() }
-        return storedInboxFacts.filter { $0.messageId == messageId }.map {
+        return inboxFactStore.all().filter { $0.messageId == messageId }.map {
             ($0.receiverType, $0.receiverId, $0.personalMention, $0.unreadEligible)
         }
     }
@@ -7401,7 +7401,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     public func addInboxFactForTesting(receiverId: String, serverId: String, channelId: String, messageId: String) {
         lock.lock()
-        storedInboxFacts.append(StoredInboxFact(
+        inboxFactStore.append(StoredInboxFact(
             messageId: messageId,
             receiverType: "user",
             receiverId: receiverId,
@@ -7539,7 +7539,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let search = params["q"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 
         lock.lock()
-        let facts = storedInboxFacts
+        let facts = inboxFactStore.all()
         let doneScopes = inboxDoneScopes
         let mentions = storedMentions
         let follows = threadFollows
@@ -9935,16 +9935,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var terminalCode: String? = nil
     }
 
-    private struct StoredInboxFact {
-        var messageId: String
-        var receiverType: String
-        var receiverId: String
-        var channelId: String?
-        var serverId: String?
-        var personalMention: Bool
-        var unreadEligible: Bool = true
-    }
-
     private struct AgentCredential {
         var id: String = UUID().uuidString.lowercased()
         var agentId: String
@@ -10422,7 +10412,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return .allowed
         }
         let residue = inboxResiduesForTesting.contains("\(userId)\n\(channelId)")
-            || storedInboxFacts.contains {
+            || inboxFactStore.all().contains {
                 $0.receiverType == "user" && $0.receiverId == userId && $0.channelId == channelId
             }
             || oauth.channelUnreadInfo(channelId: channelId, userId: userId).maxReadSeq > 0
@@ -24098,7 +24088,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 messageType: "task_assignment",
                 senderType: "agent"
             ))
-            storedInboxFacts.append(StoredInboxFact(
+            inboxFactStore.append(StoredInboxFact(
                 messageId: receiptId,
                 receiverType: assignee.type,
                 receiverId: assignee.id,
@@ -25143,7 +25133,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             messageType: "system",
             senderType: "system"
         ))
-        storedInboxFacts.append(StoredInboxFact(
+        inboxFactStore.append(StoredInboxFact(
             messageId: replyId,
             receiverType: "agent",
             receiverId: card.requesterAgentId,
@@ -25152,7 +25142,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             personalMention: true,
             unreadEligible: true
         ))
-        storedInboxFacts.append(StoredInboxFact(
+        inboxFactStore.append(StoredInboxFact(
             messageId: replyId,
             receiverType: "user",
             receiverId: confirmerUserId,
@@ -28344,7 +28334,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
         guard readableAll else {
             lock.lock()
-            let facts = storedInboxFacts.filter {
+            let facts = inboxFactStore.all().filter {
                 $0.receiverType == "user" && $0.receiverId == userId
                     && $0.channelId == channelId && $0.serverId == serverId
             }
