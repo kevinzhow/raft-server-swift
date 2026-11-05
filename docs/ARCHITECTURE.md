@@ -303,9 +303,11 @@ Generated knowledge corpus lives in `Sources/RaftHTTPServer/Generated/KnowledgeC
 
 ## EmailLogin split progress (2026-11-05)
 
-- `Sources/RaftHTTP/EmailLogin.swift`: 34,306 -> 33,249 lines.
+- `Sources/RaftHTTP/EmailLogin.swift`: 34,306 -> 30,907 lines (-3,399).
 - Moved 109 nested data-model declarations (1,171 lines) into
-  `Sources/RaftHTTP/EmailLoginModels.swift` with no behavior change; the model
-  file is data-only. Next split candidates are the self-contained feature
-  blocks (feedback multi-app, agent migration, agent skills/activity, attested
-  send, channel activity), then R3 domain stores.
+  `Sources/RaftHTTP/EmailLoginModels.swift`; moved 210 static helpers
+  (2,567 lines) into `EmailLoginStatics.swift`. Both are behavior-preserving;
+  instance handlers/stores remain in EmailLogin. Next split candidates are the
+  self-contained feature blocks (feedback multi-app, agent migration, agent
+  skills/activity, attested send, channel activity), the static-helper file by
+  domain, then R3 domain stores.
