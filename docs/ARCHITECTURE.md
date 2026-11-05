@@ -275,3 +275,17 @@ constant to make the check pass.
   failpoints, or orchestrator injection (`AGENTS.md`).
 - No new third-party dependency and no `Package.swift` change in R4.
 - No `recorded*` side channel added; a slice that touches one removes it.
+
+
+## Current migration status (2026-11-05)
+
+| Stage | State | Evidence |
+| --- | --- | --- |
+| R1 route extraction | done for auth, feedback, public, translations, servers, channels, messaging, OAuth/OIDC | `Sources/RaftHTTPServer/Features/` (8 collections, 243 route registrations moved); `configure()` 4,520 -> 2,607 lines; per-feature registration tests |
+| R2 canonical JSON | foundation done | `Sources/RaftHTTP/Support/JSONValue.swift` + `HTTPReply.jsonValue` + `Tests/RaftHTTPTests/JSONValueTests.swift`; feature handlers migrate as they are rewritten |
+| R3 store/lock split | pending | target: AuthStore, ChannelStore, TaskStore, ReadCursorStore, FeedbackStore; one domain at a time behind the `EmailLoginDirectory` facade |
+| R4 guardrails | done | `scripts/check_architecture.py`, `make architecture`: EmailLogin line ratchet (31,656), Features <= 1,200 lines, ForTesting warning baseline 243 |
+| R5 shared contracts | pending | target `Sources/RaftShared` for DTOs/capability/error contracts; migrate feature-by-feature |
+
+Remaining composition-root route families: internal agent-api, internal agent/computer/machine,
+integrations, MCP, provider-connections, notifications/product-events and misc.
