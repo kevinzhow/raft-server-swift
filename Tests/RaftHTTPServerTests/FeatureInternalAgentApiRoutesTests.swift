@@ -31,6 +31,8 @@ private let expectedInternalAgentApiRoutes: [String] = [
     "DELETE /internal/agent-api/channels/:channelId/members",
     "POST /internal/agent-api/channels/:channelId/members",
     "POST /internal/agent-api/channels/:channelId/mute",
+    "POST /internal/agent-api/channels/archive",
+    "POST /internal/agent-api/channels/unarchive",
     "POST /internal/agent-api/channels/:channelId/unmute",
     "GET /internal/agent-api/context",
     "GET /internal/agent-api/events",
@@ -111,8 +113,8 @@ private func internalAgentApiRouteKey(_ route: Route) -> String {
 
         // The table is authoritative: reject an accidental duplicate or gap in
         // the table itself before comparing it to the router.
-        #expect(expectedInternalAgentApiRoutes.count == 76)
-        #expect(Set(expectedInternalAgentApiRoutes).count == 76)
+        #expect(expectedInternalAgentApiRoutes.count == 78)
+        #expect(Set(expectedInternalAgentApiRoutes).count == 78)
 
         // One route per table entry, no route outside `/internal/agent-api`, and
         // no wildcard policy catch-all leaked into the collection.

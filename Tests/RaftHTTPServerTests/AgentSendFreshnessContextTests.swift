@@ -22,7 +22,7 @@ private struct FreshnessFixture {
         agentId = accounts.oauth.createAgent(serverId: serverId, name: "FreshnessBot", creatorUserId: ownerId, runtime: "claude")
         channelId = accounts.oauth.createChannel(serverId: serverId, name: channelName, creatorUserId: ownerId, type: "channel")
         accounts.seedPostableChannelForTesting(serverId: serverId, channelId: channelId, name: channelName, humanIds: [ownerId], agentIds: [agentId])
-        key = accounts.mintAgentCredential(agentId: agentId, scopes: ["send", "read"], name: "freshness")
+        key = accounts.mintAgentCredential(agentId: agentId, scopes: ["send", "read", "channels"], name: "freshness")
     }
 
     func human(_ content: String) -> (id: String, seq: Int) {

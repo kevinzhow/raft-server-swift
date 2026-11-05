@@ -142,6 +142,20 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 body: request.body.string ?? "{}"
             ))
         }
+        app.post("internal", "agent-api", "channels", "archive") { request -> Response in
+            routeResponse(services.emailAccounts.agentChannelArchive(
+                authorization: request.headers[.authorization],
+                body: request.body.string ?? "{}",
+                archive: true
+            ))
+        }
+        app.post("internal", "agent-api", "channels", "unarchive") { request -> Response in
+            routeResponse(services.emailAccounts.agentChannelArchive(
+                authorization: request.headers[.authorization],
+                body: request.body.string ?? "{}",
+                archive: false
+            ))
+        }
         app.post("internal", "agent-api", "channels", ":channelId", "mute") { request -> Response in
             routeResponse(services.emailAccounts.agentSetChannelMute(
                 authorization: request.headers[.authorization],

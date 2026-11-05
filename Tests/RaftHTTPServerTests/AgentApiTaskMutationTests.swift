@@ -18,7 +18,7 @@ import VaporTesting
     accounts.oauth.addChannelHuman(channelId: channel, userId: ownerId)
     let agent = accounts.oauth.createAgent(serverId: serverId, name: "TaskBot", runtime: "codex")
     accounts.oauth.addChannelAgent(channelId: channel, agentId: agent)
-    let key = accounts.mintAgentCredential(agentId: agent, scopes: ["read", "send"], name: "tasks")
+    let key = accounts.mintAgentCredential(agentId: agent, scopes: ["read", "send", "tasks"], name: "tasks")
     let knownMessage = "11111111-1111-4111-8111-000001026099"
     accounts.addTaskForTesting(channelId: channel, title: "first task", messageId: knownMessage, assigneeType: nil, assigneeId: nil)
     _ = accounts.addTasks(channelId: channel, titles: ["second task"])

@@ -19,8 +19,8 @@ import VaporTesting
     let invited = accounts.oauth.createAgent(serverId: serverId, name: "resolve-invited")
     let outsider = accounts.oauth.createAgent(serverId: serverId, name: "resolve-outsider")
     accounts.oauth.addChannelAgent(channelId: channel, agentId: invited)
-    let invitedKey = accounts.mintAgentCredential(agentId: invited, scopes: ["channels"], name: "invited")
-    let outsiderKey = accounts.mintAgentCredential(agentId: outsider, scopes: ["channels"], name: "outsider")
+    let invitedKey = accounts.mintAgentCredential(agentId: invited, scopes: ["channels", "send"], name: "invited")
+    let outsiderKey = accounts.mintAgentCredential(agentId: outsider, scopes: ["channels", "send"], name: "outsider")
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -44,7 +44,7 @@ import VaporTesting
             #expect(invitedResult.0["channelId"] as? String == channel)
             #expect(invitedResult.0["type"] as? String == "private")
             let outsiderResult = try await resolve(outsiderKey)
-            #expect(outsiderResult.1 == 404)
+            #expect(outsiderResult.1 == 404, Comment(rawValue: "\(outsiderResult.1) \(outsiderResult.0)"))
         }
     }
 }

@@ -1971,3 +1971,11 @@ RFC 074 personal assistant：
 - installation/principal credentials 互相拒绝；app client 只发现精确 Server 上的 active installation；userinfo 要求 current member，picture 仅 Raft-uploaded avatar；serverinfo 返回 access-token server、live profile、coarse paid tier 闭词表、删除 server fail closed、agent serverinfo null avatar 语义。
 - lookup/authorization email scope 拒绝与 grandfather 精确元组；retired built-in client 全链路 fail closed；Marketplace/global lookup 安装约束；agent request/inbound scopes/resource 约束；third-party event provenance/durable rebuild/ack/cold-start/managed daemon/并发去重/unbound 拒绝。
 - 裁决：2 个 random/Cindy pixel-avatar renderer 用例是上游 unit-only PRNG fixture（无 HTTP 断言），不移植；1 个 token unexpected-exchange log/audit redaction 用例依赖日志 sink，不移植。
+
+### route internalAgentApi.auth（锁定，含裁决）
+
+- bound runner 身份覆盖 server info/channel membership/history/tasks/search/mentions/resolve/reactions/integrations/attachments/profile/activity 等 agent-api 面；wrong principal、capability 缺失、read-only credential 对 mutating 路由统一 403 `capability_not_authorized`（send/resolve→send、tasks→tasks、reactions→reactions、profile→send、channels/archive→channels）。
+- task 面：bulk create 每 task 一条 durable inbox fact；resource task `creates_resource`→`requiresResourceReceipt`，`done` 前 409，`POST tasks/resource-receipt` 结构化校验 + owner-anchored expiry reminder；claim/status/delete/convert/assign 的既有组已覆盖。
+- action prepare：integration approval card 拒绝 `ACTION_TYPE_NOT_PREPARABLE`；DM thread target 支持 `agent:create` 卡片；integration app prepare 拒绝私有 IPv6 literal（需 unsafe override）、非 canonical scope/category，且不落卡。
+- 附件：id-less upload + unicode PDF 下载（RFC 5987 disposition）；activity ingest 接受 `raft-agent-activity-ingest.v1`，read gate，`transcript_path` 400，未知字段 strip 并报告。
+- 裁决排除：task-mine 常量查询数 spy、credential auth phase traces、transient owner secret wake（orchestrator）、assignment rollback/post-commit fan-out 注入、joint storage/forwarded snapshot 投影、abort 上游下载 socket。

@@ -8374,6 +8374,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// `POST` and `DELETE /internal/agent-api/messages/:messageId/reactions`. The credential must include `reactions`.
     public func mutateAgentApiMessageReaction(messageId: String, body: String, authorization: String?, remove: Bool) -> HTTPReply {
+        if let denial = agentCapabilityDenial(authorization, required: "reactions") { return denial }
         guard let emoji = Self.reactionEmoji(body) else {
             return Self.json(400, "{\"error\":\"A valid emoji is required\"}")
         }
@@ -19882,6 +19883,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func updateAgentProfile(authorization: String?, body: String) -> HTTPReply {
+        if let denial = agentCapabilityDenial(authorization, required: "send") { return denial }
         guard let authorization, authorization.hasPrefix("Bearer ") else {
             return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
         }
@@ -22057,6 +22059,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func agentResolveChannel(authorization: String?, body: String) -> HTTPReply {
+        if let denial = agentCapabilityDenial(authorization, required: "send") { return denial }
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
         else {
@@ -22197,6 +22200,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         agentGrantSets.removeValue(forKey: agentId)
         lock.unlock()
+    }
+
+    private func agentCapabilityDenial(_ authorization: String?, required: String) -> HTTPReply? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let credential = agentCredentials[token]
+        lock.unlock()
+        guard let credential, credential.revokedAt == nil else { return nil }
+        if credential.scopes.contains(required) { return nil }
+        return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\",\"requiredCapability\":\(jsonString(required))}")
     }
 
     private func agentGrantDenial(agentId: String, scope: String) -> HTTPReply? {
@@ -23862,6 +23876,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func agentTaskClaim(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
+        if let denial = agentCapabilityDenial(authorization, required: "tasks") { return denial }
         guard let writer = agentTaskWriter(authorization, legacyAgentId: legacyAgentId)
         else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
@@ -23933,6 +23948,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func agentTaskUpdateStatus(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
+        if let denial = agentCapabilityDenial(authorization, required: "tasks") { return denial }
         guard let writer = agentTaskWriter(authorization, legacyAgentId: legacyAgentId)
         else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
@@ -23985,6 +24001,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func agentTaskDelete(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
+        if let denial = agentCapabilityDenial(authorization, required: "tasks") { return denial }
         guard let writer = agentTaskWriter(authorization, legacyAgentId: legacyAgentId)
         else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
@@ -24014,6 +24031,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func agentTaskConvert(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
+        if let denial = agentCapabilityDenial(authorization, required: "tasks") { return denial }
         guard let writer = agentTaskWriter(authorization, legacyAgentId: legacyAgentId)
         else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
@@ -24055,6 +24073,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func agentTasksCreate(authorization: String?, legacyAgentId: String?, body: String) -> HTTPReply {
+        if let denial = agentCapabilityDenial(authorization, required: "tasks") { return denial }
         let auth: (agentId: String, serverId: String)
         switch agentTaskAuth(authorization: authorization, legacyAgentId: legacyAgentId) {
         case .refused(let reply): return reply
@@ -24209,6 +24228,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func agentTaskAssign(authorization: String?, body: String) -> HTTPReply {
+        if let denial = agentCapabilityDenial(authorization, required: "tasks") { return denial }
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
         else {
@@ -24994,6 +25014,98 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"messageId\":\(jsonString(card.messageId)),\"metadata\":\(marketplaceInstallMetadataJSON(updated))}")
     }
 
+    private func prepareAgentCreateCard(
+        identity: (agentId: String, serverId: String),
+        target: String,
+        action: [String: Any]
+    ) -> HTTPReply? {
+        guard let name = (action["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !name.isEmpty, name.count <= 64
+        else {
+            return Self.json(400, "{\"error\":\"Invalid agent name\",\"code\":\"INVALID_PAYLOAD\"}")
+        }
+        guard target.hasPrefix("dm:@") else { return nil }
+        var raw = String(target.dropFirst("dm:@".count))
+        guard let colon = raw.lastIndex(of: ":") else {
+            return Self.json(400, "{\"error\":\"Invalid DM thread target\",\"code\":\"INVALID_PAYLOAD\"}")
+        }
+        let suffix = String(raw[raw.index(after: colon)...])
+        raw = String(raw[..<colon])
+        guard !raw.isEmpty, !suffix.isEmpty else {
+            return Self.json(400, "{\"error\":\"Invalid DM thread target\",\"code\":\"INVALID_PAYLOAD\"}")
+        }
+        lock.lock()
+        let peerId = accounts.values.first(where: { $0.name == raw })?.id
+        var dmId = postableChannels.first { _, channel in
+            channel.kind == "dm" && channel.memberIds.contains(identity.agentId) && channel.memberIds.contains(peerId ?? "")
+        }?.key
+        let anchorId = dmId.flatMap { dm in
+            oauth.historyMessages(channelId: dm).first { $0.id.hasPrefix(suffix) }?.id
+                ?? humanMessageRows.first { $0.channelId == dm && $0.id.hasPrefix(suffix) }?.id
+        }
+        var threadId = dmId.flatMap { dm in
+            anchorId.flatMap { anchor in
+                postableChannels.first { _, channel in
+                    channel.kind == "thread" && channel.parentChannelId == dm && channel.parentMessageId == anchor
+                }?.key
+            }
+        }
+        lock.unlock()
+        guard let peerId else {
+            return Self.json(404, "{\"error\":\"Target channel not found\",\"code\":\"TARGET_NOT_FOUND\"}")
+        }
+        if dmId == nil {
+            let created = oauth.createDirectChannel(serverId: identity.serverId, firstUserId: identity.agentId, secondUserId: peerId)
+            addPostableChannel(serverId: identity.serverId, channelId: created, memberId: identity.agentId, kind: "dm", name: "dm")
+            addPostableChannel(serverId: identity.serverId, channelId: created, memberId: peerId, kind: "dm", name: "dm")
+            oauth.addChannelHuman(channelId: created, userId: peerId)
+            dmId = created
+        }
+        guard let dmId else {
+            return Self.json(404, "{\"error\":\"Target channel not found\",\"code\":\"TARGET_NOT_FOUND\"}")
+        }
+        guard let anchorId else {
+            return Self.json(404, "{\"error\":\"Thread target not found\",\"code\":\"TARGET_NOT_FOUND\"}")
+        }
+        if threadId == nil {
+            let created = oauth.createThreadChannel(parentChannelId: dmId, parentMessageId: anchorId)
+            addPostableChannel(serverId: identity.serverId, channelId: created, memberId: identity.agentId, kind: "thread", parentChannelId: dmId, parentMessageId: anchorId, name: "thread")
+            addPostableChannel(serverId: identity.serverId, channelId: created, memberId: peerId, kind: "thread", parentChannelId: dmId, parentMessageId: anchorId, name: "thread")
+            threadId = created
+        }
+        guard let threadId, let agent = oauth.agentRuntimeInfo(id: identity.agentId) else {
+            return Self.json(404, "{\"error\":\"Target channel not found\",\"code\":\"TARGET_NOT_FOUND\"}")
+        }
+        let messageId = UUID().uuidString.lowercased()
+        let content = "@\(agent.name) proposed creating agent @\(name)"
+        lock.lock()
+        appendHumanMessageLocked(StoredHumanMessage(
+            id: messageId,
+            channelId: threadId,
+            senderId: identity.agentId,
+            content: content,
+            randomId: nil,
+            messageType: "system",
+            senderType: "agent",
+            actionKind: "action-card"
+        ))
+        actionCardRecords[messageId] = ActionCardRecord(
+            messageId: messageId,
+            serverId: identity.serverId,
+            requesterAgentId: identity.agentId,
+            storageChannelId: threadId,
+            localCarrierChannelId: threadId,
+            actionType: "agent:create",
+            channelName: name,
+            visibility: "channel",
+            state: "prepared",
+            executedByUserId: nil
+        )
+        lock.unlock()
+        let metadata = "{\"kind\":\"action-card\",\"state\":\"prepared\",\"action\":{\"type\":\"agent:create\",\"name\":\(jsonString(name))},\"carrierChannelId\":\(jsonString(threadId))}"
+        return Self.json(201, "{\"messageId\":\(jsonString(messageId)),\"metadata\":\(metadata)}")
+    }
+
     private func prepareIntegrationActionCard(
         identity: (agentId: String, serverId: String), target: String, action: [String: Any]
     ) -> HTTPReply? {
@@ -25100,6 +25212,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         if let type = action["type"] as? String, type.hasPrefix("integration:") {
             return Self.json(400, "{\"error\":\"Integration approval cards must be prepared with the raft integration commands\",\"errorCode\":\"ACTION_TYPE_NOT_PREPARABLE\"}")
+        }
+        if (action["type"] as? String) == "agent:create" {
+            if let reply = prepareAgentCreateCard(identity: identity, target: target, action: action) {
+                return reply
+            }
         }
         guard (action["type"] as? String) == "channel:create",
               let channelName = action["name"] as? String
@@ -27810,6 +27927,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func agentApiReminderCancel(authorization: String?, reminderId: String) -> HTTPReply {
+        if let denial = agentCapabilityDenial(authorization, required: "tasks") { return denial }
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
         else { return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}") }
@@ -27883,6 +28001,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func agentApiReminderCreate(authorization: String?, body: String) -> HTTPReply {
+        if let denial = agentCapabilityDenial(authorization, required: "tasks") { return denial }
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
         else {
@@ -28156,7 +28275,25 @@ public final class EmailLoginDirectory: @unchecked Sendable {
 
     /// `POST /internal/agent-api/channels/:id/mute|unmute`. The mute is keyed by
     /// the agent receiver, not the channel, and only channel members may set it.
+    public func agentChannelArchive(authorization: String?, body: String, archive: Bool) -> HTTPReply {
+        if let denial = agentCapabilityDenial(authorization, required: "channels") { return denial }
+        guard let writer = agentTaskWriter(authorization, legacyAgentId: nil) else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let target = object["target"] as? String,
+              let channelId = agentTaskChannel(serverId: writer.serverId, agentId: writer.agentId, reference: target)
+        else {
+            return Self.json(400, "{\"error\":\"Invalid channel target\"}")
+        }
+        lock.lock()
+        postableChannels[channelId]?.archived = archive
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true,\"archived\":\(archive)}")
+    }
+
     public func agentSetChannelMute(authorization: String?, channelId: String, muted: Bool) -> HTTPReply {
+        if let denial = agentCapabilityDenial(authorization, required: "channels") { return denial }
         guard let writer = agentWriterAndRole(authorization: authorization, legacyAgentId: nil, scopes: []),
               let agent = oauth.agentRuntimeInfo(id: writer.agent.id), !agent.deleted
         else {

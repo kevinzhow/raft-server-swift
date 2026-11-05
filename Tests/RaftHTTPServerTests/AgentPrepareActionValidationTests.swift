@@ -98,3 +98,103 @@ private func makePrepareFixture() -> (accounts: EmailLoginDirectory, key: String
         }
     }
 }
+
+@Test func readOnlyAgentCredentialIsDeniedOnMutatingAgentApiRoutes() async throws {
+    let f = makePrepareFixture()
+    let readKey = f.accounts.mintAgentCredential(
+        agentId: f.accounts.oauth.activeAgentIds(serverId: f.serverId).first ?? "",
+        scopes: ["read"],
+        name: "read-only"
+    )
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(readKey)"
+            headers[.contentType] = "application/json"
+            func post(_ path: String, _ json: [String: Any]) async throws -> (HTTPResponse.Status, [String: Any]) {
+                let data = try JSONSerialization.data(withJSONObject: json)
+                let response = try await client.send(.post, headers: headers, to: URI(string: path)) { request in
+                    request.body = .init(data: data)
+                }
+                return (response.status, (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:])
+            }
+            let send = try await post("/internal/agent-api/send", ["target": "#\(f.channelName)", "content": "should not send"])
+            #expect(send.0 == .forbidden)
+            #expect(send.1["code"] as? String == "capability_not_authorized")
+
+            let resolve = try await post("/internal/agent-api/resolve-channel", ["target": "#\(f.channelName)"])
+            #expect(resolve.0 == .forbidden)
+            #expect(resolve.1["requiredCapability"] as? String == "send")
+
+            let claim = try await post("/internal/agent-api/tasks/claim", ["channel": "#\(f.channelName)", "task_numbers": [1]])
+            #expect(claim.0 == .forbidden)
+            #expect(claim.1["requiredCapability"] as? String == "tasks")
+
+            let reminder = try await post("/internal/agent-api/reminders", ["title": "no", "delaySeconds": 60, "msgId": UUID().uuidString.lowercased()])
+            #expect(reminder.0 == .forbidden)
+            #expect(reminder.1["requiredCapability"] as? String == "tasks")
+
+            let reaction = try await post("/internal/agent-api/messages/\(UUID().uuidString.lowercased())/reactions", ["emoji": "👍"])
+            #expect(reaction.0 == .forbidden)
+            #expect(reaction.1["requiredCapability"] as? String == "reactions")
+
+            let profile = try await post("/internal/agent-api/profile", ["displayName": "Nope"])
+            #expect(profile.0 == .forbidden)
+            #expect(profile.1["requiredCapability"] as? String == "send")
+
+            let mute = try await post("/internal/agent-api/channels/\(f.channelName)/mute", [:])
+            #expect(mute.0 == .forbidden)
+            #expect(mute.1["requiredCapability"] as? String == "channels")
+
+            for path in ["/internal/agent-api/channels/archive", "/internal/agent-api/channels/unarchive"] {
+                let response = try await post(path, ["target": "#\(f.channelName)"])
+                #expect(response.0 == .forbidden, Comment(rawValue: path))
+                #expect(response.1["requiredCapability"] as? String == "channels", Comment(rawValue: path))
+            }
+        }
+    }
+}
+
+@Test func genericPrepareActionCanPostAgentCreateCardToDMThread() async throws {
+    let f = makePrepareFixture()
+    let agentId = f.accounts.oauth.activeAgentIds(serverId: f.serverId).first ?? ""
+    let ownerId = "11111111-1111-4111-8111-111111111651"
+    let dmId = f.accounts.oauth.createDirectChannel(serverId: f.serverId, firstUserId: ownerId, secondUserId: agentId)
+    for member in [ownerId, agentId] {
+        f.accounts.addPostableChannel(serverId: f.serverId, channelId: dmId, memberId: member, kind: "dm", name: "dm")
+    }
+    f.accounts.oauth.addChannelHuman(channelId: dmId, userId: agentId)
+    let parentId = UUID().uuidString.lowercased()
+    f.accounts.insertHumanMessage(id: parentId, channelId: dmId, senderId: ownerId, content: "dm thread action-card parent")
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(f.key)"
+            headers[.contentType] = "application/json"
+            let payload: [String: Any] = [
+                "target": "dm:@prepare-action:\(String(parentId.prefix(8)))",
+                "action": [
+                    "type": "agent:create",
+                    "name": "PreparedInDmThread",
+                    "description": "Prepared from a DM thread target",
+                ],
+            ]
+            let data = try JSONSerialization.data(withJSONObject: payload)
+            let response = try await client.send(.post, headers: headers, to: "/internal/agent-api/prepare-action") { request in
+                request.body = .init(data: data)
+            }
+            #expect(response.status == .created, Comment(rawValue: response.body.string ?? ""))
+            let body = (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            #expect(body["messageId"] as? String != nil)
+            let metadata = try #require(body["metadata"] as? [String: Any])
+            #expect(metadata["kind"] as? String == "action-card")
+            #expect(metadata["state"] as? String == "prepared")
+            let action = try #require(metadata["action"] as? [String: Any])
+            #expect(action["type"] as? String == "agent:create")
+            #expect(action["name"] as? String == "PreparedInDmThread")
+        }
+    }
+}

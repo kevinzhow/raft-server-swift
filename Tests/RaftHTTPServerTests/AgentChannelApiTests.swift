@@ -16,7 +16,7 @@ import VaporTesting
     let channel = accounts.oauth.createChannel(serverId: serverId, name: "agent-api-channel", creatorUserId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channel, memberId: ownerId, name: "agent-api-channel")
     let agent = accounts.oauth.createAgent(serverId: serverId, name: "channel-agent")
-    let key = accounts.mintAgentCredential(agentId: agent, scopes: ["channels", "read"], name: "channel-api")
+    let key = accounts.mintAgentCredential(agentId: agent, scopes: ["channels", "read", "send"], name: "channel-api")
 
     try await withApp { app in
         configure(app, services: FallbackServices(
