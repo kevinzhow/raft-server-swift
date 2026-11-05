@@ -19,6 +19,7 @@ import VaporTesting
     accounts.oauth.addOwnedServer(id: foreignId, slug: "reminder-foreign", name: "Foreign Server", ownerId: ownerId)
     let agentId = accounts.oauth.createAgent(serverId: serverId, name: "RemLocal", creatorUserId: ownerId, runtime: "claude")
     let foreignAgent = accounts.oauth.createAgent(serverId: foreignId, name: "RemForeign", creatorUserId: ownerId, runtime: "claude")
+    let agentKey = accounts.mintAgentCredential(agentId: agentId, scopes: ["send", "read"], name: "reminder-agent")
     let created = try accounts.oauth.createClient(serverId: publisherId, createdByUserId: ownerId, name: "Reminder App", clientId: "reminder-app")
     accounts.oauth.markOfficialAppForTesting(clientRecordId: created.id)
     accounts.oauth.setClientOutboundGroupsForTesting(clientRecordId: created.id, groups: ["agent_reminder_write"])
@@ -80,6 +81,40 @@ import VaporTesting
             #expect(badId.0.status == .badRequest)
             let bogus = try await post("raft_installation_bogus", base)
             #expect(bogus.0.status == .unauthorized)
+
+            var agentHeaders = HTTPFields()
+            agentHeaders[.authorization] = "Bearer \(agentKey)"
+            let encodedTarget = "dm:@reminders".addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "dm:@reminders"
+            let history = try await client.get(URI(string: "/internal/agent-api/history?channel=\(encodedTarget)"), headers: agentHeaders)
+            #expect(history.status == .ok)
+            let historyText = history.body.string ?? ""
+            #expect(historyText.contains("Reminder: check the deploy"))
+            let encodedMarker = "check%20the%20deploy"
+            let search = try await client.get(URI(string: "/internal/agent-api/search?q=\(encodedMarker)&sort=recent&channel=\(encodedTarget)"), headers: agentHeaders)
+            #expect(search.status == .ok)
+            let searchBody = (try? JSONSerialization.jsonObject(with: Data((search.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            #expect((searchBody["results"] as? [[String: Any]])?.count == 1)
+
+            for target in ["dm:@reminders", "dm:@Reminders", "dm:@reminders~agent", "dm:@reminders~human", "dm:@reminders:\(String(messageId.prefix(8)))"] {
+                var sendHeaders = agentHeaders
+                sendHeaders[.contentType] = "application/json"
+                let data = try JSONSerialization.data(withJSONObject: ["target": target, "content": "done"])
+                let sent = try await client.send(.post, headers: sendHeaders, to: URI(string: "/internal/agent-api/send")) { request in
+                    request.body = .init(data: data)
+                }
+                #expect(sent.status == .forbidden, "\(target)")
+                let sentBody = (try? JSONSerialization.jsonObject(with: Data((sent.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+                #expect(sentBody["code"] as? String == "DM_TARGET_NOT_SENDABLE")
+            }
+            accounts.softDeleteAgentReminderSurfaceForTesting(agentId: agentId)
+            let rebuilt = try await post(token, ["agentId": agentId, "idempotencyKey": "rem-2", "text": "new reminder after soft delete"])
+            #expect(rebuilt.0.status == .ok)
+            #expect(rebuilt.1["created"] as? Bool == true)
+            let rebuiltId = try #require(rebuilt.1["messageId"] as? String)
+            let rebuiltMetadata = try #require(accounts.oauth.reminderMessageMetadata(id: rebuiltId))
+            #expect(rebuiltMetadata.channelId != metadata.channelId)
+            #expect(accounts.agentReminderSurfaceForTesting(agentId: agentId) == rebuiltMetadata.channelId)
+
         }
     }
 }

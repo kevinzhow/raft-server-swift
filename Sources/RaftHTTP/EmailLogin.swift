@@ -3866,6 +3866,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         let channelFilter: String? = {
             guard let channelRef, !channelRef.isEmpty else { return nil }
+            if channelRef.lowercased().hasPrefix("dm:@reminders") {
+                return agentReminderSurfaceChannels[agent.id]
+            }
             let name = channelRef.hasPrefix("#") ? String(channelRef.dropFirst()) : channelRef
             return postableChannels.first { _, channel in
                 channel.serverId == agent.serverId && channel.name == name
@@ -23123,6 +23126,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let content = (object["content"] as? String) ?? ""
         let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.lowercased().hasPrefix("dm:@reminders") {
+            return Self.json(403, "{\"error\":\"dm:@reminders is your private reminder conversation; nobody else reads it. Act at the reminder's anchor instead.\",\"code\":\"DM_TARGET_NOT_SENDABLE\"}")
+        }
         let isSendDraft = object["sendDraft"] as? Bool == true
         let isContinueAnyway = object["continueAnyway"] as? Bool == true
         if object["continue"] as? Bool == true {
@@ -25826,6 +25832,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 refusal = Self.json(404, "{\"error\":\"Channel not found or not visible\"}")
             }
         } else if reference.hasPrefix("dm:@") {
+            if reference.lowercased().hasPrefix("dm:@reminders") {
+                let surface = agentReminderSurfaceChannels[agent.id]
+                if let surface {
+                    channelId = surface
+                    canonicalTarget = "dm:@reminders"
+                    consumptionScope = "{\"agent_id\":\(jsonString(agent.id)),\"channel_id\":\(jsonString(surface)),\"channel_type\":\"dm\",\"target\":\"dm:@reminders\"}"
+                } else {
+                    refusal = Self.json(404, "{\"error\":\"Channel not found or not visible\"}")
+                }
+            } else {
             var raw = String(reference.dropFirst("dm:@".count))
             var suffix: String?
             if let colon = raw.lastIndex(of: ":") {
@@ -25865,6 +25881,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 } else {
                     refusal = Self.json(404, "{\"error\":\"Channel not found or not visible\"}")
                 }
+            }
             }
         } else {
             channelId = postableChannels.keys.first { $0 == reference }
@@ -29074,6 +29091,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(200, "{\"created\":false,\"messageId\":\(jsonString(existing)),\"surface\":{\"channelType\":\"dm\",\"channelName\":\"reminders\",\"target\":\"dm:@reminders\"}}")
         }
         var channelId = agentReminderSurfaceChannels[agentId]
+        if let existing = channelId, postableChannels[existing]?.deletedAt != nil {
+            agentReminderSurfaceChannels.removeValue(forKey: agentId)
+            channelId = nil
+        }
         lock.unlock()
         if channelId == nil {
             let createdChannel = oauth.createChannel(serverId: access.serverId, name: "reminders", creatorUserId: agentId, type: "dm")
@@ -29094,9 +29115,27 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             systemSubtype: "agent.reminder_due"
         )
         lock.lock()
+        appendHumanMessageLocked(StoredHumanMessage(
+            id: message.id,
+            channelId: channelId,
+            senderId: "system",
+            content: text,
+            randomId: nil,
+            messageType: "system",
+            senderType: "user",
+            systemSubtype: "agent.reminder_due"
+        ))
         appAgentReminderLedger[ledgerKey] = message.id
         lock.unlock()
         return Self.json(200, "{\"created\":true,\"messageId\":\(jsonString(message.id)),\"surface\":{\"channelType\":\"dm\",\"channelName\":\"reminders\",\"target\":\"dm:@reminders\"}}")
+    }
+
+    public func softDeleteAgentReminderSurfaceForTesting(agentId: String) {
+        lock.lock()
+        if let channelId = agentReminderSurfaceChannels[agentId] {
+            postableChannels[channelId]?.deletedAt = Date()
+        }
+        lock.unlock()
     }
 
     public func agentReminderSurfaceForTesting(agentId: String) -> String? {
