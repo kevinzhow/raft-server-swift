@@ -1903,3 +1903,9 @@ RFC 074 personal assistant：
 - joint channel 的 channel admin（存于各 server 自己的 projection）可修改共享 name/description，并同步到所有 projection；普通 server member 403；visibility 仍仅 server admin。
 - joint channel admin 不能 archive/remove members/set another server's member role；server admin 保留这些权限；set role 仅对本 server 成员生效（peer member 无本 projection row）。
 - joint roster 合并 peer server 成员，`canChangeChannelRole` 仅对本 server 成员为 true；GET /api/channels 对 joint channel admin 仅授予 editChannelMetadata/changeChannelMemberRoles，archive/remove/manageGuest 为 false，visibility/federate 仍 server admin。
+
+### route serverMemberEvents.api（锁定，含裁决）
+
+- 成员生命周期产生 notification 事件：admin 移除 → `server.member_removed`（reason removed、role、principal human、delivery queued）；主动 leave → reason left；删除 agent → subject agent principal agent；删除 Server → 对每个 human+agent 发 reason server_deleted，且重复删除不再新增；join link 接受 → `server.member_added`；角色变更 → `server.member_role_changed`（previous_role/role）。
+- 事件 store 与查询辅助 `serverMemberEventsForTesting` 已实现；删除 Server 幂等（重复返回 200 但不重复发事件）。
+- 裁决：OAuth app sign-in token 的撤销依赖未移植 app OAuth access-token 表；agent 创建/改角色的 service-level 用例依赖 service 注入而非 HTTP；两者不移植，其余 HTTP 行为已覆盖。

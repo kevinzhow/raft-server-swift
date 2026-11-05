@@ -312,6 +312,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         source: String, agreementId: String?, agreementVersion: Int?
     )] = []
     private var jointProjections: [JointChannelLink] = []
+    private struct ServerMemberEvent {
+        var serverId: String
+        var eventType: String
+        var subjectType: String
+        var subjectId: String
+        var provenanceJSON: String
+        var deliveryQueued: Bool
+    }
+    private var serverMemberEvents: [ServerMemberEvent] = []
+    private var deletedServerIds: Set<String> = []
     private var agentChannelJoinedAt: [String: Date] = [:]
     private var agentChannelPosted: Set<String> = []
     private var taskWriteHolds: [String: (seen: Int, latest: Int)] = [:]
@@ -8111,6 +8121,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return agentChannelReadCursors["\(channelId)\n\(agentId)"]?.seq ?? 0
     }
 
+    private func recordServerMemberEvent(serverId: String, eventType: String, subjectType: String, subjectId: String, provenanceJSON: String) {
+        serverMemberEvents.append(ServerMemberEvent(
+            serverId: serverId, eventType: eventType, subjectType: subjectType,
+            subjectId: subjectId, provenanceJSON: provenanceJSON, deliveryQueued: true
+        ))
+    }
+
+    public func serverMemberEventsForTesting(serverId: String, eventType: String?) -> [(subjectType: String, subjectId: String, provenanceJSON: String, deliveryQueued: Bool)] {
+        lock.lock(); defer { lock.unlock() }
+        return serverMemberEvents
+            .filter { $0.serverId == serverId && (eventType == nil || $0.eventType == eventType) }
+            .map { ($0.subjectType, $0.subjectId, $0.provenanceJSON, $0.deliveryQueued) }
+    }
+
     public func setAgentChannelJoinedAtForTesting(agentId: String, channelId: String, at: Date) {
         lock.lock()
         agentChannelJoinedAt["\(channelId)\n\(agentId)"] = at
@@ -12863,6 +12887,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             taskRecords[index].claimedAt = nil
             taskRecords[index].revision += 1
         }
+        lock.unlock()
+        lock.lock()
+        recordServerMemberEvent(
+            serverId: actor.info.serverId, eventType: "server.member_removed", subjectType: "agent", subjectId: agentId,
+            provenanceJSON: "{\"actor_type\":\"human\",\"principal_type\":\"agent\",\"reason\":\"removed\",\"role\":\"member\",\"source\":\"server_service\"}"
+        )
         lock.unlock()
         oauth.deleteAgent(id: agentId)
         emitRealtime("server:\(actor.info.serverId)", "agent:archive:updated", "{\"agentId\":\(jsonString(agentId))}")
@@ -19868,6 +19898,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             joinLinks[rawToken.lowercased()]?.useCount = oldCount + 1
             lock.unlock()
             oauth.addMember(serverId: existing.serverId, userId: userId, role: existing.role)
+            lock.lock()
+            recordServerMemberEvent(
+                serverId: existing.serverId, eventType: "server.member_added", subjectType: "member", subjectId: userId,
+                provenanceJSON: "{\"actor_type\":\"human\",\"principal_type\":\"human\",\"reason\":\"joined\",\"role\":\(jsonString(existing.role)),\"source\":\"server_service\"}"
+            )
+            lock.unlock()
             return Self.json(200, "{\"ok\":true,\"serverId\":\(jsonString(existing.serverId))}")
         }
         let hash = Self.sha256(rawToken)
@@ -19906,6 +19942,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         serverInvites.remove(at: index)
         lock.unlock()
         oauth.addMember(serverId: invite.serverId, userId: userId, role: invite.role)
+        lock.lock()
+        recordServerMemberEvent(
+            serverId: invite.serverId, eventType: "server.member_added", subjectType: "member", subjectId: userId,
+            provenanceJSON: "{\"actor_type\":\"human\",\"principal_type\":\"human\",\"reason\":\"joined\",\"role\":\(jsonString(invite.role)),\"source\":\"server_service\"}"
+        )
+        lock.unlock()
         return Self.json(200, "{\"ok\":true,\"serverId\":\(jsonString(invite.serverId))}")
     }
 
@@ -20063,6 +20105,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         oauth.removeMember(serverId: serverId, userId: userId)
         lock.lock()
         removedServerMembers.insert("\(serverId)\n\(userId)")
+        recordServerMemberEvent(
+            serverId: serverId, eventType: "server.member_removed", subjectType: "member", subjectId: userId,
+            provenanceJSON: "{\"actor_type\":\"human\",\"principal_type\":\"human\",\"reason\":\"left\",\"role\":\(jsonString(role)),\"source\":\"server_service\"}"
+        )
         lock.unlock()
         return Self.json(200, "{\"ok\":true}")
     }
@@ -20222,6 +20268,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         if newRole != targetRole {
             let payload = "{\"serverId\":\(jsonString(serverId)),\"userId\":\(jsonString(memberId)),\"previousRole\":\(jsonString(targetRole)),\"role\":\(jsonString(newRole))}"
             emitRealtime("server:\(serverId)", "server:member-updated", payload)
+            lock.lock()
+            recordServerMemberEvent(
+                serverId: serverId, eventType: "server.member_role_changed", subjectType: "member", subjectId: memberId,
+                provenanceJSON: "{\"actor_type\":\"human\",\"previous_role\":\(jsonString(targetRole)),\"principal_type\":\"human\",\"role\":\(jsonString(newRole)),\"source\":\"server_service\"}"
+            )
+            lock.unlock()
         }
         return Self.json(200, "{\"ok\":true,\"changed\":true}")
     }
@@ -20249,6 +20301,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         oauth.removeMember(serverId: serverId, userId: memberId)
         lock.lock()
+        recordServerMemberEvent(
+            serverId: serverId, eventType: "server.member_removed", subjectType: "member", subjectId: memberId,
+            provenanceJSON: "{\"actor_type\":\"human\",\"principal_type\":\"human\",\"reason\":\"removed\",\"role\":\(jsonString(targetRole)),\"source\":\"server_service\"}"
+        )
         for (threadId, thread) in postableChannels where thread.kind == "thread" && thread.serverId == serverId {
             guard let parentId = thread.parentChannelId,
                   let parent = postableChannels[parentId],
@@ -20264,6 +20320,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func deleteServerRoute(authorization: String?, serverId: String) -> HTTPReply {
+        lock.lock()
+        let alreadyDeleted = deletedServerIds.contains(serverId)
+        lock.unlock()
+        guard !alreadyDeleted else {
+            return Self.json(200, "{\"ok\":true}")
+        }
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)
         }
@@ -20274,7 +20336,25 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
         let memberIds = oauth.memberIdsWithRoles(serverId: serverId).map(\.id)
+        let agentIds = oauth.serverAgents(serverId: serverId).map(\.id)
+        lock.lock()
+        for memberId in memberIds {
+            recordServerMemberEvent(
+                serverId: serverId, eventType: "server.member_removed", subjectType: "member", subjectId: memberId,
+                provenanceJSON: "{\"actor_type\":\"human\",\"principal_type\":\"human\",\"reason\":\"server_deleted\",\"role\":\"member\",\"source\":\"server_service\"}"
+            )
+        }
+        for agentId in agentIds {
+            recordServerMemberEvent(
+                serverId: serverId, eventType: "server.member_removed", subjectType: "agent", subjectId: agentId,
+                provenanceJSON: "{\"actor_type\":\"human\",\"principal_type\":\"agent\",\"reason\":\"server_deleted\",\"role\":\"member\",\"source\":\"server_service\"}"
+            )
+        }
+        lock.unlock()
         oauth.deleteServer(id: serverId)
+        lock.lock()
+        deletedServerIds.insert(serverId)
+        lock.unlock()
         emitRealtime("server:\(serverId)", "server:deleted", "{\"serverId\":\(jsonString(serverId))}")
         for memberId in memberIds {
             emitRealtime("user:\(memberId)", "server:membership-removed", "{\"serverId\":\(jsonString(serverId))}")
