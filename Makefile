@@ -1,7 +1,7 @@
 SWIFT := /mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift
 PYTHON ?= python3
 
-.PHONY: test test-e2e test-pg pg-up pg-down pg-url parity parity-check
+.PHONY: test test-e2e test-pg pg-up pg-down pg-url parity parity-check architecture
 test:
 	$(SWIFT) test
 
@@ -14,6 +14,9 @@ parity:
 
 parity-check:
 	$(PYTHON) scripts/parity.py --check
+
+architecture:
+	$(PYTHON) scripts/check_architecture.py
 
 pg-up:
 	docker compose -f docker-compose.pg.yml up -d --wait

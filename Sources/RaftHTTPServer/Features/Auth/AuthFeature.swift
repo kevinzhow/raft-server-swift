@@ -6,9 +6,9 @@ import Vapor
 /// `/api/auth/...` routes extracted from `FallbackApplication.configure`.
 ///
 /// Registering this collection mounts the same paths, methods, headers, and
-/// reply handling as the original fallback registrations. `configure` stays the
-/// single place the whole HTTP surface is composed; this collection is mounted
-/// there by the integration slice.
+/// reply handling as the original fallback registrations. `configure` remains
+/// the single composition root and mounts this collection with
+/// `register(routes:)`; `boot` delegates to that same method for async mounts.
 public struct AuthFeature: RouteCollection, Sendable {
     public let services: FallbackServices
 
@@ -17,10 +17,11 @@ public struct AuthFeature: RouteCollection, Sendable {
     }
 
     public func boot(routes: any RoutesBuilder) async throws {
-    register(routes: routes)
+        register(routes: routes)
     }
 
-public func register(routes: any RoutesBuilder) {
+    /// Synchronous mount for `configure`, whose call sites are not `async`.
+    public func register(routes: any RoutesBuilder) {
         let app = routes
         app.get("api", "auth", "invite-info") { request -> Response in
             routeResponse(services.emailAccounts.inviteInfo(token: desktopQuery(request.url.query, "token")))
