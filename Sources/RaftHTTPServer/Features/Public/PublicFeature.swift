@@ -97,14 +97,3 @@ private func publicMessageWindow(_ query: String?) -> (limit: Int, before: Strin
     }
     return (limit, nil)
 }
-
-private func desktopQuery(_ query: String?, _ name: String) -> String? {
-    guard let query, !query.isEmpty else { return nil }
-    for pair in query.split(separator: "&", omittingEmptySubsequences: false) {
-        let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
-        guard parts.first == name else { continue }
-        let raw = parts.count > 1 ? parts[1] : ""
-        return raw.removingPercentEncoding ?? raw
-    }
-    return nil
-}

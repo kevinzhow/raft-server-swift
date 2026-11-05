@@ -266,20 +266,6 @@ public struct AuthFeature: RouteCollection, Sendable {
     }
 }
 
-/// Query-string lookup for redirect parameters. `FallbackApplication.swift` keeps
-/// its own file-private copy for the routes that stay there; this one serves the
-/// extracted handlers unchanged.
-private func desktopQuery(_ query: String?, _ name: String) -> String? {
-    guard let query, !query.isEmpty else { return nil }
-    for pair in query.split(separator: "&", omittingEmptySubsequences: false) {
-        let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
-        guard parts.first == name else { continue }
-        let raw = parts.count > 1 ? parts[1] : ""
-        return raw.removingPercentEncoding ?? raw
-    }
-    return nil
-}
-
 /// Encodes one typed verification result with `JSONEncoder` into the same
 /// header/body shape the rest of the auth surface publishes.
 private func authVerificationResponse(_ result: AuthVerificationResult) throws -> Response {

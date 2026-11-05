@@ -5,15 +5,15 @@ The target layering is described in ``docs/ARCHITECTURE.md``. This script
 enforces the part of it that can be measured today:
 
 1. ``Sources/RaftHTTP/EmailLogin.swift`` must not grow past its recorded
-   baseline (926 lines, the stored state + nested types + ``init`` residue).
-   Shrinking is always allowed; the baseline constant is a ratchet and may only
-   be lowered.
+   baseline (432 lines, the composition root plus the state that has not moved
+   into a domain store yet). Shrinking is always allowed; the baseline constant
+   is a ratchet and may only be lowered.
 2. Every Swift file under ``Sources/RaftHTTPServer/Features/`` must stay at or
    below 1,200 lines. A missing directory is reported as zero files.
 3. Every Swift file under ``Sources/RaftHTTP/EmailLogin/`` must stay at or
    below 1,600 lines. A missing directory is reported as zero files.
 4. ``ForTesting`` markers in ``EmailLogin.swift`` are warnings, not failures:
-   the recorded baseline is 243 markers and 0 ``private func …ForTesting``.
+   the recorded baseline is 12 markers and 0 ``private func …ForTesting``.
    New seams belong in the test-only ``TestSupport`` target (see R5 in
    ``docs/ARCHITECTURE.md``).
 
@@ -42,11 +42,13 @@ EMAIL_LOGIN_RELATIVE = Path("Sources/RaftHTTP/EmailLogin.swift")
 EMAIL_LOGIN_EXTENSIONS_RELATIVE = Path("Sources/RaftHTTP/EmailLogin")
 FEATURES_RELATIVE = Path("Sources/RaftHTTPServer/Features")
 
-# Recorded on 2026-11-06 after the AuthProfile/Notifications store split.
+# Recorded on 2026-11-06 after the AuthProfile/Notifications store split and
+# again after the TasksAndReminders/MachinesAndComputers/ServersAndChannels/
+# ManagedMCPAndCards/Feedback split plus the EmailLoginStatics3 move.
 # The line ceiling is a ratchet: lower it when a slice shrinks the file, never
 # raise it to make a check pass.
-EMAIL_LOGIN_LINE_BASELINE = 926
-EMAIL_LOGIN_FOR_TESTING_BASELINE = 14
+EMAIL_LOGIN_LINE_BASELINE = 432
+EMAIL_LOGIN_FOR_TESTING_BASELINE = 12
 EMAIL_LOGIN_PRIVATE_FUNC_FOR_TESTING_BASELINE = 0
 
 # A feature file larger than this must split along upstream route groups.

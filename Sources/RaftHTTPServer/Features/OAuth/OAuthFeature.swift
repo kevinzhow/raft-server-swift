@@ -24,69 +24,73 @@ public struct OAuthFeature: RouteCollection, Sendable {
 
     public func register(routes: any RoutesBuilder) {
         let app = routes
-        app.put("api", "oauth", "installations", ":installationId", "setup") { request -> Response in
+        let oauth = app.grouped("api", "oauth")
+        let oidc = app.grouped("oidc", ":server")
+        let oidcOAuth = oidc.grouped("api", "oauth")
+
+        oauth.put("installations", ":installationId", "setup") { request -> Response in
             routeResponse(services.emailAccounts.reportInstallationSetup(
                 authorization: request.headers[.authorization],
                 installationId: request.parameters.get("installationId") ?? "",
                 body: request.body.string ?? "{}"
             ))
         }
-        app.post("api", "oauth", "authorize", "human") { request -> Response in
+        oauth.post("authorize", "human") { request -> Response in
             routeResponse(services.emailAccounts.oauth.issueHumanAuthorization(
                 session: services.emailAccounts.oauthSession(authorization: request.headers[.authorization]),
                 body: request.body.string ?? ""
             ))
         }
-        app.post("api", "oauth", "installation-token") { request -> Response in
+        oauth.post("installation-token") { request -> Response in
             routeResponse(services.emailAccounts.oauth.mintInstallationToken(
                 authorization: request.headers[.authorization],
                 body: request.body.string ?? ""
             ))
         }
-        app.post("api", "oauth", "token") { request -> Response in
+        oauth.post("token") { request -> Response in
             routeResponse(services.emailAccounts.oauth.exchangeToken(
                 authorization: request.headers[.authorization],
                 body: request.body.string ?? "",
                 issuer: OAuthDiscovery.issuerOrigin(services.emailAccounts.serverURL) ?? ""
             ))
         }
-        app.get("api", "oauth", "userinfo") { request -> Response in
+        oauth.get("userinfo") { request -> Response in
             routeResponse(services.emailAccounts.oauth.userinfo(
                 authorization: request.headers[.authorization],
                 baseURL: services.emailAccounts.serverURL
             ))
         }
-        app.get("api", "oauth", "agents") { request -> Response in
+        oauth.get("agents") { request -> Response in
             routeResponse(services.emailAccounts.oauth.agentDirectory(
                 authorization: request.headers[.authorization],
                 baseURL: services.emailAccounts.serverURL
             ))
         }
-        app.get("api", "oauth", "serverinfo") { request -> Response in
+        oauth.get("serverinfo") { request -> Response in
             routeResponse(services.emailAccounts.oauth.serverinfo(
                 authorization: request.headers[.authorization],
                 baseURL: services.emailAccounts.serverURL
             ))
         }
-        app.post("api", "oauth", "installations", "lookup") { request -> Response in
+        oauth.post("installations", "lookup") { request -> Response in
             routeResponse(services.emailAccounts.oauth.installationLookup(
                 authorization: request.headers[.authorization],
                 body: request.body.string ?? ""
             ))
         }
-        app.post("api", "oauth", "requests", "agent") { request -> Response in
+        oauth.post("requests", "agent") { request -> Response in
             routeResponse(services.emailAccounts.oauth.requestAgentAccess(
                 authorization: request.headers[.authorization],
                 body: request.body.string ?? ""
             ))
         }
-        app.post("api", "oauth", "agent-events") { request -> Response in
+        oauth.post("agent-events") { request -> Response in
             routeResponse(services.emailAccounts.oauth.postAgentEvent(
                 authorization: request.headers[.authorization],
                 body: request.body.string ?? ""
             ))
         }
-        app.get("api", "oauth", "clients", "lookup") { request -> Response in
+        oauth.get("clients", "lookup") { request -> Response in
             routeResponse(services.emailAccounts.oauth.clientLookup(
                 session: services.emailAccounts.oauthSession(authorization: request.headers[.authorization]),
                 clientId: desktopQuery(request.url.query, "client_id") ?? desktopQuery(request.url.query, "clientId") ?? "",
@@ -97,19 +101,19 @@ public struct OAuthFeature: RouteCollection, Sendable {
         app.get(".well-known", "openid-configuration") { _ -> Response in
             routeResponse(OAuthDiscovery.openIDConfiguration(serverURL: services.emailAccounts.serverURL))
         }
-        app.get("api", "oauth", "jwks") { _ -> Response in
+        oauth.get("jwks") { _ -> Response in
             routeResponse(services.emailAccounts.oauth.jwks())
         }
-        app.get("api", "oauth", "authorize") { request -> Response in
+        oauth.get("authorize") { request -> Response in
             routeResponse(services.emailAccounts.oauth.browserAuthorize(
                 query: request.url.query ?? "",
                 appURL: services.emailAccounts.appURL
             ))
         }
-        app.get("api", "oauth", ".well-known", "openid-configuration") { _ -> Response in
+        oauth.get(".well-known", "openid-configuration") { _ -> Response in
             routeResponse(OAuthDiscovery.openIDConfiguration(serverURL: services.emailAccounts.serverURL))
         }
-        app.get("oidc", ":server", ".well-known", "openid-configuration") { request -> Response in
+        oidc.get(".well-known", "openid-configuration") { request -> Response in
             let segment = request.parameters.get("server") ?? ""
             switch resolveOIDCScope(segment, oauth: services.emailAccounts.oauth) {
             case .failure(let response):
@@ -121,7 +125,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
                 ))
             }
         }
-        app.get("oidc", ":server", "api", "oauth", ".well-known", "openid-configuration") { request -> Response in
+        oidcOAuth.get(".well-known", "openid-configuration") { request -> Response in
             let segment = request.parameters.get("server") ?? ""
             switch resolveOIDCScope(segment, oauth: services.emailAccounts.oauth) {
             case .failure(let response):
@@ -133,7 +137,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
                 ))
             }
         }
-        app.get("oidc", ":server", "api", "oauth", "agents") { request -> Response in
+        oidcOAuth.get("agents") { request -> Response in
             switch resolveOIDCScope(request.parameters.get("server") ?? "", oauth: services.emailAccounts.oauth) {
             case .failure(let response):
                 return response
@@ -145,7 +149,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
                 ))
             }
         }
-        app.get("oidc", ":server", "api", "oauth", "jwks") { request -> Response in
+        oidcOAuth.get("jwks") { request -> Response in
             switch resolveOIDCScope(request.parameters.get("server") ?? "", oauth: services.emailAccounts.oauth) {
             case .failure(let response):
                 return response
@@ -153,7 +157,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
                 return routeResponse(services.emailAccounts.oauth.jwks())
             }
         }
-        app.get("oidc", ":server", "api", "oauth", "userinfo") { request -> Response in
+        oidcOAuth.get("userinfo") { request -> Response in
             switch resolveOIDCScope(request.parameters.get("server") ?? "", oauth: services.emailAccounts.oauth) {
             case .failure(let response):
                 return response
@@ -165,7 +169,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
                 ))
             }
         }
-        app.get("oidc", ":server", "api", "oauth", "serverinfo") { request -> Response in
+        oidcOAuth.get("serverinfo") { request -> Response in
             switch resolveOIDCScope(request.parameters.get("server") ?? "", oauth: services.emailAccounts.oauth) {
             case .failure(let response):
                 return response
@@ -177,7 +181,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
                 ))
             }
         }
-        app.get("oidc", ":server", "api", "oauth", "authorize") { request -> Response in
+        oidcOAuth.get("authorize") { request -> Response in
             switch resolveOIDCScope(request.parameters.get("server") ?? "", oauth: services.emailAccounts.oauth) {
             case .failure(let response):
                 return response
@@ -189,7 +193,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
                 ))
             }
         }
-        app.post("oidc", ":server", "api", "oauth", "token") { request -> Response in
+        oidcOAuth.post("token") { request -> Response in
             let segment = request.parameters.get("server") ?? ""
             switch resolveOIDCScope(segment, oauth: services.emailAccounts.oauth) {
             case .failure(let response):
@@ -237,15 +241,4 @@ private func pixelAvatarError(_ status: Int, _ error: String) -> Response {
         ],
         body: body
     ))
-}
-
-private func desktopQuery(_ query: String?, _ name: String) -> String? {
-    guard let query, !query.isEmpty else { return nil }
-    for pair in query.split(separator: "&", omittingEmptySubsequences: false) {
-        let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
-        guard parts.first == name else { continue }
-        let raw = parts.count > 1 ? parts[1] : ""
-        return raw.removingPercentEncoding ?? raw
-    }
-    return nil
 }

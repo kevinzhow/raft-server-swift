@@ -760,3 +760,463 @@ extension EmailLoginDirectory {
     }
 
 }
+
+// MARK: - Moved model types
+
+public struct RefreshRotationReceipt: Equatable, Sendable {
+    public var attemptId: String
+    public var installationId: String
+    public var successorTokenCiphertext: String
+
+    public init(attemptId: String, installationId: String, successorTokenCiphertext: String) {
+        self.attemptId = attemptId
+        self.installationId = installationId
+        self.successorTokenCiphertext = successorTokenCiphertext
+    }
+}
+
+public struct NativeAppleCodeExchange: Equatable, Sendable {
+    public var code: String
+    public var clientId: String
+    public var clientSecret: String
+    public var grantType: String
+    public var redirectUri: String?
+
+    public init(code: String, clientId: String, clientSecret: String, grantType: String, redirectUri: String?) {
+        self.code = code
+        self.clientId = clientId
+        self.clientSecret = clientSecret
+        self.grantType = grantType
+        self.redirectUri = redirectUri
+    }
+}
+
+public struct MobileProviderProfile: Equatable, Sendable {
+    public var providerUserId: String
+    public var email: String
+    public var displayName: String?
+    /// Apple rejects a link when this is false. Google and GitHub profiles are already verified.
+    public var emailVerified: Bool
+
+    public init(providerUserId: String, email: String, displayName: String?, emailVerified: Bool = true) {
+        self.providerUserId = providerUserId
+        self.email = email
+        self.displayName = displayName
+        self.emailVerified = emailVerified
+    }
+}
+
+public struct SocialAuthState: Equatable, Sendable {
+    public var provider: String
+    public var mode: String
+    public var nonce: String
+    public var kind: String
+    public var mobileRequestId: String
+    public var desktopNonce: String?
+    public var returnTo: String?
+    public var linkUserId: String?
+    public var linkOnConflict: Bool = false
+
+    public init(provider: String, mode: String, nonce: String, kind: String, mobileRequestId: String, desktopNonce: String?, returnTo: String? = nil, linkUserId: String? = nil, linkOnConflict: Bool = false) {
+        self.provider = provider
+        self.mode = mode
+        self.nonce = nonce
+        self.kind = kind
+        self.mobileRequestId = mobileRequestId
+        self.desktopNonce = desktopNonce
+        self.returnTo = returnTo
+        self.linkUserId = linkUserId
+        self.linkOnConflict = linkOnConflict
+    }
+}
+
+public struct EmailLegalAcceptance: Equatable, Sendable {
+    public var termsVersion: String
+    public var privacyVersion: String
+    public var termsUrl: String
+    public var privacyUrl: String
+    public var source: String
+    public var userAgentHash: String?
+    public var locale: String?
+
+    public init(
+        termsVersion: String,
+        privacyVersion: String,
+        termsUrl: String,
+        privacyUrl: String,
+        source: String,
+        userAgentHash: String?,
+        locale: String?
+    ) {
+        self.termsVersion = termsVersion
+        self.privacyVersion = privacyVersion
+        self.termsUrl = termsUrl
+        self.privacyUrl = privacyUrl
+        self.source = source
+        self.userAgentHash = userAgentHash
+        self.locale = locale
+    }
+}
+
+public struct RecordedProductEvent: Sendable {
+    public var subjectType: String
+    public var subjectId: String
+    public var eventType: String
+    public var actorType: String
+    public var actorId: String
+    public var source: String
+    public var idempotencyKey: String?
+    public var metadataJSON: String
+}
+
+public struct ClientEventRecord: Sendable {
+    public var event: String
+    public var analyticsId: String
+    public var serverId: String
+    public var source: String
+    public var sessionId: String
+    public var appVersion: String?
+    public var propertiesJSON: String
+}
+
+// MARK: - Moved nested types and constants
+
+extension EmailLoginDirectory {
+    // MARK: Types
+
+    public struct MobileAppEmailContact: Equatable, Sendable {
+        public var userId: String
+        public var email: String
+        public var audienceId: String
+        public var status: String
+        public var optedOutAt: Date?
+    }
+
+    public struct NativeNotificationIntent: Sendable {
+        public var recipientUserId: String
+        public var eventKey: String
+        public var serverId: String
+        public var kind: String
+        public var channelId: String
+        public var threadId: String?
+        public var parentChannelId: String?
+        public var parentMessageId: String?
+        public var messageId: String
+        public var title: String
+        public var body: String
+        public var createdAt: Date
+
+        public init(recipientUserId: String, eventKey: String, serverId: String, kind: String, channelId: String, threadId: String?, parentChannelId: String?, parentMessageId: String?, messageId: String, title: String, body: String, createdAt: Date) {
+            self.recipientUserId = recipientUserId
+            self.eventKey = eventKey
+            self.serverId = serverId
+            self.kind = kind
+            self.channelId = channelId
+            self.threadId = threadId
+            self.parentChannelId = parentChannelId
+            self.parentMessageId = parentMessageId
+            self.messageId = messageId
+            self.title = title
+            self.body = body
+            self.createdAt = createdAt
+        }
+    }
+
+    public struct NativeEnrollmentGrantRecord: Sendable {
+        public var secretHash: String
+        public var json: String
+    }
+
+    public enum NativeStreamOpen: Sendable {
+        case closed(HTTPReply)
+        case streaming(userId: String, cursorSeq: Int, replay: [(seq: Int, frame: String)])
+    }
+
+    public struct MobileAppEmailJourney: Equatable, Sendable {
+        public var userId: String
+        public var email: String
+        public var journeyKey: String
+        public var day1Status: String
+        public var day1EmailId: String?
+        public var suppressedReason: String?
+        public var canceledAt: Date?
+    }
+
+    public struct ForwardedSource: Equatable, Sendable {
+        public var sourceServerId: String
+        public var sourceTargetId: String
+        public var sourceMessageId: String
+        public var snapshotId: String
+        public var snapshotType: String
+        public var snapshotLabel: String
+        public var snapshotLabelVisibility: String
+        public var provenanceState: String
+
+        public init(sourceServerId: String, sourceTargetId: String, sourceMessageId: String, snapshotId: String, snapshotType: String, snapshotLabel: String, snapshotLabelVisibility: String, provenanceState: String) {
+            self.sourceServerId = sourceServerId
+            self.sourceTargetId = sourceTargetId
+            self.sourceMessageId = sourceMessageId
+            self.snapshotId = snapshotId
+            self.snapshotType = snapshotType
+            self.snapshotLabel = snapshotLabel
+            self.snapshotLabelVisibility = snapshotLabelVisibility
+            self.provenanceState = provenanceState
+        }
+    }
+
+    public struct MentionFact: Equatable, Sendable {
+        public var targetType: String
+        public var targetId: String
+        public var notifiableAtSend: Bool
+        public var notified: Bool
+    }
+
+    public struct InboxFact: Equatable, Sendable {
+        public var receiverType: String
+        public var receiverId: String
+        public var personalMention: Bool = false
+        public var unreadEligible: Bool = true
+
+        public init(receiverType: String, receiverId: String, personalMention: Bool = false, unreadEligible: Bool = true) {
+            self.receiverType = receiverType
+            self.receiverId = receiverId
+            self.personalMention = personalMention
+            self.unreadEligible = unreadEligible
+        }
+    }
+
+    public struct MentionActionRecord: Equatable, Sendable {
+        public var notified: Bool
+        public var notifiedByType: String?
+        public var notifiedById: String?
+        public var notifiedAction: String?
+    }
+
+    public struct ChannelMessageEvent: Equatable, Sendable {
+        public var room: String
+        public var name: String
+        public var messageId: String
+        public var attachmentIds: [String]
+    }
+
+    public enum AgentWakeStreamStart {
+        /// `cursorSeq` is the last hint seq already replayed; the stream then
+        /// only pushes hints newer than it.
+        case start(token: String, cursorSeq: Int?, firstFrame: String)
+        case refused(HTTPReply)
+    }
+
+    public struct TimezoneObservation: Sendable {
+        public var firstTimezone: String
+        public var firstAt: Date
+        public var lastTimezone: String
+        public var lastAt: Date
+    }
+
+    enum WhenToUseError: Error {
+        case tooLong
+        case notSingleLine
+        case bareScopedPackage
+
+        var message: String {
+            switch self {
+            case .tooLong: return "whenToUse must be at most 160 characters"
+            case .notSingleLine: return "whenToUse must be a single line without control characters"
+            case .bareScopedPackage:
+                return "whenToUse must not contain a bare scoped package name like @scope/pkg; wrap it in backticks like `@scope/pkg`"
+            }
+        }
+    }
+
+    // MARK: Statics
+
+    public static let termsVersion = "2026-05-12"
+
+    public static let privacyVersion = "2026-05-12"
+
+    public static let termsURL = "https://raft.build/terms"
+
+    public static let privacyURL = "https://raft.build/privacy"
+
+    static let doneFrontierInt4Limit = 2_147_483_647
+
+    static let selfCausedFreshnessExemptSubtypes: Set<String> = ["task.created_summary"]
+
+    /// `GET /internal/agent-api/events`. Durable channel messages for the
+    /// external agent plus pending third-party events; the call drains both.
+    /// At most this many channel rows per conversation in one pull. The pull
+    /// advances each conversation's cursor, and `has_more` says whether
+    /// another call has anything left.
+    static let agentInboxPullCap = 5
+
+    static let appLoginReturnUris: Set<String> = [
+        "raft://login/callback",
+        "raft-debug://login/callback",
+    ]
+
+    static let socialProviders: Set<String> = ["google", "github", "apple"]
+
+    static let defaultMobileReturnURIs: Set<String> = [
+        "raft://oauth/callback",
+        "raft-alpha://oauth/callback",
+        "raft-beta://oauth/callback",
+        "raft-debug://oauth/callback",
+        "raft-dev://oauth/callback",
+    ]
+
+    static let rejected = json(401, "{\"code\":\"AUTH_INVALID_CREDENTIALS\",\"error\":\"Invalid email or password\"}")
+
+    static let missingAuthorization = json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+
+    static let invalidToken = json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+
+    static let wrongPassword = json(401, "{\"code\":\"AUTH_CURRENT_PASSWORD_INCORRECT\",\"error\":\"Current password is incorrect\"}")
+
+    static let linkAuthRequired = json(401, "{\"code\":\"auth_required\",\"error\":\"Authentication is required to link an account\"}")
+
+    static let linkMismatch = json(403, "{\"code\":\"link_user_mismatch\",\"error\":\"Social auth link does not match the authenticated user\"}")
+
+    static let mobileLinkMismatch = json(403, "{\"code\":\"link_user_mismatch\",\"error\":\"Mobile OAuth link request does not match the authenticated user\"}")
+
+    static let legalObject = "{\"termsVersion\":\"\(termsVersion)\",\"privacyVersion\":\"\(privacyVersion)\",\"termsUrl\":\"\(termsURL)\",\"privacyUrl\":\"\(privacyURL)\"}"
+
+    static let legalRequired = json(422, "{\"error\":\"LEGAL_ACCEPTANCE_REQUIRED\",\"legal\":\(legalObject)}")
+
+    static let returnURINotAllowed = json(400, "{\"code\":\"return_uri_not_allowed\",\"error\":\"Mobile OAuth return URI is not allowed\"}")
+
+    static let termsChanged = json(409, "{\"error\":\"TERMS_CHANGED\",\"legal\":\(legalObject)}")
+
+    static let deprecatedAgentRuntimes: Set<String> = ["kimi", "gemini", "antigravity", "copilot"]
+
+    /// Terminal migration failure codes a Computer may report over
+    /// `transport-lost`; anything else collapses to the generic reason.
+    static let migrationTerminalFailureCodes: Set<String> = [
+        "MIGRATION_TRANSPORT_LOST",
+        "MIGRATION_OBJECT_STORE_BUNDLE_TOO_LARGE",
+        "MIGRATION_OBJECT_STORE_MANIFEST_TOO_LARGE",
+        "MIGRATION_OBJECT_STORE_INSUFFICIENT_DISK",
+        "MIGRATION_OBJECT_STORE_ENTRY_COUNT_LIMIT_EXCEEDED",
+        "MIGRATION_WORKSPACE_ALREADY_EXISTS",
+        "MIGRATION_WORKSPACE_COMPLETE_OLD_COPY",
+        "MIGRATION_CHUNK_DIGEST_MISMATCH",
+        "MIGRATION_WHOLE_BUNDLE_DIGEST_MISMATCH",
+        "MIGRATION_LEASE_EXPIRED",
+        "MIGRATION_GENERATION_STALE",
+        "MIGRATION_CONTROL_MANIFEST_INVALID",
+        "MIGRATION_CONTROL_MANIFEST_TOO_LARGE",
+    ]
+
+    static let migrationSourceArchiveMaxAttempts = 12
+
+    static let migrationSourceArchiveMovedCodes: Set<String> = [
+        "MIGRATION_WORKSPACE_ARCHIVE_AGENT_RUNNING",
+        "MIGRATION_WORKSPACE_ARCHIVE_NEWER_OWNER",
+    ]
+
+    /// A `starting` row is observed, not re-dispatched, inside this window.
+    static let migrationAutoStartLease: TimeInterval = 30
+
+    static let agentConnectionProviders: Set<String> = ["github"]
+
+    static let agentConnectionIDPattern = "^[A-Za-z0-9_.~-]{1,200}$"
+
+    static let machineAPIKeyPrefix = "sk_machine_"
+
+    static let computerAPIKeyPrefix = "sk_computer_"
+
+    static let computerAPIKeyPrefixLength = 16
+
+    static let onboardingSteps: Set<String> = [
+        "add-computer", "create-agent", "invite-teammates", "join-community", "notifications",
+    ]
+
+    static let runtimeFormSchemas: [String: String] = [
+        "builtin": "builtin-pi.create.v3",
+        "claude": "claude.create.v1",
+        "codex": "codex.create.v1",
+        "kimi-sdk": "kimi-sdk.create.v1",
+        "cursor": "cursor.create.v1",
+        "opencode": "opencode.create.v1",
+        "pi": "pi.create.v1",
+        "gemini": "gemini.create.v1",
+        "kimi": "kimi.create.v1",
+        "antigravity": "antigravity.create.v1",
+        "grok": "grok.create.v1",
+    ]
+
+    /// Runtimes that still publish a v1 form definition.
+    static let runtimeFormV1Runtimes: Set<String> = ["builtin", "claude", "cursor", "kimi-sdk"]
+
+    /// Runtimes whose released form only exists at protocol v2; v1 clients
+    /// must see them as having no form at all.
+    static let runtimeFormV2Only: Set<String> = [
+        "pi", "opencode", "gemini", "codex", "grok", "antigravity", "kimi",
+    ]
+
+    static let grokBundledModels: [RuntimeModelProbeModel] = [
+        RuntimeModelProbeModel(
+            id: "grok-4.5",
+            label: "Grok 4.5",
+            supportedReasoningEfforts: ["high", "medium", "low"],
+            defaultReasoningEffort: "high"
+        ),
+        RuntimeModelProbeModel(id: "grok-4.6", label: "Grok 4.6"),
+        RuntimeModelProbeModel(id: "grok-composer-2.5-fast", label: "Composer 2.5"),
+    ]
+
+    static let runtimeAccountUsageProviders: Set<String> = ["claude", "codex", "kimi", "grok"]
+
+    public static let sharePNGData = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=") ?? Data()
+
+    static let timezoneAliases: [String: String] = [
+        "US/Pacific": "America/Los_Angeles",
+        "US/Eastern": "America/New_York",
+        "US/Central": "America/Chicago",
+        "US/Mountain": "America/Denver",
+        "US/Alaska": "America/Anchorage",
+        "US/Hawaii": "Pacific/Honolulu",
+    ]
+
+    static let scopeAttestationMaxChars = 16 * 1024
+
+    static let attachmentCommentsDisabledReply = json(403, "{\"error\":\"Attachment comments are not enabled on this server\",\"code\":\"attachment_comments_disabled\"}")
+
+    static let validTaskStatuses: Set<String> = ["todo", "in_progress", "in_review", "done", "cancelled"]
+
+    static let labDefinitions: [(key: String, name: String, description: String, state: String)] = [
+        ("open_lab", "Open Lab", "Available", "open"),
+        ("paused_lab", "Paused Lab", "Paused", "paused"),
+        ("draft_lab", "Draft Lab", "Hidden", "draft"),
+        ("retired_lab", "Retired Lab", "Historical", "retired"),
+    ]
+
+    /// Raft's own default for hosted agents; naming it always follows the provider default.
+    static let hostedDefaultModel = "deepseek-flash"
+
+    /// Production throttle for credential-use writes.
+    public static let agentCredentialUseDefaultThrottleMs = 60_000
+
+    // MARK: Computed
+
+    public var experimentalSurfacesDisabled: Bool {
+        lock.lock()
+        let override = experimentalSurfacesDisabledForTesting
+        lock.unlock()
+        if let override { return override }
+        return (ProcessInfo.processInfo.environment["SLOCK_EXPERIMENTAL_SURFACES_DISABLED"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "true"
+    }
+
+    public var wakeStreamHeartbeatMs: Int? {
+        lock.lock()
+        let override = wakeStreamHeartbeatOverrideMs
+        lock.unlock()
+        if let override { return override }
+        return ProcessInfo.processInfo.environment["SLOCK_WAKE_STREAM_HEARTBEAT_MS"].flatMap(Int.init)
+    }
+
+    var memberAttentionJSON: String {
+        ",\"attention\":{\"stillArrives\":[\"Followed threads still notify this member unless they unfollow them.\"],\"threadBoundary\":\"Removing this member does not unfollow existing thread follows. Private channel/thread content still requires current parent access.\",\"manageCommand\":\"Use raft thread unfollow to manage thread follows.\"}"
+    }
+}

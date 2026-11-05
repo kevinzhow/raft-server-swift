@@ -4,122 +4,6 @@ import Foundation
 import FoundationNetworking
 #endif
 
-public struct RefreshRotationReceipt: Equatable, Sendable {
-    public var attemptId: String
-    public var installationId: String
-    public var successorTokenCiphertext: String
-
-    public init(attemptId: String, installationId: String, successorTokenCiphertext: String) {
-        self.attemptId = attemptId
-        self.installationId = installationId
-        self.successorTokenCiphertext = successorTokenCiphertext
-    }
-}
-
-public struct NativeAppleCodeExchange: Equatable, Sendable {
-    public var code: String
-    public var clientId: String
-    public var clientSecret: String
-    public var grantType: String
-    public var redirectUri: String?
-
-    public init(code: String, clientId: String, clientSecret: String, grantType: String, redirectUri: String?) {
-        self.code = code
-        self.clientId = clientId
-        self.clientSecret = clientSecret
-        self.grantType = grantType
-        self.redirectUri = redirectUri
-    }
-}
-
-public struct MobileProviderProfile: Equatable, Sendable {
-    public var providerUserId: String
-    public var email: String
-    public var displayName: String?
-    /// Apple rejects a link when this is false. Google and GitHub profiles are already verified.
-    public var emailVerified: Bool
-
-    public init(providerUserId: String, email: String, displayName: String?, emailVerified: Bool = true) {
-        self.providerUserId = providerUserId
-        self.email = email
-        self.displayName = displayName
-        self.emailVerified = emailVerified
-    }
-}
-
-public struct SocialAuthState: Equatable, Sendable {
-    public var provider: String
-    public var mode: String
-    public var nonce: String
-    public var kind: String
-    public var mobileRequestId: String
-    public var desktopNonce: String?
-    public var returnTo: String?
-    public var linkUserId: String?
-    public var linkOnConflict: Bool = false
-
-    public init(provider: String, mode: String, nonce: String, kind: String, mobileRequestId: String, desktopNonce: String?, returnTo: String? = nil, linkUserId: String? = nil, linkOnConflict: Bool = false) {
-        self.provider = provider
-        self.mode = mode
-        self.nonce = nonce
-        self.kind = kind
-        self.mobileRequestId = mobileRequestId
-        self.desktopNonce = desktopNonce
-        self.returnTo = returnTo
-        self.linkUserId = linkUserId
-        self.linkOnConflict = linkOnConflict
-    }
-}
-
-public struct EmailLegalAcceptance: Equatable, Sendable {
-    public var termsVersion: String
-    public var privacyVersion: String
-    public var termsUrl: String
-    public var privacyUrl: String
-    public var source: String
-    public var userAgentHash: String?
-    public var locale: String?
-
-    public init(
-        termsVersion: String,
-        privacyVersion: String,
-        termsUrl: String,
-        privacyUrl: String,
-        source: String,
-        userAgentHash: String?,
-        locale: String?
-    ) {
-        self.termsVersion = termsVersion
-        self.privacyVersion = privacyVersion
-        self.termsUrl = termsUrl
-        self.privacyUrl = privacyUrl
-        self.source = source
-        self.userAgentHash = userAgentHash
-        self.locale = locale
-    }
-}
-
-public struct RecordedProductEvent: Sendable {
-    public var subjectType: String
-    public var subjectId: String
-    public var eventType: String
-    public var actorType: String
-    public var actorId: String
-    public var source: String
-    public var idempotencyKey: String?
-    public var metadataJSON: String
-}
-
-public struct ClientEventRecord: Sendable {
-    public var event: String
-    public var analyticsId: String
-    public var serverId: String
-    public var source: String
-    public var sessionId: String
-    public var appVersion: String?
-    public var propertiesJSON: String
-}
-
 /// `POST /api/auth/login`.
 ///
 /// A non-string or empty email or password is refused before any account lookup.
@@ -155,7 +39,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     var serverAgents: [String: ServerAgent] = [:]
     var storedMentions: [StoredMention] = []
     var channelAgentMembers: [String: Set<String>] = [:]
-    var machineKeys: [String: (serverId: String, agentId: String)] = [:]
     let inboxFactStore = InboxFactStore()
     var storedAgentDeliveries: [(agentId: String, messageId: String, channelType: String)] = []
     /// RFC 074 assistant link: agent id -> owner user id.
@@ -164,8 +47,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     var agentMachineIds: [String: String] = [:]
     var agentRuntimeProfiles: [String: AgentRuntimeProfileFact] = [:]
     var activeAgentMigrations: [String: AgentMigrationFact] = [:]
-    var latestComputerReleaseForTesting: (version: String, notesJSON: String)?
-    var machineBroadcastPoliciesForTesting: [String: String] = [:]
     var agentMigrationServers: Set<String> = []
     var hostedMigrationServers: Set<String> = []
     var hostedRuntimeServers: Set<String> = []
@@ -173,16 +54,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     var hostedMigrations: [String: HostedMigrationRecord] = [:]
     var appLoginRequests: [String: AppLoginRequest] = [:]
 
-
-    var machineMigrations: [String: MachineMigrationRecord] = [:]
     /// Test seam for the frozen-generation cancel dispatch to a Computer.
     public var agentMigrationCancelDispatch: (@Sendable (_ machineId: String, _ role: String, _ migrationRef: String, _ transportGeneration: String, _ stopAgent: Bool) -> Void)?
-    /// Capabilities reported by each Computer for migration admission.
-    public var machineMigrationCapabilities: [String: Set<String>] = [:]
-    /// Runtime-detection progress reported by each Computer.
-    public var machineRuntimeDetections: [String: (status: String, unfinished: Set<String>)] = [:]
-    /// Server plan override; missing means Pro.
-    public var serverPlans: [String: String] = [:]
     /// Returns an object-store session id, or nil when provisioning fails.
     public var machineMigrationProvisioner: (@Sendable (_ sourceMachineId: String, _ targetMachineId: String) -> String?)?
     /// Lease dispatch to the source (upload) and target (download) Computers.
@@ -229,7 +102,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     var agentStatusOccurredAt: [String: Date] = [:]
     var agentActivityEventIds: [String: Set<String>] = [:]
     let threadFollowStore = ThreadFollowStore()
-    var agentIntegrationLogins: [String: AgentIntegrationLoginRecord] = [:]
     var attachmentCommentRecords: [String: [AttachmentCommentRecord]] = [:]
     var hostedUsage: [String: String] = [:]
     var hostedModelPickerServers: Set<String> = []
@@ -253,57 +125,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
     }
 
-
-    /// Raft's own default for hosted agents; naming it always follows the provider default.
-    static let hostedDefaultModel = "deepseek-flash"
-
     var agentArchiveRecords: [String: AgentArchiveRecord] = [:]
-    var postableChannels: [String: PostableChannel] = [:]
-    var threadOrder: [String] = []
-    var serverMemberRoles: [String: String] = [:]
-    var hideHumansFromMembers: [String: Bool] = [:]
-    var serverMemberStatuses: [String: String] = [:]
-    var membershipAgreementAudits: [(
-        serverId: String, subjectId: String, actorUserId: String,
-        source: String, agreementId: String?, agreementVersion: Int?
-    )] = []
-    var jointProjections: [JointChannelLink] = []
-    var serverMemberEvents: [ServerMemberEvent] = []
-    var deletedServerIds: Set<String> = []
-    var sidebarReadAllEnabled = false
     var translationProviderOverride: String?
-    var appAgentReminderLedger: [String: String] = [:]
-    var agentReminderSurfaceChannels: [String: String] = [:]
     var handsFeedbackUpstreamHandler: ((URLRequest) -> (status: Int, headers: [String: String], body: Data))?
     var handsConversationSessionEnabledForTesting: Bool?
     var handsConversationAppTokenOverride: String?
-    var productFeedbackReporterSessionCache: [String: (token: String, expiresAt: Date)] = [:]
-    /// SecureString-shaped `HANDS_FEEDBACK_APPS` payload for `product_feedback_multi_app`.
-    /// Production reads this from SSM; the port takes it from `setHandsFeedbackAppsForTesting`.
-    var handsFeedbackAppsJSONForTesting: String?
-    /// Overlay for the legacy `HANDS_FEEDBACK_*` view, so a test can reproduce the
-    /// deploy environment without mutating the process environment.
-    var handsFeedbackLegacyEnvironmentForTesting: [String: String]?
     var handsFeedbackWarningSinkForTesting: ((String) -> Void)?
-    var productFeedbackRouteBindingSuccesses: [String: Date] = [:]
-    var productFeedbackRouteCommitments: [String: Data] = [:]
-    var productFeedbackRouteVerifiedCommitments: Set<String> = []
     var messageTranslationLedger: [String: (status: String, providerBilledChars: Int, targetLanguage: String, translatedContent: String)] = [:]
     var agentChannelJoinedAt: [String: Date] = [:]
     var agentChannelPosted: Set<String> = []
-    var taskWriteHolds: [String: (seen: Int, latest: Int)] = [:]
     var readMutationRecords: [String: ReadMutationRecord] = [:]
     var readMutationAuthoritySeq: [String: Int] = [:]
     var readMutationOrder: [String] = []
     var readMutationAcks: [String: (scopeId: String, throughSeq: Int)] = [:]
     var userChannelReadCursorsForTesting: [String: Int] = [:]
-    var jointInvites: [(
-        id: String, hostServerId: String, hostChannelId: String,
-        targetServerId: String, targetChannelId: String,
-        targetOwnerId: String, status: String
-    )] = []
-    var composerResourceServers: Set<String> = []
-    var installedServerApps: [String: Set<String>] = [:]
     var socialCompletions: [SocialCompletion] = []
     var pendingSocialLinks: [String: PendingSocialLink] = [:]
     var mobileRequests: [String: MobileOAuthRequest] = [:]
@@ -339,29 +174,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public var handsFeedbackAppIdOverride: String?
     public var handsFeedbackAppSlugOverride: String?
     public var handsFeedbackAppTokenOverride: String?
-    public var providerConnectionsEnabledServers: Set<String> = []
-    var providerConnections: [ProviderConnection] = []
-    var providerAssignments: [ProviderAssignment] = []
     /// Share artifacts store the uploaded PNG bytes and the intrinsic size read
     /// from the IHDR chunk, because the public page advertises the real image
     /// dimensions and the PNG route serves the same bytes the user selected.
 
     var shareArtifacts: [String: ShareArtifactRecord] = [:]
-    var serverLabsState: [String: ServerLabsState] = [:]
-    var serverInvites: [(id: String, serverId: String, email: String, role: String, tokenHash: String?)] = []
-    var serverSwitcherOrders: [String: (ids: [String], version: Int)] = [:]
-    var serverOnboardingSettings: [String: (agentId: String?, greeting: Bool)] = [:]
-    var setupPhases: [String: String] = [:]
-    var setupHandoffs: Set<String> = []
-    var guestRoleServers: Set<String> = []
-    var computers: [(id: String, serverId: String, name: String, apiKey: String, machineId: String?, revokedAt: Date?, online: Bool, version: String?)] = []
-    var computerAttachers: [String: String] = [:]
-    var runtimeAccountUsage: [String: (json: String, staleAfter: Date)] = [:]
-    var runtimeAccountUsageRefreshAt: [String: Date] = [:]
-    var machineRuntimeModels: [String: [String: (models: [(id: String, label: String)], updatedAt: Date)]] = [:]
-    var proSeats: [String: Int] = [:]
-    var joinLinks: [String: JoinLinkRecord] = [:]
-    var usageLimitAttentionServers: Set<String> = []
     var systemAttentionIncidents: [SystemAttentionIncident] = []
     var systemAttentionReceipts: [String: SystemAttentionReceipt] = [:]
     var hostedAgents: Set<String> = []
@@ -380,9 +197,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     let sendFreshnessCommitLock = NSLock()
     var attestedSendEventRecords: [AttestedSendEventRecord] = []
     var agentSendActivityRecords: [String: [(title: String, text: String, producerFactId: String?)]] = [:]
-    /// Test seam for the daemon capability that makes legacy receive-ack a
-    /// volatile delivery ack instead of a usability checkpoint.
-    var machineModelSeenCapabilityForTesting: Set<String> = []
     // Human read frontiers live in the ledger alongside the message rows. The
     // directory keeps no parallel cursor store.
     var agentActivities: [String: (activity: String, detail: String)] = [:]
@@ -391,57 +205,17 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Canonical Done frontier captured at admission, per `userId\nscopeId`.
     var inboxDoneFrontiers: [String: Int] = [:]
     var inboxResiduesForTesting: Set<String> = []
-    var guestVisibleChannels: [String: Bool] = [:]
-    var guestJoinableChannels: [String: Bool] = [:]
-    var readReceiptsServers: Set<String> = []
-    var channelHumanRoles: [String: String] = [:]
-    var channelAuthorityRevisions: [String: Int] = [:]
-    var sidebarModes: [String: (channel: String, joint: String, dm: String, pinned: String, channelTabs: [String], agentTabs: [String])] = [:]
-    var sidebarSections: [String: (sections: [(id: String, name: String, emoji: String?, sortMode: String)], order: [String], placements: [(kind: String, id: String, sectionId: String, position: Int)], version: Int)] = [:]
-    var sidebarPinnedRefs: [String: (refs: [(kind: String, id: String)], channelIds: [String], agentIds: [String], version: Int)] = [:]
-    var reminderRecords: [ReminderRecord] = []
-    var reminderEvents: [ReminderEvent] = []
-    var taskRecords: [TaskRecord] = []
-    var machines: [MachineRecord] = []
-    var machineStatusVersions: [String: Int] = [:]
-    var machineOnline: [String: Bool] = [:]
     var agentCredentialUseThrottleOverrideMs: Int?
     var wakeStreamHeartbeatOverrideMs: Int?
     var agentLastSeenAt: [String: Date] = [:]
-    var feedbackLocatorRecords: [FeedbackLocatorRecord] = []
-    var managedMCPServers: [ManagedMCPServerRecord] = []
-    var managedMCPAssignments: [String: [String: (enabled: Bool, allowedTools: [String]?)]] = [:]
-    var actionCardRecords: [String: ActionCardRecord] = [:]
-    var marketplaceInstallCards: [String: MarketplaceInstallCard] = [:]
-    var integrationRegisterCards: [String: IntegrationRegisterCard] = [:]
-    var agentApiSendReceipts: [String: AgentApiSendReceipt] = [:]
-    var pendingActionMessageEvents: [(agentId: String, messageId: String, content: String)] = []
-    var agentGrantSets: [String: Set<String>] = [:]
-    var appConfigOverrides: [String: [String: [String: Any]]] = [:]
-    var appConfigRevisions: [String: [String: Int]] = [:]
-    var agentIntegrationGrants: [String: Bool] = [:]
-    var agentAudienceStatusOverrides: [String: String] = [:]
     var agentAttachmentBytes: [String: Data] = [:]
     var agentAttachmentPresign: (@Sendable (String, Int, String, String) throws -> String)?
-
-    /// A prepared Marketplace install card. The action payload is rebuilt from
-    /// this record on every read, so the message projection never carries a
-    /// stale canonical action.
-
-    /// A prepared `integration:register_app` card. The initial client secret
-    /// is created at execution time and never lands in card state.
-
-    /// One committed agent-api send per (server, agent, idempotencyKey).
-
 
     var externalPushWebhooks: [String: (url: String, secret: String)] = [:]
     var agentStatusProtocolAdoptedAt: [String: Date] = [:]
     var agentCursorPullState: [String: (lastPulledAt: Date, pendingAcks: Int)] = [:]
     var agentProviderPositions: [String: (provider: String, state: String, providerAgentId: String?, syncPending: Bool, lastErrorCode: String?, lastErrorAt: Date?, activatedAt: Date?)] = [:]
 
-    /// Production throttle for credential-use writes.
-    public static let agentCredentialUseDefaultThrottleMs = 60_000
-    var deletedMachineWorkspaces: Set<String> = []
     let realtimeEmitterLock = NSLock()
     var realtimeEmitterStorage: (@Sendable (String, String, String?) -> Void)?
     /// `MOBILE_APP_EMAIL_UNSUBSCRIBE_SECRET`, or `JWT_SECRET`. The test harness uses `test-jwt-secret`.
@@ -500,116 +274,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     ]
     var featureFlagRuleRecords: [FeatureFlagRuleRecord] = []
 
-
-
-    public static let termsVersion = "2026-05-12"
-    public static let privacyVersion = "2026-05-12"
-    public static let termsURL = "https://raft.build/terms"
-    public static let privacyURL = "https://raft.build/privacy"
-
     public init() {}
 
     var experimentalSurfacesDisabledForTesting: Bool?
-
-    public var experimentalSurfacesDisabled: Bool {
-        lock.lock()
-        let override = experimentalSurfacesDisabledForTesting
-        lock.unlock()
-        if let override { return override }
-        return (ProcessInfo.processInfo.environment["SLOCK_EXPERIMENTAL_SURFACES_DISABLED"] ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() == "true"
-    }
-
-    public struct MobileAppEmailContact: Equatable, Sendable {
-        public var userId: String
-        public var email: String
-        public var audienceId: String
-        public var status: String
-        public var optedOutAt: Date?
-    }
-
-    public struct NativeNotificationIntent: Sendable {
-        public var recipientUserId: String
-        public var eventKey: String
-        public var serverId: String
-        public var kind: String
-        public var channelId: String
-        public var threadId: String?
-        public var parentChannelId: String?
-        public var parentMessageId: String?
-        public var messageId: String
-        public var title: String
-        public var body: String
-        public var createdAt: Date
-
-        public init(recipientUserId: String, eventKey: String, serverId: String, kind: String, channelId: String, threadId: String?, parentChannelId: String?, parentMessageId: String?, messageId: String, title: String, body: String, createdAt: Date) {
-            self.recipientUserId = recipientUserId
-            self.eventKey = eventKey
-            self.serverId = serverId
-            self.kind = kind
-            self.channelId = channelId
-            self.threadId = threadId
-            self.parentChannelId = parentChannelId
-            self.parentMessageId = parentMessageId
-            self.messageId = messageId
-            self.title = title
-            self.body = body
-            self.createdAt = createdAt
-        }
-    }
-
-    public struct NativeEnrollmentGrantRecord: Sendable {
-        public var secretHash: String
-        public var json: String
-    }
-
-
-
-
-
-
-
-
-
-
-
-    public enum NativeStreamOpen: Sendable {
-        case closed(HTTPReply)
-        case streaming(userId: String, cursorSeq: Int, replay: [(seq: Int, frame: String)])
-    }
-
-    public struct MobileAppEmailJourney: Equatable, Sendable {
-        public var userId: String
-        public var email: String
-        public var journeyKey: String
-        public var day1Status: String
-        public var day1EmailId: String?
-        public var suppressedReason: String?
-        public var canceledAt: Date?
-    }
-
-    public struct ForwardedSource: Equatable, Sendable {
-        public var sourceServerId: String
-        public var sourceTargetId: String
-        public var sourceMessageId: String
-        public var snapshotId: String
-        public var snapshotType: String
-        public var snapshotLabel: String
-        public var snapshotLabelVisibility: String
-        public var provenanceState: String
-
-        public init(sourceServerId: String, sourceTargetId: String, sourceMessageId: String, snapshotId: String, snapshotType: String, snapshotLabel: String, snapshotLabelVisibility: String, provenanceState: String) {
-            self.sourceServerId = sourceServerId
-            self.sourceTargetId = sourceTargetId
-            self.sourceMessageId = sourceMessageId
-            self.snapshotId = snapshotId
-            self.snapshotType = snapshotType
-            self.snapshotLabel = snapshotLabel
-            self.snapshotLabelVisibility = snapshotLabelVisibility
-            self.provenanceState = provenanceState
-        }
-    }
 
     /// `GET /api/attachments/:id/url`. A private source stays hidden. A copy on a visible channel does not.
     /// Test seam for the HTML preview body. Nil means the object is missing.
@@ -618,288 +285,33 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Test seam for presigning a stored attachment object.
     public var attachmentPresign: (@Sendable (_ attachmentId: String, _ mimeType: String?, _ ttlSeconds: Int) -> String)?
 
-    public struct MentionFact: Equatable, Sendable {
-        public var targetType: String
-        public var targetId: String
-        public var notifiableAtSend: Bool
-        public var notified: Bool
-    }
-
-    public struct InboxFact: Equatable, Sendable {
-        public var receiverType: String
-        public var receiverId: String
-        public var personalMention: Bool = false
-        public var unreadEligible: Bool = true
-
-        public init(receiverType: String, receiverId: String, personalMention: Bool = false, unreadEligible: Bool = true) {
-            self.receiverType = receiverType
-            self.receiverId = receiverId
-            self.personalMention = personalMention
-            self.unreadEligible = unreadEligible
-        }
-    }
-
-    public struct MentionActionRecord: Equatable, Sendable {
-        public var notified: Bool
-        public var notifiedByType: String?
-        public var notifiedById: String?
-        public var notifiedAction: String?
-    }
-
-    static let doneFrontierInt4Limit = 2_147_483_647
-
-    static let selfCausedFreshnessExemptSubtypes: Set<String> = ["task.created_summary"]
-
-    /// `GET /internal/agent-api/events`. Durable channel messages for the
-    /// external agent plus pending third-party events; the call drains both.
-    /// At most this many channel rows per conversation in one pull. The pull
-    /// advances each conversation's cursor, and `has_more` says whether
-    /// another call has anything left.
-    static let agentInboxPullCap = 5
-
-    static let appLoginReturnUris: Set<String> = [
-        "raft://login/callback",
-        "raft-debug://login/callback",
-    ]
-
-
-
-    static let socialProviders: Set<String> = ["google", "github", "apple"]
-    static let defaultMobileReturnURIs: Set<String> = [
-        "raft://oauth/callback",
-        "raft-alpha://oauth/callback",
-        "raft-beta://oauth/callback",
-        "raft-debug://oauth/callback",
-        "raft-dev://oauth/callback",
-    ]
-
-
-    public struct ChannelMessageEvent: Equatable, Sendable {
-        public var room: String
-        public var name: String
-        public var messageId: String
-        public var attachmentIds: [String]
-    }
-
-
-
-    /// App ids inside `<app:…>` outside of a code fence are not required for this check; the send under test has no fence.
-
-    /// Best-effort browser zone. A missing, non-string, empty, overlong, or non-canonical value is null.
-
-
-
-
-
-
-
-
-    static let rejected = json(401, "{\"code\":\"AUTH_INVALID_CREDENTIALS\",\"error\":\"Invalid email or password\"}")
-    static let missingAuthorization = json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
-    static let invalidToken = json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
-    static let wrongPassword = json(401, "{\"code\":\"AUTH_CURRENT_PASSWORD_INCORRECT\",\"error\":\"Current password is incorrect\"}")
-    static let linkAuthRequired = json(401, "{\"code\":\"auth_required\",\"error\":\"Authentication is required to link an account\"}")
-    static let linkMismatch = json(403, "{\"code\":\"link_user_mismatch\",\"error\":\"Social auth link does not match the authenticated user\"}")
-    static let mobileLinkMismatch = json(403, "{\"code\":\"link_user_mismatch\",\"error\":\"Mobile OAuth link request does not match the authenticated user\"}")
-    static let legalObject = "{\"termsVersion\":\"\(termsVersion)\",\"privacyVersion\":\"\(privacyVersion)\",\"termsUrl\":\"\(termsURL)\",\"privacyUrl\":\"\(privacyURL)\"}"
-    static let legalRequired = json(422, "{\"error\":\"LEGAL_ACCEPTANCE_REQUIRED\",\"legal\":\(legalObject)}")
-    static let returnURINotAllowed = json(400, "{\"code\":\"return_uri_not_allowed\",\"error\":\"Mobile OAuth return URI is not allowed\"}")
-    static let termsChanged = json(409, "{\"error\":\"TERMS_CHANGED\",\"legal\":\(legalObject)}")
-
-    static let deprecatedAgentRuntimes: Set<String> = ["kimi", "gemini", "antigravity", "copilot"]
-
-
-
-    /// `GET /api/agent-runtime-providers/:kind`. Owners and admins can ask
-    /// whether a hosted provider is usable for this server; the answer never
-    /// exposes the deployment token or the provider base URL.
-
-    var attachedComputers: [String: AttachedComputer] = [:]
     var computerAttachEnabledOverride: Bool?
     var scopeAttestationSecretOverride: String??
     var deploymentEnvironmentOverride: String??
 
-    public var wakeStreamHeartbeatMs: Int? {
-        lock.lock()
-        let override = wakeStreamHeartbeatOverrideMs
-        lock.unlock()
-        if let override { return override }
-        return ProcessInfo.processInfo.environment["SLOCK_WAKE_STREAM_HEARTBEAT_MS"].flatMap(Int.init)
-    }
-
-    public enum AgentWakeStreamStart {
-        /// `cursorSeq` is the last hint seq already replayed; the stream then
-        /// only pushes hints newer than it.
-        case start(token: String, cursorSeq: Int?, firstFrame: String)
-        case refused(HTTPReply)
-    }
-
-    /// Terminal migration failure codes a Computer may report over
-    /// `transport-lost`; anything else collapses to the generic reason.
-    static let migrationTerminalFailureCodes: Set<String> = [
-        "MIGRATION_TRANSPORT_LOST",
-        "MIGRATION_OBJECT_STORE_BUNDLE_TOO_LARGE",
-        "MIGRATION_OBJECT_STORE_MANIFEST_TOO_LARGE",
-        "MIGRATION_OBJECT_STORE_INSUFFICIENT_DISK",
-        "MIGRATION_OBJECT_STORE_ENTRY_COUNT_LIMIT_EXCEEDED",
-        "MIGRATION_WORKSPACE_ALREADY_EXISTS",
-        "MIGRATION_WORKSPACE_COMPLETE_OLD_COPY",
-        "MIGRATION_CHUNK_DIGEST_MISMATCH",
-        "MIGRATION_WHOLE_BUNDLE_DIGEST_MISMATCH",
-        "MIGRATION_LEASE_EXPIRED",
-        "MIGRATION_GENERATION_STALE",
-        "MIGRATION_CONTROL_MANIFEST_INVALID",
-        "MIGRATION_CONTROL_MANIFEST_TOO_LARGE",
-    ]
-    static let migrationSourceArchiveMaxAttempts = 12
-    static let migrationSourceArchiveMovedCodes: Set<String> = [
-        "MIGRATION_WORKSPACE_ARCHIVE_AGENT_RUNNING",
-        "MIGRATION_WORKSPACE_ARCHIVE_NEWER_OWNER",
-    ]
-    /// A `starting` row is observed, not re-dispatched, inside this window.
-    static let migrationAutoStartLease: TimeInterval = 30
-
-    static let agentConnectionProviders: Set<String> = ["github"]
-
-    static let agentConnectionIDPattern = "^[A-Za-z0-9_.~-]{1,200}$"
-
-    static let machineAPIKeyPrefix = "sk_machine_"
-    static let computerAPIKeyPrefix = "sk_computer_"
-    static let computerAPIKeyPrefixLength = 16
-
-
-
-
-
-    static let onboardingSteps: Set<String> = [
-        "add-computer", "create-agent", "invite-teammates", "join-community", "notifications",
-    ]
-
-    static let runtimeFormSchemas: [String: String] = [
-        "builtin": "builtin-pi.create.v3",
-        "claude": "claude.create.v1",
-        "codex": "codex.create.v1",
-        "kimi-sdk": "kimi-sdk.create.v1",
-        "cursor": "cursor.create.v1",
-        "opencode": "opencode.create.v1",
-        "pi": "pi.create.v1",
-        "gemini": "gemini.create.v1",
-        "kimi": "kimi.create.v1",
-        "antigravity": "antigravity.create.v1",
-        "grok": "grok.create.v1",
-    ]
-
-    /// Runtimes that still publish a v1 form definition.
-    static let runtimeFormV1Runtimes: Set<String> = ["builtin", "claude", "cursor", "kimi-sdk"]
-
-    /// Runtimes whose released form only exists at protocol v2; v1 clients
-    /// must see them as having no form at all.
-    static let runtimeFormV2Only: Set<String> = [
-        "pi", "opencode", "gemini", "codex", "grok", "antigravity", "kimi",
-    ]
-
-    static let grokBundledModels: [RuntimeModelProbeModel] = [
-        RuntimeModelProbeModel(
-            id: "grok-4.5",
-            label: "Grok 4.5",
-            supportedReasoningEfforts: ["high", "medium", "low"],
-            defaultReasoningEffort: "high"
-        ),
-        RuntimeModelProbeModel(id: "grok-4.6", label: "Grok 4.6"),
-        RuntimeModelProbeModel(id: "grok-composer-2.5-fast", label: "Composer 2.5"),
-    ]
-
-    static let runtimeAccountUsageProviders: Set<String> = ["claude", "codex", "kimi", "grok"]
-
-
-    public static let sharePNGData = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=") ?? Data()
-
-    static let timezoneAliases: [String: String] = [
-        "US/Pacific": "America/Los_Angeles",
-        "US/Eastern": "America/New_York",
-        "US/Central": "America/Chicago",
-        "US/Mountain": "America/Denver",
-        "US/Alaska": "America/Anchorage",
-        "US/Hawaii": "Pacific/Honolulu",
-    ]
-
-    public struct TimezoneObservation: Sendable {
-        public var firstTimezone: String
-        public var firstAt: Date
-        public var lastTimezone: String
-        public var lastAt: Date
-    }
-
-
-
-    static let scopeAttestationMaxChars = 16 * 1024
-
     public var computerUpgradeSender: (@Sendable (_ machineId: String, _ targetVersion: String, _ requestId: String) -> Bool)?
-
-    static let attachmentCommentsDisabledReply = json(403, "{\"error\":\"Attachment comments are not enabled on this server\",\"code\":\"attachment_comments_disabled\"}")
-
-    enum WhenToUseError: Error {
-        case tooLong
-        case notSingleLine
-        case bareScopedPackage
-
-        var message: String {
-            switch self {
-            case .tooLong: return "whenToUse must be at most 160 characters"
-            case .notSingleLine: return "whenToUse must be a single line without control characters"
-            case .bareScopedPackage:
-                return "whenToUse must not contain a bare scoped package name like @scope/pkg; wrap it in backticks like `@scope/pkg`"
-            }
-        }
-    }
-
-    static let validTaskStatuses: Set<String> = ["todo", "in_progress", "in_review", "done", "cancelled"]
-
-
-    static let labDefinitions: [(key: String, name: String, description: String, state: String)] = [
-        ("open_lab", "Open Lab", "Available", "open"),
-        ("paused_lab", "Paused Lab", "Paused", "paused"),
-        ("draft_lab", "Draft Lab", "Hidden", "draft"),
-        ("retired_lab", "Retired Lab", "Historical", "retired"),
-    ]
-
-    var memberAttentionJSON: String {
-        ",\"attention\":{\"stillArrives\":[\"Followed threads still notify this member unless they unfollow them.\"],\"threadBoundary\":\"Removing this member does not unfollow existing thread follows. Private channel/thread content still requires current parent access.\",\"manageCommand\":\"Use raft thread unfollow to manage thread follows.\"}"
-    }
-
-
-
-
 
     var marketplaceReviewerOverride: Set<String>?
 
     var agentInboxAvailableForTesting: Bool?
 
-    var removedServerMembers: Set<String> = []
-
     var readPositionSettleMs: Int = 2000
 
     var deferredUnreadAdvance: [String: Int] = [:]
-
-    var taskEvents: [(taskId: String, eventType: String, actorType: String)] = []
-
-    var lastTaskServerWarning: String?
-
-    var lastTaskServerQuery: String?
-
-    var agentApiIdempotencyKeys: [AgentApiIdempotencyRecord] = []
-
-    var assigneeChangeEvents: [(
-        taskId: String, assigneeId: String?, assigneeType: String?,
-        previousAssigneeId: String?, previousAssigneeType: String?,
-        actorType: String, actorId: String
-    )] = []
 
     var externalAvatarAssets: [String: ExternalAvatarAsset] = [:]
 
     var externalAvatarStorageAvailable = true
 
     // MARK: - Store-backed surface
+
+    // Domain stores. Each owns one ledger family behind its own lock; the
+    // computed accessors below forward here so extension files keep their names.
+    let tasksAndRemindersStore = TasksAndRemindersStore()
+    let machinesAndComputersStore = MachinesAndComputersStore()
+    let serversAndChannelsStore = ServersAndChannelsStore()
+    let managedMCPAndCardsStore = ManagedMCPAndCardsStore()
+    let feedbackStore = FeedbackStore()
 
     // Notification/announcement/push rows live in `NotificationsStore`. These
     // accessors keep the extension files' property names unchanged.
@@ -923,4 +335,98 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     var userOnboardingSettings: [String: UserOnboarding] { get { authProfileStore.userOnboardingSettings } set { authProfileStore.userOnboardingSettings = newValue } }
     var mobileAppEmailContactsByKey: [String: MobileAppEmailContact] { get { authProfileStore.mobileAppEmailContactsByKey } set { authProfileStore.mobileAppEmailContactsByKey = newValue } }
     var storedMobileAppEmailJourneys: [MobileAppEmailJourney] { get { authProfileStore.storedMobileAppEmailJourneys } set { authProfileStore.storedMobileAppEmailJourneys = newValue } }
+
+    // Rows for the task, reminder and assignee-change surface live in `TasksAndRemindersStore`.
+    var reminderRecords: [ReminderRecord] { get { tasksAndRemindersStore.reminderRecords } set { tasksAndRemindersStore.reminderRecords = newValue } }
+    var reminderEvents: [ReminderEvent] { get { tasksAndRemindersStore.reminderEvents } set { tasksAndRemindersStore.reminderEvents = newValue } }
+    var taskRecords: [TaskRecord] { get { tasksAndRemindersStore.taskRecords } set { tasksAndRemindersStore.taskRecords = newValue } }
+    var taskWriteHolds: [String: (seen: Int, latest: Int)] { get { tasksAndRemindersStore.taskWriteHolds } set { tasksAndRemindersStore.taskWriteHolds = newValue } }
+    var taskEvents: [(taskId: String, eventType: String, actorType: String)] { get { tasksAndRemindersStore.taskEvents } set { tasksAndRemindersStore.taskEvents = newValue } }
+    var lastTaskServerWarning: String? { get { tasksAndRemindersStore.lastTaskServerWarning } set { tasksAndRemindersStore.lastTaskServerWarning = newValue } }
+    var lastTaskServerQuery: String? { get { tasksAndRemindersStore.lastTaskServerQuery } set { tasksAndRemindersStore.lastTaskServerQuery = newValue } }
+    var assigneeChangeEvents: [(taskId: String, assigneeId: String?, assigneeType: String?, previousAssigneeId: String?, previousAssigneeType: String?, actorType: String, actorId: String)] { get { tasksAndRemindersStore.assigneeChangeEvents } set { tasksAndRemindersStore.assigneeChangeEvents = newValue } }
+
+    // Rows for the machine, Computer and migration surface live in `MachinesAndComputersStore`.
+    var machines: [MachineRecord] { get { machinesAndComputersStore.machines } set { machinesAndComputersStore.machines = newValue } }
+    var machineStatusVersions: [String: Int] { get { machinesAndComputersStore.machineStatusVersions } set { machinesAndComputersStore.machineStatusVersions = newValue } }
+    var machineOnline: [String: Bool] { get { machinesAndComputersStore.machineOnline } set { machinesAndComputersStore.machineOnline = newValue } }
+    var computers: [(id: String, serverId: String, name: String, apiKey: String, machineId: String?, revokedAt: Date?, online: Bool, version: String?)] { get { machinesAndComputersStore.computers } set { machinesAndComputersStore.computers = newValue } }
+    var computerAttachers: [String: String] { get { machinesAndComputersStore.computerAttachers } set { machinesAndComputersStore.computerAttachers = newValue } }
+    var attachedComputers: [String: AttachedComputer] { get { machinesAndComputersStore.attachedComputers } set { machinesAndComputersStore.attachedComputers = newValue } }
+    var deletedMachineWorkspaces: Set<String> { get { machinesAndComputersStore.deletedMachineWorkspaces } set { machinesAndComputersStore.deletedMachineWorkspaces = newValue } }
+    public var machineMigrationCapabilities: [String: Set<String>] { get { machinesAndComputersStore.machineMigrationCapabilities } set { machinesAndComputersStore.machineMigrationCapabilities = newValue } }
+    public var machineRuntimeDetections: [String: (status: String, unfinished: Set<String>)] { get { machinesAndComputersStore.machineRuntimeDetections } set { machinesAndComputersStore.machineRuntimeDetections = newValue } }
+    var machineMigrations: [String: MachineMigrationRecord] { get { machinesAndComputersStore.machineMigrations } set { machinesAndComputersStore.machineMigrations = newValue } }
+    var machineRuntimeModels: [String: [String: (models: [(id: String, label: String)], updatedAt: Date)]] { get { machinesAndComputersStore.machineRuntimeModels } set { machinesAndComputersStore.machineRuntimeModels = newValue } }
+    var runtimeAccountUsage: [String: (json: String, staleAfter: Date)] { get { machinesAndComputersStore.runtimeAccountUsage } set { machinesAndComputersStore.runtimeAccountUsage = newValue } }
+    var runtimeAccountUsageRefreshAt: [String: Date] { get { machinesAndComputersStore.runtimeAccountUsageRefreshAt } set { machinesAndComputersStore.runtimeAccountUsageRefreshAt = newValue } }
+    var machineKeys: [String: (serverId: String, agentId: String)] { get { machinesAndComputersStore.machineKeys } set { machinesAndComputersStore.machineKeys = newValue } }
+    var machineBroadcastPoliciesForTesting: [String: String] { get { machinesAndComputersStore.machineBroadcastPolicies } set { machinesAndComputersStore.machineBroadcastPolicies = newValue } }
+    var machineModelSeenCapabilityForTesting: Set<String> { get { machinesAndComputersStore.machineModelSeenCapability } set { machinesAndComputersStore.machineModelSeenCapability = newValue } }
+    var latestComputerReleaseForTesting: (version: String, notesJSON: String)? { get { machinesAndComputersStore.latestComputerRelease } set { machinesAndComputersStore.latestComputerRelease = newValue } }
+
+    // Rows for the server-membership, sidebar and channel-authority surface live in `ServersAndChannelsStore`.
+    var postableChannels: [String: PostableChannel] { get { serversAndChannelsStore.postableChannels } set { serversAndChannelsStore.postableChannels = newValue } }
+    var threadOrder: [String] { get { serversAndChannelsStore.threadOrder } set { serversAndChannelsStore.threadOrder = newValue } }
+    var serverMemberRoles: [String: String] { get { serversAndChannelsStore.serverMemberRoles } set { serversAndChannelsStore.serverMemberRoles = newValue } }
+    var hideHumansFromMembers: [String: Bool] { get { serversAndChannelsStore.hideHumansFromMembers } set { serversAndChannelsStore.hideHumansFromMembers = newValue } }
+    var serverMemberStatuses: [String: String] { get { serversAndChannelsStore.serverMemberStatuses } set { serversAndChannelsStore.serverMemberStatuses = newValue } }
+    var membershipAgreementAudits: [(serverId: String, subjectId: String, actorUserId: String, source: String, agreementId: String?, agreementVersion: Int?)] { get { serversAndChannelsStore.membershipAgreementAudits } set { serversAndChannelsStore.membershipAgreementAudits = newValue } }
+    var jointProjections: [JointChannelLink] { get { serversAndChannelsStore.jointProjections } set { serversAndChannelsStore.jointProjections = newValue } }
+    var serverMemberEvents: [ServerMemberEvent] { get { serversAndChannelsStore.serverMemberEvents } set { serversAndChannelsStore.serverMemberEvents = newValue } }
+    var deletedServerIds: Set<String> { get { serversAndChannelsStore.deletedServerIds } set { serversAndChannelsStore.deletedServerIds = newValue } }
+    var removedServerMembers: Set<String> { get { serversAndChannelsStore.removedServerMembers } set { serversAndChannelsStore.removedServerMembers = newValue } }
+    public var serverPlans: [String: String] { get { serversAndChannelsStore.serverPlans } set { serversAndChannelsStore.serverPlans = newValue } }
+    var serverLabsState: [String: ServerLabsState] { get { serversAndChannelsStore.serverLabsState } set { serversAndChannelsStore.serverLabsState = newValue } }
+    var serverInvites: [(id: String, serverId: String, email: String, role: String, tokenHash: String?)] { get { serversAndChannelsStore.serverInvites } set { serversAndChannelsStore.serverInvites = newValue } }
+    var serverSwitcherOrders: [String: (ids: [String], version: Int)] { get { serversAndChannelsStore.serverSwitcherOrders } set { serversAndChannelsStore.serverSwitcherOrders = newValue } }
+    var serverOnboardingSettings: [String: (agentId: String?, greeting: Bool)] { get { serversAndChannelsStore.serverOnboardingSettings } set { serversAndChannelsStore.serverOnboardingSettings = newValue } }
+    var setupPhases: [String: String] { get { serversAndChannelsStore.setupPhases } set { serversAndChannelsStore.setupPhases = newValue } }
+    var setupHandoffs: Set<String> { get { serversAndChannelsStore.setupHandoffs } set { serversAndChannelsStore.setupHandoffs = newValue } }
+    var guestRoleServers: Set<String> { get { serversAndChannelsStore.guestRoleServers } set { serversAndChannelsStore.guestRoleServers = newValue } }
+    var proSeats: [String: Int] { get { serversAndChannelsStore.proSeats } set { serversAndChannelsStore.proSeats = newValue } }
+    var joinLinks: [String: JoinLinkRecord] { get { serversAndChannelsStore.joinLinks } set { serversAndChannelsStore.joinLinks = newValue } }
+    var usageLimitAttentionServers: Set<String> { get { serversAndChannelsStore.usageLimitAttentionServers } set { serversAndChannelsStore.usageLimitAttentionServers = newValue } }
+    var guestVisibleChannels: [String: Bool] { get { serversAndChannelsStore.guestVisibleChannels } set { serversAndChannelsStore.guestVisibleChannels = newValue } }
+    var guestJoinableChannels: [String: Bool] { get { serversAndChannelsStore.guestJoinableChannels } set { serversAndChannelsStore.guestJoinableChannels = newValue } }
+    var readReceiptsServers: Set<String> { get { serversAndChannelsStore.readReceiptsServers } set { serversAndChannelsStore.readReceiptsServers = newValue } }
+    var channelHumanRoles: [String: String] { get { serversAndChannelsStore.channelHumanRoles } set { serversAndChannelsStore.channelHumanRoles = newValue } }
+    var channelAuthorityRevisions: [String: Int] { get { serversAndChannelsStore.channelAuthorityRevisions } set { serversAndChannelsStore.channelAuthorityRevisions = newValue } }
+    var sidebarModes: [String: (channel: String, joint: String, dm: String, pinned: String, channelTabs: [String], agentTabs: [String])] { get { serversAndChannelsStore.sidebarModes } set { serversAndChannelsStore.sidebarModes = newValue } }
+    var sidebarSections: [String: (sections: [(id: String, name: String, emoji: String?, sortMode: String)], order: [String], placements: [(kind: String, id: String, sectionId: String, position: Int)], version: Int)] { get { serversAndChannelsStore.sidebarSections } set { serversAndChannelsStore.sidebarSections = newValue } }
+    var sidebarPinnedRefs: [String: (refs: [(kind: String, id: String)], channelIds: [String], agentIds: [String], version: Int)] { get { serversAndChannelsStore.sidebarPinnedRefs } set { serversAndChannelsStore.sidebarPinnedRefs = newValue } }
+    var sidebarReadAllEnabled: Bool { get { serversAndChannelsStore.sidebarReadAllEnabled } set { serversAndChannelsStore.sidebarReadAllEnabled = newValue } }
+    var jointInvites: [(id: String, hostServerId: String, hostChannelId: String, targetServerId: String, targetChannelId: String, targetOwnerId: String, status: String)] { get { serversAndChannelsStore.jointInvites } set { serversAndChannelsStore.jointInvites = newValue } }
+    var composerResourceServers: Set<String> { get { serversAndChannelsStore.composerResourceServers } set { serversAndChannelsStore.composerResourceServers = newValue } }
+    var installedServerApps: [String: Set<String>] { get { serversAndChannelsStore.installedServerApps } set { serversAndChannelsStore.installedServerApps = newValue } }
+
+    // Rows for the managed-MCP, action-card and integration surface live in `ManagedMCPAndCardsStore`.
+    var managedMCPServers: [ManagedMCPServerRecord] { get { managedMCPAndCardsStore.managedMCPServers } set { managedMCPAndCardsStore.managedMCPServers = newValue } }
+    var managedMCPAssignments: [String: [String: (enabled: Bool, allowedTools: [String]?)]] { get { managedMCPAndCardsStore.managedMCPAssignments } set { managedMCPAndCardsStore.managedMCPAssignments = newValue } }
+    var actionCardRecords: [String: ActionCardRecord] { get { managedMCPAndCardsStore.actionCardRecords } set { managedMCPAndCardsStore.actionCardRecords = newValue } }
+    var marketplaceInstallCards: [String: MarketplaceInstallCard] { get { managedMCPAndCardsStore.marketplaceInstallCards } set { managedMCPAndCardsStore.marketplaceInstallCards = newValue } }
+    var integrationRegisterCards: [String: IntegrationRegisterCard] { get { managedMCPAndCardsStore.integrationRegisterCards } set { managedMCPAndCardsStore.integrationRegisterCards = newValue } }
+    var agentApiSendReceipts: [String: AgentApiSendReceipt] { get { managedMCPAndCardsStore.agentApiSendReceipts } set { managedMCPAndCardsStore.agentApiSendReceipts = newValue } }
+    var pendingActionMessageEvents: [(agentId: String, messageId: String, content: String)] { get { managedMCPAndCardsStore.pendingActionMessageEvents } set { managedMCPAndCardsStore.pendingActionMessageEvents = newValue } }
+    var agentGrantSets: [String: Set<String>] { get { managedMCPAndCardsStore.agentGrantSets } set { managedMCPAndCardsStore.agentGrantSets = newValue } }
+    var appConfigOverrides: [String: [String: [String: Any]]] { get { managedMCPAndCardsStore.appConfigOverrides } set { managedMCPAndCardsStore.appConfigOverrides = newValue } }
+    var appConfigRevisions: [String: [String: Int]] { get { managedMCPAndCardsStore.appConfigRevisions } set { managedMCPAndCardsStore.appConfigRevisions = newValue } }
+    var agentIntegrationGrants: [String: Bool] { get { managedMCPAndCardsStore.agentIntegrationGrants } set { managedMCPAndCardsStore.agentIntegrationGrants = newValue } }
+    var agentAudienceStatusOverrides: [String: String] { get { managedMCPAndCardsStore.agentAudienceStatusOverrides } set { managedMCPAndCardsStore.agentAudienceStatusOverrides = newValue } }
+    var agentIntegrationLogins: [String: AgentIntegrationLoginRecord] { get { managedMCPAndCardsStore.agentIntegrationLogins } set { managedMCPAndCardsStore.agentIntegrationLogins = newValue } }
+    public var providerConnectionsEnabledServers: Set<String> { get { managedMCPAndCardsStore.providerConnectionsEnabledServers } set { managedMCPAndCardsStore.providerConnectionsEnabledServers = newValue } }
+    var providerConnections: [ProviderConnection] { get { managedMCPAndCardsStore.providerConnections } set { managedMCPAndCardsStore.providerConnections = newValue } }
+    var providerAssignments: [ProviderAssignment] { get { managedMCPAndCardsStore.providerAssignments } set { managedMCPAndCardsStore.providerAssignments = newValue } }
+    var agentApiIdempotencyKeys: [AgentApiIdempotencyRecord] { get { managedMCPAndCardsStore.agentApiIdempotencyKeys } set { managedMCPAndCardsStore.agentApiIdempotencyKeys = newValue } }
+
+    // Rows for the agent-reminder and product-feedback surface live in `FeedbackStore`.
+    var appAgentReminderLedger: [String: String] { get { feedbackStore.appAgentReminderLedger } set { feedbackStore.appAgentReminderLedger = newValue } }
+    var agentReminderSurfaceChannels: [String: String] { get { feedbackStore.agentReminderSurfaceChannels } set { feedbackStore.agentReminderSurfaceChannels = newValue } }
+    var productFeedbackReporterSessionCache: [String: (token: String, expiresAt: Date)] { get { feedbackStore.productFeedbackReporterSessionCache } set { feedbackStore.productFeedbackReporterSessionCache = newValue } }
+    var productFeedbackRouteBindingSuccesses: [String: Date] { get { feedbackStore.productFeedbackRouteBindingSuccesses } set { feedbackStore.productFeedbackRouteBindingSuccesses = newValue } }
+    var productFeedbackRouteCommitments: [String: Data] { get { feedbackStore.productFeedbackRouteCommitments } set { feedbackStore.productFeedbackRouteCommitments = newValue } }
+    var productFeedbackRouteVerifiedCommitments: Set<String> { get { feedbackStore.productFeedbackRouteVerifiedCommitments } set { feedbackStore.productFeedbackRouteVerifiedCommitments = newValue } }
+    var feedbackLocatorRecords: [FeedbackLocatorRecord] { get { feedbackStore.feedbackLocatorRecords } set { feedbackStore.feedbackLocatorRecords = newValue } }
+    var handsFeedbackAppsJSONForTesting: String? { get { feedbackStore.handsFeedbackAppsJSON } set { feedbackStore.handsFeedbackAppsJSON = newValue } }
+    var handsFeedbackLegacyEnvironmentForTesting: [String: String]? { get { feedbackStore.handsFeedbackLegacyEnvironment } set { feedbackStore.handsFeedbackLegacyEnvironment = newValue } }
 }

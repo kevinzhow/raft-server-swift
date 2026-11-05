@@ -314,7 +314,11 @@ private struct PublicSearchMiddleware: Middleware {
         var headers = HTTPFields()
         headers[.contentType] = "application/json"
         headers[HTTPField.Name("Cache-Control")!] = "no-store"
-        return Response(status: httpStatus(status), headers: headers, body: .init(string: "{\"error\":\"Public search service access refused\",\"code\":\"\(code)\"}"))
+        let body = ChannelMessagingService.errorPayload(
+            "Public search service access refused",
+            code: code
+        ) ?? "{}"
+        return Response(status: httpStatus(status), headers: headers, body: .init(string: body))
     }
 
     private func serviceLimited(_ retryAfter: Int) -> Response {
@@ -322,7 +326,11 @@ private struct PublicSearchMiddleware: Middleware {
         headers[.contentType] = "application/json"
         headers[HTTPField.Name("Cache-Control")!] = "no-store"
         headers[HTTPField.Name("Retry-After")!] = String(retryAfter)
-        return Response(status: .tooManyRequests, headers: headers, body: .init(string: "{\"error\":\"Public search service rate limit exceeded\",\"code\":\"service_rate_limited\"}"))
+        let body = ChannelMessagingService.errorPayload(
+            "Public search service rate limit exceeded",
+            code: "service_rate_limited"
+        ) ?? "{}"
+        return Response(status: .tooManyRequests, headers: headers, body: .init(string: body))
     }
 
     func respond(to request: Request, chainingTo next: any Responder) async throws -> Response {
@@ -384,11 +392,15 @@ private struct ExperimentalSurfaceGate: Middleware {
             var headers = HTTPFields()
             headers[.contentType] = "application/json"
             headers[HTTPField.Name("Sec-Slock-Api-Version")!] = "1"
-            return Response(
-                status: .serviceUnavailable,
-                headers: headers,
-                body: .init(string: "{\"error\":\"Experimental internal surface is disabled\",\"code\":\"experimental_surface_disabled\",\"retry_after\":null}")
-            )
+            // `errorPayload` owns the shared `{error, code}` shape; the gate
+            // appends the upstream `retry_after` field, which is always null
+            // for a kill switch.
+            let payload = ChannelMessagingService.errorPayload(
+                "Experimental internal surface is disabled",
+                code: "experimental_surface_disabled"
+            ) ?? #"{"code":"experimental_surface_disabled","error":"Experimental internal surface is disabled"}"#
+            let body = String(payload.dropLast()) + #","retry_after":null}"#
+            return Response(status: .serviceUnavailable, headers: headers, body: .init(string: body))
         }
         return try await next.respond(to: request)
     }
@@ -450,7 +462,7 @@ private func resolveOIDCScope(_ segment: String, oauth: OAuthLedger) -> OIDCScop
 }
 
 private func pixelAvatarError(_ status: Int, _ error: String) -> Response {
-    let body = "{\"error\":\"\(error)\"}"
+    let body = ChannelMessagingService.errorPayload(error) ?? "{}"
     return routeResponse(HTTPReply(
         status: status,
         headers: [
@@ -478,15 +490,7 @@ private func publicMessageWindow(_ query: String?) -> (limit: Int, before: Strin
 
 /// Reader for one percent-decoded query parameter. Shared by the route
 /// features so the projection is identical on every mounted surface.
-///
-/// The unused source location keeps this an overload of the legacy
-/// file-private copies the unmigrated features still carry; a same-signature
-/// module-level declaration would collide with them.
-func desktopQuery(
-    _ query: String?,
-    _ name: String,
-    file: StaticString = #fileID
-) -> String? {
+func desktopQuery(_ query: String?, _ name: String) -> String? {
     guard let query, !query.isEmpty else { return nil }
     for pair in query.split(separator: "&", omittingEmptySubsequences: false) {
         let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
@@ -506,7 +510,10 @@ public func routeResponse(_ reply: HTTPReply) -> Response {
     vaporResponse(reply)
 }
 
-private func vaporResponse(_ reply: HTTPReply) -> Response {
+/// Shared `HTTPReply` → Vapor `Response` adapter. Copies the reply headers,
+/// maps the status through `httpStatus`, and restores the HEAD Content-Length
+/// the `Response` initializer would drop.
+func vaporResponse(_ reply: HTTPReply) -> Response {
     var headers = HTTPFields()
     for (name, value) in reply.headers {
         guard let field = HTTPField.Name(name) else { continue }
@@ -547,10 +554,7 @@ private let robotsTagName = HTTPField.Name("X-Robots-Tag")!
 
 /// One `Int` → `HTTPResponse.Status` mapping for every `HTTPReply` adapter
 /// in the module.
-///
-/// The unused source location keeps this an overload of the legacy
-/// file-private copies the unmigrated features still carry.
-func httpStatus(_ code: Int, file: StaticString = #fileID) -> HTTPResponse.Status {
+func httpStatus(_ code: Int) -> HTTPResponse.Status {
     switch code {
     case 200: .ok
     case 201: .created

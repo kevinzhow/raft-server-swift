@@ -1,5 +1,6 @@
 import Foundation
 import HTTPTypes
+import RaftHTTP
 import Vapor
 
 /// Global JSON error boundary: an uncaught 5xx route failure becomes a
@@ -20,7 +21,15 @@ public struct JSONErrorBoundaryMiddleware: Middleware {
             var headers = HTTPFields()
             headers[Self.errorHeader] = correlationId
             headers[.contentType] = "application/json"
-            let body = #"{"error":"Internal server error","code":"internal_server_error","correlationId":"\#(correlationId)"}"#
+            // The shared encoder owns the `{error, code}` shape; splice the
+            // correlation id in through the same JSON string encoder so it
+            // can never break the body.
+            let payload = ChannelMessagingService.errorPayload(
+                "Internal server error",
+                code: "internal_server_error"
+            ) ?? #"{"code":"internal_server_error","error":"Internal server error"}"#
+            let correlationJSON = ChannelMessagingService.jsonString(correlationId) ?? "\"\""
+            let body = String(payload.dropLast()) + ",\"correlationId\":\(correlationJSON)}"
             return Response(status: .internalServerError, headers: headers, body: .init(string: body))
         }
     }
