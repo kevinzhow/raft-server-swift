@@ -227,8 +227,26 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var cancelDisposition: String?
         var cancelSourceAck: String?
         var cancelTargetAck: String?
+        var cancelSourceAckAt: Date?
+        var cancelTargetAckAt: Date?
         var quiesceReceiptJSON: String?
         var progressJSON: String?
+        /// Generation consumed by the transition into the current state; lets a
+        /// replayed flip/arrive present the generation it was issued with.
+        var previousTransportGeneration: String?
+        var flippedAt: Date?
+        var arrivedAt: Date?
+        var completedAt: Date?
+        var updatedAt: Date = Date()
+        var sourceWorkspaceArchivedAt: Date?
+        var sourceWorkspaceArchiveAttempts: Int = 0
+        var sourceWorkspaceArchiveLastError: String?
+        var sourceWorkspaceArchiveRetryAt: Date?
+        var sourceWorkspaceArchiveAbandonedAt: Date?
+        var autoStartFailureStage: String?
+        var autoStartFailureCode: String?
+        var arrivalReportPath: String?
+        var arrivalReportSha256: String?
     }
     private var machineMigrations: [String: MachineMigrationRecord] = [:]
     /// Test seam for the frozen-generation cancel dispatch to a Computer.
@@ -243,6 +261,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public var machineMigrationProvisioner: (@Sendable (_ sourceMachineId: String, _ targetMachineId: String) -> String?)?
     /// Lease dispatch to the source (upload) and target (download) Computers.
     public var machineMigrationLeaseDispatch: (@Sendable (_ machineId: String, _ role: String, _ migrationRef: String) -> Void)?
+    /// Target-side agent start for target import arrival. Returns `.dispatched`
+    /// when the daemon accepted the launch and `.skipped(reason)` when a wake
+    /// lock (or another gate) suppressed it.
+    public var machineMigrationStartAgent: (@Sendable (_ agentId: String) async throws -> MachineMigrationAgentStartOutcome)?
+    /// Ask the source Computer to archive the migrated-away workspace. Throws
+    /// `MachineMigrationArchiveFailure` with a code-shaped cause on failure.
+    public var machineMigrationArchiveSourceWorkspace: (@Sendable (_ machineId: String, _ migrationRef: String, _ agentId: String) async throws -> Void)?
     private var hostedRuntimes: [String: (provider: String, model: String?, state: String, retryNeedsModel: Bool, createdAt: Date)] = [:]
     private var grokRuntimeServers: Set<String> = []
     private var remoteUpgradeDisabledServers: Set<String> = []
@@ -12498,16 +12523,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private func machineMigrationStatusJSON(_ migration: MachineMigrationRecord) -> String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let canceledAt = migration.canceledAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+        func timestamp(_ date: Date?) -> String {
+            date.map { jsonString(formatter.string(from: $0)) } ?? "null"
+        }
+        let canceledAt = timestamp(migration.canceledAt)
         let cancelReason = migration.cancelReason.map(jsonString) ?? "null"
-        let cancelLastDispatchAt = migration.cancelLastDispatchAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+        let cancelLastDispatchAt = timestamp(migration.cancelLastDispatchAt)
         let cancelErrorCode = migration.cancelErrorCode.map(jsonString) ?? "null"
         let failureReason = migration.failureReason.map(jsonString) ?? "null"
         let transportErrorCode = migration.transportErrorCode.map(jsonString) ?? "null"
         let transportErrorMessage = migration.transportErrorMessage.map(jsonString) ?? "null"
-        let transportLostAt = migration.transportLostAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
-        let transportTeardownAt = migration.transportTeardownAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
-        return "{\"migrationRef\":\(jsonString(migration.supportRef)),\"agentId\":\(jsonString(migration.agentId)),\"state\":\(jsonString(migration.state)),\"revision\":\(migration.revision),\"sourceMachineId\":\(jsonString(migration.sourceMachineId)),\"targetKind\":\"computer\",\"targetMachineId\":\(jsonString(migration.targetMachineId)),\"provider\":\(jsonString(migration.transportProvider)),\"failureReason\":\(failureReason),\"abortReason\":null,\"transportErrorCode\":\(transportErrorCode),\"transportErrorMessage\":\(transportErrorMessage),\"transportLostAt\":\(transportLostAt),\"transportTeardownAt\":\(transportTeardownAt),\"readyAt\":null,\"flippedAt\":null,\"arrivedAt\":null,\"completedAt\":null,\"abortedAt\":null,\"canceledAt\":\(canceledAt),\"cancelReason\":\(cancelReason),\"cancelNeedsAttention\":false,\"cancelDispatchAttempts\":\(migration.cancelDispatchAttempts),\"cancelLastDispatchAt\":\(cancelLastDispatchAt),\"cancelErrorCode\":\(cancelErrorCode),\"cancelErrorMessage\":null}"
+        let transportLostAt = timestamp(migration.transportLostAt)
+        let transportTeardownAt = timestamp(migration.transportTeardownAt)
+        let autoStartFailureStage = migration.autoStartFailureStage.map(jsonString) ?? "null"
+        let autoStartFailureCode = migration.autoStartFailureCode.map(jsonString) ?? "null"
+        return "{\"migrationRef\":\(jsonString(migration.supportRef)),\"agentId\":\(jsonString(migration.agentId)),\"state\":\(jsonString(migration.state)),\"revision\":\(migration.revision),\"sourceMachineId\":\(jsonString(migration.sourceMachineId)),\"targetKind\":\"computer\",\"targetMachineId\":\(jsonString(migration.targetMachineId)),\"provider\":\(jsonString(migration.transportProvider)),\"failureReason\":\(failureReason),\"autoStartFailureStage\":\(autoStartFailureStage),\"autoStartFailureCode\":\(autoStartFailureCode),\"abortReason\":null,\"transportErrorCode\":\(transportErrorCode),\"transportErrorMessage\":\(transportErrorMessage),\"transportLostAt\":\(transportLostAt),\"transportTeardownAt\":\(transportTeardownAt),\"readyAt\":null,\"flippedAt\":\(timestamp(migration.flippedAt)),\"arrivedAt\":\(timestamp(migration.arrivedAt)),\"completedAt\":\(timestamp(migration.completedAt)),\"abortedAt\":null,\"canceledAt\":\(canceledAt),\"cancelReason\":\(cancelReason),\"cancelNeedsAttention\":false,\"cancelDispatchAttempts\":\(migration.cancelDispatchAttempts),\"cancelLastDispatchAt\":\(cancelLastDispatchAt),\"cancelErrorCode\":\(cancelErrorCode),\"cancelErrorMessage\":null}"
     }
 
     public func agentMigrationCancel(authorization: String?, serverId: String, agentId: String, body: String = "") -> HTTPReply {
@@ -12577,7 +12607,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(200, "{\"migration\":\(migrationStatusJSON(migration))}")
         }
         var migration = machine!
-        migration.state = "canceled_pre_flip"
+        // Once the flip committed the agent belongs to the target, so the
+        // cancellation is target-authoritative even though the agent may still
+        // be arriving/starting.
+        let postFlip = migration.flippedAt != nil
+            || ["arriving", "starting", "completed"].contains(migration.state)
+        migration.state = postFlip ? "canceled_post_flip" : "canceled_pre_flip"
         migration.revision += 1
         migration.canceledAt = now
         migration.cancelReason = reason
@@ -12586,7 +12621,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         migration.cancelErrorCode = nil
         migration.cancelGeneration = UUID().uuidString.lowercased()
         migration.cancelTransportGeneration = migration.transportGeneration
-        migration.cancelDisposition = "pre_flip"
+        migration.cancelDisposition = postFlip ? "post_flip_target_authoritative" : "pre_flip_source_authoritative"
+        migration.cancelSourceAck = nil
+        migration.cancelTargetAck = nil
+        migration.cancelSourceAckAt = nil
+        migration.cancelTargetAckAt = nil
+        migration.transportTeardownAt = now
+        migration.updatedAt = now
         machineMigrations[migrationRef] = migration
         lock.unlock()
         agentMigrationCancelDispatch?(migration.sourceMachineId, "source", migration.supportRef, migration.transportGeneration, false)
@@ -12681,6 +12722,63 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             targetMachineId: targetMachineId,
             transportGeneration: transportGeneration
         )
+        lock.unlock()
+    }
+
+    /// Test-observable snapshot of one machine migration row. Mirrors what the
+    /// upstream suite reads straight out of the `agent_migrations` table.
+    public func machineMigrationStateForTesting(migrationRef: String) -> MachineMigrationStateSnapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let record = machineMigrations[migrationRef] else { return nil }
+        return MachineMigrationStateSnapshot(
+            state: record.state,
+            revision: record.revision,
+            agentId: record.agentId,
+            sourceMachineId: record.sourceMachineId,
+            targetMachineId: record.targetMachineId,
+            transportGeneration: record.transportGeneration,
+            flippedAt: record.flippedAt,
+            arrivedAt: record.arrivedAt,
+            completedAt: record.completedAt,
+            updatedAt: record.updatedAt,
+            failureReason: record.failureReason,
+            transportErrorCode: record.transportErrorCode,
+            transportErrorMessage: record.transportErrorMessage,
+            autoStartFailureStage: record.autoStartFailureStage,
+            autoStartFailureCode: record.autoStartFailureCode,
+            sourceWorkspaceArchivedAt: record.sourceWorkspaceArchivedAt,
+            sourceWorkspaceArchiveAttempts: record.sourceWorkspaceArchiveAttempts,
+            sourceWorkspaceArchiveLastError: record.sourceWorkspaceArchiveLastError,
+            sourceWorkspaceArchiveRetryAt: record.sourceWorkspaceArchiveRetryAt,
+            sourceWorkspaceArchiveAbandonedAt: record.sourceWorkspaceArchiveAbandonedAt,
+            cancelDisposition: record.cancelDisposition,
+            cancelSourceAck: record.cancelSourceAck,
+            cancelTargetAck: record.cancelTargetAck,
+            cancelSourceAckAt: record.cancelSourceAckAt,
+            cancelTargetAckAt: record.cancelTargetAckAt,
+            canceledAt: record.canceledAt,
+            transportTeardownAt: record.transportTeardownAt
+        )
+    }
+
+    /// Re-date a `starting` row so the auto-start dispatch lease can expire,
+    /// matching the upstream suite's direct `updated_at` update.
+    public func setMachineMigrationUpdatedAtForTesting(migrationRef: String, date: Date) {
+        lock.lock()
+        if var record = machineMigrations[migrationRef] {
+            record.updatedAt = date
+            machineMigrations[migrationRef] = record
+        }
+        lock.unlock()
+    }
+
+    public func setMachineMigrationArchiveStateForTesting(migrationRef: String, archivedAt: Date?) {
+        lock.lock()
+        if var record = machineMigrations[migrationRef] {
+            record.sourceWorkspaceArchivedAt = archivedAt
+            machineMigrations[migrationRef] = record
+        }
         lock.unlock()
     }
 
@@ -13405,9 +13503,70 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return computers.first { $0.apiKey == key && $0.revokedAt == nil }?.machineId
     }
 
+    /// Terminal migration failure codes a Computer may report over
+    /// `transport-lost`; anything else collapses to the generic reason.
+    private static let migrationTerminalFailureCodes: Set<String> = [
+        "MIGRATION_TRANSPORT_LOST",
+        "MIGRATION_OBJECT_STORE_BUNDLE_TOO_LARGE",
+        "MIGRATION_OBJECT_STORE_MANIFEST_TOO_LARGE",
+        "MIGRATION_OBJECT_STORE_INSUFFICIENT_DISK",
+        "MIGRATION_OBJECT_STORE_ENTRY_COUNT_LIMIT_EXCEEDED",
+        "MIGRATION_WORKSPACE_ALREADY_EXISTS",
+        "MIGRATION_WORKSPACE_COMPLETE_OLD_COPY",
+        "MIGRATION_CHUNK_DIGEST_MISMATCH",
+        "MIGRATION_WHOLE_BUNDLE_DIGEST_MISMATCH",
+        "MIGRATION_LEASE_EXPIRED",
+        "MIGRATION_GENERATION_STALE",
+        "MIGRATION_CONTROL_MANIFEST_INVALID",
+        "MIGRATION_CONTROL_MANIFEST_TOO_LARGE",
+    ]
+    private static let migrationSourceArchiveMaxAttempts = 12
+    private static let migrationSourceArchiveMovedCodes: Set<String> = [
+        "MIGRATION_WORKSPACE_ARCHIVE_AGENT_RUNNING",
+        "MIGRATION_WORKSPACE_ARCHIVE_NEWER_OWNER",
+    ]
+    /// A `starting` row is observed, not re-dispatched, inside this window.
+    private static let migrationAutoStartLease: TimeInterval = 30
+
+    private static func migrationSourceArchiveBackoff(attempts: Int) -> TimeInterval {
+        min(60 * pow(2, Double(max(0, attempts - 1))), 6 * 60 * 60)
+    }
+
+    private static func migrationArchiveFailureCode(_ error: Error) -> String {
+        if let typed = error as? MachineMigrationArchiveFailure,
+           typed.code.range(of: "^[A-Za-z0-9_:.-]{1,160}$", options: .regularExpression) != nil {
+            return typed.code
+        }
+        return "MIGRATION_SOURCE_WORKSPACE_ARCHIVE_FAILED"
+    }
+
     private func migrationTargetViewJSON(_ record: MachineMigrationRecord, targetMachineId: String) -> String {
-        let canDrive = record.state == "ready" || record.state == "in_transit" || record.state == "arriving"
-        return "{\"migrationRef\":\(jsonString(record.supportRef)),\"agentId\":\(jsonString(record.agentId)),\"state\":\(jsonString(record.state)),\"migrationGeneration\":\(jsonString(record.transportGeneration)),\"sourceMachineId\":\(jsonString(record.sourceMachineId)),\"targetMachineId\":\(jsonString(targetMachineId)),\"canDriveTargetImport\":\(canDrive ? "true" : "false")}"
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        func timestamp(_ date: Date?) -> String {
+            date.map { jsonString(formatter.string(from: $0)) } ?? "null"
+        }
+        let failureReason = record.failureReason.map(jsonString) ?? "null"
+        let transportErrorCode = record.transportErrorCode.map(jsonString) ?? "null"
+        let transportErrorMessage = record.transportErrorMessage.map(jsonString) ?? "null"
+        let autoStartFailureStage = record.autoStartFailureStage.map(jsonString) ?? "null"
+        let autoStartFailureCode = record.autoStartFailureCode.map(jsonString) ?? "null"
+        return "{\"migrationRef\":\(jsonString(record.supportRef)),\"agentId\":\(jsonString(record.agentId)),\"state\":\(jsonString(record.state)),\"migrationGeneration\":\(jsonString(record.transportGeneration)),\"sourceMachineId\":\(jsonString(record.sourceMachineId)),\"targetMachineId\":\(jsonString(targetMachineId)),\"canDriveTargetImport\":true,\"failureReason\":\(failureReason),\"transportErrorCode\":\(transportErrorCode),\"transportErrorMessage\":\(transportErrorMessage),\"autoStartFailureStage\":\(autoStartFailureStage),\"autoStartFailureCode\":\(autoStartFailureCode),\"completedAt\":\(timestamp(record.completedAt))}"
+    }
+
+    private func migrationTargetReply(_ record: MachineMigrationRecord) -> HTTPReply {
+        Self.json(200, "{\"ok\":true,\"migration\":\(migrationTargetViewJSON(record, targetMachineId: record.targetMachineId))}")
+    }
+
+    private func isAgentHeldByTarget(_ record: MachineMigrationRecord) -> Bool {
+        agentMachineIds[record.agentId] == record.targetMachineId
+    }
+
+    private func migrationGeneration(from body: String) -> String? {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let generation = object["migrationGeneration"] as? String, !generation.isEmpty
+        else { return nil }
+        return generation
     }
 
     public func getMigrationTargetView(authorization: String?, migrationRef: String) -> HTTPReply {
@@ -13423,74 +13582,350 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         guard record.targetMachineId == machineId else {
             return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
         }
-        return Self.json(200, "{\"ok\":true,\"migration\":\(migrationTargetViewJSON(record, targetMachineId: machineId))}")
+        return migrationTargetReply(record)
     }
 
-    private func migrationStep(
-        authorization: String?,
-        migrationRef: String,
-        body: String,
-        expectedState: String,
-        nextState: String
-    ) -> (HTTPReply, MachineMigrationRecord?) {
+    public func startMigrationTransfer(authorization: String?, migrationRef: String, body: String) -> HTTPReply {
         guard let machineId = computerMachineId(authorization) else {
-            return (Self.json(401, "{\"code\":\"migration_transport_token_invalid\",\"error\":\"Migration transport token is invalid\"}"), nil)
+            return Self.json(401, "{\"code\":\"migration_transport_token_invalid\",\"error\":\"Migration transport token is invalid\"}")
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let generation = object["migrationGeneration"] as? String, !generation.isEmpty
-        else {
-            return (Self.json(400, "{\"code\":\"migration_generation_required\",\"error\":\"migrationGeneration is required\"}"), nil)
+        guard let generation = migrationGeneration(from: body) else {
+            return Self.json(400, "{\"code\":\"migration_generation_required\",\"error\":\"migrationGeneration is required\"}")
         }
         lock.lock()
         guard var record = machineMigrations[migrationRef], record.targetMachineId == machineId else {
             lock.unlock()
-            return (Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}"), nil)
+            return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
         }
         guard record.transportGeneration == generation else {
             lock.unlock()
-            return (Self.json(409, "{\"code\":\"migration_generation_stale\",\"error\":\"Migration generation is stale\"}"), nil)
+            return Self.json(409, "{\"code\":\"migration_generation_stale\",\"error\":\"Migration generation is stale\"}")
         }
-        guard record.state == expectedState else {
+        guard record.state == "ready" else {
             lock.unlock()
-            return (Self.json(409, "{\"code\":\"migration_not_ready\",\"error\":\"Migration is not ready for this step\"}"), nil)
+            return Self.json(409, "{\"code\":\"migration_not_ready\",\"error\":\"Migration is not ready for transfer\"}")
         }
-        record.state = nextState
+        record.previousTransportGeneration = record.transportGeneration
+        record.state = "in_transit"
         record.transportGeneration = "generation-" + UUID().uuidString.lowercased()
-        if nextState == "arriving" {
-            agentMachineIds[record.agentId] = record.targetMachineId
-        }
+        record.revision += 1
+        record.updatedAt = Date()
         machineMigrations[migrationRef] = record
         lock.unlock()
-        if nextState == "completed" {
-            createMigrationReceiptDm(agentId: record.agentId, serverId: record.serverId, supportRef: record.supportRef)
-        }
-        return (Self.json(200, "{\"ok\":true,\"migration\":\(migrationTargetViewJSON(record, targetMachineId: machineId))}"), record)
+        return migrationTargetReply(record)
     }
 
-    public func startMigrationTransfer(authorization: String?, migrationRef: String, body: String) -> HTTPReply {
-        migrationStep(authorization: authorization, migrationRef: migrationRef, body: body, expectedState: "ready", nextState: "in_transit").0
-    }
-
+    /// A flip replayed after it already succeeded returns the current view: the
+    /// generation it consumed is no longer current, but the callback is not a
+    /// second transition.
     public func flipMigrationMachine(authorization: String?, migrationRef: String, body: String) -> HTTPReply {
-        migrationStep(authorization: authorization, migrationRef: migrationRef, body: body, expectedState: "in_transit", nextState: "arriving").0
-    }
-
-    public func completeMigrationArrival(authorization: String?, migrationRef: String, body: String) -> HTTPReply {
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+        guard let machineId = computerMachineId(authorization) else {
+            return Self.json(401, "{\"code\":\"migration_transport_token_invalid\",\"error\":\"Migration transport token is invalid\"}")
+        }
+        guard let generation = migrationGeneration(from: body) else {
             return Self.json(400, "{\"code\":\"migration_generation_required\",\"error\":\"migrationGeneration is required\"}")
         }
+        lock.lock()
+        guard var record = machineMigrations[migrationRef], record.targetMachineId == machineId else {
+            lock.unlock()
+            return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
+        }
+        if (record.state == "arriving" || record.state == "completed") && isAgentHeldByTarget(record) {
+            lock.unlock()
+            return migrationTargetReply(record)
+        }
+        guard record.transportGeneration == generation else {
+            lock.unlock()
+            return Self.json(409, "{\"code\":\"migration_generation_stale\",\"error\":\"Migration generation is stale\"}")
+        }
+        guard record.state == "in_transit" else {
+            lock.unlock()
+            return Self.json(409, "{\"code\":\"migration_not_flippable\",\"error\":\"Migration is not ready to flip\"}")
+        }
+        guard agentMachineIds[record.agentId] == record.sourceMachineId else {
+            lock.unlock()
+            return Self.json(409, "{\"code\":\"migration_source_machine_mismatch\",\"error\":\"Source machine no longer owns the agent\"}")
+        }
+        let now = Date()
+        record.previousTransportGeneration = record.transportGeneration
+        record.state = "arriving"
+        record.flippedAt = now
+        record.transportGeneration = "generation-" + UUID().uuidString.lowercased()
+        record.revision += 1
+        record.updatedAt = now
+        agentMachineIds[record.agentId] = record.targetMachineId
+        machineMigrations[migrationRef] = record
+        lock.unlock()
+        return migrationTargetReply(record)
+    }
+
+    /// Record a failed source-archive attempt. Deliberately does not bump
+    /// `revision`: source cleanup is independent of the transfer state machine.
+    private func recordSourceArchiveFailure(migrationRef: String, code rawCode: String) {
+        let code = rawCode.range(of: "^[A-Za-z0-9_:.-]{1,160}$", options: .regularExpression) != nil
+            ? rawCode
+            : "MIGRATION_SOURCE_WORKSPACE_ARCHIVE_FAILED"
+        lock.lock()
+        defer { lock.unlock() }
+        guard var record = machineMigrations[migrationRef],
+              record.sourceWorkspaceArchivedAt == nil,
+              record.sourceWorkspaceArchiveAbandonedAt == nil
+        else { return }
+        let now = Date()
+        record.sourceWorkspaceArchiveAttempts += 1
+        let agentMoved = Self.migrationSourceArchiveMovedCodes.contains(code)
+        let exhausted = agentMoved || record.sourceWorkspaceArchiveAttempts >= Self.migrationSourceArchiveMaxAttempts
+        record.sourceWorkspaceArchiveLastError = agentMoved ? "agent_moved" : code
+        record.sourceWorkspaceArchiveRetryAt = exhausted
+            ? nil
+            : now.addingTimeInterval(Self.migrationSourceArchiveBackoff(attempts: record.sourceWorkspaceArchiveAttempts))
+        record.sourceWorkspaceArchiveAbandonedAt = exhausted ? now : nil
+        record.updatedAt = now
+        machineMigrations[migrationRef] = record
+    }
+
+    private func recordAutoStartFailure(migrationRef: String, stage: String, code: String) -> HTTPReply {
+        lock.lock()
+        guard var record = machineMigrations[migrationRef] else {
+            lock.unlock()
+            return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
+        }
+        if record.state == "starting" {
+            record.failureReason = "auto_start_failed"
+            record.autoStartFailureStage = stage
+            record.autoStartFailureCode = code
+            record.revision += 1
+            record.updatedAt = Date()
+            machineMigrations[migrationRef] = record
+        }
+        lock.unlock()
+        return migrationTargetReply(record)
+    }
+
+    /// Target import arrival: confirm the idempotent source archive, move the row
+    /// to `starting`, then dispatch the target start. An archive failure after
+    /// the flip is recorded for the background retry and does not fail the
+    /// migration; a failed/suppressed start keeps the arrival retryable.
+    private struct MigrationArrivalContext {
+        var supportRef: String
+        var sourceMachineId: String
+        var agentId: String
+        var archiveCallback: (@Sendable (_ machineId: String, _ migrationRef: String, _ agentId: String) async throws -> Void)?
+    }
+
+    /// Phase 1 of the arrival callback: cheap validity check plus the input the
+    /// source archive dispatch needs. The callback is idempotent once the
+    /// authoritative archive is recorded and the target holds the agent.
+    private func migrationArrivalContext(
+        machineId: String,
+        migrationRef: String,
+        generation: String
+    ) -> (reply: HTTPReply?, context: MigrationArrivalContext?) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let record = machineMigrations[migrationRef], record.targetMachineId == machineId else {
+            return (Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}"), nil)
+        }
+        let archivableStates: Set<String> = ["arriving", "starting", "completed"]
+        let archivedAndHeld = archivableStates.contains(record.state)
+            && record.sourceWorkspaceArchivedAt != nil
+            && isAgentHeldByTarget(record)
+        if !archivedAndHeld {
+            guard record.transportGeneration == generation else {
+                return (Self.json(409, "{\"code\":\"migration_generation_stale\",\"error\":\"Migration generation is stale\"}"), nil)
+            }
+            guard archivableStates.contains(record.state) else {
+                return (Self.json(409, "{\"code\":\"migration_not_arriving\",\"error\":\"Migration is not arriving\"}"), nil)
+            }
+            guard isAgentHeldByTarget(record) else {
+                return (Self.json(409, "{\"code\":\"migration_source_machine_mismatch\",\"error\":\"Source machine no longer owns the agent\"}"), nil)
+            }
+        }
+        return (nil, MigrationArrivalContext(
+            supportRef: record.supportRef,
+            sourceMachineId: record.sourceMachineId,
+            agentId: record.agentId,
+            archiveCallback: machineMigrationArchiveSourceWorkspace
+        ))
+    }
+
+    private func recordMigrationArchiveConfirmed(migrationRef: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var current = machineMigrations[migrationRef], current.sourceWorkspaceArchivedAt == nil else { return }
+        current.sourceWorkspaceArchivedAt = Date()
+        current.revision += 1
+        current.updatedAt = Date()
+        machineMigrations[migrationRef] = current
+    }
+
+    /// Phase 3: transition `arriving` to `starting`, or observe/reclaim an
+    /// already-starting row so a replayed arrival callback is not a second
+    /// transition.
+    private func migrationArrivalTransition(
+        machineId: String,
+        migrationRef: String,
+        generation: String,
+        reportPath: String?,
+        reportSha256: String?
+    ) -> (
+        reply: HTTPReply?,
+        arrived: MachineMigrationRecord?,
+        dispatch: Bool,
+        startCallback: (@Sendable (_ agentId: String) async throws -> MachineMigrationAgentStartOutcome)?
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var current = machineMigrations[migrationRef], current.targetMachineId == machineId else {
+            return (Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}"), nil, false, nil)
+        }
+        if current.state == "completed" && isAgentHeldByTarget(current) {
+            return (migrationTargetReply(current), nil, false, nil)
+        }
+        if current.state == "starting" && isAgentHeldByTarget(current) {
+            if current.failureReason == nil {
+                if Date() < current.updatedAt.addingTimeInterval(Self.migrationAutoStartLease) {
+                    return (migrationTargetReply(current), nil, false, nil)
+                }
+                current.revision += 1
+                current.updatedAt = Date()
+            } else if current.failureReason != "auto_start_failed" {
+                return (migrationTargetReply(current), nil, false, nil)
+            } else {
+                current.failureReason = nil
+                current.revision += 1
+                current.updatedAt = Date()
+            }
+        } else {
+            guard current.transportGeneration == generation else {
+                return (Self.json(409, "{\"code\":\"migration_generation_stale\",\"error\":\"Migration generation is stale\"}"), nil, false, nil)
+            }
+            guard current.state == "arriving" else {
+                return (Self.json(409, "{\"code\":\"migration_not_arriving\",\"error\":\"Migration is not arriving\"}"), nil, false, nil)
+            }
+            guard isAgentHeldByTarget(current) else {
+                return (Self.json(409, "{\"code\":\"migration_source_machine_mismatch\",\"error\":\"Source machine no longer owns the agent\"}"), nil, false, nil)
+            }
+            current.previousTransportGeneration = current.transportGeneration
+            current.state = "starting"
+            current.arrivedAt = Date()
+            current.failureReason = nil
+            current.autoStartFailureStage = nil
+            current.autoStartFailureCode = nil
+            current.arrivalReportPath = reportPath
+            current.arrivalReportSha256 = reportSha256
+            current.revision += 1
+            current.updatedAt = Date()
+        }
+        machineMigrations[migrationRef] = current
+        return (nil, current, true, machineMigrationStartAgent)
+    }
+
+    /// Phase 4: completion means the agent runs on the target. Source cleanup is
+    /// tracked separately and never gates this transition.
+    private func completeMigrationAutoStart(migrationRef: String) -> HTTPReply {
+        lock.lock()
+        guard var completed = machineMigrations[migrationRef] else {
+            lock.unlock()
+            return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
+        }
+        guard completed.state == "starting" else {
+            lock.unlock()
+            return migrationTargetReply(completed)
+        }
+        let now = Date()
+        completed.state = "completed"
+        completed.failureReason = nil
+        completed.autoStartFailureStage = nil
+        completed.autoStartFailureCode = nil
+        completed.completedAt = now
+        completed.transportTeardownAt = now
+        completed.previousTransportGeneration = completed.transportGeneration
+        completed.transportGeneration = "generation-" + UUID().uuidString.lowercased()
+        completed.revision += 1
+        completed.updatedAt = now
+        agentMachineIds[completed.agentId] = completed.targetMachineId
+        machineMigrations[migrationRef] = completed
+        lock.unlock()
+        createMigrationReceiptDm(agentId: completed.agentId, serverId: completed.serverId, supportRef: completed.supportRef)
+        return migrationTargetReply(completed)
+    }
+
+    /// Target import arrival: confirm the idempotent source archive, move the row
+    /// to `starting`, then dispatch the target start. An archive failure after
+    /// the flip is recorded for the background retry and does not fail the
+    /// migration; a failed or suppressed start keeps the arrival retryable.
+    public func completeMigrationArrival(authorization: String?, migrationRef: String, body: String) async -> HTTPReply {
+        guard let machineId = computerMachineId(authorization) else {
+            return Self.json(401, "{\"code\":\"migration_transport_token_invalid\",\"error\":\"Migration transport token is invalid\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let generation = object["migrationGeneration"] as? String, !generation.isEmpty
+        else {
+            return Self.json(400, "{\"code\":\"migration_generation_required\",\"error\":\"migrationGeneration is required\"}")
+        }
+        var reportPath: String?
         if let path = object["reportPath"], !(path is NSNull) {
             guard let value = path as? String, !value.isEmpty else {
                 return Self.json(400, "{\"code\":\"report_path_invalid\",\"error\":\"reportPath must be a non-empty string\"}")
             }
+            reportPath = value
         }
+        var reportSha256: String?
         if let sha = object["reportSha256"], !(sha is NSNull) {
             guard let value = sha as? String, !value.isEmpty else {
                 return Self.json(400, "{\"code\":\"report_sha256_invalid\",\"error\":\"reportSha256 must be a non-empty string\"}")
             }
+            reportSha256 = value
         }
-        let (reply, _) = migrationStep(authorization: authorization, migrationRef: migrationRef, body: body, expectedState: "arriving", nextState: "completed")
-        return reply
+
+        let preflight = migrationArrivalContext(machineId: machineId, migrationRef: migrationRef, generation: generation)
+        if let reply = preflight.reply { return reply }
+        guard let context = preflight.context else {
+            return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
+        }
+
+        // Ask the source Computer to archive; a failure is retried in the
+        // background and never terminalizes the post-flip migration.
+        if let archiveCallback = context.archiveCallback {
+            do {
+                try await archiveCallback(context.sourceMachineId, context.supportRef, context.agentId)
+                recordMigrationArchiveConfirmed(migrationRef: context.supportRef)
+            } catch {
+                recordSourceArchiveFailure(migrationRef: context.supportRef, code: Self.migrationArchiveFailureCode(error))
+            }
+        } else {
+            recordSourceArchiveFailure(migrationRef: context.supportRef, code: "MIGRATION_SOURCE_WORKSPACE_ARCHIVE_UNAVAILABLE")
+        }
+
+        let transition = migrationArrivalTransition(
+            machineId: machineId,
+            migrationRef: migrationRef,
+            generation: generation,
+            reportPath: reportPath,
+            reportSha256: reportSha256
+        )
+        if let reply = transition.reply { return reply }
+        guard transition.dispatch, let arrived = transition.arrived else {
+            return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
+        }
+        // No configured orchestrator: the in-memory ledger has no daemon to
+        // dispatch to, so arrival completes as it did before target start
+        // dispatch became observable. Tests that exercise the dispatch seam set
+        // `machineMigrationStartAgent`.
+        guard let startCallback = transition.startCallback else {
+            return completeMigrationAutoStart(migrationRef: migrationRef)
+        }
+        let outcome: MachineMigrationAgentStartOutcome
+        do {
+            outcome = try await startCallback(arrived.agentId)
+        } catch {
+            return recordAutoStartFailure(migrationRef: migrationRef, stage: "start_agent", code: "start_threw")
+        }
+        guard case .dispatched = outcome else {
+            return recordAutoStartFailure(migrationRef: migrationRef, stage: "start_agent", code: "start_not_dispatched")
+        }
+        return completeMigrationAutoStart(migrationRef: migrationRef)
     }
 
     public func markMigrationTransportLostFromComputer(authorization: String?, migrationRef: String, body: String) -> HTTPReply {
@@ -13498,22 +13933,49 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(401, "{\"code\":\"migration_transport_token_invalid\",\"error\":\"Migration transport token is invalid\"}")
         }
         let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+        let reportedCode = object["code"] as? String
+        let code = reportedCode.flatMap { Self.migrationTerminalFailureCodes.contains($0) ? $0 : nil } ?? "MIGRATION_TRANSPORT_LOST"
+        let message = (object["message"] as? String).flatMap { $0.isEmpty ? nil : String($0.prefix(500)) }
+        let detailCode = (object["detailCode"] as? String).flatMap { value in
+            value.range(of: "^[A-Za-z0-9_:.-]{1,160}$", options: .regularExpression) != nil ? value : nil
+        }
+        let reportedGeneration = (object["transportGeneration"] as? String).flatMap { value in
+            !value.isEmpty && value.count <= 200 ? value : nil
+        }
         lock.lock()
-        guard var record = machineMigrations[migrationRef], record.sourceMachineId == machineId || record.targetMachineId == machineId else {
+        guard var record = machineMigrations[migrationRef],
+              record.sourceMachineId == machineId || record.targetMachineId == machineId
+        else {
             lock.unlock()
             return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
+        }
+        // A replay of the same terminal reason is already persisted.
+        if record.state == "failed" && record.failureReason == code {
+            lock.unlock()
+            return migrationTargetReply(record)
+        }
+        // A replaced run must not fail the current generation.
+        if let reportedGeneration, record.transportGeneration != reportedGeneration {
+            lock.unlock()
+            return migrationTargetReply(record)
+        }
+        let activeStates: Set<String> = ["provisioning", "prep", "ready", "in_transit", "arriving", "starting"]
+        guard activeStates.contains(record.state) else {
+            lock.unlock()
+            return Self.json(409, "{\"code\":\"migration_not_active\",\"error\":\"Migration is not active\"}")
         }
         let now = Date()
         record.state = "failed"
         record.revision += 1
-        record.failureReason = (object["errorCode"] as? String) ?? "MIGRATION_TRANSPORT_LOST"
-        record.transportErrorCode = record.failureReason
-        record.transportErrorMessage = object["message"] as? String
+        record.failureReason = code
+        record.transportErrorCode = detailCode ?? code
+        record.transportErrorMessage = message
         record.transportLostAt = now
         record.transportTeardownAt = now
+        record.updatedAt = now
         machineMigrations[migrationRef] = record
         lock.unlock()
-        return Self.json(200, "{\"ok\":true,\"migration\":\(migrationTargetViewJSON(record, targetMachineId: record.targetMachineId))}")
+        return migrationTargetReply(record)
     }
 
     public func machineMigrationCancelGenerationsForTesting(migrationRef: String) -> (cancel: String, transport: String)? {
@@ -13566,22 +14028,55 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(404, "{\"code\":\"migration_missing\",\"error\":\"Migration not found\"}")
         }
-        guard record.cancelTransportGeneration == transportGeneration else {
-            lock.unlock()
-            return Self.json(409, "{\"code\":\"migration_generation_stale\",\"error\":\"Migration generation is stale\"}")
-        }
         guard record.cancelGeneration == cancelGeneration else {
             lock.unlock()
             return Self.json(409, "{\"code\":\"migration_cancel_generation_stale\",\"error\":\"Migration cancel generation is stale\"}")
         }
-        if record.state == "canceled_post_flip" && role == "target" && outcome == "cleaned" {
+        guard record.cancelTransportGeneration == transportGeneration else {
+            lock.unlock()
+            return Self.json(409, "{\"code\":\"migration_generation_stale\",\"error\":\"Migration generation is stale\"}")
+        }
+        let cancellationStates: Set<String> = ["cancel_requested_pre_flip", "cancel_requested_post_flip", "canceled_pre_flip", "canceled_post_flip"]
+        guard cancellationStates.contains(record.state), let disposition = record.cancelDisposition else {
+            lock.unlock()
+            return Self.json(409, "{\"code\":\"migration_cancel_not_requested\",\"error\":\"Migration cancellation was not requested\"}")
+        }
+        // Post-flip the target is authoritative: its successful outcome is
+        // `stopped`, never `cleaned`. A `cleaned` target acknowledgement must not
+        // terminalize the cancellation.
+        let successOutcome = (disposition == "post_flip_target_authoritative" && role == "target") ? "stopped" : "cleaned"
+        if outcome != "needs_attention" && outcome != successOutcome {
             lock.unlock()
             return Self.json(409, "{\"code\":\"migration_cancel_outcome_mismatch\",\"error\":\"Migration cancel outcome does not match the frozen disposition\"}")
         }
-        if role == "source" { record.cancelSourceAck = outcome } else { record.cancelTargetAck = outcome }
-        machineMigrations[migrationRef] = record
+        let now = Date()
+        if outcome == "needs_attention" {
+            record.cancelErrorCode = record.cancelErrorCode ?? "cleanup_incomplete"
+            record.updatedAt = now
+            machineMigrations[migrationRef] = record
+            lock.unlock()
+            return Self.json(200, "{\"ok\":true,\"migration\":{\"migrationRef\":\(jsonString(record.supportRef)),\"state\":\(jsonString(record.state)),\"revision\":\(record.revision),\"disposition\":\(jsonString(disposition))}}")
+        }
+        let alreadyAcknowledged = role == "source" ? record.cancelSourceAckAt : record.cancelTargetAckAt
+        if alreadyAcknowledged == nil {
+            if role == "source" {
+                record.cancelSourceAck = outcome
+                record.cancelSourceAckAt = now
+            } else {
+                record.cancelTargetAck = outcome
+                record.cancelTargetAckAt = now
+            }
+            let terminal = record.cancelSourceAckAt != nil && record.cancelTargetAckAt != nil
+            if terminal {
+                record.transportTeardownAt = now
+                record.canceledAt = record.canceledAt ?? now
+            }
+            record.revision += 1
+            record.updatedAt = now
+            machineMigrations[migrationRef] = record
+        }
         lock.unlock()
-        return Self.json(200, "{\"ok\":true,\"migration\":{\"migrationRef\":\(jsonString(record.supportRef)),\"state\":\(jsonString(record.state)),\"revision\":\(record.revision),\"disposition\":\(record.cancelDisposition.map(jsonString) ?? "null")}}")
+        return Self.json(200, "{\"ok\":true,\"migration\":{\"migrationRef\":\(jsonString(record.supportRef)),\"state\":\(jsonString(record.state)),\"revision\":\(record.revision),\"disposition\":\(jsonString(disposition))}}")
     }
 
     public func recordMigrationSourceQuiesced(authorization: String?, migrationRef: String, body: String) -> HTTPReply {
@@ -33019,6 +33514,55 @@ public struct AgentRuntimeProfileFact: Sendable, Equatable {
         self.pendingKind = pendingKind
         self.pendingReleaseNotesUrl = pendingReleaseNotesUrl
     }
+}
+
+/// Outcome of a target-side agent start attempt during migration arrival.
+public enum MachineMigrationAgentStartOutcome: Sendable, Equatable {
+    /// The daemon accepted the launch; the migration completes.
+    case dispatched
+    /// A gate (for example a held wake lock) suppressed the launch; the
+    /// migration stays in `starting` so the arrival callback can retry.
+    case skipped(String)
+}
+
+/// A code-shaped source-archive failure reported by the source Computer.
+public struct MachineMigrationArchiveFailure: Error, Sendable, Equatable {
+    public let code: String
+
+    public init(code: String) {
+        self.code = code
+    }
+}
+
+/// Test-observable mirror of the in-memory machine migration row.
+public struct MachineMigrationStateSnapshot: Sendable, Equatable {
+    public var state: String
+    public var revision: Int
+    public var agentId: String
+    public var sourceMachineId: String
+    public var targetMachineId: String
+    public var transportGeneration: String
+    public var flippedAt: Date?
+    public var arrivedAt: Date?
+    public var completedAt: Date?
+    public var updatedAt: Date
+    public var failureReason: String?
+    public var transportErrorCode: String?
+    public var transportErrorMessage: String?
+    public var autoStartFailureStage: String?
+    public var autoStartFailureCode: String?
+    public var sourceWorkspaceArchivedAt: Date?
+    public var sourceWorkspaceArchiveAttempts: Int
+    public var sourceWorkspaceArchiveLastError: String?
+    public var sourceWorkspaceArchiveRetryAt: Date?
+    public var sourceWorkspaceArchiveAbandonedAt: Date?
+    public var cancelDisposition: String?
+    public var cancelSourceAck: String?
+    public var cancelTargetAck: String?
+    public var cancelSourceAckAt: Date?
+    public var cancelTargetAckAt: Date?
+    public var canceledAt: Date?
+    public var transportTeardownAt: Date?
 }
 
 /// One agent migration row. Terminal rows stay behind as history after the

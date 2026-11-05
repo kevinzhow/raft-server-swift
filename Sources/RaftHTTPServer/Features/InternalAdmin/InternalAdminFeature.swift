@@ -393,8 +393,8 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 body: request.body.string ?? "{}"
             ))
         }
-        app.post("internal", "computer", "agent-migrations", "by-id", ":migrationId", "arrived") { request -> Response in
-            routeResponse(services.emailAccounts.completeMigrationArrival(
+        app.post("internal", "computer", "agent-migrations", "by-id", ":migrationId", "arrived") { request async -> Response in
+            routeResponse(await services.emailAccounts.completeMigrationArrival(
                 authorization: request.headers[.authorization],
                 migrationRef: request.parameters.get("migrationId") ?? "",
                 body: request.body.string ?? "{}"

@@ -2028,3 +2028,11 @@ RFC 074 personal assistant：
 - E1 formal @handle mention 在 left-exclusive 区间内豁免 stale hold 并记录 `e1_exempt`；边界点 mention 不豁免；`@everyone` 等非正式 mention 不豁免。注释：本端口额外要求 resolved mention fact + legacyReadCursor==boundarySeq，以兼容既有 hold 测试；上游 E1 用例仍通过。
 - legacy `/internal/agent/:agentId/receive-ack`：model-seen capability 下保持 volatile；按 channel + membership 作用域 checkpoint；thread/DM 幂等，非法/重复 seq 忽略；new-thread first send 从 parent seed freshness，并发 first replies 通过 commit lock 串行（一个 sent、一个 held）。
 - 裁决排除：2 个用例的断言是 `agentOrchestrator.acknowledgeDeliveredMessagesForChannel{,UpToSeq}` call array（本端口无 orchestrator/inbox 注入）；其 HTTP-visible 部分（target-only heldMessages、无 recentUnread、bounded shown/omitted）已由现有测试覆盖。
+
+### route internalComputer.agentMigration（锁定，含裁决）
+
+- typed transport-lost：13-code terminal allowlist（未知 code 落 `MIGRATION_TRANSPORT_LOST`）、detailCode/500-char message、同因幂等 replay、stale generation no-op、`migration_not_active` 409；target view 暴露 failureReason/transportErrorCode/ErrorMessage。
+- arrival pipeline：generation/holder preflight → 幂等 source-archive confirm（先 archive 后 start）→ `arriving`/`starting`/observe/lease reclaim → target start dispatch（dispatched/skipped/throw）→ completed；archive 失败只记 bookkeeping 重试，不失败迁移；auto-start 失败保持 retryable。
+- flip：已 arriving/completed 且 holder 正确时幂等；stale generation 409 不改 holder；holder-moved 409 `migration_source_machine_mismatch`；source-machine drive 404。
+- post-flip cancel：freeze `canceled_post_flip`/`post_flip_target_authoritative`，target `cleaned` ack 409 `migration_cancel_outcome_mismatch` 且不能 terminalize；ack 记录 per-role outcome/time/revision。
+- 裁决：case 2 的 resumable transport-token/quiescence ordering 与既有已锁定的 simplified resumable contract 冲突（既有 `MigrationTransportChunksTests`/`MigrationControlBodyLimitTests`/`MigrationCancelAckTests` 发送无 token/上游 body 并期望成功），按既有 contract 排除该上游顺序断言；case 13 的 `drainAgentMigrationRemediation` 后台 worker drain 为 worker/outbox 内部（HTTP-observable 部分已覆盖）；case 10 的 `agents.sessionId == null` 在本端口无 native-session 模型，以 holder=machineId 投影断言。
