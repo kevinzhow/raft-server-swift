@@ -1897,3 +1897,9 @@ RFC 074 personal assistant：
 - freshness/card：`seenUpToSeq` gate 返回完整 held envelope（decision/available_actions/counts/heldMessages/mentionAnnotation/identity），仅对方消息计数，read cursor 非证明；bounded 3 条、omitted 真条数、firstShownSeq、全部展示才 read-through；channel card 仅对命名版本的客户端检查（unseen hold、旧版本 sent+changed、anyway/retry 不 hold）；DM peer card 同理；withheld reviewer 模式只回 state/mode/count；combined unread+card 单 hold。
 - 其他：首次频道发送 recent-join drive-by attention 一次；非成员 agent mention 返回 sender-only pendingMentionActions；mute 抑制普通未读但个人 mention 穿透；held identity 覆盖 channel/thread/DM/joint（joint 读 canonical storage、渲染 local name）。
 - 裁决：tracer/span（route breakdown、follower fallback、structured 4xx error_subkind）、orchestrator 注入（/events 批量消费/ack、wake-hints、mute delivery、self-leave purge、external delivery）、Postgres 错误/死锁注入、DB 行级 orphan membership 与 machine sweep 用例不移植；其 HTTP/JSON 可观测语义已由上述直接实现覆盖。
+
+### route channels.jointChannelAdmin.api（锁定）
+
+- joint channel 的 channel admin（存于各 server 自己的 projection）可修改共享 name/description，并同步到所有 projection；普通 server member 403；visibility 仍仅 server admin。
+- joint channel admin 不能 archive/remove members/set another server's member role；server admin 保留这些权限；set role 仅对本 server 成员生效（peer member 无本 projection row）。
+- joint roster 合并 peer server 成员，`canChangeChannelRole` 仅对本 server 成员为 true；GET /api/channels 对 joint channel admin 仅授予 editChannelMetadata/changeChannelMemberRoles，archive/remove/manageGuest 为 false，visibility/federate 仍 server admin。

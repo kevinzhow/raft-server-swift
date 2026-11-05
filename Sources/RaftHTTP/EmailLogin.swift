@@ -21237,9 +21237,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         lock.lock()
         let channelAdmin = channelHumanRoles["\(channelId)\n\(userId)"] == "admin"
+        let jointArchive = jointProjections.contains { $0.localChannelId == channelId }
         lock.unlock()
         guard role == "owner" || role == "admin" || channelAdmin else {
             return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        if jointArchive, role != "owner", role != "admin" {
+            return Self.json(403, "{\"error\":\"Only a server admin can archive a joint channel\",\"code\":\"joint_channel_admin_limited\"}")
         }
         let existing = oauth.channelArchivedAt(id: channelId)
         if archived {
@@ -26097,6 +26101,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func removeChannelHuman(authorization: String?, serverId: String, channelId: String, memberId: String) -> HTTPReply {
+        if let authorization, let userId = sessionUserId(authorization: authorization) {
+            lock.lock()
+            let jointRemove = jointProjections.contains { $0.localChannelId == channelId }
+            lock.unlock()
+            let actorServerRole = oauth.memberRole(serverId: serverId, userId: userId) ?? "member"
+            if jointRemove, actorServerRole != "owner", actorServerRole != "admin" {
+                return Self.json(403, "{\"error\":\"Only a server admin can remove joint channel members\",\"code\":\"joint_channel_admin_limited\"}")
+            }
+        }
         guard let userId = sessionUserId(authorization: authorization) else {
             return PublicVisits.authRequired(authorization: authorization)
         }
@@ -26222,7 +26235,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(400, "{\"error\":\"Invalid channel role\"}")
         }
-        let targetServerRole = oauth.memberRole(serverId: serverId, userId: memberId) ?? "member"
+        guard let targetRoleValue = oauth.memberRole(serverId: serverId, userId: memberId) else {
+            return Self.json(404, "{\"error\":\"Member not found\"}")
+        }
+        let targetServerRole = targetRoleValue
         if targetServerRole == "owner" || targetServerRole == "admin" {
             return Self.json(403, "{\"error\":\"Server role is managed separately\",\"code\":\"protected_server_role\"}")
         }
@@ -26272,16 +26288,30 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let viewerLocalRole = channelHumanRoles["\(channelId)\n\(userId)"]
         lock.unlock()
         let viewerIsChannelAdmin = viewerLocalRole == "admin" || viewerServerRole == "owner" || viewerServerRole == "admin"
-        let humans = oauth.channelHumanIds(channelId: scopeChannelId).map { humanId -> String in
+        lock.lock()
+        var rosterHumanIds = oauth.channelHumanIds(channelId: scopeChannelId)
+        if let canonical = jointProjections.first(where: { $0.localChannelId == scopeChannelId })?.canonicalChannelId {
+            var seen = Set(rosterHumanIds)
+            for link in jointProjections where link.canonicalChannelId == canonical {
+                for humanId in oauth.channelHumanIds(channelId: link.localChannelId) where seen.insert(humanId).inserted {
+                    rosterHumanIds.append(humanId)
+                }
+            }
+        }
+        let rosterIds = rosterHumanIds
+        lock.unlock()
+        let humans = rosterIds.map { humanId -> String in
             let targetServerRole = oauth.memberRole(serverId: serverId, userId: humanId) ?? "member"
+            let isLocalMember = oauth.memberRole(serverId: serverId, userId: humanId) != nil
             lock.lock()
             let targetLocalRole = channelHumanRoles["\(channelId)\n\(humanId)"]
+            let displayName = accounts.values.first { $0.id == humanId }?.name ?? humanId
             lock.unlock()
             let basis: String? = targetLocalRole == "admin" ? "channel_role"
                 : ((targetServerRole == "owner" || targetServerRole == "admin") ? "server_role" : nil)
             let effectiveRole = basis == nil ? "member" : "admin"
-            let canChange = viewerIsChannelAdmin && targetServerRole != "owner" && targetServerRole != "admin" && humanId != userId
-            return "{\"id\":\(jsonString(humanId)),\"serverRole\":\(jsonString(targetServerRole)),\"effectiveChannelRole\":\(jsonString(effectiveRole)),\"channelAdminBasis\":\(basis.map { jsonString($0) } ?? "null"),\"canChangeChannelRole\":\(canChange)}"
+            let canChange = viewerIsChannelAdmin && isLocalMember && targetServerRole != "owner" && targetServerRole != "admin" && humanId != userId
+            return "{\"id\":\(jsonString(humanId)),\"name\":\(jsonString(displayName)),\"serverRole\":\(jsonString(targetServerRole)),\"effectiveChannelRole\":\(jsonString(effectiveRole)),\"channelAdminBasis\":\(basis.map { jsonString($0) } ?? "null"),\"canChangeChannelRole\":\(canChange)}"
         }.joined(separator: ",")
         return Self.json(200, "{\"agents\":[\("\(agents)")],\"humans\":[\("\(humans)")]}")
     }
@@ -27798,7 +27828,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let channelRole = basis == nil ? "member" : "admin"
         let serverAdmin = serverRole == "owner" || serverRole == "admin"
         let capability = basis != nil
-        let capsJSON = "{\"editChannelMetadata\":\(capability),\"archiveChannels\":\(capability),\"addChannelMembers\":\(capability),\"changeChannelMemberRoles\":\(capability),\"deleteChannels\":\(serverAdmin),\"changeChannelVisibility\":\(serverAdmin),\"federateChannels\":\(serverAdmin)}"
+        let isJoint = jointProjections.contains { $0.localChannelId == channelId }
+        let metadataCap = capability
+        let roleCap = capability
+        let archiveCap = capability && !isJoint
+        let addCap = capability && !isJoint
+        let capsJSON = "{\"editChannelMetadata\":\(metadataCap),\"archiveChannels\":\(archiveCap),\"addChannelMembers\":\(addCap),\"removeChannelMembers\":\(addCap),\"changeChannelMemberRoles\":\(roleCap),\"manageGuestAccess\":\(serverAdmin && !isJoint),\"deleteChannels\":\(serverAdmin),\"changeChannelVisibility\":\(serverAdmin),\"federateChannels\":\(serverAdmin)}"
         var peersJSON = ""
         if receiptsEnabled {
             if peerSeqs.count > 50 {
@@ -28546,9 +28581,40 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             lock.unlock()
             return Self.json(200, "{\"ok\":true,\"id\":\(jsonString(channelId)),\"visibility\":\(jsonString(visibility)),\"type\":\(jsonString(visibility == "private" ? "private" : "channel"))}")
         }
+        let serverRole = oauth.memberRole(serverId: serverId, userId: userId) ?? "member"
         lock.lock()
+        let actorChannelRole = channelHumanRoles["\(channelId)\n\(userId)"]
+        let jointCanonical = jointProjections.first { $0.localChannelId == channelId }?.canonicalChannelId
+        let jointLinks = jointCanonical.map { canonical in
+            jointProjections.filter { $0.canonicalChannelId == canonical }.map(\.localChannelId)
+        } ?? []
         let actorName = accounts.values.first(where: { $0.id == userId })?.name ?? "Someone"
         lock.unlock()
+        guard actorChannelRole == "admin" || serverRole == "owner" || serverRole == "admin" else {
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        }
+        if !jointLinks.isEmpty {
+            if object["visibility"] != nil || object["archived"] != nil {
+                return Self.json(403, "{\"error\":\"Only a server admin can change joint visibility or archive\",\"code\":\"joint_channel_admin_limited\"}")
+            }
+            let jointName = object["name"] as? String
+            let jointDescription = object["description"] as? String
+            if let jointName, jointName.wholeMatch(of: /^[a-z0-9][a-z0-9-]{0,79}$/) == nil {
+                return Self.json(400, "{\"error\":\"Invalid channel name\"}")
+            }
+            var systemSeq: Int?
+            for linkId in jointLinks {
+                let seq = oauth.updateChannel(id: linkId, name: jointName, description: jointDescription, systemMessage: nil)
+                systemSeq = seq ?? systemSeq
+                lock.lock()
+                if let jointName { postableChannels[linkId]?.name = jointName }
+                lock.unlock()
+            }
+            let latest = oauth.channelInfo(id: channelId)
+            let nameJSON = jsonString(latest?.name ?? channel.name)
+            let descriptionJSON = latest?.description.map(jsonString) ?? "null"
+            return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(nameJSON),\"description\":\(descriptionJSON),\"systemMessageSeq\":\(systemSeq.map(String.init) ?? "null")}")
+        }
         var newName: String?
         if let name = object["name"] as? String, name != channel.name {
             guard name.wholeMatch(of: /^[a-z0-9][a-z0-9-]{0,79}$/) != nil else {
@@ -28715,7 +28781,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             let muteSeq = channel.muteFromSeq.map(String.init) ?? "null"
             let archivedAt = oauth.channelArchivedAt(id: channel.id).map { jsonString(formatter.string(from: $0)) } ?? "null"
             let displayPrefs = oauth.channelDisplayPrefs(channelId: channel.id, userId: userId)
-            return "{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(channel.type)),\"joined\":\(channel.name == "all" || channel.joined),\"archivedAt\":\(archivedAt),\"lastMessageAt\":\(last),\"activityMuted\":\(channel.activityMuted),\"muteFromSeq\":\(muteSeq),\"prefsVersion\":\(channel.prefsVersion),\"activityMuteSupported\":\(channel.type == "channel"),\"collapseLongMessages\":\(displayPrefs.collapseLongMessages),\"displayPrefsVersion\":\(displayPrefs.prefsVersion)}"
+            lock.lock()
+            let localRole = channelHumanRoles["\(channel.id)\n\(userId)"]
+            let isJoint = jointProjections.contains { $0.localChannelId == channel.id }
+            lock.unlock()
+            let serverAdmin = role == "owner" || role == "admin"
+            let capability = localRole == "admin" || serverAdmin
+            let basis: String? = localRole == "admin" ? "channel_role" : (serverAdmin ? "server_role" : nil)
+            let channelRole = basis == nil ? "member" : "admin"
+            let caps = "{\"editChannelMetadata\":\(capability),\"archiveChannels\":\(capability && !isJoint),\"addChannelMembers\":\(capability && !isJoint),\"removeChannelMembers\":\(capability && !isJoint),\"changeChannelMemberRoles\":\(capability),\"manageGuestAccess\":\(serverAdmin && !isJoint),\"deleteChannels\":\(serverAdmin),\"changeChannelVisibility\":\(serverAdmin),\"federateChannels\":\(serverAdmin)}"
+            return "{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(channel.type)),\"joined\":\(channel.name == "all" || channel.joined),\"archivedAt\":\(archivedAt),\"lastMessageAt\":\(last),\"activityMuted\":\(channel.activityMuted),\"muteFromSeq\":\(muteSeq),\"prefsVersion\":\(channel.prefsVersion),\"activityMuteSupported\":\(channel.type == "channel"),\"collapseLongMessages\":\(displayPrefs.collapseLongMessages),\"displayPrefsVersion\":\(displayPrefs.prefsVersion),\"channelRole\":\(jsonString(channelRole)),\"channelAdminBasis\":\(basis.map { jsonString($0) } ?? "null"),\"channelCapabilities\":\(caps)}"
         }.joined(separator: ",")
         return Self.json(200, "[\(rows)]")
     }
