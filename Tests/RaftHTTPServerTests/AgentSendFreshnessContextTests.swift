@@ -206,3 +206,59 @@ private func draftSend(_ client: any Client, _ key: String, _ target: String, _ 
     }
     return (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:]
 }
+
+@Test func muteSuppressesOrdinaryFreshnessButPierceHolds() async throws {
+    var fixture = FreshnessFixture()
+    fixture.seed()
+    let accounts = fixture.accounts
+    let baseline = fixture.human("baseline before mute")
+    accounts.markAgentLegacyReadForTesting(agentId: fixture.agentId, channelId: fixture.channelId, seq: baseline.seq)
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(fixture.key)"
+            headers[.contentType] = "application/json"
+            let mute = try await client.send(.post, headers: headers, to: URI(string: "/internal/agent-api/channels/\(fixture.channelId)/mute")) { request in
+                request.body = .init(string: "{}")
+            }
+            #expect(mute.status == .ok)
+
+            _ = fixture.human("muted ordinary before agent-api send")
+            let sent = try await freshnessSend(client, fixture.key, "#\(fixture.channelName)", "send after muted ordinary", seen: baseline.seq)
+            #expect(sent["state"] as? String == "sent", "muted ordinary must not hold")
+
+            let pierceId = accounts.addHumanMessageForTesting(channelId: fixture.channelId, senderId: fixture.ownerId, content: "@FreshnessBot pierce after muted ordinary")
+            accounts.addStoredMentionForTesting(channelId: fixture.channelId, messageId: pierceId, targetId: fixture.agentId, targetType: "agent", handle: "FreshnessBot")
+            let pierceSeq = accounts.messageSeqForTesting(messageId: pierceId) ?? 0
+            let held = try await freshnessSend(client, fixture.key, "#\(fixture.channelName)", "send after pierce", seen: baseline.seq)
+            #expect(held["state"] as? String == "held")
+            #expect(held["newMessageCount"] as? Int == 1)
+            #expect((held["heldMessages"] as? [[String: Any]])?.first?["id"] as? String == pierceId)
+            #expect(held["seenUpToSeq"] as? Int == pierceSeq)
+        }
+    }
+}
+
+@Test func heldMentionRowsAndCountShareTheBoundary() async throws {
+    var fixture = FreshnessFixture()
+    fixture.seed()
+    let accounts = fixture.accounts
+    let baseline = fixture.human("baseline")
+    accounts.markAgentLegacyReadForTesting(agentId: fixture.agentId, channelId: fixture.channelId, seq: baseline.seq)
+    let readCoveredId = accounts.addHumanMessageForTesting(channelId: fixture.channelId, senderId: fixture.ownerId, content: "@FreshnessBot read-covered")
+    accounts.addStoredMentionForTesting(channelId: fixture.channelId, messageId: readCoveredId, targetId: fixture.agentId, targetType: "agent", handle: "FreshnessBot")
+    let readCoveredSeq = accounts.messageSeqForTesting(messageId: readCoveredId) ?? 0
+    let unreadId = accounts.addHumanMessageForTesting(channelId: fixture.channelId, senderId: fixture.ownerId, content: "@FreshnessBot still-unread")
+    accounts.addStoredMentionForTesting(channelId: fixture.channelId, messageId: unreadId, targetId: fixture.agentId, targetType: "agent", handle: "FreshnessBot")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            let held = try await freshnessSend(client, fixture.key, "#\(fixture.channelName)", "draft after reading first mention", seen: readCoveredSeq)
+            #expect(held["state"] as? String == "held")
+            #expect(held["newMessageCount"] as? Int == 1)
+            #expect((held["heldMessages"] as? [[String: Any]])?.map { $0["id"] as? String } == [unreadId])
+            #expect((held["mentionAnnotation"] as? [String: Any])?["formalMentionCount"] as? Int == 1)
+        }
+    }
+}
