@@ -785,7 +785,7 @@ public final class OAuthLedger: @unchecked Sendable {
 
     public func createDirectChannel(serverId: String, firstUserId: String, secondUserId: String) -> String {
         lock.lock()
-        if let existing = channelRecords.first(where: {
+        if firstUserId != secondUserId, let existing = channelRecords.first(where: {
             $0.serverId == serverId && $0.type == "dm"
                 && channelHumans.contains("\($0.id)\n\(firstUserId)")
                 && channelHumans.contains("\($0.id)\n\(secondUserId)")

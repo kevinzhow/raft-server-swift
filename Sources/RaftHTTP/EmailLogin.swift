@@ -304,6 +304,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var threadOrder: [String] = []
     private var serverMemberRoles: [String: String] = [:]
     private var hideHumansFromMembers: [String: Bool] = [:]
+    private var serverMemberStatuses: [String: String] = [:]
     private var membershipAgreementAudits: [(
         serverId: String, subjectId: String, actorUserId: String,
         source: String, agreementId: String?, agreementVersion: Int?
@@ -6716,6 +6717,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return true
         }
         let pageRows = Array(cursorRows.suffix(Self.messagePageLimit(rawLimit)))
+        let statusRequests = pageRows.map { (id: $0.id, senderId: $0.senderId, senderType: $0.senderType) }
+        let memberStatusSnapshot = serverMemberStatuses
+        lock.unlock()
+        var senderStatuses: [String: String] = [:]
+        for request in statusRequests {
+            if request.senderType == "agent" {
+                senderStatuses[request.id] = oauth.agentRuntimeInfo(id: request.senderId)?.deleted == true ? "removed" : "active"
+            } else if let serverId, oauth.memberRole(serverId: serverId, userId: request.senderId) != nil {
+                senderStatuses[request.id] = "active"
+            } else {
+                senderStatuses[request.id] = memberStatusSnapshot["\(serverId ?? "")\n\(request.senderId)"] ?? "removed"
+            }
+        }
+        lock.lock()
         let highWater = rows.map(\.seq).max() ?? 0
         let pageSeqs = pageRows.map(\.seq)
         let isTail = rawBefore == nil && rawAfter == nil
@@ -6728,7 +6743,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let windowJSON = "{\"schemaVersion\":1,\"domain\":\"receiver_visible_messages_v1\",\"serverId\":\(jsonString(serverId ?? "")),\"receiverKind\":\"user\",\"receiverId\":\(jsonString(userId ?? "")),\"scopeId\":\(jsonString(channelId)),\"coveredFromSeq\":\(coveredFrom),\"coveredAfterSeq\":\(coveredAfter),\"coveredThroughSeq\":\(coveredThrough),\"remoteHighWaterSeq\":\(highWater),\"hasGap\":\(pageHasGap),\"hasNewer\":\(pageHasNewer),\"completeThroughLatest\":\(completeThroughLatest)}"
         let commentsVisible = attachmentCommentsEnabled(serverId: serverId ?? "", userId: userId)
         let listed = pageRows.map { message in
-            var row = "{\"id\":\(jsonString(message.id)),\"content\":\(jsonString(message.content)),\"attachments\":[\(messageAttachmentsJSONLocked(message.attachmentIds, commentsVisible: commentsVisible))],\"reactions\":[\(reactionJSONLocked(messageId: message.id))],\"mentions\":[\(visibleMentionJSONLocked(messageId: message.id))]"
+            let membershipStatus = senderStatuses[message.id] ?? "removed"
+            var row = "{\"id\":\(jsonString(message.id)),\"senderId\":\(jsonString(message.senderId)),\"senderType\":\(jsonString(message.senderType)),\"senderMembershipStatus\":\(jsonString(membershipStatus)),\"content\":\(jsonString(message.content)),\"attachments\":[\(messageAttachmentsJSONLocked(message.attachmentIds, commentsVisible: commentsVisible))],\"reactions\":[\(reactionJSONLocked(messageId: message.id))],\"mentions\":[\(visibleMentionJSONLocked(messageId: message.id))]"
             if let commentRef = commentRefJSONLocked(messageId: message.id), commentsVisible {
                 row += ",\"commentRef\":\(commentRef)"
             }
@@ -20306,6 +20322,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         oauth.removeMember(serverId: serverId, userId: userId)
         lock.lock()
+        serverMemberStatuses["\(serverId)\n\(userId)"] = "left"
+        lock.unlock()
+        lock.lock()
         removedServerMembers.insert("\(serverId)\n\(userId)")
         recordServerMemberEvent(
             serverId: serverId, eventType: "server.member_removed", subjectType: "member", subjectId: userId,
@@ -20502,6 +20521,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
         }
         oauth.removeMember(serverId: serverId, userId: memberId)
+        lock.lock()
+        serverMemberStatuses["\(serverId)\n\(memberId)"] = "removed"
+        lock.unlock()
         lock.lock()
         recordServerMemberEvent(
             serverId: serverId, eventType: "server.member_removed", subjectType: "member", subjectId: memberId,
@@ -28179,9 +28201,27 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         else {
             return Self.json(400, "{\"error\":\"Invalid DM peer\"}")
         }
+        let existingDm = oauth.channelsForServer(serverId: serverId, userId: userId).first { channel in
+            channel.type == "dm"
+                && oauth.channelHumanIds(channelId: channel.id).contains(userId)
+                && oauth.channelHumanIds(channelId: channel.id).contains(peerId)
+        }
+        lock.lock()
+        let hiddenDirectory = hideHumansFromMembers[serverId] == true
+        lock.unlock()
+        if existingDm == nil, hiddenDirectory, peerId != userId {
+            return Self.json(404, "{\"error\":\"DM target not found\"}")
+        }
         let channelId = oauth.createDirectChannel(serverId: serverId, firstUserId: userId, secondUserId: peerId)
         oauth.addChannelHuman(channelId: channelId, userId: userId)
         oauth.addChannelHuman(channelId: channelId, userId: peerId)
+        if existingDm == nil, peerId != userId {
+            var order = oauth.sanitizedSidebarOrder(serverId: serverId, userId: peerId)
+            if !order.hiddenDmIds.contains(channelId) {
+                order.hiddenDmIds.append(channelId)
+                oauth.setSidebarOrder(serverId: serverId, userId: peerId, order: order)
+            }
+        }
         lock.lock()
         postableChannels[channelId] = PostableChannel(serverId: serverId, memberIds: [userId, peerId], kind: "dm", name: "dm")
         lock.unlock()
@@ -28218,7 +28258,29 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                     peerType = "self"
                 }
                 let last = channel.lastMessageAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
-                return "{\"id\":\(jsonString(channel.id)),\"type\":\"dm\",\"joined\":\(channel.joined),\"activityMuteSupported\":false,\"peerId\":\(jsonString(peerId)),\"peerType\":\(jsonString(peerType)),\"lastMessageAt\":\(last)}"
+                lock.lock()
+                let lastRow = humanMessageRows.last { $0.channelId == channel.id }
+                lock.unlock()
+                let preview = lastRow.map { jsonString(String($0.content.prefix(120))) } ?? "null"
+                let senderName: String
+                if let lastRow, lastRow.senderId != "system" {
+                    if lastRow.senderType == "agent" {
+                        if let agent = oauth.agentRuntimeInfo(id: lastRow.senderId) {
+                            senderName = agent.displayName.isEmpty ? agent.name : agent.displayName
+                        } else {
+                            senderName = ""
+                        }
+                    } else {
+                        lock.lock()
+                        let account = accounts.values.first { $0.id == lastRow.senderId }
+                        lock.unlock()
+                        senderName = account.map { ($0.displayName ?? "").isEmpty ? $0.name : ($0.displayName ?? $0.name) } ?? ""
+                    }
+                } else {
+                    senderName = ""
+                }
+                let senderJSON = senderName.isEmpty ? "null" : jsonString(senderName)
+                return "{\"id\":\(jsonString(channel.id)),\"type\":\"dm\",\"joined\":\(channel.joined),\"activityMuteSupported\":false,\"peerId\":\(jsonString(peerId)),\"peerType\":\(jsonString(peerType)),\"lastMessageAt\":\(last),\"lastMessagePreview\":\(preview),\"lastMessageSenderName\":\(senderJSON)}"
             }
             .joined(separator: ",")
         return Self.json(200, "[\(rows)]")

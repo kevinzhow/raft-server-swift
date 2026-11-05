@@ -1993,3 +1993,9 @@ RFC 074 personal assistant：
 - agent 自助 join/leave/unfollow、server info runtimeContext、archived/private channel 隐藏、#all leave refusal、thread unfollow target 校验；agent 管理面 create/update/member add/remove/role/capability denial exact payload；channel archive/unarchive 权限与写恢复；reactions cloak；task parent membership；`?status` filter。
 - 覆盖证据：`AgentMembershipRouteTests`、`AgentChannelManagementTests`、`AgentChannelCapabilityTests`、`ChannelArchiveTests`、`AgentReactionContractTests`、`TaskChannelMembershipTests`、`AgentServerInfoTests`。
 - 裁决排除（非可执行/非本端口子系统）：5 个 legacy agent long-poll receive 用例（transport 未移植，其中 3 个为 trace/timeout 断言）、10 个 `CLI e2e: slock …` 用例（Node CLI 不随本端口发布，每项 HTTP 行为已有直接 HTTP mirror）、2 个 joint channel/task 投影用例（joint 模型未移植）、1 个 human-add DB fault-injection rollback 用例（注入 DB 失败后回滚，无黑盒 HTTP 路径）。
+
+### route channels.membership.api（锁定，含裁决）
+
+- membership/visibility 规则、member add/remove、hidden human directory、saved private membership、batch add 由既有 `ChannelVisibilityTests`/`ChannelMember*`/`HiddenHumanDirectoryTests`/`SavedPrivateMembershipTests`/`ChannelMembersBatchTests` 覆盖。
+- 本轮补齐：DM list 的 `lastMessagePreview`/`lastMessageSenderName`（按 sender id 解析 human/agent，system sender 为 null）；新建 user DM 只对 passive peer 进入 `hiddenDmIds`，复用既有 DM 不重新隐藏；hidden directory 下已知 user id 仍不能开新 DM（self 与既有 DM 例外，404 `DM target not found`）；message payload 携带权威 `senderMembershipStatus`（active/removed/left）；private creator leave 后从列表与 detail 全部消失；从 #all 移除 agent 不写 membership notice。
+- 裁决排除：DM list query-phase spy、batch fixed-query-count spy、human-add notice-persistence 失败回滚（fault-injected DB failure）、self join/leave 的 socket `channel:members-updated` 帧（socket surface 单独模块）。
