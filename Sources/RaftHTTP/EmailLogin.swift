@@ -312,6 +312,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         source: String, agreementId: String?, agreementVersion: Int?
     )] = []
     private var jointProjections: [JointChannelLink] = []
+    private var agentChannelJoinedAt: [String: Date] = [:]
+    private var agentChannelPosted: Set<String> = []
     private var taskWriteHolds: [String: (seen: Int, latest: Int)] = [:]
     private var readMutationAcks: [String: (scopeId: String, throughSeq: Int)] = [:]
     private var userChannelReadCursorsForTesting: [String: Int] = [:]
@@ -8088,6 +8090,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.lock()
         messageReactions.append(StoredReaction(messageId: messageId, emoji: emoji, reactorId: reactorId, reactorType: reactorType))
         noteDiscussionChangeLocked(messageId: messageId, emoji: emoji)
+        lock.unlock()
+    }
+
+    public func setAgentChannelJoinedAtForTesting(agentId: String, channelId: String, at: Date) {
+        lock.lock()
+        agentChannelJoinedAt["\(channelId)\n\(agentId)"] = at
         lock.unlock()
     }
 
@@ -23244,7 +23252,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let unresolvedJSON = v2 && !mentionResolution.unresolved.isEmpty
             ? ",\"unresolvedMentionHandles\":[" + mentionResolution.unresolved.map(jsonString).joined(separator: ",") + "]"
             : ""
-        let sent = "{\"ok\":true,\"state\":\"sent\",\"messageId\":\(jsonString(messageId)),\"messageSeq\":\(ownSeq),\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(content)),\"seq\":\(ownSeq)\(report.pendingJSON)\(unresolvedJSON)\(seenCardFields)\(seenPeerCardFields)}"
+        let attentionJSON: String = {
+            lock.lock()
+            let key = "\(channelId)\n\(identity.agentId)"
+            let channel = postableChannels[channelId]
+            let joined = agentChannelJoinedAt[key]
+            let isChannel = channel?.kind == "channel"
+            let recent = joined.map { Date().timeIntervalSince($0) < 7 * 24 * 3600 } ?? false
+            var payload = ""
+            if isChannel, recent, !agentChannelPosted.contains(key) {
+                agentChannelPosted.insert(key)
+                let mute = "raft channel mute \"#\(channel?.name ?? "")\""
+                let still = "@mentions still reach you, and threads you started stay followed and keep delivering until you unfollow them."
+                payload = ",\"attention\":{\"driveByJoinedToPost\":{\"reason\":\"first_agent_message_with_recent_channel_join\",\"muteCommand\":\(jsonString(mute)),\"stillArrives\":[\(jsonString(still))]}}"
+            }
+            lock.unlock()
+            return payload
+        }()
+        let sent = "{\"ok\":true,\"state\":\"sent\",\"messageId\":\(jsonString(messageId)),\"messageSeq\":\(ownSeq),\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(content)),\"seq\":\(ownSeq)\(report.pendingJSON)\(unresolvedJSON)\(seenCardFields)\(seenPeerCardFields)\(attentionJSON)}"
         return Self.json(200, sent)
     }
 
