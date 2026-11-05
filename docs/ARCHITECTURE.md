@@ -265,7 +265,7 @@ script once a Makefile owner adds a target.
 
 Baseline policy: the constants are a ratchet. A slice that shrinks the file or
 moves test seams updates the constant downward in the same commit and records
-the new number here and in `docs/team/R4_REPORT.md`. No slice raises a
+the new number here. No slice raises a
 constant to make the check pass.
 
 ## 8. Non-goals

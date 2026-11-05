@@ -6,31 +6,35 @@ The specification is observable behavior: HTTP status codes, JSON bodies, respon
 
 ## Status
 
-This is an active behavioral port, not a production deployment.
+This is an active reimplementation, not a production deployment. Behavioral parity with the upstream tag is complete; active work is internal architecture refactoring.
 
-- **1771 Swift tests pass** across seven test targets.
-- The HTTP router currently registers **286 routes** covering auth, servers, channels/threads/DMs, messages, tasks, notifications, attachments, public pages, release notes, OAuth/OIDC, agents, push, and provider connections. Route-by-route completion is still in progress.
+- **406/406 upstream parity modules locked (100%)** in [docs/PARITY.tsv](docs/PARITY.tsv): `219/219` route modules (`2000/2000` cases), `7/7` socket modules (`16/16` cases), and `180/180` daemon modules (`2616/2616` cases).
+- **1,897+ Swift tests pass** across eight targets (`RaftHTTPServerTests`, `RaftDaemonClientTests`, `RaftHTTPTests`, `RaftRealtimeTests`, `RaftConnectAuthTests`, `RaftMachineSocketTests`, `RaftServerStartupTests`, plus `RaftShared`), alongside a **24-check real-process end-to-end smoke suite** (`./scripts/smoke-server.sh`).
+- The HTTP router mounts **519+ route registrations** across **13 `RouteCollection` feature modules** (`Sources/RaftHTTPServer/Features/`), backed by **10 per-domain in-memory stores** (`Sources/RaftHTTP/Stores/`), **4 domain service modules** (`Sources/RaftHTTP/Services/`), and **Codable DTOs** (`Sources/RaftHTTP/DTO/`).
 - **The database is optional.** Without `DATABASE_URL` the process keeps the in-memory store and `/health` stays at `503 {"status":"error","detail":"database unreachable"}`; with `DATABASE_URL` (B2, PostgresNIO) `/health` runs `SELECT 1` and returns `200 {"status":"ok"}`.
 - The executable starts the Vapor HTTP app, the SwiftNIO `/daemon/connect` listener on `DAEMON_CONNECT_PORT` (default `8081`; `0` disables it), and the socket.io listener on `SOCKET_PORT` (default `8082`; `0` disables it). `RaftDaemon` performs the daemon-side handshake against that listener.
 - The locked behavioral reference lives in [docs/BEHAVIOR.md](docs/BEHAVIOR.md). It is the historical behavior log, not the project introduction.
-- Work is organized in vertical feature slices rather than per-assertion commits. The phase order and the upstream route/frame coverage metric live in [docs/PLAN.md](docs/PLAN.md); the working contract is [AGENTS.md](AGENTS.md).
+- Work is organized in domain architecture slices rather than per-assertion commits. The phase order and the upstream route/frame coverage metric live in [docs/PLAN.md](docs/PLAN.md); the target layering is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the working contract is [AGENTS.md](AGENTS.md).
 
-## Known gaps
+## Architecture & Current Focus
 
-The port is behaviorally incomplete. The largest remaining gaps are:
+100% of the portable route, socket, and daemon parity modules are locked and verified end to end by `./scripts/smoke-server.sh` over real ports and processes. That suite covers real human registration, email verification (`/api/auth/verify-email`, `/api/auth/resend-verification`, `SLOCK_E2E_AUTO_VERIFY_EMAIL`), channel messaging, live Socket.IO `message:new` / `sync:resume` / membership revocation, and `/daemon/connect`.
 
-- The socket.io transport covers Engine.IO open, session auth, room joins, ping/pong, channel joins, `channel:updated` on channel creation, `message:new`, `message:updated` on reactions, `task:created`/`task:updated`, `thread:followers-updated`, `machine:status`, agent `scope_read:updated`, server-member removal notices, and session-family revocation. Task delete fanout is still pending.
-- `channels.inbox` now returns the aggregated serving page (items, totals, active unread, groups, filters, search, and pagination). Assistant flag-on flows, agent migration state machines, external-diagnostics detail, and parts of RBAC/guest projections still need Node-asserted slices.
-- The daemon client is a one-shot handshake executable. The reconnect, watchdog, duplicate-key, and outbound-replay loop in `DaemonLink` is a tested state machine but is not driven by a live socket yet.
-- Domain state is still in-memory and resets on restart. `/health` 200 is available when `DATABASE_URL` points at Postgres (B2 in [docs/PLAN.md](docs/PLAN.md)); without it the process keeps the 503 body.
-- The two-real-`RaftServer` startup gate is closed by `RaftServerStartupTests.twoRaftServerProcessesStartAndStayIndependent`, which logs `two-RaftServer gate complete` after both processes report ready and serve independently.
+Current work is **Phase 5 Strangler-Fig domain architecture refactoring** ([docs/PLAN.md](docs/PLAN.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)):
+
+- Migrating the remaining `EmailLogin+*.swift` extension methods into standalone Vapor-free `Services` + `Stores` + `Codable` DTOs.
+- Replacing the remaining raw `request.body.string` reads with Vapor 5 `req.content.decode`.
+- Isolating test seams so production targets no longer expose test-only entry points.
+
+Domain state is currently in-memory and resets on restart. With `DATABASE_URL` set, `/health` runs a Postgres `SELECT 1` liveness check; without it the process keeps the 503 body.
 
 ## Modules
 
 | Target | Responsibility |
 | --- | --- |
-| `RaftHTTP` | Framework-independent behavior: in-memory OAuth/domain ledger (`EmailLoginDirectory`, `OAuthLedger`), public pages, release notes, CORS, version/liveness, route dispatch, and the JSON fallback. |
-| `RaftHTTPServer` | Vapor mount (`FallbackApplication.swift`): registers the route surface, applies middleware, and turns unmatched paths into the JSON 404. |
+| `RaftHTTP` | Framework-independent behavior: in-memory OAuth/domain ledger (`EmailLoginDirectory`, `OAuthLedger`), per-domain `Stores`, Vapor-free `Services`, `Codable` DTOs, public pages, release notes, CORS, version/liveness, route dispatch, and the JSON fallback. |
+| `RaftHTTPServer` | Vapor mount (`FallbackApplication.swift`): registers the `Features/` `RouteCollection` modules, applies middleware, and turns unmatched paths into the JSON 404. |
+| `RaftShared` | Shared value types, including `JSONValue`, used by the HTTP layer and tests. |
 | `RaftServer` | Executable entrypoint (`@main`): reads configuration, wires `FallbackServices`, starts the background liveness tracker, opens the `/daemon/connect` listener, and runs the Vapor app. |
 | `RaftDaemon` | Executable entrypoint: reads `SERVER_URL` and `MACHINE_KEY`, completes the daemon handshake, prints `daemon connected`, and exits. |
 | `RaftConnectAuth` | `/daemon/connect` authentication: API-key placement, upgrade decisions, RFC 6455 accept, `machine:context` JSON. |
@@ -58,26 +62,33 @@ make test-e2e                                                # real RaftServer +
 make pg-up                                                   # local Postgres for /health 200
 make test-pg                                                 # pg-up + real SELECT 1 test
 make parity                                                  # upstream coverage ledger (docs/PARITY.tsv)
+make parity-check                                            # fail if any parity module is not locked
+make architecture                                            # enforced layering, file-size, and test-seam rules
+./scripts/smoke-server.sh                                    # 24-check real-process end-to-end smoke
 /mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift test --filter <TestName>
 /mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift build
 /mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift build -c release
 ```
 
-`make parity` reads `docs/PARITY.tsv` and prints how many upstream route/frame modules are `locked` and the weighted case coverage. Only a `locked` row with an existing commit counts, so the number cannot move without a landed slice.
+`make parity` reads `docs/PARITY.tsv` and prints how many upstream route/frame modules are `locked` and the weighted case coverage. Only a `locked` row with an existing commit counts, so the number cannot move without a landed slice. `make parity-check` fails when any module is not locked.
 
-The full suite occasionally aborts with signal 6 or 11 under parallel execution; rerun it once before treating it as a failure. All 1771 tests pass in a clean run.
+`make architecture` runs `scripts/check_architecture.py`, which enforces the `Feature -> Service -> Store` layering, rejects forbidden Vapor imports in `RaftHTTP`, guards against mega-files, and ratchets down test-only entry points. `./scripts/smoke-server.sh` builds the debug server and asserts the 24 published behaviors over real loopback ports.
+
+The full suite occasionally aborts with signal 6 or 11 under parallel execution; rerun it once before treating it as a failure. All 1,897+ tests pass in a clean run.
 
 ### Test suites
 
 | Target | Tests | Covers |
 | --- | --- | --- |
-| `RaftHTTPServerTests` | 1106 | Route contracts through Vapor in-memory testing. |
+| `RaftHTTPServerTests` | 1,229 | Route contracts through Vapor in-memory testing. |
 | `RaftDaemonClientTests` | 559 | Connect loop, daemon client, proxy selection, fetch timeouts, failure projection. |
-| `RaftHTTPTests` | 59 | Fallback/router, liveness, database health, version identity, CORS. |
+| `RaftHTTPTests` | 61 | Fallback/router, liveness, database health, version identity, CORS, and the shared `RaftShared` types. |
 | `RaftConnectAuthTests` | 17 | Upgrade auth, rejection reasons, RFC 6455 handshake. |
 | `RaftMachineSocketTests` | 6 | Exact handshake bytes and `machine:context` frame. |
 | `RaftServerStartupTests` | 2 | Real process startup, HTTP health, `/daemon/connect`, socket.io, `RaftDaemon` handshake, and two independent `RaftServer` processes. |
 | `RaftRealtimeTests` | 22 | Engine.IO/Socket.IO frames, room joins, guest isolation, platform-scoped events, membership and family revocation. |
+
+`RaftShared` is a library target rather than a separate test bundle; its `JSONValue` model is exercised through `RaftHTTPTests`. The per-target counts above come from `swift test --list-tests`; the full run reports 1,897+ tests.
 
 ## Run
 
@@ -151,8 +162,14 @@ The upstream Node tests are the specification for scope validation, error codes,
 
 ```text
 Sources/
-  RaftHTTP/              shared behavior and route handlers
+  RaftHTTP/              shared behavior, domain stores/services, and route handlers
+    Stores/              per-domain in-memory stores (10)
+    Services/            Vapor-free domain services (4)
+    DTO/                 Codable request/response models
+    OAuthLedger.swift    OAuth/agent ledger
   RaftHTTPServer/        Vapor mount and middleware
+    Features/            RouteCollection feature modules (13)
+  RaftShared/            shared value types (JSONValue)
   RaftServer/            executable entrypoint
   RaftDaemon/            one-shot daemon handshake executable
   RaftConnectAuth/       daemon connect authentication
@@ -162,7 +179,7 @@ Sources/
 Tests/
   RaftHTTPServerTests/   HTTP route behavior
   RaftDaemonClientTests/ daemon protocol and proxy behavior
-  RaftHTTPTests/         HTTP primitives
+  RaftHTTPTests/         HTTP primitives and RaftShared
   RaftConnectAuthTests/  connect auth
   RaftMachineSocketTests/ socket upgrade
   RaftRealtimeTests/     socket.io frames and room targeting
@@ -170,6 +187,10 @@ Tests/
 docs/
   BEHAVIOR.md            locked behavior reference (historical log)
   PLAN.md                current plan, phases, and coverage metric
+  ARCHITECTURE.md        target layering and architecture guardrails
+scripts/
+  smoke-server.sh        real-process end-to-end smoke suite
+  check_architecture.py  layering, file-size, and test-seam gate
 AGENTS.md                working contract and hard constraints
 ```
 
@@ -177,7 +198,7 @@ There is no `.github/` CI configuration or license file at this time. State is i
 
 ## Working on the port
 
-Work proceeds in vertical feature slices. Slice definition, completion criteria, test commands, and commit rules are in [AGENTS.md](AGENTS.md); phase order and the coverage metric are in [docs/PLAN.md](docs/PLAN.md).
+Work proceeds in domain architecture slices. Slice definition, completion criteria, test commands, and commit rules are in [AGENTS.md](AGENTS.md); phase order and the coverage metric are in [docs/PLAN.md](docs/PLAN.md); the target layering is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Private Node helpers, query-count spies, tracer sinks, failpoints, and orchestrator injection are not ported unless they are the API-visible contract.
 
