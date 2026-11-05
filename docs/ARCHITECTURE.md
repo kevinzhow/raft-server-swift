@@ -283,7 +283,7 @@ constant to make the check pass.
 | --- | --- | --- |
 | R1 route extraction | done for auth, feedback, public, translations, servers, channels, messaging, OAuth/OIDC, internal agent-api, internal admin, integrations, notifications/misc | `Sources/RaftHTTPServer/Features/` (12 collections, ~500 route registrations moved); `configure()` 4,520 -> 667 lines (only policy catch-alls + wiring); per-feature registration tests |
 | R2 canonical JSON | foundation done | `Sources/RaftHTTP/Support/JSONValue.swift` + `HTTPReply.jsonValue` + `Tests/RaftHTTPTests/JSONValueTests.swift`; feature handlers migrate as they are rewritten |
-| R3 store/lock split | started | `Stores/ProductEventStore.swift` owns product/client events + client-event idempotency behind its own lock; target next: AuthStore, ChannelStore, TaskStore, ReadCursorStore, FeedbackStore |
+| R3 store/lock split | started | `Stores/ProductEventStore.swift` owns product/client events + idempotency; `Stores/AuthProfileStore.swift` owns linked identities, password-reset tokens and legal acceptances. Target next: ChannelStore, TaskStore, ReadCursorStore |
 | R4 guardrails | done | `scripts/check_architecture.py`, `make architecture`: EmailLogin line ratchet (31,656), Features <= 1,200 lines, ForTesting warning baseline 243 |
 | R5 shared contracts | started | `Sources/RaftShared` target added; canonical `JSONValue` moved there, `HTTPReply.jsonValue` stays in RaftHTTP; next: capability/error-code contracts and feature DTOs |
 

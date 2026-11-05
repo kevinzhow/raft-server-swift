@@ -128,8 +128,7 @@ public struct ClientEventRecord: Sendable {
 public final class EmailLoginDirectory: @unchecked Sendable {
     private let lock = NSLock()
     private var accounts: [String: Account] = [:]
-    private var authIdentityRows: [String: [(provider: String, providerEmail: String)]] = [:]
-    private var passwordResetTokens: [String: (userId: String, expiresAt: Date)] = [:]
+    private let authProfileStore = AuthProfileStore()
     private var analyticsIds: [String: String] = [:]
     private let productEventStore = ProductEventStore()
     private var sessions: [String: LiveSession] = [:]
@@ -142,7 +141,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var retirementReceipts: [String: RetirementReceipt] = [:]
     private var accessTokens: [String: String] = [:]
     private var accessTokenFamilies: [String: String] = [:]
-    private var legalAcceptances: [String: EmailLegalAcceptance] = [:]
+
     private var emailVerifications = 0
     private var humanMessageRows: [StoredHumanMessage] = []
     private var channelAttachments: [String: ChannelAttachment] = [:]
@@ -1693,7 +1692,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public var legalAcceptanceCount: Int {
         lock.lock()
         defer { lock.unlock() }
-        return legalAcceptances.count
+        return authProfileStore.legalAcceptanceCount
     }
 
     public var emailVerificationCount: Int {
@@ -1764,7 +1763,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public func legalAcceptance(userId: String) -> EmailLegalAcceptance? {
         lock.lock()
         defer { lock.unlock() }
-        return legalAcceptances[userId]
+        return authProfileStore.legalAcceptance(userId: userId)
     }
 
     public func userId(forEmail email: String) -> String? {
@@ -2008,7 +2007,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 profileSetupSuggestedHandle: suggested
             )
             let source = (object["legalAcceptanceSource"] as? String) == "invite" ? "invite" : "oauth"
-            legalAcceptances[id] = EmailLegalAcceptance(
+            authProfileStore.setLegalAcceptance(EmailLegalAcceptance(
                 termsVersion: Self.termsVersion,
                 privacyVersion: Self.privacyVersion,
                 termsUrl: Self.termsURL,
@@ -2016,7 +2015,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 source: source,
                 userAgentHash: userAgent.flatMap { $0.isEmpty ? nil : Self.sha256($0) },
                 locale: acceptLanguage
-            )
+            ), userId: id)
         }
         let accessToken = Self.token()
         let refreshToken = Self.token()
@@ -2086,7 +2085,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             profileSetupSuggestedHandle: suggested,
             stagingSelfAccountCapabilityHash: capability.map(Self.sha256)
         )
-        legalAcceptances[id] = EmailLegalAcceptance(
+        authProfileStore.setLegalAcceptance(EmailLegalAcceptance(
             termsVersion: Self.termsVersion,
             privacyVersion: Self.privacyVersion,
             termsUrl: Self.termsURL,
@@ -2094,7 +2093,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             source: source,
             userAgentHash: userAgent.flatMap { $0.isEmpty ? nil : Self.sha256($0) },
             locale: acceptLanguage
-        )
+        ), userId: id)
         let issued = openSessionLocked(userId: id)
         emailVerifications += 1
         lock.unlock()
@@ -3229,7 +3228,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             profileSetupSuggestedHandle: Self.availableUserName(seed: request.profileName ?? email, taken: taken),
             profileSetupProvider: request.provider
         )
-        legalAcceptances[id] = EmailLegalAcceptance(
+        authProfileStore.setLegalAcceptance(EmailLegalAcceptance(
             termsVersion: Self.termsVersion,
             privacyVersion: Self.privacyVersion,
             termsUrl: Self.termsURL,
@@ -3237,7 +3236,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             source: "oauth",
             userAgentHash: nil,
             locale: nil
-        )
+        ), userId: id)
         let accessToken = Self.token()
         let refreshToken = Self.token()
         sessions[refreshToken] = LiveSession(userId: id, familyId: UUID().uuidString.lowercased())
@@ -8986,7 +8985,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     private func identitiesJSONLocked(userId: String) -> (identities: String, passwordConfigured: Bool) {
-        let rows = (authIdentityRows[userId] ?? []).map { row in
+        let rows = authProfileStore.identities(userId: userId).map { row in
             "{\"provider\":\(jsonString(row.provider)),\"providerEmail\":\(jsonString(row.providerEmail))}"
         }.joined(separator: ",")
         let account = accounts.values.first { $0.id == userId }
@@ -9008,7 +9007,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
         lock.lock()
-        var rows = authIdentityRows[userId] ?? []
+        var rows = authProfileStore.identities(userId: userId)
         guard let index = rows.firstIndex(where: { $0.provider == provider }) else {
             let state = identitiesJSONLocked(userId: userId)
             lock.unlock()
@@ -9020,7 +9019,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(409, "{\"code\":\"PASSWORD_CREDENTIAL_REQUIRED\",\"error\":\"Set a password before disconnecting your final sign-in account.\"}")
         }
         rows.remove(at: index)
-        authIdentityRows[userId] = rows
+        authProfileStore.replaceIdentities(userId: userId, rows: rows)
         let state = identitiesJSONLocked(userId: userId)
         lock.unlock()
         return Self.json(200, "{\"unlinked\":true,\"identities\":[\(state.identities)],\"passwordConfigured\":\(state.passwordConfigured)}")
@@ -9035,13 +9034,13 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         }
         let hash = Self.sha256(token)
         lock.lock()
-        guard let reset = passwordResetTokens[hash], reset.expiresAt > Date(),
+        guard let reset = authProfileStore.resetToken(hash: hash), reset.expiresAt > Date(),
               let email = accounts.first(where: { $0.value.id == reset.userId })?.key
         else {
             lock.unlock()
             return Self.json(400, "{\"error\":\"Invalid or expired reset token\"}")
         }
-        passwordResetTokens.removeValue(forKey: hash)
+        authProfileStore.removeResetToken(hash: hash)
         accounts[email]?.passwordHash = Self.sha256(password)
         accounts[email]?.passwordCredentialEstablishedAt = Date()
         lock.unlock()
@@ -9058,18 +9057,18 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public func authIdentityCount(userId: String) -> Int {
         lock.lock()
         defer { lock.unlock() }
-        return (authIdentityRows[userId] ?? []).count
+        return authProfileStore.identityCount(userId: userId)
     }
 
     public func addAuthIdentityForTesting(userId: String, provider: String, providerEmail: String) {
         lock.lock()
-        authIdentityRows[userId, default: []].append((provider, providerEmail))
+        authProfileStore.appendIdentity(userId: userId, provider: provider, providerEmail: providerEmail)
         lock.unlock()
     }
 
     public func addPasswordResetTokenForTesting(userId: String, token: String, expiresAt: Date) {
         lock.lock()
-        passwordResetTokens[Self.sha256(token)] = (userId, expiresAt)
+        authProfileStore.setResetToken(hash: Self.sha256(token), userId: userId, expiresAt: expiresAt)
         lock.unlock()
     }
 
