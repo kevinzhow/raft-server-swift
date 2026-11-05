@@ -1954,3 +1954,13 @@ RFC 074 personal assistant：
 - login：stable credential/body codes；profile：current-password code、displayLanguage normalize/clear/reject、shareUsageData true/false/null、gravatar、avatar upload+oversize。
 - web/desktop/mobile OAuth：loopback state+PKCE、one-time complete、mobile legal retry/handoff、return URI allowlist/legacy fallback、cancel/exchange failure/invalid state/expiry/PKCE mismatch、explicit link contract、durable refresh replay one-successor/malformed binding。
 - 裁决：2 个 login trace credential-leak 用例使用 MemoryTraceSink（tracer 注入），不移植；其余 HTTP 行为均有 Swift acceptance 断言。
+
+### route productFeedback.api（锁定，含裁决）
+
+- `POST /api/product-feedback`：verified bearer；固定 draft UUID/legal；trusted `X-Raft-Client-Kind`/`X-Slock-Client-Kind`（缺省 web）必须与 `metadata.client_kind` 一致，否则 `feedback_invalid` 且在配置/Hands 前拒绝；native metadata 只转发 `client_kind/platform/product_type/feedback_type/contact_consent/client_version/locale/os_version`；`feedback_report_id` 仅接受 UUID，合法时 metadata 带 `feedback_report_id` + `surface:"agent.report_issue"`。
+- Hands 投影：201/200 透传 id/status；400 保留 presigned/diagnostics 优先级；401/403 → 503 `feedback_integration_unavailable` + 有界 `upstream_status`/sanitized `upstream_error`（secret 不外泄）；409 conflict；413 `feedback_attachment_too_large`；429 `feedback_rate_limited` + Retry-After；其余 503 `feedback_service_unavailable`。submit/list 成功响应带 `Server-Timing`：`raft_feedback_hands` + 上游 allowlist 的 duration-only `hands_*` 指标（丢弃 desc/未知/重复/超限）。
+- reporter attribution：`X-Server-Id` 是 UUID、server 存活、调用者成员且 slug 非空时附 `reporter_attribution{v:1,server_id,server_slug,user_id,handle}`；非成员/无 header/非法 UUID/软删 server 均省略且不阻塞提交。
+- `GET /api/product-feedback/tickets`：verified user；conversation app token mint 一次 per-user reporter session 并复用；list 用 session bearer；200 原样透传 tickets 页并带 `Server-Timing`。
+- `POST .../:id/close`：canonical UUID 才触达 Hands，转发 reason + `x-hands-reporter-id`，200 透传；非 canonical 404 `feedback_not_found` 且零上游流量。
+- `POST .../:id/comments`：multipart 附件在任何 Hands/session 流量前校验，仅 image/png|jpeg|webp|gif，否则 400 `feedback_attachment_type_invalid`。
+- 裁决：contact 格式化纯函数（无 HTTP 入口）、close 的结构化 console 日志、joint-storage pseudo-server row model（本端口无 server.kind；同 channels.joint.api 先例）为排除项；其余 17/20 用例有 Swift acceptance 断言或实现可达证据。
