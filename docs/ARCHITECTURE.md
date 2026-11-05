@@ -289,3 +289,14 @@ constant to make the check pass.
 
 Remaining composition-root route families: internal agent-api, internal agent/computer/machine,
 integrations, MCP, provider-connections, notifications/product-events and misc.
+
+
+## Remaining parity work (2026-11-05, after 211/219 route modules locked)
+
+Locked executable route surface covers all feature collections plus the parity
+suites; still partial: `agents.api`, `channels.api`,
+`internal.attestedSend.api`, `internalAgentKnowledge.api`,
+`internalComputer.agentMigration`, `productFeedback.multiApp.api`,
+`socketMembershipRevocation.api`. These need either a missing subsystem
+(knowledge corpus, multi-app binding, P2 upload service, joint tasks) or a
+large acceptance matrix (agents/channels); they are tracked in `docs/PARITY.tsv`.
