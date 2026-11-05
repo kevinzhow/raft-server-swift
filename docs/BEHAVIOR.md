@@ -1888,3 +1888,12 @@ RFC 074 personal assistant：
 
 - 模块覆盖第三方 app/OAuth integrations、webhook 加密与 CDN 资源：测试通过 `__setOAuthServiceDbForTests`、`__setAppWebhookEncryptionKeyForTests`、`__setCdnStorageForTests` 注入 DB、加密 key 与对象存储 harness，断言 registration/webhook 加密/上传资源等外部集成链路。
 - 这些外部集成服务、CDN 存储与 webhook 加密子系统未移植；无黑盒 HTTP 可在无注入下到达核心断言。按契约不以外部服务/存储注入换实现，故裁决为非可执行。
+
+### route internalAgentApi.send（锁定，含裁决）
+
+- `/internal/agent-api/send` 与 `/internal/agent-api/v2/send`：v1 保持 raw-handle mention 解析，v2 绑定 typed user/agent mentions、拒绝冲突绑定、返回 unresolved handles；hidden-human 对 typed/raw 均 cloaking、不写事实；已删除 agent 401 `Invalid agent credential`。
+- 目标解析：`#channel`、`#channel:<parent8>`（复用/创建 thread、校验父频道成员、隐藏 private parent 404）、`dm:@peer`、`dm:@peer:<parent8>`；thread 首回复建立 agent replied / 父作者 authored follows；DM/hread 目标支持 peer card。
+- 幂等与附件：idempotencyKey 精确匹配 target/content/attachment 顺序，不匹配 409 `idempotency_key_reused`+mismatch；`reconcileOnly` 写前 `not_found`、写后 `committed`；附件格式/归属/重复/已链接校验（`attachment_*`），成功后按序持久化并标记 linked。
+- freshness/card：`seenUpToSeq` gate 返回完整 held envelope（decision/available_actions/counts/heldMessages/mentionAnnotation/identity），仅对方消息计数，read cursor 非证明；bounded 3 条、omitted 真条数、firstShownSeq、全部展示才 read-through；channel card 仅对命名版本的客户端检查（unseen hold、旧版本 sent+changed、anyway/retry 不 hold）；DM peer card 同理；withheld reviewer 模式只回 state/mode/count；combined unread+card 单 hold。
+- 其他：首次频道发送 recent-join drive-by attention 一次；非成员 agent mention 返回 sender-only pendingMentionActions；mute 抑制普通未读但个人 mention 穿透；held identity 覆盖 channel/thread/DM/joint（joint 读 canonical storage、渲染 local name）。
+- 裁决：tracer/span（route breakdown、follower fallback、structured 4xx error_subkind）、orchestrator 注入（/events 批量消费/ack、wake-hints、mute delivery、self-leave purge、external delivery）、Postgres 错误/死锁注入、DB 行级 orphan membership 与 machine sweep 用例不移植；其 HTTP/JSON 可观测语义已由上述直接实现覆盖。
