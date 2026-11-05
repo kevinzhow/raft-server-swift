@@ -20982,7 +20982,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let assignee = task.assigneeId.map { jsonString($0) } ?? "null"
         let assigneeType = task.assigneeType.map { jsonString($0) } ?? "null"
         let claimed = task.claimedAt.map { jsonString(ISO8601DateFormatter().string(from: $0)) } ?? "null"
-        return "{\"id\":\(jsonString(task.id)),\"channelId\":\(jsonString(task.channelId)),\"messageId\":\(jsonString(task.messageId)),\"title\":\(jsonString(task.title)),\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber),\"claimedById\":\(assignee),\"claimedByType\":\(assigneeType),\"claimedAt\":\(claimed),\"revision\":\(task.revision)}"
+        return "{\"id\":\(jsonString(task.id)),\"channelId\":\(jsonString(task.channelId)),\"messageId\":\(jsonString(task.messageId)),\"title\":\(jsonString(task.title)),\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber),\"claimedById\":\(assignee),\"claimedByType\":\(assigneeType),\"claimedAt\":\(claimed),\"revision\":\(task.revision)\(task.requiresResourceReceipt ? ",\"requiresResourceReceipt\":true" : "")}"
     }
 
     private struct ServerLabsState {
@@ -23943,6 +23943,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 return Self.json(409, "{\"error\":\"Task cannot transition from todo to \(status)\"}")
             }
         }
+        if status == "done", taskRecords[index].requiresResourceReceipt, taskRecords[index].resourceReceiptJSON == nil {
+            lock.unlock()
+            return Self.json(409, "{\"error\":\"resource receipt required before task can move to done\"}")
+        }
         taskRecords[index].status = status
         if status == "done" || status == "closed" { taskRecords[index].completedAt = Date() }
         if status == "in_progress" { taskRecords[index].claimedAt = Date() }
@@ -24067,6 +24071,16 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
         }
         let ids = addTasks(channelId: channelId, titles: titles, creatorId: auth.agentId, creatorType: "agent")
+        let resourceFlags = rawTasks.map { $0["creates_resource"] as? Bool == true }
+        if resourceFlags.contains(true) {
+            lock.lock()
+            for (offset, id) in ids.enumerated() where offset < resourceFlags.count && resourceFlags[offset] {
+                if let index = taskRecords.firstIndex(where: { $0.id == id }) {
+                    taskRecords[index].requiresResourceReceipt = true
+                }
+            }
+            lock.unlock()
+        }
         let idsJSON = ids.map { jsonString($0) }.joined(separator: ",")
         var receiptJSON = "null"
         lock.lock()
@@ -24076,6 +24090,15 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 taskRecords[index].assigneeId = assignee.id
                 taskRecords[index].assigneeType = assignee.type
                 taskRecords[index].revision += 1
+                inboxFactStore.append(StoredInboxFact(
+                    messageId: taskRecords[index].messageId,
+                    receiverType: assignee.type,
+                    receiverId: assignee.id,
+                    channelId: channelId,
+                    serverId: auth.serverId,
+                    personalMention: true,
+                    unreadEligible: true
+                ))
             }
             let receiptId = UUID().uuidString.lowercased()
             let receiptContent = "@\(assignee.name) assigned you: \(titles.first ?? "task")"
@@ -24104,6 +24127,58 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         let idempotentReply = Self.json(200, "{\"taskIds\":[\(idsJSON)],\"tasks\":[\(taskJSONs.joined(separator: ","))],\"assignmentReceipt\":\(receiptJSON)}")
         storeAgentApiIdempotency(agentId: auth.agentId, route: "taskCreate", object: object, reply: idempotentReply)
         return idempotentReply
+    }
+
+    public func agentTaskResourceReceipt(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
+        guard let writer = agentTaskWriter(authorization, legacyAgentId: legacyAgentId) else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        if let reply = agentGrantDenial(agentId: writer.agentId, scope: "task:write") { return reply }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+              let channelRef = object["channel"] as? String,
+              let channelId = agentTaskChannel(serverId: writer.serverId, agentId: writer.agentId, reference: channelRef),
+              let taskNumber = object["task_number"] as? Int,
+              let receipt = object["receipt"] as? [String: Any],
+              let objectName = (receipt["object"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !objectName.isEmpty,
+              let purpose = (receipt["purpose"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !purpose.isEmpty,
+              let teardownOwner = (receipt["teardown_owner"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !teardownOwner.isEmpty,
+              let securityPrivacy = (receipt["security_privacy"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !securityPrivacy.isEmpty,
+              let expiryRaw = receipt["expiry"] as? String,
+              let runbook = (receipt["runbook"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !runbook.isEmpty,
+              let tracking = (receipt["tracking"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !tracking.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"Invalid resource receipt\"}")
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let expiry = formatter.date(from: expiryRaw) else {
+            return Self.json(400, "{\"error\":\"Invalid resource receipt\"}")
+        }
+        lock.lock()
+        guard let index = taskRecords.firstIndex(where: { $0.channelId == channelId && $0.taskNumber == taskNumber }),
+              taskRecords[index].requiresResourceReceipt
+        else {
+            lock.unlock()
+            return Self.json(404, "{\"error\":\"Task not found\"}")
+        }
+        let receiptJSON = Self.serializeJSON(receipt)
+        taskRecords[index].resourceReceiptJSON = receiptJSON
+        taskRecords[index].revision += 1
+        let task = taskRecords[index]
+        let agentName = oauth.agentRuntimeInfo(id: writer.agentId)?.name ?? "agent"
+        let reminder = ReminderRecord(
+            id: UUID().uuidString.lowercased(),
+            serverId: writer.serverId,
+            ownerAgentId: writer.agentId,
+            title: "Resource receipt expiry: \(objectName)",
+            fireAt: expiry,
+            notes: receiptJSON,
+            channelId: channelId
+        )
+        reminderRecords.append(reminder)
+        lock.unlock()
+        let follow = "{\"ownerAgentId\":\(jsonString(writer.agentId)),\"owner\":\(jsonString("@" + agentName)),\"msgId\":\(jsonString(task.messageId)),\"targetChannelId\":\(jsonString(channelId)),\"reminderId\":\(jsonString(reminder.id)),\"fireAt\":\(jsonString(expiryRaw))}"
+        return Self.json(200, "{\"ok\":true,\"taskNumber\":\(task.taskNumber),\"expiryFollowup\":\(follow)}")
     }
 
     public func agentTaskAssign(authorization: String?, body: String) -> HTTPReply {
@@ -27038,6 +27113,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var amendedByType: String? = nil
         var amendedByName: String? = nil
         var superseded: Bool = false
+        var requiresResourceReceipt: Bool = false
+        var resourceReceiptJSON: String? = nil
     }
 
     private var taskEvents: [(taskId: String, eventType: String, actorType: String)] = []

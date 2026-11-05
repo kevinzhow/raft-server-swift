@@ -351,6 +351,12 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 body: request.body.string ?? ""
             ))
         }
+        app.post("internal", "agent-api", "tasks", "resource-receipt") { request -> Response in
+            routeResponse(services.emailAccounts.agentTaskResourceReceipt(
+                authorization: request.headers[.authorization],
+                body: request.body.string ?? "{}"
+            ))
+        }
         app.post("internal", "agent-api", "tasks", "assign") { request -> Response in
             routeResponse(services.emailAccounts.agentTaskAssign(
                 authorization: request.headers[.authorization],
