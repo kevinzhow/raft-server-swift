@@ -1,12 +1,16 @@
 # productFeedback.api — lock evidence (shared task task-3)
 
 - Upstream module: `/mnt/data/tmp/grok/raft-source-v1.21.23/packages/server/src/routes/productFeedback.api.test.ts`
-- Repo: `/mnt/data/raft-server-swift` @ `55ecd0e` (current HEAD when prepared)
+- Repo: `/mnt/data/raft-server-swift` @ `6b8b1e9` at final check (HEAD moved from `55ecd0e` while this
+  evidence was prepared: another slice landed `auth.api`, so the parity baseline below is the
+  `6b8b1e9` measurement — re-derive once more if HEAD moves again before the lock commit)
 - Existing Swift tests inspected: `Tests/RaftHTTPServerTests/ProductFeedbackTests.swift`, `ProductFeedbackSubmitTests.swift`, `ProductFeedbackAttributionTests.swift`, `ProductFeedbackDiagnosticsTests.swift`
 - Implementation inspected: `Sources/RaftHTTP/EmailLogin.swift` (`submitProductFeedback`, `productFeedbackTickets`, `closeProductFeedbackTicket`, `replyProductFeedbackTicket`, `handsFeedbackSessionToken`, `validatedFeedbackDiagnostics`) and `Sources/RaftHTTPServer/FallbackApplication.swift` route wiring
 - Evidence runs:
-  - `swift test --filter ProductFeedback` → 13 tests passed at `55ecd0e` (all feedback suites green).
-  - `make parity` → route `202/219` locked / `17` partial / `1490/2000` cases; socket `7/7` `16/16`; daemon `180/180` `2616/2616`; overall modules `389/406`.
+  - `swift test --filter ProductFeedback` → 13 tests passed at `6b8b1e9` (re-run at final HEAD; all
+    feedback suites green).
+  - `make parity` at `6b8b1e9` → route `203/219` locked / `16` partial / `1535/2000` cases; socket
+    `7/7` `16/16`; daemon `180/180` `2616/2616`; overall modules `390/406`, overall cases `4167/4632`.
   - `python3` count of `productFeedback.api.test.ts` with `scripts/parity.py`'s case pattern → **20**, matching the ledger denominator.
 
 ## 0. Denominator note (do not lose this)
@@ -45,7 +49,7 @@ per repo contract.
 | 13 | reporter attribution forwards validated server slug and handle (L624) | covered-test | `reporter_attribution{v:1,server_id,server_slug,user_id,handle}` reaches Hands metadata: `ProductFeedbackAttributionTests.swift:9`; impl `EmailLogin.swift:30377-30391`. |
 | 14 | attribution omitted when caller is not a member of claimed server (L676) | covered-test | foreign server → 201, no `reporter_attribution`: same test (foreign sub-case, `AttributionTests.swift:70-72`). |
 | 15 | attribution omitted for clients that send no server context (L724) | covered-test | no `X-Server-Id` → 201, no attribution: same test (none sub-case, `AttributionTests.swift:74-76`). |
-| 16 | attribution refuses a joint-storage pseudo-server (L762) | **excluded** | Upstream `servers.kind = "joint_storage"` is a storage-subsystem row model. This port has no server-kind field and models joint storage only as channel projections (`jointProjections`), so no reachable server row can be a joint-storage pseudo-server. Same rationale/precedent as the already-locked `channels.joint.api` row ("this port does not implement the joint channel/server model"). Flag as fidelity risk if a joint server-kind model ever lands. |
+| 16 | attribution refuses a joint-storage pseudo-server (L762) | **excluded** | Upstream `servers.kind = "joint_storage"` is a storage-subsystem row model. This port has no server-kind field and models joint storage only as channel projections (`jointProjections`), so the case cannot be expressed: modelling the upstream storage server as a normal `addOwnedServer` row would make it indistinguishable from a user server (and the port would emit attribution), which is exactly why the assertion is not executable without porting the storage row model. Same rationale/precedent as the already-locked `channels.joint.api` row ("this port does not implement the joint channel/server model"). Flag as fidelity risk if a joint server-kind model ever lands; optional G3 hardens it. |
 | 17 | attribution never records a server submitter is not in, even with several memberships (L815) | covered-test | Claiming a foreign UUID where the user owns other servers reduces to the same membership predicate; 201, no attribution, foreign slug/id not in raw metadata: `ProductFeedbackAttributionTests.swift:9` (foreign sub-case) — the multi-membership setup adds no distinct assertion beyond "not a member of the claimed server". |
 | 18 | attribution never blocks submission when X-Server-Id is malformed (L878) | covered-test | malformed header → 201 + no attribution: `ProductFeedbackAttributionTests.swift:9` (malformed sub-case); impl short-circuits on `ServerScope.isUUID` (`EmailLogin.swift:30377`). Upstream also requires exactly one Hands POST; implied by impl, not asserted (T10). |
 | 19 | attribution skipped, not fatal, when server row disappears mid-flight (L918) | covered-impl | `oauth.serverProfile` returns nil for soft-deleted servers (`OAuthLedger.swift:574`; `deleteServer` at `OAuthLedger.swift:1482` keeps memberships), so attribution is omitted and submission proceeds (`EmailLogin.swift:30377`). No dedicated Swift test — cheap to add with the existing `deleteServer` seam (T4). |
@@ -63,14 +67,14 @@ Out of the ledger's 20 counted cases:
 | missing | 3 | 1 (403 projection), 2 (Server-Timing), 3 (list timing assertion) |
 | excluded | 3 | 9 (unit-only helper), 12 (service-internal log), 16 (joint-storage row model) |
 
-**Locking is NOT defensible now.** Three portable cases fail:
+**Locking is NOT defensible now.** The three missing portable cases are:
 - case 1 needs a real error-mapping/projection behavior (`feedback_integration_unavailable` +
   bounded `upstream_status`/`upstream_error`); today the handler emits a different code and no
   fields, so an honest acceptance test fails.
 - cases 2 and 3 need deterministic `Server-Timing` header composition (fixed allowlist,
   `dur`-only, dedupe, one decimal, ≤60 s) plumbed from upstream response headers through both
   the production `URLSession` path and the test seam; today no header is emitted at all.
-- case 19 is implemented but has no executable evidence; trivial to add.
+- plus case 19 is implemented but has no executable evidence; trivial to add (T4).
 
 Locking now would mark `locked` while two module behaviors are contradicted by code and one
 case has no assertion — that violates the repo definition ("可移植用例全部有验收断言") and
@@ -163,19 +167,19 @@ row (`parity.py` requires a real `git cat-file -e <commit>^{commit}` for `locked
 
 ### 4.3 `docs/PLAN.md` counters delta (measured, not copied)
 
-Measured baseline at `55ecd0e` with `make parity`:
+Measured baseline at `6b8b1e9` with `make parity`:
 
 | Metric | Now | After lock | Delta |
 |---|---|---|---|
-| route modules locked | 202 / 219 (92.2%) | 203 / 219 (92.7%) | +1 |
-| route modules partial | 17 | 16 | −1 |
-| route cases locked | 1490 / 2000 (74.5%) | 1510 / 2000 (75.5%) | +20 |
-| overall modules | 389 / 406 (95.8%) | 390 / 406 (96.1%) | +1 |
-| overall cases | 4122 / 4632 (89.0%) | 4142 / 4632 (89.4%) | +20 |
+| route modules locked | 203 / 219 (92.7%) | 204 / 219 (93.2%) | +1 |
+| route modules partial | 16 | 15 | −1 |
+| route cases locked | 1535 / 2000 (76.8%) | 1555 / 2000 (77.8%) | +20 |
+| overall modules | 390 / 406 (96.1%) | 391 / 406 (96.3%) | +1 |
+| overall cases | 4167 / 4632 (90.0%) | 4187 / 4632 (90.4%) | +20 |
 
-Note: the checked-in PLAN snapshot row says overall cases `4114 / 4632 (88.8%)`; the measured
-sum is `1490 + 16 + 2616 = 4122`. Treat `4114` as stale and refresh it while touching PLAN.
-Also append `productFeedback.api` to the "最近锁定的模块" list.
+Also append `productFeedback.api` to the "最近锁定的模块" list. The baseline moves whenever a
+concurrent slice lands (HEAD moved from `55ecd0e` to `6b8b1e9` during this analysis); re-run
+`make parity` immediately before writing the row rather than reusing this table blindly.
 
 ## 5. Risks / review notes
 
