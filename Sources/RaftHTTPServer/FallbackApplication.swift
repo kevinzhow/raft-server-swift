@@ -3647,7 +3647,8 @@ public func configure(_ app: Application, services: FallbackServices) {
         routeResponse(services.emailAccounts.submitProductFeedback(
             authorization: request.headers[.authorization],
             contentType: request.headers[.contentType] ?? "",
-            body: request.body.string ?? ""
+            body: request.body.string ?? "",
+            serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
         ))
     }
     app.get("api", "product-events", "config") { request -> Response in

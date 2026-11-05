@@ -326,6 +326,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var translationProviderOverride: String?
     private var appAgentReminderLedger: [String: String] = [:]
     private var agentReminderSurfaceChannels: [String: String] = [:]
+    private var handsFeedbackUpstreamHandler: ((URLRequest) -> (status: Int, body: Data))?
     private var messageTranslationLedger: [String: (status: String, providerBilledChars: Int, targetLanguage: String, translatedContent: String)] = [:]
     private var agentChannelJoinedAt: [String: Date] = [:]
     private var agentChannelPosted: Set<String> = []
@@ -30099,7 +30100,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    public func submitProductFeedback(authorization: String?, contentType: String, body: String) -> HTTPReply {
+    public func setHandsFeedbackUpstreamForTesting(_ handler: ((URLRequest) -> (status: Int, body: Data))?) {
+        lock.lock(); handsFeedbackUpstreamHandler = handler; lock.unlock()
+    }
+
+    public func submitProductFeedback(authorization: String?, contentType: String, body: String, serverId: String = "") -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
@@ -30162,6 +30167,21 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 metadataObject.removeValue(forKey: key)
             }
         }
+        if ServerScope.isUUID(serverId),
+           let profile = oauth.serverProfile(id: serverId),
+           oauth.memberRole(serverId: serverId, userId: userId) != nil,
+           !profile.slug.isEmpty {
+            lock.lock()
+            let handle = accounts.values.first { $0.id == userId }?.name ?? ""
+            lock.unlock()
+            metadataObject["reporter_attribution"] = [
+                "v": 1,
+                "server_id": serverId,
+                "server_slug": profile.slug,
+                "user_id": userId,
+                "handle": handle,
+            ]
+        }
         var presignedJSON: String?
         if let rawDiagnostics = fields["diagnostics"], !rawDiagnostics.isEmpty {
             guard let native = clientKind, ["android", "ios", "ohos"].contains(native),
@@ -30196,20 +30216,31 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         request.httpBody = multipart
-        let semaphore = DispatchSemaphore(value: 0)
-        final class UpstreamBox: @unchecked Sendable {
-            var status = 0
-            var body = Data()
+        let upstreamStatus: Int
+        let upstreamBody: Data
+        lock.lock()
+        let injectedUpstream = handsFeedbackUpstreamHandler
+        lock.unlock()
+        if let injectedUpstream {
+            let result = injectedUpstream(request)
+            upstreamStatus = result.status
+            upstreamBody = result.body
+        } else {
+            let semaphore = DispatchSemaphore(value: 0)
+            final class UpstreamBox: @unchecked Sendable {
+                var status = 0
+                var body = Data()
+            }
+            let upstream = UpstreamBox()
+            URLSession.shared.dataTask(with: request) { data, response, _ in
+                if let http = response as? HTTPURLResponse { upstream.status = http.statusCode }
+                upstream.body = data ?? Data()
+                semaphore.signal()
+            }.resume()
+            _ = semaphore.wait(timeout: .now() + 12)
+            upstreamStatus = upstream.status
+            upstreamBody = upstream.body
         }
-        let upstream = UpstreamBox()
-        URLSession.shared.dataTask(with: request) { data, response, _ in
-            if let http = response as? HTTPURLResponse { upstream.status = http.statusCode }
-            upstream.body = data ?? Data()
-            semaphore.signal()
-        }.resume()
-        _ = semaphore.wait(timeout: .now() + 12)
-        let upstreamStatus = upstream.status
-        let upstreamBody = upstream.body
         let upstreamJSON = (try? JSONSerialization.jsonObject(with: upstreamBody)) as? [String: Any] ?? [:]
         let upstreamCode = upstreamJSON["code"] as? String
         if upstreamStatus == 201 || upstreamStatus == 200 {
