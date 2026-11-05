@@ -191,46 +191,31 @@ extension EmailLoginDirectory {
             request.setValue(reporterId, forHTTPHeaderField: "X-Hands-Reporter-Id")
         }
         request.httpBody = multipart
-        let upstreamStatus: Int
-        var upstreamHeaders: [String: String] = [:]
-        let upstreamBody: Data
-        lock.lock()
-        let injectedUpstream = handsFeedbackUpstreamHandler
-        lock.unlock()
-        if let injectedUpstream {
-            let result = injectedUpstream(request)
-            upstreamStatus = result.status
-            upstreamHeaders = result.headers
-            upstreamBody = result.body
-        } else {
-            let semaphore = DispatchSemaphore(value: 0)
-            final class UpstreamBox: @unchecked Sendable {
-                var status = 0
-                var headers: [String: String] = [:]
-                var body = Data()
-            }
-            let upstream = UpstreamBox()
-            URLSession.shared.dataTask(with: request) { data, response, _ in
-                if let http = response as? HTTPURLResponse {
-                    upstream.status = http.statusCode
-                    for (key, value) in http.allHeaderFields {
-                        upstream.headers[String(describing: key)] = String(describing: value)
-                    }
-                }
-                upstream.body = data ?? Data()
-                semaphore.signal()
-            }.resume()
-            _ = semaphore.wait(timeout: .now() + 12)
-            upstreamStatus = upstream.status
-            upstreamHeaders = upstream.headers
-            upstreamBody = upstream.body
-        }
+        let (upstreamStatus, upstreamHeaders, upstreamBody) = handsFeedbackSend(request)
+        return feedbackSubmissionReply(
+            upstreamStatus: upstreamStatus,
+            upstreamHeaders: upstreamHeaders,
+            upstreamBody: upstreamBody,
+            presignedJSON: presignedJSON,
+            feedbackStartedAt: feedbackStartedAt
+        )
+    }
+
+    /// Shared upstream-outcome mapping for the synchronous and async submission
+    /// entry points.
+    func feedbackSubmissionReply(
+        upstreamStatus: Int,
+        upstreamHeaders: [String: String],
+        upstreamBody: Data,
+        presignedJSON: String?,
+        feedbackStartedAt: Date
+    ) -> HTTPReply {
         let upstreamJSON = (try? JSONSerialization.jsonObject(with: upstreamBody)) as? [String: Any] ?? [:]
         let upstreamCode = upstreamJSON["code"] as? String
         if upstreamStatus == 201 || upstreamStatus == 200 {
             let id = upstreamJSON["id"] as? String ?? UUID().uuidString.lowercased()
             let status = upstreamJSON["status"] as? String ?? "open"
-            let body = "{\"id\":\(jsonString(id)),\"status\":\(jsonString(status))}"
+            let body = FeedbackJSONCoding.string(FeedbackSubmissionResponse(id: id, status: status))
             var headers: [String: String] = [
                 "Content-Type": AppFallback.jsonContentType,
                 "Cache-Control": "no-store",
@@ -243,27 +228,198 @@ extension EmailLoginDirectory {
             return HTTPReply(status: 201, headers: headers, body: body)
         }
         if upstreamStatus == 409 {
-            return Self.json(409, "{\"error\":\"This submission was already sent\",\"code\":\"feedback_submission_conflict\"}")
+            return feedbackErrorReply(409, error: "This submission was already sent", code: "feedback_submission_conflict")
         }
         if upstreamStatus == 400, presignedJSON != nil,
            let upstreamCode, ["presigned_invalid", "presigned_not_found", "presigned_size_mismatch"].contains(upstreamCode) {
-            return Self.json(400, "{\"error\":\"The diagnostics upload was rejected\",\"code\":\"feedback_diagnostics_rejected\"}")
+            return feedbackErrorReply(400, error: "The diagnostics upload was rejected", code: "feedback_diagnostics_rejected")
         }
         if upstreamStatus == 400 {
-            return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
+            return feedbackErrorReply(400, error: "Invalid feedback submission", code: "feedback_invalid")
         }
         if upstreamStatus == 401 || upstreamStatus == 403 {
             let upstreamError = Self.feedbackUpstreamError(upstreamJSON["error"] as? String)
             return Self.json(503, "{\"error\":\"Feedback integration is temporarily unavailable\",\"code\":\"feedback_integration_unavailable\",\"upstream_status\":\(upstreamStatus),\"upstream_error\":\(jsonString(upstreamError))}")
         }
         if upstreamStatus == 413 {
-            return Self.json(413, "{\"error\":\"Feedback attachment is too large\",\"code\":\"feedback_attachment_too_large\"}")
+            return feedbackErrorReply(413, error: "Feedback attachment is too large", code: "feedback_attachment_too_large")
         }
         if upstreamStatus == 429 {
             let retryAfter = upstreamHeaders.first { $0.key.lowercased() == "retry-after" }?.value ?? "60"
-            return HTTPReply(status: 429, headers: ["Content-Type": AppFallback.jsonContentType, "Cache-Control": "no-store", "Retry-After": retryAfter], body: "{\"error\":\"Feedback is rate limited\",\"code\":\"feedback_rate_limited\"}")
+            return HTTPReply(status: 429, headers: ["Content-Type": AppFallback.jsonContentType, "Cache-Control": "no-store", "Retry-After": retryAfter], body: FeedbackJSONCoding.string(FeedbackErrorResponse(error: "Feedback is rate limited", code: "feedback_rate_limited")))
         }
-        return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
+        return feedbackErrorReply(503, error: "Feedback service is temporarily unavailable", code: "feedback_service_unavailable")
+    }
+
+    /// Async twin of `submitProductFeedback` used by `FeedbackFeature`.
+    public func submitProductFeedbackAsync(authorization: String?, contentType: String, body: String, serverId: String = "", clientKindHeader: String = "") async -> HTTPReply {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        }
+        let feedbackStartedAt = Date()
+        let verified = feedbackLocked { accounts.values.first { $0.id == userId }?.emailVerified == true }
+        guard verified else {
+            return Self.json(403, "{\"error\":\"Email verification required\",\"code\":\"account_unverified\"}")
+        }
+        guard let fields = Self.multipartFields(body: body, contentType: contentType),
+              let submissionId = fields["submission_id"],
+              submissionId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil,
+              let type = fields["type"], ["idea", "problem"].contains(type),
+              let message = fields["message"], !message.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
+        }
+        if let rawMetadata = fields["metadata"], !rawMetadata.isEmpty {
+            guard let metadata = (try? JSONSerialization.jsonObject(with: Data(rawMetadata.utf8))) as? [String: Any] else {
+                return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
+            }
+            let nativeKinds = ["ios", "android", "macos", "windows", "linux"]
+            if let clientKind = metadata["client_kind"] as? String, nativeKinds.contains(clientKind) {
+                let platform = metadata["platform"] as? String ?? ""
+                if platform != clientKind || metadata["browser"] != nil {
+                    return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
+                }
+            }
+            if let metadataKind = metadata["client_kind"] as? String,
+               !Self.productFeedbackSources.contains(metadataKind) {
+                return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
+            }
+        }
+        var metadataObject: [String: Any] = [:]
+        if let rawMetadata = fields["metadata"],
+           let parsed = (try? JSONSerialization.jsonObject(with: Data(rawMetadata.utf8))) as? [String: Any] {
+            metadataObject = parsed
+        }
+        if let reportId = fields["feedback_report_id"], !reportId.isEmpty {
+            guard reportId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
+                return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
+            }
+            metadataObject["feedback_report_id"] = reportId.lowercased()
+            metadataObject["surface"] = "agent.report_issue"
+        }
+        let trustedClientKind: String
+        do {
+            trustedClientKind = try Self.feedbackSource(clientKindHeader)
+        } catch {
+            return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
+        }
+        if let metadataKind = metadataObject["client_kind"] as? String, metadataKind != trustedClientKind {
+            return Self.json(400, "{\"error\":\"Invalid feedback submission\",\"code\":\"feedback_invalid\"}")
+        }
+        let clientKind = metadataObject["client_kind"] as? String
+        if let clientKind, Self.productFeedbackSources.contains(clientKind), clientKind != "web" {
+            var forwarded: [String: Any] = [
+                "client_kind": clientKind,
+                "platform": metadataObject["platform"] as? String ?? clientKind,
+                "product_type": clientKind,
+                "feedback_type": type,
+                "contact_consent": fields["may_contact"] == "true",
+            ]
+            for key in ["client_version", "locale", "os_version"] {
+                if let value = metadataObject[key] { forwarded[key] = value }
+            }
+            metadataObject = forwarded
+        } else {
+            for key in ["browser", "viewport", "web_version", "userId", "reporterId", "baseUrl", "appToken"] {
+                metadataObject.removeValue(forKey: key)
+            }
+        }
+        if ServerScope.isUUID(serverId),
+           let profile = oauth.serverProfile(id: serverId),
+           oauth.memberRole(serverId: serverId, userId: userId) != nil,
+           !profile.slug.isEmpty {
+            let handle = feedbackLocked { accounts.values.first { $0.id == userId }?.name ?? "" }
+            metadataObject["reporter_attribution"] = [
+                "v": 1,
+                "server_id": serverId,
+                "server_slug": profile.slug,
+                "user_id": userId,
+                "handle": handle,
+            ]
+        }
+        let (environment, appsJSON) = feedbackLocked { (feedbackLegacyEnvironmentLocked(), handsFeedbackAppsJSONForTesting) }
+        guard handsFeedbackConfigured || environment["HANDS_FEEDBACK_BASE_URL"] != nil else {
+            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_not_configured\"}")
+        }
+        let multiEnabled = evaluateFeatureFlagKey(
+            key: Self.productFeedbackMultiAppFlag,
+            userId: userId,
+            serverId: nil,
+            platform: nil,
+            client: FeatureFlagClientFacts(os: nil, buildNumber: nil, buildType: nil)
+        ).enabled
+        let routeEnvironment: FeedbackRouteEnvironment
+        if multiEnabled {
+            do {
+                routeEnvironment = try Self.feedbackMultiRouteEnvironment(
+                    source: trustedClientKind,
+                    appsJSON: appsJSON,
+                    environment: environment
+                )
+            } catch let failure as FeedbackRouteFailure {
+                return feedbackAvailabilityReply(failure)
+            } catch {
+                return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_integration_unavailable\"}")
+            }
+        } else {
+            routeEnvironment = Self.feedbackLegacyRouteEnvironment(environment)
+        }
+        let reporterId: String
+        do {
+            reporterId = try await ensureFeedbackRouteBindingAsync(userId: userId, environment: routeEnvironment)
+        } catch let failure as FeedbackRouteFailure {
+            return feedbackAvailabilityReply(failure)
+        } catch {
+            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
+        }
+        var presignedJSON: String?
+        if let rawDiagnostics = fields["diagnostics"], !rawDiagnostics.isEmpty {
+            guard let native = clientKind, ["android", "ios", "ohos"].contains(native),
+                  let diagnostics = Self.validatedFeedbackDiagnostics(rawDiagnostics, appId: routeEnvironment.appId)
+            else {
+                return Self.json(400, "{\"error\":\"Invalid feedback diagnostics\",\"code\":\"feedback_diagnostics_invalid\"}")
+            }
+            presignedJSON = "[\("\(diagnostics)")]"
+        }
+        let appSlug = routeEnvironment.appSlug.isEmpty ? routeEnvironment.appId : routeEnvironment.appSlug
+        guard !routeEnvironment.baseURL.isEmpty, !appSlug.isEmpty else {
+            return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_not_configured\"}")
+        }
+        let boundary = "raft-boundary-\(UUID().uuidString.lowercased())"
+        var multipart = Data()
+        func appendField(_ name: String, _ value: String) {
+            multipart.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8))
+        }
+        appendField("type", type)
+        appendField("message", message)
+        appendField("submission_id", submissionId)
+        appendField("metadata", Self.serializeJSON(metadataObject))
+        if let contact = fields["may_contact"] { appendField("may_contact", contact) }
+        if let presignedJSON { appendField("presigned", presignedJSON) }
+        multipart.append(Data("--\(boundary)--\r\n".utf8))
+        var request = URLRequest(url: URL(string: "\(routeEnvironment.baseURL)/public/v2/apps/\(appSlug)/feedback")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        let bearerToken = routeEnvironment.appToken.isEmpty ? environment["HANDS_FEEDBACK_APP_TOKEN"] ?? "" : routeEnvironment.appToken
+        if !bearerToken.isEmpty {
+            request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+        }
+        if !routeEnvironment.clientKey.isEmpty {
+            request.setValue(routeEnvironment.clientKey, forHTTPHeaderField: "X-Hands-Client-Key")
+        }
+        if !routeEnvironment.reporterIdSecret.isEmpty {
+            request.setValue(reporterId, forHTTPHeaderField: "X-Hands-Reporter-Id")
+        }
+        request.httpBody = multipart
+        let (upstreamStatus, upstreamHeaders, upstreamBody) = await handsFeedbackSendAsync(request)
+        return feedbackSubmissionReply(
+            upstreamStatus: upstreamStatus,
+            upstreamHeaders: upstreamHeaders,
+            upstreamBody: upstreamBody,
+            presignedJSON: presignedJSON,
+            feedbackStartedAt: feedbackStartedAt
+        )
     }
 
 

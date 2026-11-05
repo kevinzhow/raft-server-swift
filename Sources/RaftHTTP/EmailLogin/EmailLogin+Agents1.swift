@@ -4,6 +4,11 @@ import Foundation
 import FoundationNetworking
 #endif
 
+/// `HTTPReply` is already the value a route returns on a denial. With `Error`
+/// conformance the typed service entry points can report
+/// `Result<Success, HTTPReply>` without inventing a second error type.
+extension HTTPReply: Error {}
+
 extension EmailLoginDirectory {
 
 
@@ -176,15 +181,59 @@ extension EmailLoginDirectory {
         lock.unlock()
     }
 
+    /// The validated credential facts both identity entry points share.
+    private struct AgentApiCredentialProjection {
+        let agentId: String
+        let credentialId: String
+        let serverId: String
+        let scopes: [String]
+    }
+
+    /// Typed credential resolution for internal route features.
+    ///
+    /// The route layer needs `agentId`, `serverId` and `scopes`; it must not
+    /// serialize this projection into a JSON body and parse it again. A denial
+    /// is the exact `HTTPReply` the credential endpoint would have returned, so
+    /// the caller forwards it unchanged.
+    public func resolveAgentApiIdentity(
+        authorization: String?
+    ) -> Result<AgentApiIdentityDTO, HTTPReply> {
+        switch agentApiCredentialProjection(authorization: authorization) {
+        case .success(let credential):
+            return .success(AgentApiIdentityDTO(
+                agentId: credential.agentId,
+                serverId: credential.serverId,
+                scopes: credential.scopes
+            ))
+        case .failure(let reply):
+            return .failure(reply)
+        }
+    }
+
     public func agentApiIdentity(authorization: String?) -> HTTPReply {
+        switch agentApiCredentialProjection(authorization: authorization) {
+        case .success(let credential):
+            let scopesJSON = credential.scopes.map { jsonString($0) }.joined(separator: ",")
+            return Self.json(200, "{\"agentId\":\(jsonString(credential.agentId)),\"credentialId\":\(jsonString(credential.credentialId)),\"serverId\":\(jsonString(credential.serverId)),\"scopes\":[\(scopesJSON)]}")
+        case .failure(let reply):
+            return reply
+        }
+    }
+
+    /// One validation pass shared by the JSON route and the typed accessor.
+    /// `recordAgentCredentialUse` keeps its upstream position: after the token
+    /// check, before the agent lookup.
+    private func agentApiCredentialProjection(
+        authorization: String?
+    ) -> Result<AgentApiCredentialProjection, HTTPReply> {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            return .failure(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
         }
         let token = String(authorization.dropFirst("Bearer ".count))
         lock.lock()
         guard let credential = agentCredentials[token], credential.revokedAt == nil else {
             lock.unlock()
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            return .failure(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
         }
         let agentId = credential.agentId
         let credentialId = credential.id
@@ -192,10 +241,14 @@ extension EmailLoginDirectory {
         lock.unlock()
         recordAgentCredentialUse(token: token)
         guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            return .failure(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
         }
-        let scopesJSON = scopes.map { jsonString($0) }.joined(separator: ",")
-        return Self.json(200, "{\"agentId\":\(jsonString(agentId)),\"credentialId\":\(jsonString(credentialId)),\"serverId\":\(jsonString(agent.serverId)),\"scopes\":[\(scopesJSON)]}")
+        return .success(AgentApiCredentialProjection(
+            agentId: agentId,
+            credentialId: credentialId,
+            serverId: agent.serverId,
+            scopes: scopes
+        ))
     }
 
     public func uploadAgentAttachmentIdless(

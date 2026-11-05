@@ -7,6 +7,10 @@ import Vapor
 /// their exact method, path, request projection and `routeResponse` call. The
 /// collection is not registered here; the application mount decides when it is
 /// live.
+///
+/// Every feedback route calls the async `…Async` entry point: the upstream
+/// Hands transport no longer parks a thread on a semaphore, so the closures are
+/// `async throws` and run on Vapor's concurrency pool.
 public struct FeedbackFeature: RouteCollection, Sendable {
     public let services: FallbackServices
 
@@ -15,26 +19,30 @@ public struct FeedbackFeature: RouteCollection, Sendable {
     }
 
     public func boot(routes: any RoutesBuilder) async throws {
-    register(routes: routes)
+        register(routes: routes)
     }
 
-public func register(routes: any RoutesBuilder) {
-        routes.post("api", "app-installation", "agent-reminder-messages") { request -> Response in
+    public func register(routes: any RoutesBuilder) {
+        let api = routes.grouped("api")
+        let feedback = api.grouped("product-feedback")
+        let tickets = feedback.grouped("tickets")
+
+        api.post("app-installation", "agent-reminder-messages") { request -> Response in
             routeResponse(services.emailAccounts.appAgentReminderMessage(
                 authorization: request.headers[.authorization],
                 body: request.body.string ?? ""
             ))
         }
-        routes.post("api", "product-feedback", "tickets", ":ticketId", "close") { request -> Response in
-            routeResponse(services.emailAccounts.closeProductFeedbackTicket(
+        tickets.post(":ticketId", "close") { request async throws -> Response in
+            routeResponse(await services.emailAccounts.closeProductFeedbackTicketAsync(
                 authorization: request.headers[.authorization],
                 ticketId: request.parameters.get("ticketId") ?? "",
                 body: request.body.string ?? "{}",
                 clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? ""
             ))
         }
-        routes.post("api", "product-feedback", "tickets", ":ticketId", "comments") { request -> Response in
-            routeResponse(services.emailAccounts.replyProductFeedbackTicket(
+        tickets.post(":ticketId", "comments") { request async throws -> Response in
+            routeResponse(await services.emailAccounts.replyProductFeedbackTicketAsync(
                 authorization: request.headers[.authorization],
                 ticketId: request.parameters.get("ticketId") ?? "",
                 contentType: request.headers[.contentType] ?? "",
@@ -42,31 +50,31 @@ public func register(routes: any RoutesBuilder) {
                 clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? ""
             ))
         }
-        routes.get("api", "product-feedback", "tickets") { request -> Response in
-            routeResponse(services.emailAccounts.productFeedbackTickets(
+        tickets.get { request async throws -> Response in
+            routeResponse(await services.emailAccounts.productFeedbackTicketsAsync(
                 authorization: request.headers[.authorization],
                 clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? "",
                 cursor: try? request.query.get(String.self, at: "cursor")
             ))
         }
-        routes.get("api", "product-feedback", "tickets", ":ticketId") { request -> Response in
-            routeResponse(services.emailAccounts.productFeedbackTicket(
+        tickets.get(":ticketId") { request async throws -> Response in
+            routeResponse(await services.emailAccounts.productFeedbackTicketAsync(
                 authorization: request.headers[.authorization],
                 ticketId: request.parameters.get("ticketId") ?? "",
                 clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? "",
                 commentCursor: try? request.query.get(String.self, at: "comment_cursor")
             ))
         }
-        routes.get("api", "product-feedback", "tickets", ":ticketId", "attachments", ":attachmentId") { request -> Response in
-            routeResponse(services.emailAccounts.productFeedbackAttachment(
+        tickets.get(":ticketId", "attachments", ":attachmentId") { request async throws -> Response in
+            routeResponse(await services.emailAccounts.productFeedbackAttachmentAsync(
                 authorization: request.headers[.authorization],
                 ticketId: request.parameters.get("ticketId") ?? "",
                 attachmentId: request.parameters.get("attachmentId") ?? "",
                 clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? ""
             ))
         }
-        routes.post("api", "product-feedback") { request -> Response in
-            routeResponse(services.emailAccounts.submitProductFeedback(
+        feedback.post { request async throws -> Response in
+            routeResponse(await services.emailAccounts.submitProductFeedbackAsync(
                 authorization: request.headers[.authorization],
                 contentType: request.headers[.contentType] ?? "",
                 body: request.body.string ?? "",

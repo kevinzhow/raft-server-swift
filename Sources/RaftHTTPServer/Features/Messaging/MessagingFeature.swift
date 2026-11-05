@@ -29,28 +29,32 @@ public struct MessagingFeature: RouteCollection, Sendable {
     }
 
     public func register(routes: any RoutesBuilder) {
-        let app = routes
-        app.post("api", "read-mutations") { request -> Response in
+        let readMutations = routes.grouped("api", "read-mutations")
+        let messages = routes.grouped("api", "messages")
+        let attachments = routes.grouped("api", "attachments")
+        let actions = routes.grouped("api", "actions")
+        let tasks = routes.grouped("api", "tasks")
+        readMutations.post { request -> Response in
             routeResponse(services.emailAccounts.postReadMutation(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 body: request.body.string ?? "{}"
             ))
         }
-        app.get("api", "read-mutations", "frontier") { request -> Response in
+        readMutations.get("frontier") { request -> Response in
             routeResponse(services.emailAccounts.readMutationFrontier(
                 authorization: request.headers[.authorization],
                 scopeIds: desktopQuery(request.url.query, "scopeIds")
             ))
         }
-        app.post("api", "messages", "mention-actions", "execute") { request -> Response in
+        messages.post("mention-actions", "execute") { request -> Response in
             routeResponse(services.emailAccounts.executeMentionActions(
                 body: request.body.string ?? "",
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
-        app.post("api", "messages") { request -> Response in
+        messages.post { request -> Response in
             // requireAuth runs before the body check. An invalid body writes nothing.
             routeResponse(services.emailAccounts.createHumanMessage(
                 body: request.body.string ?? "",
@@ -58,7 +62,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
-        app.get("api", "messages", "forward", "targets", "search") { request -> Response in
+        messages.get("forward", "targets", "search") { request -> Response in
             routeResponse(services.emailAccounts.searchForwardTargets(
                 query: desktopQuery(request.url.query, "q"),
                 limit: desktopQuery(request.url.query, "limit"),
@@ -66,13 +70,13 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
-        app.get("api", "messages", "forward", "enabled") { request -> Response in
+        messages.get("forward", "enabled") { request -> Response in
             routeResponse(services.emailAccounts.messageForwardEnabled(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
-        app.get("api", "attachments", ":id", "url") { request -> Response in
+        attachments.get(":id", "url") { request -> Response in
             if desktopQuery(request.url.query, "previewToken") != nil {
                 return routeResponse(HTTPReply(status: 401, headers: [:], body: "{\"error\":\"Unauthorized\"}"))
             }
@@ -87,21 +91,21 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 propagateQueryToken: queryToken
             ))
         }
-        app.post("api", "messages", "forward") { request -> Response in
+        messages.post("forward") { request -> Response in
             routeResponse(services.emailAccounts.forwardHumanMessage(
                 body: request.body.string ?? "",
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
-        app.get("api", "messages", ":messageId", "mention-deliveries") { request -> Response in
+        messages.get(":messageId", "mention-deliveries") { request -> Response in
             routeResponse(services.emailAccounts.mentionDeliveries(
                 messageId: request.parameters.get("messageId") ?? "",
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
-        app.get("api", "messages", ":messageId", "reactions", "actors") { request -> Response in
+        messages.get(":messageId", "reactions", "actors") { request -> Response in
             routeResponse(services.emailAccounts.listReactionActors(
                 messageId: request.parameters.get("messageId") ?? "",
                 authorization: request.headers[.authorization],
@@ -111,14 +115,14 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 cursor: desktopQuery(request.url.query, "cursor")
             ))
         }
-        app.get("api", "messages", ":messageId", "reactions", "viewer") { request -> Response in
+        messages.get(":messageId", "reactions", "viewer") { request -> Response in
             routeResponse(services.emailAccounts.reactionViewer(
                 messageId: request.parameters.get("messageId") ?? "",
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
-        app.post("api", "messages", ":messageId", "reactions") { request -> Response in
+        messages.post(":messageId", "reactions") { request -> Response in
             routeResponse(services.emailAccounts.addMessageReaction(
                 messageId: request.parameters.get("messageId") ?? "",
                 body: request.body.string ?? "",
@@ -126,7 +130,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
-        app.delete("api", "messages", ":messageId", "reactions") { request -> Response in
+        messages.delete(":messageId", "reactions") { request -> Response in
             routeResponse(services.emailAccounts.removeMessageReaction(
                 messageId: request.parameters.get("messageId") ?? "",
                 body: request.body.string ?? "",
@@ -134,7 +138,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
-        app.get("api", "messages", "channel", ":channelId") { request -> Response in
+        messages.get("channel", ":channelId") { request -> Response in
             routeResponse(services.emailAccounts.listChannelMessages(
                 channelId: request.parameters.get("channelId") ?? "",
                 authorization: request.headers[.authorization],
@@ -144,21 +148,21 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 after: desktopQuery(request.url.query, "after")
             ))
         }
-        app.get("api", "attachments", "comments", "counts") { request -> Response in
+        attachments.get("comments", "counts") { request -> Response in
             routeResponse(services.emailAccounts.attachmentCommentCounts(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? desktopQuery(request.url.query, "server_id") ?? "",
                 ids: desktopQuery(request.url.query, "ids")
             ))
         }
-        app.get("api", "attachments", ":id", "comments") { request -> Response in
+        attachments.get(":id", "comments") { request -> Response in
             routeResponse(services.emailAccounts.attachmentCommentsList(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 attachmentId: request.parameters.get("id") ?? ""
             ))
         }
-        app.post("api", "attachments", ":id", "comments") { request -> Response in
+        attachments.post(":id", "comments") { request -> Response in
             routeResponse(services.emailAccounts.createAttachmentComment(
                 authorization: request.headers[.authorization],
                 attachmentId: request.parameters.get("id") ?? "",
@@ -166,14 +170,14 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
-        app.post("api", "actions", "migration-export") { _ -> Response in
+        actions.post("migration-export") { _ -> Response in
             routeResponse(HTTPReply(
                 status: 410,
                 headers: ["Content-Type": "application/json", "Content-Length": "76"],
                 body: "{\"error\":\"Migration action cards are no longer supported\",\"code\":\"migration_action_card_not_supported\"}"
             ))
         }
-        app.post("api", "actions", ":messageId", "execute") { request -> Response in
+        actions.post(":messageId", "execute") { request -> Response in
             routeResponse(services.emailAccounts.executeActionCard(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -181,7 +185,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 body: request.body.string ?? ""
             ))
         }
-        app.post("api", "actions", ":messageId", "mark-executed") { request -> Response in
+        actions.post(":messageId", "mark-executed") { request -> Response in
             routeResponse(services.emailAccounts.markActionCardExecuted(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -189,7 +193,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 body: request.body.string ?? ""
             ))
         }
-        app.get("api", "messages", "sync") { request -> Response in
+        messages.get("sync") { request -> Response in
             routeResponse(services.emailAccounts.syncChannelMessages(
                 channelId: desktopQuery(request.url.query, "channel_id"),
                 sinceSeq: desktopQuery(request.url.query, "since_seq"),
@@ -198,7 +202,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 limit: desktopQuery(request.url.query, "limit")
             ))
         }
-        app.get("api", "messages", "search") { request -> Response in
+        messages.get("search") { request -> Response in
             routeResponse(services.emailAccounts.searchHumanMessages(
                 query: desktopQuery(request.url.query, "q"),
                 sort: desktopQuery(request.url.query, "sort"),
@@ -211,7 +215,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 mentionTarget: desktopQuery(request.url.query, "mentionTarget")
             ))
         }
-        app.get("api", "messages", "context", ":messageId") { request -> Response in
+        messages.get("context", ":messageId") { request -> Response in
             let messageId = request.parameters.get("messageId") ?? ""
             let channelId = desktopQuery(request.url.query, "channelId")
             let authorization = request.headers[.authorization]
@@ -236,7 +240,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
             }
             return routeResponse(reply)
         }
-        app.post("api", "attachments", "upload") { request async throws -> Response in
+        attachments.post("upload") { request async throws -> Response in
             guard let contentType = request.headers[.contentType],
                   let boundary = contentType.components(separatedBy: "boundary=").dropFirst().first?
                     .trimmingCharacters(in: CharacterSet(charactersIn: "\"")),
@@ -255,37 +259,37 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 files: parsed.files.map { (filename: $0.filename, mimeType: $0.mimeType, sizeBytes: $0.sizeBytes) }
             ))
         }
-        app.post("api", "attachments", "upload-sessions") { request -> Response in
+        attachments.post("upload-sessions") { request -> Response in
             routeResponse(services.emailAccounts.attachmentUploadSessionCreate(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
             ))
         }
-        app.get("api", "attachments", "upload-sessions", ":uploadId") { request -> Response in
+        attachments.get("upload-sessions", ":uploadId") { request -> Response in
             routeResponse(services.emailAccounts.attachmentUploadSessionMissing(
                 authorization: request.headers[.authorization],
                 uploadId: request.parameters.get("uploadId") ?? ""
             ))
         }
-        app.delete("api", "attachments", "upload-sessions", ":uploadId") { request -> Response in
+        attachments.delete("upload-sessions", ":uploadId") { request -> Response in
             routeResponse(services.emailAccounts.attachmentUploadSessionMissing(
                 authorization: request.headers[.authorization],
                 uploadId: request.parameters.get("uploadId") ?? ""
             ))
         }
-        app.post("api", "attachments", "upload-sessions", ":uploadId", "complete") { request -> Response in
+        attachments.post("upload-sessions", ":uploadId", "complete") { request -> Response in
             routeResponse(services.emailAccounts.attachmentUploadSessionMissing(
                 authorization: request.headers[.authorization],
                 uploadId: request.parameters.get("uploadId") ?? ""
             ))
         }
-        app.get("api", "attachments", "upload-capabilities") { request -> Response in
+        attachments.get("upload-capabilities") { request -> Response in
             routeResponse(services.emailAccounts.attachmentUploadCapabilities(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
             ))
         }
-        app.get("api", "attachments", ":id") { request -> Response in
+        attachments.get(":id") { request -> Response in
             if desktopQuery(request.url.query, "previewToken") != nil {
                 return routeResponse(HTTPReply(status: 401, headers: [:], body: "{\"error\":\"Unauthorized\"}"))
             }
@@ -303,7 +307,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 kind: "metadata"
             ))
         }
-        app.get("api", "attachments", ":id", "html-preview") { request -> Response in
+        attachments.get(":id", "html-preview") { request -> Response in
             let reply = services.emailAccounts.attachmentHTMLPreview(
                 attachmentId: request.parameters.get("id") ?? "",
                 serverId: desktopQuery(request.url.query, "serverId") ?? request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -315,7 +319,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
             if reply.status == 200 { return vaporStreamingResponse(reply) }
             return routeResponse(reply)
         }
-        app.get("api", "attachments", ":id", "html-preview-url") { request -> Response in
+        attachments.get(":id", "html-preview-url") { request -> Response in
             if desktopQuery(request.url.query, "previewToken") != nil {
                 return routeResponse(HTTPReply(status: 401, headers: [:], body: "{\"error\":\"Unauthorized\"}"))
             }
@@ -326,21 +330,21 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 kind: "html-preview-url"
             ))
         }
-        app.get("api", "tasks", "server", "snapshot-metrics") { request -> Response in
+        tasks.get("server", "snapshot-metrics") { request -> Response in
             routeResponse(services.emailAccounts.taskSnapshotMetrics(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 rawQuery: request.url.query
             ))
         }
-        app.get("api", "tasks", "server", "period-metrics") { request -> Response in
+        tasks.get("server", "period-metrics") { request -> Response in
             routeResponse(services.emailAccounts.taskPeriodMetrics(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 rawQuery: request.url.query
             ))
         }
-        app.get("api", "tasks", "channel", ":channelId") { request -> Response in
+        tasks.get("channel", ":channelId") { request -> Response in
             routeResponse(services.emailAccounts.listChannelTasks(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -348,7 +352,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 rawQuery: request.url.query
             ))
         }
-        app.get("api", "tasks", "channel", ":channelId", "number", ":taskNumber") { request -> Response in
+        tasks.get("channel", ":channelId", "number", ":taskNumber") { request -> Response in
             routeResponse(services.emailAccounts.getChannelTaskByNumber(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -356,7 +360,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 taskNumber: Int(request.parameters.get("taskNumber") ?? "") ?? 0
             ))
         }
-        app.post("api", "tasks", "channel", ":channelId") { request -> Response in
+        tasks.post("channel", ":channelId") { request -> Response in
             let channelId = request.parameters.get("channelId") ?? ""
             let body = request.body.string ?? ""
             let reply = services.emailAccounts.createChannelTasks(
@@ -368,14 +372,14 @@ public struct MessagingFeature: RouteCollection, Sendable {
             publishTaskCreated(reply, channelId: channelId, body: body, services: services)
             return routeResponse(reply)
         }
-        app.delete("api", "tasks", ":taskId") { request -> Response in
+        tasks.delete(":taskId") { request -> Response in
             routeResponse(services.emailAccounts.deleteTask(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 taskId: request.parameters.get("taskId") ?? ""
             ))
         }
-        app.patch("api", "tasks", ":taskId", "assignee") { request -> Response in
+        tasks.patch(":taskId", "assignee") { request -> Response in
             routeResponse(services.emailAccounts.assignTask(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -383,14 +387,14 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 body: request.body.string ?? ""
             ))
         }
-        app.patch("api", "tasks", ":taskId", "unclaim") { request -> Response in
+        tasks.patch(":taskId", "unclaim") { request -> Response in
             routeResponse(services.emailAccounts.unclaimTask(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 taskId: request.parameters.get("taskId") ?? ""
             ))
         }
-        app.patch("api", "tasks", ":taskId", "claim") { request -> Response in
+        tasks.patch(":taskId", "claim") { request -> Response in
             let reply = services.emailAccounts.claimTask(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -399,7 +403,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
             publishTaskUpdated(reply, services: services)
             return routeResponse(reply)
         }
-        app.patch("api", "tasks", ":taskId", "status") { request -> Response in
+        tasks.patch(":taskId", "status") { request -> Response in
             routeResponse(services.emailAccounts.updateTaskStatus(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -407,14 +411,14 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 body: request.body.string ?? ""
             ))
         }
-        app.post("api", "tasks", "convert-message") { request -> Response in
+        tasks.post("convert-message") { request -> Response in
             routeResponse(services.emailAccounts.convertMessageToTask(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 body: request.body.string ?? ""
             ))
         }
-        app.get("api", "tasks", "server") { request -> Response in
+        tasks.get("server") { request -> Response in
             routeResponse(services.emailAccounts.listServerTasks(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -425,17 +429,6 @@ public struct MessagingFeature: RouteCollection, Sendable {
 
 }
 // MARK: - File-private helpers copied verbatim from `FallbackApplication.swift`
-
-private func desktopQuery(_ query: String?, _ name: String) -> String? {
-    guard let query, !query.isEmpty else { return nil }
-    for pair in query.split(separator: "&", omittingEmptySubsequences: false) {
-        let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
-        guard parts.first == name else { continue }
-        let raw = parts.count > 1 ? parts[1] : ""
-        return raw.removingPercentEncoding ?? raw
-    }
-    return nil
-}
 
 private struct MultipartPart {
     var name: String?
@@ -507,11 +500,9 @@ private func parseAttachmentMultipart(data: Data, boundary: String) -> (channelI
 private func publishTaskUpdated(_ reply: HTTPReply, services: FallbackServices) {
     guard reply.status == 200,
           let emit = services.emailAccounts.realtimeEmitter,
-          let task = (try? JSONSerialization.jsonObject(with: Data(reply.body.utf8))) as? [String: Any],
-          let channelId = task["channelId"] as? String
+          let event = ChannelMessagingService.taskUpdatedEvent(fromReplyBody: reply.body)
     else { return }
-    let taskJSON = String(decoding: reply.body.utf8, as: UTF8.self)
-    emit("channel:\(channelId)", "task:updated", "{\"channelId\":\(jsonChannelString(channelId)),\"task\":\(taskJSON)}")
+    emit("channel:\(event.channelId)", "task:updated", event.payloadJSON)
 }
 
 private func publishTaskCreated(
@@ -522,22 +513,13 @@ private func publishTaskCreated(
 ) {
     guard reply.status == 200,
           let emit = services.emailAccounts.realtimeEmitter,
-          let response = (try? JSONSerialization.jsonObject(with: Data(reply.body.utf8))) as? [String: Any],
-          let ids = response["taskIds"] as? [String],
-          let request = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-          let requested = request["tasks"] as? [[String: Any]]
+          let event = ChannelMessagingService.taskCreatedEvent(
+              replyBody: reply.body,
+              requestBody: body,
+              channelId: channelId
+          )
     else { return }
-    let titles = requested.compactMap { $0["title"] as? String }
-    let tasks = zip(ids, titles).map { id, title in
-        "{\"id\":\(jsonChannelString(id)),\"channelId\":\(jsonChannelString(channelId)),\"title\":\(jsonChannelString(title)),\"status\":\"todo\"}"
-    }.joined(separator: ",")
-    emit("channel:\(channelId)", "task:created", "{\"channelId\":\(jsonChannelString(channelId)),\"tasks\":[\(tasks)]}")
-}
-
-private func jsonChannelString(_ value: String) -> String {
-    let data = try! JSONSerialization.data(withJSONObject: [value])
-    let array = String(decoding: data, as: UTF8.self)
-    return String(array.dropFirst().dropLast())
+    emit("channel:\(event.channelId)", "task:created", event.payloadJSON)
 }
 
 private func vaporStreamingResponse(_ reply: HTTPReply) -> Response {
@@ -553,27 +535,4 @@ private func vaporStreamingResponse(_ reply: HTTPReply) -> Response {
         try await writer.write(body)
     }
     return response
-}
-
-private func httpStatus(_ code: Int) -> HTTPResponse.Status {
-    switch code {
-    case 200: .ok
-    case 201: .created
-    case 400: .badRequest
-    case 401: .unauthorized
-    case 403: .forbidden
-    case 204: .noContent
-    case 302: .found
-    case 304: .notModified
-    case 404: .notFound
-    case 405: .methodNotAllowed
-    case 409: .conflict
-    case 410: .gone
-    case 422: .unprocessableContent
-    case 429: .tooManyRequests
-    case 500: .internalServerError
-    case 502: .badGateway
-    case 503: .serviceUnavailable
-    default: HTTPResponse.Status(code: code, reasonPhrase: "")
-    }
 }

@@ -17,7 +17,18 @@ struct EmailVerificationRecord: Sendable, Equatable {
 /// decisions stay in `EmailLoginDirectory`; this store serializes only its own
 /// rows and returns strong Swift values, never JSON or `HTTPReply`.
 final class AuthProfileStore: @unchecked Sendable {
+    /// Profile surface rows that used to be stored inline on
+    /// `EmailLoginDirectory`: timezone history, onboarding progress and the
+    /// mobile-app lifecycle email audience.
+    struct ProfileState {
+        var timezoneObservations: [String: EmailLoginDirectory.TimezoneObservation] = [:]
+        var userOnboardingSettings: [String: UserOnboarding] = [:]
+        var mobileAppEmailContactsByKey: [String: EmailLoginDirectory.MobileAppEmailContact] = [:]
+        var storedMobileAppEmailJourneys: [EmailLoginDirectory.MobileAppEmailJourney] = []
+    }
+
     private let lock = NSLock()
+    private var profile = ProfileState()
     private var identityRows: [String: [(provider: String, providerEmail: String)]] = [:]
     private var passwordResetTokens: [String: (userId: String, expiresAt: Date)] = [:]
     private var legalAcceptances: [String: EmailLegalAcceptance] = [:]
@@ -147,5 +158,42 @@ final class AuthProfileStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return emailVerificationIssueDates[userId]?.filter { $0 >= since }.count ?? 0
+    }
+
+    // MARK: - Profile surface
+
+    /// The whole profile surface. One read or one write is one locked critical
+    /// section, so `EmailLoginDirectory`'s forwarding accessors stay atomic.
+    var profileState: ProfileState {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return profile
+        }
+        set {
+            lock.lock()
+            profile = newValue
+            lock.unlock()
+        }
+    }
+
+    var timezoneObservations: [String: EmailLoginDirectory.TimezoneObservation] {
+        get { profileState.timezoneObservations }
+        set { profileState.timezoneObservations = newValue }
+    }
+
+    var userOnboardingSettings: [String: UserOnboarding] {
+        get { profileState.userOnboardingSettings }
+        set { profileState.userOnboardingSettings = newValue }
+    }
+
+    var mobileAppEmailContactsByKey: [String: EmailLoginDirectory.MobileAppEmailContact] {
+        get { profileState.mobileAppEmailContactsByKey }
+        set { profileState.mobileAppEmailContactsByKey = newValue }
+    }
+
+    var storedMobileAppEmailJourneys: [EmailLoginDirectory.MobileAppEmailJourney] {
+        get { profileState.storedMobileAppEmailJourneys }
+        set { profileState.storedMobileAppEmailJourneys = newValue }
     }
 }

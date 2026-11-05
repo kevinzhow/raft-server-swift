@@ -408,115 +408,6 @@ private func applyRuntimeFormLanguage(_ response: inout Response, language: Stri
     response.headers[HTTPField.Name("Vary")!] = "Accept-Language"
 }
 
-private func publishTaskUpdated(_ reply: HTTPReply, services: FallbackServices) {
-    guard reply.status == 200,
-          let emit = services.emailAccounts.realtimeEmitter,
-          let task = (try? JSONSerialization.jsonObject(with: Data(reply.body.utf8))) as? [String: Any],
-          let channelId = task["channelId"] as? String
-    else { return }
-    let taskJSON = String(decoding: reply.body.utf8, as: UTF8.self)
-    emit("channel:\(channelId)", "task:updated", "{\"channelId\":\(jsonChannelString(channelId)),\"task\":\(taskJSON)}")
-}
-
-private func publishTaskCreated(
-    _ reply: HTTPReply,
-    channelId: String,
-    body: String,
-    services: FallbackServices
-) {
-    guard reply.status == 200,
-          let emit = services.emailAccounts.realtimeEmitter,
-          let response = (try? JSONSerialization.jsonObject(with: Data(reply.body.utf8))) as? [String: Any],
-          let ids = response["taskIds"] as? [String],
-          let request = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-          let requested = request["tasks"] as? [[String: Any]]
-    else { return }
-    let titles = requested.compactMap { $0["title"] as? String }
-    let tasks = zip(ids, titles).map { id, title in
-        "{\"id\":\(jsonChannelString(id)),\"channelId\":\(jsonChannelString(channelId)),\"title\":\(jsonChannelString(title)),\"status\":\"todo\"}"
-    }.joined(separator: ",")
-    emit("channel:\(channelId)", "task:created", "{\"channelId\":\(jsonChannelString(channelId)),\"tasks\":[\(tasks)]}")
-}
-
-private func publishThreadFollowers(_ reply: HTTPReply, body: String, services: FallbackServices) {
-    guard reply.status == 200,
-          let emit = services.emailAccounts.realtimeEmitter,
-          let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-          let threadId = object["threadChannelId"] as? String,
-          !threadId.isEmpty
-    else { return }
-    emit("channel:\(threadId)", "thread:followers-updated", "{\"threadChannelId\":\(jsonChannelString(threadId))}")
-}
-
-private func jsonChannelString(_ value: String) -> String {
-    let data = try! JSONSerialization.data(withJSONObject: [value])
-    let array = String(decoding: data, as: UTF8.self)
-    return String(array.dropFirst().dropLast())
-}
-
-private func jsonString(_ value: String) -> String {
-    let data = try? JSONSerialization.data(withJSONObject: [value])
-    let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
-    return String(text.dropFirst().dropLast())
-}
-
-private func reminderIdFromReply(_ reply: HTTPReply) -> String? {
-    guard reply.status == 200, let data = reply.body.data(using: .utf8),
-          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let reminder = object["reminder"] as? [String: Any]
-    else { return nil }
-    return reminder["reminderId"] as? String ?? reminder["id"] as? String
-}
-
-private func publishReminderEvent(
-    _ reply: HTTPReply, event: String, reminderId: String, agentId: String, services: FallbackServices
-) {
-    guard reply.status == 200, let hub = services.realtime,
-          let agent = services.emailAccounts.oauth.agentRuntimeInfo(id: agentId)
-    else { return }
-    var recipients: Set<String> = []
-    if let creator = agent.creatorUserId { recipients.insert(creator) }
-    for member in services.emailAccounts.serverMemberRoles(serverId: agent.serverId)
-    where member.role == "owner" || member.role == "admin" {
-        recipients.insert(member.userId)
-    }
-    guard !recipients.isEmpty else { return }
-    let payload = "{\"reminderId\":\(jsonString(reminderId)),\"ownerAgentId\":\(jsonString(agentId))}"
-    for userId in recipients {
-        hub.emit(room: "user:\(userId)", event: event, payloadJSON: payload)
-    }
-}
-
-private func publishFamilyRevoke(body: String, services: FallbackServices) {
-    guard let hub = services.realtime,
-          let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-          let capability = object["capability"] as? String,
-          let target = services.emailAccounts.familyRevokeTarget(capability: capability)
-    else { return }
-    hub.revokeFamily(userId: target.userId, familyId: target.familyId)
-}
-
-private func publishCreatedChannel(_ reply: HTTPReply, services: FallbackServices, authorization: String?) {
-    guard reply.status == 200,
-          let hub = services.realtime,
-          let userId = services.emailAccounts.sessionUserId(authorization: authorization),
-          let object = (try? JSONSerialization.jsonObject(with: Data(reply.body.utf8))) as? [String: Any],
-          let id = object["id"] as? String,
-          let name = object["name"] as? String
-    else { return }
-    let channel: [String: Any] = [
-        "id": id,
-        "name": name,
-        "description": object["description"] ?? NSNull(),
-        "joined": true,
-    ]
-    guard let data = try? JSONSerialization.data(withJSONObject: ["channel": channel]),
-          let payload = String(data: data, encoding: .utf8)
-    else { return }
-    services.realtime?.joinUserSessions(userId: userId, room: "channel:\(id)")
-    hub.emit(room: "user:\(userId)", event: "channel:updated", payloadJSON: payload)
-}
-
 private struct FallbackMiddleware: Middleware {
     var services: FallbackServices
 
@@ -585,7 +476,17 @@ private func publicMessageWindow(_ query: String?) -> (limit: Int, before: Strin
     return (limit, nil)
 }
 
-private func desktopQuery(_ query: String?, _ name: String) -> String? {
+/// Reader for one percent-decoded query parameter. Shared by the route
+/// features so the projection is identical on every mounted surface.
+///
+/// The unused source location keeps this an overload of the legacy
+/// file-private copies the unmigrated features still carry; a same-signature
+/// module-level declaration would collide with them.
+func desktopQuery(
+    _ query: String?,
+    _ name: String,
+    file: StaticString = #fileID
+) -> String? {
     guard let query, !query.isEmpty else { return nil }
     for pair in query.split(separator: "&", omittingEmptySubsequences: false) {
         let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
@@ -644,7 +545,12 @@ private func vaporStreamingResponse(_ reply: HTTPReply) -> Response {
 
 private let robotsTagName = HTTPField.Name("X-Robots-Tag")!
 
-private func httpStatus(_ code: Int) -> HTTPResponse.Status {
+/// One `Int` → `HTTPResponse.Status` mapping for every `HTTPReply` adapter
+/// in the module.
+///
+/// The unused source location keeps this an overload of the legacy
+/// file-private copies the unmigrated features still carry.
+func httpStatus(_ code: Int, file: StaticString = #fileID) -> HTTPResponse.Status {
     switch code {
     case 200: .ok
     case 201: .created

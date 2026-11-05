@@ -20,8 +20,8 @@ struct PublicFeature: RouteCollection {
     }
 
 func register(routes: any RoutesBuilder) {
-        let app = routes
-        app.get("api", "public", "servers", ":slug") { request -> Response in
+        let server = routes.grouped("api", "public", "servers", ":slug")
+        server.get { request -> Response in
             let slug = request.parameters.get("slug") ?? ""
             let country = request.headers[HTTPField.Name("CloudFront-Viewer-Country")!]
             let region = request.headers[HTTPField.Name("CloudFront-Viewer-Country-Region")!]
@@ -34,7 +34,7 @@ func register(routes: any RoutesBuilder) {
             }
             return routeResponse(PublicVisits.pageReply(found: false, mode: nil))
         }
-        app.get("api", "public", "servers", ":slug", "channels", ":channelId", "messages") { request -> Response in
+        server.get("channels", ":channelId", "messages") { request -> Response in
             let channelId = request.parameters.get("channelId") ?? ""
             guard let window = publicMessageWindow(request.url.query) else {
                 return routeResponse(PublicVisits.pageReply(found: false, mode: nil))
@@ -49,7 +49,7 @@ func register(routes: any RoutesBuilder) {
             }
             return routeResponse(PublicServerMessages.channel(channelId: channelId))
         }
-        app.get("api", "public", "servers", ":slug", "attachments", ":attachmentId") { request -> Response in
+        server.get("attachments", ":attachmentId") { request -> Response in
             let attachmentId = request.parameters.get("attachmentId") ?? ""
             let client = request.remoteAddress?.host ?? "unknown"
             if !services.publicAttachmentBudget.allow(ip: client) {
@@ -66,7 +66,7 @@ func register(routes: any RoutesBuilder) {
                 frameAncestors: services.corsOrigins
             ))
         }
-        app.get("api", "public", "servers", ":slug", "threads", ":threadChannelId", "messages") { request -> Response in
+        server.get("threads", ":threadChannelId", "messages") { request -> Response in
             let threadId = request.parameters.get("threadChannelId") ?? ""
             guard let window = publicMessageWindow(request.url.query) else {
                 return routeResponse(PublicVisits.pageReply(found: false, mode: nil))

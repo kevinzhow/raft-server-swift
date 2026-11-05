@@ -22,19 +22,20 @@ struct TranslationFeature: RouteCollection {
     }
 
     func boot(routes: any RoutesBuilder) async throws {
-    register(routes: routes)
+        register(routes: routes)
     }
 
-func register(routes: any RoutesBuilder) {
-        let app = routes
-        app.post("api", "message-translations:batch") { request -> Response in
+    func register(routes: any RoutesBuilder) {
+        let api = routes.grouped("api")
+        let publicServer = routes.grouped("api", "public", "servers", ":slug")
+        api.post("message-translations:batch") { request -> Response in
             routeResponse(services.emailAccounts.batchTranslateMessages(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 body: request.body.string ?? "{}"
             ))
         }
-        app.post("api", "public", "servers", ":slug", "message-translations:batch") { request -> Response in
+        publicServer.post("message-translations:batch") { request -> Response in
             let client = request.remoteAddress?.host ?? "unknown"
             if !services.publicTranslationBudget.allow(ip: client) {
                 return routeResponse(PublicTranslations.tooMany())

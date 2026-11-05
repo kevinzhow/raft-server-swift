@@ -576,4 +576,239 @@ extension EmailLoginDirectory {
         return .some(completion.userId)
     }
 
+    /// `409` when the target Computer cannot answer for its Built-in catalog.
+    func builtinCatalogFailureReply() -> HTTPReply {
+        Self.json(409, "{\"code\":\"builtin_catalog_unavailable\",\"error\":\"The target Computer's Built-in model catalog is unavailable. Retry after the Computer reconnects.\"}")
+    }
+
+    /// Built-in model admission check. Anything but a Built-in runtime is not ours to judge.
+    func builtinModelCheck(machineId: String?, config: [String: Any]) -> BuiltinModelCatalogResult? {
+        guard let machineId,
+              (config["runtime"] as? String) == "builtin",
+              let model = config["model"] as? [String: Any],
+              let modelId = model["id"] as? String,
+              let check = builtinModelCatalogCheck
+        else { return nil }
+        return check(machineId, modelId)
+    }
+
+    public func setAgentAttachmentPresignForTesting(_ handler: (@Sendable (String, Int, String, String) throws -> String)?) {
+        lock.lock()
+        agentAttachmentPresign = handler
+        lock.unlock()
+    }
+
+    public func addAgentAttachmentForTesting(
+        channelId: String,
+        id: String,
+        uploaderId: String,
+        filename: String,
+        mimeType: String,
+        sizeBytes: Int,
+        storageKey: String? = nil,
+        bytes: Data
+    ) {
+        lock.lock()
+        channelAttachments[id] = ChannelAttachment(
+            id: id,
+            channelId: channelId,
+            uploaderId: uploaderId,
+            filename: filename,
+            messageId: nil,
+            messagePosition: nil,
+            mimeType: mimeType,
+            sizeBytes: sizeBytes,
+            storageKey: storageKey
+        )
+        agentAttachmentBytes[id] = bytes
+        lock.unlock()
+    }
+
+
+    static let agentAttachmentUnavailableMessage = "Attachment is unavailable."
+    static let agentAttachmentUnavailableNextAction = "If this value came from a feedback report, do not use its artifactId here. Use the reportId with the Raft Feedback Admin integration instead: run `raft integration invoke --service \"Raft Feedback Admin\" --action download_feedback_transcript --param id=REPORT_ID --output PATH`."
+
+    func agentAttachmentUnavailableReply() -> HTTPReply {
+        let error = Self.agentAttachmentUnavailableMessage + " " + Self.agentAttachmentUnavailableNextAction
+        return Self.json(404, "{\"error\":\(jsonString(error)),\"code\":\"ATTACHMENT_UNAVAILABLE\",\"suggestedNextAction\":\(jsonString(Self.agentAttachmentUnavailableNextAction))}")
+    }
+
+    func agentAttachmentUnavailableURLReply() -> HTTPReply {
+        Self.json(409, "{\"error\":\"This Server's file storage cannot mint download URLs.\",\"code\":\"download_url_unavailable\",\"suggestedNextAction\":\"Download the attachment bytes instead: GET /internal/agent-api/attachments/:attachmentId (`raft attachment view --id <attachmentId> --output <path>`).\"}")
+    }
+
+    func agentVisibleAttachment(agentId: String, serverId: String, attachmentId: String) -> ChannelAttachment? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let attachment = channelAttachments[attachmentId],
+              let channel = postableChannels[attachment.channelId],
+              channel.serverId == serverId,
+              channel.deletedAt == nil
+        else { return nil }
+        let visible = channel.kind == "channel"
+            || channel.memberIds.contains(agentId)
+            || oauth.channelAgentIds(channelId: attachment.channelId).contains(agentId)
+        return visible ? attachment : nil
+    }
+
+    func agentAttachmentIdentity(authorization: String?) -> (agentId: String, serverId: String)? {
+        switch feedbackLocatorIdentity(authorization: authorization, capability: "read") {
+        case .refused: return nil
+        case .success(let agentId, let serverId): return (agentId, serverId)
+        }
+    }
+
+    public func agentAttachmentDownload(authorization: String?, attachmentId: String) -> HTTPReply {
+        guard let identity = agentAttachmentIdentity(authorization: authorization) else {
+            switch feedbackLocatorIdentity(authorization: authorization, capability: "read") {
+            case .refused(let reply): return reply
+            case .success: return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
+            }
+        }
+        guard let attachment = agentVisibleAttachment(agentId: identity.agentId, serverId: identity.serverId, attachmentId: attachmentId) else {
+            return agentAttachmentUnavailableReply()
+        }
+        lock.lock()
+        let bytes = agentAttachmentBytes[attachmentId] ?? Data()
+        lock.unlock()
+        var reply = HTTPReply(
+            status: 200,
+            headers: [
+                "Content-Type": attachment.mimeType ?? "application/octet-stream",
+                "Content-Length": String(bytes.count),
+            ],
+            body: String(decoding: bytes, as: UTF8.self)
+        )
+        reply.headers["Cache-Control"] = "private, no-store"
+        reply.headers["Content-Disposition"] = "attachment; filename=\"\(attachment.filename)\"; filename*=UTF-8''\(Self.rfc5987Encode(attachment.filename))"
+        return reply
+    }
+
+    public func agentAttachmentDownloadURL(authorization: String?, attachmentId: String) -> HTTPReply {
+        guard let identity = agentAttachmentIdentity(authorization: authorization) else {
+            switch feedbackLocatorIdentity(authorization: authorization, capability: "read") {
+            case .refused(let reply): return reply
+            case .success: return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
+            }
+        }
+        guard let attachment = agentVisibleAttachment(agentId: identity.agentId, serverId: identity.serverId, attachmentId: attachmentId) else {
+            return agentAttachmentUnavailableReply()
+        }
+        lock.lock()
+        let presign = agentAttachmentPresign
+        lock.unlock()
+        guard let presign else {
+            return agentAttachmentUnavailableURLReply()
+        }
+        let ext = (attachment.filename as NSString).pathExtension
+        let storageKey = attachment.storageKey ?? (ext.isEmpty ? "\(identity.serverId)/\(attachmentId)" : "\(identity.serverId)/\(attachmentId).\(ext)")
+        let filename = attachment.filename
+        let mimeType = attachment.mimeType ?? "application/octet-stream"
+        let disposition = "attachment; filename=\"\(filename)\"; filename*=UTF-8''\(Self.rfc5987Encode(filename))"
+        let url: String
+        do {
+            url = try presign(storageKey, 300, disposition, mimeType)
+        } catch {
+            return Self.json(500, "{\"error\":\"Failed to mint a download URL\"}")
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let expiresAt = formatter.string(from: Date().addingTimeInterval(300))
+        var reply = Self.json(200, "{\"url\":\(jsonString(url)),\"expiresAt\":\(jsonString(expiresAt)),\"filename\":\(jsonString(filename)),\"mimeType\":\(jsonString(mimeType))}")
+        reply.headers["Cache-Control"] = "private, no-store"
+        return reply
+    }
+
+    public func setAgentAudienceStatusForTesting(agentId: String, status: String) {
+        lock.lock()
+        agentAudienceStatusOverrides[agentId] = status
+        lock.unlock()
+    }
+    public func revokeAgentIntegrationGrantForTesting(agentId: String, clientKey: String) {
+        lock.lock()
+        agentIntegrationGrants["\(agentId)\n\(clientKey)"] = true
+        lock.unlock()
+    }
+
+    public func restoreAgentIntegrationGrantForTesting(agentId: String, clientKey: String) {
+        lock.lock()
+        agentIntegrationGrants["\(agentId)\n\(clientKey)"] = false
+        lock.unlock()
+    }
+
+    public func revokeAgentCredentialForTesting(apiKey: String) {
+        lock.lock()
+        agentCredentials[apiKey]?.revokedAt = Date()
+        lock.unlock()
+    }
+
+    public func agentIntegrationToken(authorization: String?, body: String) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let credential = agentCredentials[token]
+        lock.unlock()
+        guard let credential, credential.revokedAt == nil,
+              credential.scopes.contains("read"),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
+            return Self.json(400, "{\"error\":\"Invalid integration token request\",\"code\":\"INVALID_REQUEST\"}")
+        }
+        for field in ["agentId", "serverId", "audience", "issuer", "expires_in", "scopes", "claims"]
+        where object[field] != nil {
+            return Self.json(400, "{\"error\":\"Request fields are derived from the credential\",\"code\":\"INVALID_REQUEST\"}")
+        }
+        guard let service = (object["service"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !service.isEmpty
+        else {
+            return Self.json(400, "{\"error\":\"service is required\",\"code\":\"INVALID_REQUEST\"}")
+        }
+        lock.lock()
+        let status = agentAudienceStatusOverrides[agent.id] ?? "active"
+        lock.unlock()
+        guard status == "active" else {
+            return Self.json(403, "{\"error\":\"Agent is not active\",\"code\":\"AGENT_INACTIVE\"}")
+        }
+        guard oauth.agentRole(serverId: agent.serverId, agentId: agent.id) != nil else {
+            return Self.json(403, "{\"error\":\"Agent is not a member of this Server\",\"code\":\"AGENT_NOT_MEMBER\"}")
+        }
+        guard let client = oauth.localClientForAgentAudience(clientId: service, serverId: agent.serverId),
+              client.enabled,
+              client.allowedScopes.contains("openid"),
+              client.allowedScopes.contains("profile")
+        else {
+            return Self.json(403, "{\"error\":\"That App is not available on this Server\",\"code\":\"APP_UNAVAILABLE\"}")
+        }
+        let grantKey = "\(agent.id)\n\(client.clientId)"
+        lock.lock()
+        let revoked = agentIntegrationGrants[grantKey] == true
+        if !revoked {
+            agentIntegrationGrants[grantKey] = false
+        }
+        lock.unlock()
+        guard !revoked else {
+            return Self.json(403, "{\"error\":\"Agent access to this App has been revoked\",\"code\":\"GRANT_REVOKED\"}")
+        }
+        guard let slug = oauth.serverProfile(id: agent.serverId)?.slug,
+              let origin = OAuthDiscovery.issuerOrigin(serverURL),
+              let signed = oauth.signAgentAudienceToken(
+                  agentId: agent.id,
+                  agentName: agent.name,
+                  clientKey: client.clientId,
+                  serverId: agent.serverId,
+                  serverSlug: slug,
+                  issuer: "\(origin)/oidc/\(slug)"
+              )
+        else {
+            return Self.json(500, "{\"error\":\"Failed to issue the App token\"}")
+        }
+        var reply = Self.json(200, "{\"access_token\":\(jsonString(signed.token)),\"audience\":\(jsonString(client.clientId)),\"expires_in\":300}")
+        reply.headers["Cache-Control"] = "no-store"
+        return reply
+    }
 }

@@ -97,9 +97,10 @@ extension EmailLoginDirectory {
     }
 
     /// `POST /api/auth/pending-link/cancel`. Cancelling twice stays 204.
-    public func cancelPendingSocialLink(body: String) -> HTTPReply {
-        if let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-           let token = object["pendingLinkToken"] as? String {
+    /// The route already decoded `CancelPendingLinkRequest`, so a nil, empty
+    /// or unknown token is a no-op that still answers 204.
+    public func cancelPendingSocialLink(token: String?) -> HTTPReply {
+        if let token {
             lock.lock()
             if var pending = pendingSocialLinks[token] {
                 pending.cancelled = true
@@ -108,6 +109,21 @@ extension EmailLoginDirectory {
             lock.unlock()
         }
         return Self.empty(204)
+    }
+
+    /// `POST /api/auth/forgot-password` side effect: mint a reset token hash for
+    /// a known account. An unknown address stays a silent no-op so the route can
+    /// answer the same acceptance message either way.
+    public func requestPasswordReset(email: String) {
+        guard let userId = userId(forEmail: email) else { return }
+        let token = Self.randomHex(32)
+        lock.lock()
+        authProfileStore.setResetToken(
+            hash: Self.sha256(token),
+            userId: userId,
+            expiresAt: Date().addingTimeInterval(60 * 60)
+        )
+        lock.unlock()
     }
 
 
@@ -798,3 +814,57 @@ extension EmailLoginDirectory {
 /// `EmailLoginDirectory` owns the lock; the service never takes it directly.
 extension EmailLoginDirectory: AuthVerificationAccounts {}
 
+/// Directory counters the startup log and acceptance tests read. Every one is a
+/// locked snapshot; none mutates the row it counts.
+extension EmailLoginDirectory {
+
+    public var sessionCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return sessions.count
+    }
+
+    public var userCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return accounts.count
+    }
+
+    public var legalAcceptanceCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return authProfileStore.legalAcceptanceCount
+    }
+
+    public var emailVerificationCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return emailVerifications
+    }
+
+    public var providerExchangeCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return providerExchanges
+    }
+
+    public var retirementReceiptCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return retirementReceipts.count
+    }
+
+    public var mobileOAuthRequestCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return mobileRequests.count
+    }
+
+    /// Rows the directory holds for `GET /api/messages` style readbacks.
+    public var humanMessageCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return humanMessageRows.count
+    }
+
+}

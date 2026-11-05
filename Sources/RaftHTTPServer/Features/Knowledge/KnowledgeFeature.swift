@@ -23,11 +23,11 @@ struct KnowledgeFeature: RouteCollection, Sendable {
     }
 
     func register(routes: any RoutesBuilder) {
-        let app = routes
-        app.get("internal", "agent-api", "knowledge") { request -> Response in
+        let knowledge = routes.grouped("internal", "agent-api", "knowledge")
+        knowledge.get { request -> Response in
             routeResponse(Self.getReply(request: request, services: services))
         }
-        app.get("internal", "agent-api", "knowledge", "search") { request -> Response in
+        knowledge.get("search") { request -> Response in
             routeResponse(Self.searchReply(request: request, services: services))
         }
     }
@@ -48,25 +48,16 @@ struct KnowledgeFeature: RouteCollection, Sendable {
         _ request: Request,
         _ services: FallbackServices
     ) -> IdentityResolution {
-        let identityReply = services.emailAccounts.agentApiIdentity(
+        let identity: AgentApiIdentityDTO
+        switch services.emailAccounts.resolveAgentApiIdentity(
             authorization: request.headers[.authorization]
-        )
-        guard identityReply.status == 200,
-              let data = identityReply.body.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let agentId = object["agentId"] as? String,
-              let serverId = object["serverId"] as? String,
-              let scopes = object["scopes"] as? [String]
-        else {
-            if identityReply.status == 200 {
-                return .denial(KnowledgeDirectory.reply(
-                    401,
-                    KnowledgeDirectory.errorPayload(code: "auth_required", error: "Invalid or expired token")
-                ))
-            }
-            return .denial(identityReply)
+        ) {
+        case .success(let value):
+            identity = value
+        case .failure(let reply):
+            return .denial(reply)
         }
-        guard scopes.contains("knowledge") else {
+        guard identity.scopes.contains("knowledge") else {
             let body = KnowledgeDirectory.jsonObject([
                 "error": "Agent credential is not authorized for this capability",
                 "code": "capability_not_authorized",
@@ -74,7 +65,7 @@ struct KnowledgeFeature: RouteCollection, Sendable {
             ])
             return .denial(KnowledgeDirectory.reply(403, body))
         }
-        return .identity(KnowledgeIdentity(agentId: agentId, serverId: serverId))
+        return .identity(KnowledgeIdentity(agentId: identity.agentId, serverId: identity.serverId))
     }
 
     // MARK: - Request projection

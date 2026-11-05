@@ -129,6 +129,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     let lock = NSLock()
     var accounts: [String: Account] = [:]
     let authProfileStore = AuthProfileStore()
+    let notificationsStore = NotificationsStore()
     var analyticsIds: [String: String] = [:]
     let productEventStore = ProductEventStore()
     var sessions: [String: LiveSession] = [:]
@@ -221,19 +222,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Live model ids a Computer advertises for a runtime (v2 field-pointing).
     public var agentRuntimeModelsForMachine: (@Sendable (_ machineId: String, _ runtime: String) -> [String]?)?
 
-    func builtinCatalogFailureReply() -> HTTPReply {
-        Self.json(409, "{\"code\":\"builtin_catalog_unavailable\",\"error\":\"The target Computer's Built-in model catalog is unavailable. Retry after the Computer reconnects.\"}")
-    }
-
-    func builtinModelCheck(machineId: String?, config: [String: Any]) -> BuiltinModelCatalogResult? {
-        guard let machineId,
-              (config["runtime"] as? String) == "builtin",
-              let model = config["model"] as? [String: Any],
-              let modelId = model["id"] as? String,
-              let check = builtinModelCatalogCheck
-        else { return nil }
-        return check(machineId, modelId)
-    }
     var hostedRuntimes: [String: (provider: String, model: String?, state: String, retryNeedsModel: Bool, createdAt: Date)] = [:]
     var grokRuntimeServers: Set<String> = []
     var remoteUpgradeDisabledServers: Set<String> = []
@@ -323,13 +311,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     var consumedHandoffs: Set<String> = []
     var deviceGrants: [String: DeviceGrant] = [:]
     var deviceUserCodes: [String: String] = [:]
-    var mobileAppEmailContactsByKey: [String: MobileAppEmailContact] = [:]
-    var storedMobileAppEmailJourneys: [MobileAppEmailJourney] = []
-    var nativeNotificationEvents: [StoredNativeNotificationEvent] = []
-    var nextNativeNotificationSeq = 0
-    var nativeEnrollmentGrants: [StoredEnrollmentGrant] = []
-    var nativeNotificationDevices: [StoredNotificationDevice] = []
-    var nativeNotificationCredentials: [StoredNotificationCredential] = []
     public var mobileProviderProfile: MobileProviderProfile?
     /// Exchanged web provider profile. The form-post callback stores a completion and does not link an identity.
     public var webProviderProfile: MobileProviderProfile?
@@ -366,13 +347,10 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// dimensions and the PNG route serves the same bytes the user selected.
 
     var shareArtifacts: [String: ShareArtifactRecord] = [:]
-    var timezoneObservations: [String: TimezoneObservation] = [:]
     var serverLabsState: [String: ServerLabsState] = [:]
     var serverInvites: [(id: String, serverId: String, email: String, role: String, tokenHash: String?)] = []
     var serverSwitcherOrders: [String: (ids: [String], version: Int)] = [:]
     var serverOnboardingSettings: [String: (agentId: String?, greeting: Bool)] = [:]
-    var userOnboardingSettings: [String: UserOnboarding] = [:]
-    var serverNotificationPrefs: [String: (muted: Bool, mentionsOnly: Bool, mode: String, version: Int)] = [:]
     var setupPhases: [String: String] = [:]
     var setupHandoffs: Set<String> = []
     var guestRoleServers: Set<String> = []
@@ -408,11 +386,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     // Human read frontiers live in the ledger alongside the message rows. The
     // directory keeps no parallel cursor store.
     var agentActivities: [String: (activity: String, detail: String)] = [:]
-    var announcements: [(id: String, title: String, pages: [String], startsAt: Date, expiresAt: Date?, status: String, publishedAt: Date?, imageId: String?, audienceServerIds: [String])] = []
-    var announcementImageAssets: [String: AnnouncementImageAsset] = [:]
-    var announcementImageStorageAvailable = true
-
-    var announcementDismissals: Set<String> = []
     var inboxDoneScopes: Set<String> = []
     var inboxDoneAt: [String: Date] = [:]
     /// Canonical Done frontier captured at admission, per `userId\nscopeId`.
@@ -429,10 +402,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     var reminderRecords: [ReminderRecord] = []
     var reminderEvents: [ReminderEvent] = []
     var taskRecords: [TaskRecord] = []
-    var pushRegistrations: [PushRegistration] = []
-    public var fcmPushAvailable = true
-    public var webPushEnabled = true
-    var webPushSubscriptions: [WebPushSubscription] = []
     var machines: [MachineRecord] = []
     var machineStatusVersions: [String: Int] = [:]
     var machineOnline: [String: Bool] = [:]
@@ -454,227 +423,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     var agentAudienceStatusOverrides: [String: String] = [:]
     var agentAttachmentBytes: [String: Data] = [:]
     var agentAttachmentPresign: (@Sendable (String, Int, String, String) throws -> String)?
-
-    public func setAgentAttachmentPresignForTesting(_ handler: (@Sendable (String, Int, String, String) throws -> String)?) {
-        lock.lock()
-        agentAttachmentPresign = handler
-        lock.unlock()
-    }
-
-    public func addAgentAttachmentForTesting(
-        channelId: String,
-        id: String,
-        uploaderId: String,
-        filename: String,
-        mimeType: String,
-        sizeBytes: Int,
-        storageKey: String? = nil,
-        bytes: Data
-    ) {
-        lock.lock()
-        channelAttachments[id] = ChannelAttachment(
-            id: id,
-            channelId: channelId,
-            uploaderId: uploaderId,
-            filename: filename,
-            messageId: nil,
-            messagePosition: nil,
-            mimeType: mimeType,
-            sizeBytes: sizeBytes,
-            storageKey: storageKey
-        )
-        agentAttachmentBytes[id] = bytes
-        lock.unlock()
-    }
-
-
-    static let agentAttachmentUnavailableMessage = "Attachment is unavailable."
-    static let agentAttachmentUnavailableNextAction = "If this value came from a feedback report, do not use its artifactId here. Use the reportId with the Raft Feedback Admin integration instead: run `raft integration invoke --service \"Raft Feedback Admin\" --action download_feedback_transcript --param id=REPORT_ID --output PATH`."
-
-    func agentAttachmentUnavailableReply() -> HTTPReply {
-        let error = Self.agentAttachmentUnavailableMessage + " " + Self.agentAttachmentUnavailableNextAction
-        return Self.json(404, "{\"error\":\(jsonString(error)),\"code\":\"ATTACHMENT_UNAVAILABLE\",\"suggestedNextAction\":\(jsonString(Self.agentAttachmentUnavailableNextAction))}")
-    }
-
-    func agentAttachmentUnavailableURLReply() -> HTTPReply {
-        Self.json(409, "{\"error\":\"This Server's file storage cannot mint download URLs.\",\"code\":\"download_url_unavailable\",\"suggestedNextAction\":\"Download the attachment bytes instead: GET /internal/agent-api/attachments/:attachmentId (`raft attachment view --id <attachmentId> --output <path>`).\"}")
-    }
-
-    func agentVisibleAttachment(agentId: String, serverId: String, attachmentId: String) -> ChannelAttachment? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let attachment = channelAttachments[attachmentId],
-              let channel = postableChannels[attachment.channelId],
-              channel.serverId == serverId,
-              channel.deletedAt == nil
-        else { return nil }
-        let visible = channel.kind == "channel"
-            || channel.memberIds.contains(agentId)
-            || oauth.channelAgentIds(channelId: attachment.channelId).contains(agentId)
-        return visible ? attachment : nil
-    }
-
-    func agentAttachmentIdentity(authorization: String?) -> (agentId: String, serverId: String)? {
-        switch feedbackLocatorIdentity(authorization: authorization, capability: "read") {
-        case .refused: return nil
-        case .success(let agentId, let serverId): return (agentId, serverId)
-        }
-    }
-
-    public func agentAttachmentDownload(authorization: String?, attachmentId: String) -> HTTPReply {
-        guard let identity = agentAttachmentIdentity(authorization: authorization) else {
-            switch feedbackLocatorIdentity(authorization: authorization, capability: "read") {
-            case .refused(let reply): return reply
-            case .success: return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
-            }
-        }
-        guard let attachment = agentVisibleAttachment(agentId: identity.agentId, serverId: identity.serverId, attachmentId: attachmentId) else {
-            return agentAttachmentUnavailableReply()
-        }
-        lock.lock()
-        let bytes = agentAttachmentBytes[attachmentId] ?? Data()
-        lock.unlock()
-        var reply = HTTPReply(
-            status: 200,
-            headers: [
-                "Content-Type": attachment.mimeType ?? "application/octet-stream",
-                "Content-Length": String(bytes.count),
-            ],
-            body: String(decoding: bytes, as: UTF8.self)
-        )
-        reply.headers["Cache-Control"] = "private, no-store"
-        reply.headers["Content-Disposition"] = "attachment; filename=\"\(attachment.filename)\"; filename*=UTF-8''\(Self.rfc5987Encode(attachment.filename))"
-        return reply
-    }
-
-    public func agentAttachmentDownloadURL(authorization: String?, attachmentId: String) -> HTTPReply {
-        guard let identity = agentAttachmentIdentity(authorization: authorization) else {
-            switch feedbackLocatorIdentity(authorization: authorization, capability: "read") {
-            case .refused(let reply): return reply
-            case .success: return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
-            }
-        }
-        guard let attachment = agentVisibleAttachment(agentId: identity.agentId, serverId: identity.serverId, attachmentId: attachmentId) else {
-            return agentAttachmentUnavailableReply()
-        }
-        lock.lock()
-        let presign = agentAttachmentPresign
-        lock.unlock()
-        guard let presign else {
-            return agentAttachmentUnavailableURLReply()
-        }
-        let ext = (attachment.filename as NSString).pathExtension
-        let storageKey = attachment.storageKey ?? (ext.isEmpty ? "\(identity.serverId)/\(attachmentId)" : "\(identity.serverId)/\(attachmentId).\(ext)")
-        let filename = attachment.filename
-        let mimeType = attachment.mimeType ?? "application/octet-stream"
-        let disposition = "attachment; filename=\"\(filename)\"; filename*=UTF-8''\(Self.rfc5987Encode(filename))"
-        let url: String
-        do {
-            url = try presign(storageKey, 300, disposition, mimeType)
-        } catch {
-            return Self.json(500, "{\"error\":\"Failed to mint a download URL\"}")
-        }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let expiresAt = formatter.string(from: Date().addingTimeInterval(300))
-        var reply = Self.json(200, "{\"url\":\(jsonString(url)),\"expiresAt\":\(jsonString(expiresAt)),\"filename\":\(jsonString(filename)),\"mimeType\":\(jsonString(mimeType))}")
-        reply.headers["Cache-Control"] = "private, no-store"
-        return reply
-    }
-
-    public func setAgentAudienceStatusForTesting(agentId: String, status: String) {
-        lock.lock()
-        agentAudienceStatusOverrides[agentId] = status
-        lock.unlock()
-    }
-    public func revokeAgentIntegrationGrantForTesting(agentId: String, clientKey: String) {
-        lock.lock()
-        agentIntegrationGrants["\(agentId)\n\(clientKey)"] = true
-        lock.unlock()
-    }
-
-    public func restoreAgentIntegrationGrantForTesting(agentId: String, clientKey: String) {
-        lock.lock()
-        agentIntegrationGrants["\(agentId)\n\(clientKey)"] = false
-        lock.unlock()
-    }
-
-    public func revokeAgentCredentialForTesting(apiKey: String) {
-        lock.lock()
-        agentCredentials[apiKey]?.revokedAt = Date()
-        lock.unlock()
-    }
-
-    public func agentIntegrationToken(authorization: String?, body: String) -> HTTPReply {
-        guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
-        }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        let credential = agentCredentials[token]
-        lock.unlock()
-        guard let credential, credential.revokedAt == nil,
-              credential.scopes.contains("read"),
-              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
-        else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
-        }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
-            return Self.json(400, "{\"error\":\"Invalid integration token request\",\"code\":\"INVALID_REQUEST\"}")
-        }
-        for field in ["agentId", "serverId", "audience", "issuer", "expires_in", "scopes", "claims"]
-        where object[field] != nil {
-            return Self.json(400, "{\"error\":\"Request fields are derived from the credential\",\"code\":\"INVALID_REQUEST\"}")
-        }
-        guard let service = (object["service"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !service.isEmpty
-        else {
-            return Self.json(400, "{\"error\":\"service is required\",\"code\":\"INVALID_REQUEST\"}")
-        }
-        lock.lock()
-        let status = agentAudienceStatusOverrides[agent.id] ?? "active"
-        lock.unlock()
-        guard status == "active" else {
-            return Self.json(403, "{\"error\":\"Agent is not active\",\"code\":\"AGENT_INACTIVE\"}")
-        }
-        guard oauth.agentRole(serverId: agent.serverId, agentId: agent.id) != nil else {
-            return Self.json(403, "{\"error\":\"Agent is not a member of this Server\",\"code\":\"AGENT_NOT_MEMBER\"}")
-        }
-        guard let client = oauth.localClientForAgentAudience(clientId: service, serverId: agent.serverId),
-              client.enabled,
-              client.allowedScopes.contains("openid"),
-              client.allowedScopes.contains("profile")
-        else {
-            return Self.json(403, "{\"error\":\"That App is not available on this Server\",\"code\":\"APP_UNAVAILABLE\"}")
-        }
-        let grantKey = "\(agent.id)\n\(client.clientId)"
-        lock.lock()
-        let revoked = agentIntegrationGrants[grantKey] == true
-        if !revoked {
-            agentIntegrationGrants[grantKey] = false
-        }
-        lock.unlock()
-        guard !revoked else {
-            return Self.json(403, "{\"error\":\"Agent access to this App has been revoked\",\"code\":\"GRANT_REVOKED\"}")
-        }
-        guard let slug = oauth.serverProfile(id: agent.serverId)?.slug,
-              let origin = OAuthDiscovery.issuerOrigin(serverURL),
-              let signed = oauth.signAgentAudienceToken(
-                  agentId: agent.id,
-                  agentName: agent.name,
-                  clientKey: client.clientId,
-                  serverId: agent.serverId,
-                  serverSlug: slug,
-                  issuer: "\(origin)/oidc/\(slug)"
-              )
-        else {
-            return Self.json(500, "{\"error\":\"Failed to issue the App token\"}")
-        }
-        var reply = Self.json(200, "{\"access_token\":\(jsonString(signed.token)),\"audience\":\(jsonString(client.clientId)),\"expires_in\":300}")
-        reply.headers["Cache-Control"] = "no-store"
-        return reply
-    }
-
 
     /// A prepared Marketplace install card. The action payload is rebuilt from
     /// this record on every read, so the message projection never carries a
@@ -841,48 +589,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         public var canceledAt: Date?
     }
 
-    public var sessionCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return sessions.count
-    }
-
-    public var userCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return accounts.count
-    }
-
-    public var legalAcceptanceCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return authProfileStore.legalAcceptanceCount
-    }
-
-    public var emailVerificationCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return emailVerifications
-    }
-
-    public var providerExchangeCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return providerExchanges
-    }
-
-    public var retirementReceiptCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return retirementReceipts.count
-    }
-
-    public var mobileOAuthRequestCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return mobileRequests.count
-    }
-
     public struct ForwardedSource: Equatable, Sendable {
         public var sourceServerId: String
         public var sourceTargetId: String
@@ -950,12 +656,6 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// advances each conversation's cursor, and `has_more` says whether
     /// another call has anything left.
     static let agentInboxPullCap = 5
-
-    public var humanMessageCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return humanMessageRows.count
-    }
 
     static let appLoginReturnUris: Set<String> = [
         "raft://login/callback",
@@ -1198,4 +898,29 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     var externalAvatarAssets: [String: ExternalAvatarAsset] = [:]
 
     var externalAvatarStorageAvailable = true
+
+    // MARK: - Store-backed surface
+
+    // Notification/announcement/push rows live in `NotificationsStore`. These
+    // accessors keep the extension files' property names unchanged.
+    var nativeNotificationEvents: [StoredNativeNotificationEvent] { get { notificationsStore.nativeNotificationEvents } set { notificationsStore.nativeNotificationEvents = newValue } }
+    var nextNativeNotificationSeq: Int { get { notificationsStore.nextNativeNotificationSeq } set { notificationsStore.nextNativeNotificationSeq = newValue } }
+    var nativeEnrollmentGrants: [StoredEnrollmentGrant] { get { notificationsStore.nativeEnrollmentGrants } set { notificationsStore.nativeEnrollmentGrants = newValue } }
+    var nativeNotificationDevices: [StoredNotificationDevice] { get { notificationsStore.nativeNotificationDevices } set { notificationsStore.nativeNotificationDevices = newValue } }
+    var nativeNotificationCredentials: [StoredNotificationCredential] { get { notificationsStore.nativeNotificationCredentials } set { notificationsStore.nativeNotificationCredentials = newValue } }
+    var pushRegistrations: [PushRegistration] { get { notificationsStore.pushRegistrations } set { notificationsStore.pushRegistrations = newValue } }
+    public var fcmPushAvailable: Bool { get { notificationsStore.fcmPushAvailable } set { notificationsStore.fcmPushAvailable = newValue } }
+    public var webPushEnabled: Bool { get { notificationsStore.webPushEnabled } set { notificationsStore.webPushEnabled = newValue } }
+    var webPushSubscriptions: [WebPushSubscription] { get { notificationsStore.webPushSubscriptions } set { notificationsStore.webPushSubscriptions = newValue } }
+    var announcements: [NotificationsStore.AnnouncementRow] { get { notificationsStore.announcements } set { notificationsStore.announcements = newValue } }
+    var announcementImageAssets: [String: AnnouncementImageAsset] { get { notificationsStore.announcementImageAssets } set { notificationsStore.announcementImageAssets = newValue } }
+    var announcementImageStorageAvailable: Bool { get { notificationsStore.announcementImageStorageAvailable } set { notificationsStore.announcementImageStorageAvailable = newValue } }
+    var announcementDismissals: Set<String> { get { notificationsStore.announcementDismissals } set { notificationsStore.announcementDismissals = newValue } }
+    var serverNotificationPrefs: [String: NotificationsStore.ServerNotificationPref] { get { notificationsStore.serverNotificationPrefs } set { notificationsStore.serverNotificationPrefs = newValue } }
+
+    // Profile surface rows live in `AuthProfileStore`.
+    var timezoneObservations: [String: TimezoneObservation] { get { authProfileStore.timezoneObservations } set { authProfileStore.timezoneObservations = newValue } }
+    var userOnboardingSettings: [String: UserOnboarding] { get { authProfileStore.userOnboardingSettings } set { authProfileStore.userOnboardingSettings = newValue } }
+    var mobileAppEmailContactsByKey: [String: MobileAppEmailContact] { get { authProfileStore.mobileAppEmailContactsByKey } set { authProfileStore.mobileAppEmailContactsByKey = newValue } }
+    var storedMobileAppEmailJourneys: [MobileAppEmailJourney] { get { authProfileStore.storedMobileAppEmailJourneys } set { authProfileStore.storedMobileAppEmailJourneys = newValue } }
 }
