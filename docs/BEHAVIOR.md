@@ -1909,3 +1909,12 @@ RFC 074 personal assistant：
 - 成员生命周期产生 notification 事件：admin 移除 → `server.member_removed`（reason removed、role、principal human、delivery queued）；主动 leave → reason left；删除 agent → subject agent principal agent；删除 Server → 对每个 human+agent 发 reason server_deleted，且重复删除不再新增；join link 接受 → `server.member_added`；角色变更 → `server.member_role_changed`（previous_role/role）。
 - 事件 store 与查询辅助 `serverMemberEventsForTesting` 已实现；删除 Server 幂等（重复返回 200 但不重复发事件）。
 - 裁决：OAuth app sign-in token 的撤销依赖未移植 app OAuth access-token 表；agent 创建/改角色的 service-level 用例依赖 service 注入而非 HTTP；两者不移植，其余 HTTP 行为已覆盖。
+
+### route internalAgentApi.selfCausedNoticeFreshness.api（锁定，含裁决）
+
+- 消息模型增加 `systemSubtype`/`causalActorType`/`causalActorId`；send freshness 对 system notice 按因果判定：
+  - agent 自己造成且 subtype 在 allowlist（`task.created_summary`）→ 不 hold（sent）；
+  - 其他 agent、human 造成、无 causal actor、或自造但 kind 不在 allowlist（如 `task.lifecycle_thread`）→ 计入未读并 hold；
+  - 已读边界覆盖该 notice → sent。
+- thread 与 channel 同规则（thread 的自造 lifecycle_thread 仍 hold，自造 created_summary 豁免）。
+- 裁决：allowlist 纯函数单元测试为 service 内部断言；legacy `/internal/agent/:id/send` machine-key 路径与 daemon 能力环境变量不在 HTTP 可执行范围；其余 send 语义已覆盖。

@@ -7421,6 +7421,40 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     @discardableResult
+    public func addSystemNoticeForTesting(
+        channelId: String,
+        subtype: String,
+        content: String,
+        causalActorType: String? = nil,
+        causalActorId: String? = nil
+    ) -> String {
+        let id = UUID().uuidString.lowercased()
+        lock.lock()
+        appendHumanMessageLocked(StoredHumanMessage(
+            id: id,
+            channelId: channelId,
+            senderId: "system",
+            content: content,
+            randomId: nil,
+            messageType: "system",
+            senderType: "system",
+            systemSubtype: subtype,
+            causalActorType: causalActorType,
+            causalActorId: causalActorId
+        ))
+        lock.unlock()
+        return id
+    }
+
+    private static let selfCausedFreshnessExemptSubtypes: Set<String> = ["task.created_summary"]
+
+    private func isSelfCausedFreshnessExemptLocked(_ message: StoredHumanMessage, agentId: String) -> Bool {
+        message.messageType == "system"
+            && message.causalActorType == "agent"
+            && message.causalActorId == agentId
+            && message.systemSubtype.map { Self.selfCausedFreshnessExemptSubtypes.contains($0) } == true
+    }
+
     public func addExternalProjectionMessageForTesting(
         channelId: String,
         senderName: String,
@@ -9954,6 +9988,9 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         var externalMessageId: String? = nil
         var externalProvider: String? = nil
         var externalSenderName: String? = nil
+        var systemSubtype: String? = nil
+        var causalActorType: String? = nil
+        var causalActorId: String? = nil
         var mentions: [StoredMessageMention] = []
     }
 
@@ -23227,6 +23264,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                     && $0.message.senderId != identity.agentId
                     && !effectiveExactSeqs.contains($0.seq)
                     && !agentMessageSuppressedLocked($0.message, agentId: identity.agentId)
+                    && !isSelfCausedFreshnessExemptLocked($0.message, agentId: identity.agentId)
             }
             let formalMentionCount = newer.reduce(0) { partial, entry in
                 partial + (storedMentions.contains {
