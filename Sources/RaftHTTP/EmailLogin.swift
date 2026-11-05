@@ -131,9 +131,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     private var authIdentityRows: [String: [(provider: String, providerEmail: String)]] = [:]
     private var passwordResetTokens: [String: (userId: String, expiresAt: Date)] = [:]
     private var analyticsIds: [String: String] = [:]
-    private var productEventRecords: [RecordedProductEvent] = []
-    private var clientEventRecords: [ClientEventRecord] = []
-    private var seenClientEventIDs: Set<String> = []
+    private let productEventStore = ProductEventStore()
     private var sessions: [String: LiveSession] = [:]
     private var rotationReceipts: [String: RotationReceipt] = [:]
     /// Plain refresh tokens are one-time; the predecessor hash still resolves
@@ -10862,9 +10860,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func recordedProductEvents(subjectId: String) -> [RecordedProductEvent] {
-        lock.lock()
-        defer { lock.unlock() }
-        return productEventRecords.filter { $0.subjectId == subjectId }
+        productEventStore.productEvents(subjectId: subjectId)
     }
 
     /// `GET /api/product-events/config`.
@@ -10879,9 +10875,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     }
 
     public func recordedClientEvents(serverId: String) -> [ClientEventRecord] {
-        lock.lock()
-        defer { lock.unlock() }
-        return clientEventRecords.filter { $0.serverId == serverId }
+        productEventStore.clientEvents(serverId: serverId)
     }
 
     /// `POST /api/product-events/batch`.
@@ -10930,7 +10924,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 return Self.json(400, "{\"error\":\"Invalid event batch\"}")
             }
             if now.timeIntervalSince(parsed) > 7 * 24 * 60 * 60 { continue }
-            if seenClientEventIDs.contains(uuid) || !batchSeen.insert(uuid).inserted { continue }
+            if productEventStore.containsSeenClientEvent(uuid) || !batchSeen.insert(uuid).inserted { continue }
             var sanitized: [String: Any] = [:]
             let allowedKeys: Set<String>
             if name == "activity_open" {
@@ -10973,16 +10967,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 propertiesJSON: propertiesJSON
             ))
         }
-        lock.lock()
-        for row in rows {
-            clientEventRecords.append(row)
+        let seenIDs: [String] = events.compactMap { event in
+            guard let uuid = event["uuid"] as? String, uuid.wholeMatch(of: uuidPattern) != nil else { return nil }
+            return uuid
         }
-        for event in events {
-            if let uuid = event["uuid"] as? String, uuid.wholeMatch(of: uuidPattern) != nil {
-                seenClientEventIDs.insert(uuid)
-            }
-        }
-        lock.unlock()
+        productEventStore.appendClientEvents(rows, seenIDs: seenIDs)
         return Self.json(202, "{\"accepted\":\(rows.count)}")
     }
 
@@ -30629,9 +30618,7 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             idempotencyKey: object["idempotencyKey"] as? String,
             metadataJSON: metadataJSON
         )
-        lock.lock()
-        productEventRecords.append(record)
-        lock.unlock()
+        productEventStore.append(record)
         return Self.json(204, "")
     }
 

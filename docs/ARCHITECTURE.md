@@ -281,9 +281,9 @@ constant to make the check pass.
 
 | Stage | State | Evidence |
 | --- | --- | --- |
-| R1 route extraction | done for auth, feedback, public, translations, servers, channels, messaging, OAuth/OIDC | `Sources/RaftHTTPServer/Features/` (8 collections, 243 route registrations moved); `configure()` 4,520 -> 2,607 lines; per-feature registration tests |
+| R1 route extraction | done for auth, feedback, public, translations, servers, channels, messaging, OAuth/OIDC, internal agent-api, internal admin, integrations, notifications/misc | `Sources/RaftHTTPServer/Features/` (12 collections, ~500 route registrations moved); `configure()` 4,520 -> 667 lines (only policy catch-alls + wiring); per-feature registration tests |
 | R2 canonical JSON | foundation done | `Sources/RaftHTTP/Support/JSONValue.swift` + `HTTPReply.jsonValue` + `Tests/RaftHTTPTests/JSONValueTests.swift`; feature handlers migrate as they are rewritten |
-| R3 store/lock split | pending | target: AuthStore, ChannelStore, TaskStore, ReadCursorStore, FeedbackStore; one domain at a time behind the `EmailLoginDirectory` facade |
+| R3 store/lock split | started | `Stores/ProductEventStore.swift` owns product/client events + client-event idempotency behind its own lock; target next: AuthStore, ChannelStore, TaskStore, ReadCursorStore, FeedbackStore |
 | R4 guardrails | done | `scripts/check_architecture.py`, `make architecture`: EmailLogin line ratchet (31,656), Features <= 1,200 lines, ForTesting warning baseline 243 |
 | R5 shared contracts | pending | target `Sources/RaftShared` for DTOs/capability/error contracts; migrate feature-by-feature |
 
