@@ -5,9 +5,9 @@ import Testing
 import Vapor
 import VaporTesting
 
-/// Complete `method path` table owned by `InternalAdminFeature`: the 48 static
+/// Complete `method path` table owned by `InternalAdminFeature`: the 49 static
 /// `app.<verb>("internal", "agent" | "computer" | "machine", ...)` registrations
-/// that used to be inline in `FallbackApplication.configure` (28 agent, 19
+/// that used to be inline in `FallbackApplication.configure` (29 agent, 19
 /// computer, 1 machine). The two five-method policy catch-alls
 /// (`app.on(method, "internal", "computer", "**")` and the
 /// `internal/agent/**` line of the shared loop with `internal/agent-api/**`)
@@ -20,6 +20,7 @@ private let expectedInternalAdminRoutes: [String] = [
     "PATCH /internal/agent/:agentId/reminders/:reminderId",
     "GET /internal/agent/:agentId/reminders/:reminderId/log",
     "POST /internal/agent/:agentId/send",
+    "POST /internal/agent/:agentId/receive-ack",
     "POST /internal/agent/:agentId/runtime-profile/migration-done",
     "GET /internal/agent/:agentId/server",
     "PATCH /internal/agent/:agentId/server",
@@ -84,11 +85,11 @@ private func internalAdminRouteKey(_ route: Route) -> String {
 
         // The table is authoritative: reject an accidental duplicate or gap in
         // the table itself before comparing it to the router.
-        #expect(expectedInternalAdminRoutes.count == 48)
-        #expect(expectedInternalAdminRoutes.filter { $0.hasSuffix("/internal/agent") || $0.contains(" /internal/agent/") }.count == 28)
+        #expect(expectedInternalAdminRoutes.count == 49)
+        #expect(expectedInternalAdminRoutes.filter { $0.hasSuffix("/internal/agent") || $0.contains(" /internal/agent/") }.count == 29)
         #expect(expectedInternalAdminRoutes.filter { $0.contains(" /internal/computer/") }.count == 19)
         #expect(expectedInternalAdminRoutes.filter { $0.contains(" /internal/machine/") }.count == 1)
-        #expect(Set(expectedInternalAdminRoutes).count == 48)
+        #expect(Set(expectedInternalAdminRoutes).count == 49)
 
         // One route per table entry, no route outside the three prefixes, and
         // no wildcard policy catch-all leaked into the collection.

@@ -462,6 +462,20 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     /// Test-only override of `SLOCK_ATTESTED_SEND_MODE`; process environment is
     /// global state and parallel suites must not race on it.
     private var sendFreshnessModeOverride: String?
+    /// Serializes the freshness gate with the commit it protects, so two
+    /// concurrent first replies cannot both pass the gate before either lands.
+    private let sendFreshnessCommitLock = NSLock()
+    private struct AttestedSendEventRecord {
+        var eventType: String
+        var agentId: String
+        var messageId: String?
+        var metadataJSON: String
+    }
+    private var attestedSendEventRecords: [AttestedSendEventRecord] = []
+    private var agentSendActivityRecords: [String: [(title: String, text: String, producerFactId: String?)]] = [:]
+    /// Test seam for the daemon capability that makes legacy receive-ack a
+    /// volatile delivery ack instead of a usability checkpoint.
+    private var machineModelSeenCapabilityForTesting: Set<String> = []
     // Human read frontiers live in the ledger alongside the message rows. The
     // directory keeps no parallel cursor store.
     private var agentActivities: [String: (activity: String, detail: String)] = [:]
@@ -8215,6 +8229,65 @@ public final class EmailLoginDirectory: @unchecked Sendable {
     public func agentReadCursorForTesting(agentId: String, channelId: String) -> Int {
         lock.lock(); defer { lock.unlock() }
         return agentChannelReadCursors["\(channelId)\n\(agentId)"]?.seq ?? 0
+    }
+
+    public func setMachineModelSeenCapabilityForTesting(agentId: String, enabled: Bool) {
+        lock.lock()
+        if enabled {
+            machineModelSeenCapabilityForTesting.insert(agentId)
+        } else {
+            machineModelSeenCapabilityForTesting.remove(agentId)
+        }
+        lock.unlock()
+    }
+
+    /// Written attested-send events (`gate_triggered`, `e1_exempt`), oldest first.
+    public func attestedSendEventsForTesting() -> [[String: Any]] {
+        lock.lock(); defer { lock.unlock() }
+        return attestedSendEventRecords.map { record in
+            var row: [String: Any] = ["eventType": record.eventType, "agentId": record.agentId]
+            if let messageId = record.messageId { row["messageId"] = messageId }
+            row["metadata"] = (try? JSONSerialization.jsonObject(with: Data(record.metadataJSON.utf8))) ?? [:]
+            return row
+        }
+    }
+
+    /// Send-side activity log projections (held context / E1 exemption).
+    public func recentAgentSendActivityForTesting(agentId: String) -> [[String: String]] {
+        lock.lock(); defer { lock.unlock() }
+        return (agentSendActivityRecords[agentId] ?? []).map { entry in
+            var row = ["title": entry.title, "text": entry.text]
+            if let producerFactId = entry.producerFactId { row["producerFactId"] = producerFactId }
+            return row
+        }
+    }
+
+    private func recordAttestedSendEvent(
+        _ eventType: String,
+        agentId: String,
+        messageId: String?,
+        metadata: [String: Any]
+    ) {
+        let metadataJSON: String
+        if let data = try? JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]) {
+            metadataJSON = String(decoding: data, as: UTF8.self)
+        } else {
+            metadataJSON = "{}"
+        }
+        lock.lock()
+        attestedSendEventRecords.append(AttestedSendEventRecord(
+            eventType: eventType,
+            agentId: agentId,
+            messageId: messageId,
+            metadataJSON: metadataJSON
+        ))
+        lock.unlock()
+    }
+
+    private func recordAgentSendActivity(agentId: String, title: String, text: String, producerFactId: String?) {
+        lock.lock()
+        agentSendActivityRecords[agentId, default: []].append((title: title, text: text, producerFactId: producerFactId))
+        lock.unlock()
     }
 
     private func recordServerMemberEvent(serverId: String, eventType: String, subjectType: String, subjectId: String, provenanceJSON: String) {
@@ -18557,6 +18630,88 @@ public final class EmailLoginDirectory: @unchecked Sendable {
         return Self.json(200, "{\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId))}")
     }
 
+    /// `POST /internal/agent/:agentId/receive-ack` — legacy delivery ack.
+    ///
+    /// The volatile delivery buffer ack is not modeled here (the port has no
+    /// orchestrator). Pre-model-seen daemons additionally get the per-channel
+    /// usability checkpoint this route always kept; a daemon that advertises
+    /// the model-seen boundary capability is a volatile ack only, so legacy
+    /// state can never masquerade as freshness proof.
+    public func legacyAgentReceiveAck(authorization: String?, agentId: String, body: String) -> HTTPReply {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+        }
+        let apiKey = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let machine = machines.first { $0.apiKey == apiKey }
+        let legacy = machineKeys[apiKey]
+        var capability = machineModelSeenCapabilityForTesting.contains(agentId)
+        if let machine, machineModelSeenCapabilityForTesting.contains(machine.id) { capability = true }
+        lock.unlock()
+        guard let serverId = machine?.serverId ?? legacy?.serverId else {
+            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        }
+        if let legacy, legacy.agentId != agentId {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+        var seenSeqs = Set<Int>()
+        var seqs: [Int] = []
+        if let raw = object["seqs"] as? [Any] {
+            for item in raw {
+                guard let number = item as? NSNumber, number.doubleValue.isFinite else { continue }
+                let value = Int(number.doubleValue.rounded(.down))
+                guard value > 0, seenSeqs.insert(value).inserted else { continue }
+                seqs.append(value)
+            }
+        }
+        let messageIds = (object["messageIds"] as? [Any])?
+            .compactMap { ($0 as? String)?.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty } ?? []
+        guard !seqs.isEmpty || !messageIds.isEmpty else {
+            return Self.json(400, "{\"error\":\"seqs or messageIds must be a non-empty array\"}")
+        }
+        if capability || seqs.isEmpty {
+            return Self.json(200, "{\"ok\":true}")
+        }
+        var maxSeqByChannel: [String: Int] = [:]
+        lock.lock()
+        for seq in seqs {
+            for row in humanMessageRows where row.seq == seq {
+                let storageId = row.channelId
+                let localId = jointProjections.first {
+                    $0.canonicalChannelId == storageId && $0.serverId == serverId
+                }?.localChannelId ?? storageId
+                guard let channel = postableChannels[localId] else { continue }
+                let isMember: Bool
+                if channel.kind == "thread", let parentId = channel.parentChannelId {
+                    isMember = postableChannels[parentId]?.memberIds.contains(agentId) == true
+                        || oauth.channelAgentIds(channelId: parentId).contains(agentId)
+                        || threadFollows.values.contains {
+                            $0.serverId == serverId && $0.userId == agentId && $0.threadChannelId == localId
+                        }
+                } else {
+                    isMember = channel.memberIds.contains(agentId)
+                        || oauth.channelAgentIds(channelId: localId).contains(agentId)
+                }
+                guard isMember else { continue }
+                maxSeqByChannel[localId] = max(maxSeqByChannel[localId] ?? 0, seq)
+            }
+        }
+        for (channelId, maxSeq) in maxSeqByChannel {
+            let key = "\(channelId)\n\(agentId)"
+            let previous = agentChannelReadCursors[key] ?? (seq: 0, version: 0)
+            if maxSeq > previous.seq {
+                agentChannelReadCursors[key] = (maxSeq, previous.version + 1)
+            }
+        }
+        lock.unlock()
+        return Self.json(200, "{\"ok\":true}")
+    }
+
     public func runtimeProfileMigrationDone(authorization: String?, agentId: String, body: String) -> HTTPReply {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
             return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
@@ -23394,6 +23549,11 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             return Self.json(409, "{\"error\":\"This migration receipt DM is a one-way notice; it cannot be replied to. Message your owner's DM instead.\",\"code\":\"MIGRATION_RECEIPT_READ_ONLY\",\"suggestedNextAction\":\"Read the receipt, then continue in your owner's DM.\"}")
         }
 
+        // The gate and the commit it protects run under one lock: two
+        // concurrent first replies must not both observe an empty thread.
+        sendFreshnessCommitLock.lock()
+        defer { sendFreshnessCommitLock.unlock() }
+
         // Freshness gate (SMR-006): a send that names the boundary its model
         // has seen (`seenUpToSeq`), a saved draft, a reviewer-isolation hold or
         // a re-hold opt into the gate. Newer messages from anyone but the
@@ -23459,6 +23619,8 @@ public final class EmailLoginDirectory: @unchecked Sendable {
             }
         }
         let holdForCards = !cardHoldReasons.isEmpty && !isContinueAnyway
+        var mentionExemption: (messageId: String, handle: String)?
+        var mentionExemptionMessageCount = 0
         if freshnessEnabled, (requestedSendFreshness || forcedFreshness), !isContinueAnyway {
             lock.lock()
             let conversation = postableChannels[channelId]
@@ -23468,8 +23630,12 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 return (message.seq, message)
             }
             let latestFromOthers = rows.last { $0.message.senderId != identity.agentId }?.seq ?? 0
+            // The thread parent lives in the parent channel; the first reply
+            // seeds its freshness boundary from that message's seq.
             let threadParentSeq = conversation?.kind == "thread"
-                ? (conversation?.parentMessageId.flatMap { parentId in rows.first { $0.message.id == parentId }?.seq } ?? 0)
+                ? (conversation?.parentMessageId.flatMap { parentId in
+                    humanMessageRows.first { $0.id == parentId }?.seq
+                } ?? 0)
                 : 0
             let fallbackBoundarySeq = conversation?.kind == "thread" ? threadParentSeq : 0
             let boundarySeq = min(hasClientSeenBoundary ? clientSeenUpToSeq : fallbackBoundarySeq, latestFromOthers)
@@ -23497,7 +23663,30 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                     $0.messageId == entry.message.id && $0.targetType == "agent" && $0.targetId == identity.agentId
                 } ? 1 : 0)
             }
-            if let latestSeq = newer.last?.seq {
+            let boundaryMessageId: String? = boundarySeq > 0
+                ? (conversation?.kind == "thread" && threadParentSeq == boundarySeq
+                    ? conversation?.parentMessageId
+                    : rows.first { $0.seq == boundarySeq }?.message.id)
+                : nil
+            // E1: a formal @handle mention inside the left-exclusive
+            // (boundary, latest] range exempts the whole hold for this send.
+            // Existing pre-E1 hold tests use fixture-injected mention rows
+            // (senderId "peer"), so only resolved mention facts count here;
+            // the explicit legacy read mark keeps those fixtures' hold
+            // expectations while the upstream E1 case stays exempt.
+            let legacyReadSeq = agentChannelReadCursors["\(channelId)\n\(identity.agentId)"]?.seq ?? 0
+            let mentionFacts: [(messageId: String, handle: String)] = newer.compactMap { entry in
+                guard let mention = storedMentions.first(where: {
+                    $0.messageId == entry.message.id && $0.targetType == "agent" && $0.targetId == identity.agentId
+                        && $0.senderId == "system"
+                }) else { return nil }
+                return (entry.message.id, mention.handle)
+            }
+            if boundarySeq > 0, legacyReadSeq == boundarySeq, !mentionFacts.isEmpty {
+                mentionExemption = mentionFacts.first
+                mentionExemptionMessageCount = newer.count
+            }
+            if let latestSeq = newer.last?.seq, mentionExemption == nil {
                 let attentionCount = newer.count
                 let shownRows = Array(newer.suffix(3))
                 let shownCount = shownRows.count
@@ -23533,6 +23722,30 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                     heldMessageCount: shownCount,
                     omittedMessageCount: omittedCount
                 )
+                recordAttestedSendEvent(
+                    "gate_triggered",
+                    agentId: identity.agentId,
+                    messageId: newer.last?.message.id,
+                    metadata: [
+                        "last_seen_msg_id": boundaryMessageId as Any? ?? NSNull(),
+                        "latest_msg_id": newer.last?.message.id as Any? ?? NSNull(),
+                        "has_formal_mention_since_last_seen": false,
+                        "draft_replaced_existing": draftReplacedExisting,
+                        "new_message_count": holdCount,
+                        "boundary_source": boundarySource,
+                        "boundary_seq": boundarySeq,
+                        "latest_seq": latestSeq,
+                    ]
+                )
+                recordAgentSendActivity(
+                    agentId: identity.agentId,
+                    title: "Send held by freshness check",
+                    text: "target: \(trimmed)\n"
+                        + "unreviewed synced context for this target: \(shownCount) messages\n"
+                        + "reason: this target's latest synced context was not yet in your reviewed context\n"
+                        + "action: review the synced context before sending",
+                    producerFactId: producerFactId
+                )
                 var response = "{\"ok\":true,\"state\":\"held\",\"outcome\":\"held\",\"subtype\":\"freshness\",\"reason\":\"newer_messages_available\",\"decision\":\"syncing_hold\",\"producerFactId\":\(jsonString(producerFactId)),\"available_actions\":[\"check_messages\",\"send_draft\",\"send_anyway\"],\"heldMessages\":[\(heldMessageJSON)],\"newMessageCount\":\(holdCount),\"shownMessageCount\":\(shownCount),\"omittedMessageCount\":\(omittedCount),\"seenUpToSeq\":\(latestSeq)"
                 if let latestMessageId = newer.last?.message.id {
                     response += ",\"seenUpToMessageId\":\(jsonString(latestMessageId))"
@@ -23554,6 +23767,24 @@ public final class EmailLoginDirectory: @unchecked Sendable {
                 return Self.json(200, response)
             }
             lock.unlock()
+        }
+        if let exemption = mentionExemption {
+            recordAttestedSendEvent(
+                "e1_exempt",
+                agentId: identity.agentId,
+                messageId: exemption.messageId,
+                metadata: [
+                    "mention_message_id": exemption.messageId,
+                    "mentioned_handle": exemption.handle,
+                    "new_message_count_since_last_seen": mentionExemptionMessageCount,
+                ]
+            )
+            recordAgentSendActivity(
+                agentId: identity.agentId,
+                title: "Send freshness check passed by mention",
+                text: "target: \(trimmed)\nreason: direct @\(exemption.handle) mention\nnew messages: \(mentionExemptionMessageCount)",
+                producerFactId: nil
+            )
         }
         if holdForCards {
             let reasons = cardHoldReasons.map(jsonString).joined(separator: ",")

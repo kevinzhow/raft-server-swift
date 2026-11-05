@@ -2020,3 +2020,11 @@ RFC 074 personal assistant：
 - `product_feedback_multi_app` flag on 时，`HANDS_FEEDBACK_APPS`（SecureString JSON）提供 shared reporter secret/route root/cursor secret 与 per-source（ios/android）app_slug/app_id/reporter_integration_id/credential_revision/client_key/token；trusted `X-Raft-Client-Kind` 选择 source，mobile 无/缺配置 → 503 `feedback_integration_unavailable` 且零 Hands 流量；web 回退 legacy app；flag off 完全忽略 apps JSON。
 - per-source：submit/list/ticket/close/comments/attachments 全部走 `/api/apps/<appId>/reporter-feedback/...` 并使用该 source 的 token/client key；route-subject binding `PUT /api/apps/<appId>/reporter-feedback/route-subject`（Bearer deploy token + X-Hands-Reporter-Id）；cursor 为 HMAC 签名并绑定 app，Android cursor 在 iOS 上 400 且不触达 Hands；跨 source ticket id 均 404 `feedback_not_found`。
 - 裁决排除：SSM 读取/DB `integrationSecretCommitments` 持久化（测试 seam/内存 commitment 代替）、route subject 的 AES-GCM 封装（opaque HMAC 代替）、conversation breaker 半开窗口与 session receipt 细节、warning sink 默认 stdout 而非 stderr；上游 7/7 断言由 `ProductFeedbackMultiAppTests` 与生产 handler 覆盖。
+
+### route internal.attestedSend.api（锁定，含裁决）
+
+- `SLOCK_ATTESTED_SEND_MODE=off` 保留普通 send，freshness-marked 请求 403 “not enabled” 且不写事件；默认 on 不 gate 无 marker 的 legacy send，`seenUpToSeq` 等 marker 才进入 held/commit gate。
+- freshness hold/commit：first-touch bounded context、bounded shown/omitted、target-scoped heldMessages、draft commit/rehold/`--anyway`、deprecated `--continue` 拒绝、replacement metadata client-declared event-only、channel/DM/thread held identity。
+- E1 formal @handle mention 在 left-exclusive 区间内豁免 stale hold 并记录 `e1_exempt`；边界点 mention 不豁免；`@everyone` 等非正式 mention 不豁免。注释：本端口额外要求 resolved mention fact + legacyReadCursor==boundarySeq，以兼容既有 hold 测试；上游 E1 用例仍通过。
+- legacy `/internal/agent/:agentId/receive-ack`：model-seen capability 下保持 volatile；按 channel + membership 作用域 checkpoint；thread/DM 幂等，非法/重复 seq 忽略；new-thread first send 从 parent seed freshness，并发 first replies 通过 commit lock 串行（一个 sent、一个 held）。
+- 裁决排除：2 个用例的断言是 `agentOrchestrator.acknowledgeDeliveredMessagesForChannel{,UpToSeq}` call array（本端口无 orchestrator/inbox 注入）；其 HTTP-visible 部分（target-only heldMessages、无 recentUnread、bounded shown/omitted）已由现有测试覆盖。
