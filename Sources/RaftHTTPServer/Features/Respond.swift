@@ -137,3 +137,46 @@ private func jsonReply<T: Encodable>(
     for (name, value) in extraHeaders { headers[name] = value }
     return HTTPReply(status: Int(status), headers: headers, body: String(decoding: data, as: UTF8.self))
 }
+
+/// Overload for a domain whose published success body and error object both
+/// have a fixed key order that `JSONEncoder` cannot guarantee on Linux.
+///
+/// The service returns a `Codable` DTO; when it also implements
+/// `OrderedJSONBody`, its `jsonBody()` bytes are used verbatim. A thrown
+/// `OrderedJSONError` is rendered through `errorJSONBody()` so the legacy
+/// `error`-then-`code` order stays byte-for-byte. Header names and status
+/// mapping are identical to the plain `respond` path.
+func respond<DTO: Encodable, Failure: OrderedJSONError>(
+    errors _: Failure.Type,
+    status: UInt = 200,
+    _ call: () throws -> DTO
+) throws -> Response {
+    do {
+        let payload = try call()
+        if let ordered = payload as? any OrderedJSONBody {
+            return routeResponse(rawJSONReply(status: status, body: ordered.jsonBody()))
+        }
+        return routeResponse(try jsonReply(status: status, payload: payload))
+    } catch let error as Failure {
+        return routeResponse(rawJSONReply(
+            status: error.status,
+            body: error.errorJSONBody(),
+            extraHeaders: error.responseHeaders
+        ))
+    }
+}
+
+/// The exact header set `jsonReply` publishes, for an already-serialized body.
+private func rawJSONReply(
+    status: UInt,
+    body: String,
+    extraHeaders: [String: String] = [:]
+) -> HTTPReply {
+    var headers = [
+        "X-Robots-Tag": AppFallback.robotsTag,
+        "Content-Type": AppFallback.jsonContentType,
+        "Content-Length": String(body.utf8.count),
+    ]
+    for (name, value) in extraHeaders { headers[name] = value }
+    return HTTPReply(status: Int(status), headers: headers, body: body)
+}

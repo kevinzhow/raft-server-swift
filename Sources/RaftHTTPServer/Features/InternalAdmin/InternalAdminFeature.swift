@@ -101,32 +101,34 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             ))
         }
         agent.post("send") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentSend(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                body: try await request.bodyText()
-            ))
-        }
-        agent.post("receive-ack") { request async throws -> Response in
-            routeResponse(services.emailAccounts.legacyAgentReceiveAck(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
-        }
-        agent.post("runtime-profile", "migration-done") { request async throws -> Response in
-            if let body = try? await request.content.decode(AgentRuntimeProfileMigrationDTO.self) {
-                return routeResponse(services.emailAccounts.runtimeProfileMigrationDone(
+            let body = await jsonRequestBody(AgentSendRequest.self, request)
+            return try respond(errors: AgentSendDeliveryError.self) {
+                try services.emailAccounts.agentSendDelivery.agentSend(
                     authorization: request.headers[.authorization],
                     agentId: request.parameters.get("agentId") ?? "",
-                    body: body.encodedBody()
-                ))
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.runtimeProfileMigrationDone(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                body: try await request.bodyText()
-            ))
+        }
+        agent.post("receive-ack") { request async throws -> Response in
+            let body = await jsonRequestBody(AgentReceiveAckRequest.self, request)
+            return try respond(errors: AgentSendDeliveryError.self) {
+                try services.emailAccounts.agentSendDelivery.legacyAgentReceiveAck(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    body: body
+                )
+            }
+        }
+        agent.post("runtime-profile", "migration-done") { request async throws -> Response in
+            let body = await jsonRequestBody(AgentRuntimeProfileMigrationDTO.self, request)
+            return try respond(errors: AgentSendDeliveryError.self) {
+                try services.emailAccounts.agentSendDelivery.runtimeProfileMigrationDone(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    body: body
+                )
+            }
         }
         agent.get("server") { request -> Response in
             routeResponse(services.emailAccounts.agentServerInfo(
@@ -271,11 +273,14 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             ))
         }
         agent.post("threads", "unfollow") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentThreadUnfollow(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}"),
-                legacyAgentId: request.parameters.get("agentId") ?? ""
-            ))
+            let body = await jsonRequestBody(AgentThreadUnfollowRequest.self, request)
+            return try respond(errors: AgentSendDeliveryError.self) {
+                try services.emailAccounts.agentSendDelivery.agentThreadUnfollow(
+                    authorization: request.headers[.authorization],
+                    body: body,
+                    legacyAgentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
         agent.get("search") { request -> Response in
             routeResponse(services.emailAccounts.searchAgentMessages(

@@ -760,6 +760,40 @@ extension EmailLoginDirectory {
         AuthProfileService(store: authProfileStore)
     }
 
+    /// Agent send, delivery-ack, activity, thread-follow and integration
+    /// operations. The directory supplies the stores; the closures bridge the
+    /// not-yet-migrated message-visibility, message-append and OAuth
+    /// integration-projection domains.
+    public var agentSendDelivery: AgentSendDeliveryService {
+        AgentSendDeliveryService(
+            machines: machinesAndComputersStore,
+            channels: serversAndChannelsStore,
+            messages: messagesAndThreadsStore,
+            agents: agentsRuntimeStore,
+            threadFollows: threadFollowStore,
+            managedMCP: managedMCPAndCardsStore,
+            oauth: oauth,
+            searchVisible: { [self] messageChannelId, serverId, viewer in
+                lock.lock()
+                defer { lock.unlock() }
+                return messageSearchVisibleLocked(
+                    messageChannelId: messageChannelId,
+                    serverId: serverId,
+                    viewer: viewer
+                )
+            },
+            appendHumanMessage: { [self] message in
+                lock.lock()
+                let seq = appendHumanMessageLocked(message)
+                lock.unlock()
+                return seq
+            },
+            integrationServices: { [self] serverId in
+                oauth.integrationServices(serverId: serverId).map(AgentIntegrationProjection.snapshot)
+            }
+        )
+    }
+
     public var sessionCount: Int {
         lock.lock()
         defer { lock.unlock() }

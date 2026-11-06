@@ -7,7 +7,6 @@ Sources/RaftHTTP/Services/AgentHostedMigrationService.swift	21
 Sources/RaftHTTP/Services/AgentMachineMigrationControlService.swift	23
 Sources/RaftHTTP/Services/AgentMigrationStatusService.swift	2
 Sources/RaftHTTP/Services/AgentPrivateSurfaceService.swift	22
-Sources/RaftHTTP/Services/AgentSendDeliveryService.swift	12
 Sources/RaftHTTP/Services/AgentsLifecycleService.swift	8
 Sources/RaftHTTP/Services/AttachmentsAndNotificationsService.swift	9
 Sources/RaftHTTP/Services/AuthCoreService.swift	16

@@ -15,3 +15,29 @@ extension EmailLoginDirectory {
         return agentStatusAdopted.contains(agentId)
     }
 }
+
+extension EmailLoginDirectory {
+    /// Seeds one agent thread-follow row. The production service only reads
+    /// these rows after the mention/follow flows write them; tests need the
+    /// seed without going through a route.
+    public func followThreadForAgentTesting(
+        serverId: String,
+        agentId: String,
+        threadChannelId: String,
+        parentMessageId: String,
+        reason: String = "manual",
+        followedAt: Date = Date(),
+        unfollowedAt: Date? = nil
+    ) {
+        threadFollowStore.upsert(AgentThreadFollowRecord(
+            serverId: serverId,
+            agentId: agentId,
+            threadChannelId: threadChannelId,
+            parentMessageId: parentMessageId,
+            followedAt: followedAt,
+            reason: reason,
+            doneAt: nil,
+            unfollowedAt: unfollowedAt
+        ))
+    }
+}

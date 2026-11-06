@@ -15,7 +15,7 @@ import VaporTesting
     accounts.oauth.addOwnedServer(id: serverId, slug: "hosted-profile", name: "Hosted Profile", ownerId: ownerId)
     let hostedId = accounts.oauth.createAgent(serverId: serverId, name: "HostedAgent")
     accounts.oauth.updateAgentDescription(id: hostedId, description: "Human-written instructions")
-    accounts.markAgentHosted(agentId: hostedId)
+    accounts.agentSendDelivery.markAgentHosted(agentId: hostedId)
     let hostedKey = accounts.mintAgentCredential(agentId: hostedId, scopes: ["send", "read"], name: "hosted")
     let selfHostedId = accounts.oauth.createAgent(serverId: serverId, name: "SelfHostedAgent")
     let selfHostedKey = accounts.mintAgentCredential(agentId: selfHostedId, scopes: ["send", "read"], name: "self-hosted")

@@ -298,4 +298,87 @@ final class ServersAndChannelsStore: @unchecked Sendable {
         }
         return MembershipRevocation(channelIds: channelIds, threadKeys: threadKeys)
     }
+
+    // MARK: - Agent send delivery channel resolution
+
+    /// The live channel a `#name` send target resolves to, in one critical
+    /// section. Dictionary order is the legacy first-match order.
+    func postableChannel(serverId: String, name: String) -> (id: String, channel: PostableChannel)? {
+        lock.lock()
+        defer { lock.unlock() }
+        for (id, channel) in storage.postableChannels
+        where channel.serverId == serverId && channel.name == name && channel.deletedAt == nil {
+            return (id, channel)
+        }
+        return nil
+    }
+
+    /// The live thread under `parentChannelId` whose parent message text starts
+    /// with `shortId`, in one critical section.
+    func threadChannel(
+        serverId: String,
+        parentChannelId: String,
+        shortId: String
+    ) -> (id: String, channel: PostableChannel)? {
+        lock.lock()
+        defer { lock.unlock() }
+        for (id, channel) in storage.postableChannels
+        where channel.serverId == serverId
+            && channel.kind == "thread"
+            && channel.parentChannelId == parentChannelId
+            && (channel.parentMessageId?.hasPrefix(shortId) ?? false)
+            && channel.deletedAt == nil {
+            return (id, channel)
+        }
+        return nil
+    }
+
+    /// A thread reference that does not filter server or deletion, matching the
+    /// legacy `threads/unfollow` `#name:short` lookup.
+    func threadChannel(parentChannelId: String, shortId: String) -> (id: String, channel: PostableChannel)? {
+        lock.lock()
+        defer { lock.unlock() }
+        for (id, channel) in storage.postableChannels
+        where channel.kind == "thread"
+            && channel.parentChannelId == parentChannelId
+            && (channel.parentMessageId?.hasPrefix(shortId) ?? false) {
+            return (id, channel)
+        }
+        return nil
+    }
+
+    /// One channel row by id, in one critical section.
+    func postableChannel(id: String) -> PostableChannel? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.postableChannels[id]
+    }
+
+    /// Channels, joint links and thread slices for the delivery-ack read in
+    /// one locked snapshot instead of one lock per lookup.
+    struct DeliveryAckChannelSnapshot {
+        let channels: [String: PostableChannel]
+        let jointProjections: [JointChannelLink]
+    }
+
+    func deliveryAckChannelSnapshot() -> DeliveryAckChannelSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return DeliveryAckChannelSnapshot(
+            channels: storage.postableChannels,
+            jointProjections: storage.jointProjections
+        )
+    }
+
+    /// The legacy `threads/unfollow` parent lookup ignores `deletedAt`; this is
+    /// the same first-match order without the live filter.
+    func postableChannelIncludingDeleted(serverId: String, name: String) -> (id: String, channel: PostableChannel)? {
+        lock.lock()
+        defer { lock.unlock() }
+        for (id, channel) in storage.postableChannels
+        where channel.serverId == serverId && channel.name == name {
+            return (id, channel)
+        }
+        return nil
+    }
 }

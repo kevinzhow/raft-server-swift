@@ -209,4 +209,37 @@ final class MachinesAndComputersStore: @unchecked Sendable {
         get { state.computerUpgradeSender }
         set { state.computerUpgradeSender = newValue }
     }
+
+    // MARK: - Agent send / delivery credentials
+
+    /// One machine-credential read for the agent send and delivery-ack routes:
+    /// the machine row, the legacy key row and the delivery-ack capability all
+    /// come from the same critical section.
+    struct MachineCredentialSnapshot {
+        let machine: MachineRecord?
+        let legacy: (serverId: String, agentId: String)?
+        let modelSeenCapability: Bool
+    }
+
+    func machineCredential(apiKey: String, agentId: String?) -> MachineCredentialSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        let machine = storage.machines.first { $0.apiKey == apiKey }
+        let legacy = storage.machineKeys[apiKey]
+        var capability = false
+        if let agentId, storage.machineModelSeenCapability.contains(agentId) {
+            capability = true
+        }
+        if let machine, storage.machineModelSeenCapability.contains(machine.id) {
+            capability = true
+        }
+        return MachineCredentialSnapshot(machine: machine, legacy: legacy, modelSeenCapability: capability)
+    }
+
+    /// The machine row only, as the runtime-profile and task-writer lookups use it.
+    func machine(apiKey: String) -> MachineRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.machines.first { $0.apiKey == apiKey }
+    }
 }

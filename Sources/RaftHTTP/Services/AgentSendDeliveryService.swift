@@ -4,81 +4,244 @@ import Foundation
 import FoundationNetworking
 #endif
 
-/// Agent send, delivery-ack, activity ingest and agent thread routes.
+/// Domain failure for the agent send, delivery-ack, activity-ingest and
+/// agent-thread operations.
 ///
-/// These handlers were lifted from the second contiguous half of
-/// `EmailLogin+ComputersUsage2.swift`. They stay on `EmailLoginDirectory`
-/// because the directory owns the lock and the agent ledgers;
-/// `AgentSendDeliveryService` is the named, `Sendable` handle for the domain.
-public struct AgentSendDeliveryService: Sendable {
-    public let directory: EmailLoginDirectory
+/// `status`, `errorMessage` and `errorCode` are the published values; the
+/// feature layer's `respond(errors:)` overload writes `errorJSONBody()` so the
+/// legacy `{"error": …,"code": …}` key order stays fixed.
+public enum AgentSendDeliveryError: DomainError, OrderedJSONError, Equatable {
+    case missingAuthorization
+    case invalidToken
+    case agentNotFound
+    case invalidTarget
+    case agentNotParentMember
+    case threadNotFound
+    case channelNotFound
+    case agentNotChannelMember
+    case channelArchived
+    case capabilityNotAuthorized
+    case activityInvalid
+    case transcriptPathForbidden
+    case statusInvalid
+    case detailInvalid
+    case detailTooLong
+    case invalidThreadUnfollow
+    case targetMustBeThread
+    case receiveAckEmpty
 
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
+    public var status: UInt {
+        switch self {
+        case .missingAuthorization, .invalidToken:
+            401
+        case .agentNotParentMember, .agentNotChannelMember, .capabilityNotAuthorized:
+            403
+        case .agentNotFound, .threadNotFound, .channelNotFound:
+            404
+        case .channelArchived:
+            409
+        case .invalidTarget, .activityInvalid, .transcriptPathForbidden, .statusInvalid,
+             .detailInvalid, .detailTooLong, .invalidThreadUnfollow, .targetMustBeThread,
+             .receiveAckEmpty:
+            400
+        }
+    }
+
+    public var errorMessage: String {
+        switch self {
+        case .missingAuthorization:
+            "Missing or invalid Authorization header"
+        case .invalidToken:
+            "Invalid or expired token"
+        case .agentNotFound:
+            "Agent not found"
+        case .invalidTarget:
+            "Invalid target"
+        case .agentNotParentMember:
+            "Agent is not a member of the parent channel"
+        case .threadNotFound:
+            "Thread not found"
+        case .channelNotFound:
+            "Channel not found"
+        case .agentNotChannelMember:
+            "Agent is not a member of this channel"
+        case .channelArchived:
+            "This channel is archived"
+        case .capabilityNotAuthorized:
+            "Agent credential is not authorized for this capability"
+        case .activityInvalid:
+            "Invalid activity ingest"
+        case .transcriptPathForbidden:
+            "transcript_path is not accepted"
+        case .statusInvalid:
+            "Invalid agent status"
+        case .detailInvalid:
+            "Invalid status detail"
+        case .detailTooLong:
+            "Status detail is too long"
+        case .invalidThreadUnfollow:
+            "Invalid thread unfollow request"
+        case .targetMustBeThread:
+            "Target must be a thread"
+        case .receiveAckEmpty:
+            "seqs or messageIds must be a non-empty array"
+        }
+    }
+
+    public var errorCode: String? {
+        switch self {
+        case .missingAuthorization, .invalidToken:
+            "auth_required"
+        case .channelArchived:
+            "channel_archived"
+        case .capabilityNotAuthorized:
+            "capability_not_authorized"
+        case .activityInvalid:
+            "activity_invalid"
+        case .transcriptPathForbidden:
+            "transcript_path_forbidden"
+        case .statusInvalid:
+            "status_invalid"
+        case .detailInvalid:
+            "detail_invalid"
+        case .detailTooLong:
+            "detail_too_long"
+        case .agentNotFound, .invalidTarget, .agentNotParentMember, .threadNotFound,
+             .channelNotFound, .agentNotChannelMember, .invalidThreadUnfollow,
+             .targetMustBeThread, .receiveAckEmpty:
+            nil
+        }
+    }
+
+    /// Legacy order: `error`, then the optional `code`.
+    public func errorJSONBody() -> String {
+        if let errorCode {
+            return "{\"error\":\(jsonString(errorMessage)),\"code\":\(jsonString(errorCode))}"
+        }
+        return "{\"error\":\(jsonString(errorMessage))}"
     }
 }
 
-extension EmailLoginDirectory {    public func agentSend(authorization: String?, agentId: String, body: String) -> HTTPReply {
+/// Agent send, delivery ack, activity ingest, thread-follow and integration
+/// routes.
+///
+/// Every operation used to live in a directory extension and take the
+/// directory lock. Each now runs against the store that owns its rows:
+/// machine credentials come from `MachinesAndComputersStore`, channels from
+/// `ServersAndChannelsStore`, message/cursor rows from
+/// `MessagesAndThreadsStore`, activity/credential/hosted rows from
+/// `AgentsRuntimeStore`, thread follows from `ThreadFollowStore`, and
+/// integration logins from `ManagedMCPAndCardsStore`.
+///
+/// Three bridges stay injected because those domains are not migrated yet:
+/// `searchVisible` is the message-visibility policy in `SearchMentionsService`,
+/// `appendHumanMessage` is the one append path that must stay serialized with
+/// every other message writer under the directory lock, and
+/// `integrationServices` is a typed projection of the OAuth ledger's client
+/// rows, so this file never names an untyped JSON dictionary.
+public struct AgentSendDeliveryService: Sendable {
+    private let machines: MachinesAndComputersStore
+    private let channels: ServersAndChannelsStore
+    private let messages: MessagesAndThreadsStore
+    private let agents: AgentsRuntimeStore
+    private let threadFollows: ThreadFollowStore
+    private let managedMCP: ManagedMCPAndCardsStore
+    private let oauth: OAuthLedger
+    private let searchVisible: @Sendable (_ messageChannelId: String, _ serverId: String?, _ viewer: SearchViewer) -> Bool
+    private let appendHumanMessage: @Sendable (StoredHumanMessage) -> Int
+    private let integrationServices: @Sendable (_ serverId: String) -> [AgentIntegrationServiceSnapshot]
+    private let now: @Sendable () -> Date
+    private let makeMessageId: @Sendable () -> String
+
+    init(
+        machines: MachinesAndComputersStore,
+        channels: ServersAndChannelsStore,
+        messages: MessagesAndThreadsStore,
+        agents: AgentsRuntimeStore,
+        threadFollows: ThreadFollowStore,
+        managedMCP: ManagedMCPAndCardsStore,
+        oauth: OAuthLedger,
+        searchVisible: @escaping @Sendable (String, String?, SearchViewer) -> Bool,
+        appendHumanMessage: @escaping @Sendable (StoredHumanMessage) -> Int,
+        integrationServices: @escaping @Sendable (String) -> [AgentIntegrationServiceSnapshot],
+        now: @escaping @Sendable () -> Date = { Date() },
+        makeMessageId: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
+    ) {
+        self.machines = machines
+        self.channels = channels
+        self.messages = messages
+        self.agents = agents
+        self.threadFollows = threadFollows
+        self.managedMCP = managedMCP
+        self.oauth = oauth
+        self.searchVisible = searchVisible
+        self.appendHumanMessage = appendHumanMessage
+        self.integrationServices = integrationServices
+        self.now = now
+        self.makeMessageId = makeMessageId
+    }
+
+    // MARK: - POST /internal/agent/:agentId/send
+
+    /// Posts an agent message to a `#channel` or `#channel:shortId` thread.
+    ///
+    /// The upstream order is machine credential (401), agent scope (404), body
+    /// shape (400), parent membership (403), thread lookup (404), channel
+    /// membership (403) and archived (409) before the append.
+    public func agentSend(
+        authorization: String?,
+        agentId: String,
+        body: AgentSendRequest?
+    ) throws -> AgentSendResponse {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+            throw AgentSendDeliveryError.missingAuthorization
         }
         let apiKey = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        let machine = machines.first { $0.apiKey == apiKey }
-        let legacy = machineKeys[apiKey]
-        lock.unlock()
-        guard let machineServerId = machine?.serverId ?? legacy?.serverId else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        let credential = machines.machineCredential(apiKey: apiKey, agentId: nil)
+        guard let serverId = credential.machine?.serverId ?? credential.legacy?.serverId else {
+            throw AgentSendDeliveryError.invalidToken
         }
-        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == machineServerId else {
-            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == serverId else {
+            throw AgentSendDeliveryError.agentNotFound
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let target = object["target"] as? String,
-              let content = object["content"] as? String,
+        guard let body,
+              let target = body.target,
+              let content = body.content,
               target.hasPrefix("#")
         else {
-            return Self.json(400, "{\"error\":\"Invalid target\"}")
+            throw AgentSendDeliveryError.invalidTarget
         }
         let rawName = String(target.dropFirst())
         let segments = rawName.split(separator: ":", maxSplits: 1).map(String.init)
         let name = segments.first ?? rawName
         let shortId = segments.count > 1 ? segments[1] : nil
-        lock.lock()
-        let candidate = postableChannels.first { channelId, channel in
-            channel.serverId == agent.serverId && channel.name == name && channel.deletedAt == nil
-        }
-        var resolved: (String, PostableChannel)? = candidate
-        if let shortId, let (parentId, parent) = candidate {
-            guard oauth.channelAgentIds(channelId: parentId).contains(agent.id) else {
-                lock.unlock()
-                return Self.json(403, "{\"error\":\"Agent is not a member of the parent channel\"}")
+
+        let candidate = channels.postableChannel(serverId: agent.serverId, name: name)
+        var resolved: (id: String, channel: PostableChannel)? = candidate
+        if let shortId, let parent = candidate {
+            guard oauth.channelAgentIds(channelId: parent.id).contains(agent.id) else {
+                throw AgentSendDeliveryError.agentNotParentMember
             }
-            resolved = postableChannels.first { _, channel in
-                channel.serverId == agent.serverId
-                    && channel.kind == "thread"
-                    && channel.parentChannelId == parentId
-                    && (channel.parentMessageId?.hasPrefix(shortId) ?? false)
-                    && channel.deletedAt == nil
-            }
+            resolved = channels.threadChannel(
+                serverId: agent.serverId,
+                parentChannelId: parent.id,
+                shortId: shortId
+            )
             if resolved == nil {
-                lock.unlock()
-                return Self.json(404, "{\"error\":\"Thread not found\"}")
+                throw AgentSendDeliveryError.threadNotFound
             }
         }
-        lock.unlock()
         guard let (channelId, channel) = resolved else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+            throw AgentSendDeliveryError.channelNotFound
         }
         if shortId == nil, !oauth.channelAgentIds(channelId: channelId).contains(agent.id) {
-            return Self.json(403, "{\"error\":\"Agent is not a member of this channel\"}")
+            throw AgentSendDeliveryError.agentNotChannelMember
         }
         if channel.archived {
-            return Self.json(409, "{\"error\":\"This channel is archived\",\"code\":\"channel_archived\"}")
+            throw AgentSendDeliveryError.channelArchived
         }
-        let messageId = UUID().uuidString.lowercased()
-        lock.lock()
-        appendHumanMessageLocked(StoredHumanMessage(
+        let messageId = makeMessageId()
+        _ = appendHumanMessage(StoredHumanMessage(
             id: messageId,
             channelId: channelId,
             senderId: agent.id,
@@ -86,9 +249,10 @@ extension EmailLoginDirectory {    public func agentSend(authorization: String?,
             randomId: nil,
             senderType: "agent"
         ))
-        lock.unlock()
-        return Self.json(200, "{\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId))}")
+        return AgentSendResponse(id: messageId, channelId: channelId)
     }
+
+    // MARK: - POST /internal/agent/:agentId/receive-ack
 
     /// `POST /internal/agent/:agentId/receive-ack` — legacy delivery ack.
     ///
@@ -97,60 +261,51 @@ extension EmailLoginDirectory {    public func agentSend(authorization: String?,
     /// usability checkpoint this route always kept; a daemon that advertises
     /// the model-seen boundary capability is a volatile ack only, so legacy
     /// state can never masquerade as freshness proof.
-    public func legacyAgentReceiveAck(authorization: String?, agentId: String, body: String) -> HTTPReply {
+    ///
+    /// The cursor decision and the version bump are one
+    /// `MessagesAndThreadsStore` critical section.
+    public func legacyAgentReceiveAck(
+        authorization: String?,
+        agentId: String,
+        body: AgentReceiveAckRequest?
+    ) throws -> OkResponse {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+            throw AgentSendDeliveryError.missingAuthorization
         }
         let apiKey = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        let machine = machines.first { $0.apiKey == apiKey }
-        let legacy = machineKeys[apiKey]
-        var capability = machineModelSeenCapability.contains(agentId)
-        if let machine, machineModelSeenCapability.contains(machine.id) { capability = true }
-        lock.unlock()
-        guard let serverId = machine?.serverId ?? legacy?.serverId else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        let credential = machines.machineCredential(apiKey: apiKey, agentId: agentId)
+        guard let serverId = credential.machine?.serverId ?? credential.legacy?.serverId else {
+            throw AgentSendDeliveryError.invalidToken
         }
-        if let legacy, legacy.agentId != agentId {
-            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        if let legacy = credential.legacy, legacy.agentId != agentId {
+            throw AgentSendDeliveryError.agentNotFound
         }
         guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == serverId else {
-            return Self.json(404, "{\"error\":\"Agent not found\"}")
+            throw AgentSendDeliveryError.agentNotFound
         }
-        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
-        var seenSeqs = Set<Int>()
-        var seqs: [Int] = []
-        if let raw = object["seqs"] as? [Any] {
-            for item in raw {
-                guard let number = item as? NSNumber, number.doubleValue.isFinite else { continue }
-                let value = Int(number.doubleValue.rounded(.down))
-                guard value > 0, seenSeqs.insert(value).inserted else { continue }
-                seqs.append(value)
-            }
+        let request = body ?? AgentReceiveAckRequest()
+        guard !request.seqs.isEmpty || !request.messageIds.isEmpty else {
+            throw AgentSendDeliveryError.receiveAckEmpty
         }
-        let messageIds = (object["messageIds"] as? [Any])?
-            .compactMap { ($0 as? String)?.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty } ?? []
-        guard !seqs.isEmpty || !messageIds.isEmpty else {
-            return Self.json(400, "{\"error\":\"seqs or messageIds must be a non-empty array\"}")
+        if credential.modelSeenCapability || request.seqs.isEmpty {
+            return OkResponse()
         }
-        if capability || seqs.isEmpty {
-            return Self.json(200, "{\"ok\":true}")
-        }
+
+        let channelSnapshot = channels.deliveryAckChannelSnapshot()
+        let messageSnapshot = messages.deliveryAckMessageSnapshot()
         var maxSeqByChannel: [String: Int] = [:]
-        lock.lock()
-        for seq in seqs {
-            for row in humanMessageRows where row.seq == seq {
+        for seq in request.seqs {
+            for row in messageSnapshot.rows where row.seq == seq {
                 let storageId = row.channelId
-                let localId = jointProjections.first {
+                let localId = channelSnapshot.jointProjections.first {
                     $0.canonicalChannelId == storageId && $0.serverId == serverId
                 }?.localChannelId ?? storageId
-                guard let channel = postableChannels[localId] else { continue }
+                guard let channel = channelSnapshot.channels[localId] else { continue }
                 let isMember: Bool
                 if channel.kind == "thread", let parentId = channel.parentChannelId {
-                    isMember = postableChannels[parentId]?.memberIds.contains(agentId) == true
+                    isMember = channelSnapshot.channels[parentId]?.memberIds.contains(agentId) == true
                         || oauth.channelAgentIds(channelId: parentId).contains(agentId)
-                        || threadFollows.values.contains {
+                        || messageSnapshot.threadFollows.values.contains {
                             $0.serverId == serverId && $0.userId == agentId && $0.threadChannelId == localId
                         }
                 } else {
@@ -161,279 +316,257 @@ extension EmailLoginDirectory {    public func agentSend(authorization: String?,
                 maxSeqByChannel[localId] = max(maxSeqByChannel[localId] ?? 0, seq)
             }
         }
-        for (channelId, maxSeq) in maxSeqByChannel {
-            let key = "\(channelId)\n\(agentId)"
-            let previous = agentChannelReadCursors[key] ?? (seq: 0, version: 0)
-            if maxSeq > previous.seq {
-                agentChannelReadCursors[key] = (maxSeq, previous.version + 1)
-            }
-        }
-        lock.unlock()
-        return Self.json(200, "{\"ok\":true}")
+        messages.advanceAgentReadCursors(agentId: agentId, maxSeqByChannel: maxSeqByChannel)
+        return OkResponse()
     }
 
-    public func runtimeProfileMigrationDone(authorization: String?, agentId: String, body: String) -> HTTPReply {
+    // MARK: - POST /internal/agent/:agentId/runtime-profile/migration-done
+
+    /// Deprecated acknowledgement. A missing `migrationKey` keeps the `noop`
+    /// field; a present one (including an empty string decoded from a malformed
+    /// body) omits it.
+    public func runtimeProfileMigrationDone(
+        authorization: String?,
+        agentId: String,
+        body: AgentRuntimeProfileMigrationDTO?
+    ) throws -> AgentRuntimeProfileMigrationResponse {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+            throw AgentSendDeliveryError.missingAuthorization
         }
         let apiKey = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        guard let machine = machines.first(where: { $0.apiKey == apiKey }) else {
-            lock.unlock()
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        guard let machine = machines.machine(apiKey: apiKey) else {
+            throw AgentSendDeliveryError.invalidToken
         }
-        lock.unlock()
         guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == machine.serverId else {
-            return Self.json(404, "{\"error\":\"Agent not found\"}")
+            throw AgentSendDeliveryError.agentNotFound
         }
-        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
-        let migrationKey = (object?["migrationKey"] as? String) ?? ""
-        let message = "Runtime Profile migration acknowledgments are deprecated; runtime changes reset the session automatically."
-        if migrationKey.isEmpty {
-            return Self.json(200, "{\"ok\":true,\"deprecated\":true,\"noop\":\"no pending migration\",\"message\":\(jsonString(message))}")
-        }
-        return Self.json(200, "{\"ok\":true,\"deprecated\":true,\"message\":\(jsonString(message))}")
+        let migrationKey = body?.migrationKey ?? ""
+        return AgentRuntimeProfileMigrationResponse(noop: migrationKey.isEmpty)
     }
 
+    // MARK: - Hosted-agent flag
+
+    /// Marks an agent as hosted by the profile/creation flows. This is not an
+    /// HTTP operation; the test seam and the join-link policy share it.
     public func markAgentHosted(agentId: String) {
-        lock.lock()
-        hostedAgents.insert(agentId)
-        lock.unlock()
+        agents.markHosted(agentId: agentId)
     }
 
-    public func agentActivityIngest(authorization: String?, body: String) -> HTTPReply {
-        guard let credential = agentCredentialAgent(authorization),
+    // MARK: - POST /internal/agent-api/activity
+
+    /// `POST /internal/agent-api/activity`.
+    ///
+    /// The v1 schema only reports unknown fields (and rejects
+    /// `transcript_path`); the standard schema folds status/hook events into the
+    /// agent's presence rows. Status adoption, occurrence timestamps, activity
+    /// detail and the dedupe set are applied by one `AgentsRuntimeStore`
+    /// critical section, matching the legacy loop's partial-write behavior.
+    public func agentActivityIngest(
+        authorization: String?,
+        body: AgentActivityIngestRequest?
+    ) throws -> AgentActivityIngestResponse {
+        guard let credential = useCredential(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted,
               credential.scopes.contains("read")
         else {
-            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
+            throw AgentSendDeliveryError.capabilityNotAuthorized
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
-            return Self.json(400, "{\"error\":\"Invalid activity ingest\",\"code\":\"activity_invalid\"}")
+        guard let body else {
+            throw AgentSendDeliveryError.activityInvalid
         }
-        if object["schema"] as? String == "raft-agent-activity-ingest.v1" {
-            guard let events = object["events"] as? [[String: Any]] else {
-                return Self.json(400, "{\"error\":\"Invalid activity ingest\",\"code\":\"activity_invalid\"}")
-            }
+        if body.schema == "raft-agent-activity-ingest.v1" {
             let allowed: Set<String> = [
                 "eventId", "hookEventName", "toolName", "toolInput", "truncated",
                 "tool_use_id", "exit_code", "ok", "subagent",
             ]
             var ignored: Set<String> = []
-            for event in events {
-                for key in event.keys where !allowed.contains(key) {
+            for event in body.events {
+                for key in event.fields.keys where !allowed.contains(key) {
                     if key == "transcript_path" {
-                        return Self.json(400, "{\"error\":\"transcript_path is not accepted\",\"code\":\"transcript_path_forbidden\"}")
+                        throw AgentSendDeliveryError.transcriptPathForbidden
                     }
                     ignored.insert(key)
                 }
             }
-            let dropped = (object["dropped"] as? NSNumber)?.intValue ?? 0
-            var fields = ""
-            if !ignored.isEmpty {
-                let names = ignored.sorted().map(jsonString).joined(separator: ",")
-                fields = ",\"ignoredFields\":[\(names)]"
-            }
-            return Self.json(200, "{\"ok\":true,\"acceptedCount\":\(events.count),\"rejectedCount\":0,\"droppedCount\":\(dropped)\(fields)}")
+            return AgentActivityIngestResponse(
+                acceptedCount: body.events.count,
+                rejectedCount: 0,
+                droppedCount: body.dropped,
+                ignoredFields: ignored.sorted()
+            )
         }
-        guard let events = object["events"] as? [[String: Any]] else {
-            return Self.json(400, "{\"error\":\"Invalid activity ingest\",\"code\":\"activity_invalid\"}")
+        switch agents.applyActivityIngest(agentId: agent.id, events: body.events, now: now) {
+        case .applied(let accepted, let rejected):
+            return AgentActivityIngestResponse(
+                acceptedCount: accepted,
+                rejectedCount: rejected,
+                droppedCount: 0
+            )
+        case .invalidStatus:
+            throw AgentSendDeliveryError.statusInvalid
+        case .detailInvalid:
+            throw AgentSendDeliveryError.detailInvalid
+        case .detailTooLong:
+            throw AgentSendDeliveryError.detailTooLong
         }
-        let standardStatuses: Set<String> = ["working", "thinking", "online", "error", "offline"]
-        var accepted = 0
-        var rejected = 0
-        var seen = agentActivityEventIds[agent.id] ?? []
-        for event in events {
-            guard let eventId = event["eventId"] as? String, !eventId.isEmpty,
-                  let rawOccurred = event["occurredAt"] as? String,
-                  let occurred = Self.isoDate(rawOccurred)
-            else {
-                rejected += 1
-                continue
-            }
-            if seen.contains(eventId) {
-                rejected += 1
-                continue
-            }
-            let rawStatus = event["status"] as? String
-            if let rawStatus, !standardStatuses.contains(rawStatus), rawStatus != "failed" {
-                return Self.json(400, "{\"error\":\"Invalid agent status\",\"code\":\"status_invalid\"}")
-            }
-            if let detailValue = event["detail"] {
-                guard let detail = detailValue as? String else {
-                    return Self.json(400, "{\"error\":\"Invalid status detail\",\"code\":\"detail_invalid\"}")
-                }
-                if detail.count > 200 {
-                    return Self.json(400, "{\"error\":\"Status detail is too long\",\"code\":\"detail_too_long\"}")
-                }
-            }
-            let now = Date()
-            let effective = min(occurred, now)
-            seen.insert(eventId)
-            accepted += 1
-            let isStandardStatus = rawStatus.map { standardStatuses.contains($0) } ?? false
-            let hookName = event["hookEventName"] as? String
-            let detail = (event["detail"] as? String) ?? ""
-            if isStandardStatus {
-                agentStatusAdopted.insert(agent.id)
-                if effective >= (agentStatusOccurredAt[agent.id] ?? .distantPast) {
-                    agentStatusOccurredAt[agent.id] = effective
-                    let mapped = rawStatus == "working" || rawStatus == "thinking" ? rawStatus! : rawStatus!
-                    agentActivities[agent.id] = (activity: mapped, detail: detail)
-                }
-            } else if hookName != nil, !agentStatusAdopted.contains(agent.id) {
-                let hookStatus: String
-                switch hookName {
-                case "PreToolUse": hookStatus = "working"
-                case "PostToolUseFailure": hookStatus = "error"
-                case "Stop", "SessionEnd": hookStatus = "online"
-                default: hookStatus = "working"
-                }
-                if effective >= (agentStatusOccurredAt[agent.id] ?? .distantPast) {
-                    agentStatusOccurredAt[agent.id] = effective
-                    agentActivities[agent.id] = (activity: hookStatus, detail: "")
-                }
-            }
-        }
-        agentActivityEventIds[agent.id] = seen
-        return Self.json(200, "{\"ok\":true,\"acceptedCount\":\(accepted),\"rejectedCount\":\(rejected),\"droppedCount\":0}")
     }
 
-    public func followThreadForAgentTesting(
-        serverId: String,
-        agentId: String,
-        threadChannelId: String,
-        parentMessageId: String,
-        reason: String = "manual",
-        followedAt: Date = Date(),
-        unfollowedAt: Date? = nil
-    ) {
-        lock.lock()
-        threadFollowStore.upsert(AgentThreadFollowRecord(
-            serverId: serverId,
-            agentId: agentId,
-            threadChannelId: threadChannelId,
-            parentMessageId: parentMessageId,
-            followedAt: followedAt,
-            reason: reason,
-            doneAt: nil,
-            unfollowedAt: unfollowedAt
-        ))
-        lock.unlock()
-    }
+    // MARK: - GET /internal/agent-api/threads
 
-    public func agentThreadList(authorization: String?) -> HTTPReply {
-        guard let credential = agentCredentialAgent(authorization),
+    /// Lists the agent's active, visible thread follows, newest first.
+    public func agentThreadList(authorization: String?) throws -> AgentThreadListResponse {
+        guard let credential = useCredential(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
         else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            throw AgentSendDeliveryError.invalidToken
         }
         guard credential.scopes.contains("read") else {
-            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
+            throw AgentSendDeliveryError.capabilityNotAuthorized
         }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        lock.lock()
-        let rows = threadFollowStore.all()
+        let rows = threadFollows.all()
             .filter { $0.serverId == agent.serverId && $0.agentId == agent.id && $0.unfollowedAt == nil }
-            .filter { messageSearchVisibleLocked(messageChannelId: $0.threadChannelId, serverId: agent.serverId, viewer: .agent(agent.id)) }
+            .filter {
+                searchVisible($0.threadChannelId, agent.serverId, .agent(agent.id))
+            }
             .sorted { $0.followedAt > $1.followedAt }
-            .compactMap { follow -> String? in
-                guard let thread = postableChannels[follow.threadChannelId],
+            .compactMap { follow -> AgentThreadListEntry? in
+                guard let thread = channels.postableChannel(id: follow.threadChannelId),
                       let parentChannelId = thread.parentChannelId,
-                      let parent = postableChannels[parentChannelId]
+                      let parent = channels.postableChannel(id: parentChannelId)
                 else { return nil }
                 let short = String(follow.parentMessageId.prefix(8))
-                let doneJSON = follow.doneAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
-                return "{\"target\":\(jsonString("#\(parent.name):\(short)")),\"threadChannelId\":\(jsonString(follow.threadChannelId)),\"parentChannelRef\":\(jsonString("#\(parent.name)")),\"parentMessageId\":\(jsonString(follow.parentMessageId)),\"parentMessageShortId\":\(jsonString(short)),\"followedAt\":\(jsonString(formatter.string(from: follow.followedAt))),\"reason\":\(jsonString(follow.reason)),\"doneAt\":\(doneJSON)}"
+                return AgentThreadListEntry(
+                    target: "#\(parent.name):\(short)",
+                    threadChannelId: follow.threadChannelId,
+                    parentChannelRef: "#\(parent.name)",
+                    parentMessageId: follow.parentMessageId,
+                    parentMessageShortId: short,
+                    followedAt: formatter.string(from: follow.followedAt),
+                    reason: follow.reason,
+                    doneAt: follow.doneAt.map { formatter.string(from: $0) }
+                )
             }
-        lock.unlock()
-        return Self.json(200, "{\"threads\":[\(rows.joined(separator: ","))]}")
+        return AgentThreadListResponse(threads: rows)
     }
 
-    public func agentThreadUnfollow(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
-        guard let writer = agentTaskWriter(authorization, legacyAgentId: legacyAgentId),
+    // MARK: - POST /internal/agent/:agentId/threads/unfollow
+    // MARK: - POST /internal/agent-api/threads/unfollow
+
+    /// Unfollows one thread by id or `#channel:shortId` reference.
+    public func agentThreadUnfollow(
+        authorization: String?,
+        body: AgentThreadUnfollowRequest?,
+        legacyAgentId: String? = nil
+    ) throws -> OkResponse {
+        guard let writer = taskWriter(authorization, legacyAgentId: legacyAgentId),
               let agent = oauth.agentRuntimeInfo(id: writer.agentId), !agent.deleted
         else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            throw AgentSendDeliveryError.invalidToken
         }
-        if let credential = agentCredentialAgent(authorization), !credential.scopes.contains("read") {
-            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
+        if let credential = useCredential(authorization), !credential.scopes.contains("read") {
+            throw AgentSendDeliveryError.capabilityNotAuthorized
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let threadRef = object["thread"] as? String, !threadRef.isEmpty
-        else {
-            return Self.json(400, "{\"error\":\"Invalid thread unfollow request\"}")
+        guard let body, let threadRef = body.thread, !threadRef.isEmpty else {
+            throw AgentSendDeliveryError.invalidThreadUnfollow
         }
         if threadRef.hasPrefix("#"), !threadRef.contains(":") {
-            return Self.json(400, "{\"error\":\"Target must be a thread\"}")
+            throw AgentSendDeliveryError.targetMustBeThread
         }
-        lock.lock()
         var threadId: String?
         if threadRef.hasPrefix("#"), let colon = threadRef.firstIndex(of: ":") {
             let channelName = String(threadRef[threadRef.index(after: threadRef.startIndex)..<colon])
             let short = String(threadRef[threadRef.index(after: colon)...])
-            if let parent = postableChannels.first(where: { $0.value.serverId == agent.serverId && $0.value.name == channelName })?.key {
-                threadId = postableChannels.first { _, candidate in
-                    candidate.kind == "thread"
-                        && candidate.parentChannelId == parent
-                        && (candidate.parentMessageId?.hasPrefix(short) ?? false)
-                }?.key
+            if let parent = channels.postableChannelIncludingDeleted(serverId: agent.serverId, name: channelName) {
+                threadId = channels.threadChannel(parentChannelId: parent.id, shortId: short)?.id
             }
         } else {
             threadId = threadRef
         }
         guard let resolved = threadId,
-              let thread = postableChannels[resolved],
+              let thread = channels.postableChannel(id: resolved),
               thread.serverId == agent.serverId,
               thread.kind == "thread",
               thread.deletedAt == nil
         else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Thread not found\"}")
+            throw AgentSendDeliveryError.threadNotFound
         }
-        guard messageSearchVisibleLocked(messageChannelId: resolved, serverId: agent.serverId, viewer: .agent(agent.id)) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Thread not found\"}")
+        guard searchVisible(resolved, agent.serverId, .agent(agent.id)) else {
+            throw AgentSendDeliveryError.threadNotFound
         }
-        threadFollowStore.markUnfollowed(
+        threadFollows.markUnfollowed(
             serverId: agent.serverId,
             agentId: agent.id,
             threadChannelId: resolved,
-            at: Date()
+            at: now()
         )
-        lock.unlock()
-        return Self.json(200, "{\"ok\":true}")
+        return OkResponse()
     }
 
+    // MARK: - GET /internal/agent-api/integrations
 
-
-    public func agentIntegrationList(authorization: String?) -> HTTPReply {
-        guard let credential = agentCredentialAgent(authorization),
+    /// Lists the server's integration services plus the agent's active logins.
+    public func agentIntegrationList(authorization: String?) throws -> AgentIntegrationListResponse {
+        guard let credential = useCredential(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
         else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            throw AgentSendDeliveryError.invalidToken
         }
-        let services = oauth.integrationServices(serverId: agent.serverId)
-        lock.lock()
-        let active = agentIntegrationLogins.values
+        let services = integrationServices(agent.serverId)
+        let active = managedMCP.agentIntegrationLogins.values
             .filter { $0.serverId == agent.serverId && $0.agentId == agent.id }
             .sorted { $0.loggedInAt < $1.loggedInAt }
-            .compactMap { login -> String? in
-                guard let service = services.first(where: { ($0["id"] as? String) == login.clientId }) else { return nil }
-                let clientId = service["clientId"] as? String ?? ""
-                return "{\"clientId\":\(jsonString(clientId)),\"agentManifestUrl\":\(Self.integrationValueJSON(service, "agentManifestUrl")),\"agentManifestUrlSource\":\(Self.integrationValueJSON(service, "agentManifestUrlSource"))}"
+            .compactMap { login -> AgentIntegrationActiveLogin? in
+                guard let service = services.first(where: { $0.id == login.clientId }) else { return nil }
+                return AgentIntegrationActiveLogin(
+                    clientId: service.clientId ?? "",
+                    agentManifestUrl: service.agentManifestUrl,
+                    agentManifestUrlSource: service.agentManifestUrlSource
+                )
             }
-        lock.unlock()
-        let servicesJSON = services.map { service -> String in
-            let base = Self.integrationServiceJSON(service)
-            guard let recordId = service["id"] as? String,
-                  let state = oauth.getAppInstallationSetup(clientRecordId: recordId, serverId: agent.serverId)
-            else { return base }
-            let setup = "{\"status\":\(jsonString(state.status.rawValue)),\"url\":\(state.url.map(jsonString) ?? "null"),\"description\":\(state.description.map(jsonString) ?? "null"),\"revision\":\(state.revision)}"
-            return String(base.dropLast()) + ",\"setup\":\(setup)}"
-        }.joined(separator: ",")
-        return Self.json(200, "{\"services\":[\(servicesJSON)],\"activeLogins\":[\(active.joined(separator: ","))]}")
+        let resolved = services.map { service -> AgentIntegrationServiceSnapshot in
+            guard let id = service.id,
+                  let state = oauth.getAppInstallationSetup(clientRecordId: id, serverId: agent.serverId)
+            else { return service }
+            return service.withSetup(AgentIntegrationSetup(
+                status: state.status.rawValue,
+                url: state.url,
+                description: state.description,
+                revision: state.revision
+            ))
+        }
+        return AgentIntegrationListResponse(services: resolved, activeLogins: active)
     }
 
+    // MARK: - Credentials
+
+    /// The shared `sk_agent_*` credential check: revoked or absent credentials
+    /// are `nil`, a live one is marked used by the store in one critical section.
+    private func useCredential(_ authorization: String?) -> (agentId: String, scopes: [String])? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        return agents.useAgentCredential(token: token, now: now())
+    }
+
+    /// The write-route identity: an `sk_agent_*` credential, or the legacy
+    /// machine key plus the path agent id.
+    private func taskWriter(
+        _ authorization: String?,
+        legacyAgentId: String?
+    ) -> (agentId: String, serverId: String)? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        if let credential = agents.agentCredential(token: token), credential.revokedAt == nil,
+           let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted {
+            return (agent.id, agent.serverId)
+        }
+        if let machine = machines.machine(apiKey: token),
+           let legacyAgentId,
+           let agent = oauth.agentRuntimeInfo(id: legacyAgentId), !agent.deleted,
+           agent.serverId == machine.serverId {
+            return (agent.id, agent.serverId)
+        }
+        return nil
+    }
 }
