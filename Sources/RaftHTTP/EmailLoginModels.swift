@@ -270,7 +270,7 @@ enum FeedbackLocatorIdentityResult {
         case refused(HTTPReply)
     }
 
-struct ServerLabsState {
+struct ServerLabsState: Equatable {
         var accessEnabled = false
         var version = 0
         var enrolled: Set<String> = []

@@ -199,29 +199,37 @@ public struct ServersFeature: RouteCollection, Sendable {
                 body: try await request.bodyText()
             ))
         }
-        servers.get(":id", "labs") { request -> Response in
-            routeResponse(services.emailAccounts.getServerLabs(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                headerServerId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
-            ))
+        servers.get(":id", "labs") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.serverMembersAndSidebar.getServerLabs(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    headerServerId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+                )
+            }
         }
         servers.patch(":id", "labs", "access") { request async throws -> Response in
-            routeResponse(services.emailAccounts.patchServerLabsAccess(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                headerServerId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ServerLabsToggleRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.serverMembersAndSidebar.patchServerLabsAccess(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    headerServerId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    body: body
+                )
+            }
         }
         servers.put(":id", "labs", ":labKey") { request async throws -> Response in
-            routeResponse(services.emailAccounts.putServerLabEnrollment(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                headerServerId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                labKey: request.parameters.get("labKey") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ServerLabsToggleRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.serverMembersAndSidebar.putServerLabEnrollment(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    headerServerId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    labKey: request.parameters.get("labKey") ?? "",
+                    body: body
+                )
+            }
         }
         servers.get(":id", "agreement") { request -> Response in
             routeResponse(services.emailAccounts.getServerAgreement(
@@ -360,43 +368,42 @@ public struct ServersFeature: RouteCollection, Sendable {
             }
         }
         servers.patch(":id", "members", ":memberId") { request async throws -> Response in
-            // `role` is the only field; the directory owns the membership and
-            // self-demotion rules. A body that does not decode keeps the raw
-            // parser so `Invalid member role` stays the same.
-            if let body = try? await request.content.decode(ServerMemberRolePatchDTO.self) {
-                return routeResponse(services.emailAccounts.patchServerMemberRole(
+            // A body that does not decode keeps the service's published
+            // `Invalid member role` 400; an absent one does too.
+            let body = await jsonRequestBody(ServerMemberRolePatchRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.serverMembersAndSidebar.patchServerMemberRole(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",
                     memberId: request.parameters.get("memberId") ?? "",
-                    body: body.encodedBody()
-                ))
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.patchServerMemberRole(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                memberId: request.parameters.get("memberId") ?? "",
-                body: try await request.bodyText()
-            ))
         }
-        servers.delete(":id", "members", ":memberId") { request -> Response in
+        servers.delete(":id", "members", ":memberId") { request async throws -> Response in
             let serverId = request.parameters.get("id") ?? ""
             let memberId = request.parameters.get("memberId") ?? ""
-            let reply = services.emailAccounts.removeServerMember(
-                authorization: request.headers[.authorization],
-                serverId: serverId,
-                memberId: memberId
-            )
-            if reply.status == 200 {
-                services.emailAccounts.socketMembership.revokeServerMembershipResources(serverId: serverId, userId: memberId)
+            return try await respond {
+                let result = try services.emailAccounts.serverMembersAndSidebar.removeServerMember(
+                    authorization: request.headers[.authorization],
+                    serverId: serverId,
+                    memberId: memberId
+                )
+                services.emailAccounts.socketMembership.revokeServerMembershipResources(
+                    serverId: serverId,
+                    userId: memberId
+                )
                 services.realtime?.removeServerMembership(serverId: serverId, userId: memberId)
+                return result
             }
-            return routeResponse(reply)
         }
-        servers.delete(":id") { request -> Response in
-            routeResponse(services.emailAccounts.deleteServerRoute(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.delete(":id") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.serverMembersAndSidebar.deleteServer(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         servers.patch(":id", "sidebar-order") { request async throws -> Response in
             let id = request.parameters.get("id") ?? ""
@@ -406,13 +413,22 @@ public struct ServersFeature: RouteCollection, Sendable {
             ) {
                 return routeResponse(reply)
             }
-            return routeResponse(services.emailAccounts.patchSidebarOrder(
-                authorization: request.headers[.authorization],
-                serverId: id,
-                body: try await request.bodyText(default: "{}")
-            ))
+            var body = await jsonRequestBody(SidebarOrderPatchRequest.self, request)
+            if body == nil {
+                // The retired handler defaulted an absent body to `{}` and
+                // answered malformed bytes with `Invalid sidebar order`.
+                let raw = (try? await request.bodyText(default: "")) ?? ""
+                if raw.isEmpty { body = SidebarOrderPatchRequest() }
+            }
+            return try await respond {
+                try services.emailAccounts.serverMembersAndSidebar.patchSidebarOrder(
+                    authorization: request.headers[.authorization],
+                    serverId: id,
+                    body: body
+                )
+            }
         }
-        servers.get(":id", "sidebar-order") { request -> Response in
+        servers.get(":id", "sidebar-order") { request async throws -> Response in
             let id = request.parameters.get("id") ?? ""
             if let reply = ServerScope.membersGuard(
                 serverId: id,
@@ -420,10 +436,12 @@ public struct ServersFeature: RouteCollection, Sendable {
             ) {
                 return routeResponse(reply)
             }
-            return routeResponse(services.emailAccounts.sidebarOrder(
-                authorization: request.headers[.authorization],
-                serverId: id
-            ))
+            return try await respond {
+                try services.emailAccounts.serverMembersAndSidebar.sidebarOrder(
+                    authorization: request.headers[.authorization],
+                    serverId: id
+                )
+            }
         }
         servers.get(":id", "model-label-catalog") { request -> Response in
             routeResponse(services.emailAccounts.modelLabelCatalog(

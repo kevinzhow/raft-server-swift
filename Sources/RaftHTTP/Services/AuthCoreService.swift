@@ -1084,4 +1084,13 @@ extension EmailLoginDirectory {
         )
     }
 
+    /// Server member roles/removal, server deletion, the sidebar order ledger,
+    /// server labs and the task snapshot/period aggregates. The directory
+    /// supplies the two domain stores and the OAuth ledger; the session lookup,
+    /// the human-name check and the realtime emitter enter as closures because
+    /// they belong to domains that have not migrated yet.
+    public var serverMembersAndSidebar: ServerMembersAndSidebarService {
+        ServerMembersAndSidebarService(directory: self)
+    }
+
 }

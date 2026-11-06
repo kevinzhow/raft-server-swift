@@ -815,4 +815,58 @@ extension EmailLoginDirectory {
         return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(name)),\"type\":\(jsonString(type)),\"description\":\(descriptionJSON),\"joined\":true,\"createdByAgentId\":\(jsonString(agent.id))}")
     }
 
+    // MARK: - Task rows shared with the unmigrated task domains
+
+    /// One task row in the published order. The `requiresResourceReceipt`
+    /// member is omitted unless the row carries it.
+    func taskJSON(_ task: TaskRecord) -> String {
+        let assignee = task.assigneeId.map { jsonString($0) } ?? "null"
+        let assigneeType = task.assigneeType.map { jsonString($0) } ?? "null"
+        let claimed = task.claimedAt.map { jsonString(ISO8601DateFormatter().string(from: $0)) } ?? "null"
+        return "{\"id\":\(jsonString(task.id)),\"channelId\":\(jsonString(task.channelId)),\"messageId\":\(jsonString(task.messageId)),\"title\":\(jsonString(task.title)),\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber),\"claimedById\":\(assignee),\"claimedByType\":\(assigneeType),\"claimedAt\":\(claimed),\"revision\":\(task.revision)\(task.requiresResourceReceipt ? ",\"requiresResourceReceipt\":true" : "")}"
+    }
+
+    /// The channel write policy `GET`/`POST` task routes share.
+    func taskChannelAccess(serverId: String, channelId: String, userId: String) -> TaskChannelAccess {
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            return .missing
+        }
+        if oauth.isChannelParticipant(channelId: channelId, userId: userId) {
+            return .write
+        }
+        let type = oauth.channelType(id: channelId) ?? "channel"
+        return type == "channel" ? .readOnly : .missing
+    }
+
+    /// Public projection of `taskChannelAccess` for the channel-messaging
+    /// service until the channel policy moves into its own store.
+    public func channelTaskAccess(serverId: String, channelId: String, userId: String) -> ChannelTaskAccess {
+        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
+        case .missing:
+            .missing
+        case .readOnly:
+            .readOnly
+        case .write:
+            .write
+        }
+    }
+
+    public func addTasks(
+        channelId: String, titles: [String], descriptions: [String?]? = nil,
+        creatorId: String? = nil, creatorType: String = "user"
+    ) -> [String] {
+        // The directory lock keeps this append ordered with the readers that
+        // still snapshot `taskRecords`; the store method itself is one locked
+        // read-modify-write for the row array. `creatorType` is accepted for
+        // callers but the row has no column for it, as before.
+        lock.lock()
+        defer { lock.unlock() }
+        return tasksAndRemindersStore.appendTasks(
+            channelId: channelId,
+            titles: titles,
+            descriptions: descriptions,
+            creatorId: creatorId
+        )
+    }
+
 }

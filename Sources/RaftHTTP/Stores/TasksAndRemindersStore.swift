@@ -319,4 +319,68 @@ final class TasksAndRemindersStore: @unchecked Sendable {
             storage.taskEvents.append((taskId: storage.taskRecords[index].id, eventType: "closed", actorType: "system"))
         }
     }
+
+    /// One task row in the `todo` state. The returned id is the row's own id.
+    func addTask(channelId: String, title: String, description: String?) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        let taskNumber = storage.taskRecords.filter { $0.channelId == channelId }.count + 1
+        let id = UUID().uuidString.lowercased()
+        storage.taskRecords.append(TaskRecord(
+            id: id,
+            channelId: channelId,
+            title: title,
+            description: description,
+            status: "todo",
+            taskNumber: taskNumber,
+            messageId: UUID().uuidString.lowercased(),
+            createdAt: Date()
+        ))
+        return id
+    }
+
+    /// One task row with caller-supplied timestamps and status. Used by the
+    /// snapshot metrics fixtures; the number scan and append are one section.
+    func addTaskSnapshot(
+        channelId: String,
+        title: String,
+        status: String,
+        createdAt: Date,
+        updatedAt: Date,
+        completedAt: Date?
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        let taskNumber = storage.taskRecords.filter { $0.channelId == channelId }.count + 1
+        storage.taskRecords.append(TaskRecord(
+            id: UUID().uuidString.lowercased(),
+            channelId: channelId,
+            title: title,
+            description: nil,
+            status: status,
+            taskNumber: taskNumber,
+            messageId: UUID().uuidString.lowercased(),
+            createdAt: createdAt,
+            completedAt: completedAt,
+            updatedAt: updatedAt
+        ))
+    }
+
+    /// One completed task row with caller-supplied timestamps.
+    func addCompletedTask(channelId: String, title: String, createdAt: Date, completedAt: Date) {
+        lock.lock()
+        defer { lock.unlock() }
+        let taskNumber = storage.taskRecords.filter { $0.channelId == channelId }.count + 1
+        storage.taskRecords.append(TaskRecord(
+            id: UUID().uuidString.lowercased(),
+            channelId: channelId,
+            title: title,
+            description: nil,
+            status: "done",
+            taskNumber: taskNumber,
+            messageId: UUID().uuidString.lowercased(),
+            createdAt: createdAt,
+            completedAt: completedAt
+        ))
+    }
 }

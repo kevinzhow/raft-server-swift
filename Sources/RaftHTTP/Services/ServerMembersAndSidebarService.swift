@@ -1,361 +1,547 @@
-import Crypto
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 
-/// Server membership, invite/join-link and sidebar-order routes.
+/// Domain failure for server membership, server deletion, sidebar order, server
+/// labs and the task aggregate metrics.
 ///
-/// These handlers were lifted from `EmailLogin+ServerMembersAndTasks1.swift`.
-/// They stay on `EmailLoginDirectory` because the directory owns the lock and
-/// the server/channel ledgers; `ServerMembersAndSidebarService` is the named,
-/// `Sendable` handle a caller can hold instead of reaching for the composition
-/// root. The struct carries no state of its own.
-public struct ServerMembersAndSidebarService: Sendable {
-    public let directory: EmailLoginDirectory
+/// Every case is one published refusal. The retired handlers built the bodies by
+/// hand; `Respond.swift` now renders them from `errorMessage`, `errorCode` and
+/// `errorBody`, so the bytes are unchanged. Two unrelated retirements share a
+/// status and differ only in the published text (`Not a member of this server`
+/// vs `Forbidden`), which is why they stay separate cases.
+public enum ServerMembersAndSidebarError: DomainError, Equatable {
+    /// The member routes' `PublicVisits.authRequired` refusal.
+    case authRequired(bearerPresent: Bool)
+    /// The sidebar/labs/metrics plain missing-session refusal.
+    case unauthorized
+    case notAMember
+    /// The member-role refusal that names the owner even though an admin also
+    /// passes the check, as the published text did.
+    case onlyOwnerCanChangeRoles
+    case forbidden
+    case memberNotFound
+    case invalidMemberRole
+    case selfRoleChange
+    case guestRoleDisabled
+    case seatLimit(String)
+    case lastOwner
+    case serverNotFound
+    case invalidSidebarOrder
+    case invalidSidebarSortMode
+    case invalidSidebarPanelOrder
+    case sidebarSectionsConflict
+    case invalidCustomSections
+    case invalidSectionOrder
+    case invalidSectionPlacements
+    case invalidPinnedReferences
+    case serverScopeForbidden
+    case invalidLabsAccessRequest
+    case serverLabsVersionConflict(currentVersion: Int)
+    case serverLabsAccessDisabled
+    case labNotFound
+    case labNotOpen
+    case invalidLabEnrollmentRequest
+    case invalidMetricsWindow
+    case invalidChannelId
+    case channelNotFound
 
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
+    public var status: UInt {
+        switch self {
+        case .authRequired, .unauthorized:
+            401
+        case .notAMember, .onlyOwnerCanChangeRoles, .forbidden, .guestRoleDisabled,
+             .serverScopeForbidden:
+            403
+        case .memberNotFound, .serverNotFound, .labNotFound, .channelNotFound:
+            404
+        case .invalidMemberRole, .selfRoleChange, .lastOwner, .invalidSidebarOrder,
+             .invalidSidebarSortMode, .invalidSidebarPanelOrder, .invalidCustomSections,
+             .invalidSectionOrder, .invalidSectionPlacements, .invalidPinnedReferences,
+             .invalidLabsAccessRequest, .invalidLabEnrollmentRequest, .invalidMetricsWindow,
+             .invalidChannelId:
+            400
+        case .seatLimit, .sidebarSectionsConflict, .serverLabsVersionConflict,
+             .serverLabsAccessDisabled, .labNotOpen:
+            409
+        }
+    }
+
+    public var errorMessage: String {
+        switch self {
+        case .authRequired(let bearerPresent):
+            bearerPresent
+                ? "Invalid or expired token"
+                : "Missing or invalid Authorization header"
+        case .unauthorized:
+            "Unauthorized"
+        case .notAMember:
+            "Not a member of this server"
+        case .onlyOwnerCanChangeRoles:
+            "Only the owner can change member roles"
+        case .forbidden:
+            "Forbidden"
+        case .memberNotFound:
+            "Member not found"
+        case .invalidMemberRole:
+            "Invalid member role"
+        case .selfRoleChange:
+            "You cannot change your own role"
+        case .guestRoleDisabled:
+            "Guest role transitions are not enabled"
+        case .seatLimit(let message):
+            message
+        case .lastOwner:
+            "The last owner cannot be removed"
+        case .serverNotFound:
+            "Server not found"
+        case .invalidSidebarOrder:
+            "Invalid sidebar order"
+        case .invalidSidebarSortMode:
+            "Invalid sidebar sort mode"
+        case .invalidSidebarPanelOrder:
+            "Invalid sidebar panel order"
+        case .sidebarSectionsConflict:
+            "Sidebar sections changed"
+        case .invalidCustomSections:
+            "Invalid custom sections"
+        case .invalidSectionOrder:
+            "Invalid section order"
+        case .invalidSectionPlacements:
+            "Invalid section placements"
+        case .invalidPinnedReferences:
+            "Invalid sidebar pinned references"
+        case .serverScopeForbidden:
+            "Server scope forbidden"
+        case .invalidLabsAccessRequest:
+            "Invalid labs access request"
+        case .serverLabsVersionConflict:
+            "Server Labs version changed"
+        case .serverLabsAccessDisabled:
+            "Server Labs access is disabled"
+        case .labNotFound:
+            "Lab not found"
+        case .labNotOpen:
+            "Lab is not open"
+        case .invalidLabEnrollmentRequest:
+            "Invalid lab enrollment request"
+        case .invalidMetricsWindow:
+            "Invalid metrics window"
+        case .invalidChannelId:
+            "Invalid channelId"
+        case .channelNotFound:
+            "Channel not found"
+        }
+    }
+
+    public var errorCode: String? {
+        switch self {
+        case .authRequired:
+            "auth_required"
+        case .seatLimit:
+            "human_seat_limit_reached"
+        case .sidebarSectionsConflict:
+            "SIDEBAR_SECTIONS_VERSION_CONFLICT"
+        case .serverScopeForbidden:
+            "server_scope_forbidden"
+        case .serverLabsVersionConflict:
+            "server_labs_version_conflict"
+        case .serverLabsAccessDisabled:
+            "server_labs_access_disabled"
+        case .labNotOpen:
+            "lab_not_open"
+        case .unauthorized, .notAMember, .onlyOwnerCanChangeRoles, .forbidden,
+             .memberNotFound, .invalidMemberRole, .selfRoleChange, .guestRoleDisabled,
+             .lastOwner, .serverNotFound, .invalidSidebarOrder, .invalidSidebarSortMode,
+             .invalidSidebarPanelOrder, .invalidCustomSections, .invalidSectionOrder,
+             .invalidSectionPlacements, .invalidPinnedReferences, .invalidLabsAccessRequest,
+             .labNotFound, .invalidLabEnrollmentRequest, .invalidMetricsWindow, .invalidChannelId,
+             .channelNotFound:
+            nil
+        }
+    }
+
+    /// The Labs version conflict publishes `currentVersion` after `error` and
+    /// `code`; the default envelope cannot add it.
+    public var errorBody: OrderedJSON? {
+        switch self {
+        case .serverLabsVersionConflict(let currentVersion):
+            .object([
+                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("code", "server_labs_version_conflict"),
+                OrderedJSONField("currentVersion", currentVersion),
+            ])
+        case .authRequired, .unauthorized, .notAMember, .onlyOwnerCanChangeRoles, .forbidden,
+             .memberNotFound, .invalidMemberRole, .selfRoleChange, .guestRoleDisabled,
+             .lastOwner, .serverNotFound, .invalidSidebarOrder, .invalidSidebarSortMode,
+             .invalidSidebarPanelOrder, .sidebarSectionsConflict, .invalidCustomSections,
+             .invalidSectionOrder, .invalidSectionPlacements, .invalidPinnedReferences,
+             .serverScopeForbidden, .invalidLabsAccessRequest, .serverLabsAccessDisabled,
+             .labNotFound, .labNotOpen, .invalidLabEnrollmentRequest, .invalidMetricsWindow,
+             .invalidChannelId, .channelNotFound, .seatLimit:
+            nil
+        }
+    }
+
+    /// The member routes' auth refusal kept `Cache-Control: no-store`; every
+    /// other refusal uses the plain set.
+    public var responseHeaders: [String: String] {
+        switch self {
+        case .authRequired:
+            ["Cache-Control": "no-store"]
+        default:
+            [:]
+        }
     }
 }
 
-extension EmailLoginDirectory {
+// MARK: - Injected dependencies
 
+/// Every cross-domain decision the server-member surface needs.
+///
+/// The server/channel and task ledgers belong to their stores; the human session
+/// lookup and the realtime emitter belong to the auth and realtime domains and
+/// stay behind closures. `live(directory:)` wires them to the existing directory
+/// entry points at the composition root.
+struct ServerMembersAndSidebarDependencies: Sendable {
+    var sessionUserId: @Sendable (String?) -> String?
+    var emitRealtime: @Sendable (String, String, String?) -> Void
+    var humanExists: @Sendable (String) -> Bool
+    var oauth: OAuthLedger
+    var channels: ServersAndChannelsStore
+    var tasks: TasksAndRemindersStore
+    var now: @Sendable () -> Date
 
-    public func patchServerMemberRole(authorization: String?, serverId: String, memberId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return PublicVisits.authRequired(authorization: authorization)
+    static func live(directory source: EmailLoginDirectory) -> ServerMembersAndSidebarDependencies {
+        ServerMembersAndSidebarDependencies(
+            sessionUserId: { source.sessionUserId(authorization: $0) },
+            emitRealtime: { room, event, payload in
+                source.emitRealtime(room, event, payload)
+            },
+            humanExists: { userId in
+                source.authProfileStore.accounts.values.contains { $0.id == userId }
+            },
+            oauth: source.oauth,
+            channels: source.serversAndChannelsStore,
+            tasks: source.tasksAndRemindersStore,
+            now: { Date() }
+        )
+    }
+}
+
+// MARK: - Service
+
+/// Server member roles/removal, server deletion, the sidebar order ledger,
+/// server labs and the task snapshot/period aggregates.
+///
+/// The service owns the orchestration and returns the published `Codable` /
+/// `JSONBodyConvertible` DTOs; every refusal is a `ServerMembersAndSidebarError`.
+/// It builds no HTTP reply, header set or response body. The sidebar write and
+/// both labs version checks are one store critical section, so two concurrent
+/// requests cannot both accept the same expected version.
+public struct ServerMembersAndSidebarService: Sendable {
+    private let dependencies: ServerMembersAndSidebarDependencies
+
+    /// Production wiring.
+    public init(directory: EmailLoginDirectory) {
+        self.init(dependencies: .live(directory: directory))
+    }
+
+    init(dependencies: ServerMembersAndSidebarDependencies) {
+        self.dependencies = dependencies
+    }
+
+    // MARK: - PATCH /api/servers/:id/members/:memberId
+
+    /// Changes one member role.
+    ///
+    /// The authorization and self-demotion rules run before any write; the guest
+    /// seat cap is one store decision. A changed role publishes
+    /// `server:member-updated` and queues one `server.member_role_changed` event.
+    public func patchServerMemberRole(
+        authorization: String?,
+        serverId: String,
+        memberId: String,
+        body: ServerMemberRolePatchRequest?
+    ) throws -> ServerMemberRolePatchResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ServerMembersAndSidebarError.authRequired(
+                bearerPresent: authorization?.hasPrefix("Bearer ") == true
+            )
         }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        guard let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw ServerMembersAndSidebarError.notAMember
         }
         guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Only the owner can change member roles\"}")
+            throw ServerMembersAndSidebarError.onlyOwnerCanChangeRoles
         }
-        guard let targetRole = oauth.memberRole(serverId: serverId, userId: memberId) else {
-            return Self.json(404, "{\"error\":\"Member not found\"}")
+        guard let targetRole = dependencies.oauth.memberRole(serverId: serverId, userId: memberId) else {
+            throw ServerMembersAndSidebarError.memberNotFound
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let newRole = object["role"] as? String,
+        guard let newRole = body?.role,
               ["owner", "admin", "member", "guest"].contains(newRole)
         else {
-            return Self.json(400, "{\"error\":\"Invalid member role\"}")
+            throw ServerMembersAndSidebarError.invalidMemberRole
         }
         if role == "admin", targetRole == "owner" || targetRole == "admin" || newRole == "owner" {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            throw ServerMembersAndSidebarError.forbidden
         }
         if memberId == userId {
-            let canSelfDemoteToGuest = targetRole == "owner" && newRole == "guest" && oauth.ownerCount(serverId: serverId) > 1
+            let canSelfDemoteToGuest = targetRole == "owner"
+                && newRole == "guest"
+                && dependencies.oauth.ownerCount(serverId: serverId) > 1
             guard canSelfDemoteToGuest else {
-                return Self.json(400, "{\"error\":\"You cannot change your own role\"}")
+                throw ServerMembersAndSidebarError.selfRoleChange
             }
         }
         if newRole == "guest" {
-            lock.lock()
-            let enabled = guestRoleServers.contains(serverId)
-            lock.unlock()
-            guard enabled else {
-                return Self.json(403, "{\"error\":\"Guest role transitions are not enabled\"}")
+            guard dependencies.channels.isGuestRoleEnabled(serverId: serverId) else {
+                throw ServerMembersAndSidebarError.guestRoleDisabled
             }
         }
         if targetRole == "guest", newRole == "member" {
             // The seat cap and the holder count are one store critical section.
-            let message = serversAndChannelsStore.seatLimitMessage(
+            let message = dependencies.channels.seatLimitMessage(
                 serverId: serverId,
-                usedSeats: { [oauth] serverId in
+                usedSeats: { [oauth = dependencies.oauth] serverId in
                     oauth.memberIdsWithRoles(serverId: serverId).filter { $0.role != "guest" }.count
                 }
             )
             if let message {
-                return Self.json(409, "{\"error\":\(jsonString(message)),\"code\":\"human_seat_limit_reached\"}")
+                throw ServerMembersAndSidebarError.seatLimit(message)
             }
         }
-        oauth.addMember(serverId: serverId, userId: memberId, role: newRole)
-        if newRole == "guest", let allChannel = oauth.allChannelId(serverId: serverId) {
-            oauth.removeChannelHuman(channelId: allChannel, userId: memberId)
+        dependencies.oauth.addMember(serverId: serverId, userId: memberId, role: newRole)
+        if newRole == "guest", let allChannel = dependencies.oauth.allChannelId(serverId: serverId) {
+            dependencies.oauth.removeChannelHuman(channelId: allChannel, userId: memberId)
         }
         if newRole != targetRole {
             let payload = "{\"serverId\":\(jsonString(serverId)),\"userId\":\(jsonString(memberId)),\"previousRole\":\(jsonString(targetRole)),\"role\":\(jsonString(newRole))}"
-            emitRealtime("server:\(serverId)", "server:member-updated", payload)
-            lock.lock()
-            recordServerMemberEvent(
-                serverId: serverId, eventType: "server.member_role_changed", subjectType: "member", subjectId: memberId,
+            dependencies.emitRealtime("server:\(serverId)", "server:member-updated", payload)
+            dependencies.channels.appendServerMemberEvent(
+                serverId: serverId,
+                eventType: "server.member_role_changed",
+                subjectType: "member",
+                subjectId: memberId,
                 provenanceJSON: "{\"actor_type\":\"human\",\"previous_role\":\(jsonString(targetRole)),\"principal_type\":\"human\",\"role\":\(jsonString(newRole)),\"source\":\"server_service\"}"
             )
-            lock.unlock()
         }
-        return Self.json(200, "{\"ok\":true,\"changed\":true}")
+        return ServerMemberRolePatchResponse()
     }
 
-    public func removeServerMember(authorization: String?, serverId: String, memberId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return PublicVisits.authRequired(authorization: authorization)
+    // MARK: - DELETE /api/servers/:id/members/:memberId
+
+    /// Removes one member.
+    ///
+    /// The last owner cannot be removed. The member status, removed-marker and
+    /// queued event are one store critical section; the channel/thread-follow
+    /// cascade stays the route's existing follow-up on success.
+    public func removeServerMember(
+        authorization: String?,
+        serverId: String,
+        memberId: String
+    ) throws -> OkResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ServerMembersAndSidebarError.authRequired(
+                bearerPresent: authorization?.hasPrefix("Bearer ") == true
+            )
         }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        guard let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw ServerMembersAndSidebarError.notAMember
         }
         guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            throw ServerMembersAndSidebarError.forbidden
         }
-        guard let targetRole = oauth.memberRole(serverId: serverId, userId: memberId) else {
-            return Self.json(404, "{\"error\":\"Member not found\"}")
+        guard let targetRole = dependencies.oauth.memberRole(serverId: serverId, userId: memberId) else {
+            throw ServerMembersAndSidebarError.memberNotFound
         }
         if targetRole == "owner" {
             guard role == "owner" else {
-                return Self.json(403, "{\"error\":\"Forbidden\"}")
+                throw ServerMembersAndSidebarError.forbidden
             }
-            guard oauth.ownerCount(serverId: serverId) > 1 else {
-                return Self.json(400, "{\"error\":\"The last owner cannot be removed\"}")
+            guard dependencies.oauth.ownerCount(serverId: serverId) > 1 else {
+                throw ServerMembersAndSidebarError.lastOwner
             }
         }
-        oauth.removeMember(serverId: serverId, userId: memberId)
-        lock.lock()
-        serverMemberStatuses["\(serverId)\n\(memberId)"] = "removed"
-        lock.unlock()
-        lock.lock()
-        recordServerMemberEvent(
-            serverId: serverId, eventType: "server.member_removed", subjectType: "member", subjectId: memberId,
+        dependencies.oauth.removeMember(serverId: serverId, userId: memberId)
+        dependencies.channels.markMemberRemoved(
+            serverId: serverId,
+            userId: memberId,
             provenanceJSON: "{\"actor_type\":\"human\",\"principal_type\":\"human\",\"reason\":\"removed\",\"role\":\(jsonString(targetRole)),\"source\":\"server_service\"}"
         )
-        for (threadId, thread) in postableChannels where thread.kind == "thread" && thread.serverId == serverId {
-            guard let parentId = thread.parentChannelId,
-                  let parent = postableChannels[parentId],
-                  parent.kind == "private" || parent.kind == "dm"
-            else { continue }
-            threadFollows.removeValue(forKey: "\(serverId)\n\(memberId)\n\(threadId)")
-        }
-        removedServerMembers.insert("\(serverId)\n\(memberId)")
-        lock.unlock()
-        emitRealtime("server:\(serverId)", "server:member-removed", "{\"serverId\":\(jsonString(serverId)),\"userId\":\(jsonString(memberId))}")
-        emitRealtime("user:\(memberId)", "server:membership-removed", "{\"serverId\":\(jsonString(serverId))}")
-        return Self.json(200, "{\"ok\":true}")
+        dependencies.emitRealtime(
+            "server:\(serverId)",
+            "server:member-removed",
+            "{\"serverId\":\(jsonString(serverId)),\"userId\":\(jsonString(memberId))}"
+        )
+        dependencies.emitRealtime(
+            "user:\(memberId)",
+            "server:membership-removed",
+            "{\"serverId\":\(jsonString(serverId))}"
+        )
+        return OkResponse()
     }
 
-    public func deleteServerRoute(authorization: String?, serverId: String) -> HTTPReply {
-        lock.lock()
-        let alreadyDeleted = deletedServerIds.contains(serverId)
-        lock.unlock()
-        guard !alreadyDeleted else {
-            return Self.json(200, "{\"ok\":true}")
+    // MARK: - DELETE /api/servers/:id
+
+    /// Deletes a server. A second delete is the idempotent `{"ok":true}` before
+    /// any authorization check, exactly as the retired handler answered.
+    public func deleteServer(authorization: String?, serverId: String) throws -> OkResponse {
+        guard !dependencies.channels.isServerDeleted(serverId) else {
+            return OkResponse()
         }
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return PublicVisits.authRequired(authorization: authorization)
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ServerMembersAndSidebarError.authRequired(
+                bearerPresent: authorization?.hasPrefix("Bearer ") == true
+            )
         }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        guard let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw ServerMembersAndSidebarError.notAMember
         }
         guard role == "owner" else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            throw ServerMembersAndSidebarError.forbidden
         }
-        let memberIds = oauth.memberIdsWithRoles(serverId: serverId).map(\.id)
-        let agentIds = oauth.serverAgents(serverId: serverId).map(\.id)
-        lock.lock()
+        let memberIds = dependencies.oauth.memberIdsWithRoles(serverId: serverId).map(\.id)
+        let agentIds = dependencies.oauth.serverAgents(serverId: serverId).map(\.id)
+        var events: [ServerMemberEvent] = []
         for memberId in memberIds {
-            recordServerMemberEvent(
-                serverId: serverId, eventType: "server.member_removed", subjectType: "member", subjectId: memberId,
-                provenanceJSON: "{\"actor_type\":\"human\",\"principal_type\":\"human\",\"reason\":\"server_deleted\",\"role\":\"member\",\"source\":\"server_service\"}"
-            )
+            events.append(ServerMemberEvent(
+                serverId: serverId,
+                eventType: "server.member_removed",
+                subjectType: "member",
+                subjectId: memberId,
+                provenanceJSON: "{\"actor_type\":\"human\",\"principal_type\":\"human\",\"reason\":\"server_deleted\",\"role\":\"member\",\"source\":\"server_service\"}",
+                deliveryQueued: true
+            ))
         }
         for agentId in agentIds {
-            recordServerMemberEvent(
-                serverId: serverId, eventType: "server.member_removed", subjectType: "agent", subjectId: agentId,
-                provenanceJSON: "{\"actor_type\":\"human\",\"principal_type\":\"agent\",\"reason\":\"server_deleted\",\"role\":\"member\",\"source\":\"server_service\"}"
+            events.append(ServerMemberEvent(
+                serverId: serverId,
+                eventType: "server.member_removed",
+                subjectType: "agent",
+                subjectId: agentId,
+                provenanceJSON: "{\"actor_type\":\"human\",\"principal_type\":\"agent\",\"reason\":\"server_deleted\",\"role\":\"member\",\"source\":\"server_service\"}",
+                deliveryQueued: true
+            ))
+        }
+        dependencies.channels.appendServerMemberEvents(events)
+        dependencies.oauth.deleteServer(id: serverId)
+        dependencies.channels.markServerDeleted(serverId)
+        dependencies.emitRealtime(
+            "server:\(serverId)",
+            "server:deleted",
+            "{\"serverId\":\(jsonString(serverId))}"
+        )
+        for memberId in memberIds {
+            dependencies.emitRealtime(
+                "user:\(memberId)",
+                "server:membership-removed",
+                "{\"serverId\":\(jsonString(serverId))}"
             )
         }
-        lock.unlock()
-        oauth.deleteServer(id: serverId)
-        lock.lock()
-        deletedServerIds.insert(serverId)
-        lock.unlock()
-        emitRealtime("server:\(serverId)", "server:deleted", "{\"serverId\":\(jsonString(serverId))}")
-        for memberId in memberIds {
-            emitRealtime("user:\(memberId)", "server:membership-removed", "{\"serverId\":\(jsonString(serverId))}")
-        }
-        return Self.json(200, "{\"ok\":true}")
+        return OkResponse()
     }
 
+    // MARK: - PATCH /api/servers/:id/sidebar-order
 
-    func sidebarHumanDMChannelId(peerId: String, userId: String, serverId: String) -> String? {
-        oauth.channelsForServer(serverId: serverId, userId: userId, includeArchived: true)
-            .first {
-                $0.type == "dm"
-                    && oauth.channelHumanIds(channelId: $0.id).contains(userId)
-                    && oauth.channelHumanIds(channelId: $0.id).contains(peerId)
-                    && oauth.channelAgentIds(channelId: $0.id).isEmpty
-            }?.id
-    }
-
-    func sidebarPinnedChannel(
-        id: String,
+    /// Writes the caller's sidebar order, sections and pinned references.
+    ///
+    /// The body is optional (`{}` by default). An absent member keeps the stored
+    /// value; a wrong one publishes its member-specific 400. The sections
+    /// version check and every row write are one store critical section, so two
+    /// concurrent patches cannot both accept the same version.
+    public func patchSidebarOrder(
+        authorization: String?,
         serverId: String,
-        userId: String
-    ) -> SidebarPinnedChannelResolution {
-        guard let channel = oauth.channelInfo(id: id), channel.serverId == serverId else {
-            return .missing
+        body: SidebarOrderPatchRequest?
+    ) throws -> SidebarOrderResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ServerMembersAndSidebarError.unauthorized
         }
-        let type = oauth.channelType(id: id) ?? "channel"
-        if type == "dm" {
-            let agents = oauth.channelAgentIds(channelId: id)
-            if agents.count == 1 {
-                return .dm(("agent", agents[0]), legacyId: id)
-            }
-            let humans = oauth.channelHumanIds(channelId: id).filter { $0 != userId }
-            if let peer = humans.first {
-                return .dm(("human", peer), legacyId: id)
-            }
-            return .missing
+        guard dependencies.oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            throw ServerMembersAndSidebarError.serverNotFound
         }
-        if type == "private" && !oauth.channelHumanIds(channelId: id).contains(userId) {
-            return .missing
+        guard let body else {
+            throw ServerMembersAndSidebarError.invalidSidebarOrder
         }
-        return .channel(("channel", id))
-    }
-
-    public func patchSidebarOrder(authorization: String?, serverId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
-        }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
-            return Self.json(400, "{\"error\":\"Invalid sidebar order\"}")
-        }
-        let key = "\(serverId)\n\(userId)"
-        lock.lock()
-        var modes = sidebarModes[key] ?? ("manual", "manual", "manual", "manual", ["chat"], ["activity", "profile"])
-        lock.unlock()
-        func mode(_ field: String, _ current: String) -> String? {
-            guard let raw = object[field] else { return current }
-            guard let value = raw as? String, ["manual", "recent", "az"].contains(value) else { return nil }
-            return value
-        }
-        guard let channel = mode("channelSortMode", modes.channel),
-              let joint = mode("jointChannelSortMode", modes.joint),
-              let dm = mode("dmSortMode", modes.dm),
-              let pinned = mode("pinnedSortMode", modes.pinned)
-        else {
-            return Self.json(400, "{\"error\":\"Invalid sidebar sort mode\"}")
-        }
-        func tabs(_ field: String, _ current: [String], allowed: Set<String>) -> [String]? {
-            guard let raw = object[field] else { return current }
-            guard let values = raw as? [String] else { return nil }
-            return values.filter { allowed.contains($0) }
-        }
-        guard let channelTabs = tabs("channelPanelTabOrder", modes.channelTabs, allowed: ["files", "tasks", "chat"]),
-              let agentTabs = tabs("agentPanelTabOrder", modes.agentTabs, allowed: ["activity", "integrations", "profile"])
-        else {
-            return Self.json(400, "{\"error\":\"Invalid sidebar panel order\"}")
-        }
-        lock.lock()
-        var sections = sidebarSections[key] ?? ([], ["system:pinned", "system:joint", "system:channels", "system:dms"], [], 0)
-        lock.unlock()
-        let hasSectionFields = object["customSections"] != nil || object["sectionOrder"] != nil || object["sectionPlacements"] != nil
+        let snapshot = dependencies.channels.sidebarSnapshot(serverId: serverId, userId: userId)
+        let modes = try patchModes(body, current: snapshot.modes)
+        var sections = snapshot.sections
+        let hasSectionFields = body.hasSectionFields
+        var expectedSectionsVersion: Int?
         if hasSectionFields {
-            if let rawVersion = object["sectionsVersion"] {
-                guard let version = rawVersion as? Int, version == sections.version else {
-                    return Self.json(409, "{\"error\":\"Sidebar sections changed\",\"code\":\"SIDEBAR_SECTIONS_VERSION_CONFLICT\"}")
+            switch body.sectionsVersion {
+            case .value(let version):
+                guard version == sections.version else {
+                    throw ServerMembersAndSidebarError.sidebarSectionsConflict
                 }
+                expectedSectionsVersion = version
+            case .invalid:
+                throw ServerMembersAndSidebarError.sidebarSectionsConflict
+            case .absent:
+                break
             }
-            if let rawSections = object["customSections"] {
-                guard let entries = rawSections as? [[String: Any]] else {
-                    return Self.json(400, "{\"error\":\"Invalid custom sections\"}")
-                }
-                var parsed: [(id: String, name: String, emoji: String?, sortMode: String)] = []
-                for entry in entries {
-                    guard let id = entry["id"] as? String, !id.isEmpty,
-                          let name = entry["name"] as? String
-                    else { return Self.json(400, "{\"error\":\"Invalid custom sections\"}") }
-                    let emoji: String?
-                    if let raw = entry["emoji"], !(raw is NSNull) {
-                        guard let value = raw as? String else { return Self.json(400, "{\"error\":\"Invalid custom sections\"}") }
-                        emoji = value
-                    } else {
-                        emoji = nil
-                    }
-                    let sortMode = (entry["sortMode"] as? String) ?? "manual"
-                    guard ["manual", "recent", "az"].contains(sortMode) else {
-                        return Self.json(400, "{\"error\":\"Invalid custom sections\"}")
-                    }
-                    parsed.append((id, name.trimmingCharacters(in: .whitespacesAndNewlines), emoji, sortMode))
-                }
-                sections.sections = parsed
+            if case .value(let entries) = body.customSections {
+                sections.sections = try parseSections(entries)
+            } else if case .invalid = body.customSections {
+                throw ServerMembersAndSidebarError.invalidCustomSections
             }
-            if let rawOrder = object["sectionOrder"] {
-                guard let requested = rawOrder as? [String] else {
-                    return Self.json(400, "{\"error\":\"Invalid section order\"}")
-                }
+            if case .value(let requested) = body.sectionOrder {
                 var order = requested
-                for system in ["system:pinned", "system:joint", "system:channels", "system:dms"] where !order.contains(system) {
+                for system in ServersAndChannelsStore.SidebarSectionsRow.defaults.order where !order.contains(system) {
                     order.append(system)
                 }
                 sections.order = order
+            } else if case .invalid = body.sectionOrder {
+                throw ServerMembersAndSidebarError.invalidSectionOrder
             }
-            if let rawPlacements = object["sectionPlacements"] {
-                guard let entries = rawPlacements as? [[String: Any]] else {
-                    return Self.json(400, "{\"error\":\"Invalid section placements\"}")
-                }
-                var placements: [(kind: String, id: String, sectionId: String, position: Int)] = []
-                for entry in entries {
-                    guard let kind = entry["kind"] as? String, ["channel", "agent"].contains(kind),
-                          let id = entry["id"] as? String,
-                          let sectionId = entry["sectionId"] as? String
-                    else { return Self.json(400, "{\"error\":\"Invalid section placements\"}") }
-                    if kind == "channel" {
-                        lock.lock()
-                        let exists = postableChannels[id]?.deletedAt == nil && postableChannels[id] != nil
-                        lock.unlock()
-                        guard exists else { continue }
-                    }
-                    placements.append((kind, id, sectionId, placements.count))
-                }
-                sections.placements = placements
+            if case .value(let entries) = body.sectionPlacements {
+                sections.placements = try parsePlacements(entries)
+            } else if case .invalid = body.sectionPlacements {
+                throw ServerMembersAndSidebarError.invalidSectionPlacements
             }
             sections.version += 1
         }
-        lock.lock()
-        var pinnedState = sidebarPinnedRefs[key] ?? ([], [], [], 0)
-        lock.unlock()
+        var pinnedState = snapshot.pinned ?? ServersAndChannelsStore.SidebarPinnedRow(
+            refs: [],
+            channelIds: [],
+            agentIds: [],
+            version: 0
+        )
         var pinnedChanged = false
-        if let rawPinned = object["pinned"] {
-            guard object["pinnedChannelIds"] == nil else {
-                return Self.json(400, "{\"error\":\"Invalid sidebar pinned references\"}")
+        if body.pinned != .absent {
+            guard body.pinnedChannelIds == .absent else {
+                throw ServerMembersAndSidebarError.invalidPinnedReferences
             }
-            guard let entries = rawPinned as? [[String: Any]] else {
-                return Self.json(400, "{\"error\":\"Invalid sidebar pinned references\"}")
+            guard case .value(let entries) = body.pinned else {
+                throw ServerMembersAndSidebarError.invalidPinnedReferences
             }
-            var refs: [(kind: String, id: String)] = []
+            var refs: [ServersAndChannelsStore.SidebarPinRow] = []
             var channelIds: [String] = []
             var agentIds: [String] = []
             for entry in entries {
-                guard let kind = entry["kind"] as? String,
+                guard let kind = entry.kind,
                       ["channel", "agent", "human"].contains(kind),
-                      let id = entry["id"] as? String,
+                      let id = entry.id,
                       !id.isEmpty
                 else {
-                    return Self.json(400, "{\"error\":\"Invalid sidebar pinned references\"}")
+                    throw ServerMembersAndSidebarError.invalidPinnedReferences
                 }
                 if kind == "channel" {
                     switch sidebarPinnedChannel(id: id, serverId: serverId, userId: userId) {
                     case .missing:
                         continue
-                    case .channel(let canonical):
-                        refs.append(canonical)
-                        channelIds.append(id)
-                    case .dm(let canonical, let legacyId):
+                    case .canonical(let canonical, let legacyId):
                         refs.append(canonical)
                         channelIds.append(legacyId)
                     }
                 } else if kind == "agent" {
-                    guard let agent = oauth.agentRuntimeInfo(id: id), agent.serverId == serverId else { continue }
-                    refs.append(("agent", id))
+                    guard let agent = dependencies.oauth.agentRuntimeInfo(id: id),
+                          agent.serverId == serverId
+                    else { continue }
+                    refs.append(ServersAndChannelsStore.SidebarPinRow(kind: "agent", id: id))
                     agentIds.append(id)
                 } else {
-                    lock.lock()
-                    let exists = accounts.values.contains { $0.id == id }
-                    lock.unlock()
-                    guard exists else { continue }
-                    refs.append(("human", id))
+                    guard dependencies.humanExists(id) else { continue }
+                    refs.append(ServersAndChannelsStore.SidebarPinRow(kind: "human", id: id))
                     if let dm = sidebarHumanDMChannelId(peerId: id, userId: userId, serverId: serverId) {
                         channelIds.append(dm)
                     }
@@ -367,45 +553,52 @@ extension EmailLoginDirectory {
             channelIds = channelIds.filter { channelSeen.insert($0).inserted }
             var agentSeen = Set<String>()
             agentIds = agentIds.filter { agentSeen.insert($0).inserted }
-            pinnedChanged = refs.map { "\($0.kind)\n\($0.id)" } != pinnedState.refs.map { "\($0.kind)\n\($0.id)" }
+            pinnedChanged = refs.map { "\($0.kind)\n\($0.id)" }
+                != pinnedState.refs.map { "\($0.kind)\n\($0.id)" }
             if pinnedChanged {
-                pinnedState = (refs, channelIds, agentIds, pinnedState.version + 1)
+                pinnedState = ServersAndChannelsStore.SidebarPinnedRow(
+                    refs: refs,
+                    channelIds: channelIds,
+                    agentIds: agentIds,
+                    version: pinnedState.version + 1
+                )
             }
-        } else if object["pinnedChannelIds"] != nil || object["pinnedAgentIds"] != nil || object["pinnedOrder"] != nil {
-            func stringArray(_ field: String) -> [String]? {
-                guard let raw = object[field] else { return [] }
-                return raw as? [String]
-            }
-            guard let requestedChannels = stringArray("pinnedChannelIds"),
-                  let requestedAgents = stringArray("pinnedAgentIds"),
-                  let requestedOrder = object["pinnedOrder"] == nil ? nil : stringArray("pinnedOrder")
+        } else if body.pinnedChannelIds != .absent
+                    || body.pinnedAgentIds != .absent
+                    || body.pinnedOrder != .absent {
+            guard let requestedChannels = stringArray(body.pinnedChannelIds),
+                  let requestedAgents = stringArray(body.pinnedAgentIds),
+                  let requestedOrder = body.pinnedOrder == .absent
+                      ? nil
+                      : stringArray(body.pinnedOrder)
             else {
-                return Self.json(400, "{\"error\":\"Invalid sidebar pinned references\"}")
+                throw ServerMembersAndSidebarError.invalidPinnedReferences
             }
             var refs = pinnedState.refs.filter { $0.kind == "human" }
             var channelIds: [String] = []
             var agentIds: [String] = []
-            let channelSource = requestedChannels.isEmpty && object["pinnedChannelIds"] == nil
-                ? (requestedOrder ?? []).filter { oauth.channelInfo(id: $0) != nil }
+            let channelSource = requestedChannels.isEmpty && body.pinnedChannelIds == .absent
+                ? requestedOrder.filter { dependencies.oauth.channelInfo(id: $0) != nil }
                 : requestedChannels
             for id in channelSource {
                 switch sidebarPinnedChannel(id: id, serverId: serverId, userId: userId) {
                 case .missing:
                     continue
-                case .channel(let canonical):
-                    refs.append(canonical)
-                    channelIds.append(id)
-                case .dm(let canonical, let legacyId):
+                case .canonical(let canonical, let legacyId):
                     refs.append(canonical)
                     channelIds.append(legacyId)
                 }
             }
-            let agentSource = requestedAgents.isEmpty && object["pinnedAgentIds"] == nil
-                ? (requestedOrder ?? []).filter { oauth.agentRuntimeInfo(id: $0)?.serverId == serverId }
+            let agentSource = requestedAgents.isEmpty && body.pinnedAgentIds == .absent
+                ? requestedOrder.filter {
+                    dependencies.oauth.agentRuntimeInfo(id: $0)?.serverId == serverId
+                }
                 : requestedAgents
             for id in agentSource {
-                guard let agent = oauth.agentRuntimeInfo(id: id), agent.serverId == serverId else { continue }
-                refs.append(("agent", id))
+                guard let agent = dependencies.oauth.agentRuntimeInfo(id: id),
+                      agent.serverId == serverId
+                else { continue }
+                refs.append(ServersAndChannelsStore.SidebarPinRow(kind: "agent", id: id))
                 agentIds.append(id)
             }
             var seen = Set<String>()
@@ -414,339 +607,254 @@ extension EmailLoginDirectory {
             channelIds = channelIds.filter { channelSeen.insert($0).inserted }
             var agentSeen = Set<String>()
             agentIds = agentIds.filter { agentSeen.insert($0).inserted }
-            pinnedChanged = refs.map { "\($0.kind)\n\($0.id)" } != pinnedState.refs.map { "\($0.kind)\n\($0.id)" }
+            pinnedChanged = refs.map { "\($0.kind)\n\($0.id)" }
+                != pinnedState.refs.map { "\($0.kind)\n\($0.id)" }
             if pinnedChanged {
-                pinnedState = (refs, channelIds, agentIds, pinnedState.version + 1)
+                pinnedState = ServersAndChannelsStore.SidebarPinnedRow(
+                    refs: refs,
+                    channelIds: channelIds,
+                    agentIds: agentIds,
+                    version: pinnedState.version + 1
+                )
             }
         }
-        lock.lock()
-        if pinnedChanged { sidebarPinnedRefs[key] = pinnedState }
-        sidebarModes[key] = (channel, joint, dm, pinned, channelTabs, agentTabs)
-        if hasSectionFields { sidebarSections[key] = sections }
-        lock.unlock()
-        if pinnedChanged {
-            let refsJSON = pinnedState.refs.map { "{\"kind\":\(jsonString($0.kind)),\"id\":\(jsonString($0.id))}" }.joined(separator: ",")
-            emitRealtime("user:\(userId)", "pinned:updated", "{\"pinned\":[\(refsJSON)],\"pinnedVersion\":\(pinnedState.version)}")
+        let result = dependencies.channels.applySidebarOrder(
+            serverId: serverId,
+            userId: userId,
+            modes: modes,
+            sections: hasSectionFields ? sections : nil,
+            pinned: pinnedChanged ? pinnedState : nil,
+            expectedSectionsVersion: expectedSectionsVersion
+        )
+        if case .sectionsConflict = result {
+            throw ServerMembersAndSidebarError.sidebarSectionsConflict
         }
-        return sidebarOrder(authorization: authorization, serverId: serverId)
+        if pinnedChanged {
+            let refsJSON = pinnedState.refs
+                .map { "{\"kind\":\(jsonString($0.kind)),\"id\":\(jsonString($0.id))}" }
+                .joined(separator: ",")
+            dependencies.emitRealtime(
+                "user:\(userId)",
+                "pinned:updated",
+                "{\"pinned\":[\(refsJSON)],\"pinnedVersion\":\(pinnedState.version)}"
+            )
+        }
+        return try sidebarOrder(authorization: authorization, serverId: serverId)
     }
 
-    public func sidebarOrder(authorization: String?, serverId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    // MARK: - GET /api/servers/:id/sidebar-order
+
+    /// The caller's sidebar order with the stored modes, sections and pinned
+    /// references. A pinned ledger that was never written is derived from the
+    /// OAuth order's `pinnedOrder`, exactly as the retired handler did.
+    public func sidebarOrder(authorization: String?, serverId: String) throws -> SidebarOrderResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ServerMembersAndSidebarError.unauthorized
         }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        guard dependencies.oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            throw ServerMembersAndSidebarError.notAMember
         }
-        let order = oauth.sanitizedSidebarOrder(serverId: serverId, userId: userId)
-        lock.lock()
-        let visibleChannelOrder = order.channelOrder.filter { postableChannels[$0]?.deletedAt == nil }
-        lock.unlock()
-        func array(_ values: [String]) -> String {
-            values.map { jsonString($0) }.joined(separator: ",")
-        }
-        lock.lock()
-        let modes = sidebarModes["\(serverId)\n\(userId)"] ?? ("manual", "manual", "manual", "manual", ["chat"], ["activity", "profile"])
-        let sections = sidebarSections["\(serverId)\n\(userId)"] ?? ([], [], [], 0)
-        let storedPinned = sidebarPinnedRefs["\(serverId)\n\(userId)"]
-        lock.unlock()
-        let pinnedState: (refs: [(kind: String, id: String)], channelIds: [String], agentIds: [String], version: Int)
-        if let storedPinned {
+        let order = dependencies.oauth.sanitizedSidebarOrder(serverId: serverId, userId: userId)
+        let visibleChannelOrder = dependencies.channels.liveChannelIds(order.channelOrder)
+        let snapshot = dependencies.channels.sidebarSnapshot(serverId: serverId, userId: userId)
+        let pinnedState: ServersAndChannelsStore.SidebarPinnedRow
+        if let storedPinned = snapshot.pinned {
             pinnedState = storedPinned
         } else {
-            var refs: [(kind: String, id: String)] = []
+            var refs: [ServersAndChannelsStore.SidebarPinRow] = []
             var channelIds: [String] = []
             var agentIds: [String] = []
             for id in order.pinnedOrder {
-                if oauth.agentRuntimeInfo(id: id)?.serverId == serverId {
-                    refs.append(("agent", id))
+                if dependencies.oauth.agentRuntimeInfo(id: id)?.serverId == serverId {
+                    refs.append(ServersAndChannelsStore.SidebarPinRow(kind: "agent", id: id))
                     agentIds.append(id)
-                } else if oauth.channelInfo(id: id)?.serverId == serverId {
-                    refs.append(("channel", id))
+                } else if dependencies.oauth.channelInfo(id: id)?.serverId == serverId {
+                    refs.append(ServersAndChannelsStore.SidebarPinRow(kind: "channel", id: id))
                     channelIds.append(id)
                 } else {
-                    refs.append(("human", id))
+                    refs.append(ServersAndChannelsStore.SidebarPinRow(kind: "human", id: id))
                 }
             }
-            pinnedState = (refs, channelIds, agentIds, 0)
+            pinnedState = ServersAndChannelsStore.SidebarPinnedRow(
+                refs: refs,
+                channelIds: channelIds,
+                agentIds: agentIds,
+                version: 0
+            )
         }
-        let pinnedJSON = pinnedState.refs.map {
-            "{\"kind\":\(jsonString($0.kind)),\"id\":\(jsonString($0.id))}"
-        }.joined(separator: ",")
-        let legacyPinnedOrder = storedPinned == nil ? order.pinnedOrder : (pinnedState.channelIds + pinnedState.agentIds)
-        let sectionJSON = sections.sections.map { section -> String in
-            "{\"id\":\(jsonString(section.id)),\"name\":\(jsonString(section.name)),\"emoji\":\(section.emoji.map { jsonString($0) } ?? "null"),\"sortMode\":\(jsonString(section.sortMode))}"
-        }.joined(separator: ",")
-        let placementJSON = sections.placements.map { placement in
-            "{\"kind\":\(jsonString(placement.kind)),\"id\":\(jsonString(placement.id)),\"sectionId\":\(jsonString(placement.sectionId)),\"position\":\(placement.position)}"
-        }.joined(separator: ",")
-        return Self.json(200, "{\"channelOrder\":[\("\(array(visibleChannelOrder))")],\"agentOrder\":[\("\(array(order.agentOrder))")],\"dmOrder\":[\("\(array(order.dmOrder))")],\"pinned\":[\(pinnedJSON)],\"pinnedChannelIds\":[\("\(array(pinnedState.channelIds))")],\"pinnedAgentIds\":[\("\(array(pinnedState.agentIds))")],\"pinnedOrder\":[\("\(array(legacyPinnedOrder))")],\"pinnedVersion\":\(pinnedState.version),\"hiddenDmIds\":[\("\(array(order.hiddenDmIds))")],\"channelSortMode\":\(jsonString(modes.channel)),\"jointChannelSortMode\":\(jsonString(modes.joint)),\"dmSortMode\":\(jsonString(modes.dm)),\"pinnedSortMode\":\(jsonString(modes.pinned)),\"channelPanelTabOrder\":[\("\(array(modes.channelTabs))")],\"agentPanelTabOrder\":[\("\(array(modes.agentTabs))")],\"customSections\":[\("\(sectionJSON)")],\"sectionOrder\":[\("\(array(sections.order.isEmpty ? ["system:pinned", "system:joint", "system:channels", "system:dms"] : sections.order))")],\"sectionPlacements\":[\("\(placementJSON)")],\"sectionsVersion\":\(sections.version)}")
-    }
-
-    public func addTaskSnapshot(
-        channelId: String,
-        title: String,
-        status: String,
-        createdAt: Date,
-        updatedAt: Date,
-        completedAt: Date? = nil
-    ) {
-        lock.lock()
-        let taskNumber = taskRecords.filter { $0.channelId == channelId }.count + 1
-        taskRecords.append(TaskRecord(
-            id: UUID().uuidString.lowercased(),
-            channelId: channelId,
-            title: title,
-            description: nil,
-            status: status,
-            taskNumber: taskNumber,
-            messageId: UUID().uuidString.lowercased(),
-            createdAt: createdAt,
-            completedAt: completedAt,
-            updatedAt: updatedAt
-        ))
-        lock.unlock()
-    }
-
-    public func addCompletedTask(
-        channelId: String,
-        title: String,
-        createdAt: Date,
-        completedAt: Date
-    ) {
-        lock.lock()
-        let taskNumber = taskRecords.filter { $0.channelId == channelId }.count + 1
-        taskRecords.append(TaskRecord(
-            id: UUID().uuidString.lowercased(),
-            channelId: channelId,
-            title: title,
-            description: nil,
-            status: "done",
-            taskNumber: taskNumber,
-            messageId: UUID().uuidString.lowercased(),
-            createdAt: createdAt,
-            completedAt: completedAt
-        ))
-        lock.unlock()
-    }
-
-    public func addTask(channelId: String, title: String, description: String?) -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        let taskNumber = taskRecords.filter { $0.channelId == channelId }.count + 1
-        let id = UUID().uuidString.lowercased()
-        taskRecords.append(TaskRecord(
-            id: id,
-            channelId: channelId,
-            title: title,
-            description: description,
-            status: "todo",
-            taskNumber: taskNumber,
-            messageId: UUID().uuidString.lowercased(),
-            createdAt: Date()
-        ))
-        return id
-    }
-
-    public func addTasks(
-        channelId: String, titles: [String], descriptions: [String?]? = nil,
-        creatorId: String? = nil, creatorType: String = "user"
-    ) -> [String] {
-        // The directory lock keeps this append ordered with the readers that
-        // still snapshot `taskRecords`; the store method itself is one locked
-        // read-modify-write for the row array. `creatorType` is accepted for
-        // callers but the row has no column for it, as before.
-        lock.lock()
-        defer { lock.unlock() }
-        return tasksAndRemindersStore.appendTasks(
-            channelId: channelId,
-            titles: titles,
-            descriptions: descriptions,
-            creatorId: creatorId
+        let legacyPinnedOrder = snapshot.pinned == nil
+            ? order.pinnedOrder
+            : (pinnedState.channelIds + pinnedState.agentIds)
+        let sections = snapshot.sections
+        return SidebarOrderResponse(
+            channelOrder: visibleChannelOrder,
+            agentOrder: order.agentOrder,
+            dmOrder: order.dmOrder,
+            pinned: pinnedState.refs.map { SidebarPinDTO(kind: $0.kind, id: $0.id) },
+            pinnedChannelIds: pinnedState.channelIds,
+            pinnedAgentIds: pinnedState.agentIds,
+            pinnedOrder: legacyPinnedOrder,
+            pinnedVersion: pinnedState.version,
+            hiddenDmIds: order.hiddenDmIds,
+            channelSortMode: snapshot.modes.channel,
+            jointChannelSortMode: snapshot.modes.joint,
+            dmSortMode: snapshot.modes.dm,
+            pinnedSortMode: snapshot.modes.pinned,
+            channelPanelTabOrder: snapshot.modes.channelTabs,
+            agentPanelTabOrder: snapshot.modes.agentTabs,
+            customSections: sections.sections.map {
+                SidebarSectionDTO(id: $0.id, name: $0.name, emoji: $0.emoji, sortMode: $0.sortMode)
+            },
+            sectionOrder: sections.order.isEmpty ? ServersAndChannelsStore.SidebarSectionsRow.defaults.order : sections.order,
+            sectionPlacements: sections.placements.map {
+                SidebarPlacementDTO(kind: $0.kind, id: $0.id, sectionId: $0.sectionId, position: $0.position)
+            },
+            sectionsVersion: sections.version
         )
     }
 
+    // MARK: - GET /api/servers/:id/labs
 
-    func taskChannelAccess(serverId: String, channelId: String, userId: String) -> TaskChannelAccess {
-        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
-            return .missing
-        }
-        if oauth.isChannelParticipant(channelId: channelId, userId: userId) {
-            return .write
-        }
-        let type = oauth.channelType(id: channelId) ?? "channel"
-        return type == "channel" ? .readOnly : .missing
-    }
-
-    /// Public view of `taskChannelAccess` for the channel-messaging service
-    /// until the channel policy moves into its own store. Keeping the decision
-    /// here avoids a second copy of the participant/read-only rule.
-    public func channelTaskAccess(serverId: String, channelId: String, userId: String) -> ChannelTaskAccess {
-        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
-        case .missing:
-            .missing
-        case .readOnly:
-            .readOnly
-        case .write:
-            .write
-        }
-    }
-
-
-
-    func taskJSON(_ task: TaskRecord) -> String {
-        let assignee = task.assigneeId.map { jsonString($0) } ?? "null"
-        let assigneeType = task.assigneeType.map { jsonString($0) } ?? "null"
-        let claimed = task.claimedAt.map { jsonString(ISO8601DateFormatter().string(from: $0)) } ?? "null"
-        return "{\"id\":\(jsonString(task.id)),\"channelId\":\(jsonString(task.channelId)),\"messageId\":\(jsonString(task.messageId)),\"title\":\(jsonString(task.title)),\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber),\"claimedById\":\(assignee),\"claimedByType\":\(assigneeType),\"claimedAt\":\(claimed),\"revision\":\(task.revision)\(task.requiresResourceReceipt ? ",\"requiresResourceReceipt\":true" : "")}"
-    }
-
-    func labsJSON(serverId: String, userId: String, role: String, state: ServerLabsState) -> String {
-        let labs = Self.labDefinitions
-            .filter { $0.state == "open" || $0.state == "paused" }
-            .map { lab -> String in
-                let enrolled = state.enrolled.contains(lab.key)
-                let effective = state.accessEnabled && lab.state == "open" && enrolled
-                let formatter = ISO8601DateFormatter()
-                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                let updated = state.updatedAt[lab.key].map { jsonString(formatter.string(from: $0)) } ?? "null"
-                return "{\"labKey\":\(jsonString(lab.key)),\"name\":\(jsonString(lab.name)),\"description\":\(jsonString(lab.description)),\"state\":\(jsonString(lab.state)),\"enrolled\":\(enrolled),\"effective\":\(effective),\"updatedAt\":\(updated)}"
-            }
-            .joined(separator: ",")
-        let canManageAccess = role == "owner"
-        let canManageEnrollments = role == "owner" || role == "admin"
-        return "{\"accessEnabled\":\(state.accessEnabled),\"version\":\(state.version),\"canManageAccess\":\(canManageAccess),\"canManageEnrollments\":\(canManageEnrollments),\"labs\":[\(labs)]}"
-    }
-
-    public func getServerLabs(authorization: String?, serverId: String, headerServerId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    /// The server lab catalog. Any member may read it; the manage flags are
+    /// role-derived.
+    public func getServerLabs(
+        authorization: String?,
+        serverId: String,
+        headerServerId: String
+    ) throws -> ServerLabsResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ServerMembersAndSidebarError.unauthorized
         }
         guard headerServerId == serverId else {
-            return Self.json(403, "{\"error\":\"Server scope forbidden\",\"code\":\"server_scope_forbidden\"}")
+            throw ServerMembersAndSidebarError.serverScopeForbidden
         }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        guard let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw ServerMembersAndSidebarError.forbidden
         }
-        lock.lock()
-        let state = serverLabsState[serverId] ?? ServerLabsState()
-        lock.unlock()
-        return Self.json(200, labsJSON(serverId: serverId, userId: userId, role: role, state: state))
+        let state = dependencies.channels.serverLabs(serverId: serverId)
+        return ServerLabsResponse(
+            accessEnabled: state.accessEnabled,
+            version: state.version,
+            canManageAccess: role == "owner",
+            canManageEnrollments: role == "owner" || role == "admin",
+            labs: labDTOs(state: state)
+        )
     }
 
-    public func patchServerLabsAccess(authorization: String?, serverId: String, headerServerId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    // MARK: - PATCH /api/servers/:id/labs/access
+
+    /// Flips the server lab master switch. The expected-version check, the
+    /// toggle and the version bump are one store critical section.
+    public func patchServerLabsAccess(
+        authorization: String?,
+        serverId: String,
+        headerServerId: String,
+        body: ServerLabsToggleRequest?
+    ) throws -> ServerLabsAccessPatchResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ServerMembersAndSidebarError.unauthorized
         }
         guard headerServerId == serverId else {
-            return Self.json(403, "{\"error\":\"Server scope forbidden\",\"code\":\"server_scope_forbidden\"}")
+            throw ServerMembersAndSidebarError.serverScopeForbidden
         }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        guard let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw ServerMembersAndSidebarError.forbidden
         }
         guard role == "owner" else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            throw ServerMembersAndSidebarError.forbidden
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let enabled = object["enabled"] as? Bool,
-              let expectedVersion = object["expectedVersion"] as? Int
-        else {
-            return Self.json(400, "{\"error\":\"Invalid labs access request\"}")
+        guard let body, let enabled = body.enabled, let expectedVersion = body.expectedVersion else {
+            throw ServerMembersAndSidebarError.invalidLabsAccessRequest
         }
-        lock.lock()
-        var state = serverLabsState[serverId] ?? ServerLabsState()
-        if expectedVersion != state.version {
-            let current = state.version
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"Server Labs version changed\",\"code\":\"server_labs_version_conflict\",\"currentVersion\":\(current)}")
+        switch dependencies.channels.applyLabsAccess(
+            serverId: serverId,
+            enabled: enabled,
+            expectedVersion: expectedVersion
+        ) {
+        case .versionConflict(let currentVersion):
+            throw ServerMembersAndSidebarError.serverLabsVersionConflict(currentVersion: currentVersion)
+        case .applied(let state, let changed):
+            return ServerLabsAccessPatchResponse(
+                applied: changed,
+                accessEnabled: state.accessEnabled,
+                version: state.version,
+                labs: labDTOs(state: state)
+            )
         }
-        let applied = state.accessEnabled != enabled
-        if applied {
-            state.accessEnabled = enabled
-            state.version += 1
-        }
-        serverLabsState[serverId] = state
-        lock.unlock()
-        var replyState = state
-        if !applied {
-            replyState.version = state.version
-        }
-        let json = labsJSON(serverId: serverId, userId: userId, role: role, state: replyState)
-        return Self.json(200, "{\"applied\":\(applied),\"accessEnabled\":\(state.accessEnabled),\"version\":\(state.version),\"labs\":\(labsOnlyJSON(json))}")
     }
 
-    func labsOnlyJSON(_ labs: String) -> String {
-        guard let range = labs.range(of: "\"labs\":[") else { return "[]" }
-        let suffix = labs[range.upperBound...]
-        guard let end = suffix.lastIndex(of: "]") else { return "[]" }
-        return "[" + String(suffix[..<end]) + "]"
-    }
+    // MARK: - PUT /api/servers/:id/labs/:labKey
 
-    public func putServerLabEnrollment(authorization: String?, serverId: String, headerServerId: String, labKey: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    /// Enrolls or unenrolls the caller's server in one lab. The expected version,
+    /// the master switch, the lab state and the enrollment write are one store
+    /// critical section, in the published decision order.
+    public func putServerLabEnrollment(
+        authorization: String?,
+        serverId: String,
+        headerServerId: String,
+        labKey: String,
+        body: ServerLabsToggleRequest?
+    ) throws -> ServerLabEnrollmentResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ServerMembersAndSidebarError.unauthorized
         }
         guard headerServerId == serverId else {
-            return Self.json(403, "{\"error\":\"Server scope forbidden\",\"code\":\"server_scope_forbidden\"}")
+            throw ServerMembersAndSidebarError.serverScopeForbidden
         }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        guard let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw ServerMembersAndSidebarError.forbidden
         }
         guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            throw ServerMembersAndSidebarError.forbidden
         }
-        guard let definition = Self.labDefinitions.first(where: { $0.key == labKey }),
+        guard let definition = EmailLoginDirectory.labDefinitions.first(where: { $0.key == labKey }),
               definition.state == "open" || definition.state == "paused"
         else {
-            return Self.json(404, "{\"error\":\"Lab not found\"}")
+            throw ServerMembersAndSidebarError.labNotFound
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let enabled = object["enabled"] as? Bool,
-              let expectedVersion = object["expectedVersion"] as? Int
-        else {
-            return Self.json(400, "{\"error\":\"Invalid lab enrollment request\"}")
+        guard let body, let enabled = body.enabled, let expectedVersion = body.expectedVersion else {
+            throw ServerMembersAndSidebarError.invalidLabEnrollmentRequest
         }
-        lock.lock()
-        var state = serverLabsState[serverId] ?? ServerLabsState()
-        if expectedVersion != state.version {
-            let current = state.version
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"Server Labs version changed\",\"code\":\"server_labs_version_conflict\",\"currentVersion\":\(current)}")
+        switch dependencies.channels.applyLabEnrollment(
+            serverId: serverId,
+            labKey: labKey,
+            enabled: enabled,
+            expectedVersion: expectedVersion,
+            labOpen: definition.state == "open",
+            now: dependencies.now()
+        ) {
+        case .versionConflict(let currentVersion):
+            throw ServerMembersAndSidebarError.serverLabsVersionConflict(currentVersion: currentVersion)
+        case .accessDisabled:
+            throw ServerMembersAndSidebarError.serverLabsAccessDisabled
+        case .labNotOpen:
+            throw ServerMembersAndSidebarError.labNotOpen
+        case .applied(let state, let changed):
+            return ServerLabEnrollmentResponse(
+                applied: changed,
+                version: state.version,
+                labs: labDTOs(state: state)
+            )
         }
-        guard state.accessEnabled else {
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"Server Labs access is disabled\",\"code\":\"server_labs_access_disabled\"}")
-        }
-        guard definition.state == "open" else {
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"Lab is not open\",\"code\":\"lab_not_open\"}")
-        }
-        let isEnrolled = state.enrolled.contains(labKey)
-        let applied = isEnrolled != enabled
-        if applied {
-            if enabled {
-                state.enrolled.insert(labKey)
-                state.updatedAt[labKey] = Date()
-            } else {
-                state.enrolled.remove(labKey)
-            }
-            state.version += 1
-        }
-        serverLabsState[serverId] = state
-        lock.unlock()
-        let json = labsJSON(serverId: serverId, userId: userId, role: role, state: state)
-        return Self.json(200, "{\"applied\":\(applied),\"version\":\(state.version),\"labs\":\(labsOnlyJSON(json))}")
     }
 
-    public func taskSnapshotMetrics(authorization: String?, serverId: String, rawQuery: String?) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    // MARK: - GET /api/tasks/server/snapshot-metrics
+
+    /// The task snapshot aggregate. Only visible channels count, and an
+    /// explicit `channelId` must be a readable channel on this server.
+    public func taskSnapshotMetrics(
+        authorization: String?,
+        serverId: String,
+        rawQuery: String?
+    ) throws -> TaskSnapshotMetricsResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ServerMembersAndSidebarError.unauthorized
         }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        guard let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw ServerMembersAndSidebarError.notAMember
         }
         guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            throw ServerMembersAndSidebarError.forbidden
         }
         var channelFilter: String?
         for pair in (rawQuery ?? "").split(separator: "&") {
@@ -754,23 +862,26 @@ extension EmailLoginDirectory {
             if parts.count == 2, parts[0] == "channelId" {
                 let rawChannel = parts[1].removingPercentEncoding ?? parts[1]
                 guard UUID(uuidString: rawChannel) != nil,
-                      let channel = oauth.channelInfo(id: rawChannel), channel.serverId == serverId
+                      let channel = dependencies.oauth.channelInfo(id: rawChannel),
+                      channel.serverId == serverId
                 else {
-                    return Self.json(404, "{\"error\":\"Channel not found\"}")
+                    throw ServerMembersAndSidebarError.channelNotFound
                 }
-                if (oauth.channelType(id: rawChannel) ?? "channel") != "channel",
-                   !oauth.isChannelParticipant(channelId: rawChannel, userId: userId) {
-                    return Self.json(404, "{\"error\":\"Channel not found\"}")
+                if (dependencies.oauth.channelType(id: rawChannel) ?? "channel") != "channel",
+                   !dependencies.oauth.isChannelParticipant(channelId: rawChannel, userId: userId) {
+                    throw ServerMembersAndSidebarError.channelNotFound
                 }
                 channelFilter = rawChannel
             }
         }
-        let visible = Set(oauth.channelsForServer(serverId: serverId, userId: userId).filter { $0.joined }.map { $0.id })
-        lock.lock()
-        let rows = taskRecords.filter { task in
+        let visible = Set(
+            dependencies.oauth.channelsForServer(serverId: serverId, userId: userId)
+                .filter { $0.joined }
+                .map { $0.id }
+        )
+        let rows = dependencies.tasks.taskRecords.filter { task in
             channelFilter.map({ $0 == task.channelId }) ?? visible.contains(task.channelId)
         }
-        lock.unlock()
         let inReview = rows.filter { $0.status == "in_review" }.count
         let done = rows.filter { $0.status == "done" }.count
         let durations = rows.compactMap { task -> Double? in
@@ -782,29 +893,40 @@ extension EmailLoginDirectory {
             let index = max(0, min(durations.count - 1, Int(ceil(value * Double(durations.count))) - 1))
             return durations[index]
         }
-        let median = percentile(0.5)
-        let p90 = percentile(0.9)
-        func number(_ value: Double) -> String {
-            value == value.rounded() ? String(Int(value)) : String(format: "%.2f", value)
-        }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let firstCreatedAt = rows.compactMap { $0.createdAt }.min()
+        let firstCreatedAt = rows.map(\.createdAt).min()
         let latestUpdatedAt = rows.compactMap { $0.updatedAt ?? $0.completedAt ?? $0.createdAt }.max()
-        let firstJSON = firstCreatedAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
-        let latestJSON = latestUpdatedAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
-        return Self.json(200, "{\"total\":\(rows.count),\"inReview\":\(inReview),\"done\":\(done),\"durationSamples\":\(durations.count),\"medianHours\":\(number(median)),\"p90Hours\":\(number(p90)),\"firstCreatedAt\":\(firstJSON),\"latestUpdatedAt\":\(latestJSON)}")
+        return TaskSnapshotMetricsResponse(
+            total: rows.count,
+            inReview: inReview,
+            done: done,
+            durationSamples: durations.count,
+            medianHours: Self.number(percentile(0.5)),
+            p90Hours: Self.number(percentile(0.9)),
+            firstCreatedAt: firstCreatedAt.map { formatter.string(from: $0) },
+            latestUpdatedAt: latestUpdatedAt.map { formatter.string(from: $0) }
+        )
     }
 
-    public func taskPeriodMetrics(authorization: String?, serverId: String, rawQuery: String?) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    // MARK: - GET /api/tasks/server/period-metrics
+
+    /// The two-week task aggregate: `from`→`midpoint` for the previous window
+    /// and `midpoint`→`to` for the current one. Both windows must be exactly one
+    /// week long.
+    public func taskPeriodMetrics(
+        authorization: String?,
+        serverId: String,
+        rawQuery: String?
+    ) throws -> TaskPeriodMetricsResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ServerMembersAndSidebarError.unauthorized
         }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        guard let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw ServerMembersAndSidebarError.notAMember
         }
         guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            throw ServerMembersAndSidebarError.forbidden
         }
         var params: [String: String] = [:]
         for pair in (rawQuery ?? "").split(separator: "&") {
@@ -818,38 +940,47 @@ extension EmailLoginDirectory {
             guard let value else { return nil }
             return formatter.date(from: value) ?? fallback.date(from: value)
         }
-        guard let from = parse(params["from"]), let midpoint = parse(params["midpoint"]), let to = parse(params["to"]) else {
-            return Self.json(400, "{\"error\":\"Invalid metrics window\"}")
+        guard let from = parse(params["from"]),
+              let midpoint = parse(params["midpoint"]),
+              let to = parse(params["to"])
+        else {
+            throw ServerMembersAndSidebarError.invalidMetricsWindow
         }
         let week: TimeInterval = 7 * 24 * 60 * 60
         guard abs(midpoint.timeIntervalSince(from) - week) < 1,
               abs(to.timeIntervalSince(midpoint) - week) < 1
         else {
-            return Self.json(400, "{\"error\":\"Invalid metrics window\"}")
+            throw ServerMembersAndSidebarError.invalidMetricsWindow
         }
         var channelFilter: String?
         if let rawChannel = params["channelId"] {
             guard UUID(uuidString: rawChannel) != nil else {
-                return Self.json(400, "{\"error\":\"Invalid channelId\"}")
+                throw ServerMembersAndSidebarError.invalidChannelId
             }
-            guard let channel = oauth.channelInfo(id: rawChannel), channel.serverId == serverId else {
-                return Self.json(404, "{\"error\":\"Channel not found\"}")
+            guard let channel = dependencies.oauth.channelInfo(id: rawChannel),
+                  channel.serverId == serverId
+            else {
+                throw ServerMembersAndSidebarError.channelNotFound
             }
-            if (oauth.channelType(id: rawChannel) ?? "channel") != "channel",
-               !oauth.isChannelParticipant(channelId: rawChannel, userId: userId) {
-                return Self.json(404, "{\"error\":\"Channel not found\"}")
+            if (dependencies.oauth.channelType(id: rawChannel) ?? "channel") != "channel",
+               !dependencies.oauth.isChannelParticipant(channelId: rawChannel, userId: userId) {
+                throw ServerMembersAndSidebarError.channelNotFound
             }
             channelFilter = rawChannel
         }
-        let visible = Set(oauth.channelsForServer(serverId: serverId, userId: userId).filter { $0.joined }.map { $0.id })
-        lock.lock()
-        let rows = taskRecords.filter { task in
+        let visible = Set(
+            dependencies.oauth.channelsForServer(serverId: serverId, userId: userId)
+                .filter { $0.joined }
+                .map { $0.id }
+        )
+        let rows = dependencies.tasks.taskRecords.filter { task in
             guard let completedAt = task.completedAt else { return false }
-            guard channelFilter.map({ $0 == task.channelId }) ?? visible.contains(task.channelId) else { return false }
+            guard channelFilter.map({ $0 == task.channelId }) ?? visible.contains(task.channelId) else {
+                return false
+            }
             return completedAt >= from && completedAt < to
         }
-        lock.unlock()
-        func metrics(_ start: Date, _ end: Date) -> String {
+        func metrics(_ start: Date, _ end: Date) -> TaskPeriodMetricsWindowDTO {
             let window = rows.filter { task in
                 guard let completedAt = task.completedAt else { return false }
                 return completedAt >= start && completedAt < end
@@ -867,12 +998,199 @@ extension EmailLoginDirectory {
             } else {
                 median = (durations[durations.count / 2 - 1] + durations[durations.count / 2]) / 2
             }
-            func number(_ value: Double) -> String {
-                value == value.rounded() ? String(Int(value)) : String(format: "%.2f", value)
-            }
-            return "{\"completed\":\(window.count),\"durationSamples\":\(durations.count),\"meanHours\":\(number(mean)),\"medianHours\":\(number(median))}"
+            return TaskPeriodMetricsWindowDTO(
+                completed: window.count,
+                durationSamples: durations.count,
+                meanHours: Self.number(mean),
+                medianHours: Self.number(median)
+            )
         }
-        return Self.json(200, "{\"current\":\(metrics(midpoint, to)),\"previous\":\(metrics(from, midpoint))}")
+        return TaskPeriodMetricsResponse(
+            current: metrics(midpoint, to),
+            previous: metrics(from, midpoint)
+        )
     }
 
+    // MARK: - Helpers
+
+    private func patchModes(
+        _ body: SidebarOrderPatchRequest,
+        current: ServersAndChannelsStore.SidebarModesRow
+    ) throws -> ServersAndChannelsStore.SidebarModesRow {
+        func mode(_ field: SidebarField<String>, _ current: String) throws -> String {
+            switch field {
+            case .absent:
+                return current
+            case .value(let value) where ["manual", "recent", "az"].contains(value):
+                return value
+            case .value, .invalid:
+                throw ServerMembersAndSidebarError.invalidSidebarSortMode
+            }
+        }
+        func tabs(
+            _ field: SidebarField<[String]>,
+            _ current: [String],
+            allowed: Set<String>
+        ) throws -> [String] {
+            switch field {
+            case .absent:
+                return current
+            case .value(let values):
+                return values.filter { allowed.contains($0) }
+            case .invalid:
+                throw ServerMembersAndSidebarError.invalidSidebarPanelOrder
+            }
+        }
+        return ServersAndChannelsStore.SidebarModesRow(
+            channel: try mode(body.channelSortMode, current.channel),
+            joint: try mode(body.jointChannelSortMode, current.joint),
+            dm: try mode(body.dmSortMode, current.dm),
+            pinned: try mode(body.pinnedSortMode, current.pinned),
+            channelTabs: try tabs(
+                body.channelPanelTabOrder,
+                current.channelTabs,
+                allowed: ["files", "tasks", "chat"]
+            ),
+            agentTabs: try tabs(
+                body.agentPanelTabOrder,
+                current.agentTabs,
+                allowed: ["activity", "integrations", "profile"]
+            )
+        )
+    }
+
+    private func parseSections(
+        _ entries: [SidebarSectionPatchEntry]
+    ) throws -> [ServersAndChannelsStore.SidebarSectionRow] {
+        var parsed: [ServersAndChannelsStore.SidebarSectionRow] = []
+        for entry in entries {
+            guard let id = entry.id, !id.isEmpty, let name = entry.name, !entry.emojiInvalid else {
+                throw ServerMembersAndSidebarError.invalidCustomSections
+            }
+            let sortMode = entry.sortMode ?? "manual"
+            guard ["manual", "recent", "az"].contains(sortMode) else {
+                throw ServerMembersAndSidebarError.invalidCustomSections
+            }
+            parsed.append(ServersAndChannelsStore.SidebarSectionRow(
+                id: id,
+                name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                emoji: entry.emoji,
+                sortMode: sortMode
+            ))
+        }
+        return parsed
+    }
+
+    private func parsePlacements(
+        _ entries: [SidebarPlacementPatchEntry]
+    ) throws -> [ServersAndChannelsStore.SidebarPlacementRow] {
+        var placements: [ServersAndChannelsStore.SidebarPlacementRow] = []
+        for entry in entries {
+            guard let kind = entry.kind,
+                  ["channel", "agent"].contains(kind),
+                  let id = entry.id,
+                  let sectionId = entry.sectionId
+            else {
+                throw ServerMembersAndSidebarError.invalidSectionPlacements
+            }
+            if kind == "channel" {
+                guard dependencies.channels.liveChannelExists(id) else { continue }
+            }
+            placements.append(ServersAndChannelsStore.SidebarPlacementRow(
+                kind: kind,
+                id: id,
+                sectionId: sectionId,
+                position: placements.count
+            ))
+        }
+        return placements
+    }
+
+    private func stringArray(_ field: SidebarField<[String]>) -> [String]? {
+        switch field {
+        case .absent:
+            return []
+        case .value(let values):
+            return values
+        case .invalid:
+            return nil
+        }
+    }
+
+    private enum SidebarPinnedResolution {
+        case missing
+        case canonical(ServersAndChannelsStore.SidebarPinRow, legacyId: String)
+    }
+
+    private func sidebarPinnedChannel(
+        id: String,
+        serverId: String,
+        userId: String
+    ) -> SidebarPinnedResolution {
+        guard let channel = dependencies.oauth.channelInfo(id: id), channel.serverId == serverId else {
+            return .missing
+        }
+        let type = dependencies.oauth.channelType(id: id) ?? "channel"
+        if type == "dm" {
+            let agents = dependencies.oauth.channelAgentIds(channelId: id)
+            if agents.count == 1 {
+                return .canonical(
+                    ServersAndChannelsStore.SidebarPinRow(kind: "agent", id: agents[0]),
+                    legacyId: id
+                )
+            }
+            let humans = dependencies.oauth.channelHumanIds(channelId: id).filter { $0 != userId }
+            if let peer = humans.first {
+                return .canonical(
+                    ServersAndChannelsStore.SidebarPinRow(kind: "human", id: peer),
+                    legacyId: id
+                )
+            }
+            return .missing
+        }
+        if type == "private",
+           !dependencies.oauth.channelHumanIds(channelId: id).contains(userId) {
+            return .missing
+        }
+        return .canonical(
+            ServersAndChannelsStore.SidebarPinRow(kind: "channel", id: id),
+            legacyId: id
+        )
+    }
+
+    private func sidebarHumanDMChannelId(peerId: String, userId: String, serverId: String) -> String? {
+        dependencies.oauth.channelsForServer(serverId: serverId, userId: userId, includeArchived: true)
+            .first {
+                $0.type == "dm"
+                    && dependencies.oauth.channelHumanIds(channelId: $0.id).contains(userId)
+                    && dependencies.oauth.channelHumanIds(channelId: $0.id).contains(peerId)
+                    && dependencies.oauth.channelAgentIds(channelId: $0.id).isEmpty
+            }?.id
+    }
+
+    private func labDTOs(state: ServerLabsState) -> [ServerLabDTO] {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return EmailLoginDirectory.labDefinitions
+            .filter { $0.state == "open" || $0.state == "paused" }
+            .map { lab in
+                let enrolled = state.enrolled.contains(lab.key)
+                let effective = state.accessEnabled && lab.state == "open" && enrolled
+                return ServerLabDTO(
+                    labKey: lab.key,
+                    name: lab.name,
+                    description: lab.description,
+                    state: lab.state,
+                    enrolled: enrolled,
+                    effective: effective,
+                    updatedAt: state.updatedAt[lab.key].map { formatter.string(from: $0) }
+                )
+            }
+    }
+
+    /// The retired `number(_:)` text: integral values print without a fractional
+    /// part, everything else with two decimals.
+    private static func number(_ value: Double) -> String {
+        value == value.rounded() ? String(Int(value)) : String(format: "%.2f", value)
+    }
 }
