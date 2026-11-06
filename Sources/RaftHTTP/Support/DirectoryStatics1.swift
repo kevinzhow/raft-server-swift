@@ -587,20 +587,6 @@ extension EmailLoginDirectory {
         return values
     }
 
-    static func parse(_ body: String) -> Parsed {
-        guard let data = body.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
-            return .invalid([Issue(path: "", message: "Expected object, received string")])
-        }
-        var issues: [Issue] = []
-        let email = stringField(object["email"], path: "email", into: &issues)
-        let password = stringField(object["password"], path: "password", into: &issues)
-        if !issues.isEmpty { return .invalid(issues) }
-        let pendingLinkToken = object["pendingLinkToken"] as? String
-        return .request(Request(email: email ?? "", password: password ?? "", pendingLinkToken: pendingLinkToken))
-    }
-
     static func channelFilesBase64URLEncode(_ value: String) -> String {
         Data(value.utf8).base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
@@ -723,10 +709,6 @@ extension EmailLoginDirectory {
         if value is Bool { return "boolean" }
         if value is NSNumber { return "number" }
         return "object"
-    }
-
-    static func invalid(_ issues: [Issue]) -> HTTPReply {
-        bodyIssues(issues, error: "Invalid email login body", code: "email_login_body_invalid")
     }
 
     static func registerInvalid(_ issues: [Issue]) -> HTTPReply {

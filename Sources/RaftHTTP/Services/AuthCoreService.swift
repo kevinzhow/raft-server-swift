@@ -20,11 +20,6 @@ public struct AuthCoreService: Sendable {
         self.directory = directory
     }
 
-    /// `POST /api/auth/login`.
-    public func login(_ body: LoginRequestDTO) -> HTTPReply {
-        directory.login(body: body.encodedBody())
-    }
-
     /// `POST /api/auth/refresh`. The replay-binding identifiers stay headers.
     public func refresh(
         _ body: RefreshRequestDTO,
@@ -836,6 +831,14 @@ extension EmailLoginDirectory {
     /// service; the directory only supplies the profile store it reads.
     public var authProfile: AuthProfileService {
         AuthProfileService(store: authProfileStore)
+    }
+
+    /// Session, identity, app-login and profile operations: identity list and
+    /// unlink, password login, the HarmonyOS app-login handoff, `GET`/`PATCH`
+    /// `/api/auth/me`, the avatar upload and the integration settings list. The
+    /// directory supplies the profile store and the OAuth ledger.
+    public var authIdentities: AuthIdentitiesService {
+        AuthIdentitiesService(store: authProfileStore, oauth: oauth)
     }
 
     /// Agent migration status, cancellation, provider position and the external

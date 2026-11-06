@@ -247,8 +247,7 @@ struct RealtimeTransportTests {
     accounts.oauth.addOwnedServer(id: serverId, slug: "realtime-send", name: "Realtime Send", ownerId: ownerId)
     let channel = accounts.oauth.createChannel(serverId: serverId, name: "realtime-send", creatorUserId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channel, memberId: ownerId, name: "realtime-send")
-    let login = accounts.login(body: "{\"email\":\"realtime-send@slock.test\",\"password\":\"password123\"}")
-    let token = (try JSONSerialization.jsonObject(with: Data(login.body.utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
+    let token = try accounts.authIdentities.login(LoginRequest(email: "realtime-send@slock.test", password: "password123")).accessToken
 
     let box = RealtimeEventBox()
     accounts.realtimeEmitter = { room, event, payload in
@@ -276,8 +275,7 @@ struct RealtimeTransportTests {
     let channel = accounts.oauth.createChannel(serverId: serverId, name: "realtime-reaction", creatorUserId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channel, memberId: ownerId, name: "realtime-reaction")
     let messageId = accounts.addHumanMessageForTesting(channelId: channel, senderId: ownerId, content: "react to me")
-    let login = accounts.login(body: "{\"email\":\"realtime-reaction@slock.test\",\"password\":\"password123\"}")
-    let token = (try JSONSerialization.jsonObject(with: Data(login.body.utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
+    let token = try accounts.authIdentities.login(LoginRequest(email: "realtime-reaction@slock.test", password: "password123")).accessToken
 
     let box = RealtimeEventBox()
     accounts.realtimeEmitter = { room, event, payload in

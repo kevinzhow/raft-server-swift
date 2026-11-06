@@ -54,18 +54,6 @@ final class AuthProfileStore: @unchecked Sendable {
     /// rate limit can count sends from the last hour even after old rows go.
     private var emailVerificationIssueDates: [String: [Date]] = [:]
 
-    func identities(userId: String) -> [(provider: String, providerEmail: String)] {
-        lock.lock()
-        defer { lock.unlock() }
-        return identityRows[userId] ?? []
-    }
-
-    func replaceIdentities(userId: String, rows: [(provider: String, providerEmail: String)]) {
-        lock.lock()
-        identityRows[userId] = rows
-        lock.unlock()
-    }
-
     func appendIdentity(userId: String, provider: String, providerEmail: String) {
         lock.lock()
         identityRows[userId, default: []].append((provider, providerEmail))
@@ -525,11 +513,6 @@ final class AuthProfileStore: @unchecked Sendable {
         set { accountState.emailVerifications = newValue }
     }
 
-    var appLoginRequests: [String: AppLoginRequest] {
-        get { accountState.appLoginRequests }
-        set { accountState.appLoginRequests = newValue }
-    }
-
     var socialCompletions: [SocialCompletion] {
         get { accountState.socialCompletions }
         set { accountState.socialCompletions = newValue }
@@ -697,5 +680,351 @@ final class AuthProfileStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return accountSurface.accounts.values.first { $0.name == exactName }
+    }
+}
+
+// MARK: - Session identity, app login and profile writes
+//
+// Each method below is one critical section over the account surface (and, for
+// the identity list, the identity rows). They return plain values and decision
+// enums; the `AuthIdentitiesService` maps them to its DTOs and typed errors.
+
+/// A user's linked sign-in identities and the password flag, read together.
+struct AuthIdentitySnapshot {
+    var rows: [(provider: String, providerEmail: String)]
+    var passwordConfigured: Bool
+}
+
+/// The access/refresh pair one opened session family issued.
+struct IssuedSessionTokens: Sendable, Equatable {
+    var accessToken: String
+    var refreshToken: String
+}
+
+/// Result of the locked unlink-and-guard decision.
+enum UnlinkIdentityOutcome {
+    case notLinked(AuthIdentitySnapshot)
+    case passwordCredentialRequired
+    case unlinked(AuthIdentitySnapshot)
+}
+
+/// Result of the locked password login (pending-link check, password check,
+/// session open and link consume).
+enum AuthenticateOutcome {
+    case authenticated(userId: String, email: String, tokens: IssuedSessionTokens, linkedProvider: String?)
+    case pendingLinkExpired
+    case pendingLinkAccountMismatch
+    case rejected
+}
+
+/// What the signed-in user decided for a pending app-login request.
+enum AppLoginDecision {
+    case approve(userId: String, code: String)
+    case deny
+}
+
+enum AppLoginDecisionOutcome {
+    case decided(AppLoginRequest)
+    case notFound
+    case expired(AppLoginRequest)
+    case notPending
+}
+
+/// Result of the locked one-time-code completion.
+enum CompleteAppLoginOutcome {
+    case completed(Account, IssuedSessionTokens)
+    case codeNotFound
+    case codeConsumed
+    case codeExpired
+    case pkceMismatch
+    case notApproved
+    case accountMissing
+}
+
+enum ChangePasswordOutcome: Equatable, Sendable {
+    case changed
+    case accountMissing
+    case wrongPassword
+}
+
+/// The validated `PATCH /api/auth/me` profile fields. A double optional is
+/// "leave alone" (outer `nil`), "clear" (`.some(nil)`) or "set".
+struct AccountProfileUpdate: Sendable {
+    var referralSource: String?? = nil
+    var referralSourceOther: String?? = nil
+    var referralSourceSkipped = false
+    var preferredLanguage: String?? = nil
+    var preferredTimezone: String?? = nil
+    var preferredTranslationMode: String? = nil
+    var autoTranslationEnabled: Bool? = nil
+    var preferredTranslationDisplay: String? = nil
+    var preferredTimeFormat: String?? = nil
+    var preferredMessageBodyFontSize: String?? = nil
+    var displayLanguage: String?? = nil
+    var shareUsageData: Bool?? = nil
+}
+
+extension AuthProfileStore {
+    /// The identity rows and the password flag in one critical section.
+    func identitySnapshot(userId: String) -> AuthIdentitySnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return identitySnapshotLocked(userId: userId, rows: identityRows[userId] ?? [])
+    }
+
+    private func identitySnapshotLocked(
+        userId: String,
+        rows: [(provider: String, providerEmail: String)]
+    ) -> AuthIdentitySnapshot {
+        let passwordConfigured = accountSurface.accounts.values
+            .first { $0.id == userId }?.passwordCredentialEstablishedAt != nil
+        return AuthIdentitySnapshot(rows: rows, passwordConfigured: passwordConfigured)
+    }
+
+    /// Unlinks the first row for `provider`. The row lookup, the
+    /// final-credential guard and the row write are one critical section, so
+    /// two concurrent unlinks of a passwordless user's last two identities
+    /// cannot both pass the guard.
+    func unlinkIdentity(userId: String, provider: String) -> UnlinkIdentityOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        var rows = identityRows[userId] ?? []
+        let before = identitySnapshotLocked(userId: userId, rows: rows)
+        guard let index = rows.firstIndex(where: { $0.provider == provider }) else {
+            return .notLinked(before)
+        }
+        if rows.count == 1, !before.passwordConfigured {
+            return .passwordCredentialRequired
+        }
+        rows.remove(at: index)
+        identityRows[userId] = rows
+        return .unlinked(identitySnapshotLocked(userId: userId, rows: rows))
+    }
+
+    /// The account behind a bearer token, without the revoked-family check the
+    /// session decisions apply (`requireAuth` for the OAuth routes).
+    func account(forAnyAccessToken token: String) -> Account? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let userId = accountSurface.accessTokens[token] else { return nil }
+        return accountSurface.accounts.values.first { $0.id == userId }
+    }
+
+    /// Opens one session family. The caller holds `lock`.
+    private func openSessionLocked(userId: String) -> IssuedSessionTokens {
+        let familyId = UUID().uuidString.lowercased()
+        accountSurface.sessionFamilies[familyId] = SessionFamily(userId: userId, revokedAt: nil)
+        let accessToken = EmailLoginDirectory.token()
+        let refreshToken = EmailLoginDirectory.token()
+        accountSurface.sessions[refreshToken] = LiveSession(userId: userId, familyId: familyId)
+        accountSurface.accessTokens[accessToken] = userId
+        accountSurface.accessTokenFamilies[accessToken] = familyId
+        return IssuedSessionTokens(accessToken: accessToken, refreshToken: refreshToken)
+    }
+
+    /// Password login. The pending-link validation, the credential check, the
+    /// first-password stamp, the session open and the link consume are one
+    /// critical section, so a pending link cannot be spent twice.
+    func authenticate(
+        email: String,
+        passwordHash: String,
+        pendingLinkToken: String?,
+        now: Date
+    ) -> AuthenticateOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        var pendingLink: PendingSocialLink?
+        if let token = pendingLinkToken, !token.isEmpty {
+            guard let pending = accountSurface.pendingSocialLinks[token], !pending.consumed,
+                  !pending.cancelled, pending.expiresAt > now
+            else { return .pendingLinkExpired }
+            guard pending.email == email else { return .pendingLinkAccountMismatch }
+            pendingLink = pending
+        }
+        guard var account = accountSurface.accounts[email],
+              account.passwordHash == passwordHash,
+              account.retiredAt == nil
+        else { return .rejected }
+        if account.passwordCredentialEstablishedAt == nil {
+            account.passwordCredentialEstablishedAt = now
+            accountSurface.accounts[email] = account
+        }
+        let tokens = openSessionLocked(userId: account.id)
+        var linkedProvider: String?
+        if var pending = pendingLink {
+            pending.consumed = true
+            accountSurface.pendingSocialLinks[pending.token] = pending
+            if !accountSurface.linkedIdentities.contains(where: {
+                $0.userId == account.id && $0.provider == pending.provider
+                    && $0.providerUserId == pending.providerUserId
+            }) {
+                accountSurface.linkedIdentities.append(LinkedIdentity(
+                    userId: account.id,
+                    provider: pending.provider,
+                    providerUserId: pending.providerUserId,
+                    providerEmail: pending.email
+                ))
+            }
+            linkedProvider = pending.provider
+        }
+        return .authenticated(userId: account.id, email: account.email, tokens: tokens, linkedProvider: linkedProvider)
+    }
+
+    // MARK: App login
+
+    func insertAppLoginRequest(_ request: AppLoginRequest) {
+        lock.lock()
+        accountSurface.appLoginRequests[request.id] = request
+        lock.unlock()
+    }
+
+    func appLoginRequest(id: String) -> AppLoginRequest? {
+        lock.lock()
+        defer { lock.unlock() }
+        return accountSurface.appLoginRequests[id]
+    }
+
+    /// Approves or denies one request. The expiry check, the pending check and
+    /// the status write are one critical section, so a request cannot be both
+    /// approved and denied.
+    func decideAppLogin(
+        requestId: String,
+        decision: AppLoginDecision,
+        now: Date
+    ) -> AppLoginDecisionOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var request = accountSurface.appLoginRequests[requestId] else { return .notFound }
+        if request.expiresAt <= now { return .expired(request) }
+        guard request.status == "pending" else { return .notPending }
+        switch decision {
+        case .approve(let userId, let code):
+            request.status = "approved"
+            request.code = code
+            request.userId = userId
+        case .deny:
+            request.status = "denied"
+        }
+        accountSurface.appLoginRequests[requestId] = request
+        return .decided(request)
+    }
+
+    /// Spends one approved request's code. The code lookup, the consumed/expiry
+    /// checks, the PKCE comparison, the consumed stamp and the session open are
+    /// one critical section: a wrong verifier burns nothing, and two concurrent
+    /// completions of one code cannot both open a session.
+    func completeAppLogin(
+        code: String,
+        verifierChallenge: String,
+        now: Date
+    ) -> CompleteAppLoginOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let request = accountSurface.appLoginRequests.values.first(where: { $0.code == code }) else {
+            return .codeNotFound
+        }
+        if request.consumedAt != nil { return .codeConsumed }
+        if request.expiresAt <= now { return .codeExpired }
+        guard verifierChallenge == request.codeChallenge else { return .pkceMismatch }
+        guard let userId = request.userId else { return .notApproved }
+        var approved = request
+        approved.consumedAt = now
+        accountSurface.appLoginRequests[approved.id] = approved
+        guard let account = accountSurface.accounts.values.first(where: { $0.id == userId }) else {
+            return .accountMissing
+        }
+        return .completed(account, openSessionLocked(userId: userId))
+    }
+
+    // MARK: Profile writes
+
+    /// Replaces the password when the current one matches. The compare and the
+    /// write are one critical section.
+    func changePassword(userId: String, currentHash: String, newHash: String) -> ChangePasswordOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var account = accountSurface.accounts.values.first(where: { $0.id == userId }) else {
+            return .accountMissing
+        }
+        guard account.passwordHash == currentHash else { return .wrongPassword }
+        account.passwordHash = newHash
+        accountSurface.accounts[account.email] = account
+        return .changed
+    }
+
+    /// Applies every validated profile field and the analytics-id mapping the
+    /// usage opt-in controls in one critical section and returns the stored
+    /// row. `nil` means the account no longer exists and nothing was written.
+    func applyProfileUpdate(
+        userId: String,
+        update: AccountProfileUpdate,
+        now: Date,
+        newAnalyticsId: String
+    ) -> Account? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var account = accountSurface.accounts.values.first(where: { $0.id == userId }) else {
+            return nil
+        }
+        var changed = false
+        if let value = update.referralSource {
+            account.referralSource = value
+            account.referralSourceSkippedAt = nil
+            changed = true
+        }
+        if let value = update.referralSourceOther {
+            account.referralSourceOther = value
+            changed = true
+        }
+        if update.referralSourceSkipped {
+            account.referralSourceSkippedAt = now
+            changed = true
+        }
+        if let value = update.preferredLanguage { account.preferredLanguage = value; changed = true }
+        if let value = update.preferredTimezone { account.preferredTimezone = value; changed = true }
+        if let value = update.preferredTranslationMode { account.preferredTranslationMode = value; changed = true }
+        if let value = update.autoTranslationEnabled { account.autoTranslationEnabled = value; changed = true }
+        if let value = update.preferredTranslationDisplay { account.preferredTranslationDisplay = value; changed = true }
+        if let value = update.preferredTimeFormat { account.preferredTimeFormat = value; changed = true }
+        if let value = update.preferredMessageBodyFontSize { account.preferredMessageBodyFontSize = value; changed = true }
+        if let language = update.displayLanguage {
+            account.displayLanguage = language
+            changed = true
+        }
+        if let share = update.shareUsageData {
+            account.shareUsageData = share
+            if share == true {
+                if accountSurface.analyticsIds[account.id] == nil {
+                    accountSurface.analyticsIds[account.id] = newAnalyticsId
+                }
+            } else if share == false {
+                accountSurface.analyticsIds.removeValue(forKey: account.id)
+            }
+            changed = true
+        }
+        if changed {
+            accountSurface.accounts[account.email] = account
+        }
+        return account
+    }
+
+    /// Stores a new avatar path and returns the stored row, or `nil` when the
+    /// account no longer exists.
+    func setAvatarURL(userId: String, url: String) -> Account? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var account = accountSurface.accounts.values.first(where: { $0.id == userId }) else {
+            return nil
+        }
+        account.avatarUrl = url
+        accountSurface.accounts[account.email] = account
+        return account
+    }
+
+    /// The first/last timezone pair `me` appends once a user reported one.
+    func timezoneObservation(userId: String) -> EmailLoginDirectory.TimezoneObservation? {
+        lock.lock()
+        defer { lock.unlock() }
+        return profile.timezoneObservations[userId]
     }
 }
