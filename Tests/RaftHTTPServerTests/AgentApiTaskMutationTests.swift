@@ -22,7 +22,7 @@ import VaporTesting
     let key = accounts.mintAgentCredential(agentId: agent, scopes: ["read", "send", "tasks"], name: "tasks")
     let knownMessage = "11111111-1111-4111-8111-000001026099"
     accounts.addTaskForTesting(channelId: channel, title: "first task", messageId: knownMessage, assigneeType: nil, assigneeId: nil)
-    _ = DirectoryTaskCatalog(directory: accounts).addTasks(channelId: channel, titles: ["second task"])
+    _ = accounts.taskCatalog.addTasks(channelId: channel, titles: ["second task"])
 
     try await withApp { app in
         configure(app, services: FallbackServices(

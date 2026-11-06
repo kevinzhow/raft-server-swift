@@ -337,11 +337,8 @@ extension EmailLoginDirectory {
             sessionUserId: { [self] authorization in
                 sessionUserId(authorization: authorization)
             },
-            channelAccess: { [self] serverId, channelId, userId in
-                switch DirectoryTaskCatalog(directory: self).taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
-                case .missing: false
-                case .readOnly, .write: true
-                }
+            channelAccess: { [catalog = taskCatalog] serverId, channelId, userId in
+                catalog.canReadChannel(serverId: serverId, channelId: channelId, userId: userId)
             }
         )
     }
@@ -586,6 +583,11 @@ extension EmailLoginDirectory {
     /// they belong to domains that have not migrated yet.
     public var serverMembersAndSidebar: ServerMembersAndSidebarService {
         ServerMembersAndSidebarService(directory: self)
+    }
+
+    /// Task creation and live catalog projections share the existing owners.
+    public var taskCatalog: TaskCatalogService {
+        TaskCatalogService(tasks: tasksAndRemindersStore, profiles: authProfileStore, oauth: oauth)
     }
 
     /// Server tasks: channel task reads, the assignee write and the agent amend.

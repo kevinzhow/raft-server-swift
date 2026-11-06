@@ -1,18 +1,25 @@
 import Foundation
 
-public struct DirectoryTaskCatalog: Sendable {
-    let tasks: TasksAndRemindersStore
-    let profiles: AuthProfileStore
-    let oauth: OAuthLedger
+public struct TaskCatalogService: Sendable {
+    private let tasks: TasksAndRemindersStore
+    private let profiles: AuthProfileStore
+    private let oauth: OAuthLedger
 
-    public init(directory: EmailLoginDirectory) {
-        tasks = directory.tasksAndRemindersStore
-        profiles = directory.authProfileStore
-        oauth = directory.oauth
+    init(tasks: TasksAndRemindersStore, profiles: AuthProfileStore, oauth: OAuthLedger) {
+        self.tasks = tasks
+        self.profiles = profiles
+        self.oauth = oauth
     }
 
     func taskChannelAccess(serverId: String, channelId: String, userId: String) -> TaskChannelAccess {
         TasksAndLabsService.channelAccess(oauth: oauth, serverId: serverId, channelId: channelId, userId: userId)
+    }
+
+    func canReadChannel(serverId: String, channelId: String, userId: String) -> Bool {
+        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
+        case .missing: false
+        case .readOnly, .write: true
+        }
     }
 
     public func channelTaskAccess(serverId: String, channelId: String, userId: String) -> ChannelTaskAccess {

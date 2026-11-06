@@ -25,7 +25,7 @@ import VaporTesting
     accounts.oauth.addMember(serverId: serverId, userId: outsiderId, role: "member")
     let channelId = accounts.oauth.createChannel(serverId: serverId, name: "assign-channel", creatorUserId: ownerId)
     accounts.oauth.addChannelHuman(channelId: channelId, userId: memberId)
-    let taskId = DirectoryTaskCatalog(directory: accounts).addTasks(channelId: channelId, titles: ["assign task"]).first ?? ""
+    let taskId = accounts.taskCatalog.addTasks(channelId: channelId, titles: ["assign task"]).first ?? ""
 
     try await withApp { app in
         configure(app, services: FallbackServices(

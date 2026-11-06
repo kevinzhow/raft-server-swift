@@ -15,7 +15,7 @@ The upstream server separates route modules, services, database schema, middlewa
 | `Sources/RaftHTTPServer/FallbackApplication.swift` | Composition, middleware order, lifecycle wiring, and policy catch-alls |
 | `Sources/RaftHTTPServer/Features/` | 16 `RouteCollection` modules plus request/response helpers; 19 Swift files |
 | `Sources/RaftHTTP/EmailLogin.swift` | 28-line directory root: 12 principal store instances and the OAuth ledger; no shared lock or field forwarders |
-| `Sources/RaftHTTP/Services/` | 104 Swift files of domain services and remaining directory accessors; no Vapor imports |
+| `Sources/RaftHTTP/Services/` | 105 Swift files of domain services and remaining directory accessors; no Vapor imports |
 | `Sources/RaftHTTP/Stores/` | 54 Swift files; implementations split by responsibility; every file at most 1,000 lines, currently largest 974 |
 | `Sources/RaftHTTP/DTO/` | Codable request shapes, ordered response payloads, and semantic outcomes |
 | `Sources/RaftHTTP/Support/` | Naming, token, cursor, projection, runtime-config, and policy helpers; no directory extensions or legacy reply factories |
@@ -67,7 +67,7 @@ Conditional release-note responses retain their ETag and the original 304 header
 
 Two leaf services now make the construction graph acyclic at the known policy loops. `AgentCredentialUseService` holds Agents, OAuth and the realtime relay, preserving the owner's use/throttle transaction and publishing external presence afterwards. Credential lookup no longer needs PrivateSurface. `MessageSuppressionService` holds Messages and OAuth and evaluates current prefs/mentions using the existing predicate; execute captures this leaf and no longer constructs tools to make that decision. Their long-lived values retain owners, not state or callback snapshots.
 
-CredentialLookup, RuntimePolicy and MobileEmail helpers now receive explicit owners or narrow services; their Source directory initializers/callers are retired. TaskCatalog and the other broad service constructors/factory captures remain. Removing unused credential-use/suppression directory wrappers is part of this migration; replacing the remaining type name alone would not finish composition.
+CredentialLookup, RuntimePolicy and MobileEmail helpers now receive explicit owners or narrow services; their Source directory initializers/callers are retired. TaskCatalog is now TaskCatalogService with explicit Tasks/Profile/OAuth owners, and all six Source directory-construction calls are retired. Catalog projection, access policy and number-allocation behavior stay in that domain service. Other broad service constructors/factory captures remain. Replacing the remaining type name alone would not finish composition.
 
 ### 2.3 Stores and concurrency
 
@@ -144,7 +144,7 @@ For a new metric, expanded scope, or a reviewed pure file move, `--print-ratchet
 
 ### 3.2 Snapshot and exclusions
 
-The current handwritten-source snapshot has six directory extension occurrences, zero forwarding lines/properties, 60 server reply tokens, 94 server JSON-any text occurrences, 84 directory type references, and 169 string-literal candidates. Services have zero reply tokens; the combined Services/DTO JSON-any occurrence and the remaining Services `directory.` occurrence are comments. Source-level transport/string construction, factory captures, and nested directory contracts remain outside those narrow zeros.
+The current handwritten-source snapshot has six directory extension occurrences, zero forwarding lines/properties, 60 server reply tokens, 94 server JSON-any text occurrences, 83 directory type references, and 169 string-literal candidates. Services have zero reply tokens; the combined Services/DTO JSON-any occurrence and the remaining Services `directory.` occurrence are comments. Source-level transport/string construction, factory captures, and nested directory contracts remain outside those narrow zeros.
 
 The unchecked conformance ratchet now covers all Sources, including Generated: 28 declarations, all daemon-only; the complete server dependency closure is zero. Stores, public directories, caches, the immutable directory root, the realtime hub/session/attention state, connect state, and generated knowledge telemetry use checked storage. The realtime parser handler is deliberately non-Sendable and transferred only through SDK `NIOLoopBound` for synchronous installation on its channel loop; every entry checks that loop. Connect tasks capture immutable values and checked connection state, with channel writes/status callbacks on the owning loop. Session terminal writes and attention callbacks use a single ordered drainer outside their state locks. Session drains process at most 64 frames per batch; only backlog schedules a 1 ms continuation, so continuous HTTP broadcasts cannot keep one immediate task running indefinitely or prevent the selector from polling other connections. Idle admission still schedules its first drain immediately.
 

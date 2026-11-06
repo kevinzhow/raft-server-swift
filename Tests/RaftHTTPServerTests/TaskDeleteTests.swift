@@ -47,7 +47,7 @@ import VaporTesting
 
             let number = try await client.send(.get, headers: headers, to: "/api/tasks/channel/\(channelId)/number/1")
             #expect(number.status == .notFound)
-            #expect(DirectoryTaskCatalog(directory: accounts).addTasks(channelId: channelId, titles: []).isEmpty)
+            #expect(accounts.taskCatalog.addTasks(channelId: channelId, titles: []).isEmpty)
             #expect(second.isEmpty == false)
 
             let unknown = try await client.send(.delete, headers: headers, to: "/api/tasks/not-a-task")

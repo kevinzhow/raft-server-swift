@@ -16,8 +16,8 @@ struct ManagedMCPAssignmentsDependencies: Sendable {
     var sessionUserId: @Sendable (String?) -> String?
     var assistantOwner: @Sendable (_ agentId: String) -> String?
     var channelProbeAccess: @Sendable (_ channelId: String, _ serverId: String, _ userId: String) -> ChannelProbeAccess
-    /// Appends one human-message row (and its ledger mirror) under the
-    /// directory lock, returning its server-wide sequence.
+    /// Appends one human-message row and its ledger mirror in the same
+    /// Messages transaction, returning its server-wide sequence.
     var appendSystemNotice: @Sendable (_ message: StoredHumanMessage, _ bornReadAgentId: String?) -> Int
     var leaveChannelAsAgent: @Sendable (_ agentId: String, _ serverId: String, _ channelId: String) throws -> OkResponse
     var orderedTasks: @Sendable (_ serverId: String, _ userId: String, _ status: String?) -> [(task: TaskRecord, channelName: String, channelType: String)]
@@ -28,7 +28,8 @@ struct ManagedMCPAssignmentsDependencies: Sendable {
         directory source: EmailLoginDirectory,
         appendSystemNotice: @escaping @Sendable (StoredHumanMessage, String?) -> Int
     ) -> ManagedMCPAssignmentsDependencies {
-        ManagedMCPAssignmentsDependencies(
+        let catalog = source.taskCatalog
+        return ManagedMCPAssignmentsDependencies(
             sessionUserId: { source.sessionUserId(authorization: $0) },
             assistantOwner: { source.assistantOwnerRaw($0) },
             channelProbeAccess: { channelId, serverId, userId in
@@ -39,12 +40,12 @@ struct ManagedMCPAssignmentsDependencies: Sendable {
                 try source.channelMembership.leaveChannel(agentId: agentId, serverId: serverId, channelId: channelId)
             },
             orderedTasks: { serverId, userId, status in
-                DirectoryTaskCatalog(directory: source).orderedTasks(serverId: serverId, userId: userId, status: status)
+                catalog.orderedTasks(serverId: serverId, userId: userId, status: status)
             },
             taskFragment: { task, channelName, channelType, summary in
                 summary
-                    ? DirectoryTaskCatalog(directory: source).summaryTaskJSON(task, channelName: channelName, channelType: channelType)
-                    : DirectoryTaskCatalog(directory: source).fullTaskJSON(task, channelName: channelName, channelType: channelType)
+                    ? catalog.summaryTaskJSON(task, channelName: channelName, channelType: channelType)
+                    : catalog.fullTaskJSON(task, channelName: channelName, channelType: channelType)
             },
             now: { Date() }
         )

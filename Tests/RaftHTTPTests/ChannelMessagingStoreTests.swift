@@ -11,7 +11,7 @@ import Testing
     let batches = await withTaskGroup(of: [String].self, returning: [[String]].self) { group in
         for _ in 0..<25 {
             group.addTask {
-                DirectoryTaskCatalog(directory: accounts).addTasks(channelId: channelId, titles: ["first", "second"])
+                accounts.taskCatalog.addTasks(channelId: channelId, titles: ["first", "second"])
             }
         }
         var collected: [[String]] = []

@@ -102,6 +102,7 @@ public struct FallbackServices: Sendable {
     /// orchestration without a directory or transport dependency.
     public var channelMessaging: ChannelMessagingService {
         let accounts = emailAccounts
+        let catalog = accounts.taskCatalog
         let hub = realtime
         return ChannelMessagingService(
             dependencies: ChannelMessagingDependencies(
@@ -110,11 +111,11 @@ public struct FallbackServices: Sendable {
                     accounts.oauth.memberRole(serverId: serverId, userId: userId)
                 },
                 taskChannelAccess: { serverId, channelId, userId in
-                    DirectoryTaskCatalog(directory: accounts).channelTaskAccess(serverId: serverId, channelId: channelId, userId: userId)
+                    catalog.channelTaskAccess(serverId: serverId, channelId: channelId, userId: userId)
                 },
                 isChannelArchived: { accounts.oauth.channelArchivedAt(id: $0) != nil },
                 addTasks: { channelId, titles, descriptions, creatorId in
-                    DirectoryTaskCatalog(directory: accounts).addTasks(
+                    catalog.addTasks(
                         channelId: channelId,
                         titles: titles,
                         descriptions: descriptions,

@@ -2137,3 +2137,8 @@ RFC 074 personal assistant：
 - Credential use 仍先做原 live-scope/revoked/throttle 检查与 lastUsedAt/lastSeenAt 更新，然后在锁外广播 external agent 的原 `agent:seen` 帧。真实 Socket.IO 验收覆盖第一次 use、节流期间不重复、live throttle override 与 emitter 卸载/重装；常驻 lookup 不冻结 relay slot。Legacy revoked read 的接受/不盖戳规则保持。
 - 同一 RuntimePolicy 或 MobileEmail helper 在构造后仍能看到 feature flag、unsubscribe secret 与 callback 的后续配置变化；HTML、签名、授权与取消 callback 的重入顺序不变。三 helper 已改显式 owner/Service 构造，移除目录形参不会缓存配置。
 - Execute/send/inbox 的 suppression 每次读当前 receiver 的 prefs 与 message mentions；muteFromSeq、个人 mention 穿透及原 actor 身份保持。先 mute、再插个人 mention、再 unmute 的同 app 公开请求仍及时反映变化，31 个已有公开路径回归继续通过。
+
+### 任务 catalog 的领域 owner 构造
+
+- TaskCatalogService 显式持有原 Tasks/Profile/OAuth 实例，六处 Source 目录构造调用与旧类型删除。任务可见频道、archive 过滤与 channel-name/task-number/id 排序保持；full/summary 的成员顺序、null、UTF-8 descriptionBytes、毫秒时间和当前 claimed/creator 姓名保持。
+- Fallback 建任务、MCP server task list 和 usage channel-read 判定均复用该任务边界；只读 public channel 仍可读而不能写，private/nonmember 拒绝顺序不变。批次 task number 扫描和 append 仍一次 Tasks 事务，25 路双任务批次得到唯一 1…50。Catalog 长期值只持 owner 引用，未冻结 task、profile 或 OAuth 状态。

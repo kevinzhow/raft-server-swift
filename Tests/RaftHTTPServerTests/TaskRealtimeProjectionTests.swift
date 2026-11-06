@@ -29,7 +29,7 @@ private final class TaskRealtimeEvents: @unchecked Sendable {
     let channel = accounts.oauth.createChannel(serverId: serverId, name: "task-realtime-room", creatorUserId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channel, memberId: ownerId, name: "task-realtime-room")
     accounts.oauth.addChannelHuman(channelId: channel, userId: ownerId)
-    let ids = DirectoryTaskCatalog(directory: accounts).addTasks(channelId: channel, titles: ["canonical task"])
+    let ids = accounts.taskCatalog.addTasks(channelId: channel, titles: ["canonical task"])
     let events = TaskRealtimeEvents()
     accounts.realtimeRelay.install { room, event, payload in events.append(room, event, payload) }
 

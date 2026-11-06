@@ -329,7 +329,7 @@ private func body(_ error: any DomainError) -> String {
 @Test func taskRoutesRefuseInTheirPublishedOrder() throws {
     let f = makeFixture("005")
     let service = f.service
-    let ids = DirectoryTaskCatalog(directory: f.accounts).addTasks(channelId: f.channelId, titles: ["one"], creatorId: f.ownerId)
+    let ids = f.accounts.taskCatalog.addTasks(channelId: f.channelId, titles: ["one"], creatorId: f.ownerId)
     let taskId = try #require(ids.first)
 
     func expect(_ expected: ManagedMCPAssignmentsError, _ block: () throws -> Void) {
@@ -397,7 +397,7 @@ private func body(_ error: any DomainError) -> String {
 @Test func serverTaskListValidatesQueryBeforeReadingAndPublishesPages() throws {
     let f = makeFixture("006")
     let service = f.service
-    _ = DirectoryTaskCatalog(directory: f.accounts).addTasks(channelId: f.channelId, titles: ["a", "b", "c"], creatorId: f.ownerId)
+    _ = f.accounts.taskCatalog.addTasks(channelId: f.channelId, titles: ["a", "b", "c"], creatorId: f.ownerId)
 
     func refusal(_ query: String?) -> ManagedMCPAssignmentsError? {
         do {

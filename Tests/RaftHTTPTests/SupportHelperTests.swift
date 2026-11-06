@@ -4,7 +4,7 @@ import Testing
 
 @Test func supportHelperTaskCatalogKeepsPublishedBytesAndNulls() {
     let task = TaskRecord(id: "task", channelId: "channel", title: "a\"/中", description: "é", status: "todo", taskNumber: 7, messageId: "message", createdAt: Date(timeIntervalSince1970: 0))
-    let catalog = DirectoryTaskCatalog(directory: EmailLoginDirectory())
+    let catalog = TaskCatalogService(tasks: TasksAndRemindersStore(), profiles: AuthProfileStore(), oauth: OAuthLedger())
     #expect(catalog.fullTaskJSON(task, channelName: "general", channelType: "channel") == #"{"id":"task","channelId":"channel","channelName":"general","channelType":"channel","title":"a\"/中","description":"é","status":"todo","taskNumber":7,"messageId":"message","revision":0}"#)
     #expect(catalog.summaryTaskJSON(task, channelName: "general", channelType: "channel") == #"{"channelId":"channel","channelName":"general","channelType":"channel","claimedAt":null,"claimedById":null,"claimedByName":null,"claimedByType":null,"completedAt":null,"createdAt":"1970-01-01T00:00:00.000Z","createdById":null,"createdByName":null,"createdByType":null,"descriptionBytes":2,"hasDescription":true,"id":"task","isLegacy":false,"messageId":"message","readOnlyReason":null,"revision":0,"source":"tasks","status":"todo","taskNumber":7,"title":"a\"/中","updatedAt":null}"#)
 }

@@ -58,7 +58,7 @@ Phase 5 已完成旧 `EmailLogin/` 文件提取、Feature 路由拆分、同步 
 
 ### 第十批：纯装配容器与剩余服务端 Sendable
 
-1. **已拆两个构造叶节点**：credential-use 与 message-suppression 分别去掉 Lookup→PrivateSurface、execute→tools 的依赖，三 Support 改显式构造；live credential/presence 与 prefs/mentions/flags/slot 不缓存。接下来迁 TaskCatalog 六处 Source 构造调用，再按消息、agent/machine、task/channel、integration/feedback、transport 分组显式初始化所需 owner/能力，策略归真正 Service。最终 `ServiceContainer` 只装配窄 Service；Feature 与专属 fixture 迁走旧类型、raw ledger 与目录构造器，删除六处扩展/嵌套契约/旧名与别名，不以全仓改名代替职责迁移。
+1. **已拆两个构造叶节点**：credential-use 与 message-suppression 分别去掉 Lookup→PrivateSurface、execute→tools 的依赖，三 Support 改显式构造；live credential/presence 与 prefs/mentions/flags/slot 不缓存。TaskCatalog 六处 Source 构造已迁到显式 owner 的 TaskCatalogService；下一步按消息、agent/machine、task/channel、integration/feedback、transport 分组显式初始化所需 owner/能力，策略归真正 Service。最终 `ServiceContainer` 只装配窄 Service；Feature 与专属 fixture 迁走旧类型、raw ledger 与目录构造器，删除六处扩展/嵌套契约/旧名与别名，不以全仓改名代替职责迁移。
 2. **已完成非 daemon unchecked 清理**：完整服务端依赖闭包与 Generated 均为零，guard 包含生成代码；恢复可复现的 knowledge 生成脚本及 template，`--check` 不改变固定语料。NIO 局部非 Sendable handler 通过 SDK loop-bound 值限定安装与访问，不以新 unchecked 壳替代。
 3. daemon-only 原 41 处已逐项评估。六个不可变错误、child guard lifecycle、HTTP completion/loop timer 和四个可变模型已迁移，余 28 处见 `docs/CONCURRENCY.md`。真实默认 child timer、单字段并发 Probe 快照和 Data 自定义释放回调均有红→绿验收；HTTP 跨队列问题的原证据是源码审查，未声称 TSan。剩余 timer check/register/publish、token/walk budget、callback subscriber、raw Any 和 storage 能力仍需收窄，不能因 daemon-only 而判为安全。
 4. 如实同步文档，再跑最终完整门禁。只在所有目标确实完成后宣布 Phase 6 结束。

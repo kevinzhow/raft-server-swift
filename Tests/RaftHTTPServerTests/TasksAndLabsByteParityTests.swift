@@ -41,7 +41,7 @@ private func jsonField(_ response: ClientResponse, _ path: [String]) -> String {
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, name: "tl-bytes")
     accounts.oauth.addChannelHuman(channelId: channelId, userId: ownerId)
     accounts.oauth.addChannelHuman(channelId: channelId, userId: memberId)
-    let taskId = DirectoryTaskCatalog(directory: accounts).addTasks(channelId: channelId, titles: ["Write bytes"]).first ?? ""
+    let taskId = accounts.taskCatalog.addTasks(channelId: channelId, titles: ["Write bytes"]).first ?? ""
     let token = accounts.mintAccessTokenForTesting(userId: ownerId)
 
     try await withApp { app in
@@ -196,7 +196,7 @@ private func jsonField(_ response: ClientResponse, _ path: [String]) -> String {
     let memberAgent = accounts.oauth.createAgent(serverId: serverId, name: "PlainBot", creatorUserId: ownerId, runtime: "claude")
     let adminKey = accounts.mintAgentCredential(agentId: agentId, scopes: ["read", "channels", "server", "send", "tasks"], name: "admin")
     let plainKey = accounts.mintAgentCredential(agentId: memberAgent, scopes: ["read", "channels", "server"], name: "plain")
-    let taskIds = DirectoryTaskCatalog(directory: accounts).addTasks(channelId: alpha, titles: ["Amend me"])
+    let taskIds = accounts.taskCatalog.addTasks(channelId: alpha, titles: ["Amend me"])
     #expect(taskIds.count == 1)
 
     try await withApp { app in
