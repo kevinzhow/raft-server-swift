@@ -107,8 +107,16 @@ public struct NotificationsFeature: RouteCollection, Sendable {
             routeResponse(services.emailAccounts.externalAvatar(file: request.parameters.get("file") ?? ""))
         }
         featureFlags.post("evaluate") { request async throws -> Response in
-            routeResponse(services.emailAccounts.evaluateFeatureFlags(
-                body: try await request.bodyText(),
+            // Typed bodies go through the DTO; a body the typed decoder rejects
+            // keeps the raw path so the existing validator owns the reply.
+            let body: String
+            if let typed = try? await request.content.decode(FeatureFlagsEvaluateDTO.self) {
+                body = FeedbackJSONCoding.string(typed)
+            } else {
+                body = try await request.bodyText()
+            }
+            return routeResponse(services.emailAccounts.evaluateFeatureFlags(
+                body: body,
                 authorization: request.headers[.authorization]
             ))
         }
@@ -125,9 +133,15 @@ public struct NotificationsFeature: RouteCollection, Sendable {
             ))
         }
         notifications.post("credentials", "rotate") { request async throws -> Response in
-            routeResponse(services.emailAccounts.rotateNativeNotificationCredential(
+            let body: String
+            if let typed = try? await request.content.decode(RotateNotificationCredentialDTO.self) {
+                body = FeedbackJSONCoding.string(typed)
+            } else {
+                body = try await request.bodyText()
+            }
+            return routeResponse(services.emailAccounts.rotateNativeNotificationCredential(
                 authorization: request.headers[.authorization],
-                body: try await request.bodyText()
+                body: body
             ))
         }
         notifications.get("devices") { request -> Response in
@@ -142,11 +156,23 @@ public struct NotificationsFeature: RouteCollection, Sendable {
             ))
         }
         notifications.post("enrollment-exchanges") { request async throws -> Response in
-            routeResponse(services.emailAccounts.exchangeNativeEnrollmentGrant(body: try await request.bodyText()))
+            let body: String
+            if let typed = try? await request.content.decode(EnrollmentExchangeDTO.self) {
+                body = FeedbackJSONCoding.string(typed)
+            } else {
+                body = try await request.bodyText()
+            }
+            return routeResponse(services.emailAccounts.exchangeNativeEnrollmentGrant(body: body))
         }
         notifications.post("enrollment-grants") { request async throws -> Response in
-            routeResponse(services.emailAccounts.issueNativeEnrollmentGrant(
-                body: try await request.bodyText(),
+            let body: String
+            if let typed = try? await request.content.decode(EnrollmentGrantRequestDTO.self) {
+                body = FeedbackJSONCoding.string(typed)
+            } else {
+                body = try await request.bodyText()
+            }
+            return routeResponse(services.emailAccounts.issueNativeEnrollmentGrant(
+                body: body,
                 authorization: request.headers[.authorization]
             ))
         }
@@ -246,7 +272,12 @@ public struct NotificationsFeature: RouteCollection, Sendable {
             ))
         }
         push.post("family-revoke") { request async throws -> Response in
-            let body = try await request.bodyText()
+            let body: String
+            if let typed = try? await request.content.decode(PushFamilyRevokeDTO.self) {
+                body = FeedbackJSONCoding.string(typed)
+            } else {
+                body = try await request.bodyText()
+            }
             let reply = services.emailAccounts.revokePushFamily(body: body)
             if reply.status == 204 {
                 publishFamilyRevoke(body: body, services: services)

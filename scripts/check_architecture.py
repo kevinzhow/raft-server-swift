@@ -14,8 +14,13 @@ enforces the part of it that can be measured today:
 2. Every Swift file under ``Sources/RaftHTTPServer/Features/`` must stay at or
    below 1,200 lines. A missing directory is reported as zero files.
 3. Every Swift file under ``Sources/RaftHTTP/EmailLogin/`` must stay at or
-   below 1,600 lines. A missing directory is reported as zero files.
-4. ``ForTesting`` markers in ``EmailLogin.swift`` are warnings, not failures:
+   below 1,600 lines, and the directory must not grow past the recorded file
+   count. Both numbers ratchet down as extensions migrate to ``Services/``.
+   A missing directory is reported as zero files.
+4. Every Swift file under ``Sources/RaftHTTP/Services/`` must stay at or below
+   1,200 lines, so one migrated domain cannot become the next mega-file. A
+   missing directory is reported as zero files.
+5. ``ForTesting`` markers in ``EmailLogin.swift`` are warnings, not failures:
    the recorded baseline is 0 markers and 0 ``private func …ForTesting``. The
    file holds no test-only storage; seams live in
    ``EmailLogin+TestSeams.swift`` and new ones belong in the test-only
@@ -45,6 +50,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 EMAIL_LOGIN_RELATIVE = Path("Sources/RaftHTTP/EmailLogin.swift")
 EMAIL_LOGIN_EXTENSIONS_RELATIVE = Path("Sources/RaftHTTP/EmailLogin")
 FEATURES_RELATIVE = Path("Sources/RaftHTTPServer/Features")
+SERVICES_RELATIVE = Path("Sources/RaftHTTP/Services")
 
 # Recorded on 2026-11-06 after the AuthProfile/Notifications store split, then
 # after the TasksAndReminders/MachinesAndComputers/ServersAndChannels/
@@ -65,6 +71,16 @@ FEATURE_FILE_LINE_LIMIT = 1_200
 
 # A domain extension file larger than this must split along its domain again.
 EMAIL_LOGIN_EXTENSION_LINE_LIMIT = 1_600
+
+# ``Sources/RaftHTTP/EmailLogin/`` holds one file per upstream route family.
+# Batch A of the Phase 5 migration deleted AuthCore, AuthIdentitiesProfile and
+# OAuthFlows; Batch B deleted FeedbackMultiApp and AttachmentsMobile. The count
+# is a ratchet: lower it when a slice deletes a file, never raise it.
+EMAIL_LOGIN_EXTENSION_COUNT_BASELINE = 25
+
+# A service file larger than this must split along its domain again, so a
+# migrated domain cannot simply become the next mega-file.
+SERVICE_FILE_LINE_LIMIT = 1_200
 
 # ``ForTesting`` is almost always a suffix (``mintAccessTokenForTesting``), so a
 # word-boundary prefix match would miss nearly every marker.
@@ -161,6 +177,50 @@ def check_feature_file_ceilings(root: Path) -> dict:
     }
 
 
+def check_service_file_ceilings(root: Path) -> dict:
+    directory = root / SERVICES_RELATIVE
+    files: list[dict] = []
+    if directory.is_dir():
+        for path in sorted(directory.rglob("*.swift")):
+            if not path.is_file():
+                continue
+            lines = count_lines(path)
+            files.append(
+                {
+                    "path": str(path.relative_to(root)),
+                    "lines": lines,
+                    "limit": SERVICE_FILE_LINE_LIMIT,
+                    "status": "fail" if lines > SERVICE_FILE_LINE_LIMIT else "pass",
+                }
+            )
+    violations = [entry for entry in files if entry["status"] == "fail"]
+    present = directory.is_dir()
+    if not present:
+        message = f"{SERVICES_RELATIVE} does not exist yet (0 service files)"
+    elif not files:
+        message = f"{SERVICES_RELATIVE} exists but has no .swift files (0 service files)"
+    else:
+        largest = max(entry["lines"] for entry in files)
+        message = (
+            f"{len(files)} service {plural(len(files), 'file')}, "
+            f"largest {largest:,} / {SERVICE_FILE_LINE_LIMIT:,} lines"
+        )
+        if violations:
+            message += f"; {len(violations)} over the limit"
+    return {
+        "id": "service-file-ceiling",
+        "title": "Services/*.swift line ceiling",
+        "status": "fail" if violations else "pass",
+        "severity": "error",
+        "path": str(SERVICES_RELATIVE),
+        "directory_present": present,
+        "limit": SERVICE_FILE_LINE_LIMIT,
+        "files": files,
+        "violations": violations,
+        "message": message,
+    }
+
+
 def check_email_login_extension_ceilings(root: Path) -> dict:
     directory = root / EMAIL_LOGIN_EXTENSIONS_RELATIVE
     files: list[dict] = []
@@ -179,6 +239,9 @@ def check_email_login_extension_ceilings(root: Path) -> dict:
             )
     violations = [entry for entry in files if entry["status"] == "fail"]
     present = directory.is_dir()
+    count = len(files)
+    count_limit = EMAIL_LOGIN_EXTENSION_COUNT_BASELINE
+    over_count = count > count_limit
     if not present:
         message = f"{EMAIL_LOGIN_EXTENSIONS_RELATIVE} does not exist yet (0 extension files)"
     elif not files:
@@ -189,19 +252,27 @@ def check_email_login_extension_ceilings(root: Path) -> dict:
     else:
         largest = max(entry["lines"] for entry in files)
         message = (
-            f"{len(files)} EmailLogin extension {plural(len(files), 'file')}, "
+            f"{count} EmailLogin extension {plural(count, 'file')} "
+            f"(count baseline {count_limit}), "
             f"largest {largest:,} / {EMAIL_LOGIN_EXTENSION_LINE_LIMIT:,} lines"
         )
         if violations:
             message += f"; {len(violations)} over the limit"
+        if over_count:
+            message += (
+                f"; {count - count_limit} file(s) over the {count_limit}-file baseline "
+                "(migrate a domain to Services/ instead of adding an extension)"
+            )
     return {
         "id": "email-login-extension-ceiling",
         "title": "EmailLogin/*.swift line ceiling",
-        "status": "fail" if violations else "pass",
+        "status": "fail" if violations or over_count else "pass",
         "severity": "error",
         "path": str(EMAIL_LOGIN_EXTENSIONS_RELATIVE),
         "directory_present": present,
         "limit": EMAIL_LOGIN_EXTENSION_LINE_LIMIT,
+        "count": count,
+        "count_limit": count_limit,
         "files": files,
         "violations": violations,
         "message": message,
@@ -259,6 +330,7 @@ def evaluate(root: Path) -> dict:
         check_email_login_ceiling(root),
         check_feature_file_ceilings(root),
         check_email_login_extension_ceilings(root),
+        check_service_file_ceilings(root),
         check_email_login_test_seams(root),
     ]
     warnings = [warning for check in checks for warning in check.get("warnings", [])]
@@ -291,6 +363,8 @@ def evaluate(root: Path) -> dict:
             "email_login_lines": EMAIL_LOGIN_LINE_BASELINE,
             "feature_file_line_limit": FEATURE_FILE_LINE_LIMIT,
             "email_login_extension_line_limit": EMAIL_LOGIN_EXTENSION_LINE_LIMIT,
+            "email_login_extension_count_baseline": EMAIL_LOGIN_EXTENSION_COUNT_BASELINE,
+            "service_file_line_limit": SERVICE_FILE_LINE_LIMIT,
             "email_login_for_testing_markers": EMAIL_LOGIN_FOR_TESTING_BASELINE,
             "email_login_private_func_for_testing": EMAIL_LOGIN_PRIVATE_FUNC_FOR_TESTING_BASELINE,
         },

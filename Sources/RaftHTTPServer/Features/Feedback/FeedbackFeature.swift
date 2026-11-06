@@ -1,4 +1,5 @@
 import HTTPTypes
+import RaftHTTP
 import Vapor
 
 /// Product-feedback and agent-reminder route surface.
@@ -28,16 +29,30 @@ public struct FeedbackFeature: RouteCollection, Sendable {
         let tickets = feedback.grouped("tickets")
 
         api.post("app-installation", "agent-reminder-messages") { request async throws -> Response in
-            routeResponse(services.emailAccounts.appAgentReminderMessage(
+            // Typed bodies go through the DTO; anything that does not decode
+            // keeps the raw-body path so the existing validator owns the reply.
+            let body: String
+            if let typed = try? await request.content.decode(AppAgentReminderMessageRequest.self) {
+                body = FeedbackJSONCoding.string(typed)
+            } else {
+                body = try await request.bodyText()
+            }
+            return routeResponse(services.emailAccounts.appAgentReminderMessage(
                 authorization: request.headers[.authorization],
-                body: try await request.bodyText()
+                body: body
             ))
         }
         tickets.post(":ticketId", "close") { request async throws -> Response in
-            routeResponse(await services.emailAccounts.closeProductFeedbackTicketAsync(
+            let body: String
+            if let typed = try? await request.content.decode(FeedbackTicketCloseRequest.self) {
+                body = FeedbackJSONCoding.string(typed)
+            } else {
+                body = try await request.bodyText(default: "{}")
+            }
+            return routeResponse(await services.emailAccounts.closeProductFeedbackTicketAsync(
                 authorization: request.headers[.authorization],
                 ticketId: request.parameters.get("ticketId") ?? "",
-                body: try await request.bodyText(default: "{}"),
+                body: body,
                 clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? ""
             ))
         }

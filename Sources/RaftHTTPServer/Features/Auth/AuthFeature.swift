@@ -37,6 +37,8 @@ public struct AuthFeature: RouteCollection, Sendable {
         let appLoginRequest = appLogin.grouped("requests", ":requestId")
         let me = auth.grouped("me")
         let profile = AuthProfileService(emailAccounts: services.emailAccounts)
+        let authCore = AuthCoreService(directory: services.emailAccounts)
+        let identityService = AuthIdentitiesService(directory: services.emailAccounts)
 
         // `verify-email` and `resend-verification` are literal siblings of the
         // `:provider` auth routes, so they mount from the same `api/auth` group.
@@ -128,15 +130,26 @@ public struct AuthFeature: RouteCollection, Sendable {
             ))
         }
         device.post("authorize") { request async throws -> Response in
+            // The typed body covers the published shape; every other body keeps
+            // the directory's raw parser and its `client_name_invalid` reply.
+            if let body = try? await request.content.decode(DeviceAuthorizeRequestDTO.self) {
+                return routeResponse(authCore.authorizeDevice(body))
+            }
             return routeResponse(services.emailAccounts.authorizeDevice(body: try await request.bodyText()))
         }
         device.post("approve") { request async throws -> Response in
+            if let body = try? await request.content.decode(DeviceApproveRequestDTO.self) {
+                return routeResponse(authCore.approveDevice(body, authorization: request.headers[.authorization]))
+            }
             return routeResponse(services.emailAccounts.approveDevice(
                 body: try await request.bodyText(),
                 authorization: request.headers[.authorization]
             ))
         }
         device.post("token") { request async throws -> Response in
+            if let body = try? await request.content.decode(DeviceTokenPollRequestDTO.self) {
+                return routeResponse(authCore.pollDeviceToken(body))
+            }
             return routeResponse(services.emailAccounts.pollDeviceToken(body: try await request.bodyText()))
         }
         auth.post("staging-self-account", "retire") { request async throws -> Response in
@@ -153,22 +166,34 @@ public struct AuthFeature: RouteCollection, Sendable {
             ))
         }
         auth.post("refresh") { request async throws -> Response in
+            let attempt = request.headers[HTTPField.Name("X-Slock-Auth-Refresh-Attempt-Id")!]
+            let installation = request.headers[HTTPField.Name("X-Slock-Auth-Installation-Id")!]
+            // A body without a usable `refreshToken` falls through to the raw
+            // parser so the published "Refresh token is required" reply stands.
+            if let body = try? await request.content.decode(RefreshRequestDTO.self) {
+                return routeResponse(authCore.refresh(
+                    body,
+                    attemptHeader: attempt,
+                    installationHeader: installation
+                ))
+            }
             return routeResponse(services.emailAccounts.refresh(
                 body: try await request.bodyText(),
-                attemptHeader: request.headers[HTTPField.Name("X-Slock-Auth-Refresh-Attempt-Id")!],
-                installationHeader: request.headers[HTTPField.Name("X-Slock-Auth-Installation-Id")!]
+                attemptHeader: attempt,
+                installationHeader: installation
             ))
         }
         auth.post("logout") { request async throws -> Response in
+            if let body = try? await request.content.decode(LogoutRequestDTO.self) {
+                return routeResponse(authCore.logout(body))
+            }
             return routeResponse(services.emailAccounts.logout(body: try await request.bodyText()))
         }
         identities.get { request -> Response in
-            routeResponse(services.emailAccounts.authIdentities(
-                authorization: request.headers[.authorization]
-            ))
+            routeResponse(identityService.identities(authorization: request.headers[.authorization]))
         }
         identities.delete(":provider") { request -> Response in
-            routeResponse(services.emailAccounts.unlinkAuthIdentity(
+            routeResponse(identityService.unlink(
                 authorization: request.headers[.authorization],
                 provider: request.parameters.get("provider") ?? ""
             ))
@@ -190,10 +215,19 @@ public struct AuthFeature: RouteCollection, Sendable {
             return routeResponse(profile.cancelPendingLink(body))
         }
         auth.post("login") { request async throws -> Response in
+            // A typed body needs both required strings; anything else (missing
+            // key, JSON null, non-string value) keeps the raw parser so the
+            // upstream `issues` list is unchanged.
+            if let body = try? await request.content.decode(LoginRequestDTO.self) {
+                return routeResponse(authCore.login(body))
+            }
             return routeResponse(services.emailAccounts.login(body: try await request.bodyText()))
         }
         appLogin.post("start") { request async throws -> Response in
-            routeResponse(services.emailAccounts.appLoginStart(body: try await request.bodyText(default: "{}")))
+            if let body = try? await request.content.decode(AppLoginStartRequestDTO.self) {
+                return routeResponse(identityService.appLoginStart(body))
+            }
+            return routeResponse(services.emailAccounts.appLoginStart(body: try await request.bodyText(default: "{}")))
         }
         appLoginRequest.get { request -> Response in
             routeResponse(services.emailAccounts.appLoginDescribe(
@@ -214,7 +248,10 @@ public struct AuthFeature: RouteCollection, Sendable {
             ))
         }
         appLogin.post("complete") { request async throws -> Response in
-            routeResponse(services.emailAccounts.appLoginComplete(body: try await request.bodyText(default: "{}")))
+            if let body = try? await request.content.decode(AppLoginCompleteRequestDTO.self) {
+                return routeResponse(identityService.appLoginComplete(body))
+            }
+            return routeResponse(services.emailAccounts.appLoginComplete(body: try await request.bodyText(default: "{}")))
         }
         auth.get("providers") { request in
             routeResponse(services.emailAccounts.authProviders(platform: desktopQuery(request.url.query, "platform")))

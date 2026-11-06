@@ -4,6 +4,60 @@ import Foundation
 import FoundationNetworking
 #endif
 
+
+/// Typed facade over the email/password session core: login, refresh rotation,
+/// logout, device grants and the test seams around them.
+///
+/// The state transitions stay on `EmailLoginDirectory` with unchanged
+/// signatures, so every existing caller and test compiles untouched. This type
+/// exists so a route can hand over a decoded request DTO instead of a JSON
+/// string, and so the domain has a `Service` boundary of its own.
+public struct AuthCoreService: Sendable {
+    public let directory: EmailLoginDirectory
+
+    public init(directory: EmailLoginDirectory) {
+        self.directory = directory
+    }
+
+    /// `POST /api/auth/login`.
+    public func login(_ body: LoginRequestDTO) -> HTTPReply {
+        directory.login(body: body.encodedBody())
+    }
+
+    /// `POST /api/auth/refresh`. The replay-binding identifiers stay headers.
+    public func refresh(
+        _ body: RefreshRequestDTO,
+        attemptHeader: String?,
+        installationHeader: String?
+    ) -> HTTPReply {
+        directory.refresh(
+            body: body.encodedBody(),
+            attemptHeader: attemptHeader,
+            installationHeader: installationHeader
+        )
+    }
+
+    /// `POST /api/auth/logout`.
+    public func logout(_ body: LogoutRequestDTO) -> HTTPReply {
+        directory.logout(body: body.encodedBody())
+    }
+
+    /// `POST /api/auth/device/authorize`.
+    public func authorizeDevice(_ body: DeviceAuthorizeRequestDTO) -> HTTPReply {
+        directory.authorizeDevice(body: body.encodedBody())
+    }
+
+    /// `POST /api/auth/device/approve`.
+    public func approveDevice(_ body: DeviceApproveRequestDTO, authorization: String?) -> HTTPReply {
+        directory.approveDevice(body: body.encodedBody(), authorization: authorization)
+    }
+
+    /// `POST /api/auth/device/token`.
+    public func pollDeviceToken(_ body: DeviceTokenPollRequestDTO) -> HTTPReply {
+        directory.pollDeviceToken(body: body.encodedBody())
+    }
+}
+
 extension EmailLoginDirectory {
 
 

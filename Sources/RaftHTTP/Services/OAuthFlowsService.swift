@@ -4,6 +4,44 @@ import Foundation
 import FoundationNetworking
 #endif
 
+
+/// Typed facade over the provider/OAuth flow surface: provider discovery, the
+/// mobile and native-Apple handoffs, the web callback leg, profile completion,
+/// and the installation lookup.
+///
+/// The state transitions stay on `EmailLoginDirectory` / `OAuthLedger` with
+/// unchanged signatures; this type is the `Service` boundary the routes call.
+public struct OAuthFlowsService: Sendable {
+    public let directory: EmailLoginDirectory
+
+    public init(directory: EmailLoginDirectory) {
+        self.directory = directory
+    }
+
+    /// `GET /api/auth/providers`.
+    public func authProviders(platform: String?) -> HTTPReply {
+        directory.authProviders(platform: platform)
+    }
+
+    /// `POST /api/auth/mobile/oauth/start`.
+    public func startMobileOAuth(body: String) -> HTTPReply {
+        directory.startMobileOAuth(body: body)
+    }
+
+    /// `GET /api/auth/:provider/start`.
+    public func startWebOAuth(provider: String, returnTo: String?, linkOnConflict: Bool = false) -> HTTPReply {
+        directory.startWebOAuth(provider: provider, returnTo: returnTo, linkOnConflict: linkOnConflict)
+    }
+
+    /// `POST /api/auth/oauth/installations/lookup`, decoded as a typed body.
+    public func installationLookup(_ body: OAuthInstallationLookupDTO, authorization: String?) -> HTTPReply {
+        directory.oauth.installationLookup(
+            authorization: authorization,
+            body: body.encodedBody()
+        )
+    }
+}
+
 extension EmailLoginDirectory {
 
 

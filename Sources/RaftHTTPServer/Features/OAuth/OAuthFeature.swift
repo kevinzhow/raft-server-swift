@@ -27,6 +27,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
         let oauth = app.grouped("api", "oauth")
         let oidc = app.grouped("oidc", ":server")
         let oidcOAuth = oidc.grouped("api", "oauth")
+        let oauthFlows = OAuthFlowsService(directory: services.emailAccounts)
 
         oauth.put("installations", ":installationId", "setup") { request async throws -> Response in
             routeResponse(services.emailAccounts.reportInstallationSetup(
@@ -73,7 +74,13 @@ public struct OAuthFeature: RouteCollection, Sendable {
             ))
         }
         oauth.post("installations", "lookup") { request async throws -> Response in
-            routeResponse(services.emailAccounts.oauth.installationLookup(
+            // The lookup reads four string fields (with a `serverId` alias);
+            // a body of any other shape keeps the ledger's raw parser so the
+            // credential and `server_id` replies are unchanged.
+            if let body = try? await request.content.decode(OAuthInstallationLookupDTO.self) {
+                return routeResponse(oauthFlows.installationLookup(body, authorization: request.headers[.authorization]))
+            }
+            return routeResponse(services.emailAccounts.oauth.installationLookup(
                 authorization: request.headers[.authorization],
                 body: try await request.bodyText()
             ))
