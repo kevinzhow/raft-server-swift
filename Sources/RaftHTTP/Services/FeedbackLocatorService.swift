@@ -157,17 +157,6 @@ public struct FeedbackLocatorService: Sendable {
     private let makeReceiptId: @Sendable () -> String
     private let hashPayload: @Sendable (String) -> String
 
-    init(directory source: EmailLoginDirectory) {
-        self.feedback = source.feedbackStore
-        self.agents = source.agentsRuntimeStore
-        self.channels = source.serversAndChannelsStore
-        self.cards = source.managedMCPAndCardsStore
-        self.oauth = source.oauth
-        self.now = { Date() }
-        self.makeReceiptId = { UUID().uuidString.lowercased() }
-        self.hashPayload = { AuthTokenCodec.sha256($0) }
-    }
-
     init(
         feedback: FeedbackStore,
         agents: AgentsRuntimeStore,
@@ -219,6 +208,14 @@ public struct FeedbackLocatorService: Sendable {
             return .allowed
         }
         return credential.scopes.contains(capability) ? .allowed : .denied(capability: capability)
+    }
+
+    /// The denied capability for profile callers that own their error body.
+    func deniedCapability(authorization: String?, capability: String) -> String? {
+        switch capabilityDecision(authorization: authorization, capability: capability) {
+        case .allowed: nil
+        case .denied(let denied): denied
+        }
     }
 
     /// An agent with no stored grant row carries every grantable scope, so only

@@ -37,7 +37,7 @@ public struct ActionCardExecuteService: Sendable {
             agents: source.agentsRuntimeStore,
             machines: source.machinesAndComputersStore,
             oauth: source.oauth,
-            feedbackLocators: FeedbackLocatorService(directory: source),
+            feedbackLocators: source.feedbackLocators,
             cards: source.managedMCPAndCardsStore,
             prepare: source.actionCardPrepare,
             dependencies: .live(directory: source),

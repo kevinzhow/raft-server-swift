@@ -2171,3 +2171,9 @@ RFC 074 personal assistant：
 - LedgerRealtimeAuth 改持 AuthCore/SocketMembership；token→user 与 token→family 仍分别调用原 pushPrincipal 查询，不额外要求 account 存在或通过 revoked/verified 检查。Handshake 的 server role 仍为原 membership role（包括 guest），visible rooms 和 sync resume 的过滤、顺序及帧字节不变。
 - LedgerMachineLookup 改持 RuntimeForms/ComputersFleet；Computer 的 linked/revoked/machineUnlinked/keyMismatch/notFound 顺序和 denial stage/reason、legacyKeyMigratedAt 保持。Body middleware 只持 RuntimeForms，原 machine/computer Bool 凭据判定、100KiB/576KiB/1MiB 限额、401-before-413 与 JSON 字节不变。
 - 真实 Startup 验收继续执行 socket 入房、Computer CONNECT context、legacy key 迁移后拒绝、daemon online，以及两个独立 RaftServer 的状态隔离和 completion line。特殊 token-row 接受集由原 owner 同一查询保持，未声称新增了该异常 row 的生产 socket fixture。
+
+### OAuth flow 与 feedback locator 的显式 owner
+
+- OAuthFlows 与 FeedbackLocator 删除目录构造器，复用原 Profile/flag/OAuth 和 Feedback/Agents/Channels/Cards/OAuth owners。配置、provider profile、flag、credential、grant 与 route ref 仍在操作时读取；clock、receipt id 与 hash 默认实现保持，未冻结状态。
+- Locator identity 仍要求 live credential、capability 和有效 agent；另一个 capability refusal 投影保持 malformed/missing/revoked 放行、仅 live credential 缺 scope 才拒绝的旧语义。该 nil/string 投影从 Root 移回 locator 服务，原错误对象顺序不变。
+- Profile/card/marketplace/tool callers持实际 locator 值，旧七处 Source 构造及两处专属 fixture 构造迁完。Feedback 并发首次 ingest 的去重判断与 append 仍同一 owner 事务，OAuth 的 web/mobile callback、redirect/cookie 和安装 lookup 字节未改。

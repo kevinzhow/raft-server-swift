@@ -408,8 +408,8 @@ extension EmailLoginDirectory {
                     card: card
                 )
             },
-            mcpIdentity: { authorization in
-                FeedbackLocatorService(directory: self).identityResolution(
+            mcpIdentity: { [locator = feedbackLocators] authorization in
+                locator.identityResolution(
                     authorization: authorization,
                     capability: "mcp"
                 )

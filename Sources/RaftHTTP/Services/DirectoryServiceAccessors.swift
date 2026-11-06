@@ -13,7 +13,11 @@ extension EmailLoginDirectory {
     /// directory supplies the stores and the OAuth ledger; nothing crosses a
     /// domain boundary.
     public var oauthFlows: OAuthFlowsService {
-        OAuthFlowsService(directory: self)
+        OAuthFlowsService(
+            store: OAuthFlowsStore(profiles: authProfileStore),
+            flags: agentsRuntimeStore,
+            oauth: oauth
+        )
     }
 
     /// One flag's rollout decision for the unmigrated callers that still ask
@@ -76,7 +80,13 @@ extension EmailLoginDirectory {
     /// plus the agent credential/grant decisions the rest of the agent API
     /// shares. The directory only supplies its stores and the OAuth ledger.
     public var feedbackLocators: FeedbackLocatorService {
-        FeedbackLocatorService(directory: self)
+        FeedbackLocatorService(
+            feedback: feedbackStore,
+            agents: agentsRuntimeStore,
+            channels: serversAndChannelsStore,
+            cards: managedMCPAndCardsStore,
+            oauth: oauth
+        )
     }
 
     /// The served-inbox surface: the channel message page and its sync cursor,
@@ -468,14 +478,8 @@ extension EmailLoginDirectory {
                 agentRead: { [lookup = agentCredentialLookup] authorization in
                     lookup.profileReadOutcome(authorization)
                 },
-                capabilityDenial: { [self] authorization, capability in
-                    switch FeedbackLocatorService(directory: self)
-                        .capabilityDecision(authorization: authorization, capability: capability) {
-                    case .allowed:
-                        return nil
-                    case .denied(let denied):
-                        return denied
-                    }
+                capabilityDenial: { [locator = feedbackLocators] authorization, capability in
+                    locator.deniedCapability(authorization: authorization, capability: capability)
                 },
                 emitRealtime: { [self] room, event, payload in
                     realtimeRelay.emit(room, event, payload)

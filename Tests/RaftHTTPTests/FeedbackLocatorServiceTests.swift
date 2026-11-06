@@ -216,7 +216,7 @@ private func locatorService(
         agentId: fixture.agentId,
         reportId: reportId
     )
-    let service = FeedbackLocatorService(directory: fixture.directory)
+    let service = fixture.directory.feedbackLocators
     let authorization = "Bearer \(fixture.apiKey)"
 
     // Every concurrent first report for the same identity must land as one

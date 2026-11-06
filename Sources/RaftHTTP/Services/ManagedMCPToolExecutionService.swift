@@ -67,7 +67,7 @@ public struct ManagedMCPToolExecutionService: Sendable {
             notifications: source.notificationsStore,
             inboxFacts: source.inboxFactStore,
             oauth: source.oauth,
-            feedbackLocators: FeedbackLocatorService(directory: source),
+            feedbackLocators: source.feedbackLocators,
             dependencies: .live(directory: source)
         )
     }

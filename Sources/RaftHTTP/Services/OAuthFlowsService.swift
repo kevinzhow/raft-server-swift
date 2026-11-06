@@ -35,14 +35,6 @@ public struct OAuthFlowsService: Sendable {
         self.now = now
     }
 
-    public init(directory source: EmailLoginDirectory) {
-        self.init(
-            store: OAuthFlowsStore(profiles: source.authProfileStore),
-            flags: source.agentsRuntimeStore,
-            oauth: source.oauth
-        )
-    }
-
     // MARK: - Provider discovery
 
     /// `GET /api/auth/providers`. A missing platform is web. Anything other than web or mobile is refused first.

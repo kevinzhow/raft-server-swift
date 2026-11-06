@@ -61,7 +61,7 @@ extension EmailLoginDirectory {
             machines: machinesAndComputersStore,
             cards: managedMCPAndCardsStore,
             oauth: oauth,
-            locator: FeedbackLocatorService(directory: self),
+            locator: feedbackLocators,
             idempotency: ActionCardTaskIdempotencyLedger.port(cards: managedMCPAndCardsStore),
             appendHumanMessage: { [messages = messagesAndThreadsStore, ledger = MessageLedgerPort(oauth: oauth)] message in
                 messages.appendMessage(message, ledger: ledger)

@@ -21,7 +21,7 @@ public func makeActionCardMarketplaceService(
         machines: directory.machinesAndComputersStore,
         cards: directory.managedMCPAndCardsStore,
         oauth: directory.oauth,
-        locator: FeedbackLocatorService(directory: directory),
+        locator: directory.feedbackLocators,
         idempotency: idempotency,
         appendHumanMessage: { message in
             directory.messagesAndThreadsStore.appendMessage(message, ledger: .init(oauth: directory.oauth))
