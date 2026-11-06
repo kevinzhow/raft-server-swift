@@ -56,4 +56,148 @@ extension EmailLoginDirectory {
     public func latestEmailVerificationTokenForTesting(userId: String) -> String? {
         authProfileStore.latestVerificationToken(userId: userId)?.rawToken
     }
+
+    // MARK: Account and session readbacks (moved out of AuthCoreService.swift)
+
+    public func markPasswordCredentialEstablished(userId: String) {
+        var state = authProfileStore.accountState
+        if let key = state.accounts.first(where: { $0.value.id == userId })?.key {
+            state.accounts[key]?.passwordCredentialEstablishedAt = Date()
+        }
+        authProfileStore.accountState = state
+    }
+
+    public func hasAccount(email: String) -> Bool {
+        authProfileStore.accountState.accounts[Self.normalize(email)] != nil
+    }
+
+    public func legalAcceptance(userId: String) -> EmailLegalAcceptance? {
+        authProfileStore.legalAcceptance(userId: userId)
+    }
+
+    public func userId(forEmail email: String) -> String? {
+        authProfileStore.accountState.accounts[Self.normalize(email)]?.id
+    }
+
+    /// A provider callback already exchanged. The raw code is what
+    /// `POST /:provider/complete` spends.
+    public func addSocialCompletion(
+        provider: String,
+        code: String,
+        email: String,
+        mode: String = "login",
+        intendedAction: String = "login",
+        returnTo: String = "/",
+        userId: String? = nil,
+        providerUserId: String? = nil,
+        linkOnConflict: Bool = false
+    ) {
+        var state = authProfileStore.accountState
+        state.socialCompletions.append(SocialCompletion(
+            provider: provider,
+            code: code,
+            mode: mode,
+            intendedAction: intendedAction,
+            email: Self.normalize(email),
+            returnTo: returnTo,
+            userId: userId,
+            providerUserId: providerUserId,
+            linkOnConflict: linkOnConflict
+        ))
+        authProfileStore.accountState = state
+    }
+
+    public func linkedProviderUserIds(userId: String, provider: String) -> [String] {
+        authProfileStore.accountState.linkedIdentities
+            .filter { $0.userId == userId && $0.provider == provider }.map(\.providerUserId)
+    }
+
+    public func linkedProviderEmail(userId: String, provider: String) -> String? {
+        authProfileStore.accountState.linkedIdentities
+            .first { $0.userId == userId && $0.provider == provider }?.providerEmail
+    }
+
+    public func refreshRotationReceipts() -> [RefreshRotationReceipt] {
+        authProfileStore.accountState.rotationReceipts.values.map {
+            RefreshRotationReceipt(
+                attemptId: $0.attemptId,
+                installationId: $0.installationId,
+                successorTokenCiphertext: $0.ciphertext
+            )
+        }
+    }
+
+    public func expireRefreshReceipts() {
+        var state = authProfileStore.accountState
+        for key in state.rotationReceipts.keys {
+            state.rotationReceipts[key]?.expiresAt = Date(timeIntervalSinceNow: -1)
+        }
+        authProfileStore.accountState = state
+    }
+
+    /// Moves one mobile OAuth request's expiry into the past. Completion then
+    /// reports `handoff_code_expired`.
+    public func expireMobileOAuthRequest(id: String) {
+        var state = authProfileStore.accountState
+        state.mobileRequests[id]?.expiresAt = Date(timeIntervalSinceNow: -1)
+        authProfileStore.accountState = state
+    }
+
+    public func oauthRequestStatus(id: String) -> String? {
+        authProfileStore.accountState.mobileRequests[id]?.status
+    }
+
+    public func oauthRequestReturnUri(id: String) -> String? {
+        authProfileStore.accountState.mobileRequests[id]?.returnUri
+    }
+
+    public func oauthRequestCodeHash(id: String) -> String? {
+        authProfileStore.accountState.mobileRequests[id]?.codeHash
+    }
+
+    public func oauthRequestExpiresAt(id: String) -> Date? {
+        authProfileStore.accountState.mobileRequests[id]?.expiresAt
+    }
+
+    public func oauthRequestProviderUserId(id: String) -> String? {
+        authProfileStore.accountState.mobileRequests[id]?.profileUserId
+    }
+
+    public func oauthRequestProviderEmail(id: String) -> String? {
+        authProfileStore.accountState.mobileRequests[id]?.profileEmail
+    }
+
+    public func oauthRequestCodeChallenge(id: String) -> String? {
+        authProfileStore.accountState.mobileRequests[id]?.codeChallenge
+    }
+
+    /// The Node fixture marks a row verified without an HTTP call. Retirement
+    /// refuses an unverified account.
+    public func markEmailVerified(userId: String) {
+        authProfileStore.markEmailVerified(userId: userId)
+    }
+
+    public func stagingSelfAccountCapabilityHash(userId: String) -> String? {
+        authProfileStore.account(userId: userId)?.stagingSelfAccountCapabilityHash
+    }
+
+    public func retiredAt(userId: String) -> Date? {
+        authProfileStore.account(userId: userId)?.retiredAt
+    }
+
+    public func sessionCount(for userId: String) -> Int {
+        authProfileStore.accountState.sessions.values.filter { $0.userId == userId }.count
+    }
+
+    public func sessionFamilyRevokedAts(userId: String) -> [Date?] {
+        authProfileStore.accountState.sessionFamilies.values.filter { $0.userId == userId }.map(\.revokedAt)
+    }
+
+    /// Adds platform allow rules for Apple sign-in. An empty set leaves Apple
+    /// disabled on every platform.
+    public func allowAppleLogin(on platforms: [String]) {
+        var state = authProfileStore.accountState
+        state.appleLoginPlatforms.formUnion(platforms)
+        authProfileStore.accountState = state
+    }
 }

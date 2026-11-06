@@ -435,36 +435,6 @@ extension EmailLoginDirectory {
         return "dvc_\(encoded)"
     }
 
-    static func deviceNotReady(_ code: String, status: Int) -> HTTPReply {
-        json(status, "{\"error\":\"Device authorization not ready\",\"code\":\(jsonString(code))}")
-    }
-
-    static func deviceUpdateFailed(_ code: String, status: Int) -> HTTPReply {
-        json(status, "{\"error\":\"Device authorization could not be updated\",\"code\":\(jsonString(code))}")
-    }
-
-    static func stagingCapability(_ value: Any?, into issues: inout [Issue]) -> String? {
-        guard let value else { return nil }
-        guard let text = value as? String else {
-            issues.append(Issue(path: "stagingSelfAccountCapability", message: "Expected string, received \(kind(value))"))
-            return nil
-        }
-        if text.count < 32 {
-            issues.append(Issue(path: "stagingSelfAccountCapability", message: "String must contain at least 32 character(s)"))
-            return nil
-        }
-        if text.count > 256 {
-            issues.append(Issue(path: "stagingSelfAccountCapability", message: "String must contain at most 256 character(s)"))
-            return nil
-        }
-        return text
-    }
-
-    static func retirementJSON(_ receipt: RetirementReceipt) -> HTTPReply {
-        let body = "{\"receipt\":{\"userId\":\(jsonString(receipt.userId)),\"actorUserId\":\(jsonString(receipt.actorUserId)),\"environment\":\(jsonString(receipt.environment)),\"terminalState\":\(jsonString(receipt.terminalState)),\"sessionsRevoked\":\(receipt.sessionsRevoked)}}"
-        return json(200, body)
-    }
-
     static func parseConfiguredMobileReturnURIs(_ raw: String?) -> Set<String> {
         guard let raw else { return [] }
         var values: Set<String> = []
@@ -532,43 +502,6 @@ extension EmailLoginDirectory {
         let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.wholeMatch(of: /^[a-z0-9][a-z0-9_.-]{0,127}$/) != nil else { return nil }
         return trimmed
-    }
-
-    static func stringField(_ value: Any?, path: String, into issues: inout [Issue]) -> String? {
-        guard let value else {
-            issues.append(Issue(path: path, message: "Required"))
-            return nil
-        }
-        if let string = value as? String {
-            if string.isEmpty {
-                issues.append(Issue(path: path, message: "String must contain at least 1 character(s)"))
-                return nil
-            }
-            return string
-        }
-        issues.append(Issue(path: path, message: "Expected string, received \(kind(value))"))
-        return nil
-    }
-
-    static func kind(_ value: Any) -> String {
-        if value is NSNull { return "null" }
-        if value is String { return "string" }
-        if value is NSDictionary { return "object" }
-        if value is NSArray { return "array" }
-        if value is Bool { return "boolean" }
-        if value is NSNumber { return "number" }
-        return "object"
-    }
-
-    static func registerInvalid(_ issues: [Issue]) -> HTTPReply {
-        bodyIssues(issues, error: "Invalid email registration body", code: "email_register_body_invalid")
-    }
-
-    static func bodyIssues(_ issues: [Issue], error: String, code: String) -> HTTPReply {
-        let listed = issues.map {
-            "{\"path\":\(jsonString($0.path)),\"message\":\(jsonString($0.message))}"
-        }.joined(separator: ",")
-        return json(400, "{\"error\":\(jsonString(error)),\"code\":\(jsonString(code)),\"issues\":[\(listed)]}")
     }
 
     static func deviceContext(userAgent: String, country: String) -> [String: Any] {
