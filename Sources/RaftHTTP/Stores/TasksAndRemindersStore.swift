@@ -607,10 +607,10 @@ extension TasksAndRemindersStore {
 
     /// `PATCH /api/tasks/:taskId/claim`: the row lookup, the deleted-channel
     /// refusal and the claim write are one critical section.
-    func claimForUser(taskId: String, userId: String, channelDeleted: (String) -> Bool, now: Date) -> HumanClaimOutcome {
+    func claimForUser(taskId: String, userId: String, channelDeletion: TaskChannelDeletionQuery, now: Date) -> HumanClaimOutcome {
         mutex.withLock { storage in
             guard let index = storage.taskRecords.firstIndex(where: { $0.id == taskId }) else { return .notFound }
-            guard !channelDeleted(storage.taskRecords[index].channelId) else { return .channelDeleted }
+            guard !channelDeletion.isDeleted(channelId: storage.taskRecords[index].channelId) else { return .channelDeleted }
             storage.taskRecords[index].assigneeId = userId
             storage.taskRecords[index].assigneeType = "user"
             storage.taskRecords[index].claimedAt = now
@@ -653,13 +653,13 @@ extension TasksAndRemindersStore {
         taskId: String,
         status: String,
         userId: String,
-        channelDeleted: (String) -> Bool,
+        channelDeletion: TaskChannelDeletionQuery,
         now: Date
     ) -> HumanStatusOutcome {
         mutex.withLock { storage in
             guard let index = storage.taskRecords.firstIndex(where: { $0.id == taskId }) else { return .notFound }
             let current = storage.taskRecords[index]
-            if channelDeleted(current.channelId), !["done", "closed", "cancelled"].contains(status) {
+            if channelDeletion.isDeleted(channelId: current.channelId), !["done", "closed", "cancelled"].contains(status) {
                 return .channelDeletedTerminalOnly
             }
             if status == "todo", current.status == "in_progress", current.assigneeId != userId {

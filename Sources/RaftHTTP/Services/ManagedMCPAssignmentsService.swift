@@ -597,7 +597,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
         switch tasks.claimForUser(
             taskId: taskId,
             userId: userId,
-            channelDeleted: { channels.postableChannel(id: $0)?.deletedAt != nil },
+            channelDeletion: TaskChannelDeletionQuery(channels: channels),
             now: now()
         ) {
         case .notFound:
@@ -639,7 +639,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
             taskId: taskId,
             status: status,
             userId: userId,
-            channelDeleted: { channels.postableChannel(id: $0)?.deletedAt != nil },
+            channelDeletion: TaskChannelDeletionQuery(channels: channels),
             now: now()
         ) {
         case .notFound:

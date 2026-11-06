@@ -2230,3 +2230,9 @@ RFC 074 personal assistant：
 - Typed dependencies 保 optional AuthCore session、raw memberRole、archiveAt!=nil 及原 catalog access/addTasks，权限与 session 每次重读。Committed-task publisher 只包原 status200，JSON 原样且只发一次；task 编号、created/updated 帧顺序保持。
 - bindingUserDelivery 只复制原 dependencies/general emitter，替换本 Fallback 固定可选 Hub 的 join/emit，仍 join→user emit。没有新字段、owner、slot 或 install；同一 Root 的 A/B/nil Fallback 均注册后仍各投自身 Hub，nil 不继承上一次绑定，general relay 发送时仍读当前 slot。
 - 真实 Socket/HTTP 的实例隔离、入房、A/B relay 替换、custom raw role、archive/access 和 logout 失效均有输出及额外帧负断言。TaskStore 原子区、notifications read observer 的 last-write 与 ServerMembership 的固定 Hub hooks 本片未改；未声称 user join/emit 是并发 session 原子 cohort，也未声称整条 task 调用链不存在锁内 callback。
+
+### Tasks 原位的 Channels deletion leaf
+
+- claimForUser/applyHumanStatus 不再接受 arbitrary channelDeleted callback，改用持实际 Channels owner 的 TaskChannelDeletionQuery。每次仍在原 Tasks borrow 内、原 row lookup 之后读取 postableChannel.deletedAt，缺失或仅 archived 均为 false；不提早取快照、释放/重入 Tasks 或加强权限。
+- 原 notFound/deleted/non-assignee 拒绝优先级、零写、time/claimedAt/revision/status/assignee/event 顺序保持；deleted channel 的 claim 与非 terminal status 仍是原 409/JSON，done/closed/cancelled 仍按旧规则允许。静态当前生产图无 Channels-held→Tasks 回边；deleteChannel 先释放 Channels 再 cleanup，七个 generic Channels callback API 仍是债务，不被该固定叶豁免。
+- 原 direct Store 调用已改真实 Channels，新增同 query 后续 delete、missing/archived 与拒绝不改行的输出验收。旧 TaskRealtimeEvents/NSLock tracer 已删除，真实 Hub/Socket 对404、成功claim、DELETE、409分别用同session FIFO fence；成功窗口比较完整task帧，拒绝窗口无task/message帧，DELETE独立drain不限制合法清理输出。Relay安装仅生产forward，不记录事件。

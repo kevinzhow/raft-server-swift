@@ -1,4 +1,12 @@
-# Daemon concurrency boundaries
+# Concurrency boundaries
+
+## Checked server transaction leaves
+
+The server Stores use checked Mutex state, but a checked declaration alone does not approve every cross-owner call. Tasks claim/status previously accepted an arbitrary `channelDeleted` callback and invoked it inside the Tasks transaction. TaskChannelDeletionQuery now holds the actual Channels owner and performs only the existing `postableChannel(...).deletedAt != nil` read at the same transaction point. Missing and archived-only channels remain false. Row lookup, refusal priority, revision/status/assignee/event writes and the supplied time retain their order; the channel read is not moved to an earlier snapshot.
+
+The current production graph has Tasks → Channels for this fixed query, Messages → OAuth for mirror/cursor commit, and Channels → OAuth for DM/role leaves. Inspection of all ten Channels owner files and their current binders found no Channels-held → Tasks path; deleteChannel releases Channels before orphan cleanup, and role notices release Channels before Messages. This describes the inspected graph, not arbitrary future callbacks or mutex borrowing. Seven Channels callback-taking APIs remain debt: their current production binders reach OAuth leaves, but their generic signatures are not approved as callback-free capabilities.
+
+## Retained daemon declarations
 
 The daemon-only targets are `RaftDaemonClient` and `RaftDaemon`. After the immutable errors, timer/HTTP completion boundaries, and four mutable daemon models moved to checked state or NIO confinement, 28 explicit unchecked declarations remain, all in `RaftDaemonClient`. This inventory records actual storage and call paths. It does **not** certify those declarations as safe exceptions.
 

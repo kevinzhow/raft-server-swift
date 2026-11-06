@@ -456,11 +456,14 @@ private func body(_ error: any DomainError) -> String {
 
 @Test func concurrentClaimsLoseNoRevisionBump() {
     let store = TasksAndRemindersStore()
+    let channels = ServersAndChannelsStore()
+    channels.addPostableChannel(serverId: "s", channelId: "c", memberId: "owner")
+    let channelDeletion = TaskChannelDeletionQuery(channels: channels)
     let ids = store.appendTasks(channelId: "c", titles: ["t"], descriptions: nil, creatorId: "owner")
     let taskId = ids[0]
     let writers = 64
     DispatchQueue.concurrentPerform(iterations: writers) { index in
-        _ = store.claimForUser(taskId: taskId, userId: "user-\(index)", channelDeleted: { _ in false }, now: Date())
+        _ = store.claimForUser(taskId: taskId, userId: "user-\(index)", channelDeletion: channelDeletion, now: Date())
     }
     let task = store.task(id: taskId)
     #expect(task?.revision == writers, "every claim is one complete read-modify-write")
@@ -471,25 +474,90 @@ private func body(_ error: any DomainError) -> String {
 
 @Test func claimRefusesADeletedChannelWithoutWriting() {
     let store = TasksAndRemindersStore()
+    let channels = ServersAndChannelsStore()
+    channels.addPostableChannel(serverId: "s", channelId: "c", memberId: "owner")
+    channels.markChannelDeleted(channelId: "c", now: Date())
+    let channelDeletion = TaskChannelDeletionQuery(channels: channels)
     let taskId = store.appendTasks(channelId: "c", titles: ["t"], descriptions: nil, creatorId: "owner")[0]
-    switch store.claimForUser(taskId: taskId, userId: "u", channelDeleted: { $0 == "c" }, now: Date()) {
+    switch store.claimForUser(taskId: taskId, userId: "u", channelDeletion: channelDeletion, now: Date()) {
     case .channelDeleted: break
     default: Issue.record("a deleted channel refuses the claim")
     }
-    switch store.claimForUser(taskId: "ghost", userId: "u", channelDeleted: { _ in false }, now: Date()) {
+    switch store.claimForUser(taskId: "ghost", userId: "u", channelDeletion: channelDeletion, now: Date()) {
     case .notFound: break
     default: Issue.record("an unknown task is not found")
     }
     let task = store.task(id: taskId)
     #expect(task?.revision == 0)
     #expect(task?.assigneeId == nil)
+    #expect(task?.assigneeType == nil)
+    #expect(task?.claimedAt == nil)
+    #expect(task?.updatedAt == nil)
+    #expect(task?.completedAt == nil)
+    #expect(task?.closedAt == nil)
     #expect(task?.status == "todo")
+    #expect(store.taskEvents.isEmpty)
+    #expect(store.assigneeChangeEvents.isEmpty)
+}
+
+@Test func taskDeletionQueriesUseTheLiveOwnerAndPreserveMissingAndArchivedRows() {
+    let store = TasksAndRemindersStore()
+    let channels = ServersAndChannelsStore()
+    channels.addPostableChannel(serverId: "s", channelId: "c", memberId: "u")
+    let channelDeletion = TaskChannelDeletionQuery(channels: channels)
+    let taskId = store.appendTasks(channelId: "c", titles: ["live owner"], descriptions: nil, creatorId: "u")[0]
+    let now = Date(timeIntervalSince1970: 1_767_225_600)
+    switch store.claimForUser(taskId: taskId, userId: "u", channelDeletion: channelDeletion, now: now) {
+    case .claimed(let task):
+        #expect(task.status == "in_progress")
+        #expect(task.claimedAt == now)
+        #expect(task.revision == 1)
+    default: Issue.record("the actual live channel allows the claim")
+    }
+
+    channels.markChannelDeleted(channelId: "c", now: now)
+    switch store.claimForUser(taskId: taskId, userId: "other", channelDeletion: channelDeletion, now: now.addingTimeInterval(1)) {
+    case .channelDeleted: break
+    default: Issue.record("the same query must see a deletion committed after its construction")
+    }
+    switch store.applyHumanStatus(taskId: taskId, status: "todo", userId: "other", channelDeletion: channelDeletion, now: now) {
+    case .channelDeletedTerminalOnly: break
+    default: Issue.record("the deletion refusal keeps its precedence over the assignee refusal")
+    }
+    #expect(store.task(id: taskId)?.assigneeId == "u")
+    #expect(store.task(id: taskId)?.claimedAt == now)
+    #expect(store.task(id: taskId)?.status == "in_progress")
+    #expect(store.task(id: taskId)?.revision == 1)
+    #expect(store.taskEvents.isEmpty)
+    #expect(store.assigneeChangeEvents.isEmpty)
+    switch store.applyHumanStatus(taskId: taskId, status: "done", userId: "u", channelDeletion: channelDeletion, now: now) {
+    case .updated(let task):
+        #expect(task.completedAt == now)
+        #expect(task.claimedAt == now)
+        #expect(task.revision == 2)
+    default: Issue.record("a deleted channel still permits a terminal transition")
+    }
+
+    channels.addPostableChannel(serverId: "s", channelId: "archived", memberId: "u")
+    channels.setArchivedFlag(channelId: "archived", archived: true)
+    for channelId in ["missing", "archived"] {
+        let id = store.appendTasks(channelId: channelId, titles: [channelId], descriptions: nil, creatorId: "u")[0]
+        switch store.claimForUser(taskId: id, userId: "u", channelDeletion: channelDeletion, now: now) {
+        case .claimed(let task):
+            #expect(task.status == "in_progress")
+            #expect(task.revision == 1)
+        default: Issue.record("missing rows and archived rows are not soft-deleted channels")
+        }
+    }
 }
 
 @Test func concurrentUnclaimsRecordOneAssigneeEventEach() {
     let store = TasksAndRemindersStore()
+    let channels = ServersAndChannelsStore()
+    channels.addPostableChannel(serverId: "s", channelId: "c", memberId: "owner")
+    let channelDeletion = TaskChannelDeletionQuery(channels: channels)
     let taskId = store.appendTasks(channelId: "c", titles: ["t"], descriptions: nil, creatorId: "owner")[0]
-    _ = store.claimForUser(taskId: taskId, userId: "first", channelDeleted: { _ in false }, now: Date())
+    _ = store.claimForUser(taskId: taskId, userId: "first", channelDeletion: channelDeletion, now: Date())
     let writers = 48
     DispatchQueue.concurrentPerform(iterations: writers) { index in
         _ = store.unclaimForUser(taskId: taskId, userId: "user-\(index)")
@@ -503,35 +571,42 @@ private func body(_ error: any DomainError) -> String {
 
 @Test func humanStatusWriteAppliesStampsAndRefusalsInOneSection() {
     let store = TasksAndRemindersStore()
+    let channels = ServersAndChannelsStore()
+    channels.addPostableChannel(serverId: "s", channelId: "c", memberId: "owner")
+    let channelDeletion = TaskChannelDeletionQuery(channels: channels)
+    let deletedChannels = ServersAndChannelsStore()
+    deletedChannels.addPostableChannel(serverId: "s", channelId: "c", memberId: "owner")
+    deletedChannels.markChannelDeleted(channelId: "c", now: Date())
+    let deletedChannelQuery = TaskChannelDeletionQuery(channels: deletedChannels)
     let taskId = store.appendTasks(channelId: "c", titles: ["t"], descriptions: nil, creatorId: "owner")[0]
     let now = Date(timeIntervalSince1970: 1_767_225_600)
 
-    switch store.applyHumanStatus(taskId: taskId, status: "in_progress", userId: "u", channelDeleted: { _ in false }, now: now) {
+    switch store.applyHumanStatus(taskId: taskId, status: "in_progress", userId: "u", channelDeletion: channelDeletion, now: now) {
     case .updated(let task):
         #expect(task.claimedAt == now)
         #expect(task.revision == 1)
     default: Issue.record("in_progress is applied")
     }
-    switch store.applyHumanStatus(taskId: taskId, status: "todo", userId: "other", channelDeleted: { _ in false }, now: now) {
+    switch store.applyHumanStatus(taskId: taskId, status: "todo", userId: "other", channelDeletion: channelDeletion, now: now) {
     case .onlyAssigneeCanReturnToTodo: break
     default: Issue.record("only the assignee returns an in-progress task to todo")
     }
-    switch store.applyHumanStatus(taskId: taskId, status: "in_review", userId: "u", channelDeleted: { _ in true }, now: now) {
+    switch store.applyHumanStatus(taskId: taskId, status: "in_review", userId: "u", channelDeletion: deletedChannelQuery, now: now) {
     case .channelDeletedTerminalOnly: break
     default: Issue.record("a deleted channel only takes terminal statuses")
     }
     #expect(store.task(id: taskId)?.revision == 1, "refusals write nothing")
-    switch store.applyHumanStatus(taskId: taskId, status: "done", userId: "u", channelDeleted: { _ in true }, now: now) {
+    switch store.applyHumanStatus(taskId: taskId, status: "done", userId: "u", channelDeletion: deletedChannelQuery, now: now) {
     case .updated(let task):
         #expect(task.completedAt == now)
         #expect(task.revision == 2)
     default: Issue.record("done is terminal")
     }
-    switch store.applyHumanStatus(taskId: taskId, status: "closed", userId: "u", channelDeleted: { _ in false }, now: now) {
+    switch store.applyHumanStatus(taskId: taskId, status: "closed", userId: "u", channelDeletion: channelDeletion, now: now) {
     case .updated(let task): #expect(task.closedAt == now)
     default: Issue.record("closed is applied")
     }
-    switch store.applyHumanStatus(taskId: "ghost", status: "done", userId: "u", channelDeleted: { _ in false }, now: now) {
+    switch store.applyHumanStatus(taskId: "ghost", status: "done", userId: "u", channelDeletion: channelDeletion, now: now) {
     case .notFound: break
     default: Issue.record("an unknown task is not found")
     }

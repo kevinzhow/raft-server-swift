@@ -128,14 +128,20 @@ private func orphanObject(_ response: ClientResponse) throws -> [String: Any] {
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
         try await app.testing { client in
+            let before = try await client.get(URI(string: "/api/tasks/channel/\(f.channelId)"), headers: orphanHeaders(f.ownerToken, f.serverId))
+            #expect(before.status == .ok)
             let reject = try await client.send(.patch, headers: orphanHeaders(f.ownerToken, f.serverId), to: URI(string: "/api/tasks/\(task)/status")) { request in
                 request.body = .init(string: "{\"status\":\"in_progress\"}")
             }
             #expect(reject.status == .conflict)
-            #expect(try orphanObject(reject)["code"] as? String == "channel_deleted_terminal_only")
+            #expect(reject.body.string == #"{"error":"This channel was deleted; only terminal task statuses are allowed","code":"channel_deleted_terminal_only"}"#)
 
             let claim = try await client.send(.patch, headers: orphanHeaders(f.ownerToken, f.serverId), to: URI(string: "/api/tasks/\(task)/claim"))
             #expect(claim.status == .conflict)
+            #expect(claim.body.string == #"{"error":"This channel was deleted; the task can only be closed","code":"channel_deleted_terminal_only"}"#)
+            let after = try await client.get(URI(string: "/api/tasks/channel/\(f.channelId)"), headers: orphanHeaders(f.ownerToken, f.serverId))
+            #expect(after.status == .ok)
+            #expect(after.body.string == before.body.string, "both refusals preserve the public task row including revision and claim stamps")
         }
     }
 }
