@@ -228,19 +228,23 @@ public struct NotificationsFeature: RouteCollection, Sendable {
             return response
         }
         productEvents.post("batch") { request async throws -> Response in
-            routeResponse(services.emailAccounts.clientEventsBatch(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                userAgent: request.headers[HTTPField.Name("User-Agent")!] ?? "",
-                country: request.headers[HTTPField.Name("CloudFront-Viewer-Country")!] ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ClientEventsBatchRequest.self, request)
+            return try await respond(status: 202) {
+                try services.emailAccounts.agentsLifecycle.clientEventsBatch(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    userAgent: request.headers[HTTPField.Name("User-Agent")!] ?? "",
+                    country: request.headers[HTTPField.Name("CloudFront-Viewer-Country")!] ?? "",
+                    body: body
+                )
+            }
         }
-        productEvents.get("config") { request -> Response in
-            routeResponse(services.emailAccounts.clientEventsConfig(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
-            ))
+        productEvents.get("config") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentsLifecycle.clientEventsConfig(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         productEvents.post("onboarding-wizard") { request async throws -> Response in
             // The legacy handler read the raw JSON body regardless of the

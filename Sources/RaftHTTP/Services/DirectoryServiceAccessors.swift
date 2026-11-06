@@ -29,7 +29,7 @@ extension EmailLoginDirectory {
                     emitRealtime(room, event, payload)
                 },
                 computerAttachEnabled: { [self] in
-                    computerAttachEnabled()
+                    agentsLifecycle.computerAttachEnabled()
                 },
                 mintAgentCredential: { [self] agentId, scopes, name in
                     let minted = mintAgentCredential(agentId: agentId, scopes: scopes, name: name)
@@ -175,6 +175,85 @@ extension EmailLoginDirectory {
     /// enter as closures.
     public var humanMessageCreate: HumanMessageCreateService {
         HumanMessageCreateService(directory: self)
+    }
+
+    /// Agent lifecycle: the access-token and credential gates, attachment upload
+    /// and read, channel files, client product events, the Computer preflight
+    /// and the runtime-provider probe. The directory supplies its stores and the
+    /// OAuth ledger; the credential-use stamp (agent private surface) and the
+    /// joint-channel projection lookup enter as closures.
+    public var agentsLifecycle: AgentsLifecycleService {
+        AgentsLifecycleService(
+            profiles: authProfileStore,
+            agents: agentsRuntimeStore,
+            machines: machinesAndComputersStore,
+            channels: serversAndChannelsStore,
+            messages: messagesAndThreadsStore,
+            inboxFacts: inboxFactStore,
+            productEvents: productEventStore,
+            oauth: oauth,
+            dependencies: AgentsLifecycleDependencies(
+                recordAgentCredentialUse: { [self] token in
+                    recordAgentCredentialUse(token: token)
+                },
+                jointLocalChannelId: { [self] canonicalChannelId, serverId, userId in
+                    jointLocalChannelIdLocked(
+                        canonicalChannelId: canonicalChannelId,
+                        serverId: serverId,
+                        userId: userId
+                    )
+                }
+            )
+        )
+    }
+
+    // Forwarders for the lifecycle helpers that unmigrated services still call.
+
+    /// The user id behind a live access token. A missing or unknown bearer is nil.
+    public func sessionUserId(authorization: String?) -> String? {
+        agentsLifecycle.sessionUserId(authorization: authorization)
+    }
+
+    /// Access-token identity used by the socket layer. The family id scopes
+    /// revocation to the connection family that owns the token.
+    public func sessionIdentity(accessToken: String) -> (userId: String, familyId: String?)? {
+        authProfileStore.pushPrincipal(accessToken: accessToken)
+    }
+
+    /// Resolve a `push/family-revoke` capability without consuming it.
+    public func familyRevokeTarget(capability: String) -> (userId: String, familyId: String)? {
+        authProfileStore.familyRevokeTarget(capability: capability)
+    }
+
+    func openSessionLocked(userId: String) -> IssuedSessionTokens {
+        authProfileStore.openSession(userId: userId)
+    }
+
+    func refreshLocked(refreshToken: String, attemptId: String?, installationId: String?) -> RefreshOutcome {
+        authProfileStore.rotateRefresh(refreshToken: refreshToken, attemptId: attemptId, installationId: installationId)
+    }
+
+    /// Retirement auth keeps the access token after the account is retired. A
+    /// missing bearer is the invalid-token body.
+    func retirementActor(_ authorization: String?) -> String? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        return authProfileStore.pushPrincipal(accessToken: String(authorization.dropFirst("Bearer ".count)))?.userId
+    }
+
+    func guestCanSeeScopeLocked(_ scopeId: String) -> Bool {
+        agentsLifecycle.guestCanSeeScope(scopeId)
+    }
+
+    func channelProbeAccessLocked(channelId: String, serverId: String, userId: String) -> ChannelProbeAccess {
+        agentsLifecycle.channelProbeAccess(channelId: channelId, serverId: serverId, userId: userId)
+    }
+
+    func visibleAttachment(userId: String, serverId: String?, attachment: ChannelAttachment) -> Bool {
+        agentsLifecycle.canSeeAttachment(userId: userId, serverId: serverId, attachment: attachment)
+    }
+
+    func visibleAttachmentUnlocked(userId: String, serverId: String?, attachment: ChannelAttachment) -> Bool {
+        agentsLifecycle.canSeeAttachmentIgnoringJoint(userId: userId, serverId: serverId, attachment: attachment)
     }
 
     public var sessionCount: Int {

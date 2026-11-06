@@ -136,10 +136,12 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.get() { request -> Response in
-            routeResponse(services.emailAccounts.agentApiIdentity(
-                authorization: request.headers[.authorization]
-            ))
+        agentApi.get() { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentsLifecycle.agentApiIdentity(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         agentApi.get("profile") { request async throws -> Response in
             try await respond {
@@ -279,10 +281,12 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.get("attachment-upload-capabilities") { request -> Response in
-            routeResponse(services.emailAccounts.agentAttachmentUploadCapabilities(
-                authorization: request.headers[.authorization]
-            ))
+        agentApi.get("attachment-upload-capabilities") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentsLifecycle.agentAttachmentUploadCapabilities(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         agentApi.get("history") { request async throws -> Response in
             try await respond {
@@ -825,23 +829,25 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                     .trimmingCharacters(in: CharacterSet(charactersIn: "\"")),
                   !boundary.isEmpty
             else {
-                return routeResponse(HTTPReply(status: 400, headers: [:], body: "{\"error\":\"Invalid multipart upload\"}"))
+                return respond(status: 400, headers: .exact([:]), rawJSON: "{\"error\":\"Invalid multipart upload\"}")
             }
             let buffer = try await request.body.collect(max: .specified(ByteCount(value: 300 * 1024 * 1024)))
             guard let buffer,
                   let parsed = parseAttachmentMultipart(data: buffer, boundary: boundary),
                   let file = parsed.files.first
             else {
-                return routeResponse(HTTPReply(status: 400, headers: [:], body: "{\"error\":\"Invalid multipart upload\"}"))
+                return respond(status: 400, headers: .exact([:]), rawJSON: "{\"error\":\"Invalid multipart upload\"}")
             }
-            return routeResponse(services.emailAccounts.uploadAgentAttachmentIdless(
-                authorization: request.headers[.authorization],
-                channelId: parsed.channelId,
-                filename: file.filename,
-                mimeType: file.mimeType,
-                sizeBytes: file.sizeBytes,
-                bytes: file.data
-            ))
+            return try await respond {
+                try services.emailAccounts.agentsLifecycle.uploadAgentAttachmentIdless(
+                    authorization: request.headers[.authorization],
+                    channelId: parsed.channelId,
+                    filename: file.filename,
+                    mimeType: file.mimeType,
+                    sizeBytes: file.sizeBytes,
+                    bytes: file.data
+                )
+            }
         }
     }
 }

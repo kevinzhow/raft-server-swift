@@ -22,3 +22,8 @@ public extension HTTPReply {
         return HTTPReply(status: status, headers: headers, body: body)
     }
 }
+
+/// `HTTPReply` is the value an unmigrated route returns on a denial. With
+/// `Error` conformance those entry points report `Result<Success, HTTPReply>`
+/// without a second error type.
+extension HTTPReply: Error {}

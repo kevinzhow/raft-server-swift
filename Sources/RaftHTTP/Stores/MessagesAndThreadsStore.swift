@@ -1732,3 +1732,13 @@ extension MessagesAndThreadsStore {
         return message
     }
 }
+
+extension MessagesAndThreadsStore {
+    /// Stores one uploaded file row. The row carries its final uploader type, so
+    /// no reader can observe an agent upload as a user upload.
+    func insertAttachment(_ attachment: ChannelAttachment) {
+        lock.lock()
+        storage.channelAttachments[attachment.id] = attachment
+        lock.unlock()
+    }
+}

@@ -1,4 +1,3 @@
-Sources/RaftHTTP/Services/AgentsLifecycleService.swift	28
 Sources/RaftHTTP/Services/AuthCoreService.swift	13
 Sources/RaftHTTP/Services/OAuthFlowsService.swift	18
 Sources/RaftHTTP/Services/ReactionsRealtimeService.swift	17

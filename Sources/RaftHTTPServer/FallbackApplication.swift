@@ -285,24 +285,30 @@ public func configure(_ app: Application, services: FallbackServices) {
     // The claimed `/internal/computer/` prefix fails closed for paths the
     // surface registry does not know, instead of leaking a routing 404.
     for method in [HTTPRequest.Method.get, .post, .put, .patch, .delete] {
-        app.on(method, "internal", "computer", "**") { request -> Response in
-            routeResponse(services.emailAccounts.unregisteredInternalComputerSurface(
-                authorization: request.headers[.authorization]
-            ))
+        app.on(method, "internal", "computer", "**") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentsLifecycle.unregisteredInternalComputerSurface(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
     }
     // The claimed agent principal prefixes fail closed the same way. A route
     // that exists without a policy entry must not look like an unmounted 404.
     for method in [HTTPRequest.Method.get, .post, .put, .patch, .delete] {
-        app.on(method, "internal", "agent-api", "**") { request -> Response in
-            routeResponse(services.emailAccounts.unregisteredInternalAgentSurface(
-                authorization: request.headers[.authorization]
-            ))
+        app.on(method, "internal", "agent-api", "**") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentsLifecycle.unregisteredInternalAgentSurface(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
-        app.on(method, "internal", "agent", "**") { request -> Response in
-            routeResponse(services.emailAccounts.unregisteredInternalAgentSurface(
-                authorization: request.headers[.authorization]
-            ))
+        app.on(method, "internal", "agent", "**") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentsLifecycle.unregisteredInternalAgentSurface(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
     }
 

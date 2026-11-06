@@ -44,3 +44,33 @@ final class ProductEventStore: @unchecked Sendable {
         lock.unlock()
     }
 }
+
+extension ProductEventStore {
+    /// One event of a client batch that already passed validation, with the
+    /// batch id the idempotency set tracks and the row to store when it is new.
+    struct ClientEventCandidate: Sendable {
+        let eventId: String
+        let record: ClientEventRecord
+    }
+
+    /// Admits a validated batch: a candidate whose id was already seen (in an
+    /// earlier batch or earlier in this one) is dropped, the rest append, and
+    /// every syntactically valid batch id (`seenIDs`) joins the seen set, all in
+    /// one critical section. Two concurrent deliveries of the same batch
+    /// therefore store its events once. Returns the number of rows appended.
+    func admitClientEvents(_ candidates: [ClientEventCandidate], seenIDs: [String]) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        var admitted: [ClientEventRecord] = []
+        var batchSeen: Set<String> = []
+        for candidate in candidates {
+            if seenClientEventIDs.contains(candidate.eventId) || !batchSeen.insert(candidate.eventId).inserted {
+                continue
+            }
+            admitted.append(candidate.record)
+        }
+        clientEvents.append(contentsOf: admitted)
+        seenClientEventIDs.formUnion(seenIDs)
+        return admitted.count
+    }
+}

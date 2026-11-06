@@ -358,11 +358,13 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        computer.post("preflight") { request -> Response in
-            routeResponse(services.emailAccounts.computerPreflight(
-                authorization: request.headers[.authorization],
-                surface: internalSurface.value
-            ))
+        computer.post("preflight") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentsLifecycle.computerPreflight(
+                    authorization: request.headers[.authorization],
+                    surface: internalSurface.value
+                )
+            }
         }
         agent.post("upload") { request async throws -> Response in
             guard let contentType = request.headers[.contentType],
@@ -370,23 +372,25 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                     .trimmingCharacters(in: CharacterSet(charactersIn: "\"")),
                   !boundary.isEmpty
             else {
-                return routeResponse(HTTPReply(status: 400, headers: [:], body: "{\"error\":\"Invalid multipart upload\"}"))
+                return respond(status: 400, headers: .exact([:]), rawJSON: "{\"error\":\"Invalid multipart upload\"}")
             }
             let buffer = try await request.body.collect(max: .specified(ByteCount(value: 300 * 1024 * 1024)))
             guard let buffer,
                   let parsed = parseAttachmentMultipart(data: buffer, boundary: boundary),
                   let file = parsed.files.first
             else {
-                return routeResponse(HTTPReply(status: 400, headers: [:], body: "{\"error\":\"Invalid multipart upload\"}"))
+                return respond(status: 400, headers: .exact([:]), rawJSON: "{\"error\":\"Invalid multipart upload\"}")
             }
-            return routeResponse(services.emailAccounts.uploadAgentAttachment(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                channelId: parsed.channelId,
-                filename: file.filename,
-                mimeType: file.mimeType,
-                sizeBytes: file.sizeBytes
-            ))
+            return try await respond {
+                try services.emailAccounts.agentsLifecycle.uploadAgentAttachment(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    channelId: parsed.channelId,
+                    filename: file.filename,
+                    mimeType: file.mimeType,
+                    sizeBytes: file.sizeBytes
+                )
+            }
         }
         machine.post("scope-attestation") { request async throws -> Response in
             let body = await jsonRequestBody(MachineScopeAttestationRequest.self, request)
