@@ -1,5 +1,6 @@
 import Crypto
 import Foundation
+import RaftShared
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -417,20 +418,21 @@ extension EmailLoginDirectory {
                     heldMessageCount: shownCount,
                     omittedMessageCount: omittedCount
                 )
+                let gateMetadata: [String: JSONValue] = [
+                    "last_seen_msg_id": boundaryMessageId.map(JSONValue.string) ?? .null,
+                    "latest_msg_id": newer.last.map { JSONValue.string($0.message.id) } ?? .null,
+                    "has_formal_mention_since_last_seen": .bool(false),
+                    "draft_replaced_existing": .bool(draftReplacedExisting),
+                    "new_message_count": .integer(Int64(holdCount)),
+                    "boundary_source": .string(boundarySource),
+                    "boundary_seq": .integer(Int64(boundarySeq)),
+                    "latest_seq": .integer(Int64(latestSeq)),
+                ]
                 recordAttestedSendEvent(
                     "gate_triggered",
                     agentId: identity.agentId,
                     messageId: newer.last?.message.id,
-                    metadata: [
-                        "last_seen_msg_id": boundaryMessageId as Any? ?? NSNull(),
-                        "latest_msg_id": newer.last?.message.id as Any? ?? NSNull(),
-                        "has_formal_mention_since_last_seen": false,
-                        "draft_replaced_existing": draftReplacedExisting,
-                        "new_message_count": holdCount,
-                        "boundary_source": boundarySource,
-                        "boundary_seq": boundarySeq,
-                        "latest_seq": latestSeq,
-                    ]
+                    metadata: gateMetadata
                 )
                 recordAgentSendActivity(
                     agentId: identity.agentId,
@@ -464,15 +466,16 @@ extension EmailLoginDirectory {
             lock.unlock()
         }
         if let exemption = mentionExemption {
+            let exemptionMetadata: [String: JSONValue] = [
+                "mention_message_id": .string(exemption.messageId),
+                "mentioned_handle": .string(exemption.handle),
+                "new_message_count_since_last_seen": .integer(Int64(mentionExemptionMessageCount)),
+            ]
             recordAttestedSendEvent(
                 "e1_exempt",
                 agentId: identity.agentId,
                 messageId: exemption.messageId,
-                metadata: [
-                    "mention_message_id": exemption.messageId,
-                    "mentioned_handle": exemption.handle,
-                    "new_message_count_since_last_seen": mentionExemptionMessageCount,
-                ]
+                metadata: exemptionMetadata
             )
             recordAgentSendActivity(
                 agentId: identity.agentId,

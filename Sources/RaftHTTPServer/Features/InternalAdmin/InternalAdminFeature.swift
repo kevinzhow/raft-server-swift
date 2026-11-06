@@ -255,22 +255,28 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             ))
         }
         agent.post("messages", ":messageId", "reactions") { request async throws -> Response in
-            routeResponse(services.emailAccounts.mutateAgentMessageReaction(
-                agentId: request.parameters.get("agentId") ?? "",
-                messageId: request.parameters.get("messageId") ?? "",
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization],
-                remove: false
-            ))
+            let body = await jsonRequestBody(ProfileReactionRequestDTO.self, request)
+            return try await respond {
+                try services.emailAccounts.profileAndChannelFiles.mutateAgentMessageReaction(
+                    agentId: request.parameters.get("agentId") ?? "",
+                    messageId: request.parameters.get("messageId") ?? "",
+                    emoji: body?.emoji,
+                    authorization: request.headers[.authorization],
+                    remove: false
+                )
+            }
         }
         agent.delete("messages", ":messageId", "reactions") { request async throws -> Response in
-            routeResponse(services.emailAccounts.mutateAgentMessageReaction(
-                agentId: request.parameters.get("agentId") ?? "",
-                messageId: request.parameters.get("messageId") ?? "",
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization],
-                remove: true
-            ))
+            let body = await jsonRequestBody(ProfileReactionRequestDTO.self, request)
+            return try await respond {
+                try services.emailAccounts.profileAndChannelFiles.mutateAgentMessageReaction(
+                    agentId: request.parameters.get("agentId") ?? "",
+                    messageId: request.parameters.get("messageId") ?? "",
+                    emoji: body?.emoji,
+                    authorization: request.headers[.authorization],
+                    remove: true
+                )
+            }
         }
         agent.post("threads", "unfollow") { request async throws -> Response in
             let body = await jsonRequestBody(AgentThreadUnfollowRequest.self, request)

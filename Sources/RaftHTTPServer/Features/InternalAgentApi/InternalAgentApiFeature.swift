@@ -460,38 +460,26 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             ))
         }
         agentApi.post("messages", ":messageId", "reactions") { request async throws -> Response in
-            // `emoji` is the only body field on both verbs; the directory owns
-            // the trim, the 16-unit cap and the `A valid emoji is required` 400.
-            if let body = try? await request.content.decode(AgentMessageReactionDTO.self) {
-                return routeResponse(services.emailAccounts.mutateAgentApiMessageReaction(
+            let body = await jsonRequestBody(ProfileReactionRequestDTO.self, request)
+            return try await respond {
+                try services.emailAccounts.profileAndChannelFiles.mutateAgentApiMessageReaction(
                     messageId: request.parameters.get("messageId") ?? "",
-                    body: body.encodedBody(),
+                    emoji: body?.emoji,
                     authorization: request.headers[.authorization],
                     remove: false
-                ))
+                )
             }
-            return routeResponse(services.emailAccounts.mutateAgentApiMessageReaction(
-                messageId: request.parameters.get("messageId") ?? "",
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization],
-                remove: false
-            ))
         }
         agentApi.delete("messages", ":messageId", "reactions") { request async throws -> Response in
-            if let body = try? await request.content.decode(AgentMessageReactionDTO.self) {
-                return routeResponse(services.emailAccounts.mutateAgentApiMessageReaction(
+            let body = await jsonRequestBody(ProfileReactionRequestDTO.self, request)
+            return try await respond {
+                try services.emailAccounts.profileAndChannelFiles.mutateAgentApiMessageReaction(
                     messageId: request.parameters.get("messageId") ?? "",
-                    body: body.encodedBody(),
+                    emoji: body?.emoji,
                     authorization: request.headers[.authorization],
                     remove: true
-                ))
+                )
             }
-            return routeResponse(services.emailAccounts.mutateAgentApiMessageReaction(
-                messageId: request.parameters.get("messageId") ?? "",
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization],
-                remove: true
-            ))
         }
         agentApi.post("activity") { request async throws -> Response in
             let body = await jsonRequestBody(AgentActivityIngestRequest.self, request)
@@ -651,10 +639,13 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             routeResponse(services.emailAccounts.agentThirdPartyEvents(authorization: request.headers[.authorization]))
         }
         agentApi.post("third-party-events", "delivered") { request async throws -> Response in
-            routeResponse(services.emailAccounts.reportThirdPartyEventsDelivered(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ThirdPartyEventDeliveryRequestDTO.self, request)
+            return try await respond {
+                try services.emailAccounts.profileAndChannelFiles.reportThirdPartyEventsDelivered(
+                    authorization: request.headers[.authorization],
+                    eventIds: body?.eventIds
+                )
+            }
         }
         agentApi.put("push-webhook") { request async throws -> Response in
             routeResponse(services.emailAccounts.putAgentPushWebhook(

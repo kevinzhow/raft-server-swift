@@ -860,6 +860,55 @@ extension EmailLoginDirectory {
         )
     }
 
+    /// Message reactions, the reaction viewer/actor pages, both agent reaction
+    /// routes and the managed-daemon third-party delivery report. The directory
+    /// supplies the stores; the session and agent-credential/grant decisions and
+    /// the attachment-comment projections belong to unmigrated domains and enter
+    /// as closures.
+    public var profileAndChannelFiles: ProfileAndChannelFilesService {
+        ProfileAndChannelFilesService(
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            accounts: authProfileStore,
+            agents: agentsRuntimeStore,
+            machines: machinesAndComputersStore,
+            oauth: oauth,
+            dependencies: ProfileAndChannelFilesDependencies(
+                sessionUserId: { [self] authorization in
+                    sessionUserId(authorization: authorization)
+                },
+                agentRead: { [self] authorization in
+                    profileAgentReadOutcome(authorization)
+                },
+                capabilityDenial: { [self] authorization, capability in
+                    switch FeedbackLocatorService(directory: self)
+                        .capabilityDecision(authorization: authorization, capability: capability) {
+                    case .allowed:
+                        return nil
+                    case .denied(let denied):
+                        return denied
+                    }
+                },
+                emitRealtime: { [self] room, event, payload in
+                    emitRealtime(room, event, payload)
+                },
+                attachmentCommentsEnabled: { [self] serverId, userId in
+                    attachmentCommentsEnabled(serverId: serverId, userId: userId)
+                },
+                attachmentsJSON: { [self] ids, commentsVisible in
+                    lock.lock()
+                    defer { lock.unlock() }
+                    return "[" + messageAttachmentsJSONLocked(ids, commentsVisible: commentsVisible) + "]"
+                },
+                commentRefJSON: { [self] messageId in
+                    lock.lock()
+                    defer { lock.unlock() }
+                    return commentRefJSONLocked(messageId: messageId)
+                }
+            )
+        )
+    }
+
     /// Action-card prepare, the agent context / app-config surface, and the
     /// agent-target projections the execute/send domains still call. The
     /// service reads the domain stores; the session lookup and the

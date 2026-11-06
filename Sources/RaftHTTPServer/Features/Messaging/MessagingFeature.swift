@@ -120,63 +120,48 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
-        messages.get(":messageId", "reactions", "actors") { request -> Response in
-            routeResponse(services.emailAccounts.listReactionActors(
-                messageId: request.parameters.get("messageId") ?? "",
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                emoji: desktopQuery(request.url.query, "emoji"),
-                limit: desktopQuery(request.url.query, "limit"),
-                cursor: desktopQuery(request.url.query, "cursor")
-            ))
+        messages.get(":messageId", "reactions", "actors") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.profileAndChannelFiles.listReactionActors(
+                    messageId: request.parameters.get("messageId") ?? "",
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+                    emoji: desktopQuery(request.url.query, "emoji"),
+                    limit: desktopQuery(request.url.query, "limit"),
+                    cursor: desktopQuery(request.url.query, "cursor")
+                )
+            }
         }
-        messages.get(":messageId", "reactions", "viewer") { request -> Response in
-            routeResponse(services.emailAccounts.reactionViewer(
-                messageId: request.parameters.get("messageId") ?? "",
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!]
-            ))
+        messages.get(":messageId", "reactions", "viewer") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.profileAndChannelFiles.reactionViewer(
+                    messageId: request.parameters.get("messageId") ?? "",
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
+            }
         }
         messages.post(":messageId", "reactions") { request async throws -> Response in
-            let messageId = request.parameters.get("messageId") ?? ""
-            let authorization = request.headers[.authorization]
-            let serverId = request.headers[HTTPField.Name("X-Server-Id")!]
-            // `emoji` is the only key this route reads, so a decoded body is
-            // re-encoded for the directory's reaction parser. Every other shape
-            // keeps the raw body.
-            if let body = try? await request.content.decode(ReactionMutationRequestDTO.self) {
-                return routeResponse(messageSend.addMessageReaction(
-                    messageId: messageId,
-                    body: body,
-                    authorization: authorization,
-                    serverId: serverId
-                ))
+            let body = await jsonRequestBody(ProfileReactionRequestDTO.self, request)
+            return try await respond {
+                try services.emailAccounts.profileAndChannelFiles.addMessageReaction(
+                    messageId: request.parameters.get("messageId") ?? "",
+                    emoji: body?.emoji,
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
             }
-            return routeResponse(services.emailAccounts.addMessageReaction(
-                messageId: messageId,
-                body: try await request.bodyText(),
-                authorization: authorization,
-                serverId: serverId
-            ))
         }
         messages.delete(":messageId", "reactions") { request async throws -> Response in
-            let messageId = request.parameters.get("messageId") ?? ""
-            let authorization = request.headers[.authorization]
-            let serverId = request.headers[HTTPField.Name("X-Server-Id")!]
-            if let body = try? await request.content.decode(ReactionMutationRequestDTO.self) {
-                return routeResponse(messageSend.removeMessageReaction(
-                    messageId: messageId,
-                    body: body,
-                    authorization: authorization,
-                    serverId: serverId
-                ))
+            let body = await jsonRequestBody(ProfileReactionRequestDTO.self, request)
+            return try await respond {
+                try services.emailAccounts.profileAndChannelFiles.removeMessageReaction(
+                    messageId: request.parameters.get("messageId") ?? "",
+                    emoji: body?.emoji,
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
             }
-            return routeResponse(services.emailAccounts.removeMessageReaction(
-                messageId: messageId,
-                body: try await request.bodyText(),
-                authorization: authorization,
-                serverId: serverId
-            ))
         }
         messages.get("channel", ":channelId") { request -> Response in
             routeResponse(inbox.listChannelMessages(
