@@ -24,7 +24,7 @@ import VaporTesting
     let humanDM = accounts.oauth.createDirectChannel(serverId: serverId, firstUserId: ownerId, secondUserId: peerId)
 
     let eventBox = PinnedEventBox()
-    accounts.realtimeEmitter = { room, event, payload in
+    accounts.realtimeRelay.install { room, event, payload in
         eventBox.append(room: room, event: event, payload: payload)
     }
 
@@ -186,7 +186,7 @@ private final class PinnedEventBox: @unchecked Sendable {
     let channel = accounts.oauth.createChannel(serverId: serverId, name: "legacy-pins-channel", creatorUserId: ownerId)
     accounts.oauth.addChannelHuman(channelId: channel, userId: ownerId)
     let eventBox = PinnedEventBox()
-    accounts.realtimeEmitter = { room, event, payload in
+    accounts.realtimeRelay.install { room, event, payload in
         eventBox.append(room: room, event: event, payload: payload)
     }
 

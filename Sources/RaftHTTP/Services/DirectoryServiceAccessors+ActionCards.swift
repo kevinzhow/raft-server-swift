@@ -123,7 +123,7 @@ extension EmailLoginDirectory {
                     )
                 },
                 emitRealtime: { [self] room, event, payload in
-                    emitRealtime(room, event, payload)
+                    realtimeRelay.emit(room, event, payload)
                 },
                 marketplaceInstallableClient: { [self] recordId in
                     oauth.marketplaceInstallableClientIdentity(recordId: recordId)

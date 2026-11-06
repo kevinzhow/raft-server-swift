@@ -160,7 +160,7 @@ private func v1SourceURL(_ fixture: FormCatalogFixture, _ runtime: String, _ sou
         recorder.calls.append((runtime, force))
         return recorder.probe
     }
-    fixture.accounts.machineRoutedLocally = { _ in recorder.routedLocally }
+    fixture.accounts.installMachineRoutedLocallyForTesting { _ in recorder.routedLocally }
     try await withApp { app in
         configure(app, services: FallbackServices(
             nodeEnv: "test",
@@ -251,7 +251,7 @@ private func v1SourceURL(_ fixture: FormCatalogFixture, _ runtime: String, _ sou
         recorder.calls.append((runtime, force))
         return recorder.probe
     }
-    fixture.accounts.machineRoutedLocally = { _ in recorder.routedLocally }
+    fixture.accounts.installMachineRoutedLocallyForTesting { _ in recorder.routedLocally }
     try await withApp { app in
         configure(app, services: FallbackServices(
             nodeEnv: "test",
@@ -336,7 +336,7 @@ private func v1SourceURL(_ fixture: FormCatalogFixture, _ runtime: String, _ sou
     let fixture = makeFormCatalogFixture(suffix: "1204", runtimes: ["kimi-sdk"])
     let recorder = RuntimeProbeRecorder()
     fixture.accounts.machineRuntimeModelProbe = { _, _, _ in recorder.probe }
-    fixture.accounts.machineRoutedLocally = { _ in recorder.routedLocally }
+    fixture.accounts.installMachineRoutedLocallyForTesting { _ in recorder.routedLocally }
     try await withApp { app in
         configure(app, services: FallbackServices(
             nodeEnv: "test",
@@ -436,7 +436,7 @@ private func v1SourceURL(_ fixture: FormCatalogFixture, _ runtime: String, _ sou
     let fixture = makeFormCatalogFixture(suffix: "1205", runtimes: ["builtin", "kimi-sdk"])
     let recorder = RuntimeProbeRecorder()
     fixture.accounts.machineRuntimeModelProbe = { _, _, _ in recorder.probe }
-    fixture.accounts.machineRoutedLocally = { _ in recorder.routedLocally }
+    fixture.accounts.installMachineRoutedLocallyForTesting { _ in recorder.routedLocally }
     try await withApp { app in
         configure(app, services: FallbackServices(
             nodeEnv: "test",

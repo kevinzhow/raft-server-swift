@@ -52,7 +52,7 @@ private final class MigrationEventBox: @unchecked Sendable {
     accounts.setAgentMachineForTesting(agentId: creatorAgent, machineId: machine)
     let ref = "mig_abcdefghijklmnopqrstuv"
     let events = MigrationEventBox()
-    accounts.realtimeEmitter = { room, event, payload in
+    accounts.realtimeRelay.install { room, event, payload in
         events.append(room: room, event: event, payload: payload)
     }
 

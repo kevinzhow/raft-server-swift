@@ -130,7 +130,7 @@ private func followerMgmtRoster(_ client: any Client, token: String, fixture: Fo
 @Test func threadFollowerRemovalIsAuthorizedIdempotentAndReversible() async throws {
     let fixture = makeFollowerManagementFixture()
     let events = FollowerEventCollector()
-    fixture.accounts.realtimeEmitter = { room, event, payload in
+    fixture.accounts.realtimeRelay.install { room, event, payload in
         events.append(room: room, event: event, payload: payload)
     }
     try await withApp { app in

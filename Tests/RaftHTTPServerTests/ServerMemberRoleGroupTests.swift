@@ -70,7 +70,7 @@ private func roleHeaders(_ token: String, _ serverId: String) -> HTTPFields {
 @Test func serverMemberRoleGroupPreservesOwnersAndGatesAdminChanges() async throws {
     let fixture = try await makeMemberRoleFixture(suffix: "821")
     let events = MemberGroupEvents()
-    fixture.accounts.realtimeEmitter = { room, event, payload in
+    fixture.accounts.realtimeRelay.install { room, event, payload in
         events.append(room: room, event: event, payload: payload)
     }
     try await withApp { app in
@@ -172,7 +172,7 @@ private final class MemberGroupEvents: @unchecked Sendable {
     accounts.markEmailVerified(userId: ownerId)
     accounts.oauth.addOwnedServer(id: serverId, slug: "machine-broadcast", name: "Machine Broadcast", ownerId: ownerId)
     let events = MemberGroupEvents()
-    accounts.realtimeEmitter = { room, event, payload in
+    accounts.realtimeRelay.install { room, event, payload in
         events.append(room: room, event: event, payload: payload)
     }
     try await withApp { app in

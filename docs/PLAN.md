@@ -49,7 +49,7 @@ Phase 5 已完成旧 `EmailLogin/` 文件提取、Feature 路由拆分、同步 
 
 已完成状态隔离子批：十二个主 Store、OAuth ledger、只持有不可变引用的目录根类型、公开 server/visit 目录均为 checked Sendable，领域记录与配置由 Mutex 隔离；55 个共享值模型补齐 checked conformance。保持原事务，修复兼容 setter 整份 State 回写覆盖其他字段并发更新的问题。非 daemon 的显式 unchecked 现已清零，口径包含 Generated；NIO handler 的 loop 边界、共享会话发送队列和 telemetry 生成入口已落实。此前 HTTP 缓存/预算切片也已完成。
 
-这些数字不代表整批完成。仍有 12 处目录扩展和 195 个属性组成的 580 行 forwarding 文件；全局锁、生产文件内的测试夹具和复合消息提交都要按真实消费者迁移。消息 comment writer 原本不经过目录锁，必须与 human/agent append 统一序号分配，不能只删锁保留 count/get/append。
+这些数字不代表整批完成。relay/配置子片已删 63 个转发属性和三把专用锁；Root 上限从 48 收紧到 40 行。仍有 12 处目录扩展和 132 个属性组成的 388 行 forwarding 文件；全局锁、生产文件内的测试夹具和复合消息提交都要按真实消费者迁移。消息 comment writer 原本不经过目录锁，必须与 human/agent append 统一序号分配，不能只删锁保留 count/get/append。
 
 1. 把剩余目录扩展中的领域逻辑和跨域 helper 移到真正的 Service / Store；删除旧实现和 forwarding 文件，不保留另一层兼容外壳。
 2. **已完成状态隔离**：可变 Store 状态使用编译器检查的 Mutex，原 read-modify-write 事务保持完整。后续业务迁移仍不能把事务拆成分别锁住的 getter/setter。

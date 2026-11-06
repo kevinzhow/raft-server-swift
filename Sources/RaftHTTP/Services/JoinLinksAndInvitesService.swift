@@ -813,7 +813,7 @@ extension EmailLoginDirectory {
                     sessionUserId(authorization: authorization)
                 },
                 emitRealtime: { [self] room, event, payload in
-                    emitRealtime(room, event, payload)
+                    realtimeRelay.emit(room, event, payload)
                 }
             )
         )

@@ -36,13 +36,5 @@ public final class EmailLoginDirectory: Sendable {
     /// Human authorization codes and the token endpoint. The same ledger the HTTP routes exchange.
     public let oauth = OAuthLedger()
 
-    /// Serializes the two relay slots whose stored values live in the domain
-    /// stores. The locks stay here so this body holds no relay state.
-    let agentConnectionLock = NSLock()
-    let realtimeEmitterLock = NSLock()
-    /// Serializes the freshness gate with the commit it protects, so two
-    /// concurrent first replies cannot both pass the gate before either lands.
-    let sendFreshnessCommitLock = NSLock()
-
     public init() {}
 }

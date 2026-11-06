@@ -15,7 +15,6 @@ extension EmailLoginDirectory {
     // Notification/announcement/push rows live in `NotificationsStore`. These
     // accessors keep the extension files' property names unchanged.
     public var fcmPushAvailable: Bool { get { notificationsStore.fcmPushAvailable } set { notificationsStore.fcmPushAvailable = newValue } }
-    public var webPushEnabled: Bool { get { notificationsStore.webPushEnabled } set { notificationsStore.webPushEnabled = newValue } }
     var announcements: [NotificationsStore.AnnouncementRow] { get { notificationsStore.announcements } set { notificationsStore.announcements = newValue } }
 
     // Profile surface rows live in `AuthProfileStore`.
@@ -24,7 +23,6 @@ extension EmailLoginDirectory {
     var storedMobileAppEmailJourneys: [MobileAppEmailJourney] { get { authProfileStore.storedMobileAppEmailJourneys } set { authProfileStore.storedMobileAppEmailJourneys = newValue } }
 
     // Rows for the task, reminder and assignee-change surface live in `TasksAndRemindersStore`.
-    var reminderRecords: [ReminderRecord] { get { tasksAndRemindersStore.reminderRecords } set { tasksAndRemindersStore.reminderRecords = newValue } }
     var reminderEvents: [ReminderEvent] { get { tasksAndRemindersStore.reminderEvents } set { tasksAndRemindersStore.reminderEvents = newValue } }
     var taskRecords: [TaskRecord] { get { tasksAndRemindersStore.taskRecords } set { tasksAndRemindersStore.taskRecords = newValue } }
     var taskEvents: [(taskId: String, eventType: String, actorType: String)] { get { tasksAndRemindersStore.taskEvents } set { tasksAndRemindersStore.taskEvents = newValue } }
@@ -33,13 +31,9 @@ extension EmailLoginDirectory {
 
     // Rows for the machine, Computer and migration surface live in `MachinesAndComputersStore`.
     var machines: [MachineRecord] { get { machinesAndComputersStore.machines } set { machinesAndComputersStore.machines = newValue } }
-    var machineOnline: [String: Bool] { get { machinesAndComputersStore.machineOnline } set { machinesAndComputersStore.machineOnline = newValue } }
     var computers: [(id: String, serverId: String, name: String, apiKey: String, machineId: String?, revokedAt: Date?, online: Bool, version: String?)] { get { machinesAndComputersStore.computers } set { machinesAndComputersStore.computers = newValue } }
     var computerAttachers: [String: String] { get { machinesAndComputersStore.computerAttachers } set { machinesAndComputersStore.computerAttachers = newValue } }
-    var attachedComputers: [String: AttachedComputer] { get { machinesAndComputersStore.attachedComputers } set { machinesAndComputersStore.attachedComputers = newValue } }
-    var deletedMachineWorkspaces: Set<String> { get { machinesAndComputersStore.deletedMachineWorkspaces } set { machinesAndComputersStore.deletedMachineWorkspaces = newValue } }
     public var machineMigrationCapabilities: [String: Set<String>] { get { machinesAndComputersStore.machineMigrationCapabilities } set { machinesAndComputersStore.machineMigrationCapabilities = newValue } }
-    public var machineRuntimeDetections: [String: (status: String, unfinished: Set<String>)] { get { machinesAndComputersStore.machineRuntimeDetections } set { machinesAndComputersStore.machineRuntimeDetections = newValue } }
     var machineMigrations: [String: MachineMigrationRecord] { get { agentsRuntimeStore.machineMigrations } set { agentsRuntimeStore.machineMigrations = newValue } }
     var machineRuntimeModels: [String: [String: (models: [(id: String, label: String)], updatedAt: Date)]] { get { machinesAndComputersStore.machineRuntimeModels } set { machinesAndComputersStore.machineRuntimeModels = newValue } }
     var machineKeys: [String: (serverId: String, agentId: String)] { get { machinesAndComputersStore.machineKeys } set { machinesAndComputersStore.machineKeys = newValue } }
@@ -47,32 +41,20 @@ extension EmailLoginDirectory {
     // Rows for the server-membership, sidebar and channel-authority surface live in `ServersAndChannelsStore`.
     var postableChannels: [String: PostableChannel] { get { serversAndChannelsStore.postableChannels } set { serversAndChannelsStore.postableChannels = newValue } }
     var threadOrder: [String] { get { serversAndChannelsStore.threadOrder } set { serversAndChannelsStore.threadOrder = newValue } }
-    var serverMemberRoles: [String: String] { get { serversAndChannelsStore.serverMemberRoles } set { serversAndChannelsStore.serverMemberRoles = newValue } }
     var hideHumansFromMembers: [String: Bool] { get { serversAndChannelsStore.hideHumansFromMembers } set { serversAndChannelsStore.hideHumansFromMembers = newValue } }
-    var serverMemberStatuses: [String: String] { get { serversAndChannelsStore.serverMemberStatuses } set { serversAndChannelsStore.serverMemberStatuses = newValue } }
     var membershipAgreementAudits: [(serverId: String, subjectId: String, actorUserId: String, source: String, agreementId: String?, agreementVersion: Int?)] { get { serversAndChannelsStore.membershipAgreementAudits } set { serversAndChannelsStore.membershipAgreementAudits = newValue } }
     var jointProjections: [JointChannelLink] { get { serversAndChannelsStore.jointProjections } set { serversAndChannelsStore.jointProjections = newValue } }
     var serverMemberEvents: [ServerMemberEvent] { get { serversAndChannelsStore.serverMemberEvents } set { serversAndChannelsStore.serverMemberEvents = newValue } }
-    public var serverPlans: [String: String] { get { serversAndChannelsStore.serverPlans } set { serversAndChannelsStore.serverPlans = newValue } }
-    var serverInvites: [(id: String, serverId: String, email: String, role: String, tokenHash: String?)] { get { serversAndChannelsStore.serverInvites } set { serversAndChannelsStore.serverInvites = newValue } }
     var serverOnboardingSettings: [String: (agentId: String?, greeting: Bool)] { get { serversAndChannelsStore.serverOnboardingSettings } set { serversAndChannelsStore.serverOnboardingSettings = newValue } }
-    var setupPhases: [String: String] { get { serversAndChannelsStore.setupPhases } set { serversAndChannelsStore.setupPhases = newValue } }
-    var setupHandoffs: Set<String> { get { serversAndChannelsStore.setupHandoffs } set { serversAndChannelsStore.setupHandoffs = newValue } }
-    var guestRoleServers: Set<String> { get { serversAndChannelsStore.guestRoleServers } set { serversAndChannelsStore.guestRoleServers = newValue } }
-    var proSeats: [String: Int] { get { serversAndChannelsStore.proSeats } set { serversAndChannelsStore.proSeats = newValue } }
     var joinLinks: [String: JoinLinkRecord] { get { serversAndChannelsStore.joinLinks } set { serversAndChannelsStore.joinLinks = newValue } }
     var guestVisibleChannels: [String: Bool] { get { serversAndChannelsStore.guestVisibleChannels } set { serversAndChannelsStore.guestVisibleChannels = newValue } }
     var guestJoinableChannels: [String: Bool] { get { serversAndChannelsStore.guestJoinableChannels } set { serversAndChannelsStore.guestJoinableChannels = newValue } }
-    var readReceiptsServers: Set<String> { get { serversAndChannelsStore.readReceiptsServers } set { serversAndChannelsStore.readReceiptsServers = newValue } }
     var channelHumanRoles: [String: String] { get { serversAndChannelsStore.channelHumanRoles } set { serversAndChannelsStore.channelHumanRoles = newValue } }
-    var channelAuthorityRevisions: [String: Int] { get { serversAndChannelsStore.channelAuthorityRevisions } set { serversAndChannelsStore.channelAuthorityRevisions = newValue } }
     var sidebarReadAllEnabled: Bool { get { serversAndChannelsStore.sidebarReadAllEnabled } set { serversAndChannelsStore.sidebarReadAllEnabled = newValue } }
 
     // Rows for the managed-MCP, action-card and integration surface live in `ManagedMCPAndCardsStore`.
     var managedMCPServers: [ManagedMCPServerRecord] { get { managedMCPAndCardsStore.managedMCPServers } set { managedMCPAndCardsStore.managedMCPServers = newValue } }
     var actionCardRecords: [String: ActionCardRecord] { get { managedMCPAndCardsStore.actionCardRecords } set { managedMCPAndCardsStore.actionCardRecords = newValue } }
-    var marketplaceInstallCards: [String: MarketplaceInstallCard] { get { managedMCPAndCardsStore.marketplaceInstallCards } set { managedMCPAndCardsStore.marketplaceInstallCards = newValue } }
-    var integrationRegisterCards: [String: IntegrationRegisterCard] { get { managedMCPAndCardsStore.integrationRegisterCards } set { managedMCPAndCardsStore.integrationRegisterCards = newValue } }
     var agentGrantSets: [String: Set<String>] { get { managedMCPAndCardsStore.agentGrantSets } set { managedMCPAndCardsStore.agentGrantSets = newValue } }
     var agentIntegrationGrants: [String: Bool] { get { managedMCPAndCardsStore.agentIntegrationGrants } set { managedMCPAndCardsStore.agentIntegrationGrants = newValue } }
     var agentAudienceStatusOverrides: [String: String] { get { managedMCPAndCardsStore.agentAudienceStatusOverrides } set { managedMCPAndCardsStore.agentAudienceStatusOverrides = newValue } }
@@ -80,16 +62,12 @@ extension EmailLoginDirectory {
 
     // Rows for the agent-reminder and product-feedback surface live in `FeedbackStore`.
     var agentReminderSurfaceChannels: [String: String] { get { feedbackStore.agentReminderSurfaceChannels } set { feedbackStore.agentReminderSurfaceChannels = newValue } }
-    var productFeedbackRouteVerifiedCommitments: Set<String> { get { feedbackStore.productFeedbackRouteVerifiedCommitments } set { feedbackStore.productFeedbackRouteVerifiedCommitments = newValue } }
-    var feedbackLocatorRecords: [FeedbackLocatorRecord] { get { feedbackStore.feedbackLocatorRecords } set { feedbackStore.feedbackLocatorRecords = newValue } }
 
     // MARK: - Account, session and login rows (AuthProfileStore)
 
     var accounts: [String: Account] { get { authProfileStore.accounts } set { authProfileStore.accounts = newValue } }
     var analyticsIds: [String: String] { get { authProfileStore.analyticsIds } set { authProfileStore.analyticsIds = newValue } }
     var sessions: [String: LiveSession] { get { authProfileStore.sessions } set { authProfileStore.sessions = newValue } }
-    var rotationReceipts: [String: RotationReceipt] { get { authProfileStore.rotationReceipts } set { authProfileStore.rotationReceipts = newValue } }
-    var predecessorFamilies: [String: String] { get { authProfileStore.predecessorFamilies } set { authProfileStore.predecessorFamilies = newValue } }
     var revokedFamilies: Set<String> { get { authProfileStore.revokedFamilies } set { authProfileStore.revokedFamilies = newValue } }
     var sessionFamilies: [String: SessionFamily] { get { authProfileStore.sessionFamilies } set { authProfileStore.sessionFamilies = newValue } }
     var retirementReceipts: [String: RetirementReceipt] { get { authProfileStore.retirementReceipts } set { authProfileStore.retirementReceipts = newValue } }
@@ -100,10 +78,6 @@ extension EmailLoginDirectory {
     var pendingSocialLinks: [String: PendingSocialLink] { get { authProfileStore.pendingSocialLinks } set { authProfileStore.pendingSocialLinks = newValue } }
     var mobileRequests: [String: MobileOAuthRequest] { get { authProfileStore.mobileRequests } set { authProfileStore.mobileRequests = newValue } }
     var providerExchanges: Int { get { authProfileStore.providerExchanges } set { authProfileStore.providerExchanges = newValue } }
-    var consumedHandoffs: Set<String> { get { authProfileStore.consumedHandoffs } set { authProfileStore.consumedHandoffs = newValue } }
-    var deviceGrants: [String: DeviceGrant] { get { authProfileStore.deviceGrants } set { authProfileStore.deviceGrants = newValue } }
-    var deviceUserCodes: [String: String] { get { authProfileStore.deviceUserCodes } set { authProfileStore.deviceUserCodes = newValue } }
-    var appleLoginPlatforms: Set<String> { get { authProfileStore.appleLoginPlatforms } set { authProfileStore.appleLoginPlatforms = newValue } }
     var linkedIdentities: [LinkedIdentity] { get { authProfileStore.linkedIdentities } set { authProfileStore.linkedIdentities = newValue } }
 
     // MARK: - Human messages, reactions and read frontiers (MessagesAndThreadsStore)
@@ -113,31 +87,24 @@ extension EmailLoginDirectory {
     var forwardedBundles: [String: [ForwardedSource]] { get { messagesAndThreadsStore.forwardedBundles } set { messagesAndThreadsStore.forwardedBundles = newValue } }
     var forwardRecords: [String: StoredForwardRecord] { get { messagesAndThreadsStore.forwardRecords } set { messagesAndThreadsStore.forwardRecords = newValue } }
     var messageReactions: [StoredReaction] { get { messagesAndThreadsStore.messageReactions } set { messagesAndThreadsStore.messageReactions = newValue } }
-    var reactionViewerVersions: [String: Int] { get { messagesAndThreadsStore.reactionViewerVersions } set { messagesAndThreadsStore.reactionViewerVersions = newValue } }
     var reactionDiscussionVersions: [String: Int] { get { messagesAndThreadsStore.reactionDiscussionVersions } set { messagesAndThreadsStore.reactionDiscussionVersions = newValue } }
     var storedMentions: [StoredMention] { get { messagesAndThreadsStore.storedMentions } set { messagesAndThreadsStore.storedMentions = newValue } }
     var attachmentCommentRecords: [String: [AttachmentCommentRecord]] { get { messagesAndThreadsStore.attachmentCommentRecords } set { messagesAndThreadsStore.attachmentCommentRecords = newValue } }
-    var readMutationAcks: [String: (scopeId: String, throughSeq: Int)] { get { messagesAndThreadsStore.readMutationAcks } set { messagesAndThreadsStore.readMutationAcks = newValue } }
     var threadFollows: [String: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String)] { get { messagesAndThreadsStore.threadFollows } set { messagesAndThreadsStore.threadFollows = newValue } }
     var threadUnfollows: [String: ThreadUnfollowRecord] { get { messagesAndThreadsStore.threadUnfollows } set { messagesAndThreadsStore.threadUnfollows = newValue } }
     var threadFollowStarts: [String: Date] { get { messagesAndThreadsStore.threadFollowStarts } set { messagesAndThreadsStore.threadFollowStarts = newValue } }
-    var channelReadVersions: [String: Int] { get { messagesAndThreadsStore.channelReadVersions } set { messagesAndThreadsStore.channelReadVersions = newValue } }
     var agentChannelReadCursors: [String: (seq: Int, version: Int)] { get { messagesAndThreadsStore.agentChannelReadCursors } set { messagesAndThreadsStore.agentChannelReadCursors = newValue } }
     var attestedSendEventRecords: [AttestedSendEventRecord] { get { messagesAndThreadsStore.attestedSendEventRecords } set { messagesAndThreadsStore.attestedSendEventRecords = newValue } }
     var agentSendActivityRecords: [String: [(title: String, text: String, producerFactId: String?)]] { get { messagesAndThreadsStore.agentSendActivityRecords } set { messagesAndThreadsStore.agentSendActivityRecords = newValue } }
     var inboxDoneScopes: Set<String> { get { messagesAndThreadsStore.inboxDoneScopes } set { messagesAndThreadsStore.inboxDoneScopes = newValue } }
     var inboxDoneAt: [String: Date] { get { messagesAndThreadsStore.inboxDoneAt } set { messagesAndThreadsStore.inboxDoneAt = newValue } }
     var inboxDoneFrontiers: [String: Int] { get { messagesAndThreadsStore.inboxDoneFrontiers } set { messagesAndThreadsStore.inboxDoneFrontiers = newValue } }
-    var deferredUnreadAdvance: [String: Int] { get { messagesAndThreadsStore.deferredUnreadAdvance } set { messagesAndThreadsStore.deferredUnreadAdvance = newValue } }
-    var externalAvatarAssets: [String: ExternalAvatarAsset] { get { messagesAndThreadsStore.externalAvatarAssets } set { messagesAndThreadsStore.externalAvatarAssets = newValue } }
-    var externalAvatarStorageAvailable: Bool { get { messagesAndThreadsStore.externalAvatarStorageAvailable } set { messagesAndThreadsStore.externalAvatarStorageAvailable = newValue } }
 
     // MARK: - Agent registry, hosted runtime and migration rows (AgentsRuntimeStore)
 
     var serverAgents: [String: ServerAgent] { get { agentsRuntimeStore.serverAgents } set { agentsRuntimeStore.serverAgents = newValue } }
     var channelAgentMembers: [String: Set<String>] { get { agentsRuntimeStore.channelAgentMembers } set { agentsRuntimeStore.channelAgentMembers = newValue } }
     var storedAgentDeliveries: [(agentId: String, messageId: String, channelType: String)] { get { agentsRuntimeStore.storedAgentDeliveries } set { agentsRuntimeStore.storedAgentDeliveries = newValue } }
-    var assistantOwners: [String: String] { get { agentsRuntimeStore.assistantOwners } set { agentsRuntimeStore.assistantOwners = newValue } }
     var agentCredentials: [String: AgentCredential] { get { agentsRuntimeStore.agentCredentials } set { agentsRuntimeStore.agentCredentials = newValue } }
     var agentMachineIds: [String: String] { get { agentsRuntimeStore.agentMachineIds } set { agentsRuntimeStore.agentMachineIds = newValue } }
     var agentRuntimeProfiles: [String: AgentRuntimeProfileFact] { get { agentsRuntimeStore.agentRuntimeProfiles } set { agentsRuntimeStore.agentRuntimeProfiles = newValue } }
@@ -151,51 +118,12 @@ extension EmailLoginDirectory {
     var grokRuntimeServers: Set<String> { get { agentsRuntimeStore.grokRuntimeServers } set { agentsRuntimeStore.grokRuntimeServers = newValue } }
     var remoteUpgradeDisabledServers: Set<String> { get { agentsRuntimeStore.remoteUpgradeDisabledServers } set { agentsRuntimeStore.remoteUpgradeDisabledServers = newValue } }
     var agentStatusAdopted: Set<String> { get { agentsRuntimeStore.agentStatusAdopted } set { agentsRuntimeStore.agentStatusAdopted = newValue } }
-    var agentStatusOccurredAt: [String: Date] { get { agentsRuntimeStore.agentStatusOccurredAt } set { agentsRuntimeStore.agentStatusOccurredAt = newValue } }
-    var agentActivityEventIds: [String: Set<String>] { get { agentsRuntimeStore.agentActivityEventIds } set { agentsRuntimeStore.agentActivityEventIds = newValue } }
     var hostedUsage: [String: String] { get { agentsRuntimeStore.hostedUsage } set { agentsRuntimeStore.hostedUsage = newValue } }
-    var hostedModelPickerServers: Set<String> { get { agentsRuntimeStore.hostedModelPickerServers } set { agentsRuntimeStore.hostedModelPickerServers = newValue } }
     var hostedModels: [String: HostedModelState] { get { agentsRuntimeStore.hostedModels } set { agentsRuntimeStore.hostedModels = newValue } }
-    var agentArchiveRecords: [String: AgentArchiveRecord] { get { agentsRuntimeStore.agentArchiveRecords } set { agentsRuntimeStore.agentArchiveRecords = newValue } }
-    var providerConnections: [ProviderConnection] { get { managedMCPAndCardsStore.providerConnections } set { managedMCPAndCardsStore.providerConnections = newValue } }
     var agentActivities: [String: (activity: String, detail: String)] { get { agentsRuntimeStore.agentActivities } set { agentsRuntimeStore.agentActivities = newValue } }
-    var agentLastSeenAt: [String: Date] { get { agentsRuntimeStore.agentLastSeenAt } set { agentsRuntimeStore.agentLastSeenAt = newValue } }
     var agentAttachmentBytes: [String: Data] { get { agentsRuntimeStore.agentAttachmentBytes } set { agentsRuntimeStore.agentAttachmentBytes = newValue } }
-    var externalPushWebhooks: [String: (url: String, secret: String)] { get { agentsRuntimeStore.externalPushWebhooks } set { agentsRuntimeStore.externalPushWebhooks = newValue } }
-    var hostedAgents: Set<String> { get { agentsRuntimeStore.hostedAgents } set { agentsRuntimeStore.hostedAgents = newValue } }
     var featureFlagRecords: [String: FeatureFlagRecord] { get { agentsRuntimeStore.featureFlagRecords } set { agentsRuntimeStore.featureFlagRecords = newValue } }
     var featureFlagRuleRecords: [FeatureFlagRuleRecord] { get { agentsRuntimeStore.featureFlagRuleRecords } set { agentsRuntimeStore.featureFlagRuleRecords = newValue } }
-
-    // MARK: - Lock-guarded configuration forwarders
-
-    /// Provider relay for `github` account connections. Production wires this to
-    /// the hosted runtime provider; tests replace it with a deterministic stub.
-    public var agentConnectionProvider: (@Sendable (AgentConnectionProviderRequest) -> AgentConnectionProviderResult)? {
-        get {
-            agentConnectionLock.lock()
-            defer { agentConnectionLock.unlock() }
-            return agentConnectionProviderStorage
-        }
-        set {
-            agentConnectionLock.lock()
-            agentConnectionProviderStorage = newValue
-            agentConnectionLock.unlock()
-        }
-    }
-
-    /// Production socket sink: room, event name, JSON payload.
-    public var realtimeEmitter: (@Sendable (String, String, String?) -> Void)? {
-        get {
-            realtimeEmitterLock.lock()
-            defer { realtimeEmitterLock.unlock() }
-            return realtimeEmitterStorage
-        }
-        set {
-            realtimeEmitterLock.lock()
-            realtimeEmitterStorage = newValue
-            realtimeEmitterLock.unlock()
-        }
-    }
 
     // MARK: - Agent relay configuration (AgentsRuntimeStore)
 
@@ -203,79 +131,6 @@ extension EmailLoginDirectory {
     public var agentMigrationCancelDispatch: (@Sendable (_ machineId: String, _ role: String, _ migrationRef: String, _ transportGeneration: String, _ stopAgent: Bool) -> Void)? {
         get { agentsRuntimeStore.agentMigrationCancelDispatch }
         set { agentsRuntimeStore.agentMigrationCancelDispatch = newValue }
-    }
-
-    /// Agent start dispatch used by `POST /api/channels/:id/resume-all-agents`.
-    /// Returns `.dispatched` when the daemon accepted the resume prompt and
-    /// `.skipped(reason)` when a gate (for example a held wake lock) suppressed it.
-    public var agentStartDispatch: (@Sendable (_ agentId: String, _ resumePrompt: String?) async throws -> AgentStartDispatchOutcome)? {
-        get { agentsRuntimeStore.agentStartDispatch }
-        set { agentsRuntimeStore.agentStartDispatch = newValue }
-    }
-
-    /// Recent activity-log entries for one agent, serialized as the HTTP body.
-    public var agentActivityLogProvider: (@Sendable (_ agentId: String, _ limit: Int?) -> AgentSurfaceResult)? {
-        get { agentsRuntimeStore.agentActivityLogProvider }
-        set { agentsRuntimeStore.agentActivityLogProvider = newValue }
-    }
-
-    /// Turn summaries plus the next cursor; the handler redacts triggers the
-    /// viewer cannot see.
-    public var agentActivitySummariesProvider: (@Sendable (_ agentId: String, _ limit: Int, _ beforeEndedAt: Int?, _ beforeId: String?) -> AgentSurfaceResult)? {
-        get { agentsRuntimeStore.agentActivitySummariesProvider }
-        set { agentsRuntimeStore.agentActivitySummariesProvider = newValue }
-    }
-
-    /// `{"global":[...],"workspace":[...]}` skills body for one agent.
-    public var agentSkillsProvider: (@Sendable (_ agentId: String) -> AgentSurfaceResult)? {
-        get { agentsRuntimeStore.agentSkillsProvider }
-        set { agentsRuntimeStore.agentSkillsProvider = newValue }
-    }
-
-    /// Whether the agent's Computer connection is owned by this replica.
-    public var agentHasMachineLocally: (@Sendable (_ agentId: String) -> Bool)? {
-        get { agentsRuntimeStore.agentHasMachineLocally }
-        set { agentsRuntimeStore.agentHasMachineLocally = newValue }
-    }
-
-    /// File-tree JSON array for one agent workspace directory.
-    public var agentWorkspaceTreeProvider: (@Sendable (_ agentId: String, _ dirPath: String?, _ includeHidden: Bool) -> AgentSurfaceResult)? {
-        get { agentsRuntimeStore.agentWorkspaceTreeProvider }
-        set { agentsRuntimeStore.agentWorkspaceTreeProvider = newValue }
-    }
-
-    /// One workspace file read body.
-    public var agentWorkspaceReadProvider: (@Sendable (_ agentId: String, _ path: String?) -> AgentSurfaceResult)? {
-        get { agentsRuntimeStore.agentWorkspaceReadProvider }
-        set { agentsRuntimeStore.agentWorkspaceReadProvider = newValue }
-    }
-
-    /// Human Start control dispatch (`control: "human_start"`).
-    public var agentStartControlDispatch: (@Sendable (_ agentId: String, _ control: String) -> Void)? {
-        get { agentsRuntimeStore.agentStartControlDispatch }
-        set { agentsRuntimeStore.agentStartControlDispatch = newValue }
-    }
-
-    /// Human Reset dispatch (`terminalControl: "human_reset"`).
-    public var agentResetDispatch: (@Sendable (_ agentId: String, _ mode: String, _ terminalControl: String) -> Void)? {
-        get { agentsRuntimeStore.agentResetDispatch }
-        set { agentsRuntimeStore.agentResetDispatch = newValue }
-    }
-
-    /// Terminal-breaker lift on a PATCH, with whether a runtime value really changed.
-    public var agentConfigLiftDispatch: (@Sendable (_ agentId: String, _ runtimeValuesChanged: Bool) -> Void)? {
-        get { agentsRuntimeStore.agentConfigLiftDispatch }
-        set { agentsRuntimeStore.agentConfigLiftDispatch = newValue }
-    }
-
-    var agentConnectionOrigin: String {
-        get { agentsRuntimeStore.agentConnectionOrigin }
-        set { agentsRuntimeStore.agentConnectionOrigin = newValue }
-    }
-
-    var agentConnectionProviderStorage: (@Sendable (AgentConnectionProviderRequest) -> AgentConnectionProviderResult)? {
-        get { agentsRuntimeStore.agentConnectionProviderStorage }
-        set { agentsRuntimeStore.agentConnectionProviderStorage = newValue }
     }
 
     var agentCredentialUseThrottleOverrideMs: Int? {
@@ -295,42 +150,6 @@ extension EmailLoginDirectory {
 
     // MARK: - Machine relay configuration (MachinesAndComputersStore)
 
-    /// Returns an object-store session id, or nil when provisioning fails.
-    public var machineMigrationProvisioner: (@Sendable (_ sourceMachineId: String, _ targetMachineId: String) -> String?)? {
-        get { machinesAndComputersStore.machineMigrationProvisioner }
-        set { machinesAndComputersStore.machineMigrationProvisioner = newValue }
-    }
-
-    /// Lease dispatch to the source (upload) and target (download) Computers.
-    public var machineMigrationLeaseDispatch: (@Sendable (_ machineId: String, _ role: String, _ migrationRef: String) -> Void)? {
-        get { machinesAndComputersStore.machineMigrationLeaseDispatch }
-        set { machinesAndComputersStore.machineMigrationLeaseDispatch = newValue }
-    }
-
-    /// Target-side agent start for target import arrival.
-    public var machineMigrationStartAgent: (@Sendable (_ agentId: String) async throws -> MachineMigrationAgentStartOutcome)? {
-        get { machinesAndComputersStore.machineMigrationStartAgent }
-        set { machinesAndComputersStore.machineMigrationStartAgent = newValue }
-    }
-
-    /// Ask the source Computer to archive the migrated-away workspace.
-    public var machineMigrationArchiveSourceWorkspace: (@Sendable (_ machineId: String, _ migrationRef: String, _ agentId: String) async throws -> Void)? {
-        get { machinesAndComputersStore.machineMigrationArchiveSourceWorkspace }
-        set { machinesAndComputersStore.machineMigrationArchiveSourceWorkspace = newValue }
-    }
-
-    /// Asks the target Computer whether its Built-in model catalog lists a preset.
-    public var builtinModelCatalogCheck: (@Sendable (_ machineId: String, _ modelId: String) -> BuiltinModelCatalogResult)? {
-        get { machinesAndComputersStore.builtinModelCatalogCheck }
-        set { machinesAndComputersStore.builtinModelCatalogCheck = newValue }
-    }
-
-    /// Live model ids a Computer advertises for a runtime (v2 field-pointing).
-    public var agentRuntimeModelsForMachine: (@Sendable (_ machineId: String, _ runtime: String) -> [String]?)? {
-        get { machinesAndComputersStore.agentRuntimeModelsForMachine }
-        set { machinesAndComputersStore.agentRuntimeModelsForMachine = newValue }
-    }
-
     public var runtimeAccountUsageManualRefresh: (@Sendable (String, String) -> RuntimeAccountUsageManualResult)? {
         get { machinesAndComputersStore.runtimeAccountUsageManualRefresh }
         set { machinesAndComputersStore.runtimeAccountUsageManualRefresh = newValue }
@@ -340,12 +159,6 @@ extension EmailLoginDirectory {
     public var machineRuntimeModelProbe: (@Sendable (_ machineId: String, _ runtimeId: String, _ force: Bool) -> RuntimeModelProbeOutcome)? {
         get { machinesAndComputersStore.machineRuntimeModelProbe }
         set { machinesAndComputersStore.machineRuntimeModelProbe = newValue }
-    }
-
-    /// Whether this server can route a probe to the Computer. Defaults to true.
-    public var machineRoutedLocally: (@Sendable (_ machineId: String) -> Bool)? {
-        get { machinesAndComputersStore.machineRoutedLocally }
-        set { machinesAndComputersStore.machineRoutedLocally = newValue }
     }
 
     /// Built-in model catalog authority as reported by the Computer.
@@ -528,11 +341,6 @@ extension EmailLoginDirectory {
     var sendFreshnessModeOverride: String? {
         get { messagesAndThreadsStore.sendFreshnessModeOverride }
         set { messagesAndThreadsStore.sendFreshnessModeOverride = newValue }
-    }
-
-    var realtimeEmitterStorage: (@Sendable (String, String, String?) -> Void)? {
-        get { messagesAndThreadsStore.realtimeEmitterStorage }
-        set { messagesAndThreadsStore.realtimeEmitterStorage = newValue }
     }
 
 }

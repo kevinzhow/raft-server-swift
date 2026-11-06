@@ -1,6 +1,6 @@
 # Architecture: target Swift layering
 
-**Status**: Phase 5 extracted the old `EmailLogin/` files; Phase 6 is removing the remaining transport, directory, and concurrency coupling. An empty old directory and a 48-line class body do not mean that migration is complete. `EmailLoginDirectory` still owns a global lock, has extensions outside that directory, and is referenced by services and tests. The remaining milestones live in `docs/PLAN.md`.
+**Status**: Phase 5 extracted the old `EmailLogin/` files; Phase 6 is removing the remaining transport, directory, and concurrency coupling. An empty old directory and a 40-line class body do not mean that migration is complete. `EmailLoginDirectory` still owns a global lock, has extensions outside that directory, and is referenced by services and tests. The remaining milestones live in `docs/PLAN.md`.
 
 **Specification**: observable HTTP status codes, JSON bytes, response headers, and socket frames asserted by the upstream suite at `v1.21.23-source.1`. Refactoring preserves those contracts, including validation order, omission versus null, input coercion, and stored JSON fingerprints.
 
@@ -14,7 +14,7 @@ The upstream server separates route modules, services, database schema, middlewa
 | --- | --- |
 | `Sources/RaftHTTPServer/FallbackApplication.swift` | Composition, middleware order, lifecycle wiring, and policy catch-alls |
 | `Sources/RaftHTTPServer/Features/` | 16 `RouteCollection` modules plus request/response helpers; 19 Swift files |
-| `Sources/RaftHTTP/EmailLogin.swift` | 48-line directory root: 12 principal store instances, OAuth ledger, and remaining transaction/relay locks |
+| `Sources/RaftHTTP/EmailLogin.swift` | 40-line directory root: 12 principal store instances, OAuth ledger, and the remaining directory transaction lock |
 | `Sources/RaftHTTP/Services/` | 96 Swift files of domain services and remaining directory accessors; no Vapor imports |
 | `Sources/RaftHTTP/Stores/` | 50 Swift files; large store implementations split into extensions by responsibility; every file at most 1,000 lines |
 | `Sources/RaftHTTP/DTO/` | Codable request shapes, ordered response payloads, and semantic outcomes |
@@ -71,7 +71,7 @@ Each principal store owns one record family. All twelve principal stores and the
 
 Field setters update only their own field in one transaction. This fixes the old whole-State copy/writeback race that could discard a concurrent write to another field. Whole-state replacement remains a setup operation; legacy field reads followed by a separate write still do not form an atomic read-modify-write. Directory forwarders and their callers must migrate to domain operations before the global lock can disappear.
 
-The directory root now has checked conformance because its stored fields are immutable references to Sendable stores, the ledger, and lock objects. Its global and relay locks remain, and an unused freshness-lock declaration still needs deletion. This conformance does not establish a consistent cross-store authorization snapshot or make the remaining directory extensions pure composition.
+The directory root now has checked conformance because its stored fields are immutable references to Sendable stores, the ledger, and lock objects. Its directory transaction lock remains. The two relay locks and unused freshness-lock declaration have been deleted: owned Store slot accessors take the snapshot, then relay Services invoke the callback outside the Mutex. This conformance does not establish a consistent cross-store authorization snapshot or make the remaining directory extensions pure composition.
 
 OAuth's signing secret uses a separate Mutex so signing can run after a record transaction. The cards store's send-commit barrier remains separate from its State Mutex: the protected orchestration calls back into receipt/state operations, so merging the two would cause reentry. Existing cross-store callbacks retain their original positions and still require explicit ownership and lock-order review.
 
@@ -95,7 +95,7 @@ Run `make architecture` or `python3 scripts/check_architecture.py`. `--json` ret
 
 | Check | Rule |
 | --- | --- |
-| Directory root size | `EmailLogin.swift` at most 48 lines; the ceiling only decreases |
+| Directory root size | `EmailLogin.swift` at most 40 lines; the ceiling only decreases |
 | Feature size | Every feature/helper Swift file at most 1,200 lines |
 | Service size | Every service/accessor Swift file at most 1,200 lines |
 | Store size | Every Store Swift file, including nested extension files, at most 1,000 lines |
@@ -131,7 +131,7 @@ For a new metric, expanded scope, or a reviewed pure file move, `--print-ratchet
 
 ### 3.2 Snapshot and exclusions
 
-The current handwritten-source snapshot has 12 directory extension occurrences, a 580-line forwarding file, 60 server reply tokens, 94 server JSON-any text occurrences, 98 directory type references, and 185 string-literal candidates. Services have zero reply tokens; the combined Services/DTO JSON-any occurrence and the two Services `directory.` occurrences are comments. Source-level transport and string construction remain outside those narrow service zeros.
+The current handwritten-source snapshot has 12 directory extension occurrences, a 388-line forwarding file with 132 properties, 60 server reply tokens, 94 server JSON-any text occurrences, 98 directory type references, and 185 string-literal candidates. Services have zero reply tokens; the combined Services/DTO JSON-any occurrence and the two Services `directory.` occurrences are comments. Source-level transport and string construction remain outside those narrow service zeros.
 
 The unchecked conformance ratchet now covers all Sources, including Generated: 35 declarations, all daemon-only; the complete server dependency closure is zero. Stores, public directories, caches, the immutable directory root, the realtime hub/session/attention state, connect state, and generated knowledge telemetry use checked storage. The realtime parser handler is deliberately non-Sendable and transferred only through SDK `NIOLoopBound` for synchronous installation on its channel loop; every entry checks that loop. Connect tasks capture immutable values and checked connection state, with channel writes/status callbacks on the owning loop. Session terminal writes and attention callbacks use a single ordered drainer outside their state locks. Session drains process at most 64 frames per batch; only backlog schedules a 1 ms continuation, so continuous HTTP broadcasts cannot keep one immediate task running indefinitely or prevent the selector from polling other connections. Idle admission still schedules its first drain immediately.
 

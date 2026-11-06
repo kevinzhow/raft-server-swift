@@ -41,7 +41,7 @@ struct AgentPrivateSurfaceDependencies: Sendable {
         AgentPrivateSurfaceDependencies(
             sessionUserId: { source.sessionUserId(authorization: $0) },
             emitRealtime: { room, event, payload in
-                source.emitRealtime(room, event, payload)
+                source.realtimeRelay.emit(room, event, payload)
             },
             oauth: source.oauth,
             agents: source.agentsRuntimeStore,

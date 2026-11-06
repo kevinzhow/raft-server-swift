@@ -73,7 +73,7 @@ private func sortedJSON(_ value: some Encodable) -> String {
     accounts.oauth.addChannelHuman(channelId: channelId, userId: ownerId)
 
     let capture = FrameCapture()
-    accounts.realtimeEmitter = { room, event, payload in
+    accounts.realtimeRelay.install { room, event, payload in
         capture.record(room: room, event: event, payload: payload)
     }
 

@@ -77,7 +77,7 @@ auth.post("verify-email") { request async throws -> Response in
 ## 6. Delete the old path
 - Remove the `extension EmailLoginDirectory` handlers/forwarders and the seam
   only they used; the directory keeps a computed accessor for the service
-  (`EmailLogin.swift` has a 48-line ceiling — do not add lines there).
+  (`EmailLogin.swift` has a 40-line ceiling — do not add lines there).
 - Remove unread result types, DTOs and `DirectoryStoreForwarders` accessors;
   keep a thin forwarder only where unmigrated code calls it, and update tests
   to use the store, the service, or the HTTP route.

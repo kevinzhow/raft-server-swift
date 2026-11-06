@@ -141,7 +141,7 @@ private func makeService(
             accounts.visibleAttachment(userId: userId, serverId: serverId, attachment: attachment)
         },
         emitRealtime: { room, event, payload in
-            accounts.emitRealtime(room, event, payload)
+            accounts.realtimeRelay.emit(room, event, payload)
         },
         registerPostableChannel: { serverId, channelId, memberId, kind, name in
             accounts.addPostableChannel(

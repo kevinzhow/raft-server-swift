@@ -214,7 +214,7 @@ struct ServerMembersAndSidebarDependencies: Sendable {
         ServerMembersAndSidebarDependencies(
             sessionUserId: { source.sessionUserId(authorization: $0) },
             emitRealtime: { room, event, payload in
-                source.emitRealtime(room, event, payload)
+                source.realtimeRelay.emit(room, event, payload)
             },
             humanExists: { userId in
                 source.authProfileStore.accounts.values.contains { $0.id == userId }

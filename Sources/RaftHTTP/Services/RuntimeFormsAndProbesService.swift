@@ -27,7 +27,7 @@ struct RuntimeFormsAndProbesDependencies: Sendable {
         RuntimeFormsAndProbesDependencies(
             sessionUserId: { source.sessionUserId(authorization: $0) },
             emitRealtime: { room, event, payload in
-                source.emitRealtime(room, event, payload)
+                source.realtimeRelay.emit(room, event, payload)
             },
             registerMachine: { serverId, userId, name in
                 source.machinesAndComputersStore.registerMachine(serverId: serverId, userId: userId, name: name)

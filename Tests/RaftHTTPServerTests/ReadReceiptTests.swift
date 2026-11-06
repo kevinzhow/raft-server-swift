@@ -93,7 +93,7 @@ private func receiptHeaders(_ token: String, _ serverId: String) -> HTTPFields {
 @Test func readReceiptsExposeOnlyAgentWatermarksAndEmitOnAdvance() async throws {
     let fixture = makeReceiptFixture()
     let events = ReceiptEventCollector()
-    fixture.accounts.realtimeEmitter = { room, event, payload in
+    fixture.accounts.realtimeRelay.install { room, event, payload in
         events.append(room, event, payload)
     }
     fixture.accounts.enableReadReceiptsForServer(fixture.serverId)

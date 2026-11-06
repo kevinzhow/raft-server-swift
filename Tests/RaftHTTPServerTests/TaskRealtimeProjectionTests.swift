@@ -31,7 +31,7 @@ private final class TaskRealtimeEvents: @unchecked Sendable {
     accounts.oauth.addChannelHuman(channelId: channel, userId: ownerId)
     let ids = DirectoryTaskCatalog(directory: accounts).addTasks(channelId: channel, titles: ["canonical task"])
     let events = TaskRealtimeEvents()
-    accounts.realtimeEmitter = { room, event, payload in events.append(room, event, payload) }
+    accounts.realtimeRelay.install { room, event, payload in events.append(room, event, payload) }
 
     try await withApp { app in
         configure(app, services: FallbackServices(

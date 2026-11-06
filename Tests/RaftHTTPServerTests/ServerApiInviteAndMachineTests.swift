@@ -239,7 +239,7 @@ private final class RuntimeProbeCounter: @unchecked Sendable {
     accounts.oauth.addMember(serverId: serverId, userId: adminId, role: "admin")
     accounts.oauth.addMember(serverId: serverId, userId: memberId, role: "member")
     let events = ServerEventCollector()
-    accounts.realtimeEmitter = { room, event, payload in events.append(room, event, payload) }
+    accounts.realtimeRelay.install { room, event, payload in events.append(room, event, payload) }
 
     try await withApp { app in
         configure(app, services: FallbackServices(

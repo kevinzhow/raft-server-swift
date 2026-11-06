@@ -86,7 +86,7 @@ private func agentRows(_ client: any Client, token: String, serverId: String) as
     let fixture = makePresenceFixture(suffix: "201")
     let accounts = fixture.accounts
     let events = PresenceEventBox()
-    accounts.realtimeEmitter = { room, event, payload in
+    accounts.realtimeRelay.install { room, event, payload in
         events.append(room: room, event: event, payload: payload)
     }
     #expect(AuthTokenCodec.agentCredentialUseDefaultThrottleMs == 60_000)
@@ -128,7 +128,7 @@ private func agentRows(_ client: any Client, token: String, serverId: String) as
     let fixture = makePresenceFixture(suffix: "202")
     let accounts = fixture.accounts
     let events = PresenceEventBox()
-    accounts.realtimeEmitter = { room, event, payload in
+    accounts.realtimeRelay.install { room, event, payload in
         events.append(room: room, event: event, payload: payload)
     }
 
@@ -194,7 +194,7 @@ private func agentRows(_ client: any Client, token: String, serverId: String) as
     accounts.setAgentCredentialUseThrottleMsForTesting(50)
     accounts.setWakeStreamHeartbeatMsForTesting(100)
     let events = PresenceEventBox()
-    accounts.realtimeEmitter = { room, event, payload in
+    accounts.realtimeRelay.install { room, event, payload in
         events.append(room: room, event: event, payload: payload)
     }
 

@@ -2106,3 +2106,7 @@ RFC 074 personal assistant：
 - Desktop attention 保留 Bool/NSNumber 0/1 输入、节流和 blur 后立即重新记录的行为；回调重入不会死锁，已接纳的 record/clear 动作按序交付，TTL 边界不变。
 - 并发 machine lookup 仍返回原 101 与 machine context 字节，online/offline 状态回调在所属 channel loop 执行；断连后迟到的 lookup 结果不再发 online 或写已断连接。拒绝路径仍先 flush 原错误响应再关闭。
 - Knowledge registry/table 固定语料不变；metadata-only telemetry 继续不存 document body，生成器从固定上游与仓库 template 再生后字节一致。
+
+### Relay 安装与重入
+
+- provider/emitter slot 的一次读取或替换由所属 Store Mutex 保护，实际 provider 调用和广播在锁外。Provider 在处理首请求时卸载自己，首请求仍按已取得的 provider 完成，后续请求走原 unavailable 错误；emitter 自卸载后，第二条成功写入的消息不广播，重装后恢复原 `message:new` 真实 socket 帧。此项不改变缺省 provider/error 映射、房间名称或消息正文。

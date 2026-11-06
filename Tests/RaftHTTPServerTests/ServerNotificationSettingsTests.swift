@@ -18,7 +18,7 @@ import VaporTesting
     accounts.oauth.addOwnedServer(id: serverId, slug: "notify", name: "Notify", ownerId: ownerId)
     accounts.oauth.addMember(serverId: serverId, userId: memberId, role: "member")
     let emitted = NotificationSettingsEvents()
-    accounts.realtimeEmitter = { room, event, payload in
+    accounts.realtimeRelay.install { room, event, payload in
         emitted.append(room: room, event: event, payload: payload)
     }
 

@@ -22,7 +22,7 @@ struct ManagedMCPToolExecutionDependencies: Sendable {
     static func live(directory source: EmailLoginDirectory) -> ManagedMCPToolExecutionDependencies {
         ManagedMCPToolExecutionDependencies(
             sessionUserId: { source.sessionUserId(authorization: $0) },
-            emitRealtime: { room, event, payload in source.emitRealtime(room, event, payload) },
+            emitRealtime: { room, event, payload in source.realtimeRelay.emit(room, event, payload) },
             taskWriter: { source.actionCardExecute.taskWriter(authorization: $0, legacyAgentId: nil) },
             taskChannel: { serverId, agentId, reference in
                 source.actionCardExecute.taskChannel(serverId: serverId, agentId: agentId, reference: reference)

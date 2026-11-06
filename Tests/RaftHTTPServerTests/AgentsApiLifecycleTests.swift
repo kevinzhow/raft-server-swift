@@ -289,7 +289,7 @@ private func lifecycleDelete(
     let f = makeAgentLifecycleFixture("009")
     let agent = f.accounts.oauth.createAgent(serverId: f.serverId, name: "broadcast-agent-009", creatorUserId: f.ownerId, runtime: "codex")
     let events = LifecycleEvents()
-    f.accounts.realtimeEmitter = { room, event, payload in events.append(room, event, payload) }
+    f.accounts.realtimeRelay.install { room, event, payload in events.append(room, event, payload) }
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
         try await app.testing { client in

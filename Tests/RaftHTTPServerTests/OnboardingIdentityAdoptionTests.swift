@@ -52,7 +52,7 @@ private final class AgentUpdateEvents: @unchecked Sendable {
     let other = accounts.oauth.createAgent(serverId: serverId, name: "OtherAgent", creatorUserId: ownerId)
     accounts.addServerAgent(serverId: serverId, id: other, name: "OtherAgent", avatarUrl: nil, status: "inactive")
     let events = AgentUpdateEvents()
-    accounts.realtimeEmitter = { room, event, payload in
+    accounts.realtimeRelay.install { room, event, payload in
         events.append(room: room, event: event, payload: payload)
     }
 

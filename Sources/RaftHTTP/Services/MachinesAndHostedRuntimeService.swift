@@ -23,19 +23,18 @@ struct MachinesAndHostedRuntimeDependencies: Sendable {
     static func live(directory source: EmailLoginDirectory) -> MachinesAndHostedRuntimeDependencies {
         MachinesAndHostedRuntimeDependencies(
             sessionUserId: { source.sessionUserId(authorization: $0) },
-            emitRealtime: { room, event, payload in
-                source.emitRealtime(room, event, payload)
+            emitRealtime: { [relay = source.realtimeRelay] room, event, payload in
+                relay.emit(room, event, payload)
             },
             oauth: source.oauth,
             agents: source.agentsRuntimeStore,
             machines: source.machinesAndComputersStore,
             channels: source.serversAndChannelsStore,
             profiles: source.authProfileStore,
-            callProvider: { request in
-                guard let relay = source.agentConnectionProvider else { return .unavailable }
-                return relay(request)
+            callProvider: { [relay = source.agentConnectionRelay] request in
+                relay.call(request)
             },
-            connectionOrigin: { source.agentConnectionOrigin }
+            connectionOrigin: { [agents = source.agentsRuntimeStore] in agents.agentConnectionOrigin }
         )
     }
 }

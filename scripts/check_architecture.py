@@ -5,10 +5,10 @@ The target layering is described in ``docs/ARCHITECTURE.md``. This script
 enforces the part of it that can be measured today:
 
 1. ``Sources/RaftHTTP/EmailLogin.swift`` must not grow past its recorded
-   baseline (48 lines, the composition root: the locks, the domain stores, the
+   baseline (40 lines, the remaining directory lock, the domain stores, the
    OAuth ledger and ``init()``). Every row ledger and injected configuration
    slot lives in a domain store, every accessor lives in
-   ``EmailLogin+StoreForwarders.swift``, and the domain services live under
+   ``Stores/DirectoryStoreForwarders.swift``, and the domain services live under
    ``Services/``. Shrinking is always allowed; the baseline constant is a
    ratchet and may only be lowered.
 2. Every Swift file under ``Sources/RaftHTTPServer/Features/`` must stay at or
@@ -150,7 +150,7 @@ RATCHET_UPDATE_COMMAND = "python3 scripts/check_architecture.py --update-baselin
 # moved under Sources/RaftHTTP/Services/.
 # The line ceiling is a ratchet: lower it when a slice shrinks the file, never
 # raise it to make a check pass.
-EMAIL_LOGIN_LINE_BASELINE = 48
+EMAIL_LOGIN_LINE_BASELINE = 40
 EMAIL_LOGIN_FOR_TESTING_BASELINE = 0
 EMAIL_LOGIN_PRIVATE_FUNC_FOR_TESTING_BASELINE = 0
 

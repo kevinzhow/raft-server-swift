@@ -30,7 +30,7 @@ private final class AgentProfileEvents: @unchecked Sendable {
     let sendKey = accounts.mintAgentCredential(agentId: agent, scopes: ["send"], name: "send")
     let broadKey = accounts.mintAgentCredential(agentId: agent, scopes: ["read", "send"], name: "broad")
     let events = AgentProfileEvents()
-    accounts.realtimeEmitter = { room, event, payload in events.append(room, event, payload) }
+    accounts.realtimeRelay.install { room, event, payload in events.append(room, event, payload) }
 
     try await withApp { app in
         configure(app, services: FallbackServices(

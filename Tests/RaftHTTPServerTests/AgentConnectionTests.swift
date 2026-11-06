@@ -131,7 +131,7 @@ private func connectionTokens(_ client: any Client, fixture: ConnectionFixture) 
             return .response(status: 500, body: "{\"error\":{\"code\":\"unexpected\",\"message\":\"\(request.action)\"}}")
         }
     }
-    accounts.agentConnectionProvider = { stub.respond($0) }
+    accounts.agentConnectionRelay.install { stub.respond($0) }
     accounts.setAgentConnectionOriginForTesting(origin: "https://raft.example.test")
 
     try await withApp { app in
@@ -217,7 +217,7 @@ private func connectionTokens(_ client: any Client, fixture: ConnectionFixture) 
     let accounts = fixture.accounts
     accounts.setHostedRuntimeStateForTesting(agentId: fixture.agentId, state: "active")
     let stub = ConnectionProviderStub()
-    accounts.agentConnectionProvider = { stub.respond($0) }
+    accounts.agentConnectionRelay.install { stub.respond($0) }
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -377,7 +377,7 @@ private func connectionTokens(_ client: any Client, fixture: ConnectionFixture) 
     let accounts = fixture.accounts
     accounts.setHostedRuntimeStateForTesting(agentId: fixture.agentId, state: "active")
     let stub = ConnectionProviderStub()
-    accounts.agentConnectionProvider = { stub.respond($0) }
+    accounts.agentConnectionRelay.install { stub.respond($0) }
     let connectorsJSON = """
     {"connected":false,"connectorId":null,"account":null,"connectors":[
       {"id":"ctr_creator","account":"octocat","creatorRaftUserId":"\(fixture.creatorId)","createdAt":"2026-09-29T00:00:00.000Z","current":false},
@@ -475,6 +475,47 @@ private func connectionTokens(_ client: any Client, fixture: ConnectionFixture) 
             #expect(partial.status == .badGateway)
             #expect(payload(partial)["code"] as? String == "agent_connection_connector_disconnect_partial")
             #expect(payload(partial)["failedCount"] as? Int == 2)
+        }
+    }
+}
+
+@Test func connectionProviderCanUninstallItselfDuringAnHTTPRequest() async throws {
+    let fixture = makeConnectionFixture(suffix: "204")
+    let accounts = fixture.accounts
+    accounts.setHostedRuntimeStateForTesting(agentId: fixture.agentId, state: "active")
+    let relay = accounts.agentConnectionRelay
+    relay.install { _ in
+        relay.install(nil)
+        return .response(status: 200, body: "{\"url\":\"https://github.com/login/oauth/authorize?state=reentrant\",\"scopes\":[\"public_repo\"]}")
+    }
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            let tokens = try await connectionTokens(client, fixture: fixture)
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(try #require(tokens[fixture.ownerId]))"
+            headers[.contentType] = "application/json"
+            headers[HTTPField.Name("X-Server-Id")!] = fixture.serverId
+            let path = "/api/agents/\(fixture.agentId)/connections/github"
+            let first = try await client.send(.post, headers: headers, to: URI(string: path)) { request in
+                request.body = .init(string: "{}")
+            }
+            #expect(first.status == .ok)
+            let firstBody = try JSONSerialization.jsonObject(with: Data((first.body.string ?? "").utf8)) as? [String: Any]
+            #expect(firstBody?["url"] as? String == "https://github.com/login/oauth/authorize?state=reentrant")
+
+            let second = try await client.send(.post, headers: headers, to: URI(string: path)) { request in
+                request.body = .init(string: "{}")
+            }
+            #expect(second.status == .badGateway)
+            let secondBody = try JSONSerialization.jsonObject(with: Data((second.body.string ?? "").utf8)) as? [String: Any]
+            #expect(secondBody?["code"] as? String == "agent_connection_provider_error")
         }
     }
 }

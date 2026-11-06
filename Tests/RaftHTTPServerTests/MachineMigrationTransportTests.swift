@@ -87,7 +87,7 @@ private func transportObject(_ response: ClientResponse) throws -> [String: Any]
 @Test func machineMigrationProvisionsLeasesAndReportsTransportFailure() async throws {
     let fixture = makeMachineMigrationFixture(suffix: "1501")
     let leases = LeaseCollector()
-    fixture.accounts.machineMigrationLeaseDispatch = { machineId, role, _ in
+    fixture.accounts.installMachineMigrationLeaseDispatchForTesting { machineId, role, _ in
         leases.append(machineId, role)
     }
     try await withApp { app in
@@ -185,19 +185,19 @@ private func transportObject(_ response: ClientResponse) throws -> [String: Any]
             #expect(try transportObject(offline)["code"] as? String == "TARGET_COMPUTER_OFFLINE")
 
             fixture.accounts.setMachineOnline(machineId: fixture.target, online: true)
-            fixture.accounts.machineRuntimeDetections[fixture.target] = (status: "pending", unfinished: [])
+            fixture.accounts.setMachineRuntimeDetectionForTesting(machineId: fixture.target, status: "pending")
             let pending = try await migrate("{\"targetComputer\":\"\(fixture.target)\"}")
             #expect(pending.status == .conflict)
             #expect(try transportObject(pending)["code"] as? String == "TARGET_RUNTIME_DETECTION_PENDING")
-            fixture.accounts.machineRuntimeDetections.removeValue(forKey: fixture.target)
+            fixture.accounts.setMachineRuntimeDetectionForTesting(machineId: fixture.target, status: nil)
 
-            fixture.accounts.serverPlans[fixture.serverId] = "free"
+            fixture.accounts.setMigrationServerPlanForTesting(serverId: fixture.serverId, plan: "free")
             let free = try await migrate("{\"targetComputer\":\"\(fixture.target)\"}")
             #expect(free.status == .forbidden)
             #expect(try transportObject(free)["code"] as? String == "MIGRATION_PRO_PLAN_REQUIRED")
-            fixture.accounts.serverPlans.removeValue(forKey: fixture.serverId)
+            fixture.accounts.setMigrationServerPlanForTesting(serverId: fixture.serverId, plan: nil)
 
-            fixture.accounts.machineMigrationProvisioner = { _, _ in nil }
+            fixture.accounts.installMachineMigrationProvisionerForTesting { _, _ in nil }
             let failed = try await migrate("{\"targetComputer\":\"\(fixture.target)\"}")
             #expect(failed.status == .init(code: 422, reasonPhrase: "Unprocessable Entity"))
             #expect(try transportObject(failed)["code"] as? String == "MIGRATION_TRANSPORT_PROVISION_FAILED")

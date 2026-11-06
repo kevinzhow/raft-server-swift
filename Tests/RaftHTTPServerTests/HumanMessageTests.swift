@@ -237,7 +237,7 @@ private func deleteJSON(
     let requestedOrder = [uploadedSecond, uploadedFirst]
     let sendBody = "{\"channelId\":\"\(channelId)\",\"content\":\"attachment selection order\",\"randomId\":\"attachment-selection-order-replay\",\"attachmentIds\":[\"\(uploadedSecond)\",\"\(uploadedFirst)\"]}"
     let realtimeEvents = Mutex<[(room: String, name: String, payload: String?)]>([])
-    accounts.realtimeEmitter = { room, name, payload in
+    accounts.realtimeRelay.install { room, name, payload in
         if name == "message:new" {
             realtimeEvents.withLock { $0.append((room, name, payload)) }
         }
@@ -1615,7 +1615,7 @@ private func deleteJSON(
         return (try JSONSerialization.jsonObject(with: Data(bodyText(response).utf8)) as? [String: Any]) ?? [:]
     }
     let viewerEvents = ReactionViewerEventCollector()
-    accounts.realtimeEmitter = { room, event, payload in
+    accounts.realtimeRelay.install { room, event, payload in
         viewerEvents.append(room: room, event: event, payload: payload)
     }
     try await withApp { app in

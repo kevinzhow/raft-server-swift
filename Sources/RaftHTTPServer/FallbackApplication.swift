@@ -124,7 +124,7 @@ public struct FallbackServices: Sendable {
             ),
             sink: ChannelRealtimeSink(
                 emit: { room, event, payload in
-                    accounts.realtimeEmitter?(room, event, payload)
+                    accounts.realtimeRelay.emit(room, event, payload)
                 },
                 emitToUser: { userId, event, payload in
                     hub?.emit(room: "user:\(userId)", event: event, payloadJSON: payload)

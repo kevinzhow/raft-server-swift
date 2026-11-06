@@ -239,6 +239,60 @@ struct RealtimeTransportTests {
     #expect(web.textFrames.contains { $0.contains("\"notification:push\"") } == false)
 }
 
+@Test func relayCanUninstallItselfWhileDeliveringMessagesOverTheSocket() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111642"
+    let serverId = "33333333-3333-4333-8333-333333333667"
+    accounts.addAccount(id: ownerId, email: "relay-socket@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "relay-socket", name: "Relay Socket", ownerId: ownerId)
+    let channelId = accounts.oauth.createChannel(serverId: serverId, name: "relay-socket", creatorUserId: ownerId)
+    accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, name: "relay-socket")
+    let token = try accounts.authIdentities.login(LoginRequest(email: "relay-socket@slock.test", password: "password123")).accessToken
+    let server = try await RealtimeServer.start(auth: StubAuth(
+        tokens: [token: ownerId],
+        roles: ["\(serverId)\n\(ownerId)": "member"],
+        channels: ["\(serverId)\n\(ownerId)": [channelId]]
+    ))
+    defer { Task { try? await server.close() } }
+    let client = try await RawSocketIOClient(port: server.port)
+    defer { client.close() }
+    #expect(await client.waitForText { $0.hasPrefix("0") } != nil)
+    client.send("40{\"token\":\"\(token)\",\"serverId\":\"\(serverId)\"}")
+    #expect(await client.waitForText { $0 == "42[\"rooms:joined\"]" } != nil)
+
+    let relay = accounts.realtimeRelay
+    relay.install { room, event, payload in
+        relay.install(nil)
+        server.hub.emit(room: room, event: event, payloadJSON: payload)
+    }
+    let first = try accounts.humanMessageCreate.createHumanMessage(
+        HumanMessageCreateRequest(channelId: channelId, content: "first relay delivery"),
+        authorization: "Bearer \(token)", serverId: serverId
+    )
+    #expect(first.messageJSON.contains("first relay delivery"))
+    let frame = try #require(await client.waitForText { $0.contains("first relay delivery") })
+    #expect(frame.hasPrefix("42[\"message:new\","))
+    #expect(frame.contains("\"channelId\":\"\(channelId)\""))
+
+    let second = try accounts.humanMessageCreate.createHumanMessage(
+        HumanMessageCreateRequest(channelId: channelId, content: "uninstalled relay delivery"),
+        authorization: "Bearer \(token)", serverId: serverId
+    )
+    #expect(second.messageJSON.contains("uninstalled relay delivery"))
+    #expect(await client.waitForText({ $0.contains("uninstalled relay delivery") }, timeout: 0.2) == nil)
+
+    relay.install { room, event, payload in
+        server.hub.emit(room: room, event: event, payloadJSON: payload)
+    }
+    _ = try accounts.humanMessageCreate.createHumanMessage(
+        HumanMessageCreateRequest(channelId: channelId, content: "reinstalled relay delivery"),
+        authorization: "Bearer \(token)", serverId: serverId
+    )
+    #expect(await client.waitForText { $0.contains("reinstalled relay delivery") } != nil)
+    #expect(client.textFrames.contains { $0.contains("uninstalled relay delivery") } == false)
+}
+
 @Test func humanMessageSendEmitsMessageNewOnTheChannelRoom() async throws {
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-111111111626"
@@ -251,7 +305,7 @@ struct RealtimeTransportTests {
     let token = try accounts.authIdentities.login(LoginRequest(email: "realtime-send@slock.test", password: "password123")).accessToken
 
     let box = RealtimeEventBox()
-    accounts.realtimeEmitter = { room, event, payload in
+    accounts.realtimeRelay.install { room, event, payload in
         box.append(room: room, event: event, payload: payload)
     }
     let created = try accounts.humanMessageCreate.createHumanMessage(
@@ -279,7 +333,7 @@ struct RealtimeTransportTests {
     let token = try accounts.authIdentities.login(LoginRequest(email: "realtime-reaction@slock.test", password: "password123")).accessToken
 
     let box = RealtimeEventBox()
-    accounts.realtimeEmitter = { room, event, payload in
+    accounts.realtimeRelay.install { room, event, payload in
         box.append(room: room, event: event, payload: payload)
     }
     let reply = try accounts.profileAndChannelFiles.addMessageReaction(

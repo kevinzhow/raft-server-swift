@@ -320,7 +320,7 @@ extension EmailLoginDirectory {
         }
         lock.unlock()
         let body = HumanMessagePayload(stored).jsonBody.render()
-        emitRealtime("channel:\(channelId)", "message:new", body)
+        realtimeRelay.emit("channel:\(channelId)", "message:new", body)
         return StoredHumanMessageWrite(status: 200, body: body, created: true)
     }
 
@@ -338,10 +338,4 @@ extension EmailLoginDirectory {
         return true
     }
 
-    func emitRealtime(_ room: String, _ event: String, _ payload: String?) {
-        realtimeEmitterLock.lock()
-        let emitter = realtimeEmitterStorage
-        realtimeEmitterLock.unlock()
-        emitter?(room, event, payload)
-    }
 }

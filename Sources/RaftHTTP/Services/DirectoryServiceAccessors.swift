@@ -31,6 +31,14 @@ extension EmailLoginDirectory {
         )
     }
 
+    public var realtimeRelay: RealtimeRelayService {
+        RealtimeRelayService(messages: messagesAndThreadsStore)
+    }
+
+    public var agentConnectionRelay: AgentConnectionRelayService {
+        AgentConnectionRelayService(agents: agentsRuntimeStore)
+    }
+
     /// The Computer fleet: machine roster, Computer attach/adoption, runner
     /// control plane and the lifecycle controls. The directory supplies the
     /// machine, agent and profile stores and the OAuth ledger; the session
@@ -47,8 +55,8 @@ extension EmailLoginDirectory {
                 sessionUserId: { [self] authorization in
                     sessionUserId(authorization: authorization)
                 },
-                emitRealtime: { [self] room, event, payload in
-                    emitRealtime(room, event, payload)
+                emitRealtime: { [relay = realtimeRelay] room, event, payload in
+                    relay.emit(room, event, payload)
                 },
                 computerAttachEnabled: { [self] in
                     agentsLifecycle.computerAttachEnabled()
@@ -314,7 +322,7 @@ extension EmailLoginDirectory {
                 visibleAttachment(userId: userId, serverId: serverId, attachment: attachment)
             },
             emitRealtime: { [self] room, event, payload in
-                emitRealtime(room, event, payload)
+                realtimeRelay.emit(room, event, payload)
             },
             registerPostableChannel: { [self] serverId, channelId, memberId, kind, name in
                 addPostableChannel(
@@ -402,7 +410,7 @@ extension EmailLoginDirectory {
             oauth: oauth,
             agents: agentsRuntimeStore,
             emitRealtime: { room, event, payload in
-                accounts.emitRealtime(room, event, payload)
+                accounts.realtimeRelay.emit(room, event, payload)
             },
             cancelDispatch: { machineId, role, migrationRef, transportGeneration, stopAgent in
                 accounts.agentMigrationCancelDispatch?(
@@ -478,7 +486,7 @@ extension EmailLoginDirectory {
                     }
                 },
                 emitRealtime: { [self] room, event, payload in
-                    emitRealtime(room, event, payload)
+                    realtimeRelay.emit(room, event, payload)
                 },
                 attachmentCommentsEnabled: { [self] serverId, userId in
                     attachmentCommentsEnabled(serverId: serverId, userId: userId)
@@ -735,7 +743,7 @@ extension EmailLoginDirectory {
             oauth: oauth,
             dependencies: AgentHostedMigrationDependencies(
                 sessionUserId: { [self] in sessionUserId(authorization: $0) },
-                emitRealtime: { [self] room, event, payload in emitRealtime(room, event, payload) },
+                emitRealtime: { [self] room, event, payload in realtimeRelay.emit(room, event, payload) },
                 mintAgentCredential: { [self] agentId, scopes, name in
                     mintAgentCredential(agentId: agentId, scopes: scopes, name: name)
                 },
@@ -760,7 +768,7 @@ extension EmailLoginDirectory {
             oauth: oauth,
             dependencies: AgentMachineMigrationControlDependencies(
                 sessionUserId: { [self] in sessionUserId(authorization: $0) },
-                emitRealtime: { [self] room, event, payload in emitRealtime(room, event, payload) }
+                emitRealtime: { [self] room, event, payload in realtimeRelay.emit(room, event, payload) }
             )
         )
     }

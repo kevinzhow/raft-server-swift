@@ -782,7 +782,7 @@ private func withFacetApp(
         }
     }
     let recorder = DispatchRecorder()
-    fixture.accounts.agentStartDispatch = { agentId, prompt in
+    fixture.accounts.installAgentStartDispatchForTesting { agentId, prompt in
         recorder.append(agentId, prompt)
         return agentId == skippedAgent ? .skipped("wake_lock_held") : .dispatched
     }

@@ -92,8 +92,6 @@ extension EmailLoginDirectory {
     }
 
     public func setAgentConnectionOriginForTesting(origin: String) {
-        lock.lock()
-        agentConnectionOrigin = origin
-        lock.unlock()
+        agentsRuntimeStore.agentConnectionOrigin = origin
     }
 }

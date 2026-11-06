@@ -399,8 +399,8 @@ private func withMigrationGapApp(
     let fixture = makeMigrationGapFixture(2610)
     let ref = gapRef(2610, "h")
     gapSeedMigration(fixture, ref: ref)
-    fixture.accounts.machineMigrationArchiveSourceWorkspace = { _, _, _ in }
-    fixture.accounts.machineMigrationStartAgent = { _ in .dispatched }
+    fixture.accounts.installMachineMigrationArchiveSourceWorkspaceForTesting { _, _, _ in }
+    fixture.accounts.installMachineMigrationStartAgentForTesting { _ in .dispatched }
     try await withMigrationGapApp(fixture) { client in
         let base = "/internal/computer/agent-migrations/by-id/\(ref)"
         let started = try await gapPost(client, fixture.targetKey, "\(base)/start-transfer", "{\"migrationGeneration\":\"gen-ready\"}")
@@ -503,11 +503,11 @@ private func withMigrationGapApp(
     let ref = gapRef(2620, "l")
     gapSeedMigration(fixture, ref: ref)
     let recorder = MigrationGapRecorder()
-    fixture.accounts.machineMigrationArchiveSourceWorkspace = { machineId, migrationRef, agentId in
+    fixture.accounts.installMachineMigrationArchiveSourceWorkspaceForTesting { machineId, migrationRef, agentId in
         let state = fixture.accounts.machineMigrationStateForTesting(migrationRef: migrationRef)?.state ?? "missing"
         recorder.record("archive|\(machineId)|\(migrationRef)|\(agentId)|\(state)")
     }
-    fixture.accounts.machineMigrationStartAgent = { agentId in
+    fixture.accounts.installMachineMigrationStartAgentForTesting { agentId in
         let archived = fixture.accounts.machineMigrationStateForTesting(migrationRef: ref)?.sourceWorkspaceArchivedAt
         recorder.record("start|\(agentId)|archived=\(archived != nil)")
         return .dispatched
@@ -540,10 +540,10 @@ private func withMigrationGapApp(
     gapSeedMigration(fixture, ref: ref)
     let recorder = MigrationGapRecorder()
     let gate = MigrationStartGate()
-    fixture.accounts.machineMigrationArchiveSourceWorkspace = { _, _, _ in
+    fixture.accounts.installMachineMigrationArchiveSourceWorkspaceForTesting { _, _, _ in
         recorder.increment("archive")
     }
-    fixture.accounts.machineMigrationStartAgent = { agentId in
+    fixture.accounts.installMachineMigrationStartAgentForTesting { agentId in
         recorder.increment("start")
         recorder.record("start|\(agentId)")
         gate.signalEntered()
@@ -578,10 +578,10 @@ private func withMigrationGapApp(
     let ref = gapRef(2622, "n")
     gapSeedMigration(fixture, ref: ref)
     let recorder = MigrationGapRecorder()
-    fixture.accounts.machineMigrationArchiveSourceWorkspace = { _, _, _ in
+    fixture.accounts.installMachineMigrationArchiveSourceWorkspaceForTesting { _, _, _ in
         recorder.increment("archive")
     }
-    fixture.accounts.machineMigrationStartAgent = { agentId in
+    fixture.accounts.installMachineMigrationStartAgentForTesting { agentId in
         recorder.increment("start")
         if recorder.count("start") == 1 {
             throw MigrationStartTestError()
@@ -621,13 +621,13 @@ private func withMigrationGapApp(
     let ref = gapRef(2623, "o")
     gapSeedMigration(fixture, ref: ref)
     let recorder = MigrationGapRecorder()
-    fixture.accounts.machineMigrationArchiveSourceWorkspace = { _, _, _ in
+    fixture.accounts.installMachineMigrationArchiveSourceWorkspaceForTesting { _, _, _ in
         recorder.increment("archive")
         if recorder.count("archive") == 1 {
             throw MachineMigrationArchiveFailure(code: "NODE_EXDEV")
         }
     }
-    fixture.accounts.machineMigrationStartAgent = { _ in
+    fixture.accounts.installMachineMigrationStartAgentForTesting { _ in
         recorder.increment("start")
         return .dispatched
     }
@@ -664,10 +664,10 @@ private func withMigrationGapApp(
     gapSeedMigration(fixture, ref: ref)
     let recorder = MigrationGapRecorder()
     let gate = MigrationStartGate()
-    fixture.accounts.machineMigrationArchiveSourceWorkspace = { _, _, _ in
+    fixture.accounts.installMachineMigrationArchiveSourceWorkspaceForTesting { _, _, _ in
         recorder.increment("archive")
     }
-    fixture.accounts.machineMigrationStartAgent = { _ in
+    fixture.accounts.installMachineMigrationStartAgentForTesting { _ in
         recorder.increment("start")
         if recorder.count("start") == 1 {
             gate.signalEntered()
@@ -716,10 +716,10 @@ private func withMigrationGapApp(
     let ref = gapRef(2630, "q")
     gapSeedMigration(fixture, ref: ref)
     let recorder = MigrationGapRecorder()
-    fixture.accounts.machineMigrationArchiveSourceWorkspace = { machineId, migrationRef, agentId in
+    fixture.accounts.installMachineMigrationArchiveSourceWorkspaceForTesting { machineId, migrationRef, agentId in
         recorder.record("archive|\(machineId)|\(migrationRef)|\(agentId)")
     }
-    fixture.accounts.machineMigrationStartAgent = { _ in .dispatched }
+    fixture.accounts.installMachineMigrationStartAgentForTesting { _ in .dispatched }
     try await withMigrationGapApp(fixture) { client in
         let base = "/internal/computer/agent-migrations/by-id/\(ref)"
         let flippedGeneration = try await gapDriveToArriving(client, fixture, ref: ref)
@@ -760,8 +760,8 @@ private func withMigrationGapApp(
     let fixture = makeMigrationGapFixture(2640)
     let ref = gapRef(2640, "r")
     gapSeedMigration(fixture, ref: ref)
-    fixture.accounts.machineMigrationArchiveSourceWorkspace = { _, _, _ in }
-    fixture.accounts.machineMigrationStartAgent = { _ in .dispatched }
+    fixture.accounts.installMachineMigrationArchiveSourceWorkspaceForTesting { _, _, _ in }
+    fixture.accounts.installMachineMigrationStartAgentForTesting { _ in .dispatched }
     try await withMigrationGapApp(fixture) { client in
         let base = "/internal/computer/agent-migrations/by-id/\(ref)"
         _ = try await gapDriveToArriving(client, fixture, ref: ref)

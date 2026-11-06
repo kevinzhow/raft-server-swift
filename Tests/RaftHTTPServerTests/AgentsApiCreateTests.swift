@@ -217,7 +217,7 @@ private func createAgentBody(_ client: any Client, token: String, serverId: Stri
 @Test func agentCreateOpensAEmptyCreatorDmForTheOwnerOnly() async throws {
     let f = makeAgentCreateFixture("004")
     let events = CreateEvents()
-    f.accounts.realtimeEmitter = { room, event, payload in events.append(room, event, payload) }
+    f.accounts.realtimeRelay.install { room, event, payload in events.append(room, event, payload) }
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
         try await app.testing { client in
