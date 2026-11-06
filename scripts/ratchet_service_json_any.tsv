@@ -11,11 +11,9 @@ Sources/RaftHTTP/Services/HumanMessageCreateService.swift	12
 Sources/RaftHTTP/Services/IntegrationsAndAppAccessService.swift	16
 Sources/RaftHTTP/Services/MachinesAndHostedRuntimeService.swift	14
 Sources/RaftHTTP/Services/ManagedMCPAgentCatalogService.swift	18
-Sources/RaftHTTP/Services/ManagedMCPAssignmentsService.swift	12
 Sources/RaftHTTP/Services/ManagedMCPControlPlaneService.swift	14
 Sources/RaftHTTP/Services/ManagedMCPLifecycleService.swift	21
 Sources/RaftHTTP/Services/ManagedMCPOAuthService.swift	10
-Sources/RaftHTTP/Services/ManagedMCPToolExecutionService.swift	16
 Sources/RaftHTTP/Services/MessageSendService.swift	5
 Sources/RaftHTTP/Services/OAuthFlowsService.swift	14
 Sources/RaftHTTP/Services/ReactionsRealtimeService.swift	9

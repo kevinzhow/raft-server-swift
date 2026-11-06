@@ -151,7 +151,7 @@ enum Entrypoint {
                 realtimeServer.hub.emit(room: room, event: event, payloadJSON: payload)
             }
             emailAccounts.onAgentReadUpdated = { serverId, channelId, agentId, maxReadSeq in
-                guard emailAccounts.readReceiptsEnabled(serverId: serverId),
+                guard emailAccounts.managedMCPToolExecution.readReceiptsEnabled(serverId: serverId),
                       let channel = emailAccounts.oauth.channelInfo(id: channelId),
                       channel.serverId == serverId,
                       channel.name != "all",

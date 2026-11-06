@@ -592,6 +592,123 @@ extension TasksAndRemindersStore {
         return storage.taskRecords.first { $0.id == id }
     }
 
+    // MARK: - Human task routes (managed-MCP assignments)
+
+    /// `DELETE /api/tasks/:taskId`: removes the row by id and returns it. The
+    /// legacy handler removed by an index it had read earlier; removing by id
+    /// in one section cannot drop a neighbour when rows move in between.
+    func removeTask(id: String) -> TaskRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = storage.taskRecords.firstIndex(where: { $0.id == id }) else { return nil }
+        return storage.taskRecords.remove(at: index)
+    }
+
+    enum HumanClaimOutcome {
+        case notFound
+        case channelDeleted
+        case claimed(TaskRecord)
+    }
+
+    /// `PATCH /api/tasks/:taskId/claim`: the row lookup, the deleted-channel
+    /// refusal and the claim write are one critical section.
+    func claimForUser(taskId: String, userId: String, channelDeleted: (String) -> Bool, now: Date) -> HumanClaimOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = storage.taskRecords.firstIndex(where: { $0.id == taskId }) else { return .notFound }
+        guard !channelDeleted(storage.taskRecords[index].channelId) else { return .channelDeleted }
+        storage.taskRecords[index].assigneeId = userId
+        storage.taskRecords[index].assigneeType = "user"
+        storage.taskRecords[index].claimedAt = now
+        storage.taskRecords[index].revision += 1
+        if storage.taskRecords[index].status == "todo" { storage.taskRecords[index].status = "in_progress" }
+        return .claimed(storage.taskRecords[index])
+    }
+
+    /// `PATCH /api/tasks/:taskId/unclaim`: the assignee clear, the revision
+    /// bump and the assignee-change event are one critical section.
+    func unclaimForUser(taskId: String, userId: String) -> TaskRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = storage.taskRecords.firstIndex(where: { $0.id == taskId }) else { return nil }
+        let previousAssigneeId = storage.taskRecords[index].assigneeId
+        let previousAssigneeType = storage.taskRecords[index].assigneeType
+        storage.taskRecords[index].assigneeId = nil
+        storage.taskRecords[index].assigneeType = nil
+        storage.taskRecords[index].claimedAt = nil
+        storage.taskRecords[index].revision += 1
+        storage.assigneeChangeEvents.append((
+            taskId: taskId, assigneeId: nil, assigneeType: nil,
+            previousAssigneeId: previousAssigneeId, previousAssigneeType: previousAssigneeType,
+            actorType: "user", actorId: userId
+        ))
+        return storage.taskRecords[index]
+    }
+
+    enum HumanStatusOutcome {
+        case notFound
+        case channelDeletedTerminalOnly
+        case onlyAssigneeCanReturnToTodo
+        case updated(TaskRecord)
+    }
+
+    /// `PATCH /api/tasks/:taskId/status`: the refusals and the status write
+    /// (with its completion, close and claim stamps) are one critical section.
+    func applyHumanStatus(
+        taskId: String,
+        status: String,
+        userId: String,
+        channelDeleted: (String) -> Bool,
+        now: Date
+    ) -> HumanStatusOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = storage.taskRecords.firstIndex(where: { $0.id == taskId }) else { return .notFound }
+        let current = storage.taskRecords[index]
+        if channelDeleted(current.channelId), !["done", "closed", "cancelled"].contains(status) {
+            return .channelDeletedTerminalOnly
+        }
+        if status == "todo", current.status == "in_progress", current.assigneeId != userId {
+            return .onlyAssigneeCanReturnToTodo
+        }
+        storage.taskRecords[index].status = status
+        if status == "done", storage.taskRecords[index].completedAt == nil {
+            storage.taskRecords[index].completedAt = now
+        }
+        if status == "closed" || status == "cancelled" {
+            storage.taskRecords[index].closedAt = now
+        }
+        if status == "in_progress", storage.taskRecords[index].claimedAt == nil {
+            storage.taskRecords[index].claimedAt = now
+        }
+        if status == "todo" {
+            storage.taskRecords[index].claimedAt = nil
+        }
+        storage.taskRecords[index].revision += 1
+        return .updated(storage.taskRecords[index])
+    }
+
+    /// `POST /api/tasks/convert-message`: one `Converted message` task whose
+    /// host message is the converted one. The task-number scan, the append and
+    /// the message link are one critical section.
+    func appendConvertedMessageTask(channelId: String, messageId: String, creatorId: String) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        let id = UUID().uuidString.lowercased()
+        storage.taskRecords.append(TaskRecord(
+            id: id,
+            channelId: channelId,
+            title: "Converted message",
+            description: nil,
+            status: "todo",
+            taskNumber: storage.taskRecords.filter { $0.channelId == channelId }.count + 1,
+            messageId: messageId,
+            createdAt: Date(),
+            creatorId: creatorId
+        ))
+        return id
+    }
+
     /// `POST /internal/agent-api/tasks/amend`: the row lookup, the title and
     /// description write, the revision bump and the amend markers are one
     /// critical section. `nil` means the task does not exist.

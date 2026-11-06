@@ -932,6 +932,118 @@ final class ServersAndChannelsStore: @unchecked Sendable {
     }
 
 
+    // MARK: - Channel member set, channel roles and thread rows (managed-MCP assignments)
+    //
+    // Each method below is one critical section over the rows it reads and
+    // rewrites. The retired handlers held the directory lock for the same span.
+
+    /// Drops one member id from a channel's postable member set.
+    func removePostableMember(channelId: String, memberId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId]?.memberIds.remove(memberId)
+    }
+
+    /// Adds one member id to a channel's postable member set, creating the row
+    /// (kind `channel`) when the channel has none yet.
+    func insertPostableMember(serverId: String, channelId: String, memberId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId, default: PostableChannel(serverId: serverId, memberIds: [])]
+            .memberIds.insert(memberId)
+    }
+
+    /// The channel-local role (`admin`) one human holds, when any.
+    func channelHumanRole(channelId: String, userId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.channelHumanRoles["\(channelId)\n\(userId)"]
+    }
+
+    /// The channel authority revision; a channel that never changed authority
+    /// reports `1`.
+    func channelAuthorityRevision(channelId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.channelAuthorityRevisions[channelId] ?? 1
+    }
+
+    /// Writes one channel-local role and bumps the channel authority revision
+    /// in the same critical section; returns the new revision.
+    func setChannelHumanRole(channelId: String, memberId: String, role: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.channelHumanRoles["\(channelId)\n\(memberId)"] = role
+        let revision = (storage.channelAuthorityRevisions[channelId] ?? 1) + 1
+        storage.channelAuthorityRevisions[channelId] = revision
+        return revision
+    }
+
+    enum ThreadForParentMessage {
+        /// A live thread already hangs off the parent message.
+        case existing(id: String)
+        /// A new thread row was created and ordered.
+        case created(id: String)
+    }
+
+    /// `POST /api/channels/:id/threads`: the existing-thread lookup, the new
+    /// thread's channel row and its creation order are one critical section, so
+    /// two concurrent requests for the same parent message cannot both create
+    /// a thread. `createChannel` mints the ledger channel; it runs inside the
+    /// section and must not call back into this store.
+    func findOrCreateThread(
+        serverId: String,
+        parentChannelId: String,
+        parentMessageId: String,
+        creatorId: String,
+        createChannel: () -> String
+    ) -> ThreadForParentMessage {
+        lock.lock()
+        defer { lock.unlock() }
+        if let existing = storage.postableChannels.first(where: { _, candidate in
+            candidate.serverId == serverId && candidate.kind == "thread"
+                && candidate.parentChannelId == parentChannelId && candidate.parentMessageId == parentMessageId
+                && candidate.deletedAt == nil
+        }) {
+            return .existing(id: existing.key)
+        }
+        let threadId = createChannel()
+        storage.postableChannels[threadId] = PostableChannel(
+            serverId: serverId,
+            memberIds: [creatorId],
+            kind: "thread",
+            parentChannelId: parentChannelId,
+            parentMessageId: parentMessageId,
+            name: "thread"
+        )
+        storage.threadOrder.append(threadId)
+        return .created(id: threadId)
+    }
+
+    /// The DM row `POST /api/channels/dm` records: kind `dm`, name `dm`.
+    func upsertDirectChannel(serverId: String, channelId: String, memberIds: Set<String>) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId] = PostableChannel(
+            serverId: serverId,
+            memberIds: memberIds,
+            kind: "dm",
+            name: "dm"
+        )
+    }
+
+    func enableReadReceipts(serverId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.readReceiptsServers.insert(serverId)
+    }
+
+    func readReceiptsEnabled(serverId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.readReceiptsServers.contains(serverId)
+    }
+
     // MARK: - Sidebar order
 
     /// One sidebar sort-mode row.
