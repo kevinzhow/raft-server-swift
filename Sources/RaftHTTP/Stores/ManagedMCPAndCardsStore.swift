@@ -288,6 +288,17 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Removes and returns the action reply events queued for one agent, in
+    /// queue order, in one critical section so two concurrent drains can never
+    /// both receive the same event.
+    func takePendingActionMessageEvents(agentId: String) -> [(agentId: String, messageId: String, content: String)] {
+        lock.lock()
+        defer { lock.unlock() }
+        let taken = storage.pendingActionMessageEvents.filter { $0.agentId == agentId }
+        storage.pendingActionMessageEvents.removeAll { $0.agentId == agentId }
+        return taken
+    }
+
     // MARK: - Agent-api idempotency
 
     /// Outcome of one idempotency-key lookup for an agent-api write.

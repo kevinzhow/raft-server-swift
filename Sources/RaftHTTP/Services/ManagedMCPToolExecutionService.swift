@@ -367,16 +367,16 @@ public struct ManagedMCPToolExecutionService: Sendable {
     }
 
     /// Whether Activity from this message is suppressed for the agent by an
-    /// active channel mute (a personal @mention always arrives).
+    /// active channel mute (a personal @mention always arrives). The predicate
+    /// is `MessagesAndThreadsStore.agentMessageSuppressed`, shared with the
+    /// agent inbox; this only supplies the mute prefs and the stored mentions.
     func agentMessageSuppressed(_ message: StoredHumanMessage, agentId: String) -> Bool {
-        let prefs = oauth.notificationPrefs(channelId: message.channelId, userId: agentId)
-        guard prefs.activityMuted, let from = prefs.muteFromSeq, message.seq >= from else {
-            return false
-        }
-        let mentioned = messages.storedMentions.contains {
-            $0.messageId == message.id && $0.targetType == "agent" && $0.targetId == agentId
-        }
-        return !mentioned
+        MessagesAndThreadsStore.agentMessageSuppressed(
+            message,
+            agentId: agentId,
+            prefs: oauth.notificationPrefs(channelId: message.channelId, userId: agentId),
+            mentions: messages.storedMentions
+        )
     }
 
     // MARK: - POST /internal/agent-api/channels/archive|unarchive
