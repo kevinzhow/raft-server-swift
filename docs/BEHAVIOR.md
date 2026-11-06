@@ -2201,3 +2201,8 @@ RFC 074 personal assistant：
 - 两个 create 仍按原 auth/rollout/body 判定后写 reminder 与 scheduled record，再按原序读取 agent、creator、owner/admin roles，以 Set 去重产生 typed delivery。缺 agent 或 recipients 为空不发，不加 deleted/member 条件，也不对 Set 排序。HTTP 仍仅原 reminder envelope，payload 键序仍 reminderId→ownerAgentId。
 - 两条 Feature 仅向固定可选 Fallback Hub 发帧；nil Hub 不准备提交后 recipients，提醒仍创建，不能改发当前 relay slot。真实 HTTP/Socket.IO 的同十个参数场景在旧 helper 和新 completion 上通过：creator/admin 去重、creator 双 session、member/guest/另一 server 排除、两入口、拒绝无帧/无记录、nil Hub/live relay、固定 Hub/空 slot、注册后 relay 换 Hub。
 - 新 API 的编译红只证明接口迁移，旧网络基线原本绿；未声称修复线上 wire bug。确定性 commit→recipient-read 并发交错未新增测试钩子，保持顺序由代码直接核对；既有 CRUD、rollout、字节和 Store version/event/CAS 验收继续覆盖。
+
+### Fleet/lifecycle 的领域能力接线
+
+- Fleet 的 session 仍是原 optional AuthCore.authenticate，不新增 verified 判定；attach gate 每次先读 Machines override 再读 environment，room emit 仍逐次读当前 relay。Mint 的 agentId/scopes/name 及 apiKey/credentialId 对应关系不变，Computer credential 仍直接使用原 Machines 五态查询和优先级。
+- Joint-local 查询归 MessageReadProjection，每次从当前 Channels snapshot 构造临时 facts，canonical/server/user 匹配与原 closure 相同。Root 不保存 facts/State，也不执行 mint DTO 投影；Fleet→Lifecycle→Projection/CredentialUse 没有 Fleet 回边。原 attach/adopt、runner、joint attachment/resolve 及凭据拒绝字节保持。

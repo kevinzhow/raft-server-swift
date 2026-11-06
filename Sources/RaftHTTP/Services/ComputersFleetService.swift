@@ -1,9 +1,8 @@
 import Crypto
 import Foundation
 
-/// The not-yet-migrated domains the fleet still needs: the human session
-/// lookup, the realtime room emitter, the device-login feature gate, the agent
-/// credential mint and the Computer credential lookup.
+/// Fleet capabilities for session auth, realtime delivery, the device-login
+/// gate and credential operations. Production binds the actual domain owners.
 public struct ComputersFleetDependencies: Sendable {
     /// One minted `sk_agent_*` credential and its row id.
     public struct MintedCredential: Sendable, Equatable {
@@ -21,6 +20,26 @@ public struct ComputersFleetDependencies: Sendable {
     public var computerAttachEnabled: @Sendable () -> Bool
     public var mintAgentCredential: @Sendable (_ agentId: String, _ scopes: [String], _ name: String) -> MintedCredential
     public var computerCredential: @Sendable (_ apiKey: String) -> ComputerCredentialLookup
+
+    /// Production capabilities retain their owners and read current state per call.
+    init(
+        auth: AuthCoreService,
+        realtime: RealtimeRelayService,
+        lifecycle: AgentsLifecycleService,
+        agents: AgentsRuntimeStore,
+        machines: MachinesAndComputersStore
+    ) {
+        self.init(
+            sessionUserId: { try? auth.authenticate($0) },
+            emitRealtime: { realtime.emit($0, $1, $2) },
+            computerAttachEnabled: { lifecycle.computerAttachEnabled() },
+            mintAgentCredential: { agentId, scopes, name in
+                let minted = agents.mintAgentCredential(agentId: agentId, scopes: scopes, name: name)
+                return MintedCredential(apiKey: minted.apiKey, credentialId: minted.credentialId)
+            },
+            computerCredential: { machines.computerCredential(apiKey: $0) }
+        )
+    }
 
     public init(
         sessionUserId: @escaping @Sendable (String?) -> String?,

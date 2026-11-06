@@ -49,6 +49,10 @@ struct MessageReadProjection: Sendable {
     let agents: AgentsRuntimeStore
     let oauth: OAuthLedger
 
+    func localChannel(canonical: String, serverId: String?, userId: String) -> String? {
+        MessageChannelFacts(channels.state).localChannel(canonical: canonical, serverId: serverId, userId: userId)
+    }
+
     func reactions(messageId: String) -> [ProfileReactionBucket] {
         let rows = messages.reactionRows(messageId: messageId)
         let accounts = profiles.accounts

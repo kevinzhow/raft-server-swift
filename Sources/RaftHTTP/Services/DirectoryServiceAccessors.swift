@@ -43,12 +43,8 @@ extension EmailLoginDirectory {
         AgentConnectionRelayService(agents: agentsRuntimeStore)
     }
 
-    /// The Computer fleet: machine roster, Computer attach/adoption, runner
-    /// control plane and the lifecycle controls. The directory supplies the
-    /// machine, agent and profile stores and the OAuth ledger; the session
-    /// lookup, the realtime emitter, the device-login gate, the agent credential
-    /// mint and the Computer credential lookup belong to unmigrated domains and
-    /// enter as closures.
+    /// Fleet owners and named capabilities; decisions and DTO projections stay
+    /// in the domain dependencies.
     public var computersFleet: ComputersFleetService {
         ComputersFleetService(
             machines: machinesAndComputersStore,
@@ -56,22 +52,11 @@ extension EmailLoginDirectory {
             profiles: authProfileStore,
             oauth: oauth,
             dependencies: ComputersFleetDependencies(
-                sessionUserId: { [self] authorization in
-                    sessionUserId(authorization: authorization)
-                },
-                emitRealtime: { [relay = realtimeRelay] room, event, payload in
-                    relay.emit(room, event, payload)
-                },
-                computerAttachEnabled: { [self] in
-                    agentsLifecycle.computerAttachEnabled()
-                },
-                mintAgentCredential: { [self] agentId, scopes, name in
-                    let minted = agentsRuntimeStore.mintAgentCredential(agentId: agentId, scopes: scopes, name: name)
-                    return ComputersFleetDependencies.MintedCredential(apiKey: minted.apiKey, credentialId: minted.credentialId)
-                },
-                computerCredential: { [self] apiKey in
-                    computerCredential(apiKey: apiKey)
-                }
+                auth: authCore,
+                realtime: realtimeRelay,
+                lifecycle: agentsLifecycle,
+                agents: agentsRuntimeStore,
+                machines: machinesAndComputersStore
             )
         )
     }
@@ -263,13 +248,7 @@ extension EmailLoginDirectory {
                 recordAgentCredentialUse: { [credentialUse = agentCredentialUse] token in
                     credentialUse.record(token: token)
                 },
-                jointLocalChannelId: { [channels = serversAndChannelsStore] canonicalChannelId, serverId, userId in
-                    MessageChannelFacts(channels.state).localChannel(
-                        canonical: canonicalChannelId,
-                        serverId: serverId,
-                        userId: userId
-                    )
-                }
+                jointLocalChannelId: messageReadProjection.localChannel
             )
         )
     }
