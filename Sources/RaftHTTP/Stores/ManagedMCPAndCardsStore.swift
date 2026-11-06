@@ -146,6 +146,17 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         set { state.agentIntegrationLogins = newValue }
     }
 
+    /// Records the agent's login into a service unless one exists. The lookup and
+    /// the insert are one critical section, so two concurrent first logins cannot
+    /// both report `logged_in`. Returns whether the login already existed.
+    func recordAgentIntegrationLogin(key: String, record: AgentIntegrationLoginRecord) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if storage.agentIntegrationLogins[key] != nil { return true }
+        storage.agentIntegrationLogins[key] = record
+        return false
+    }
+
     var providerConnectionsEnabledServers: Set<String> {
         get { state.providerConnectionsEnabledServers }
         set { state.providerConnectionsEnabledServers = newValue }

@@ -177,27 +177,34 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 )
             }
         }
-        attachments.get("comments", "counts") { request -> Response in
-            routeResponse(services.emailAccounts.attachmentCommentCounts(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? desktopQuery(request.url.query, "server_id") ?? "",
-                ids: desktopQuery(request.url.query, "ids")
-            ))
+        attachments.get("comments", "counts") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.attachmentComments.attachmentCommentCounts(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? desktopQuery(request.url.query, "server_id") ?? "",
+                    ids: desktopQuery(request.url.query, "ids")
+                )
+            }
         }
-        attachments.get(":id", "comments") { request -> Response in
-            routeResponse(services.emailAccounts.attachmentCommentsList(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                attachmentId: request.parameters.get("id") ?? ""
-            ))
+        attachments.get(":id", "comments") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.attachmentComments.attachmentCommentsList(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    attachmentId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         attachments.post(":id", "comments") { request async throws -> Response in
-            routeResponse(services.emailAccounts.createAttachmentComment(
-                authorization: request.headers[.authorization],
-                attachmentId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText(default: "{}"),
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!]
-            ))
+            let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.attachmentComments.createAttachmentComment(
+                    authorization: request.headers[.authorization],
+                    attachmentId: request.parameters.get("id") ?? "",
+                    body: body,
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
+            }
         }
         actions.post("migration-export") { _ -> Response in
             routeResponse(HTTPReply(

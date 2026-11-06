@@ -92,7 +92,6 @@ extension EmailLoginDirectory {
     var agentGrantSets: [String: Set<String>] { get { managedMCPAndCardsStore.agentGrantSets } set { managedMCPAndCardsStore.agentGrantSets = newValue } }
     var agentIntegrationGrants: [String: Bool] { get { managedMCPAndCardsStore.agentIntegrationGrants } set { managedMCPAndCardsStore.agentIntegrationGrants = newValue } }
     var agentAudienceStatusOverrides: [String: String] { get { managedMCPAndCardsStore.agentAudienceStatusOverrides } set { managedMCPAndCardsStore.agentAudienceStatusOverrides = newValue } }
-    var agentIntegrationLogins: [String: AgentIntegrationLoginRecord] { get { managedMCPAndCardsStore.agentIntegrationLogins } set { managedMCPAndCardsStore.agentIntegrationLogins = newValue } }
     public var providerConnectionsEnabledServers: Set<String> { get { managedMCPAndCardsStore.providerConnectionsEnabledServers } set { managedMCPAndCardsStore.providerConnectionsEnabledServers = newValue } }
     var providerConnections: [ProviderConnection] { get { managedMCPAndCardsStore.providerConnections } set { managedMCPAndCardsStore.providerConnections = newValue } }
     var providerAssignments: [ProviderAssignment] { get { managedMCPAndCardsStore.providerAssignments } set { managedMCPAndCardsStore.providerAssignments = newValue } }

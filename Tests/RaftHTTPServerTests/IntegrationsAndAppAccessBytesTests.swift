@@ -28,10 +28,14 @@ private final class Normalizer: @unchecked Sendable {
     private var seen: [String: Int] = [:]
     private let uuid = try! NSRegularExpression(pattern: "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
     private let stamp = try! NSRegularExpression(pattern: "\\d{4}-\\d\\d-\\d\\dT[\\d:.]+Z")
+    private let cursor = try! NSRegularExpression(pattern: "\"\\d{13}\\.")
 
     func callAsFunction(_ text: String) -> String {
         var out = stamp.stringByReplacingMatches(
             in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "<ts>"
+        )
+        out = cursor.stringByReplacingMatches(
+            in: out, range: NSRange(out.startIndex..., in: out), withTemplate: "\"<ms>."
         )
         let matches = uuid.matches(in: out, range: NSRange(out.startIndex..., in: out))
         for match in matches.reversed() {

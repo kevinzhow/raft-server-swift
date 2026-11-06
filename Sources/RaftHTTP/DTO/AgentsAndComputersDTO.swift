@@ -272,34 +272,6 @@ public struct ProviderConnectionToggleDTO: Codable, Sendable, Equatable, AgentsA
     }
 }
 
-/// `POST /api/integrations/agents/:agentId/grants` request body.
-///
-/// `clientId` names the installed App and `scopes` is the requested capability
-/// set. The directory drops non-string scope elements and answers
-/// `clientId is required` when the App is absent, so a missing client keeps the
-/// raw 400.
-public struct AgentGrantCreateDTO: Codable, Sendable, Equatable, AgentsAndComputersRequestDTO {
-    public var clientId: String
-    public var scopes: [String]?
-
-    public init(clientId: String, scopes: [String]? = nil) {
-        self.clientId = clientId
-        self.scopes = scopes
-    }
-}
-
-/// `POST /api/integrations/requests/:requestId/approve` request body.
-///
-/// `remember` is the only key the route reads; anything that is not a Boolean
-/// keeps the raw parser's `false` fallback.
-public struct AgentAccessRequestApproveDTO: Codable, Sendable, Equatable, AgentsAndComputersRequestDTO {
-    public var remember: Bool?
-
-    public init(remember: Bool? = nil) {
-        self.remember = remember
-    }
-}
-
 /// `POST /internal/agent/:agentId/runtime-profile/migration-done` request body.
 ///
 /// The runtime-profile migration acknowledgment is deprecated: the route reads

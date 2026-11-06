@@ -1563,32 +1563,59 @@ public final class OAuthLedger: @unchecked Sendable {
         }
     }
 
-    public func integrationLoginClient(serverId: String, clientId: String) -> [String: Any]? {
-        integrationServices(serverId: serverId).first {
-            ($0["clientId"] as? String) == clientId || ($0["id"] as? String) == clientId
-        } ?? {
-            lock.lock()
-            defer { lock.unlock() }
-            guard let client = clients.first(where: { candidate in
-                (candidate.clientId == clientId || candidate.id == clientId)
-                    && candidate.appType != "slock_builtin"
-                    && installations.contains {
-                        $0.clientId == candidate.id && $0.serverId == serverId && $0.status == "active"
-                    }
-            }) else { return nil }
-            let manifest = manifestFields(client)
-            return [
-                "id": client.id,
-                "clientId": client.clientId,
-                "name": client.name,
-                "description": client.descriptionText as Any,
-                "homepageUrl": client.homepageUrl as Any,
-                "agentManifestUrl": manifest.url,
-                "agentManifestUrlSource": manifest.source,
-                "allowedScopes": client.allowedScopes as Any,
-                "appType": client.appType,
-            ]
-        }()
+    /// One client as an integration service row. `whenToUse` is only published
+    /// for the installed-service listing, so callers pass whether to carry it.
+    private func serviceRow(_ client: Client, includeWhenToUse: Bool) -> IntegrationServiceRow {
+        let manifest = manifestFields(client)
+        return IntegrationServiceRow(
+            id: client.id,
+            clientId: client.clientId,
+            name: client.name,
+            description: client.descriptionText,
+            homepageUrl: client.homepageUrl,
+            agentManifestUrl: manifest.url as? String,
+            agentManifestUrlSource: manifest.source as? String,
+            allowedScopes: client.allowedScopes,
+            whenToUse: includeWhenToUse ? client.whenToUse : nil,
+            appType: client.appType
+        )
+    }
+
+    /// The service an agent logs into on `serverId`: an enabled service of the
+    /// Server (own or installed) first, then an installed one that is not the
+    /// built-in tombstone class.
+    public func integrationLoginServiceRow(serverId: String, clientId: String) -> IntegrationServiceRow? {
+        lock.lock()
+        defer { lock.unlock() }
+        let installed: (Client) -> Bool = { candidate in
+            self.installations.contains {
+                $0.clientId == candidate.id && $0.serverId == serverId && $0.status == "active"
+            }
+        }
+        if let client = clients.first(where: { client in
+            client.appType != "slock_builtin" && client.enabled
+                && (client.serverId == serverId || installed(client))
+                && (client.clientId == clientId || client.id == clientId)
+        }) {
+            return serviceRow(client, includeWhenToUse: true)
+        }
+        guard let client = clients.first(where: { candidate in
+            (candidate.clientId == clientId || candidate.id == clientId)
+                && candidate.appType != "slock_builtin"
+                && installed(candidate)
+        }) else { return nil }
+        return serviceRow(client, includeWhenToUse: false)
+    }
+
+    /// The Marketplace-visible service `clientId` names, when no installed one
+    /// does.
+    public func publicIntegrationServiceRow(clientId: String) -> IntegrationServiceRow? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let client = clients.first(where: { candidate in
+            (candidate.clientId == clientId || candidate.id == clientId) && isMarketplaceVisible(candidate)
+        }) else { return nil }
+        return serviceRow(client, includeWhenToUse: false)
     }
 
     public func integrationClient(serverId: String, clientId: String) -> [String: Any]? {
@@ -2255,9 +2282,16 @@ public final class OAuthLedger: @unchecked Sendable {
             }
     }
 
+    /// The decision of an approve or revoke the caller was allowed to try.
+    public enum AgentAccessMutationOutcome: Sendable, Equatable {
+        case done
+        case forbidden
+    }
+
     /// Approve a pending agent access request. The agent's creator or an
     /// owner/admin may approve; `remember` turns the request into a grant.
-    public func approveAgentAccessRequest(userId: String, requestId: String, remember: Bool) -> HTTPReply? {
+    /// `nil` means the request does not exist.
+    public func approveAgentAccessRequest(userId: String, requestId: String, remember: Bool) -> AgentAccessMutationOutcome? {
         lock.lock()
         defer { lock.unlock() }
         guard let index = requests.firstIndex(where: { $0.id == requestId }), let agentId = requests[index].agentId,
@@ -2265,7 +2299,7 @@ public final class OAuthLedger: @unchecked Sendable {
               let client = clients.first(where: { $0.id == requests[index].clientId })
         else { return nil }
         guard isAgentAuthorityLocked(userId: userId, agent: agent, serverId: agent.serverId) else {
-            return json(403, "{\"error\":\"You cannot manage this agent's app access\"}")
+            return .forbidden
         }
         requests[index].status = "approved"
         if remember, activeAgentGrantLocked(agentId: agentId, clientRecordId: client.id) == nil {
@@ -2276,23 +2310,24 @@ public final class OAuthLedger: @unchecked Sendable {
             ))
         }
         autoGrantBlocked.remove(agentGrantKey(agentId, client.id))
-        return json(200, "{\"status\":\"approved\"}")
+        return .done
     }
 
     /// Revoke one grant. A person's revoke blocks automatic re-granting until a
-    /// person grants again.
-    public func revokeAgentGrant(userId: String, grantId: String) -> HTTPReply? {
+    /// person grants again. `nil` means the grant does not exist or is already
+    /// revoked.
+    public func revokeAgentGrant(userId: String, grantId: String) -> AgentAccessMutationOutcome? {
         lock.lock()
         defer { lock.unlock() }
         guard let index = agentGrants.firstIndex(where: { $0.id == grantId }), agentGrants[index].revokedAt == nil,
               let agent = agents[agentGrants[index].agentId]
         else { return nil }
         guard isAgentAuthorityLocked(userId: userId, agent: agent, serverId: agent.serverId) else {
-            return json(403, "{\"error\":\"You cannot manage this agent's app access\"}")
+            return .forbidden
         }
         agentGrants[index].revokedAt = Date()
         autoGrantBlocked.insert(agentGrantKey(agentGrants[index].agentId, agentGrants[index].clientRecordId))
-        return json(200, "{\"status\":\"revoked\"}")
+        return .done
     }
 
     public struct AgentGrantCreateResult: Sendable {
@@ -3698,7 +3733,7 @@ public final class OAuthLedger: @unchecked Sendable {
     /// The agent-facing projection of Apps this agent may manage: every
     /// user-managed app of the Server for an admin agent, otherwise only the
     /// ones this agent owns. Installation ids never cross the Server boundary.
-    public func ownedIntegrationApps(serverId: String, agentId: String, admin: Bool) -> [[String: Any]] {
+    public func ownedIntegrationApps(serverId: String, agentId: String, admin: Bool) -> [IntegrationAppProjection] {
         lock.lock()
         defer { lock.unlock() }
         return clients.filter { client in
@@ -3711,7 +3746,7 @@ public final class OAuthLedger: @unchecked Sendable {
         }
     }
 
-    public func ownedIntegrationApp(serverId: String, agentId: String, clientKey: String, admin: Bool) -> [String: Any]? {
+    public func ownedIntegrationApp(serverId: String, agentId: String, clientKey: String, admin: Bool) -> IntegrationAppProjection? {
         lock.lock()
         defer { lock.unlock() }
         guard let client = clients.first(where: { candidate in
@@ -3724,59 +3759,53 @@ public final class OAuthLedger: @unchecked Sendable {
         return integrationAppProjection(client, serverId: serverId, admin: admin)
     }
 
-    private func setupStateDictionary(client: Client, serverId: String) -> Any {
+    private func setupProjection(client: Client, serverId: String) -> IntegrationAppSetupProjection? {
         guard let installation = installations.first(where: {
             $0.clientId == client.id && $0.serverId == serverId && $0.status == "active"
-        }) else { return NSNull() }
+        }) else { return nil }
         guard let state = try? AppSetupContract.project(
             setupUrl: client.setupUrl, setupDescription: client.setupDescription,
             setupRevision: client.setupRevision, installationId: installation.id,
             serverId: installation.serverId,
             completedRevision: installation.setupCompletedRevision,
             completedAt: installation.setupCompletedAt
-        ) else { return NSNull() }
-        return [
-            "status": state.status.rawValue,
-            "url": state.url as Any,
-            "description": state.description as Any,
-            "revision": state.revision,
-            "completedAt": state.completedAt as Any,
-        ]
+        ) else { return nil }
+        return IntegrationAppSetupProjection(
+            status: state.status.rawValue,
+            url: state.url,
+            description: state.description,
+            revision: state.revision,
+            completedAt: state.completedAt
+        )
     }
 
-    private func integrationAppProjection(_ client: Client, serverId: String, admin: Bool) -> [String: Any] {
+    private func integrationAppProjection(_ client: Client, serverId: String, admin: Bool) -> IntegrationAppProjection {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let now = formatter.string(from: Date())
-        let installation: Any = installations.first {
-            $0.clientId == client.id && $0.serverId == serverId && $0.status == "active"
-        }?.id ?? NSNull()
-        return [
-            "state": "committed",
-            "card": NSNull(),
-            "installationId": installation,
-            "name": client.name,
-            "clientKey": client.clientId,
-            "createdAt": now,
-            "updatedAt": now,
-            "description": client.descriptionText as Any,
-            "homepageUrl": client.homepageUrl as Any,
-            "callbackUrl": client.returnUrl as Any,
-            "agentManifestUrl": client.agentManifestUrl as Any,
-            "setupUrl": client.setupUrl as Any,
-            "setupDescription": client.setupDescription as Any,
-            "setupRevision": client.setupRevision,
-            "setup": setupStateDictionary(client: client, serverId: serverId) as Any,
-            "scopes": client.allowedScopes ?? [],
-            "category": "Other",
-            "dataAccessSummary": NSNull(),
-            "logoUrl": NSNull(),
-            "appType": client.appType,
-            "publishStatus": client.publishStatus,
-            "enabled": client.enabled,
-            "authority": admin ? "admin" : "owner",
-            "recoveryCommand": "raft integration app rotate-secret --client \(client.clientId) --output <new-private-path>",
-        ]
+        return IntegrationAppProjection(
+            installationId: installations.first {
+                $0.clientId == client.id && $0.serverId == serverId && $0.status == "active"
+            }?.id,
+            name: client.name,
+            clientKey: client.clientId,
+            createdAt: now,
+            updatedAt: now,
+            description: client.descriptionText,
+            homepageUrl: client.homepageUrl,
+            callbackUrl: client.returnUrl,
+            agentManifestUrl: client.agentManifestUrl,
+            setupUrl: client.setupUrl,
+            setupDescription: client.setupDescription,
+            setupRevision: client.setupRevision,
+            setup: setupProjection(client: client, serverId: serverId),
+            scopes: client.allowedScopes ?? [],
+            appType: client.appType,
+            publishStatus: client.publishStatus,
+            enabled: client.enabled,
+            authority: admin ? "admin" : "owner",
+            recoveryCommand: "raft integration app rotate-secret --client \(client.clientId) --output <new-private-path>"
+        )
     }
 
     /// An App that declares no manifest still points agents at its own
@@ -3828,7 +3857,7 @@ public final class OAuthLedger: @unchecked Sendable {
             && client.humanMarketplaceVisible
     }
 
-    public func marketplaceClients(serverId: String, query: String?) -> [[String: Any]] {
+    public func marketplaceClients(serverId: String, query: String?) -> [MarketplaceClientRow] {
         lock.lock()
         defer { lock.unlock() }
         let needle = (query ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -3839,17 +3868,17 @@ public final class OAuthLedger: @unchecked Sendable {
                 || (client.descriptionText ?? "").lowercased().contains(needle)
                 || client.clientId.lowercased().contains(needle)
         }.map { client in
-            [
-                "id": client.id,
-                "clientId": client.clientId,
-                "name": client.name,
-                "description": client.descriptionText as Any,
-                "homepageUrl": client.homepageUrl as Any,
-                "allowedScopes": client.allowedScopes ?? ["openid", "profile", "identity"],
-                "installedOnServer": installations.contains {
+            MarketplaceClientRow(
+                id: client.id,
+                clientId: client.clientId,
+                name: client.name,
+                description: client.descriptionText,
+                homepageUrl: client.homepageUrl,
+                allowedScopes: client.allowedScopes ?? ["openid", "profile", "identity"],
+                installedOnServer: installations.contains {
                     $0.clientId == client.id && $0.serverId == serverId && $0.status == "active"
-                },
-            ]
+                }
+            )
         }
     }
 

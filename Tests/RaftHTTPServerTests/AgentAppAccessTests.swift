@@ -80,7 +80,7 @@ private struct AppAccessFixture {
 
     // The creator revokes; the app's next request waits for a person.
     let revoked = accounts.oauth.revokeAgentGrant(userId: fixture.creatorId, grantId: grant.id)
-    #expect(revoked?.status == 200)
+    #expect(revoked == .done)
     let afterRevoke = await request(creatorApp, agentName: "CreatorBot")
     #expect(afterRevoke.1["status"] as? String == "pending")
     #expect(grants(for: creatorApp).isEmpty)
@@ -119,9 +119,9 @@ private struct AppAccessFixture {
     #expect(pending.1["status"] as? String == "pending")
     let requestId = try #require(pending.1["requestId"] as? String)
 
-    #expect(accounts.oauth.approveAgentAccessRequest(userId: fixture.memberId, requestId: requestId, remember: true)?.status == 403)
+    #expect(accounts.oauth.approveAgentAccessRequest(userId: fixture.memberId, requestId: requestId, remember: true) == .forbidden)
     #expect(accounts.oauth.agentGrantRowsForTesting(agentId: fixture.creatorAgent).isEmpty)
-    #expect(accounts.oauth.approveAgentAccessRequest(userId: fixture.creatorId, requestId: requestId, remember: true)?.status == 200)
+    #expect(accounts.oauth.approveAgentAccessRequest(userId: fixture.creatorId, requestId: requestId, remember: true) == .done)
     #expect(accounts.oauth.agentGrantRowsForTesting(agentId: fixture.creatorAgent).count == 1)
 
     #expect(accounts.oauth.grantableApps(userId: fixture.memberId, agentId: fixture.creatorAgent)?.isEmpty == true)
@@ -159,7 +159,7 @@ private struct AppAccessFixture {
     #expect(login.1["status"] as? String == "approved")
     let grant = try #require(accounts.oauth.agentGrantRowsForTesting(agentId: fixture.creatorAgent).first)
     #expect(grant.grantSource == "agent_login")
-    #expect(accounts.oauth.revokeAgentGrant(userId: fixture.creatorId, grantId: grant.id)?.status == 200)
+    #expect(accounts.oauth.revokeAgentGrant(userId: fixture.creatorId, grantId: grant.id) == .done)
     let blocked = await request(initiatedByAgent: true)
     #expect(blocked.1["status"] as? String == "pending")
 }

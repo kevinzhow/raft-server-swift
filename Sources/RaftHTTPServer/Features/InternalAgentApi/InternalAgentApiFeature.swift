@@ -287,17 +287,21 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.get("attachments", ":attachmentId", "comments") { request -> Response in
-            routeResponse(services.emailAccounts.agentAttachmentCommentsList(
-                authorization: request.headers[.authorization],
-                attachmentId: request.parameters.get("attachmentId") ?? ""
-            ))
+        agentApi.get("attachments", ":attachmentId", "comments") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.attachmentComments.agentAttachmentCommentsList(
+                    authorization: request.headers[.authorization],
+                    attachmentId: request.parameters.get("attachmentId") ?? ""
+                )
+            }
         }
-        agentApi.post("attachments", ":attachmentId", "comments") { request -> Response in
-            routeResponse(services.emailAccounts.agentAttachmentCommentCreate(
-                authorization: request.headers[.authorization],
-                attachmentId: request.parameters.get("attachmentId") ?? ""
-            ))
+        agentApi.post("attachments", ":attachmentId", "comments") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.attachmentComments.agentAttachmentCommentCreate(
+                    authorization: request.headers[.authorization],
+                    attachmentId: request.parameters.get("attachmentId") ?? ""
+                )
+            }
         }
         agentApi.get("attachments", ":attachmentId") { request -> Response in
             routeResponse(services.emailAccounts.agentAttachmentDownload(
@@ -318,10 +322,12 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.get("integrations", "app") { request -> Response in
-            routeResponse(services.emailAccounts.agentIntegrationAppList(
-                authorization: request.headers[.authorization]
-            ))
+        agentApi.get("integrations", "app") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentIntegrationApps.agentIntegrationAppList(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         agentApi.post("integrations", "app", "prepare") { request async throws -> Response in
             let body = await jsonRequestBody(IntegrationAppPrepareRequest.self, request)
@@ -333,30 +339,40 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
         }
         agentApi.post("integrations", "app", "update") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentIntegrationAppUpdate(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentIntegrationApps.agentIntegrationAppUpdate(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
-        agentApi.get("integrations", "app", "status") { request -> Response in
-            routeResponse(services.emailAccounts.agentIntegrationAppStatus(
-                authorization: request.headers[.authorization],
-                client: desktopQuery(request.url.query, "client"),
-                card: desktopQuery(request.url.query, "card")
-            ))
+        agentApi.get("integrations", "app", "status") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentIntegrationApps.agentIntegrationAppStatus(
+                    authorization: request.headers[.authorization],
+                    client: desktopQuery(request.url.query, "client"),
+                    card: desktopQuery(request.url.query, "card")
+                )
+            }
         }
-        agentApi.get("integrations", "marketplace") { request -> Response in
-            routeResponse(services.emailAccounts.agentIntegrationMarketplace(
-                authorization: request.headers[.authorization],
-                query: desktopQuery(request.url.query, "query"),
-                limit: desktopQuery(request.url.query, "limit")
-            ))
+        agentApi.get("integrations", "marketplace") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentIntegrationApps.agentIntegrationMarketplace(
+                    authorization: request.headers[.authorization],
+                    query: desktopQuery(request.url.query, "query"),
+                    limit: desktopQuery(request.url.query, "limit")
+                )
+            }
         }
         agentApi.post("integrations", "login") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentIntegrationLogin(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentIntegrationApps.agentIntegrationLogin(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         agentApi.post("integrations", "token") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentIntegrationToken(
@@ -565,17 +581,21 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.get("messages", ":messageId", "mention-deliveries") { request -> Response in
-            routeResponse(services.emailAccounts.agentMentionDeliveries(
-                authorization: request.headers[.authorization],
-                messageRef: request.parameters.get("messageId") ?? ""
-            ))
+        agentApi.get("messages", ":messageId", "mention-deliveries") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentMessageLookup.agentMentionDeliveries(
+                    authorization: request.headers[.authorization],
+                    messageRef: request.parameters.get("messageId") ?? ""
+                )
+            }
         }
-        agentApi.get("messages", ":messageId", "resolve") { request -> Response in
-            routeResponse(services.emailAccounts.agentMessageResolve(
-                authorization: request.headers[.authorization],
-                messageRef: request.parameters.get("messageId") ?? ""
-            ))
+        agentApi.get("messages", ":messageId", "resolve") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentMessageLookup.agentMessageResolve(
+                    authorization: request.headers[.authorization],
+                    messageRef: request.parameters.get("messageId") ?? ""
+                )
+            }
         }
         agentApi.get("search") { request async throws -> Response in
             try await respond {

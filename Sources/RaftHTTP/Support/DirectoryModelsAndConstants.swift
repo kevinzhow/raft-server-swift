@@ -968,21 +968,6 @@ extension EmailLoginDirectory {
         public var lastAt: Date
     }
 
-    enum WhenToUseError: Error {
-        case tooLong
-        case notSingleLine
-        case bareScopedPackage
-
-        var message: String {
-            switch self {
-            case .tooLong: return "whenToUse must be at most 160 characters"
-            case .notSingleLine: return "whenToUse must be a single line without control characters"
-            case .bareScopedPackage:
-                return "whenToUse must not contain a bare scoped package name like @scope/pkg; wrap it in backticks like `@scope/pkg`"
-            }
-        }
-    }
-
     // MARK: Statics
 
     public static let termsVersion = "2026-05-12"
@@ -1089,8 +1074,6 @@ extension EmailLoginDirectory {
     ]
 
     static let scopeAttestationMaxChars = 16 * 1024
-
-    static let attachmentCommentsDisabledReply = json(403, "{\"error\":\"Attachment comments are not enabled on this server\",\"code\":\"attachment_comments_disabled\"}")
 
     static let validTaskStatuses: Set<String> = ["todo", "in_progress", "in_review", "done", "cancelled"]
 
