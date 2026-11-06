@@ -3,10 +3,7 @@ import Foundation
 
 extension EmailLoginDirectory {
     public func mintAccessTokenForTesting(userId: String) -> String {
-        lock.lock()
-        let token = openSessionLocked(userId: userId).accessToken
-        lock.unlock()
-        return token
+        authProfileStore.openSession(userId: userId).accessToken
     }
 
     public func addAuthIdentityForTesting(userId: String, provider: String, providerEmail: String) {

@@ -64,21 +64,6 @@ final class FeedbackStore: @unchecked Sendable {
         set { state.agentReminderSurfaceChannels = newValue }
     }
 
-    var productFeedbackReporterSessionCache: [String: (token: String, expiresAt: Date)] {
-        get { state.productFeedbackReporterSessionCache }
-        set { state.productFeedbackReporterSessionCache = newValue }
-    }
-
-    var productFeedbackRouteBindingSuccesses: [String: Date] {
-        get { state.productFeedbackRouteBindingSuccesses }
-        set { state.productFeedbackRouteBindingSuccesses = newValue }
-    }
-
-    var productFeedbackRouteCommitments: [String: Data] {
-        get { state.productFeedbackRouteCommitments }
-        set { state.productFeedbackRouteCommitments = newValue }
-    }
-
     var productFeedbackRouteVerifiedCommitments: Set<String> {
         get { state.productFeedbackRouteVerifiedCommitments }
         set { state.productFeedbackRouteVerifiedCommitments = newValue }
@@ -286,5 +271,87 @@ extension FeedbackStore {
         lock.lock()
         defer { lock.unlock() }
         storage.appAgentReminderLedger[ledgerKey] = messageId
+    }
+}
+
+// MARK: - Hands route binding and reporter sessions
+
+extension FeedbackStore {
+    /// The outcome of one route-binding cache probe.
+    enum RouteBindingCheck: Equatable {
+        /// A different root commitment is already recorded for the label.
+        case commitmentMismatch
+        /// A live success for the cache key is cached.
+        case cached
+        /// Nothing cached: the caller must bind upstream.
+        case miss
+    }
+
+    /// The commitment compare-or-insert and the cached-success lookup are one
+    /// critical section, so two concurrent first requests cannot both record
+    /// different commitments for the same label.
+    func checkRouteBinding(
+        commitmentLabel: String,
+        commitment: Data,
+        cacheKey: String,
+        now: Date
+    ) -> RouteBindingCheck {
+        lock.lock()
+        defer { lock.unlock() }
+        if let existing = storage.productFeedbackRouteCommitments[commitmentLabel] {
+            if existing != commitment { return .commitmentMismatch }
+        } else {
+            storage.productFeedbackRouteCommitments[commitmentLabel] = commitment
+        }
+        if let expiresAt = storage.productFeedbackRouteBindingSuccesses[cacheKey], expiresAt > now {
+            return .cached
+        }
+        return .miss
+    }
+
+    func recordRouteBindingSuccess(cacheKey: String, expiresAt: Date) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.productFeedbackRouteBindingSuccesses[cacheKey] = expiresAt
+    }
+
+    /// The cached reporter session token that stays valid past `validAfter`.
+    func cachedReporterSession(cacheKey: String, validAfter: Date) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let cached = storage.productFeedbackReporterSessionCache[cacheKey],
+              cached.expiresAt > validAfter
+        else { return nil }
+        return cached.token
+    }
+
+    func storeReporterSession(cacheKey: String, token: String, expiresAt: Date) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.productFeedbackReporterSessionCache[cacheKey] = (token, expiresAt)
+    }
+
+    /// Drops the cached route-binding successes and verified commitments; the
+    /// recorded commitments survive unless `includingCommitments` is set.
+    func clearRouteBindingCache(includingCommitments: Bool = false, includingReporterSessions: Bool = false) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.productFeedbackRouteBindingSuccesses.removeAll()
+        storage.productFeedbackRouteVerifiedCommitments.removeAll()
+        if includingCommitments { storage.productFeedbackRouteCommitments.removeAll() }
+        if includingReporterSessions { storage.productFeedbackReporterSessionCache.removeAll() }
+    }
+
+    func clearReporterSessions() {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.productFeedbackReporterSessionCache.removeAll()
+    }
+
+    /// Labels committed by route binding, sorted.
+    func routeCommitmentLabels() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.productFeedbackRouteCommitments.keys.sorted()
     }
 }

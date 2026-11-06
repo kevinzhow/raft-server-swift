@@ -101,13 +101,13 @@ struct AgentSendDependencies: Sendable {
                 source.assistantOwnerFor(agentId: agentId, serverId: serverId)
             },
             threadByAnchor: { parentId, anchorMessageId in
-                source.agentHistoryThread(parentId: parentId, anchorMessageId: anchorMessageId)
+                source.serversAndChannelsStore.historyThread(parentId: parentId, anchorMessageId: anchorMessageId)
             },
             threadById: { parentId, suffix in
-                source.agentHistoryThreadById(parentId: parentId, suffix: suffix)
+                source.serversAndChannelsStore.historyThread(parentId: parentId, idPrefix: suffix)
             },
             threadByAnchorPrefix: { parentId, suffix in
-                source.agentHistoryThreadByAnchorPrefix(parentId: parentId, suffix: suffix)
+                source.serversAndChannelsStore.historyThread(parentId: parentId, anchorPrefix: suffix)
             },
             addPostableChannel: { serverId, channelId, memberId, kind, parentChannelId, parentMessageId, name in
                 source.addPostableChannel(

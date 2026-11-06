@@ -133,15 +133,6 @@ extension EmailLoginDirectory {
         return formatter.string(from: date)
     }
 
-    static func taskStatusFilter(_ rawQuery: String?) -> TaskStatusFilterResult {
-        switch TasksAndLabsService.statusFilter(rawQuery) {
-        case .valid(let value):
-            return .valid(value)
-        case .invalid:
-            return .invalid(Self.json(400, TasksAndLabsError.invalidTaskStatus.publishedErrorBody.render()))
-        }
-    }
-
     static func appConfigDefaults() -> [String: Any] {
         ["enabled": true, "threshold_bytes": 65536, "interval_seconds": 3600]
     }
@@ -315,27 +306,6 @@ extension EmailLoginDirectory {
         return (channelId, taskNumber)
     }
 
-    static func canonicalJSON(_ value: Any) -> Any {
-        if let dict = value as? [String: Any] {
-            var result: [String: Any] = [:]
-            for (key, child) in dict {
-                if key == "idempotencyKey" { continue }
-                if let bool = child as? Bool, bool == false { continue }
-                if child is NSNull { continue }
-                result[key] = canonicalJSON(child)
-            }
-            return result
-        }
-        if let array = value as? [Any] { return array.map(canonicalJSON) }
-        return value
-    }
-
-    static func agentApiRequestFingerprint(_ object: [String: Any]) -> String {
-        let canonical = canonicalJSON(object)
-        let data = (try? JSONSerialization.data(withJSONObject: canonical, options: [.sortedKeys])) ?? Data()
-        return sha256Hex(String(decoding: data, as: UTF8.self))
-    }
-
     static func feedbackTimingHeader(elapsedMs: Double, upstreamHeaders: [String: String]) -> String {
         let clamped = min(max(elapsedMs, 0), 60_000)
         var parts = [String(format: "raft_feedback_hands;dur=%.1f", clamped)]
@@ -344,7 +314,7 @@ extension EmailLoginDirectory {
         for piece in raw.split(separator: ",") {
             let value = piece.trimmingCharacters(in: .whitespaces)
             guard let match = value.wholeMatch(of: /^([a-z_]+);dur=(\d+(?:\.\d+)?)$/),
-                  feedbackTimingNames.contains(String(match.1)),
+                  FeedbackService.feedbackTimingNames.contains(String(match.1)),
                   !seen.contains(String(match.1)),
                   let duration = Double(match.2), duration >= 0, duration <= 60_000
             else { continue }

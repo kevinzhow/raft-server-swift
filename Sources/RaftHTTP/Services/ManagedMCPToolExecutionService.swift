@@ -1,48 +1,168 @@
-import Crypto
 import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
 
-/// Saved messages, direct channels and read-receipt tool surfaces.
-/// Migrated verbatim from the second half of `EmailLogin+ManagedMCP2.swift`.
-///
-/// The handlers stay on `EmailLoginDirectory`, which owns the lock and the
-/// domain ledgers. This type is the named, `Sendable` handle a route can hold
-/// instead of reaching for the composition root; it carries no state of its own.
-public struct ManagedMCPToolExecutionService: Sendable {
-    public let directory: EmailLoginDirectory
+// MARK: - Injected dependencies
 
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
+/// Every cross-domain decision the read-state service needs, as injected
+/// closures. The channel rows, read cursors and read-receipt flags are the
+/// stores the service owns; the session lookup, the realtime emitter and the
+/// agent task credential/channel resolution belong to domains that have not
+/// migrated (or whose service another slice owns). `live(directory:)` wires them
+/// to the existing directory entry points at the composition root.
+struct ManagedMCPToolExecutionDependencies: Sendable {
+    var sessionUserId: @Sendable (String?) -> String?
+    var emitRealtime: @Sendable (_ room: String, _ event: String, _ payload: String?) -> Void
+    var taskWriter: @Sendable (_ authorization: String?) -> (agentId: String, serverId: String)?
+    var taskChannel: @Sendable (_ serverId: String, _ agentId: String, _ reference: String) -> String?
+    var agentWriter: @Sendable (_ authorization: String?) -> OAuthLedger.AgentRuntimeInfo?
+    var now: @Sendable () -> Date
+
+    static func live(directory source: EmailLoginDirectory) -> ManagedMCPToolExecutionDependencies {
+        ManagedMCPToolExecutionDependencies(
+            sessionUserId: { source.sessionUserId(authorization: $0) },
+            emitRealtime: { room, event, payload in source.emitRealtime(room, event, payload) },
+            taskWriter: { source.actionCardExecute.taskWriter(authorization: $0, legacyAgentId: nil) },
+            taskChannel: { serverId, agentId, reference in
+                source.actionCardExecute.taskChannel(serverId: serverId, agentId: agentId, reference: reference)
+            },
+            agentWriter: { authorization in
+                source.agentWriterAndRole(authorization: authorization, legacyAgentId: nil, scopes: [])?.agent
+            },
+            now: { Date() }
+        )
     }
 }
 
-extension EmailLoginDirectory {
-    public func checkSavedMessages(authorization: String?, serverId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+// MARK: - Service
+
+/// Saved messages, direct channels, channel detail, read state and the agent
+/// channel archive/mute surface.
+///
+/// The service owns the orchestration and returns the published `Codable` /
+/// `JSONBodyConvertible` DTOs; every refusal is a `ChannelMembershipError` (the
+/// shared channel refusals), a `FeedbackLocatorError` (a missing agent
+/// capability) or a `ManagedMCPToolExecutionError`. It builds no HTTP reply.
+/// The read-state writes are `MessagesAndThreadsStore` critical sections (the
+/// frontier comparison and version bump, the agent cursor advance, the
+/// Done-inbox stamp) and the DM row is one `ServersAndChannelsStore` write.
+public struct ManagedMCPToolExecutionService: Sendable {
+    private let channels: ServersAndChannelsStore
+    private let messages: MessagesAndThreadsStore
+    private let agents: AgentsRuntimeStore
+    private let profiles: AuthProfileStore
+    private let notifications: NotificationsStore
+    private let inboxFacts: InboxFactStore
+    private let oauth: OAuthLedger
+    private let feedbackLocators: FeedbackLocatorService
+    private let dependencies: ManagedMCPToolExecutionDependencies
+
+    init(directory source: EmailLoginDirectory) {
+        self.init(
+            channels: source.serversAndChannelsStore,
+            messages: source.messagesAndThreadsStore,
+            agents: source.agentsRuntimeStore,
+            profiles: source.authProfileStore,
+            notifications: source.notificationsStore,
+            inboxFacts: source.inboxFactStore,
+            oauth: source.oauth,
+            feedbackLocators: FeedbackLocatorService(directory: source),
+            dependencies: .live(directory: source)
+        )
+    }
+
+    init(
+        channels: ServersAndChannelsStore,
+        messages: MessagesAndThreadsStore,
+        agents: AgentsRuntimeStore,
+        profiles: AuthProfileStore,
+        notifications: NotificationsStore,
+        inboxFacts: InboxFactStore,
+        oauth: OAuthLedger,
+        feedbackLocators: FeedbackLocatorService,
+        dependencies: ManagedMCPToolExecutionDependencies
+    ) {
+        self.channels = channels
+        self.messages = messages
+        self.agents = agents
+        self.profiles = profiles
+        self.notifications = notifications
+        self.inboxFacts = inboxFacts
+        self.oauth = oauth
+        self.feedbackLocators = feedbackLocators
+        self.dependencies = dependencies
+    }
+
+    private var visibility: ManagedMCPChannelVisibility {
+        ManagedMCPChannelVisibility(oauth: oauth, channels: channels)
+    }
+
+    private func requireSession(_ authorization: String?) throws -> String {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ManagedMCPToolExecutionError.unauthorized
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let messageIds = object["messageIds"] as? [String]
-        else {
-            return Self.json(400, "{\"error\":\"Invalid saved check request\"}")
+        return userId
+    }
+
+    private func requireMember(serverId: String, userId: String) throws -> String {
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw ChannelMembershipError.notAMember
         }
-        let saved = Set(oauth.savedMessages(userId: userId).map(\.messageId))
-        lock.lock()
+        return role
+    }
+
+    private func requireNotArchived(_ channelId: String) throws {
+        guard oauth.channelArchivedAt(id: channelId) == nil else {
+            throw ChannelMembershipError.channelArchived
+        }
+    }
+
+    /// The agent credential must carry the capability; a missing one is the
+    /// published `capability_not_authorized` refusal.
+    private func requireCapability(_ authorization: String?, _ capability: String) throws {
+        if case .denied(let denied) = feedbackLocators.capabilityDecision(
+            authorization: authorization,
+            capability: capability
+        ) {
+            throw FeedbackLocatorError.capabilityNotAuthorized(capability: denied)
+        }
+    }
+
+    private func isoFractional(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+
+    // MARK: - POST /api/channels/saved/check
+
+    public func checkSavedMessages(
+        authorization: String?,
+        serverId: String,
+        body: SavedCheckRequest?
+    ) throws -> SavedCheckResponse {
+        let userId = try requireSession(authorization)
+        guard let messageIds = body?.messageIds else {
+            throw ManagedMCPToolExecutionError.invalidSavedCheckRequest
+        }
+        var savedEntries: [String: OAuthLedger.SavedMessageInfo] = [:]
+        for entry in oauth.savedMessages(userId: userId) where savedEntries[entry.messageId] == nil {
+            savedEntries[entry.messageId] = entry
+        }
+        let postable = channels.state.postableChannels
         let visible = messageIds.filter { id in
-            guard saved.contains(id) else { return false }
-            guard let entry = oauth.savedMessages(userId: userId).first(where: { $0.messageId == id }) else { return false }
-            if let scope = postableChannels[entry.channelId] {
+            guard let entry = savedEntries[id] else { return false }
+            if let scope = postable[entry.channelId] {
                 guard scope.serverId == serverId, scope.deletedAt == nil, !scope.archived else { return false }
                 return scope.kind == "channel" || scope.memberIds.contains(userId)
             }
             return true
         }
-        lock.unlock()
-        let ids = visible.map { jsonString($0) }.joined(separator: ",")
-        return Self.json(200, "{\"savedIds\":[\("\(ids)")]}")
+        return SavedCheckResponse(savedIds: visible)
     }
+
+    // MARK: - GET /api/channels/saved
 
     public func listSavedMessages(
         authorization: String?,
@@ -52,28 +172,22 @@ extension EmailLoginDirectory {
         sort: String?,
         limit: Int,
         offset: Int
-    ) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
-        var entries = oauth.savedMessages(userId: userId)
-        lock.lock()
-        entries = entries.filter { entry in
-            if let scope = postableChannels[entry.channelId] {
+    ) throws -> SavedMessagesResponse {
+        let userId = try requireSession(authorization)
+        _ = try requireMember(serverId: serverId, userId: userId)
+        let postable = channels.state.postableChannels
+        var entries = oauth.savedMessages(userId: userId).filter { entry in
+            if let scope = postable[entry.channelId] {
                 guard scope.serverId == serverId, scope.deletedAt == nil, !scope.archived else { return false }
                 if scope.kind == "channel" { return true }
                 return scope.memberIds.contains(userId)
             }
-            if let parentChannelId = entry.parentChannelId, let parent = postableChannels[parentChannelId] {
+            if let parentChannelId = entry.parentChannelId, let parent = postable[parentChannelId] {
                 guard parent.serverId == serverId, parent.deletedAt == nil, !parent.archived else { return false }
                 return parent.kind == "channel" || parent.memberIds.contains(userId)
             }
             return true
         }
-        lock.unlock()
         if let channelId, !channelId.isEmpty {
             entries = entries.filter { $0.channelId == channelId || $0.parentChannelId == channelId }
         }
@@ -91,70 +205,74 @@ extension EmailLoginDirectory {
         }
         let total = entries.count
         let page = Array(entries.dropFirst(max(0, offset)).prefix(max(0, limit)))
-        let rows = page.map { entry -> String in
-            let parentChannel = entry.parentChannelId.map { jsonString($0) } ?? "null"
-            let parentMessage = entry.parentMessageId.map { jsonString($0) } ?? "null"
-            let preview = entry.parentMessagePreview.map { jsonString($0) } ?? "null"
-            return "{\"messageId\":\(jsonString(entry.messageId)),\"channelId\":\(jsonString(entry.channelId)),\"channelType\":\(jsonString(entry.channelType)),\"content\":\(jsonString(entry.content)),\"parentChannelId\":\(parentChannel),\"parentMessageId\":\(parentMessage),\"parentMessagePreview\":\(preview),\"replyCount\":\(entry.replyCount)}"
-        }.joined(separator: ",")
-        return Self.json(200, "{\"saved\":[\("\(rows)")],\"total\":\(total),\"hasMore\":\(offset + page.count < total)}")
+        return SavedMessagesResponse(
+            saved: page.map {
+                SavedMessageRowDTO(
+                    messageId: $0.messageId,
+                    channelId: $0.channelId,
+                    channelType: $0.channelType,
+                    content: $0.content,
+                    parentChannelId: $0.parentChannelId,
+                    parentMessageId: $0.parentMessageId,
+                    parentMessagePreview: $0.parentMessagePreview,
+                    replyCount: $0.replyCount
+                )
+            },
+            total: total,
+            hasMore: offset + page.count < total
+        )
     }
 
-    public func setAllChannelVisibility(authorization: String?, serverId: String, visible: Bool) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
-        guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
-        }
+    // MARK: - POST /api/channels/system/all/hide|restore
+
+    public func setAllChannelVisibility(
+        authorization: String?,
+        serverId: String,
+        visible: Bool
+    ) throws -> AllChannelVisibilityResponse {
+        let userId = try requireSession(authorization)
+        let role = try requireMember(serverId: serverId, userId: userId)
+        guard role == "owner" || role == "admin" else { throw ChannelMembershipError.forbidden }
         guard let allChannelId = oauth.allChannelId(serverId: serverId) else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+            throw ChannelMembershipError.channelNotFound
         }
-        oauth.setChannelType(id: allChannelId, type: visible ? "channel" : "private")
-        return Self.json(200, "{\"id\":\(jsonString(allChannelId)),\"visible\":\(visible)}")
+        _ = oauth.setChannelType(id: allChannelId, type: visible ? "channel" : "private")
+        return AllChannelVisibilityResponse(id: allChannelId, visible: visible)
     }
 
-    public func createDirectChannelRoute(authorization: String?, serverId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
-            return Self.json(400, "{\"error\":\"Invalid DM peer\"}")
-        }
-        if let agentId = object["agentId"] as? String {
+    // MARK: - POST /api/channels/dm
+
+    public func createDirectChannel(
+        authorization: String?,
+        serverId: String,
+        body: DirectChannelRequest?
+    ) throws -> DirectChannelResponse {
+        let userId = try requireSession(authorization)
+        _ = try requireMember(serverId: serverId, userId: userId)
+        guard let body else { throw ManagedMCPToolExecutionError.invalidDirectMessagePeer }
+        if let agentId = body.agentId {
             guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == serverId else {
-                return Self.json(404, "{\"error\":\"Agent not found in this server\"}")
+                throw ManagedMCPToolExecutionError.agentNotFoundInServer
             }
             let channelId = oauth.createDirectChannel(serverId: serverId, firstUserId: userId, secondUserId: agentId)
             oauth.addChannelAgent(channelId: channelId, agentId: agentId)
-            lock.lock()
-            postableChannels[channelId] = PostableChannel(serverId: serverId, memberIds: [userId, agentId], kind: "dm", name: "dm")
-            lock.unlock()
-            emitRealtime("channel:\(channelId)", "dm:new", "{\"channelId\":\(jsonString(channelId))}")
-            emitRealtime("user:\(userId)", "dm:new", "{\"channelId\":\(jsonString(channelId))}")
-            return Self.json(200, "{\"id\":\(jsonString(channelId)),\"type\":\"dm\",\"activityMuteSupported\":false,\"peerId\":\(jsonString(agentId)),\"peerType\":\"agent\"}")
+            channels.upsertDirectChannel(serverId: serverId, channelId: channelId, memberIds: [userId, agentId])
+            let payload = OrderedJSON.object([OrderedJSONField("channelId", channelId)]).render()
+            dependencies.emitRealtime("channel:\(channelId)", "dm:new", payload)
+            dependencies.emitRealtime("user:\(userId)", "dm:new", payload)
+            return DirectChannelResponse(id: channelId, peerId: agentId, peerType: "agent")
         }
-        guard let peerId = object["userId"] as? String,
-              oauth.memberRole(serverId: serverId, userId: peerId) != nil
-        else {
-            return Self.json(400, "{\"error\":\"Invalid DM peer\"}")
+        guard let peerId = body.userId, oauth.memberRole(serverId: serverId, userId: peerId) != nil else {
+            throw ManagedMCPToolExecutionError.invalidDirectMessagePeer
         }
         let existingDm = oauth.channelsForServer(serverId: serverId, userId: userId).first { channel in
             channel.type == "dm"
                 && oauth.channelHumanIds(channelId: channel.id).contains(userId)
                 && oauth.channelHumanIds(channelId: channel.id).contains(peerId)
         }
-        lock.lock()
-        let hiddenDirectory = hideHumansFromMembers[serverId] == true
-        lock.unlock()
+        let hiddenDirectory = channels.hideHumansFromMembers[serverId] == true
         if existingDm == nil, hiddenDirectory, peerId != userId {
-            return Self.json(404, "{\"error\":\"DM target not found\"}")
+            throw ManagedMCPToolExecutionError.directMessageTargetNotFound
         }
         let channelId = oauth.createDirectChannel(serverId: serverId, firstUserId: userId, secondUserId: peerId)
         oauth.addChannelHuman(channelId: channelId, userId: userId)
@@ -166,24 +284,20 @@ extension EmailLoginDirectory {
                 oauth.setSidebarOrder(serverId: serverId, userId: peerId, order: order)
             }
         }
-        lock.lock()
-        postableChannels[channelId] = PostableChannel(serverId: serverId, memberIds: [userId, peerId], kind: "dm", name: "dm")
-        lock.unlock()
-        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"type\":\"dm\",\"activityMuteSupported\":false,\"peerId\":\(jsonString(peerId)),\"peerType\":\"user\"}")
+        channels.upsertDirectChannel(serverId: serverId, channelId: channelId, memberIds: [userId, peerId])
+        return DirectChannelResponse(id: channelId, peerId: peerId, peerType: "user")
     }
 
-    public func listDirectChannels(authorization: String?, serverId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let rows = oauth.channelsForServer(serverId: serverId, userId: userId)
+    // MARK: - GET /api/channels/dm
+
+    public func listDirectChannels(authorization: String?, serverId: String) throws -> DirectChannelListResponse {
+        let userId = try requireSession(authorization)
+        _ = try requireMember(serverId: serverId, userId: userId)
+        let rows = messages.humanMessageRows
+        let accounts = profiles.accounts
+        let list = oauth.channelsForServer(serverId: serverId, userId: userId)
             .filter { $0.type == "dm" }
-            .compactMap { channel -> String? in
+            .compactMap { channel -> DirectChannelListRowDTO? in
                 let agentIds = oauth.channelAgentIds(channelId: channel.id)
                 let humanIds = oauth.channelHumanIds(channelId: channel.id)
                 let peerId: String
@@ -201,11 +315,7 @@ extension EmailLoginDirectory {
                     peerId = userId
                     peerType = "self"
                 }
-                let last = channel.lastMessageAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
-                lock.lock()
-                let lastRow = humanMessageRows.last { $0.channelId == channel.id }
-                lock.unlock()
-                let preview = lastRow.map { jsonString(String($0.content.prefix(120))) } ?? "null"
+                let lastRow = rows.last { $0.channelId == channel.id }
                 let senderName: String
                 if let lastRow, lastRow.senderId != "system" {
                     if lastRow.senderType == "agent" {
@@ -215,371 +325,331 @@ extension EmailLoginDirectory {
                             senderName = ""
                         }
                     } else {
-                        lock.lock()
                         let account = accounts.values.first { $0.id == lastRow.senderId }
-                        lock.unlock()
                         senderName = account.map { ($0.displayName ?? "").isEmpty ? $0.name : ($0.displayName ?? $0.name) } ?? ""
                     }
                 } else {
                     senderName = ""
                 }
-                let senderJSON = senderName.isEmpty ? "null" : jsonString(senderName)
-                return "{\"id\":\(jsonString(channel.id)),\"type\":\"dm\",\"joined\":\(channel.joined),\"activityMuteSupported\":false,\"peerId\":\(jsonString(peerId)),\"peerType\":\(jsonString(peerType)),\"lastMessageAt\":\(last),\"lastMessagePreview\":\(preview),\"lastMessageSenderName\":\(senderJSON)}"
+                return DirectChannelListRowDTO(
+                    id: channel.id,
+                    joined: channel.joined,
+                    peerId: peerId,
+                    peerType: peerType,
+                    lastMessageAt: channel.lastMessageAt.map(isoFractional),
+                    lastMessagePreview: lastRow.map { String($0.content.prefix(120)) },
+                    lastMessageSenderName: senderName.isEmpty ? nil : senderName
+                )
             }
-            .joined(separator: ",")
-        return Self.json(200, "[\(rows)]")
+        return DirectChannelListResponse(rows: list)
     }
 
-    public func enableReadReceiptsForServer(_ serverId: String) {
-        lock.lock()
-        readReceiptsServers.insert(serverId)
-        lock.unlock()
-    }
+    // MARK: - Read receipts
 
-    public func emitAgentScopeRead(serverId: String, channelId: String, agentId: String, maxReadSeq: Int) {
-        lock.lock()
-        let enabled = readReceiptsServers.contains(serverId)
-        let peer = oauth.channelAgentIds(channelId: channelId).contains(agentId)
-        lock.unlock()
-        guard enabled, peer else { return }
-        let payload = "{\"scopeId\":\(jsonString(channelId)),\"peerKind\":\"agent\",\"peerId\":\(jsonString(agentId)),\"maxReadSeq\":\(maxReadSeq)}"
-        emitRealtime("channel:\(channelId)", "scope_read:updated", payload)
-    }
-
+    /// Whether read receipts are enabled for the server.
     public func readReceiptsEnabled(serverId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return readReceiptsServers.contains(serverId)
+        channels.readReceiptsEnabled(serverId: serverId)
     }
 
-    public func agentReadCursor(channelId: String, agentId: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return agentChannelReadCursors["\(channelId)\n\(agentId)"]?.seq ?? 0
+    /// Publishes `scope_read:updated` for an agent's read of a channel it is a
+    /// member of, when the server has read receipts enabled.
+    public func emitAgentScopeRead(serverId: String, channelId: String, agentId: String, maxReadSeq: Int) {
+        let enabled = channels.readReceiptsEnabled(serverId: serverId)
+        let peer = oauth.channelAgentIds(channelId: channelId).contains(agentId)
+        guard enabled, peer else { return }
+        let payload = OrderedJSON.object([
+            OrderedJSONField("scopeId", channelId),
+            OrderedJSONField("peerKind", "agent"),
+            OrderedJSONField("peerId", agentId),
+            OrderedJSONField("maxReadSeq", maxReadSeq),
+        ]).render()
+        dependencies.emitRealtime("channel:\(channelId)", "scope_read:updated", payload)
     }
 
-    public func humanReadCursor(channelId: String, userId: String) -> Int {
-        return oauth.channelReadCursor(channelId: channelId, userId: userId)
+    /// Whether Activity from this message is suppressed for the agent by an
+    /// active channel mute (a personal @mention always arrives). The predicate
+    /// is `MessagesAndThreadsStore.agentMessageSuppressed`, shared with the
+    /// agent inbox; this only supplies the mute prefs and the stored mentions.
+    func agentMessageSuppressed(_ message: StoredHumanMessage, agentId: String) -> Bool {
+        MessagesAndThreadsStore.agentMessageSuppressed(
+            message,
+            agentId: agentId,
+            prefs: oauth.notificationPrefs(channelId: message.channelId, userId: agentId),
+            mentions: messages.storedMentions
+        )
     }
 
-    func agentMessageSuppressedLocked(_ message: StoredHumanMessage, agentId: String) -> Bool {
-        let prefs = oauth.notificationPrefs(channelId: message.channelId, userId: agentId)
-        guard prefs.activityMuted, let from = prefs.muteFromSeq, message.seq >= from else {
-            return false
+    // MARK: - POST /internal/agent-api/channels/archive|unarchive
+
+    /// The mute is keyed by the agent receiver, not the channel, and only
+    /// channel members may set it.
+    public func agentChannelArchive(
+        authorization: String?,
+        body: AgentChannelArchiveRequest?,
+        archive: Bool
+    ) throws -> AgentChannelArchiveResponse {
+        try requireCapability(authorization, "channels")
+        guard let writer = dependencies.taskWriter(authorization) else {
+            throw ChannelMembershipError.agentTokenInvalid
         }
-        let mentioned = storedMentions.contains {
-            $0.messageId == message.id && $0.targetType == "agent" && $0.targetId == agentId
-        }
-        return !mentioned
-    }
-
-    /// `POST /internal/agent-api/channels/:id/mute|unmute`. The mute is keyed by
-    /// the agent receiver, not the channel, and only channel members may set it.
-    public func agentChannelArchive(authorization: String?, body: String, archive: Bool) -> HTTPReply {
-        if let denial = agentCapabilityDenial(authorization, required: "channels") { return denial }
-        guard let writer = agentTaskWriter(authorization, legacyAgentId: nil) else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
-        }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let target = object["target"] as? String,
-              let channelId = agentTaskChannel(serverId: writer.serverId, agentId: writer.agentId, reference: target)
+        guard let target = body?.target,
+              let channelId = dependencies.taskChannel(writer.serverId, writer.agentId, target)
         else {
-            return Self.json(400, "{\"error\":\"Invalid channel target\"}")
+            throw ManagedMCPToolExecutionError.invalidChannelTarget
         }
-        lock.lock()
-        postableChannels[channelId]?.archived = archive
-        lock.unlock()
-        return Self.json(200, "{\"ok\":true,\"archived\":\(archive)}")
+        channels.setArchivedFlag(channelId: channelId, archived: archive)
+        return AgentChannelArchiveResponse(archived: archive)
     }
 
-    public func agentSetChannelMute(authorization: String?, channelId: String, muted: Bool) -> HTTPReply {
-        if let denial = agentCapabilityDenial(authorization, required: "channels") { return denial }
-        guard let writer = agentWriterAndRole(authorization: authorization, legacyAgentId: nil, scopes: []),
-              let agent = oauth.agentRuntimeInfo(id: writer.agent.id), !agent.deleted
+    // MARK: - POST /internal/agent-api/channels/:channelId/mute|unmute
+
+    public func agentSetChannelMute(
+        authorization: String?,
+        channelId: String,
+        muted: Bool
+    ) throws -> AgentChannelMuteResponse {
+        try requireCapability(authorization, "channels")
+        guard let writer = dependencies.agentWriter(authorization),
+              let agent = oauth.agentRuntimeInfo(id: writer.id), !agent.deleted
         else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            throw ChannelMembershipError.agentTokenInvalid
         }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == agent.serverId else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+            throw ChannelMembershipError.channelNotFound
         }
-        lock.lock()
-        let isMember = postableChannels[channelId]?.memberIds.contains(agent.id) == true
-            || channelAgentMembers[channelId]?.contains(agent.id) == true
+        let isMember = channels.postableChannel(id: channelId)?.memberIds.contains(agent.id) == true
+            || agents.channelAgentMembers[channelId]?.contains(agent.id) == true
             || oauth.channelAgentIds(channelId: channelId).contains(agent.id)
-        guard isMember else {
-            lock.unlock()
-            return Self.json(403, "{\"error\":\"Agent is not a member of this channel\",\"code\":\"not_channel_member\"}")
-        }
-        let latest = humanMessageRows.filter { $0.channelId == channelId }.map(\.seq).max() ?? 0
-        lock.unlock()
+        guard isMember else { throw ManagedMCPToolExecutionError.agentNotChannelMember }
+        let latest = messages.humanMessageRows.filter { $0.channelId == channelId }.map(\.seq).max() ?? 0
         let state = oauth.setActivityMuted(
             channelId: channelId,
             receiverId: agent.id,
             muted: muted,
             muteFromSeq: muted ? latest + 1 : nil
         )
-        let name = channel.name
-        if muted {
-            let muteFromSeq = state.prefs.muteFromSeq ?? (latest + 1)
-            let attention = "{\"state\":\"muted\",\"unmuteCommand\":\(jsonString("raft channel unmute #\(name)")),\"unmuteApi\":\(jsonString("POST /internal/agent-api/channels/\(channelId)/unmute")),\"stillArrives\":[\"Personal @mentions still arrive.\",\"Direct messages still arrive.\",\"Threads you follow deliver independently.\"],\"threadBoundary\":\(jsonString("Channel mute suppresses ordinary Activity from this channel only. Threads you follow keep delivering independently until you unfollow them.")),\"catchUp\":\(jsonString("Run `raft channel history #\(name)` or GET /internal/agent-api/history to catch up."))}"
-            return Self.json(200, "{\"activityMuted\":true,\"muteFromSeq\":\(muteFromSeq),\"attention\":\(attention)}")
-        }
-        let attention = "{\"state\":\"unmuted\",\"muteCommand\":\(jsonString("raft channel mute #\(name)"))}"
-        return Self.json(200, "{\"activityMuted\":false,\"muteFromSeq\":null,\"attention\":\(attention)}")
+        return AgentChannelMuteResponse(
+            muted: muted,
+            muteFromSeq: muted ? (state.prefs.muteFromSeq ?? (latest + 1)) : nil,
+            channelId: channelId,
+            channelName: channel.name
+        )
     }
 
-    public func systemMessageContents(channelId: String) -> [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return humanMessageRows
-            .filter { $0.channelId == channelId && $0.messageType == "system" }
-            .map(\.content)
-    }
+    // MARK: - GET /api/channels/:channelId
 
-    public func humanMessageSequence(id: String) -> Int? {
-        lock.lock()
-        defer { lock.unlock() }
-        return humanMessageRows.first(where: { $0.id == id })?.seq
-    }
-
-    public func getChannelRoute(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
-        if guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+    public func channelDetail(
+        authorization: String?,
+        serverId: String,
+        channelId: String
+    ) throws -> ChannelDetailResponse {
+        let userId = try requireSession(authorization)
+        _ = try requireMember(serverId: serverId, userId: userId)
+        if visibility.guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
+            throw ChannelMembershipError.channelNotFound
         }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+            throw ChannelMembershipError.channelNotFound
         }
         let type = oauth.channelType(id: channelId) ?? "channel"
         // A thread is visible to whoever can see its parent; a private parent
         // must not leak its child thread's existence or metadata.
         let threadParentId = type == "thread" ? oauth.channelParentChannelId(id: channelId) : nil
-        let canSee = threadParentId.map { channelActorCanSee(channelId: $0, userId: userId) }
-            ?? channelActorCanSee(channelId: channelId, userId: userId)
-        guard canSee else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
-        }
-        lock.lock()
+        let canSee = threadParentId.map { visibility.actorCanSee(channelId: $0, userId: userId) }
+            ?? visibility.actorCanSee(channelId: channelId, userId: userId)
+        guard canSee else { throw ChannelMembershipError.channelNotFound }
+        let snapshot = channels.state
         let joined = channel.name == "all"
-            || postableChannels[channelId]?.memberIds.contains(userId) == true
+            || snapshot.postableChannels[channelId]?.memberIds.contains(userId) == true
             || oauth.channelHumanIds(channelId: channelId).contains(userId)
-        lock.unlock()
-        let supported = type == "channel"
         let info = oauth.channelUnreadInfo(channelId: channelId, userId: userId)
-        lock.lock()
-        let version = channelReadVersions["\(channelId)\n\(userId)"] ?? 0
-        let receiptsEnabled = readReceiptsServers.contains(serverId)
-        let agentIds = oauth.channelAgentIds(channelId: channelId)
-        let peerSeqs = agentIds.map { agentId in
-            (agentId, agentChannelReadCursors["\(channelId)\n\(agentId)"]?.seq ?? 0)
+        let version = messages.channelReadVersion(channelId: channelId, userId: userId)
+        let receiptsEnabled = snapshot.readReceiptsServers.contains(serverId)
+        let peerSeqs = oauth.channelAgentIds(channelId: channelId).map { agentId in
+            (agentId, messages.agentChannelReadSeq(channelId: channelId, agentId: agentId))
         }
-        lock.unlock()
         let serverRole = oauth.memberRole(serverId: serverId, userId: userId) ?? "member"
-        lock.lock()
-        let localRole = channelHumanRoles["\(channelId)\n\(userId)"]
-        let authorityRevision = channelAuthorityRevisions[channelId] ?? 1
-        lock.unlock()
+        let localRole = snapshot.channelHumanRoles["\(channelId)\n\(userId)"]
+        let authorityRevision = snapshot.channelAuthorityRevisions[channelId] ?? 1
         let basis: String? = localRole == "admin" ? "channel_role"
             : ((serverRole == "owner" || serverRole == "admin") ? "server_role" : nil)
-        let channelRole = basis == nil ? "member" : "admin"
         let serverAdmin = serverRole == "owner" || serverRole == "admin"
         let capability = basis != nil
-        let isJoint = jointProjections.contains { $0.localChannelId == channelId }
-        let metadataCap = capability
-        let roleCap = capability
-        let archiveCap = capability && !isJoint
-        let addCap = capability && !isJoint
-        let capsJSON = "{\"editChannelMetadata\":\(metadataCap),\"archiveChannels\":\(archiveCap),\"addChannelMembers\":\(addCap),\"removeChannelMembers\":\(addCap),\"changeChannelMemberRoles\":\(roleCap),\"manageGuestAccess\":\(serverAdmin && !isJoint),\"deleteChannels\":\(serverAdmin),\"changeChannelVisibility\":\(serverAdmin),\"federateChannels\":\(serverAdmin)}"
-        var peersJSON = ""
+        let isJoint = snapshot.jointProjections.contains { $0.localChannelId == channelId }
+        var peerReadState: ChannelDetailResponse.PeerReadState?
         if receiptsEnabled {
             if peerSeqs.count > 50 {
                 var counts: [Int: Int] = [:]
                 for (_, seq) in peerSeqs { counts[seq, default: 0] += 1 }
-                let buckets = counts.keys.sorted().map { seq in
-                    "{\"seq\":\(seq),\"count\":\(counts[seq] ?? 0)}"
-                }.joined(separator: ",")
-                peersJSON = ",\"peerReadSummary\":{\"peerCount\":\(peerSeqs.count),\"readCountAtSeq\":[\("\(buckets)")]}"
+                peerReadState = .summary(
+                    peerCount: peerSeqs.count,
+                    readCountAtSeq: counts.keys.sorted().map { (seq: $0, count: counts[$0] ?? 0) }
+                )
             } else {
-                let peers = peerSeqs.map { agentId, seq in
-                    "{\"peerKind\":\"agent\",\"peerId\":\(jsonString(agentId)),\"maxReadSeq\":\(seq)}"
-                }.joined(separator: ",")
-                peersJSON = ",\"peerReadStates\":[\("\(peers)")]"
+                peerReadState = .states(peerSeqs.map { (peerId: $0.0, maxReadSeq: $0.1) })
             }
         }
         let displayPrefs = oauth.channelDisplayPrefs(channelId: channelId, userId: userId)
-        var dmFields = ""
+        var directPeer: ChannelDetailResponse.DirectPeer?
         if type == "dm" {
-            lock.lock()
-            let peerId = postableChannels[channelId]?.memberIds.first { $0 != userId }
-            lock.unlock()
+            let peerId = snapshot.postableChannels[channelId]?.memberIds.first { $0 != userId }
             if let peerId {
                 if let agent = oauth.agentRuntimeInfo(id: peerId) {
-                    dmFields = ",\"peerType\":\"agent\",\"peerId\":\(jsonString(peerId)),\"peerName\":\(jsonString(agent.name))"
-                } else if let account = accounts.values.first(where: { $0.id == peerId }) {
-                    dmFields = ",\"peerType\":\"human\",\"peerId\":\(jsonString(peerId)),\"peerName\":\(jsonString(account.name))"
+                    directPeer = .init(peerType: "agent", peerId: peerId, peerName: agent.name)
+                } else if let account = profiles.accounts.values.first(where: { $0.id == peerId }) {
+                    directPeer = .init(peerType: "human", peerId: peerId, peerName: account.name)
                 }
             }
         }
-        return Self.json(200, "{\"id\":\(jsonString(channelId)),\"name\":\(jsonString(channel.name)),\"type\":\(jsonString(type)),\"joined\":\(joined)\(dmFields),\"maxReadSeq\":\(info.maxReadSeq),\"readStateVersion\":\(version),\"activityMuteSupported\":\(supported),\"collapseLongMessages\":\(displayPrefs.collapseLongMessages),\"displayPrefsVersion\":\(displayPrefs.prefsVersion),\"channelRole\":\(jsonString(channelRole)),\"channelAdminBasis\":\(basis.map { jsonString($0) } ?? "null"),\"channelAuthorityRevision\":\(authorityRevision),\"channelCapabilities\":\(capsJSON)\(peersJSON)}")
+        return ChannelDetailResponse(
+            id: channelId,
+            name: channel.name,
+            type: type,
+            joined: joined,
+            directPeer: directPeer,
+            maxReadSeq: info.maxReadSeq,
+            readStateVersion: version,
+            activityMuteSupported: type == "channel",
+            collapseLongMessages: displayPrefs.collapseLongMessages,
+            displayPrefsVersion: displayPrefs.prefsVersion,
+            channelRole: basis == nil ? "member" : "admin",
+            channelAdminBasis: basis,
+            channelAuthorityRevision: authorityRevision,
+            capabilities: .init(
+                editChannelMetadata: capability,
+                archiveChannels: capability && !isJoint,
+                addChannelMembers: capability && !isJoint,
+                removeChannelMembers: capability && !isJoint,
+                changeChannelMemberRoles: capability,
+                manageGuestAccess: serverAdmin && !isJoint,
+                deleteChannels: serverAdmin,
+                changeChannelVisibility: serverAdmin,
+                federateChannels: serverAdmin
+            ),
+            peerReadState: peerReadState
+        )
     }
 
-    public func channelDisplaySettings(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
+    // MARK: - GET|PATCH /api/channels/:channelId/message-display-settings
+
+    private func requireDisplayPrefsAccess(userId: String, serverId: String, channelId: String) throws {
         if oauth.channelType(id: channelId) == "thread" {
-            return Self.json(400, "{\"error\":\"Display preferences are stored on the parent channel\"}")
+            throw ManagedMCPToolExecutionError.displayPreferencesOnParentChannel
         }
         guard oauth.canAccessChannelPrefs(channelId: channelId, userId: userId, serverId: serverId) else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+            throw ChannelMembershipError.channelNotFound
         }
+    }
+
+    public func channelDisplaySettings(
+        authorization: String?,
+        serverId: String,
+        channelId: String
+    ) throws -> ChannelDisplaySettingsResponse {
+        let userId = try requireSession(authorization)
+        _ = try requireMember(serverId: serverId, userId: userId)
+        try requireDisplayPrefsAccess(userId: userId, serverId: serverId, channelId: channelId)
         let prefs = oauth.channelDisplayPrefs(channelId: channelId, userId: userId)
-        return Self.json(200, "{\"collapseLongMessages\":\(prefs.collapseLongMessages),\"prefsVersion\":\(prefs.prefsVersion)}")
+        return ChannelDisplaySettingsResponse(
+            collapseLongMessages: prefs.collapseLongMessages,
+            prefsVersion: prefs.prefsVersion
+        )
     }
 
-    public func patchChannelDisplaySettings(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
-        if oauth.channelType(id: channelId) == "thread" {
-            return Self.json(400, "{\"error\":\"Display preferences are stored on the parent channel\"}")
-        }
-        guard oauth.canAccessChannelPrefs(channelId: channelId, userId: userId, serverId: serverId) else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
-        }
-        if let reply = archivedChannelReply(channelId) { return reply }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let collapse = object["collapseLongMessages"] as? Bool
-        else {
-            return Self.json(400, "{\"error\":\"collapseLongMessages must be a boolean\"}")
-        }
-        let prefs = oauth.setCollapseLongMessages(channelId: channelId, userId: userId, collapse: collapse)
-        return Self.json(200, "{\"collapseLongMessages\":\(prefs.collapseLongMessages),\"prefsVersion\":\(prefs.prefsVersion)}")
-    }
-
-    public func updateChannelReadState(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
-        if guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
-        }
-        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
-        }
-        lock.lock()
-        let readable = postableChannels[channelId].map { $0.kind == "channel" || $0.memberIds.contains(userId) }
-            ?? (oauth.channelType(id: channelId) == "channel" || oauth.isChannelParticipant(channelId: channelId, userId: userId))
-        lock.unlock()
-        guard readable else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
-        }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let seq = object["seq"] as? Int, seq >= 0
-        else {
-            return Self.json(400, "{\"error\":\"seq must be a non-negative integer\"}")
-        }
-        let key = "\(channelId)\n\(userId)"
-        lock.lock()
-        let info = oauth.channelUnreadInfo(channelId: channelId, userId: userId)
-        let current = max(info.maxReadSeq, channelReadVersions[key] == nil ? 0 : info.maxReadSeq)
-        if seq <= info.maxReadSeq {
-            let version = channelReadVersions[key] ?? 0
-            lock.unlock()
-            return Self.json(200, "{\"ok\":true,\"maxReadSeq\":\(current),\"readStateVersion\":\(version)}")
-        }
-        channelReadVersions[key] = (channelReadVersions[key] ?? 0) + 1
-        let version = channelReadVersions[key] ?? 1
-        lock.unlock()
-        oauth.setChannelReadCursor(channelId: channelId, userId: userId, seq: seq)
-        return Self.json(200, "{\"ok\":true,\"maxReadSeq\":\(seq),\"readStateVersion\":\(version)}")
-    }
-
-    /// Synchronous context gathering for the resume handler; the async method
-    /// only awaits the dispatch callback.
-    func resumeAllAgentsContext(
-        userId: String,
+    public func patchChannelDisplaySettings(
+        authorization: String?,
         serverId: String,
         channelId: String,
-        requestedAgentIds: Set<String>?
-    ) -> ResumeAllAgentsContext {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let channel = postableChannels[channelId], channel.serverId == serverId else {
-            return ResumeAllAgentsContext(targets: [], dispatch: nil, error: Self.json(404, "{\"error\":\"Channel not found\"}"))
+        body: ChannelDisplayPatchRequest?
+    ) throws -> ChannelDisplaySettingsResponse {
+        let userId = try requireSession(authorization)
+        _ = try requireMember(serverId: serverId, userId: userId)
+        try requireDisplayPrefsAccess(userId: userId, serverId: serverId, channelId: channelId)
+        try requireNotArchived(channelId)
+        guard let collapse = body?.collapseLongMessages else {
+            throw ManagedMCPToolExecutionError.collapseLongMessagesNotBoolean
         }
-        let readable = channel.kind == "channel"
-            || channel.memberIds.contains(userId)
-            || oauth.isChannelParticipant(channelId: channelId, userId: userId)
-        guard readable else {
-            return ResumeAllAgentsContext(targets: [], dispatch: nil, error: Self.json(404, "{\"error\":\"Channel not found\"}"))
-        }
-        let channelAgentIds = Array(channelAgentMembers[channelId] ?? []).sorted()
-        let targets = requestedAgentIds.map { requested in channelAgentIds.filter { requested.contains($0) } } ?? channelAgentIds
-        return ResumeAllAgentsContext(targets: targets, dispatch: agentStartDispatch, error: nil)
+        let prefs = oauth.setCollapseLongMessages(channelId: channelId, userId: userId, collapse: collapse)
+        return ChannelDisplaySettingsResponse(
+            collapseLongMessages: prefs.collapseLongMessages,
+            prefsVersion: prefs.prefsVersion
+        )
     }
 
-    /// `POST /api/channels/:id/resume-all-agents`. Sends an optional resume
-    /// prompt to every agent in the channel (or the explicit `agentIds` subset)
-    /// and reports an agent whose start was skipped instead of counting it
-    /// resumed.
+    // MARK: - POST /api/channels/:channelId/read
+
+    public func updateChannelReadState(
+        authorization: String?,
+        serverId: String,
+        channelId: String,
+        body: ChannelReadRequest?
+    ) throws -> ChannelReadStateResponse {
+        let userId = try requireSession(authorization)
+        _ = try requireMember(serverId: serverId, userId: userId)
+        if visibility.guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
+            throw ChannelMembershipError.channelNotFound
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            throw ChannelMembershipError.channelNotFound
+        }
+        let readable = channels.postableChannel(id: channelId).map { $0.kind == "channel" || $0.memberIds.contains(userId) }
+            ?? (oauth.channelType(id: channelId) == "channel" || oauth.isChannelParticipant(channelId: channelId, userId: userId))
+        guard readable else { throw ChannelMembershipError.channelNotFound }
+        guard let seq = body?.seq, seq >= 0 else { throw ManagedMCPToolExecutionError.invalidReadSeq }
+        switch messages.advanceChannelRead(
+            channelId: channelId,
+            userId: userId,
+            seq: seq,
+            maxReadSeq: { oauth.channelUnreadInfo(channelId: channelId, userId: userId).maxReadSeq }
+        ) {
+        case .unchanged(let maxReadSeq, let version):
+            return ChannelReadStateResponse(maxReadSeq: maxReadSeq, readStateVersion: version)
+        case .advanced(let version):
+            oauth.setChannelReadCursor(channelId: channelId, userId: userId, seq: seq)
+            return ChannelReadStateResponse(maxReadSeq: seq, readStateVersion: version)
+        }
+    }
+
+    // MARK: - POST /api/channels/:channelId/resume-all-agents
+
+    /// Sends an optional resume prompt to every agent in the channel (or the
+    /// explicit `agentIds` subset) and reports an agent whose start was skipped
+    /// instead of counting it resumed. A `nil` body is a body that is not a JSON
+    /// object; a blank body is an empty request.
     public func resumeAllAgents(
         authorization: String?,
         serverId: String,
         channelId: String,
-        body: String
-    ) async -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
-        let object: [String: Any]
-        if body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            object = [:]
-        } else if let parsed = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] {
-            object = parsed
-        } else {
-            return Self.json(400, "{\"error\":\"Invalid resume request\"}")
-        }
-        let prompt = object["prompt"] as? String
+        body: ResumeAllAgentsRequest?
+    ) async throws -> ResumeAllAgentsResponse {
+        let userId = try requireSession(authorization)
+        _ = try requireMember(serverId: serverId, userId: userId)
+        guard let body else { throw ManagedMCPToolExecutionError.invalidResumeRequest }
         var requestedAgentIds: Set<String>?
-        if let raw = object["agentIds"], !(raw is NSNull) {
-            guard let ids = raw as? [String] else {
-                return Self.json(400, "{\"error\":\"agentIds must be an array of agent ids\"}")
-            }
-            requestedAgentIds = Set(ids)
+        switch body.agentIds {
+        case .absent: break
+        case .invalid: throw ManagedMCPToolExecutionError.agentIdsNotArray
+        case .ids(let ids): requestedAgentIds = Set(ids)
         }
-        let context = resumeAllAgentsContext(
-            userId: userId,
-            serverId: serverId,
-            channelId: channelId,
-            requestedAgentIds: requestedAgentIds
-        )
-        if let error = context.error { return error }
-        var results: [String] = []
+        guard let channel = channels.postableChannel(id: channelId), channel.serverId == serverId else {
+            throw ChannelMembershipError.channelNotFound
+        }
+        let readable = channel.kind == "channel"
+            || channel.memberIds.contains(userId)
+            || oauth.isChannelParticipant(channelId: channelId, userId: userId)
+        guard readable else { throw ChannelMembershipError.channelNotFound }
+        let channelAgentIds = Array(agents.channelAgentMembers[channelId] ?? []).sorted()
+        let targets = requestedAgentIds.map { requested in channelAgentIds.filter { requested.contains($0) } }
+            ?? channelAgentIds
+        let dispatch = agents.agentStartDispatch
+        var results: [ResumeAllAgentsResponse.Result] = []
         var started = 0
-        for agentId in context.targets {
+        for agentId in targets {
             var dispatched = false
             var skipReason: String?
-            if let dispatch = context.dispatch {
+            if let dispatch {
                 do {
-                    switch try await dispatch(agentId, prompt) {
+                    switch try await dispatch(agentId, body.prompt) {
                     case .dispatched:
                         dispatched = true
                     case .skipped:
@@ -592,95 +662,72 @@ extension EmailLoginDirectory {
                 dispatched = true
             }
             if dispatched { started += 1 }
-            if let skipReason {
-                results.append("{\"agentId\":\(jsonString(agentId)),\"ok\":false,\"reason\":\(jsonString(skipReason))}")
-            } else {
-                results.append("{\"agentId\":\(jsonString(agentId)),\"ok\":true}")
-            }
+            results.append(ResumeAllAgentsResponse.Result(agentId: agentId, skipReason: skipReason))
         }
-        let allStarted = started == context.targets.count
-        return Self.json(200, "{\"ok\":\(allStarted ? "true" : "false"),\"started\":\(started),\"total\":\(context.targets.count),\"results\":[\(results.joined(separator: ","))]}")
+        return ResumeAllAgentsResponse(started: started, total: targets.count, results: results)
     }
 
-    public func markChannelReadAll(authorization: String?, serverId: String, channelId: String, body: String = "{}") -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
-        if guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+    // MARK: - POST /api/channels/:channelId/read-all
+
+    public func markChannelReadAll(
+        authorization: String?,
+        serverId: String,
+        channelId: String,
+        body: ChannelReadAllRequest?
+    ) throws -> ChannelReadAllResponse {
+        let userId = try requireSession(authorization)
+        let role = try requireMember(serverId: serverId, userId: userId)
+        if visibility.guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
+            throw ChannelMembershipError.channelNotFound
         }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+            throw ChannelMembershipError.channelNotFound
         }
         // A kinded receiver delegates the read to that agent. Authority is the
         // server role or the agent's creator, never the caller's own membership:
         // the human caller's read state must stay untouched.
-        if let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-           let receiver = object["receiver"] as? [String: Any],
-           let kind = receiver["kind"] as? String,
-           let receiverId = receiver["id"] as? String {
-            guard kind == "agent",
-                  let agent = oauth.agentRuntimeInfo(id: receiverId),
+        if let receiver = body?.receiver {
+            guard receiver.kind == "agent",
+                  let agent = oauth.agentRuntimeInfo(id: receiver.id),
                   agent.serverId == serverId
             else {
-                return Self.json(403, "{\"error\":\"Forbidden\"}")
+                throw ChannelMembershipError.forbidden
             }
             let canDelegate = role == "owner" || role == "admin" || agent.creatorUserId == userId
             guard canDelegate, oauth.channelAgentIds(channelId: channelId).contains(agent.id) else {
-                return Self.json(403, "{\"error\":\"Forbidden\"}")
+                throw ChannelMembershipError.forbidden
             }
             let latestSeq = oauth.channelUnreadInfo(channelId: channelId, userId: userId).latestSeq ?? 0
-            lock.lock()
-            let key = "\(channelId)\n\(receiverId)"
-            let previous = agentChannelReadCursors[key] ?? (seq: 0, version: 0)
-            let advanced = latestSeq > previous.seq
-            let version = advanced ? previous.version + 1 : previous.version
-            agentChannelReadCursors[key] = (seq: max(previous.seq, latestSeq), version: version)
-            lock.unlock()
-            if advanced {
-                onAgentReadUpdated?(serverId, channelId, receiverId, latestSeq)
+            let advance = messages.advanceAgentChannelRead(
+                channelId: channelId,
+                agentId: receiver.id,
+                latestSeq: latestSeq
+            )
+            if advance.advanced {
+                notifications.onAgentReadUpdated?(serverId, channelId, receiver.id, latestSeq)
             }
-            return Self.json(200, "{\"ok\":true,\"seq\":\(max(previous.seq, latestSeq)),\"readStateVersion\":\(max(version, 1))}")
+            return ChannelReadAllResponse(seq: advance.seq, readStateVersion: max(advance.version, 1))
         }
-        lock.lock()
-        let readableAll = postableChannels[channelId].map { $0.kind == "channel" || $0.memberIds.contains(userId) }
+        let readableAll = channels.postableChannel(id: channelId).map { $0.kind == "channel" || $0.memberIds.contains(userId) }
             ?? (oauth.channelType(id: channelId) == "channel" || oauth.isChannelParticipant(channelId: channelId, userId: userId))
-        lock.unlock()
         guard readableAll else {
-            lock.lock()
-            let facts = inboxFactStore.all().filter {
+            let facts = inboxFacts.all().filter {
                 $0.receiverType == "user" && $0.receiverId == userId
                     && $0.channelId == channelId && $0.serverId == serverId
             }
-            lock.unlock()
             var ownedSeq = oauth.channelUnreadInfo(channelId: channelId, userId: userId).maxReadSeq
             if let lastFact = facts.last,
                let owned = oauth.historyMessages(channelId: channelId).first(where: { $0.id == lastFact.messageId }) {
                 ownedSeq = max(ownedSeq, owned.seq)
             }
-            guard ownedSeq > 0 else {
-                return Self.json(404, "{\"error\":\"Channel not found\"}")
-            }
+            guard ownedSeq > 0 else { throw ChannelMembershipError.channelNotFound }
             oauth.setChannelReadCursor(channelId: channelId, userId: userId, seq: ownedSeq)
-            let key = "\(channelId)\n\(userId)"
-            lock.lock()
-            inboxDoneScopes.insert("\(userId)\n\(channelId)")
-            inboxDoneAt["\(userId)\n\(channelId)"] = Date()
-            channelReadVersions[key] = (channelReadVersions[key] ?? 0) + 1
-            let version = channelReadVersions[key] ?? 1
-            lock.unlock()
-            return Self.json(200, "{\"ok\":true,\"seq\":\(ownedSeq),\"readStateVersion\":\(version)}")
+            let version = messages.markInboxScopeDone(channelId: channelId, userId: userId, at: dependencies.now())
+            return ChannelReadAllResponse(seq: ownedSeq, readStateVersion: version)
         }
         let latest = oauth.channelUnreadInfo(channelId: channelId, userId: userId).latestSeq ?? 0
-        let key = "\(channelId)\n\(userId)"
-        lock.lock()
-        channelReadVersions[key] = (channelReadVersions[key] ?? 0) + 1
-        let version = channelReadVersions[key] ?? 1
-        lock.unlock()
+        let version = messages.bumpChannelReadVersion(channelId: channelId, userId: userId)
         oauth.setChannelReadCursor(channelId: channelId, userId: userId, seq: latest)
-        return Self.json(200, "{\"ok\":true,\"seq\":\(latest),\"readStateVersion\":\(version)}")
+        return ChannelReadAllResponse(seq: latest, readStateVersion: version)
     }
 }

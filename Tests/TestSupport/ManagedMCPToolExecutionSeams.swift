@@ -2,6 +2,28 @@
 import Foundation
 
 extension EmailLoginDirectory {
+    public func enableReadReceiptsForServer(_ serverId: String) {
+        serversAndChannelsStore.enableReadReceipts(serverId: serverId)
+    }
+
+    public func agentReadCursor(channelId: String, agentId: String) -> Int {
+        messagesAndThreadsStore.agentChannelReadSeq(channelId: channelId, agentId: agentId)
+    }
+
+    public func humanReadCursor(channelId: String, userId: String) -> Int {
+        oauth.channelReadCursor(channelId: channelId, userId: userId)
+    }
+
+    public func systemMessageContents(channelId: String) -> [String] {
+        messagesAndThreadsStore.humanMessageRows
+            .filter { $0.channelId == channelId && $0.messageType == "system" }
+            .map(\.content)
+    }
+
+    public func humanMessageSequence(id: String) -> Int? {
+        messagesAndThreadsStore.humanMessageRow(id: id)?.seq
+    }
+
     public func agentMuteStateForTesting(channelId: String, agentId: String) -> (serverId: String, muteFromSeq: Int)? {
         let prefs = oauth.notificationPrefs(channelId: channelId, userId: agentId)
         guard prefs.activityMuted, let muteFromSeq = prefs.muteFromSeq else { return nil }

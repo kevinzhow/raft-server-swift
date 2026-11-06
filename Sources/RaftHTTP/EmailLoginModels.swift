@@ -103,12 +103,6 @@ struct ExternalAvatarAsset {
         var active: Bool
     }
 
-struct ResumeAllAgentsContext {
-        var targets: [String]
-        var dispatch: (@Sendable (_ agentId: String, _ resumePrompt: String?) async throws -> AgentStartDispatchOutcome)?
-        var error: HTTPReply?
-    }
-
 struct ReminderEvent {
         var reminderId: String
         var serverId: String
@@ -188,11 +182,6 @@ struct AgentInboxRow {
         var joinedAt: Date
     }
 
-enum AgentTaskAuthResult {
-        case ok(agentId: String, serverId: String)
-        case refused(HTTPReply)
-    }
-
 struct AgentChannelCardSnapshot {
         let id: String
         let name: String
@@ -250,21 +239,11 @@ enum DMPeerResolution {
         case notFound
     }
 
-enum FeedbackLocatorIdentityResult {
-        case success(agentId: String, serverId: String)
-        case refused(HTTPReply)
-    }
-
 struct ServerLabsState: Equatable {
         var accessEnabled = false
         var version = 0
         var enrolled: Set<String> = []
         var updatedAt: [String: Date] = [:]
-    }
-
-enum TaskStatusFilterResult {
-        case valid(String?)
-        case invalid(HTTPReply)
     }
 
 enum TaskChannelAccess {
@@ -323,40 +302,6 @@ struct AttachedComputer {
         let userId: String
         let name: String
         let apiKey: String
-    }
-
-struct AgentLifecycleActor {
-        var userId: String
-        var role: String
-        var info: OAuthLedger.AgentManagementInfo
-    }
-
-enum AgentLifecycleCapability {
-        case controlRuntime
-        case deleteAgent
-
-        var denialMessage: String {
-            switch self {
-            case .controlRuntime:
-                return "The `controlAgentRuntime` capability or human creator authority is required to control agents"
-            case .deleteAgent:
-                return "The `deleteAgents` capability or human creator authority is required to delete agents"
-            }
-        }
-
-        func granted(role: String, isCreator: Bool) -> Bool {
-            switch self {
-            case .controlRuntime:
-                return role != "guest" || isCreator
-            case .deleteAgent:
-                return role == "owner" || role == "admin" || isCreator
-            }
-        }
-    }
-
-enum AgentAuthority {
-        case allowed(userId: String, role: String, info: OAuthLedger.AgentManagementInfo)
-        case denied(HTTPReply)
     }
 
 enum Auth {
@@ -573,16 +518,6 @@ struct SocialCompletion {
         var linkOnConflict: Bool = false
     }
 
-enum RefreshOutcome {
-        case rejected
-        case rotated(IssuedRefresh, String)
-    }
-
-struct IssuedRefresh {
-        var accessToken: String
-        var userId: String
-    }
-
 struct RotationReceipt {
         var attemptId: String
         var installationId: String
@@ -657,43 +592,6 @@ enum ReactionTarget {
         case message(StoredHumanMessage, PostableChannel, String)
         case ambiguous
         case missing
-    }
-
-enum AgentRead {
-        case failure(HTTPReply)
-        case success(String)
-    }
-
-struct InboxMessageDetail {
-        var content: String
-        var senderId: String
-        var seq: Int
-        var createdAt: Date
-    }
-
-struct InboxGroup {
-        var channelId: String
-        var channelName: String
-        var channelType: String
-        var count: Int
-        var lastActivityAt: Date
-    }
-
-struct InboxRow {
-        var scopeId: String
-        var kind: String
-        var channelType: String
-        var parentChannelId: String?
-        var parentChannelType: String?
-        var lastMessageId: String
-        var lastActivityAt: Date
-        var searchText: String
-        var unreadCount: Int
-        var firstUnreadMessageId: String?
-        var firstMentionMessageId: String?
-        var hasMention: Bool
-        var isFollowing: Bool
-        var isDM: Bool
     }
 
 enum PageCursor: Equatable {

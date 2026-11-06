@@ -76,6 +76,15 @@ final class MessagesAndThreadsStore: @unchecked Sendable {
         }
     }
 
+    /// Runs `body` on the owned state in ONE critical section, for a decision
+    /// that reads and writes several rows and must not interleave with another
+    /// request. `body` must not call back into this store.
+    func withState<Result>(_ body: (inout State) -> Result) -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&storage)
+    }
+
     var humanMessageRows: [StoredHumanMessage] {
         get { state.humanMessageRows }
         set { state.humanMessageRows = newValue }
@@ -648,6 +657,123 @@ final class MessagesAndThreadsStore: @unchecked Sendable {
             guard maxSeq > previous.seq else { continue }
             storage.agentChannelReadCursors[key] = (maxSeq, previous.version + 1)
         }
+    }
+
+    // MARK: - Channel read state and thread rows (managed-MCP assignments)
+
+    /// Bumps one human's channel read-state version and returns the new value.
+    func bumpChannelReadVersion(channelId: String, userId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = "\(channelId)\n\(userId)"
+        let version = (storage.channelReadVersions[key] ?? 0) + 1
+        storage.channelReadVersions[key] = version
+        return version
+    }
+
+    func channelReadVersion(channelId: String, userId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.channelReadVersions["\(channelId)\n\(userId)"] ?? 0
+    }
+
+    enum ChannelReadAdvance: Equatable {
+        /// The frontier already covers `seq`; nothing was written.
+        case unchanged(maxReadSeq: Int, version: Int)
+        case advanced(version: Int)
+    }
+
+    /// `POST /api/channels/:id/read`: the frontier comparison and the version
+    /// bump are one critical section. `maxReadSeq` reads the ledger frontier
+    /// inside the section and must not call back into this store.
+    func advanceChannelRead(
+        channelId: String,
+        userId: String,
+        seq: Int,
+        maxReadSeq: () -> Int
+    ) -> ChannelReadAdvance {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = "\(channelId)\n\(userId)"
+        let frontier = maxReadSeq()
+        if seq <= frontier {
+            return .unchanged(maxReadSeq: frontier, version: storage.channelReadVersions[key] ?? 0)
+        }
+        let version = (storage.channelReadVersions[key] ?? 0) + 1
+        storage.channelReadVersions[key] = version
+        return .advanced(version: version)
+    }
+
+    struct AgentReadAdvance: Equatable {
+        var seq: Int
+        var version: Int
+        var advanced: Bool
+    }
+
+    /// `POST /api/channels/:id/read-all` delegated to an agent receiver: the
+    /// previous cursor, the version bump and the write are one critical section.
+    func advanceAgentChannelRead(channelId: String, agentId: String, latestSeq: Int) -> AgentReadAdvance {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = "\(channelId)\n\(agentId)"
+        let previous = storage.agentChannelReadCursors[key] ?? (seq: 0, version: 0)
+        let advanced = latestSeq > previous.seq
+        let version = advanced ? previous.version + 1 : previous.version
+        storage.agentChannelReadCursors[key] = (seq: max(previous.seq, latestSeq), version: version)
+        return AgentReadAdvance(seq: max(previous.seq, latestSeq), version: version, advanced: advanced)
+    }
+
+    /// The Done-inbox stamp and the read-version bump of a receiver-owned
+    /// residue read-all, in one critical section; returns the new version.
+    func markInboxScopeDone(channelId: String, userId: String, at date: Date) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.inboxDoneScopes.insert("\(userId)\n\(channelId)")
+        storage.inboxDoneAt["\(userId)\n\(channelId)"] = date
+        let key = "\(channelId)\n\(userId)"
+        let version = (storage.channelReadVersions[key] ?? 0) + 1
+        storage.channelReadVersions[key] = version
+        return version
+    }
+
+    func agentChannelReadSeq(channelId: String, agentId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.agentChannelReadCursors["\(channelId)\n\(agentId)"]?.seq ?? 0
+    }
+
+    /// Follows the creator (and, when a different live member wrote the
+    /// parent, the parent author) of a freshly created thread in one critical
+    /// section.
+    func followCreatedThread(
+        serverId: String,
+        userId: String,
+        threadChannelId: String,
+        parentMessageId: String,
+        parentAuthorId: String?
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.threadFollows["\(serverId)\n\(userId)\n\(threadChannelId)"] =
+            (serverId, userId, threadChannelId, parentMessageId)
+        if let parentAuthorId {
+            storage.threadFollows["\(serverId)\n\(parentAuthorId)\n\(threadChannelId)"] =
+                (serverId, parentAuthorId, threadChannelId, parentMessageId)
+        }
+    }
+
+    /// `DELETE /api/tasks/:taskId`: clears the task shadow a host message
+    /// carried, in one critical section.
+    func clearTaskShadow(messageId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let shadow = storage.humanMessageRows.firstIndex(where: { $0.id == messageId }) else { return }
+        storage.humanMessageRows[shadow].taskStatus = nil
+        storage.humanMessageRows[shadow].taskNumber = nil
+        storage.humanMessageRows[shadow].taskAssigneeType = nil
+        storage.humanMessageRows[shadow].taskAssigneeId = nil
+        storage.humanMessageRows[shadow].taskClaimedAt = nil
+        storage.humanMessageRows[shadow].taskCompletedAt = nil
     }
 
     // MARK: - Agent task and inbox reads
@@ -1613,5 +1739,15 @@ extension MessagesAndThreadsStore {
         guard var message = storage.humanMessageRows.first(where: { $0.id == messageId }) else { return nil }
         message.channelId = destinationChannelId
         return message
+    }
+}
+
+extension MessagesAndThreadsStore {
+    /// Stores one uploaded file row. The row carries its final uploader type, so
+    /// no reader can observe an agent upload as a user upload.
+    func insertAttachment(_ attachment: ChannelAttachment) {
+        lock.lock()
+        storage.channelAttachments[attachment.id] = attachment
+        lock.unlock()
     }
 }

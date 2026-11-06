@@ -5,10 +5,32 @@ import RaftShared
 import FoundationNetworking
 #endif
 
-/// Domain service accessors, continued from `AuthCoreService.swift` (pure move:
-/// that file is near the Services line ceiling). Each accessor wires one
-/// migrated service from the directory's stores and the OAuth ledger.
+/// Domain service accessors. Each accessor wires one migrated service from the
+/// directory's stores and the OAuth ledger.
 extension EmailLoginDirectory {
+    /// Provider discovery, the web and mobile OAuth legs, the native-Apple
+    /// handoff, the installation lookup and the feature-flag evaluation. The
+    /// directory supplies the stores and the OAuth ledger; nothing crosses a
+    /// domain boundary.
+    public var oauthFlows: OAuthFlowsService {
+        OAuthFlowsService(directory: self)
+    }
+
+    /// One flag's rollout decision for the unmigrated callers that still ask
+    /// per key (`FeedbackService`, the integrations gate). The decision lives in
+    /// `AgentsRuntimeStore`.
+    func evaluateFeatureFlagKey(
+        key: String,
+        userId: String,
+        serverId: String?,
+        platform: String?,
+        client: FeatureFlagClientFacts
+    ) -> (enabled: Bool, reason: String) {
+        agentsRuntimeStore.evaluateFeatureFlag(
+            key: key, userId: userId, serverId: serverId, platform: platform, client: client
+        )
+    }
+
     /// The Computer fleet: machine roster, Computer attach/adoption, runner
     /// control plane and the lifecycle controls. The directory supplies the
     /// machine, agent and profile stores and the OAuth ledger; the session
@@ -29,7 +51,7 @@ extension EmailLoginDirectory {
                     emitRealtime(room, event, payload)
                 },
                 computerAttachEnabled: { [self] in
-                    computerAttachEnabled()
+                    agentsLifecycle.computerAttachEnabled()
                 },
                 mintAgentCredential: { [self] agentId, scopes, name in
                     let minted = mintAgentCredential(agentId: agentId, scopes: scopes, name: name)
@@ -113,19 +135,34 @@ extension EmailLoginDirectory {
         agentSurface.assistantOwnerRaw(agentId: agentId)
     }
 
-    /// The content-free wake hints of one agent. The projection spans the
-    /// channel, message, joint and suppression ledgers, so it still runs under
-    /// the directory lock.
+    /// The Done/Undone, read-all, Activity page and agent mention, wake-hint and
+    /// event surface. The directory supplies its stores and the OAuth ledger;
+    /// the session lookup, the agent read credential, guest scope visibility and
+    /// account names enter as closures.
+    public var reactionsRealtime: ReactionsRealtimeService {
+        ReactionsRealtimeService(directory: self)
+    }
+
+    /// The content-free wake hints of one agent, for the wake-hint stream.
     func pendingWakeHints(
         agentId: String,
         agent: OAuthLedger.AgentRuntimeInfo,
         sinceSeq: Int?,
         limit: Int
     ) -> [AgentWakeHintRow] {
-        lock.lock()
-        defer { lock.unlock() }
-        return pendingWakeHintRowsLocked(agentId: agentId, agent: agent, sinceSeq: sinceSeq, limit: limit)
-            .rows.map { AgentWakeHintRow(seq: $0.seq, json: $0.json) }
+        reactionsRealtime.pendingWakeHints(agentId: agentId, agent: agent, sinceSeq: sinceSeq, limit: limit)
+            .hints.compactMap { hint in
+                hint.seq.map { AgentWakeHintRow(seq: $0, json: hint.jsonBody.render()) }
+            }
+    }
+
+    /// A system notice an agent caused itself, of a subtype that never trips
+    /// the send freshness gate.
+    func isSelfCausedFreshnessExemptLocked(_ message: StoredHumanMessage, agentId: String) -> Bool {
+        message.messageType == "system"
+            && message.causalActorType == "agent"
+            && message.causalActorId == agentId
+            && message.systemSubtype.map { Self.selfCausedFreshnessExemptSubtypes.contains($0) } == true
     }
 
     /// A real server-role change on an agent posts a system notice into the
@@ -175,6 +212,340 @@ extension EmailLoginDirectory {
     /// enter as closures.
     public var humanMessageCreate: HumanMessageCreateService {
         HumanMessageCreateService(directory: self)
+    }
+
+    /// Agent lifecycle: the access-token and credential gates, attachment upload
+    /// and read, channel files, client product events, the Computer preflight
+    /// and the runtime-provider probe. The directory supplies its stores and the
+    /// OAuth ledger; the credential-use stamp (agent private surface) and the
+    /// joint-channel projection lookup enter as closures.
+    public var agentsLifecycle: AgentsLifecycleService {
+        AgentsLifecycleService(
+            profiles: authProfileStore,
+            agents: agentsRuntimeStore,
+            machines: machinesAndComputersStore,
+            channels: serversAndChannelsStore,
+            messages: messagesAndThreadsStore,
+            inboxFacts: inboxFactStore,
+            productEvents: productEventStore,
+            oauth: oauth,
+            dependencies: AgentsLifecycleDependencies(
+                recordAgentCredentialUse: { [self] token in
+                    recordAgentCredentialUse(token: token)
+                },
+                jointLocalChannelId: { [self] canonicalChannelId, serverId, userId in
+                    jointLocalChannelIdLocked(
+                        canonicalChannelId: canonicalChannelId,
+                        serverId: serverId,
+                        userId: userId
+                    )
+                }
+            )
+        )
+    }
+
+    // Forwarders for the lifecycle helpers that unmigrated services still call.
+
+    /// The user id behind a live access token. A missing or unknown bearer is nil.
+    public func sessionUserId(authorization: String?) -> String? {
+        agentsLifecycle.sessionUserId(authorization: authorization)
+    }
+
+    /// Access-token identity used by the socket layer. The family id scopes
+    /// revocation to the connection family that owns the token.
+    public func sessionIdentity(accessToken: String) -> (userId: String, familyId: String?)? {
+        authProfileStore.pushPrincipal(accessToken: accessToken)
+    }
+
+    /// Resolve a `push/family-revoke` capability without consuming it.
+    public func familyRevokeTarget(capability: String) -> (userId: String, familyId: String)? {
+        authProfileStore.familyRevokeTarget(capability: capability)
+    }
+
+    func guestCanSeeScopeLocked(_ scopeId: String) -> Bool {
+        agentsLifecycle.guestCanSeeScope(scopeId)
+    }
+
+    func channelProbeAccessLocked(channelId: String, serverId: String, userId: String) -> ChannelProbeAccess {
+        agentsLifecycle.channelProbeAccess(channelId: channelId, serverId: serverId, userId: userId)
+    }
+
+    func visibleAttachment(userId: String, serverId: String?, attachment: ChannelAttachment) -> Bool {
+        agentsLifecycle.canSeeAttachment(userId: userId, serverId: serverId, attachment: attachment)
+    }
+
+    func visibleAttachmentUnlocked(userId: String, serverId: String?, attachment: ChannelAttachment) -> Bool {
+        agentsLifecycle.canSeeAttachmentIgnoringJoint(userId: userId, serverId: serverId, attachment: attachment)
+    }
+
+    /// The session core: provider completion, register, staging retirement,
+    /// device grants, refresh and logout. Every row lives in the account store,
+    /// so the accessor needs no cross-domain closure.
+    public var authCore: AuthCoreService {
+        AuthCoreService(store: authProfileStore)
+    }
+
+    /// The bearer access-token check the domain services that have not migrated
+    /// yet still share. The decision is `AuthCoreService.authenticate`; this
+    /// forwarder only maps it to the `Auth` value those callers consume.
+    func authorize(_ authorization: String?) -> Auth {
+        do {
+            return .user(try authCore.authenticate(authorization))
+        } catch AuthCoreError.missingAuthorization {
+            return .rejected(Self.missingAuthorization)
+        } catch {
+            return .rejected(Self.invalidToken)
+        }
+    }
+
+    /// `requireVerified` reads this from the profile store; the unmigrated
+    /// OAuth flows and the inbox closure call it by this name.
+    public func isEmailVerified(userId: String) -> Bool {
+        authProfileStore.isEmailVerified(userId: userId)
+    }
+
+    /// Email-verification policy for `POST /api/auth/verify-email` and
+    /// `POST /api/auth/resend-verification`. The feature calls this service;
+    /// the directory only supplies the profile store it reads.
+    public var authVerification: AuthVerificationService {
+        AuthVerificationService(store: authProfileStore)
+    }
+
+    /// The message-send boundary: the attachment download URL, the
+    /// thread-follower undo routes and the migration receipt DM. It reads the
+    /// message/channel/profile stores and the OAuth ledger directly; the
+    /// attachment-visibility policy, the socket emitter and the serialized
+    /// message append still live in unmigrated directory code and enter as
+    /// closures (`MessageSendService.live`).
+    public var messageSend: MessageSendService {
+        MessageSendService(
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            profiles: authProfileStore,
+            oauth: oauth,
+            visibleAttachment: { [self] userId, serverId, attachment in
+                visibleAttachment(userId: userId, serverId: serverId, attachment: attachment)
+            },
+            emitRealtime: { [self] room, event, payload in
+                emitRealtime(room, event, payload)
+            },
+            registerPostableChannel: { [self] serverId, channelId, memberId, kind, name in
+                addPostableChannel(
+                    serverId: serverId,
+                    channelId: channelId,
+                    memberId: memberId,
+                    kind: kind,
+                    name: name
+                )
+            },
+            appendHumanMessage: { [self] message in
+                // The append still serializes with every other message writer
+                // under the directory lock until the channel-message domain
+                // moves its seq stamping into `MessagesAndThreadsStore`.
+                lock.lock()
+                defer { lock.unlock() }
+                return appendHumanMessageLocked(message)
+            }
+        )
+    }
+
+    /// Socket room membership: connect-time visibility, thread-room
+    /// enumeration, `sync:resume` catch-up and membership revocation. The
+    /// directory supplies the channel/message stores and the OAuth ledger; the
+    /// attachment-comments feature flag is owned by the unmigrated integrations
+    /// domain, so it enters the service as a closure.
+    public var socketMembership: SocketMembershipService {
+        SocketMembershipService(
+            channels: serversAndChannelsStore,
+            messages: messagesAndThreadsStore,
+            oauth: oauth,
+            attachmentCommentsEnabled: { [self] serverId, userId in
+                attachmentCommentsEnabled(serverId: serverId, userId: userId)
+            }
+        )
+    }
+
+    /// Server usage, system attention, mention-delivery diagnostics, session
+    /// transcripts, transcript feedback and share artifacts. The directory
+    /// supplies the machine/agent/message stores and the OAuth ledger; session
+    /// lookup and the unmigrated channel access policy enter as closures.
+    public var runtimeUsageAttestations: RuntimeUsageAndAttestationsService {
+        RuntimeUsageAndAttestationsService(
+            machines: machinesAndComputersStore,
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            agents: agentsRuntimeStore,
+            oauth: oauth,
+            sessionUserId: { [self] authorization in
+                sessionUserId(authorization: authorization)
+            },
+            channelAccess: { [self] serverId, channelId, userId in
+                switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
+                case .missing: false
+                case .readOnly, .write: true
+                }
+            }
+        )
+    }
+
+    /// Account-profile policy for `POST /api/auth/reset-password`,
+    /// `POST /api/auth/pending-link/cancel` and
+    /// `POST /api/auth/me/timezone-observation`. The feature calls this
+    /// service; the directory only supplies the profile store it reads.
+    public var authProfile: AuthProfileService {
+        AuthProfileService(store: authProfileStore)
+    }
+
+    /// Session, identity, app-login and profile operations: identity list and
+    /// unlink, password login, the HarmonyOS app-login handoff, `GET`/`PATCH`
+    /// `/api/auth/me`, the avatar upload and the integration settings list. The
+    /// directory supplies the profile store and the OAuth ledger.
+    public var authIdentities: AuthIdentitiesService {
+        AuthIdentitiesService(store: authProfileStore, oauth: oauth)
+    }
+
+    /// Agent migration status, cancellation, provider position and the external
+    /// diagnostics view. The service owns the three published operations; the
+    /// directory supplies the agent runtime store (both migration families), the OAuth ledger, and the
+    /// realtime/cancel relay seams the unmigrated migration domains own.
+    public var agentMigrationStatus: AgentMigrationStatusService {
+        let accounts = self
+        return AgentMigrationStatusService(
+            sessionUserId: { accounts.sessionUserId(authorization: $0) },
+            oauth: oauth,
+            agents: agentsRuntimeStore,
+            emitRealtime: { room, event, payload in
+                accounts.emitRealtime(room, event, payload)
+            },
+            cancelDispatch: { machineId, role, migrationRef, transportGeneration, stopAgent in
+                accounts.agentMigrationCancelDispatch?(
+                    machineId,
+                    role,
+                    migrationRef,
+                    transportGeneration,
+                    stopAgent
+                )
+            }
+        )
+    }
+
+    /// Agent send, delivery-ack, activity, thread-follow and integration
+    /// operations. The directory supplies the stores; the closures bridge the
+    /// not-yet-migrated message-visibility, message-append and OAuth
+    /// integration-projection domains.
+    public var agentSendDelivery: AgentSendDeliveryService {
+        AgentSendDeliveryService(
+            machines: machinesAndComputersStore,
+            channels: serversAndChannelsStore,
+            messages: messagesAndThreadsStore,
+            agents: agentsRuntimeStore,
+            threadFollows: threadFollowStore,
+            managedMCP: managedMCPAndCardsStore,
+            oauth: oauth,
+            searchVisible: { [self] messageChannelId, serverId, viewer in
+                searchMentions.messageVisible(
+                    messageChannelId: messageChannelId,
+                    serverId: serverId,
+                    viewer: viewer
+                )
+            },
+            appendHumanMessage: { [self] message in
+                lock.lock()
+                let seq = appendHumanMessageLocked(message)
+                lock.unlock()
+                return seq
+            },
+            integrationServices: { [self] serverId in
+                oauth.integrationServices(serverId: serverId).map(AgentIntegrationProjection.snapshot)
+            }
+        )
+    }
+
+    /// Message reactions, the reaction viewer/actor pages, both agent reaction
+    /// routes and the managed-daemon third-party delivery report. The directory
+    /// supplies the stores; the session and agent-credential/grant decisions and
+    /// the attachment-comment projections belong to unmigrated domains and enter
+    /// as closures.
+    public var profileAndChannelFiles: ProfileAndChannelFilesService {
+        ProfileAndChannelFilesService(
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            accounts: authProfileStore,
+            agents: agentsRuntimeStore,
+            machines: machinesAndComputersStore,
+            oauth: oauth,
+            dependencies: ProfileAndChannelFilesDependencies(
+                sessionUserId: { [self] authorization in
+                    sessionUserId(authorization: authorization)
+                },
+                agentRead: { [self] authorization in
+                    profileAgentReadOutcome(authorization)
+                },
+                capabilityDenial: { [self] authorization, capability in
+                    switch FeedbackLocatorService(directory: self)
+                        .capabilityDecision(authorization: authorization, capability: capability) {
+                    case .allowed:
+                        return nil
+                    case .denied(let denied):
+                        return denied
+                    }
+                },
+                emitRealtime: { [self] room, event, payload in
+                    emitRealtime(room, event, payload)
+                },
+                attachmentCommentsEnabled: { [self] serverId, userId in
+                    attachmentCommentsEnabled(serverId: serverId, userId: userId)
+                },
+                attachmentsJSON: { [self] ids, commentsVisible in
+                    lock.lock()
+                    defer { lock.unlock() }
+                    return "[" + messageAttachmentsJSONLocked(ids, commentsVisible: commentsVisible) + "]"
+                },
+                commentRefJSON: { [self] messageId in
+                    lock.lock()
+                    defer { lock.unlock() }
+                    return commentRefJSONLocked(messageId: messageId)
+                }
+            )
+        )
+    }
+
+    /// Action-card prepare, the agent context / app-config surface, and the
+    /// agent-target projections the execute/send domains still call. The
+    /// service reads the domain stores; the session lookup and the
+    /// assistant-owner policy belong to unmigrated domains and enter as
+    /// closures.
+    public var actionCardPrepare: ActionCardPrepareService {
+        ActionCardPrepareService(
+            oauth: oauth,
+            cards: managedMCPAndCardsStore,
+            feedback: feedbackStore,
+            agents: agentsRuntimeStore,
+            channels: serversAndChannelsStore,
+            accounts: authProfileStore,
+            messages: messagesAndThreadsStore,
+            sessionUserId: { self.sessionUserId(authorization: $0) },
+            assistantOwner: { [self] agentId, serverId in
+                assistantOwnerFor(agentId: agentId, serverId: serverId)
+            }
+        )
+    }
+
+    /// Agent task list, claim and update-status. The service owns the task
+    /// policy and reads the task/message/channel/agent/machine stores; the
+    /// directory accessor stays here so the feature layer never touches the
+    /// composition root.
+    public var actionCardExecute: ActionCardExecuteService {
+        ActionCardExecuteService(directory: self)
+    }
+
+    /// Message search, the stored context fallback, the shared message
+    /// visibility policy and channel soft-delete. The directory supplies the
+    /// domain stores and the OAuth ledger; the not-yet-migrated session,
+    /// machine/agent credential, attachment/action-card and thread-summary
+    /// projections enter as closures.
+    public var searchMentions: SearchMentionsService {
+        SearchMentionsService(directory: self)
     }
 
     public var sessionCount: Int {
@@ -231,7 +602,7 @@ extension EmailLoginDirectory {
     /// `FeedbackService`, so they enter as closures; the account row, the
     /// feature-flag decision and product-event rows come from their stores.
     public var productFeedbackSubmissions: ProductFeedbackSubmissionService {
-        let feedback = FeedbackService(directory: self)
+        let feedback = feedbackTransport
         return ProductFeedbackSubmissionService(
             dependencies: ProductFeedbackSubmissionDependencies(
                 account: { [authProfileStore] userId in
@@ -253,7 +624,7 @@ extension EmailLoginDirectory {
                 },
                 multiAppEnabled: { [self] userId in
                     evaluateFeatureFlagKey(
-                        key: EmailLoginDirectory.productFeedbackMultiAppFlag,
+                        key: FeedbackService.productFeedbackMultiAppFlag,
                         userId: userId,
                         serverId: nil,
                         platform: nil,
@@ -323,7 +694,7 @@ extension EmailLoginDirectory {
 
     /// The system notice (and the acting agent's born-read cursor) the channel
     /// membership writes post; the append still serializes under the directory lock.
-    private var systemNoticeAppender: @Sendable (StoredHumanMessage, String?) -> Int {
+    var systemNoticeAppender: @Sendable (StoredHumanMessage, String?) -> Int {
         { [self] message, bornReadAgentId in
             lock.lock()
             defer { lock.unlock() }
@@ -447,7 +818,7 @@ extension EmailLoginDirectory {
     /// the not-yet-migrated `FeedbackService`, so they enter as closures; the
     /// session lookup and the account row come from their domains.
     public var feedbackMultiApp: FeedbackMultiAppService {
-        let feedback = FeedbackService(directory: self)
+        let feedback = feedbackTransport
         return FeedbackMultiAppService(
             dependencies: FeedbackMultiAppDependencies(
                 userId: { [self] authorization in
@@ -483,132 +854,6 @@ extension EmailLoginDirectory {
         )
     }
 
-    /// Read mutations, joint-invite accept, the channel list, profile
-    /// completion and the server create/details/analytics routes. The human
-    /// session lookup belongs to the unmigrated auth domain and enters as a
-    /// closure.
-    public var managedMCPLifecycle: ManagedMCPLifecycleService {
-        ManagedMCPLifecycleService(
-            sessionUserId: { [self] in sessionUserId(authorization: $0) },
-            oauth: oauth,
-            messages: messagesAndThreadsStore,
-            channels: serversAndChannelsStore,
-            profiles: authProfileStore
-        )
-    }
-
-    /// Provider connections (list, create, patch, rotate, retired probe,
-    /// assigned agents).
-    public var managedMCPProviderConnections: ManagedMCPProviderConnectionsService {
-        ManagedMCPProviderConnectionsService(
-            sessionUserId: { [self] in sessionUserId(authorization: $0) },
-            oauth: oauth,
-            providers: managedMCPAndCardsStore
-        )
-    }
-
-    /// Push registration, browser subscription, delivery status, unbind and the
-    /// family-revoke capability.
-    public var managedMCPPush: ManagedMCPPushService {
-        ManagedMCPPushService(
-            oauth: oauth,
-            profiles: authProfileStore,
-            notifications: notificationsStore
-        )
-    }
-
-    /// Announcements, external avatars, channel unread and notification
-    /// settings, the agent user lookups and the app-installation reminder
-    /// write. The session lookup, the agent credential resolution, the guest
-    /// visibility rule and the human-message append belong to unmigrated
-    /// domains and enter as closures.
-    public var managedMCPOAuth: ManagedMCPOAuthService {
-        ManagedMCPOAuthService(dependencies: ManagedMCPOAuthDependencies(
-            sessionUserId: { [self] in sessionUserId(authorization: $0) },
-            agentIdentity: { [self] authorization, capability in
-                switch feedbackLocators.identityResolution(authorization: authorization, capability: capability) {
-                case .success(let agentId, let serverId):
-                    return (agentId: agentId, serverId: serverId)
-                case .missingAuthorization, .invalidAccessToken, .capabilityNotAuthorized,
-                     .invalidAgentCredential:
-                    return nil
-                }
-            },
-            agentScopes: { [self] in feedbackLocators.credentialScopes(authorization: $0) },
-            guestDeniedHiddenChannel: { [self] channelId, serverId, userId in
-                guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId)
-            },
-            appendMessage: { [self] message in
-                lock.lock()
-                defer { lock.unlock() }
-                appendHumanMessageLocked(message)
-            },
-            oauth: oauth,
-            notifications: notificationsStore,
-            messages: messagesAndThreadsStore,
-            channels: serversAndChannelsStore,
-            feedback: feedbackStore,
-            profiles: authProfileStore,
-            now: { Date() }
-        ))
-    }
-
-    /// `PATCH /api/channels/:id` and `POST /api/channels`. The channel
-    /// visibility predicate belongs to the channel-agent routes and enters as a
-    /// closure.
-    public var managedMCPChannelRoutes: ManagedMCPChannelRoutesService {
-        ManagedMCPChannelRoutesService(
-            sessionUserId: { [self] in sessionUserId(authorization: $0) },
-            channelActorCanSee: { [self] channelId, userId in
-                channelActorCanSee(channelId: channelId, userId: userId)
-            },
-            oauth: oauth,
-            channels: serversAndChannelsStore,
-            messages: messagesAndThreadsStore,
-            profiles: authProfileStore
-        )
-    }
-
-    /// App reminders (owner list, internal machine routes, agent-api routes)
-    /// and the saved-message write. The reminder ledger, machine keys and
-    /// agent credentials come from their stores; the session lookup and the
-    /// agent capability decision belong to other domains and enter as closures.
-    public var managedMCPAgentCatalog: ManagedMCPAgentCatalogService {
-        ManagedMCPAgentCatalogService(
-            reminders: tasksAndRemindersStore,
-            machines: machinesAndComputersStore,
-            agents: agentsRuntimeStore,
-            oauth: oauth,
-            dependencies: ManagedMCPAgentCatalogDependencies(
-                sessionUserId: { [self] authorization in
-                    sessionUserId(authorization: authorization)
-                },
-                deniedCapability: { [feedbackLocators] authorization, capability in
-                    switch feedbackLocators.capabilityDecision(authorization: authorization, capability: capability) {
-                    case .allowed: nil
-                    case .denied(let denied): denied
-                    }
-                }
-            )
-        )
-    }
-
-    /// The managed MCP control plane (`/api/mcp/*`). The server rows live in
-    /// `ManagedMCPAndCardsStore`; the session lookup and the public origin come
-    /// from the profile domain as closures.
-    public var managedMCPControlPlane: ManagedMCPControlPlaneService {
-        ManagedMCPControlPlaneService(
-            servers: managedMCPAndCardsStore,
-            oauth: oauth,
-            dependencies: ManagedMCPControlPlaneDependencies(
-                sessionUserId: { [self] authorization in
-                    sessionUserId(authorization: authorization)
-                },
-                serverURL: { [authProfileStore] in authProfileStore.serverURL }
-            )
-        )
-    }
-
     /// The agent history read and the machine channel join/leave. The read
     /// cursors live in the message store; the thread lookups belong to the
     /// action-card helpers and the read-update hook is the notifications
@@ -625,14 +870,14 @@ extension EmailLoginDirectory {
             actionCardPrepare: actionCardPrepare,
             channelMembership: channelMembership,
             dependencies: AgentHistoryDependencies(
-                threadByAnchor: { [self] parentId, anchorMessageId in
-                    agentHistoryThread(parentId: parentId, anchorMessageId: anchorMessageId)
+                threadByAnchor: { [serversAndChannelsStore] parentId, anchorMessageId in
+                    serversAndChannelsStore.historyThread(parentId: parentId, anchorMessageId: anchorMessageId)
                 },
-                threadById: { [self] parentId, suffix in
-                    agentHistoryThreadById(parentId: parentId, suffix: suffix)
+                threadById: { [serversAndChannelsStore] parentId, suffix in
+                    serversAndChannelsStore.historyThread(parentId: parentId, idPrefix: suffix)
                 },
-                threadByAnchorPrefix: { [self] parentId, suffix in
-                    agentHistoryThreadByAnchorPrefix(parentId: parentId, suffix: suffix)
+                threadByAnchorPrefix: { [serversAndChannelsStore] parentId, suffix in
+                    serversAndChannelsStore.historyThread(parentId: parentId, anchorPrefix: suffix)
                 },
                 agentReadUpdated: { [notificationsStore] serverId, channelId, agentId, seq in
                     notificationsStore.onAgentReadUpdated?(serverId, channelId, agentId, seq)
@@ -641,145 +886,40 @@ extension EmailLoginDirectory {
         )
     }
 
-    // MARK: - Integrations and app access
+    // MARK: - Native notifications, agent attachments and integration tokens
 
-    /// Setup declarations, Marketplace installs, agent grants and the app event
-    /// feed. The OAuth ledger owns every row; only the human session lookup
-    /// belongs to an unmigrated domain.
-    public var integrationsAndAppAccess: IntegrationsAndAppAccessService {
-        IntegrationsAndAppAccessService(
-            oauth: oauth,
-            sessionUserId: { [self] authorization in
-                sessionUserId(authorization: authorization)
-            }
+    /// Native notification enrollment, devices, credentials, the stream open and
+    /// the event ledger. The rows live in the notifications store's native
+    /// store; the kill switch and attestation policy in the notifications store;
+    /// the sessions come from the profile store.
+    public var nativeNotifications: NativeNotificationsService {
+        NativeNotificationsService(
+            rows: notificationsStore.native,
+            settings: notificationsStore,
+            profiles: authProfileStore
         )
     }
 
-    /// Scoped attachment comments. The session, the agent credential, the
-    /// feature-flag gate, the attachment visibility rules, the thread lookup and
-    /// the mention-row writer belong to unmigrated domains and enter as closures.
-    public var attachmentComments: AttachmentCommentsService {
-        AttachmentCommentsService(
+    /// The agent attachment download, the minted download URL and the shared
+    /// agent visibility rule. The credential decision belongs to the feedback
+    /// locator service.
+    public var agentAttachments: AgentAttachmentsService {
+        AgentAttachmentsService(
             messages: messagesAndThreadsStore,
             channels: serversAndChannelsStore,
+            agents: agentsRuntimeStore,
+            oauth: oauth,
+            locators: feedbackLocators
+        )
+    }
+
+    /// `POST /internal/agent-api/integrations/token`.
+    public var agentIntegrationTokens: AgentIntegrationTokenService {
+        AgentIntegrationTokenService(
+            agents: agentsRuntimeStore,
+            grants: managedMCPAndCardsStore,
             profiles: authProfileStore,
-            oauth: oauth,
-            dependencies: AttachmentCommentsDependencies(
-                sessionUserId: { [self] authorization in
-                    sessionUserId(authorization: authorization)
-                },
-                commentsEnabled: { [self] serverId, userId in
-                    attachmentCommentsEnabled(serverId: serverId, userId: userId)
-                },
-                visibleAttachment: { [self] userId, serverId, attachment in
-                    visibleAttachment(userId: userId, serverId: serverId, attachment: attachment)
-                },
-                visibleAttachmentUnlocked: { [self] userId, serverId, attachment in
-                    visibleAttachmentUnlocked(userId: userId, serverId: serverId, attachment: attachment)
-                },
-                agentCredential: { [self] authorization in
-                    agentCredentialAgent(authorization)
-                },
-                agentVisibleAttachment: { [self] agentId, serverId, attachmentId in
-                    agentVisibleAttachment(agentId: agentId, serverId: serverId, attachmentId: attachmentId)
-                },
-                agentHistoryThread: { [self] parentId, anchorMessageId in
-                    agentHistoryThread(parentId: parentId, anchorMessageId: anchorMessageId)
-                },
-                recordMemberMentionRows: { [self] messageId, channelId, mentions in
-                    recordMemberMentionRows(messageId: messageId, channelId: channelId, mentions: mentions)
-                }
-            )
+            oauth: oauth
         )
-    }
-
-    /// The agent integration-app surface. The agent credential and the
-    /// Marketplace install card (target resolution plus card write, both owned by
-    /// the action-card domain) enter as closures.
-    public var agentIntegrationApps: AgentIntegrationAppsService {
-        AgentIntegrationAppsService(
-            oauth: oauth,
-            logins: managedMCPAndCardsStore,
-            dependencies: AgentIntegrationAppsDependencies(
-                agentCredential: { [self] authorization in
-                    agentCredentialAgent(authorization)
-                },
-                prepareMarketplaceInstallCard: { [self] agent, client, scopes, target in
-                    guard let resolved = actionCardTarget(
-                        serverId: agent.serverId, agentId: agent.id, target: target
-                    ) else { return nil }
-                    return actionCardIntegrationRegister.prepareMarketplaceInstallCard(
-                        serverId: agent.serverId,
-                        agent: agent,
-                        client: client,
-                        scopes: scopes,
-                        target: resolved
-                    )
-                }
-            )
-        )
-    }
-
-    /// The agent mention-delivery and message-resolve lookups. The agent
-    /// credential and the shared message-visibility rule (owned by the migrated
-    /// search service) enter as closures.
-    public var agentMessageLookup: AgentMessageLookupService {
-        let search = searchMentions
-        return AgentMessageLookupService(
-            messages: messagesAndThreadsStore,
-            channels: serversAndChannelsStore,
-            profiles: authProfileStore,
-            oauth: oauth,
-            dependencies: AgentMessageLookupDependencies(
-                agentCredential: { [self] authorization in
-                    agentCredentialAgent(authorization)
-                },
-                messageVisible: { channelId, serverId, agentId in
-                    search.messageVisible(messageChannelId: channelId, serverId: serverId, viewer: .agent(agentId))
-                }
-            )
-        )
-    }
-
-    // MARK: - Attachment-comment helpers with callers in other domains
-    //
-    // Moved unchanged from the retired integrations extension: the feature-flag
-    // gate is read by search and the profile/files accessor, and the two chip
-    // projections are read by search and the auth-core human message surface.
-
-    /// Feature flag gate shared by the attachment-comment routes. It answers
-    /// before body validation so a disabled server sees one uniform 403.
-    public func attachmentCommentsEnabled(serverId: String, userId: String? = nil) -> Bool {
-        evaluateFeatureFlagKey(
-            key: "attachment_comments_v0",
-            userId: userId ?? "",
-            serverId: serverId,
-            platform: nil,
-            client: FeatureFlagClientFacts(os: nil, buildNumber: nil, buildType: nil)
-        ).enabled
-    }
-
-    /// Attachment projection with the scoped comment count; a viewer who cannot
-    /// use attachment comments always observes zero, never a hint.
-    func messageAttachmentsJSONLocked(_ ids: [String], commentsVisible: Bool) -> String {
-        ids.map { id -> String in
-            let count = commentsVisible ? (attachmentCommentRecords[id]?.count ?? 0) : 0
-            return "{\"id\":\(jsonString(id)),\"commentCount\":\(count)}"
-        }.joined(separator: ",")
-    }
-
-    /// Scoped commentRef projection. Callers hold the directory lock. The chip
-    /// payload carries the host coordinates the client routes with; it is only
-    /// emitted to viewers who may see the scoped comment.
-    func commentRefJSONLocked(messageId: String) -> String? {
-        for (attachmentId, records) in attachmentCommentRecords {
-            guard let record = records.first(where: { $0.id == messageId }),
-                  let hostMessageId = record.hostMessageId,
-                  let hostChannelId = record.hostChannelId
-            else { continue }
-            let threadJSON = record.threadChannelId.map(jsonString) ?? "null"
-            return "{\"attachmentId\":\(jsonString(attachmentId)),\"hostMessageId\":\(jsonString(hostMessageId)),\"hostSource\":{\"type\":\"channel\",\"routeKind\":\"channel\",\"channelId\":\(jsonString(hostChannelId)),\"rootThreadChannelId\":\(threadJSON)}}"
-        }
-        return nil
     }
 }

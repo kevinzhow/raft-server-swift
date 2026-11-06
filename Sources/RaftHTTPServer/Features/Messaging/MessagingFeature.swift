@@ -35,6 +35,13 @@ public struct MessagingFeature: RouteCollection, Sendable {
         let actions = routes.grouped("api", "actions")
         let tasks = routes.grouped("api", "tasks")
         let humanMessageCreate = services.emailAccounts.humanMessageCreate
+        // The claim publishes `task:updated` through the channel-messaging
+        // domain; the service hands it the claimed task's published JSON.
+        let assignments = services.emailAccounts.channelAssignments(
+            publishTaskUpdated: { replyBody in
+                services.channelMessaging.publishTaskUpdated(status: 200, replyBody: replyBody)
+            }
+        )
         let inbox = services.emailAccounts.inboxAndWake
         readMutations.post { request async throws -> Response in
             let body = await jsonRequestBody(LenientJSONObjectRequest.self, request, emptyDefault: "{}")
@@ -300,89 +307,114 @@ public struct MessagingFeature: RouteCollection, Sendable {
                     .trimmingCharacters(in: CharacterSet(charactersIn: "\"")),
                   !boundary.isEmpty
             else {
-                return routeResponse(HTTPReply(status: 400, headers: [:], body: "{\"error\":\"Invalid multipart upload\"}"))
+                return respond(status: 400, headers: .exact([:]), rawJSON: "{\"error\":\"Invalid multipart upload\"}")
             }
             let buffer = try await request.body.collect(max: .specified(ByteCount(value: 300 * 1024 * 1024)))
             guard let buffer, let parsed = parseAttachmentMultipart(data: buffer, boundary: boundary) else {
-                return routeResponse(HTTPReply(status: 400, headers: [:], body: "{\"error\":\"Invalid multipart upload\"}"))
+                return respond(status: 400, headers: .exact([:]), rawJSON: "{\"error\":\"Invalid multipart upload\"}")
             }
-            return routeResponse(services.emailAccounts.uploadAttachments(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: parsed.channelId,
-                files: parsed.files.map { (filename: $0.filename, mimeType: $0.mimeType, sizeBytes: $0.sizeBytes) }
-            ))
+            return try await respond {
+                try services.emailAccounts.agentsLifecycle.uploadAttachments(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: parsed.channelId,
+                    files: parsed.files.map {
+                        AttachmentUploadFile(filename: $0.filename, mimeType: $0.mimeType, sizeBytes: $0.sizeBytes)
+                    }
+                )
+            }
         }
-        attachments.post("upload-sessions") { request -> Response in
-            routeResponse(services.emailAccounts.attachmentUploadSessionCreate(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
-            ))
+        attachments.post("upload-sessions") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentsLifecycle.attachmentUploadSessionCreate(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+                )
+            }
         }
-        attachments.get("upload-sessions", ":uploadId") { request -> Response in
-            routeResponse(services.emailAccounts.attachmentUploadSessionMissing(
-                authorization: request.headers[.authorization],
-                uploadId: request.parameters.get("uploadId") ?? ""
-            ))
+        attachments.get("upload-sessions", ":uploadId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentsLifecycle.attachmentUploadSessionMissing(
+                    authorization: request.headers[.authorization],
+                    uploadId: request.parameters.get("uploadId") ?? ""
+                )
+            }
         }
-        attachments.delete("upload-sessions", ":uploadId") { request -> Response in
-            routeResponse(services.emailAccounts.attachmentUploadSessionMissing(
-                authorization: request.headers[.authorization],
-                uploadId: request.parameters.get("uploadId") ?? ""
-            ))
+        attachments.delete("upload-sessions", ":uploadId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentsLifecycle.attachmentUploadSessionMissing(
+                    authorization: request.headers[.authorization],
+                    uploadId: request.parameters.get("uploadId") ?? ""
+                )
+            }
         }
-        attachments.post("upload-sessions", ":uploadId", "complete") { request -> Response in
-            routeResponse(services.emailAccounts.attachmentUploadSessionMissing(
-                authorization: request.headers[.authorization],
-                uploadId: request.parameters.get("uploadId") ?? ""
-            ))
+        attachments.post("upload-sessions", ":uploadId", "complete") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentsLifecycle.attachmentUploadSessionMissing(
+                    authorization: request.headers[.authorization],
+                    uploadId: request.parameters.get("uploadId") ?? ""
+                )
+            }
         }
-        attachments.get("upload-capabilities") { request -> Response in
-            routeResponse(services.emailAccounts.attachmentUploadCapabilities(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
-            ))
+        attachments.get("upload-capabilities") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentsLifecycle.attachmentUploadCapabilities(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+                )
+            }
         }
-        attachments.get(":id") { request -> Response in
+        attachments.get(":id") { request async throws -> Response in
             if desktopQuery(request.url.query, "previewToken") != nil {
-                return routeResponse(HTTPReply(status: 401, headers: [:], body: "{\"error\":\"Unauthorized\"}"))
+                return respond(status: 401, headers: .exact([:]), rawJSON: "{\"error\":\"Unauthorized\"}")
             }
             if request.headers[.authorization] == nil, desktopQuery(request.url.query, "token") != nil {
-                return routeResponse(services.emailAccounts.attachmentQueryTokenStream(
+                return try await respond(headers: { (stream: AttachmentStreamBody) in stream.headers }) {
+                    try services.emailAccounts.agentsLifecycle.attachmentQueryTokenStream(
+                        attachmentId: request.parameters.get("id") ?? "",
+                        token: desktopQuery(request.url.query, "token") ?? "",
+                        serverId: desktopQuery(request.url.query, "serverId")
+                    )
+                }
+            }
+            return try await respond {
+                try services.emailAccounts.agentsLifecycle.readAttachment(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!],
                     attachmentId: request.parameters.get("id") ?? "",
-                    token: desktopQuery(request.url.query, "token") ?? "",
-                    serverId: desktopQuery(request.url.query, "serverId")
-                ))
+                    kind: .metadata
+                )
             }
-            return routeResponse(services.emailAccounts.readAttachment(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                attachmentId: request.parameters.get("id") ?? "",
-                kind: "metadata"
-            ))
         }
-        attachments.get(":id", "html-preview") { request -> Response in
-            let reply = services.emailAccounts.attachmentHTMLPreview(
-                attachmentId: request.parameters.get("id") ?? "",
-                serverId: desktopQuery(request.url.query, "serverId") ?? request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                previewToken: desktopQuery(request.url.query, "previewToken"),
-                bearerQuery: desktopQuery(request.url.query, "token")
-            )
-            // The preview streams the stored document plus the appended bridge, so
-            // it must not carry the stored Content-Length.
-            if reply.status == 200 { return vaporStreamingResponse(reply) }
-            return routeResponse(reply)
+        attachments.get(":id", "html-preview") { request async throws -> Response in
+            let preview: AttachmentHTMLPreview
+            do {
+                preview = try services.emailAccounts.agentsLifecycle.attachmentHTMLPreview(
+                    attachmentId: request.parameters.get("id") ?? "",
+                    serverId: desktopQuery(request.url.query, "serverId") ?? request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    previewToken: desktopQuery(request.url.query, "previewToken"),
+                    bearerQuery: desktopQuery(request.url.query, "token")
+                )
+            } catch let error as any DomainError {
+                return respond(status: error.status, headers: error.errorHeaders, rawJSON: error.publishedErrorBody.render())
+            }
+            // Feature-local on purpose: the preview streams the stored document
+            // plus the appended bridge, so it must not carry a Content-Length
+            // (`respond` always writes one).
+            return streamingResponse(preview)
         }
-        attachments.get(":id", "html-preview-url") { request -> Response in
+        attachments.get(":id", "html-preview-url") { request async throws -> Response in
             if desktopQuery(request.url.query, "previewToken") != nil {
-                return routeResponse(HTTPReply(status: 401, headers: [:], body: "{\"error\":\"Unauthorized\"}"))
+                return respond(status: 401, headers: .exact([:]), rawJSON: "{\"error\":\"Unauthorized\"}")
             }
-            return routeResponse(services.emailAccounts.readAttachment(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                attachmentId: request.parameters.get("id") ?? "",
-                kind: "html-preview-url"
-            ))
+            return try await respond {
+                try services.emailAccounts.agentsLifecycle.readAttachment(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+                    attachmentId: request.parameters.get("id") ?? "",
+                    kind: .htmlPreviewURL
+                )
+            }
         }
         tasks.get("server", "snapshot-metrics") { request async throws -> Response in
             try await respond {
@@ -433,12 +465,14 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 )
             }
         }
-        tasks.delete(":taskId") { request -> Response in
-            routeResponse(services.emailAccounts.deleteTask(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                taskId: request.parameters.get("taskId") ?? ""
-            ))
+        tasks.delete(":taskId") { request async throws -> Response in
+            try await respond {
+                try assignments.deleteTask(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    taskId: request.parameters.get("taskId") ?? ""
+                )
+            }
         }
         tasks.patch(":taskId", "assignee") { request async throws -> Response in
             // A body sent without a JSON Content-Type was accepted before; a
@@ -453,56 +487,55 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 )
             }
         }
-        tasks.patch(":taskId", "unclaim") { request -> Response in
-            routeResponse(services.emailAccounts.unclaimTask(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                taskId: request.parameters.get("taskId") ?? ""
-            ))
+        tasks.patch(":taskId", "unclaim") { request async throws -> Response in
+            try await respond {
+                try assignments.unclaimTask(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    taskId: request.parameters.get("taskId") ?? ""
+                )
+            }
         }
-        tasks.patch(":taskId", "claim") { request -> Response in
-            let reply = services.emailAccounts.claimTask(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                taskId: request.parameters.get("taskId") ?? ""
-            )
-            services.channelMessaging.publishTaskUpdated(status: reply.status, replyBody: reply.body)
-            return routeResponse(reply)
+        tasks.patch(":taskId", "claim") { request async throws -> Response in
+            try await respond {
+                try assignments.claimTask(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    taskId: request.parameters.get("taskId") ?? ""
+                )
+            }
         }
         tasks.patch(":taskId", "status") { request async throws -> Response in
-            let taskId = request.parameters.get("taskId") ?? ""
-            let authorization = request.headers[.authorization]
-            let serverId = request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
             // `status` is the only key this route reads; an unknown value still
-            // answers the directory's `Invalid task status` 400.
-            if let body = try? await request.content.decode(TaskStatusUpdateRequestDTO.self) {
-                return routeResponse(services.emailAccounts.updateTaskStatus(
-                    authorization: authorization,
-                    serverId: serverId,
-                    taskId: taskId,
-                    body: body.encodedBody()
-                ))
+            // answers the published `Invalid task status` 400.
+            let body = await jsonRequestBody(TaskStatusRequest.self, request)
+            return try await respond {
+                try assignments.updateTaskStatus(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    taskId: request.parameters.get("taskId") ?? "",
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.updateTaskStatus(
-                authorization: authorization,
-                serverId: serverId,
-                taskId: taskId,
-                body: try await request.bodyText()
-            ))
         }
         tasks.post("convert-message") { request async throws -> Response in
-            routeResponse(services.emailAccounts.convertMessageToTask(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(TaskConvertRequest.self, request)
+            return try await respond {
+                try assignments.convertMessageToTask(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    body: body
+                )
+            }
         }
-        tasks.get("server") { request -> Response in
-            routeResponse(services.emailAccounts.listServerTasks(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                rawQuery: request.url.query
-            ))
+        tasks.get("server") { request async throws -> Response in
+            try await respond(headers: { $0.headers }) {
+                try assignments.listServerTasks(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    rawQuery: request.url.query
+                )
+            }
         }
 }
 
@@ -576,15 +609,14 @@ private func parseAttachmentMultipart(data: Data, boundary: String) -> (channelI
     return (channelId, files)
 }
 
-private func vaporStreamingResponse(_ reply: HTTPReply) -> Response {
+private func streamingResponse(_ preview: AttachmentHTMLPreview) -> Response {
     var headers = HTTPFields()
-    for (name, value) in reply.headers {
+    for (name, value) in preview.headers {
         guard let field = HTTPField.Name(name) else { continue }
-        if field == .contentLength { continue }
         headers[field] = value
     }
-    var response = Response(status: httpStatus(reply.status), headers: headers)
-    let body = reply.body
+    var response = Response(status: .ok, headers: headers)
+    let body = preview.body
     response.body = Response.Body { writer in
         try await writer.write(body)
     }

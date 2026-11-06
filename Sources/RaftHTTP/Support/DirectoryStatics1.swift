@@ -18,105 +18,8 @@ extension EmailLoginDirectory {
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
-    static func evaluateAttestation(body: String, mode: String?, nodeEnv: String, verifier: ((String) -> Bool)?) -> (state: String, evidenceHash: String?) {
-        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
-        let raw = object?["attestation"] as? String
-        let evidence = (raw?.isEmpty == false && (raw?.count ?? 0) <= 4096) ? raw : nil
-        let enforce = nodeEnv == "production" || mode == "enforce" || (mode != nil && mode != "observe")
-        let verified = evidence != nil && verifier?(evidence!) == true
-        let hash = evidence.map { sha256($0) }
-        if enforce && !verified { return ("rejected", hash) }
-        if verified { return ("verified", hash) }
-        return (evidence == nil ? "missing" : "observed", hash)
-    }
-
-    static func parseEnrollmentRequest(_ body: String) -> (appId: String, protocolVersion: Int, appVersion: String, releaseChannel: String, appInstanceId: String, publicKey: String, nonce: String)? {
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let appId = object["appId"] as? String,
-              appId == "ai.slock.desktop",
-              appId.wholeMatch(of: /^[a-z0-9]+(?:\.[a-z0-9-]+){2,7}$/) != nil,
-              ((object["protocolVersion"] as? NSNumber)?.intValue ?? object["protocolVersion"] as? Int) == 1,
-              let appVersion = object["appVersion"] as? String,
-              appVersion.wholeMatch(of: /^[A-Za-z0-9][A-Za-z0-9._+()-]{0,63}$/) != nil,
-              let releaseChannel = object["releaseChannel"] as? String,
-              releaseChannel == "development" || releaseChannel == "staging" || releaseChannel == "production",
-              let appInstanceId = object["appInstanceId"] as? String,
-              appInstanceId.wholeMatch(of: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/) != nil,
-              let publicKey = object["publicKey"] as? String,
-              canonicalBase64URL(publicKey, minBytes: 32, maxBytes: 128) != nil,
-              let nonce = object["nonce"] as? String,
-              canonicalBase64URL(nonce, minBytes: 32, maxBytes: 32) != nil
-        else { return nil }
-        return (appId, 1, appVersion, releaseChannel, appInstanceId, publicKey, nonce)
-    }
-
-    static func parseOpaqueCredential(_ value: String, prefix: String) -> (id: String, secret: String)? {
-        guard value.count <= 160 else { return nil }
-        let parts = value.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
-        guard parts.count == 3, parts[0] == prefix,
-              parts[1].wholeMatch(of: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/) != nil,
-              canonicalBase64URL(parts[2], minBytes: 32, maxBytes: 32) != nil
-        else { return nil }
-        return (parts[1], parts[2])
-    }
-
-    static func canonicalBase64URL(_ value: String, minBytes: Int, maxBytes: Int) -> Data? {
-        guard value.wholeMatch(of: /^[A-Za-z0-9_-]+$/) != nil,
-              let bytes = base64urlDecode(value),
-              (minBytes...maxBytes).contains(bytes.count),
-              base64url(bytes) == value
-        else { return nil }
-        return bytes
-    }
-
-    static func mintOpaqueCredential(prefix: String, id: String) -> (opaque: String, secretHash: String) {
-        var bytes = Data(count: 32)
-        for index in bytes.indices {
-            bytes[index] = UInt8.random(in: 0...255)
-        }
-        let secret = base64url(bytes)
-        return ("\(prefix).\(id).\(secret)", sha256(secret))
-    }
-
-    static func verifyEd25519(publicKeySPKI: String, transcript: Data, proof: String) -> Bool {
-        guard let signature = canonicalBase64URL(proof, minBytes: 64, maxBytes: 64),
-              let spki = canonicalBase64URL(publicKeySPKI, minBytes: 44, maxBytes: 44)
-        else { return false }
-        let prefix = Data([0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00])
-        guard spki.starts(with: prefix), spki.count == 44,
-              let key = try? Curve25519.Signing.PublicKey(rawRepresentation: spki.dropFirst(prefix.count))
-        else { return false }
-        return key.isValidSignature(signature, for: transcript)
-    }
-
-    static func sseFrame(_ event: StoredNativeNotificationEvent) -> String {
-        let data = "{\"body\":\(jsonString(event.body)),\"createdAt\":\(jsonString(iso8601(event.createdAt))),\"eventId\":\(jsonString(event.eventId)),\"serverId\":\(jsonString(event.serverId)),\"targetUri\":\(jsonString(event.targetUri)),\"title\":\(jsonString(event.title)),\"version\":1}"
-        return "event: native-notification.v1\nid: \(event.eventId)\ndata: \(data)\n\n"
-    }
-
     static func empty(_ status: Int) -> HTTPReply {
         HTTPReply(status: status, headers: ["Content-Length": "0"], body: "")
-    }
-
-    static func featureFlagClientFacts(_ object: [String: Any]) -> FeatureFlagClientFacts {
-        let osValues: Set<String> = ["android", "ios", "ohos"]
-        let buildTypes: Set<String> = ["release", "alpha", "debug"]
-        let os = (object["os"] as? String).flatMap { osValues.contains($0) ? $0 : nil }
-        let buildType = (object["buildType"] as? String).flatMap { buildTypes.contains($0) ? $0 : nil }
-        var buildNumber: Int?
-        if let raw = object["buildNumber"] {
-            if let string = raw as? String, string.range(of: "^[0-9]{1,15}$", options: .regularExpression) != nil {
-                buildNumber = Int(string)
-            } else if let number = raw as? NSNumber,
-                      String(cString: number.objCType) != "c",
-                      String(cString: number.objCType) != "B",
-                      number.doubleValue >= 0,
-                      number.doubleValue.rounded() == number.doubleValue,
-                      number.doubleValue <= Double(Int.max) {
-                buildNumber = number.intValue
-            }
-        }
-        return FeatureFlagClientFacts(os: os, buildNumber: buildNumber, buildType: buildType)
     }
 
     static func searchSnippet(_ content: String) -> String {
@@ -286,16 +189,6 @@ extension EmailLoginDirectory {
         return min(parsed, 200)
     }
 
-    static func parseDoneFrontier(_ raw: Any?) -> Int? {
-        guard let text = raw as? String, !text.isEmpty,
-              text == text.trimmingCharacters(in: .whitespacesAndNewlines),
-              text.count <= 19,
-              text.range(of: "^[1-9][0-9]*$", options: .regularExpression) != nil,
-              let value = Int(text), value > 0
-        else { return nil }
-        return value
-    }
-
     static func inboxQueryParameters(_ query: String?) -> [String: String] {
         guard let query, !query.isEmpty else { return [:] }
         var result: [String: String] = [:]
@@ -306,14 +199,6 @@ extension EmailLoginDirectory {
             result[name] = value
         }
         return result
-    }
-
-    static func inertThirdPartyMentions(_ text: String) -> String {
-        text.replacingOccurrences(
-            of: "@([A-Za-z0-9_.-]+)",
-            with: "user:$1",
-            options: .regularExpression
-        )
     }
 
     static func validReactionEmoji(_ raw: String) -> String? {
@@ -435,36 +320,6 @@ extension EmailLoginDirectory {
         return "dvc_\(encoded)"
     }
 
-    static func deviceNotReady(_ code: String, status: Int) -> HTTPReply {
-        json(status, "{\"error\":\"Device authorization not ready\",\"code\":\(jsonString(code))}")
-    }
-
-    static func deviceUpdateFailed(_ code: String, status: Int) -> HTTPReply {
-        json(status, "{\"error\":\"Device authorization could not be updated\",\"code\":\(jsonString(code))}")
-    }
-
-    static func stagingCapability(_ value: Any?, into issues: inout [Issue]) -> String? {
-        guard let value else { return nil }
-        guard let text = value as? String else {
-            issues.append(Issue(path: "stagingSelfAccountCapability", message: "Expected string, received \(kind(value))"))
-            return nil
-        }
-        if text.count < 32 {
-            issues.append(Issue(path: "stagingSelfAccountCapability", message: "String must contain at least 32 character(s)"))
-            return nil
-        }
-        if text.count > 256 {
-            issues.append(Issue(path: "stagingSelfAccountCapability", message: "String must contain at most 256 character(s)"))
-            return nil
-        }
-        return text
-    }
-
-    static func retirementJSON(_ receipt: RetirementReceipt) -> HTTPReply {
-        let body = "{\"receipt\":{\"userId\":\(jsonString(receipt.userId)),\"actorUserId\":\(jsonString(receipt.actorUserId)),\"environment\":\(jsonString(receipt.environment)),\"terminalState\":\(jsonString(receipt.terminalState)),\"sessionsRevoked\":\(receipt.sessionsRevoked)}}"
-        return json(200, body)
-    }
-
     static func parseConfiguredMobileReturnURIs(_ raw: String?) -> Set<String> {
         guard let raw else { return [] }
         var values: Set<String> = []
@@ -525,85 +380,6 @@ extension EmailLoginDirectory {
         }
         body += "}"
         return json(200, body)
-    }
-
-    static func featureFlagKey(_ value: Any) -> String? {
-        guard let string = value as? String else { return nil }
-        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.wholeMatch(of: /^[a-z0-9][a-z0-9_.-]{0,127}$/) != nil else { return nil }
-        return trimmed
-    }
-
-    static func stringField(_ value: Any?, path: String, into issues: inout [Issue]) -> String? {
-        guard let value else {
-            issues.append(Issue(path: path, message: "Required"))
-            return nil
-        }
-        if let string = value as? String {
-            if string.isEmpty {
-                issues.append(Issue(path: path, message: "String must contain at least 1 character(s)"))
-                return nil
-            }
-            return string
-        }
-        issues.append(Issue(path: path, message: "Expected string, received \(kind(value))"))
-        return nil
-    }
-
-    static func kind(_ value: Any) -> String {
-        if value is NSNull { return "null" }
-        if value is String { return "string" }
-        if value is NSDictionary { return "object" }
-        if value is NSArray { return "array" }
-        if value is Bool { return "boolean" }
-        if value is NSNumber { return "number" }
-        return "object"
-    }
-
-    static func registerInvalid(_ issues: [Issue]) -> HTTPReply {
-        bodyIssues(issues, error: "Invalid email registration body", code: "email_register_body_invalid")
-    }
-
-    static func bodyIssues(_ issues: [Issue], error: String, code: String) -> HTTPReply {
-        let listed = issues.map {
-            "{\"path\":\(jsonString($0.path)),\"message\":\(jsonString($0.message))}"
-        }.joined(separator: ",")
-        return json(400, "{\"error\":\(jsonString(error)),\"code\":\(jsonString(code)),\"issues\":[\(listed)]}")
-    }
-
-    static func deviceContext(userAgent: String, country: String) -> [String: Any] {
-        var context: [String: Any] = [:]
-        if let range = userAgent.range(of: "Chrome/") {
-            let rest = userAgent[range.upperBound...]
-            let major = rest.prefix(while: { $0 != "." && !$0.isWhitespace })
-            context["$browser"] = "chrome"
-            if let version = Int(major) { context["$browser_version"] = version }
-        } else if userAgent.contains("Firefox/") {
-            context["$browser"] = "firefox"
-        } else if userAgent.contains("Safari/") {
-            context["$browser"] = "safari"
-        } else {
-            context["$browser"] = "unknown"
-        }
-        if userAgent.contains("Windows") {
-            context["$os"] = "windows"
-        } else if userAgent.contains("Mac OS X") {
-            context["$os"] = "macos"
-        } else if userAgent.contains("Android") {
-            context["$os"] = "android"
-        } else if userAgent.contains("iPhone") || userAgent.contains("iPad") {
-            context["$os"] = "ios"
-        } else if userAgent.contains("Linux") {
-            context["$os"] = "linux"
-        } else {
-            context["$os"] = "unknown"
-        }
-        context["$device_type"] = userAgent.contains("Mobile") ? "mobile" : "desktop"
-        let normalizedCountry = country.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        if normalizedCountry.wholeMatch(of: /^[A-Z]{2}$/) != nil {
-            context["$country"] = normalizedCountry
-        }
-        return context
     }
 
     static func serializeJSON(_ object: [String: Any]) -> String {

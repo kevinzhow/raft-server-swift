@@ -136,10 +136,12 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.get() { request -> Response in
-            routeResponse(services.emailAccounts.agentApiIdentity(
-                authorization: request.headers[.authorization]
-            ))
+        agentApi.get() { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentsLifecycle.agentApiIdentity(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         agentApi.get("profile") { request async throws -> Response in
             try await respond {
@@ -158,11 +160,13 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.post("channels", ":channelId", "leave") { request -> Response in
-            routeResponse(services.emailAccounts.agentLeaveChannel(
-                authorization: request.headers[.authorization],
-                channelId: request.parameters.get("channelId") ?? ""
-            ))
+        agentApi.post("channels", ":channelId", "leave") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.channelAssignments().agentLeaveChannel(
+                    authorization: request.headers[.authorization],
+                    channelId: request.parameters.get("channelId") ?? ""
+                )
+            }
         }
         agentApi.patch("server") { request async throws -> Response in
             let body = await jsonRequestBody(AgentServerUpdateRequest.self, request, emptyDefault: "{}")
@@ -184,32 +188,42 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
         }
         agentApi.post("channels", "archive") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentChannelArchive(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}"),
-                archive: true
-            ))
+            let body = await jsonRequestBody(AgentChannelArchiveRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.managedMCPToolExecution.agentChannelArchive(
+                    authorization: request.headers[.authorization],
+                    body: body,
+                    archive: true
+                )
+            }
         }
         agentApi.post("channels", "unarchive") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentChannelArchive(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}"),
-                archive: false
-            ))
+            let body = await jsonRequestBody(AgentChannelArchiveRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.managedMCPToolExecution.agentChannelArchive(
+                    authorization: request.headers[.authorization],
+                    body: body,
+                    archive: false
+                )
+            }
         }
-        agentApi.post("channels", ":channelId", "mute") { request -> Response in
-            routeResponse(services.emailAccounts.agentSetChannelMute(
-                authorization: request.headers[.authorization],
-                channelId: request.parameters.get("channelId") ?? "",
-                muted: true
-            ))
+        agentApi.post("channels", ":channelId", "mute") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPToolExecution.agentSetChannelMute(
+                    authorization: request.headers[.authorization],
+                    channelId: request.parameters.get("channelId") ?? "",
+                    muted: true
+                )
+            }
         }
-        agentApi.post("channels", ":channelId", "unmute") { request -> Response in
-            routeResponse(services.emailAccounts.agentSetChannelMute(
-                authorization: request.headers[.authorization],
-                channelId: request.parameters.get("channelId") ?? "",
-                muted: false
-            ))
+        agentApi.post("channels", ":channelId", "unmute") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPToolExecution.agentSetChannelMute(
+                    authorization: request.headers[.authorization],
+                    channelId: request.parameters.get("channelId") ?? "",
+                    muted: false
+                )
+            }
         }
         agentApi.post("channels", ":channelId", "members") { request async throws -> Response in
             let body = await jsonRequestBody(AgentChannelMemberRequest.self, request, emptyDefault: "{}")
@@ -267,10 +281,12 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.get("attachment-upload-capabilities") { request -> Response in
-            routeResponse(services.emailAccounts.agentAttachmentUploadCapabilities(
-                authorization: request.headers[.authorization]
-            ))
+        agentApi.get("attachment-upload-capabilities") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentsLifecycle.agentAttachmentUploadCapabilities(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         agentApi.get("history") { request async throws -> Response in
             try await respond {
@@ -328,17 +344,38 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.get("attachments", ":attachmentId") { request -> Response in
-            routeResponse(services.emailAccounts.agentAttachmentDownload(
-                authorization: request.headers[.authorization],
-                attachmentId: request.parameters.get("attachmentId") ?? ""
+        agentApi.get("attachments", ":attachmentId") { request async throws -> Response in
+            // The refusal projects through `respond`. The byte reply is the one
+            // shape `respond` cannot express: `Content-Length` is the stored
+            // byte count while the body is the lossily decoded text, and the
+            // `Content-Type` is the attachment's own.
+            var stored: AgentAttachmentDownload?
+            let refusal = try await respond { () throws -> OkResponse in
+                stored = try services.emailAccounts.agentAttachments.download(
+                    authorization: request.headers[.authorization],
+                    attachmentId: request.parameters.get("attachmentId") ?? ""
+                )
+                return OkResponse()
+            }
+            guard let stored else { return refusal }
+            return routeResponse(HTTPReply(
+                status: 200,
+                headers: [
+                    "Content-Type": stored.mimeType,
+                    "Content-Length": String(stored.bytes.count),
+                    "Cache-Control": "private, no-store",
+                    "Content-Disposition": "attachment; filename=\"\(stored.filename)\"; filename*=UTF-8''\(stored.encodedFilename)",
+                ],
+                body: String(decoding: stored.bytes, as: UTF8.self)
             ))
         }
-        agentApi.get("attachments", ":attachmentId", "url") { request -> Response in
-            routeResponse(services.emailAccounts.agentAttachmentDownloadURL(
-                authorization: request.headers[.authorization],
-                attachmentId: request.parameters.get("attachmentId") ?? ""
-            ))
+        agentApi.get("attachments", ":attachmentId", "url") { request async throws -> Response in
+            try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
+                try services.emailAccounts.agentAttachments.downloadURL(
+                    authorization: request.headers[.authorization],
+                    attachmentId: request.parameters.get("attachmentId") ?? ""
+                )
+            }
         }
         agentApi.get("integrations") { request async throws -> Response in
             try await respond {
@@ -400,10 +437,13 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
         }
         agentApi.post("integrations", "token") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentIntegrationToken(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
+            return try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
+                try services.emailAccounts.agentIntegrationTokens.issue(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         agentApi.get("context") { request async throws -> Response in
             try await respond {
@@ -634,11 +674,13 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.get("mentions") { request -> Response in
-            routeResponse(services.emailAccounts.agentMentionInbox(
-                authorization: request.headers[.authorization],
-                limit: desktopQuery(request.url.query, "limit")
-            ))
+        agentApi.get("mentions") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.reactionsRealtime.agentMentionInbox(
+                    authorization: request.headers[.authorization],
+                    limit: desktopQuery(request.url.query, "limit")
+                )
+            }
         }
         agentApi.post("prepare-action") { request async throws -> Response in
             let body = await jsonRequestBody(ActionCardPrepareRequest.self, request)
@@ -699,12 +741,14 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.get("wake-hints") { request -> Response in
-            routeResponse(services.emailAccounts.agentWakeHints(
-                authorization: request.headers[.authorization],
-                since: desktopQuery(request.url.query, "since"),
-                limit: desktopQuery(request.url.query, "limit")
-            ))
+        agentApi.get("wake-hints") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.reactionsRealtime.agentWakeHints(
+                    authorization: request.headers[.authorization],
+                    since: desktopQuery(request.url.query, "since"),
+                    limit: desktopQuery(request.url.query, "limit")
+                )
+            }
         }
         agentApi.get("wake-hints", "stream") { request async throws -> Response in
             // The refusal projects through `respond`; the open stream is the one
@@ -763,8 +807,12 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.get("events") { request -> Response in
-            routeResponse(services.emailAccounts.agentThirdPartyEvents(authorization: request.headers[.authorization]))
+        agentApi.get("events") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.reactionsRealtime.agentThirdPartyEvents(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         agentApi.post("third-party-events", "delivered") { request async throws -> Response in
             let body = await jsonRequestBody(ThirdPartyEventDeliveryRequestDTO.self, request)
@@ -789,23 +837,25 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                     .trimmingCharacters(in: CharacterSet(charactersIn: "\"")),
                   !boundary.isEmpty
             else {
-                return routeResponse(HTTPReply(status: 400, headers: [:], body: "{\"error\":\"Invalid multipart upload\"}"))
+                return respond(status: 400, headers: .exact([:]), rawJSON: "{\"error\":\"Invalid multipart upload\"}")
             }
             let buffer = try await request.body.collect(max: .specified(ByteCount(value: 300 * 1024 * 1024)))
             guard let buffer,
                   let parsed = parseAttachmentMultipart(data: buffer, boundary: boundary),
                   let file = parsed.files.first
             else {
-                return routeResponse(HTTPReply(status: 400, headers: [:], body: "{\"error\":\"Invalid multipart upload\"}"))
+                return respond(status: 400, headers: .exact([:]), rawJSON: "{\"error\":\"Invalid multipart upload\"}")
             }
-            return routeResponse(services.emailAccounts.uploadAgentAttachmentIdless(
-                authorization: request.headers[.authorization],
-                channelId: parsed.channelId,
-                filename: file.filename,
-                mimeType: file.mimeType,
-                sizeBytes: file.sizeBytes,
-                bytes: file.data
-            ))
+            return try await respond {
+                try services.emailAccounts.agentsLifecycle.uploadAgentAttachmentIdless(
+                    authorization: request.headers[.authorization],
+                    channelId: parsed.channelId,
+                    filename: file.filename,
+                    mimeType: file.mimeType,
+                    sizeBytes: file.sizeBytes,
+                    bytes: file.data
+                )
+            }
         }
     }
 }

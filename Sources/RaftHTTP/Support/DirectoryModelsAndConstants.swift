@@ -101,7 +101,7 @@ extension EmailLoginDirectory {
     static func feedbackSource(_ header: String) throws -> String {
         let normalized = header.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if normalized.isEmpty { return "web" }
-        guard productFeedbackSources.contains(normalized) else { throw FeedbackRouteFailure.invalidSource }
+        guard FeedbackService.productFeedbackSources.contains(normalized) else { throw FeedbackRouteFailure.invalidSource }
         return normalized
     }
 
@@ -167,8 +167,8 @@ extension EmailLoginDirectory {
             keyId: environment.routeSubjectKeyId,
             root: environment.routeSubjectRoot,
             commitmentLabel: environment.routeCommitmentScope == "multi"
-                ? Self.productFeedbackMultiCommitmentLabel
-                : Self.productFeedbackLegacyCommitmentLabel,
+                ? FeedbackService.productFeedbackMultiCommitmentLabel
+                : FeedbackService.productFeedbackLegacyCommitmentLabel,
             reporterIdSecret: environment.reporterIdSecret
         )
     }
@@ -449,16 +449,6 @@ extension EmailLoginDirectory {
         return "\(base)\(separator)provider=\(provider)&mode=\(mode)&code=\(code)\(hash)"
     }
 
-    static func redirect(_ location: String, cookie: String? = nil) -> HTTPReply {
-        var headers = [
-            "X-Robots-Tag": AppFallback.robotsTag,
-            "Location": location,
-            "Content-Length": "0",
-        ]
-        if let cookie { headers["Set-Cookie"] = cookie }
-        return HTTPReply(status: 302, headers: headers, body: "")
-    }
-
     static func isMobileUnsubscribeUserId(_ value: String) -> Bool {
         value.wholeMatch(of: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.ignoresCase()) != nil
     }
@@ -646,13 +636,6 @@ extension EmailLoginDirectory {
             return "/"
         }
         return input
-    }
-
-    static func returnToField(_ body: String) -> String? {
-        guard let data = body.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        return object["returnTo"] as? String
     }
 
     static func formFields(_ body: String) -> [String: String] {
@@ -847,46 +830,6 @@ extension EmailLoginDirectory {
         public var optedOutAt: Date?
     }
 
-    public struct NativeNotificationIntent: Sendable {
-        public var recipientUserId: String
-        public var eventKey: String
-        public var serverId: String
-        public var kind: String
-        public var channelId: String
-        public var threadId: String?
-        public var parentChannelId: String?
-        public var parentMessageId: String?
-        public var messageId: String
-        public var title: String
-        public var body: String
-        public var createdAt: Date
-
-        public init(recipientUserId: String, eventKey: String, serverId: String, kind: String, channelId: String, threadId: String?, parentChannelId: String?, parentMessageId: String?, messageId: String, title: String, body: String, createdAt: Date) {
-            self.recipientUserId = recipientUserId
-            self.eventKey = eventKey
-            self.serverId = serverId
-            self.kind = kind
-            self.channelId = channelId
-            self.threadId = threadId
-            self.parentChannelId = parentChannelId
-            self.parentMessageId = parentMessageId
-            self.messageId = messageId
-            self.title = title
-            self.body = body
-            self.createdAt = createdAt
-        }
-    }
-
-    public struct NativeEnrollmentGrantRecord: Sendable {
-        public var secretHash: String
-        public var json: String
-    }
-
-    public enum NativeStreamOpen: Sendable {
-        case closed(HTTPReply)
-        case streaming(userId: String, cursorSeq: Int, replay: [(seq: Int, frame: String)])
-    }
-
     public struct MobileAppEmailJourney: Equatable, Sendable {
         public var userId: String
         public var email: String
@@ -971,16 +914,7 @@ extension EmailLoginDirectory {
 
     public static let privacyURL = "https://raft.build/privacy"
 
-    static let doneFrontierInt4Limit = 2_147_483_647
-
     static let selfCausedFreshnessExemptSubtypes: Set<String> = ["task.created_summary"]
-
-    /// `GET /internal/agent-api/events`. Durable channel messages for the
-    /// external agent plus pending third-party events; the call drains both.
-    /// At most this many channel rows per conversation in one pull. The pull
-    /// advances each conversation's cursor, and `has_more` says whether
-    /// another call has anything left.
-    static let agentInboxPullCap = 5
 
     static let appLoginReturnUris: Set<String> = [
         "raft://login/callback",
@@ -1001,17 +935,9 @@ extension EmailLoginDirectory {
 
     static let invalidToken = json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
 
-    static let linkAuthRequired = json(401, "{\"code\":\"auth_required\",\"error\":\"Authentication is required to link an account\"}")
-
-    static let linkMismatch = json(403, "{\"code\":\"link_user_mismatch\",\"error\":\"Social auth link does not match the authenticated user\"}")
-
-    static let mobileLinkMismatch = json(403, "{\"code\":\"link_user_mismatch\",\"error\":\"Mobile OAuth link request does not match the authenticated user\"}")
-
     static let legalObject = "{\"termsVersion\":\"\(termsVersion)\",\"privacyVersion\":\"\(privacyVersion)\",\"termsUrl\":\"\(termsURL)\",\"privacyUrl\":\"\(privacyURL)\"}"
 
     static let legalRequired = json(422, "{\"error\":\"LEGAL_ACCEPTANCE_REQUIRED\",\"legal\":\(legalObject)}")
-
-    static let returnURINotAllowed = json(400, "{\"code\":\"return_uri_not_allowed\",\"error\":\"Mobile OAuth return URI is not allowed\"}")
 
     static let termsChanged = json(409, "{\"error\":\"TERMS_CHANGED\",\"legal\":\(legalObject)}")
 

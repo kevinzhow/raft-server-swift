@@ -288,6 +288,17 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Removes and returns the action reply events queued for one agent, in
+    /// queue order, in one critical section so two concurrent drains can never
+    /// both receive the same event.
+    func takePendingActionMessageEvents(agentId: String) -> [(agentId: String, messageId: String, content: String)] {
+        lock.lock()
+        defer { lock.unlock() }
+        let taken = storage.pendingActionMessageEvents.filter { $0.agentId == agentId }
+        storage.pendingActionMessageEvents.removeAll { $0.agentId == agentId }
+        return taken
+    }
+
     // MARK: - Agent-api idempotency
 
     /// Outcome of one idempotency-key lookup for an agent-api write.
@@ -666,5 +677,29 @@ extension ManagedMCPAndCardsStore {
         }
         storage.managedMCPAssignments[agentId, default: [:]][mcpServerId] = (enabled, allowedTools)
         return .stored
+    }
+}
+
+// MARK: - Agent audience tokens
+
+extension ManagedMCPAndCardsStore {
+    /// The audience status of one agent; an agent without an override is
+    /// `active`.
+    func agentAudienceStatus(agentId: String) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.agentAudienceStatusOverrides[agentId] ?? "active"
+    }
+
+    /// Admits an App token for the `agent\nclient` grant key unless the grant
+    /// was revoked, and records the grant as live on first use. The check and
+    /// the write are one critical section, so a revocation cannot slip between
+    /// them. `false` when the grant is revoked.
+    func claimAgentIntegrationGrant(key: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if storage.agentIntegrationGrants[key] == true { return false }
+        storage.agentIntegrationGrants[key] = false
+        return true
     }
 }

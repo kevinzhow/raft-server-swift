@@ -14,11 +14,6 @@ extension EmailLoginDirectory {
 
     // Notification/announcement/push rows live in `NotificationsStore`. These
     // accessors keep the extension files' property names unchanged.
-    var nativeNotificationEvents: [StoredNativeNotificationEvent] { get { notificationsStore.nativeNotificationEvents } set { notificationsStore.nativeNotificationEvents = newValue } }
-    var nextNativeNotificationSeq: Int { get { notificationsStore.nextNativeNotificationSeq } set { notificationsStore.nextNativeNotificationSeq = newValue } }
-    var nativeEnrollmentGrants: [StoredEnrollmentGrant] { get { notificationsStore.nativeEnrollmentGrants } set { notificationsStore.nativeEnrollmentGrants = newValue } }
-    var nativeNotificationDevices: [StoredNotificationDevice] { get { notificationsStore.nativeNotificationDevices } set { notificationsStore.nativeNotificationDevices = newValue } }
-    var nativeNotificationCredentials: [StoredNotificationCredential] { get { notificationsStore.nativeNotificationCredentials } set { notificationsStore.nativeNotificationCredentials = newValue } }
     public var fcmPushAvailable: Bool { get { notificationsStore.fcmPushAvailable } set { notificationsStore.fcmPushAvailable = newValue } }
     public var webPushEnabled: Bool { get { notificationsStore.webPushEnabled } set { notificationsStore.webPushEnabled = newValue } }
     var announcements: [NotificationsStore.AnnouncementRow] { get { notificationsStore.announcements } set { notificationsStore.announcements = newValue } }
@@ -78,7 +73,6 @@ extension EmailLoginDirectory {
     var actionCardRecords: [String: ActionCardRecord] { get { managedMCPAndCardsStore.actionCardRecords } set { managedMCPAndCardsStore.actionCardRecords = newValue } }
     var marketplaceInstallCards: [String: MarketplaceInstallCard] { get { managedMCPAndCardsStore.marketplaceInstallCards } set { managedMCPAndCardsStore.marketplaceInstallCards = newValue } }
     var integrationRegisterCards: [String: IntegrationRegisterCard] { get { managedMCPAndCardsStore.integrationRegisterCards } set { managedMCPAndCardsStore.integrationRegisterCards = newValue } }
-    var pendingActionMessageEvents: [(agentId: String, messageId: String, content: String)] { get { managedMCPAndCardsStore.pendingActionMessageEvents } set { managedMCPAndCardsStore.pendingActionMessageEvents = newValue } }
     var agentGrantSets: [String: Set<String>] { get { managedMCPAndCardsStore.agentGrantSets } set { managedMCPAndCardsStore.agentGrantSets = newValue } }
     var agentIntegrationGrants: [String: Bool] { get { managedMCPAndCardsStore.agentIntegrationGrants } set { managedMCPAndCardsStore.agentIntegrationGrants = newValue } }
     var agentAudienceStatusOverrides: [String: String] { get { managedMCPAndCardsStore.agentAudienceStatusOverrides } set { managedMCPAndCardsStore.agentAudienceStatusOverrides = newValue } }
@@ -86,9 +80,6 @@ extension EmailLoginDirectory {
 
     // Rows for the agent-reminder and product-feedback surface live in `FeedbackStore`.
     var agentReminderSurfaceChannels: [String: String] { get { feedbackStore.agentReminderSurfaceChannels } set { feedbackStore.agentReminderSurfaceChannels = newValue } }
-    var productFeedbackReporterSessionCache: [String: (token: String, expiresAt: Date)] { get { feedbackStore.productFeedbackReporterSessionCache } set { feedbackStore.productFeedbackReporterSessionCache = newValue } }
-    var productFeedbackRouteBindingSuccesses: [String: Date] { get { feedbackStore.productFeedbackRouteBindingSuccesses } set { feedbackStore.productFeedbackRouteBindingSuccesses = newValue } }
-    var productFeedbackRouteCommitments: [String: Data] { get { feedbackStore.productFeedbackRouteCommitments } set { feedbackStore.productFeedbackRouteCommitments = newValue } }
     var productFeedbackRouteVerifiedCommitments: Set<String> { get { feedbackStore.productFeedbackRouteVerifiedCommitments } set { feedbackStore.productFeedbackRouteVerifiedCommitments = newValue } }
     var feedbackLocatorRecords: [FeedbackLocatorRecord] { get { feedbackStore.feedbackLocatorRecords } set { feedbackStore.feedbackLocatorRecords = newValue } }
 
@@ -545,43 +536,6 @@ extension EmailLoginDirectory {
         set { messagesAndThreadsStore.realtimeEmitterStorage = newValue }
     }
 
-    // MARK: - Feedback transport configuration (FeedbackStore)
-
-    public var handsFeedbackUpstreamHandler: ((URLRequest) -> (status: Int, headers: [String: String], body: Data))? {
-        get { feedbackStore.handsFeedbackUpstreamHandler }
-        set { feedbackStore.handsFeedbackUpstreamHandler = newValue }
-    }
-
-    var handsConversationAppTokenOverride: String? {
-        get { feedbackStore.handsConversationAppTokenOverride }
-        set { feedbackStore.handsConversationAppTokenOverride = newValue }
-    }
-
-    var handsFeedbackBaseURLOverride: String? {
-        get { feedbackStore.handsFeedbackBaseURLOverride }
-        set { feedbackStore.handsFeedbackBaseURLOverride = newValue }
-    }
-
-    var handsFeedbackAppIdOverride: String? {
-        get { feedbackStore.handsFeedbackAppIdOverride }
-        set { feedbackStore.handsFeedbackAppIdOverride = newValue }
-    }
-
-    var handsFeedbackAppSlugOverride: String? {
-        get { feedbackStore.handsFeedbackAppSlugOverride }
-        set { feedbackStore.handsFeedbackAppSlugOverride = newValue }
-    }
-
-    var handsFeedbackAppTokenOverride: String? {
-        get { feedbackStore.handsFeedbackAppTokenOverride }
-        set { feedbackStore.handsFeedbackAppTokenOverride = newValue }
-    }
-
-    public var handsFeedbackConfigured: Bool {
-        get { feedbackStore.handsFeedbackConfigured }
-        set { feedbackStore.handsFeedbackConfigured = newValue }
-    }
-
 }
 
 // MARK: - Store-backed accessors
@@ -589,16 +543,6 @@ extension EmailLoginDirectory {
 /// Directory-level accessors for store properties that production services read
 /// and write. Each forwards to the domain store property of the same name.
 extension EmailLoginDirectory {
-    var handsConversationSessionEnabled: Bool? {
-        get { authProfileStore.handsConversationSessionEnabled }
-        set { authProfileStore.handsConversationSessionEnabled = newValue }
-    }
-
-    var handsFeedbackWarningSink: ((String) -> Void)? {
-        get { authProfileStore.handsFeedbackWarningSink }
-        set { authProfileStore.handsFeedbackWarningSink = newValue }
-    }
-
     var experimentalSurfacesDisabledOverride: Bool? {
         get { authProfileStore.experimentalSurfacesDisabledOverride }
         set { authProfileStore.experimentalSurfacesDisabledOverride = newValue }
@@ -634,13 +578,4 @@ extension EmailLoginDirectory {
         set { machinesAndComputersStore.latestComputerRelease = newValue }
     }
 
-    var handsFeedbackAppsJSON: String? {
-        get { feedbackStore.handsFeedbackAppsJSON }
-        set { feedbackStore.handsFeedbackAppsJSON = newValue }
-    }
-
-    var handsFeedbackLegacyEnvironment: [String: String]? {
-        get { feedbackStore.handsFeedbackLegacyEnvironment }
-        set { feedbackStore.handsFeedbackLegacyEnvironment = newValue }
-    }
 }

@@ -168,3 +168,17 @@ projected the error through `any DomainError`: the standard header set (with
 with the extension supplying the default, so the override is dispatched
 dynamically. This restores the legacy headers of the retryable feedback errors
 (`429`, route-binding `503`).
+
+## Note: `LegacySortedJSON` is a serializer for decoded input, not a body type
+
+Response bodies stay `OrderedJSON` / `JSONBodyConvertible`. One payload is
+different: a client-supplied JSON object that the server stores verbatim and
+reads back later (the agent resource-receipt `notes`, the agent-API idempotency
+fingerprint). The retired code printed it with
+`JSONSerialization.data(options: [.sortedKeys])`, whose bytes are part of what is
+stored. `Support/LegacySortedJSON.swift` renders a decoded `RaftShared.JSONValue`
+with exactly those bytes (localized-standard key order, `\/` escaping, lowercase
+`\u00xx` controls, integral doubles without `.0`, non-finite = unrepresentable)
+and is locked by a randomized differential test against `JSONSerialization`
+(`LegacySortedJSONTests`). It has no ordered-body API and must not be used for a
+published response body.

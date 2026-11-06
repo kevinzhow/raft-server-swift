@@ -47,34 +47,6 @@ public struct ReactionMutationRequestDTO: Codable, Sendable, Equatable, Messagin
     }
 }
 
-/// `PATCH /api/tasks/:taskId/status` request body.
-///
-/// `status` is the only key the route reads and it must be one of the five
-/// task statuses; an unknown value still answers the raw
-/// `Invalid task status` 400, so the lookup stays in the directory.
-public struct TaskStatusUpdateRequestDTO: Codable, Sendable, Equatable, MessagingAndChannelsRequestDTO {
-    public var status: String
-
-    public init(status: String) {
-        self.status = status
-    }
-}
-
-/// `POST /api/channels/dm` request body.
-///
-/// This is the only channel-creation surface `ChannelsFeature` owns. A peer is
-/// named either as an agent (`agentId`) or as a human server member (`userId`);
-/// both absent or unknown keeps the raw `Invalid DM peer` 400.
-public struct ChannelCreateRequestDTO: Codable, Sendable, Equatable, MessagingAndChannelsRequestDTO {
-    public var agentId: String?
-    public var userId: String?
-
-    public init(agentId: String? = nil, userId: String? = nil) {
-        self.agentId = agentId
-        self.userId = userId
-    }
-}
-
 /// `POST /api/channels/threads/follow` and `/unfollow` request body.
 ///
 /// A client names the thread directly (`threadChannelId`) or by the parent

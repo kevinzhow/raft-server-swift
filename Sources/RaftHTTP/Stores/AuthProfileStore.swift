@@ -41,17 +41,17 @@ final class AuthProfileStore: @unchecked Sendable {
         var storedMobileAppEmailJourneys: [EmailLoginDirectory.MobileAppEmailJourney] = []
     }
 
-    private let lock = NSLock()
+    let lock = NSLock()
     private var profile = ProfileState()
     private var identityRows: [String: [(provider: String, providerEmail: String)]] = [:]
     private var passwordResetTokens: [String: (userId: String, expiresAt: Date)] = [:]
-    private var legalAcceptances: [String: EmailLegalAcceptance] = [:]
+    var legalAcceptances: [String: EmailLegalAcceptance] = [:]
     /// Live tokens keyed by user id. `issueVerificationToken` replaces the
     /// user's set, which is the upstream insert-after-delete behavior.
-    private var emailVerificationTokens: [String: [EmailVerificationRecord]] = [:]
+    var emailVerificationTokens: [String: [EmailVerificationRecord]] = [:]
     /// Issue history per user. It survives token replacement so the resend
     /// rate limit can count sends from the last hour even after old rows go.
-    private var emailVerificationIssueDates: [String: [Date]] = [:]
+    var emailVerificationIssueDates: [String: [Date]] = [:]
 
     func appendIdentity(userId: String, provider: String, providerEmail: String) {
         lock.lock()
@@ -163,6 +163,19 @@ final class AuthProfileStore: @unchecked Sendable {
         now: Date = Date(),
         ttl: TimeInterval = 24 * 60 * 60
     ) {
+        lock.lock()
+        issueVerificationTokenLocked(userId: userId, token: token, tokenHash: tokenHash, now: now, ttl: ttl)
+        lock.unlock()
+    }
+
+    /// The token replacement and issue-date append. The caller holds `lock`.
+    func issueVerificationTokenLocked(
+        userId: String,
+        token: String,
+        tokenHash: String,
+        now: Date,
+        ttl: TimeInterval
+    ) {
         let record = EmailVerificationRecord(
             userId: userId,
             tokenHash: tokenHash,
@@ -170,10 +183,8 @@ final class AuthProfileStore: @unchecked Sendable {
             createdAt: now,
             expiresAt: now.addingTimeInterval(ttl)
         )
-        lock.lock()
         emailVerificationTokens[userId] = [record]
         emailVerificationIssueDates[userId, default: []].append(now)
-        lock.unlock()
     }
 
     /// The resend policy and its write in one critical section: hourly-cap
@@ -404,7 +415,7 @@ final class AuthProfileStore: @unchecked Sendable {
         var deploymentEnvironmentOverride: String?? = nil
     }
 
-    private var accountSurface = AccountState()
+    var accountSurface = AccountState()
     private var seamSurface = SeamState()
     private var configSurface = ConfigState()
 
@@ -805,7 +816,7 @@ extension AuthProfileStore {
     }
 
     /// Opens one session family. The caller holds `lock`.
-    private func openSessionLocked(userId: String) -> IssuedSessionTokens {
+    func openSessionLocked(userId: String) -> IssuedSessionTokens {
         let familyId = UUID().uuidString.lowercased()
         accountSurface.sessionFamilies[familyId] = SessionFamily(userId: userId, revokedAt: nil)
         let accessToken = EmailLoginDirectory.token()
@@ -1144,5 +1155,52 @@ extension AuthProfileStore {
         lock.lock()
         defer { lock.unlock() }
         return accountSurface.accounts.values.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+    }
+}
+
+// MARK: - Analytics identity and push family revoke
+
+extension AuthProfileStore {
+    /// The user's analytics id, minted on first use. Lookup and mint are one
+    /// critical section, so two concurrent first events share one id.
+    func analyticsId(userId: String) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        if let existing = accountSurface.analyticsIds[userId] { return existing }
+        let minted = UUID().uuidString.lowercased()
+        accountSurface.analyticsIds[userId] = minted
+        return minted
+    }
+
+    /// Resolves a `push/family-revoke` capability (`<familyId>.<nonce>`)
+    /// without consuming it.
+    func familyRevokeTarget(capability: String) -> (userId: String, familyId: String)? {
+        let parts = capability.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 2 else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let familyId = accountSurface.sessionFamilies.first(where: { $0.value.revokeCapabilityNonce == parts[1] })?.key,
+              let family = accountSurface.sessionFamilies[familyId]
+        else { return nil }
+        return (family.userId, familyId)
+    }
+}
+
+extension AuthProfileStore {
+    /// One critical section over the account surface, the sign-in
+    /// configuration and the legal acceptances. The OAuth flow store reads and
+    /// writes the handoff rows, the accounts, the sessions and the linked
+    /// identities of one request as a single decision, exactly as the retired
+    /// handlers did while holding the directory lock.
+    func withOAuthFlowState<Result>(
+        _ body: (
+            _ accounts: inout AccountState,
+            _ config: inout ConfigState,
+            _ legalAcceptances: inout [String: EmailLegalAcceptance]
+        ) -> Result
+    ) -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&accountSurface, &configSurface, &legalAcceptances)
     }
 }

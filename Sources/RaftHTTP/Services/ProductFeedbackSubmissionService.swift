@@ -56,7 +56,7 @@ public struct ProductFeedbackSubmissionService: Sendable {
                 }
             }
             if let metadataKind = metadata.productFeedbackString("client_kind"),
-               !EmailLoginDirectory.productFeedbackSources.contains(metadataKind) {
+               !FeedbackService.productFeedbackSources.contains(metadataKind) {
                 throw ProductFeedbackSubmissionError.invalidSubmission
             }
             metadataObject = metadata
@@ -79,7 +79,7 @@ public struct ProductFeedbackSubmissionService: Sendable {
             throw ProductFeedbackSubmissionError.invalidSubmission
         }
         let clientKind = metadataObject.productFeedbackString("client_kind")
-        if let clientKind, EmailLoginDirectory.productFeedbackSources.contains(clientKind), clientKind != "web" {
+        if let clientKind, FeedbackService.productFeedbackSources.contains(clientKind), clientKind != "web" {
             var forwarded: [String: JSONValue] = [
                 "client_kind": .string(clientKind),
                 "platform": .string(metadataObject.productFeedbackString("platform") ?? clientKind),

@@ -56,8 +56,9 @@ public struct AuthFeature: RouteCollection, Sendable {
         let appLogin = auth.grouped("app-login")
         let appLoginRequest = appLogin.grouped("requests", ":requestId")
         let me = auth.grouped("me")
-        let authCore = AuthCoreService(directory: services.emailAccounts)
+        let authCore = services.emailAccounts.authCore
         let identityService = services.emailAccounts.authIdentities
+        let oauthFlows = services.emailAccounts.oauthFlows
 
         // `verify-email` and `resend-verification` are literal siblings of the
         // `:provider` auth routes, so they mount from the same `api/auth` group.
@@ -84,135 +85,143 @@ public struct AuthFeature: RouteCollection, Sendable {
         }
 
         mobileAppleNative.post("start") { request async throws -> Response in
-            routeResponse(services.emailAccounts.startNativeApple(
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization]
-            ))
+            let body = (try await rawJSON(NativeAppleStartRequest.self, request)) ?? NativeAppleStartRequest()
+            return try await respond(status: 201) {
+                try oauthFlows.startNativeApple(body, authorization: request.headers[.authorization])
+            }
         }
         mobileAppleNative.post("authorize") { request async throws -> Response in
-            let reply = await services.emailAccounts.authorizeNativeApple(
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization]
-            )
-            return routeResponse(reply)
+            let body = (try await rawJSON(NativeAppleAuthorizeRequest.self, request)) ?? NativeAppleAuthorizeRequest()
+            return try await respond {
+                try await oauthFlows.authorizeNativeApple(body, authorization: request.headers[.authorization])
+            }
         }
         mobileOAuth.post("start") { request async throws -> Response in
-            return routeResponse(services.emailAccounts.startMobileOAuth(body: try await request.bodyText()))
+            let body = (try await rawJSON(MobileOAuthStartRequest.self, request)) ?? MobileOAuthStartRequest()
+            return try await respond(status: 201) { try oauthFlows.startMobileOAuth(body) }
         }
         mobileProvider.post("link", "start") { request async throws -> Response in
-            return routeResponse(services.emailAccounts.startMobileOAuthLink(
-                provider: request.parameters.get("provider") ?? "",
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization]
-            ))
+            let body = (try await rawJSON(MobileOAuthStartRequest.self, request)) ?? MobileOAuthStartRequest()
+            return try await respond(status: 201) {
+                try oauthFlows.startMobileOAuthLink(
+                    provider: request.parameters.get("provider") ?? "",
+                    body: body,
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         mobileProvider.post("link", "complete") { request async throws -> Response in
-            return routeResponse(services.emailAccounts.completeMobileOAuthLink(
-                provider: request.parameters.get("provider") ?? "",
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization]
-            ))
+            let body = (try await rawJSON(MobileOAuthCompleteRequest.self, request)) ?? MobileOAuthCompleteRequest()
+            return try await respond {
+                try oauthFlows.completeMobileOAuthLink(
+                    provider: request.parameters.get("provider") ?? "",
+                    body: body,
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
-        provider.get("start") { request in
-            routeResponse(services.emailAccounts.startWebOAuth(
-                provider: request.parameters.get("provider") ?? "",
-                returnTo: desktopQuery(request.url.query, "returnTo"),
-                linkOnConflict: desktopQuery(request.url.query, "linkOnConflict") == "1"
-            ))
+        provider.get("start") { request async throws -> Response in
+            try await respond(status: { $0.status }, headers: { $0.headers }) {
+                try oauthFlows.startWebOAuth(
+                    provider: request.parameters.get("provider") ?? "",
+                    returnTo: desktopQuery(request.url.query, "returnTo"),
+                    linkOnConflict: desktopQuery(request.url.query, "linkOnConflict") == "1"
+                )
+            }
         }
         provider.post("link", "start") { request async throws -> Response in
-            routeResponse(services.emailAccounts.startWebOAuthLink(
-                provider: request.parameters.get("provider") ?? "",
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization]
-            ))
+            let body = (try await rawJSON(WebOAuthLinkStartRequest.self, request)) ?? WebOAuthLinkStartRequest()
+            return try await respond(headers: { $0.headers }) {
+                try oauthFlows.startWebOAuthLink(
+                    provider: request.parameters.get("provider") ?? "",
+                    body: body,
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         provider.post("callback") { request async throws -> Response in
-            routeResponse(services.emailAccounts.webOAuthCallback(
-                provider: request.parameters.get("provider") ?? "",
-                body: try await request.bodyText(),
-                cookie: request.headers[.cookie]
-            ))
+            // A form post (`application/x-www-form-urlencoded`), not JSON: the
+            // service parses the raw text with the legacy field parser.
+            let body = try await request.bodyText()
+            return try await respond(status: { $0.status }, headers: { $0.headers }) {
+                try oauthFlows.webOAuthCallback(
+                    provider: request.parameters.get("provider") ?? "",
+                    body: body,
+                    cookie: request.headers[.cookie]
+                )
+            }
         }
-        provider.get("callback") { request -> Response in
-            return routeResponse(services.emailAccounts.mobileOAuthCallback(
-                provider: request.parameters.get("provider") ?? "",
-                code: desktopQuery(request.url.query, "code"),
-                state: desktopQuery(request.url.query, "state"),
-                providerError: desktopQuery(request.url.query, "error")
-            ))
+        provider.get("callback") { request async throws -> Response in
+            try await respond(status: { $0.status }, headers: { $0.headers }) {
+                try oauthFlows.mobileOAuthCallback(
+                    provider: request.parameters.get("provider") ?? "",
+                    code: desktopQuery(request.url.query, "code"),
+                    state: desktopQuery(request.url.query, "state"),
+                    providerError: desktopQuery(request.url.query, "error")
+                )
+            }
         }
         mobileOAuth.post("complete") { request async throws -> Response in
-            return routeResponse(services.emailAccounts.completeMobileOAuth(body: try await request.bodyText()))
+            let body = (try await rawJSON(MobileOAuthCompleteRequest.self, request)) ?? MobileOAuthCompleteRequest()
+            return try await respond { try oauthFlows.completeMobileOAuth(body) }
         }
         provider.post("complete") { request async throws -> Response in
-            return routeResponse(services.emailAccounts.completeSocial(
-                provider: request.parameters.get("provider") ?? "",
-                body: try await request.bodyText(),
-                userAgent: request.headers[.userAgent],
-                acceptLanguage: request.headers[.acceptLanguage],
-                authorization: request.headers[.authorization]
-            ))
+            // A body that is not a JSON object reads as an empty request, so the
+            // service answers the published "code is required" 400.
+            let body = (try await rawJSON(SocialCompleteRequest.self, request)) ?? SocialCompleteRequest()
+            return try await respond {
+                try authCore.completeSocial(
+                    provider: request.parameters.get("provider") ?? "",
+                    body: body,
+                    userAgent: request.headers[.userAgent],
+                    acceptLanguage: request.headers[.acceptLanguage],
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         device.post("authorize") { request async throws -> Response in
-            // The typed body covers the published shape; every other body keeps
-            // the directory's raw parser and its `client_name_invalid` reply.
-            if let body = try? await request.content.decode(DeviceAuthorizeRequestDTO.self) {
-                return routeResponse(authCore.authorizeDevice(body))
-            }
-            return routeResponse(services.emailAccounts.authorizeDevice(body: try await request.bodyText()))
+            let body = (try await rawJSON(DeviceAuthorizeRequest.self, request)) ?? DeviceAuthorizeRequest()
+            return try await respond(status: 201) { try authCore.authorizeDevice(body) }
         }
         device.post("approve") { request async throws -> Response in
-            if let body = try? await request.content.decode(DeviceApproveRequestDTO.self) {
-                return routeResponse(authCore.approveDevice(body, authorization: request.headers[.authorization]))
+            let body = (try await rawJSON(DeviceApproveRequest.self, request)) ?? DeviceApproveRequest()
+            return try await respond {
+                try authCore.approveDevice(body, authorization: request.headers[.authorization])
             }
-            return routeResponse(services.emailAccounts.approveDevice(
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization]
-            ))
         }
         device.post("token") { request async throws -> Response in
-            if let body = try? await request.content.decode(DeviceTokenPollRequestDTO.self) {
-                return routeResponse(authCore.pollDeviceToken(body))
-            }
-            return routeResponse(services.emailAccounts.pollDeviceToken(body: try await request.bodyText()))
+            let body = (try await rawJSON(DeviceTokenRequest.self, request)) ?? DeviceTokenRequest()
+            return try await respond { try authCore.pollDeviceToken(body) }
         }
         auth.post("staging-self-account", "retire") { request async throws -> Response in
-            return routeResponse(services.emailAccounts.retireStagingSelfAccount(
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization]
-            ))
+            let body = (try await rawJSON(RetireStagingRequest.self, request)) ?? RetireStagingRequest()
+            return try await respond {
+                try authCore.retireStagingSelfAccount(body, authorization: request.headers[.authorization])
+            }
         }
         auth.post("register") { request async throws -> Response in
-            return routeResponse(services.emailAccounts.register(
-                body: try await request.bodyText(),
-                userAgent: request.headers[.userAgent],
-                acceptLanguage: request.headers[.acceptLanguage]
-            ))
+            // A body that is not a JSON object stays `nil`: the service answers
+            // the published `Expected object` issue list.
+            let body = try await rawJSON(RegisterRequest.self, request)
+            return try await respond {
+                try authCore.register(
+                    body,
+                    userAgent: request.headers[.userAgent],
+                    acceptLanguage: request.headers[.acceptLanguage]
+                )
+            }
         }
         auth.post("refresh") { request async throws -> Response in
             let attempt = request.headers[HTTPField.Name("X-Slock-Auth-Refresh-Attempt-Id")!]
             let installation = request.headers[HTTPField.Name("X-Slock-Auth-Installation-Id")!]
-            // A body without a usable `refreshToken` falls through to the raw
-            // parser so the published "Refresh token is required" reply stands.
-            if let body = try? await request.content.decode(RefreshRequestDTO.self) {
-                return routeResponse(authCore.refresh(
-                    body,
-                    attemptHeader: attempt,
-                    installationHeader: installation
-                ))
+            let body = (try await rawJSON(RefreshTokenRequest.self, request)) ?? RefreshTokenRequest()
+            return try await respond {
+                try authCore.refresh(body, attemptHeader: attempt, installationHeader: installation)
             }
-            return routeResponse(services.emailAccounts.refresh(
-                body: try await request.bodyText(),
-                attemptHeader: attempt,
-                installationHeader: installation
-            ))
         }
         auth.post("logout") { request async throws -> Response in
-            if let body = try? await request.content.decode(LogoutRequestDTO.self) {
-                return routeResponse(authCore.logout(body))
-            }
-            return routeResponse(services.emailAccounts.logout(body: try await request.bodyText()))
+            let body = (try await rawJSON(RefreshTokenRequest.self, request)) ?? RefreshTokenRequest()
+            return try await respond { authCore.logout(body) }
         }
         identities.get { request async throws -> Response in
             try await respond { try identityService.identities(authorization: request.headers[.authorization]) }
@@ -277,8 +286,10 @@ public struct AuthFeature: RouteCollection, Sendable {
             let body = (try await rawJSON(AppLoginCompleteRequest.self, request)) ?? AppLoginCompleteRequest()
             return try await respond { try identityService.appLoginComplete(body) }
         }
-        auth.get("providers") { request in
-            routeResponse(services.emailAccounts.authProviders(platform: desktopQuery(request.url.query, "platform")))
+        auth.get("providers") { request async throws -> Response in
+            try await respond {
+                try oauthFlows.authProviders(platform: desktopQuery(request.url.query, "platform"))
+            }
         }
         me.get { request async throws -> Response in
             try await respond { try identityService.me(authorization: request.headers[.authorization]) }

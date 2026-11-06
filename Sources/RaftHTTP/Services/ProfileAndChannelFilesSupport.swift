@@ -20,9 +20,8 @@ extension EmailLoginDirectory {
         return value
     }
 
-    /// The typed agent read check. The third-party delivery operation uses it
-    /// through `ProfileAndChannelFilesService`; `agentReadCredential` keeps the
-    /// legacy reply projection for the unmigrated callers.
+    /// The typed agent read check. The third-party delivery operation and the
+    /// agent wake-hint and event reads use it.
     func profileAgentReadOutcome(_ authorization: String?) -> ProfileAgentReadOutcome {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
             return .missingAuthorization
@@ -36,17 +35,6 @@ extension EmailLoginDirectory {
         }
         recordAgentCredentialUse(token: token)
         return .success(agentId: credential.agentId)
-    }
-
-    func agentReadCredential(_ authorization: String?) -> AgentRead {
-        switch profileAgentReadOutcome(authorization) {
-        case .success(let agentId):
-            return .success(agentId)
-        case .missingAuthorization:
-            return .failure(Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}"))
-        case .invalidCredential:
-            return .failure(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
-        }
     }
 
     /// A raw agent API key. The mentions inbox accepts it when `mentions` is one of the scopes.

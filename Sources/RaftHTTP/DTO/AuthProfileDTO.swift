@@ -154,103 +154,17 @@ extension AuthRequestDTO {
     }
 }
 
-/// `POST /api/auth/refresh`.
-///
-/// `refreshToken` is the only body field; the replay-binding attempt and
-/// installation identifiers travel in headers.
-public struct RefreshRequestDTO: Codable, Sendable, Equatable, AuthRequestDTO {
-    public var refreshToken: String
-
-    public init(refreshToken: String) {
-        self.refreshToken = refreshToken
-    }
-}
-
-/// `POST /api/auth/logout`.
-///
-/// Upstream answers `{"ok":true}` even when the body carries no usable token,
-/// so a body that does not decode keeps the raw path and its 200.
-public struct LogoutRequestDTO: Codable, Sendable, Equatable, AuthRequestDTO {
-    public var refreshToken: String
-
-    public init(refreshToken: String) {
-        self.refreshToken = refreshToken
-    }
-}
-
-/// `POST /api/auth/device/authorize`.
-///
-/// `clientName` is optional. The directory accepts a JSON `null` for it and
-/// caps a string at 200 characters; a non-string value keeps the raw path and
-/// its `client_name_invalid` reply.
-public struct DeviceAuthorizeRequestDTO: Codable, Sendable, Equatable, AuthRequestDTO {
-    public var clientName: String?
-
-    public init(clientName: String? = nil) {
-        self.clientName = clientName
-    }
-}
-
-/// `POST /api/auth/device/approve`.
-///
-/// `approve` is tri-state upstream: an absent key approves, `true` approves and
-/// `false` denies. An explicit JSON `null` reads as deny there because the raw
-/// parser tests `object["approve"] == nil` before the `as? Bool` cast, so this
-/// DTO refuses `null` and lets the route fall back to the raw parser.
-public struct DeviceApproveRequestDTO: Codable, Sendable, Equatable, AuthRequestDTO {
-    public var userCode: String
-    public var approve: Bool?
-
-    enum CodingKeys: String, CodingKey {
-        case userCode
-        case approve
-    }
-
-    public init(userCode: String, approve: Bool? = nil) {
-        self.userCode = userCode
-        self.approve = approve
-    }
-
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.userCode = try container.decode(String.self, forKey: .userCode)
-        if container.contains(.approve), try container.decodeNil(forKey: .approve) {
-            throw DecodingError.dataCorruptedError(
-                forKey: .approve,
-                in: container,
-                debugDescription: "approve must be a boolean when present"
-            )
-        }
-        self.approve = try container.decodeIfPresent(Bool.self, forKey: .approve)
-    }
-}
-
-/// `POST /api/auth/device/token`.
-public struct DeviceTokenPollRequestDTO: Codable, Sendable, Equatable, AuthRequestDTO {
-    public var deviceCode: String
-
-    public init(deviceCode: String) {
-        self.deviceCode = deviceCode
-    }
-}
-
 /// `POST /api/oauth/installations/lookup`.
 ///
-/// The ledger reads `client_id`, `client_secret` and either `server_id` or its
-/// `serverId` alias. Every field is read with `as? String`, so a `null` and an
-/// absent key are interchangeable; encoding always normalizes the alias back to
-/// `server_id`.
-public struct OAuthInstallationLookupDTO: Codable, Sendable, Equatable, AuthRequestDTO {
+/// The lookup reads `client_id`, `client_secret` and the Server id from
+/// `server_id`, falling back to its `serverId` alias only when `server_id` is
+/// absent: a present `server_id` of any type (`null` included) shadows the
+/// alias. Every member is read with `as? String`, so a value of another type
+/// reads as absent, and a body that is not a JSON object reads as an empty one.
+public struct OAuthInstallationLookupDTO: Decodable, Sendable, Equatable {
     public var clientId: String?
     public var clientSecret: String?
     public var serverId: String?
-
-    enum CodingKeys: String, CodingKey {
-        case clientId = "client_id"
-        case clientSecret = "client_secret"
-        case serverId = "server_id"
-        case serverIdAlias = "serverId"
-    }
 
     public init(clientId: String? = nil, clientSecret: String? = nil, serverId: String? = nil) {
         self.clientId = clientId
@@ -259,17 +173,9 @@ public struct OAuthInstallationLookupDTO: Codable, Sendable, Equatable, AuthRequ
     }
 
     public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.clientId = try container.decodeIfPresent(String.self, forKey: .clientId)
-        self.clientSecret = try container.decodeIfPresent(String.self, forKey: .clientSecret)
-        self.serverId = try container.decodeIfPresent(String.self, forKey: .serverId)
-            ?? container.decodeIfPresent(String.self, forKey: .serverIdAlias)
-    }
-
-    public func encode(to encoder: any Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encodeIfPresent(clientId, forKey: .clientId)
-        try container.encodeIfPresent(clientSecret, forKey: .clientSecret)
-        try container.encodeIfPresent(serverId, forKey: .serverId)
+        let object = LegacyJSONObject(decoder)
+        clientId = object.string("client_id")
+        clientSecret = object.string("client_secret")
+        serverId = object.has("server_id") ? object.string("server_id") : object.string("serverId")
     }
 }

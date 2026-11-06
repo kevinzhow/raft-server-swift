@@ -1,10 +1,1 @@
 Sources/RaftHTTP/DTO/RealtimeEventDTO.swift	1
-Sources/RaftHTTP/Services/ActionCardDirectoryHelpers.swift	5
-Sources/RaftHTTP/Services/AgentsLifecycleService.swift	8
-Sources/RaftHTTP/Services/AttachmentsAndNotificationsService.swift	9
-Sources/RaftHTTP/Services/AuthCoreService.swift	16
-Sources/RaftHTTP/Services/FeedbackService.swift	4
-Sources/RaftHTTP/Services/ManagedMCPAssignmentsService.swift	12
-Sources/RaftHTTP/Services/ManagedMCPToolExecutionService.swift	16
-Sources/RaftHTTP/Services/OAuthFlowsService.swift	14
-Sources/RaftHTTP/Services/ReactionsRealtimeService.swift	9

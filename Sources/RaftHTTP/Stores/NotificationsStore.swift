@@ -35,11 +35,6 @@ final class NotificationsStore: @unchecked Sendable {
     /// whole store snapshot; each accessor below copies it, which is cheap
     /// because the collections are copy-on-write.
     struct State {
-        var nativeNotificationEvents: [StoredNativeNotificationEvent] = []
-        var nextNativeNotificationSeq = 0
-        var nativeEnrollmentGrants: [StoredEnrollmentGrant] = []
-        var nativeNotificationDevices: [StoredNotificationDevice] = []
-        var nativeNotificationCredentials: [StoredNotificationCredential] = []
         var pushRegistrations: [EmailLoginDirectory.PushRegistration] = []
         var fcmPushAvailable = true
         var webPushEnabled = true
@@ -65,6 +60,11 @@ final class NotificationsStore: @unchecked Sendable {
     private let lock = NSLock()
     private var storage = State()
 
+    /// Enrollment grants, devices, native credentials and the event ledger.
+    /// A `Mutex`-guarded store of its own; this store keeps only the kill
+    /// switch, attestation and stream configuration beside it.
+    let native = NativeNotificationStore()
+
     /// The whole owned state. A read or a write is one locked critical section.
     var state: State {
         get {
@@ -77,31 +77,6 @@ final class NotificationsStore: @unchecked Sendable {
             storage = newValue
             lock.unlock()
         }
-    }
-
-    var nativeNotificationEvents: [StoredNativeNotificationEvent] {
-        get { state.nativeNotificationEvents }
-        set { state.nativeNotificationEvents = newValue }
-    }
-
-    var nextNativeNotificationSeq: Int {
-        get { state.nextNativeNotificationSeq }
-        set { state.nextNativeNotificationSeq = newValue }
-    }
-
-    var nativeEnrollmentGrants: [StoredEnrollmentGrant] {
-        get { state.nativeEnrollmentGrants }
-        set { state.nativeEnrollmentGrants = newValue }
-    }
-
-    var nativeNotificationDevices: [StoredNotificationDevice] {
-        get { state.nativeNotificationDevices }
-        set { state.nativeNotificationDevices = newValue }
-    }
-
-    var nativeNotificationCredentials: [StoredNotificationCredential] {
-        get { state.nativeNotificationCredentials }
-        set { state.nativeNotificationCredentials = newValue }
     }
 
     var pushRegistrations: [EmailLoginDirectory.PushRegistration] {

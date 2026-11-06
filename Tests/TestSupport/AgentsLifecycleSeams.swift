@@ -80,4 +80,20 @@ extension EmailLoginDirectory {
         computerAttachEnabledOverride = enabled
         lock.unlock()
     }
+
+    public func setShareUsageData(userId: String, value: Bool?) {
+        var state = authProfileStore.accountState
+        if let key = state.accounts.first(where: { $0.value.id == userId })?.key {
+            state.accounts[key]?.shareUsageData = value
+            authProfileStore.accountState = state
+        }
+    }
+
+    public func recordedProductEvents(subjectId: String) -> [RecordedProductEvent] {
+        productEventStore.productEvents(subjectId: subjectId)
+    }
+
+    public func recordedClientEvents(serverId: String) -> [ClientEventRecord] {
+        productEventStore.clientEvents(serverId: serverId)
+    }
 }
