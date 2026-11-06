@@ -22,27 +22,6 @@ extension EmailLoginDirectory {
         HTTPReply(status: status, headers: ["Content-Length": "0"], body: "")
     }
 
-    static func featureFlagClientFacts(_ object: [String: Any]) -> FeatureFlagClientFacts {
-        let osValues: Set<String> = ["android", "ios", "ohos"]
-        let buildTypes: Set<String> = ["release", "alpha", "debug"]
-        let os = (object["os"] as? String).flatMap { osValues.contains($0) ? $0 : nil }
-        let buildType = (object["buildType"] as? String).flatMap { buildTypes.contains($0) ? $0 : nil }
-        var buildNumber: Int?
-        if let raw = object["buildNumber"] {
-            if let string = raw as? String, string.range(of: "^[0-9]{1,15}$", options: .regularExpression) != nil {
-                buildNumber = Int(string)
-            } else if let number = raw as? NSNumber,
-                      String(cString: number.objCType) != "c",
-                      String(cString: number.objCType) != "B",
-                      number.doubleValue >= 0,
-                      number.doubleValue.rounded() == number.doubleValue,
-                      number.doubleValue <= Double(Int.max) {
-                buildNumber = number.intValue
-            }
-        }
-        return FeatureFlagClientFacts(os: os, buildNumber: buildNumber, buildType: buildType)
-    }
-
     static func searchSnippet(_ content: String) -> String {
         let compact = content.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         if compact.count <= 180 { return compact }
@@ -449,13 +428,6 @@ extension EmailLoginDirectory {
         }
         body += "}"
         return json(200, body)
-    }
-
-    static func featureFlagKey(_ value: Any) -> String? {
-        guard let string = value as? String else { return nil }
-        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.wholeMatch(of: /^[a-z0-9][a-z0-9_.-]{0,127}$/) != nil else { return nil }
-        return trimmed
     }
 
     static func stringField(_ value: Any?, path: String, into issues: inout [Issue]) -> String? {

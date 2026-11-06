@@ -1252,3 +1252,22 @@ extension AuthProfileStore {
         return (family.userId, familyId)
     }
 }
+
+extension AuthProfileStore {
+    /// One critical section over the account surface, the sign-in
+    /// configuration and the legal acceptances. The OAuth flow store reads and
+    /// writes the handoff rows, the accounts, the sessions and the linked
+    /// identities of one request as a single decision, exactly as the retired
+    /// handlers did while holding the directory lock.
+    func withOAuthFlowState<Result>(
+        _ body: (
+            _ accounts: inout AccountState,
+            _ config: inout ConfigState,
+            _ legalAcceptances: inout [String: EmailLegalAcceptance]
+        ) -> Result
+    ) -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&accountSurface, &configSurface, &legalAcceptances)
+    }
+}

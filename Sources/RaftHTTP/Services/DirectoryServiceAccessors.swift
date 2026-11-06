@@ -9,6 +9,29 @@ import FoundationNetworking
 /// that file is near the Services line ceiling). Each accessor wires one
 /// migrated service from the directory's stores and the OAuth ledger.
 extension EmailLoginDirectory {
+    /// Provider discovery, the web and mobile OAuth legs, the native-Apple
+    /// handoff, the installation lookup and the feature-flag evaluation. The
+    /// directory supplies the stores and the OAuth ledger; nothing crosses a
+    /// domain boundary.
+    public var oauthFlows: OAuthFlowsService {
+        OAuthFlowsService(directory: self)
+    }
+
+    /// One flag's rollout decision for the unmigrated callers that still ask
+    /// per key (`FeedbackService`, the integrations gate). The decision lives in
+    /// `AgentsRuntimeStore`.
+    func evaluateFeatureFlagKey(
+        key: String,
+        userId: String,
+        serverId: String?,
+        platform: String?,
+        client: FeatureFlagClientFacts
+    ) -> (enabled: Bool, reason: String) {
+        agentsRuntimeStore.evaluateFeatureFlag(
+            key: key, userId: userId, serverId: serverId, platform: platform, client: client
+        )
+    }
+
     /// The Computer fleet: machine roster, Computer attach/adoption, runner
     /// control plane and the lifecycle controls. The directory supplies the
     /// machine, agent and profile stores and the OAuth ledger; the session

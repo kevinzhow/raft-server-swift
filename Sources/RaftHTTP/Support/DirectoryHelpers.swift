@@ -283,24 +283,9 @@ extension EmailLoginDirectory {
 
 
 
-    static let appleNotConfigured = json(404, "{\"code\":\"provider_not_configured\",\"error\":\"Apple sign-in is not configured\"}")
-    static let nativeAppleInvalidRequest = json(400, "{\"code\":\"invalid_request\",\"error\":\"Native Apple sign-in requires the iOS platform and app environment\"}")
-    static let nativeAppleInvalidCredential = json(400, "{\"code\":\"native_apple_invalid_credential\",\"error\":\"Apple sign-in credential was invalid\"}")
-    static let nativeAppleAuthRequired = json(401, "{\"code\":\"auth_required\",\"error\":\"Apple account linking requires authentication\"}")
-    static let nativeAppleLinkMismatch = json(403, "{\"code\":\"link_user_mismatch\",\"error\":\"Apple account linking does not match the authenticated user\"}")
-    static let nativeAppleRequestExpired = json(410, "{\"code\":\"native_apple_request_expired\",\"error\":\"Apple sign-in request expired\"}")
-    static let nativeAppleRequestConsumed = json(410, "{\"code\":\"native_apple_request_consumed\",\"error\":\"Apple sign-in request was already used\"}")
 
 
 
-
-    func nativeAppleAvailable() -> Bool {
-        lock.lock()
-        let configured = !nativeAppleClientId.isEmpty && !nativeAppleClientSecret.isEmpty
-        let gate = appleLoginPlatforms.contains("mobile")
-        lock.unlock()
-        return configured && gate
-    }
 
     public static func signNativeAppleRequestToken(secret: String, requestId: String, mode: String, codeChallenge: String, expiresAt: Date, userId: String? = nil) -> String {
         let header = base64url(Data("{\"alg\":\"HS256\",\"typ\":\"JWT\"}".utf8))
@@ -322,16 +307,16 @@ extension EmailLoginDirectory {
     }
 
 
-    func parseAppleIdentity(_ token: String) -> AppleIdentityClaims? {
+    static func parseAppleIdentity(_ token: String, clientId: String) -> AppleIdentityClaims? {
         let parts = token.split(separator: ".").map(String.init)
         guard parts.count == 3,
-              let headerData = Self.base64urlDecode(parts[0]),
+              let headerData = base64urlDecode(parts[0]),
               let header = try? JSONSerialization.jsonObject(with: headerData) as? [String: Any],
               header["alg"] as? String == "RS256",
-              let payloadData = Self.base64urlDecode(parts[1]),
+              let payloadData = base64urlDecode(parts[1]),
               let object = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any],
               object["iss"] as? String == "https://appleid.apple.com",
-              object["aud"] as? String == nativeAppleClientId,
+              object["aud"] as? String == clientId,
               let subject = object["sub"] as? String, !subject.isEmpty,
               let nonce = object["nonce"] as? String, !nonce.isEmpty
         else { return nil }
@@ -351,57 +336,6 @@ extension EmailLoginDirectory {
         }
         guard verified else { return nil }
         return AppleIdentityClaims(subject: subject, nonce: nonce, email: rawEmail)
-    }
-
-    func mobileAppleAvailable() -> Bool {
-        lock.lock()
-        let configured = configuredSocialAuthProviders.contains("apple")
-        let allowed = appleLoginPlatforms.contains("mobile")
-        lock.unlock()
-        return configured && allowed
-    }
-
-    func webProviderAvailable(_ provider: String) -> Bool {
-        lock.lock()
-        let configured = configuredSocialAuthProviders.contains(provider)
-        let allowed = appleLoginPlatforms.contains("web")
-        lock.unlock()
-        guard configured else { return false }
-        if provider == "apple" { return allowed }
-        return true
-    }
-
-    func webAuthorizationURL(provider: String, state: String, nonce: String) -> String {
-        guard provider == "apple" else {
-            return Self.authorizationURL(provider: provider, state: state)
-        }
-        let base = serverURL.hasSuffix("/") ? String(serverURL.dropLast()) : serverURL
-        var components = URLComponents(string: "https://appleid.apple.com/auth/authorize")!
-        components.queryItems = [
-            URLQueryItem(name: "client_id", value: appleClientId),
-            URLQueryItem(name: "redirect_uri", value: "\(base)/api/auth/apple/callback"),
-            URLQueryItem(name: "response_type", value: "code"),
-            URLQueryItem(name: "response_mode", value: "form_post"),
-            URLQueryItem(name: "scope", value: "email"),
-            URLQueryItem(name: "state", value: state),
-            URLQueryItem(name: "nonce", value: nonce),
-        ]
-        return components.string ?? ""
-    }
-
-    func stateCookie(provider: String, nonce: String) -> String {
-        let encoded = nonce.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? nonce
-        var parts = [
-            "slock_\(provider)_oauth_nonce=\(encoded)",
-            "Path=/api/auth/\(provider)/callback",
-            "Max-Age=600",
-            "HttpOnly",
-            "SameSite=\(provider == "apple" ? "None" : "Lax")",
-        ]
-        if provider == "apple" || serverURL.hasPrefix("https://") {
-            parts.append("Secure")
-        }
-        return parts.joined(separator: "; ")
     }
 
     // MARK: - Agent credential and grant projections (legacy)
@@ -551,15 +485,6 @@ extension EmailLoginDirectory {
             chars.append(alphabet[Int.random(in: 0..<alphabet.count)])
         }
         return "\(chars.prefix(4))-\(chars.dropFirst(4))"
-    }
-
-    /// Primary env wins when it parses to at least one URI. Otherwise the legacy list replaces the defaults. An empty parse falls through.
-    func configuredMobileReturnURIs() -> Set<String> {
-        let primary = Self.parseConfiguredMobileReturnURIs(mobileOAuthReturnURI)
-        if !primary.isEmpty { return primary }
-        let legacy = Self.parseConfiguredMobileReturnURIs(mobileOAuthAllowedReturnURIs)
-        if !legacy.isEmpty { return legacy }
-        return Self.defaultMobileReturnURIs
     }
 
     /// The bearer credential of an agent, marking its use.

@@ -2206,15 +2206,30 @@ public final class OAuthLedger: @unchecked Sendable {
         }
     }
 
+    /// What `POST /api/oauth/installations/lookup` decided. The refusals keep
+    /// the legacy order: credentials, client, Server id, then the installation.
+    public enum InstallationLookupOutcome: Sendable, Equatable {
+        case credentialsRequired
+        case invalidCredentials
+        case serverIdRequired
+        case serverIdInvalid
+        case notFound
+        case found(installationId: String, serverId: String)
+    }
+
     /// `POST /api/oauth/installations/lookup`. The authenticated client is the
     /// App boundary; a miss never discloses another App's installation.
-    public func installationLookup(authorization: String?, body: String) -> HTTPReply {
-        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+    public func lookupInstallation(
+        authorization: String?,
+        clientId bodyClientId: String?,
+        clientSecret bodyClientSecret: String?,
+        serverId rawServerId: String?
+    ) -> InstallationLookupOutcome {
         var fields: [String: String] = [:]
-        if let value = object?["client_id"] as? String { fields["client_id"] = value }
-        if let value = object?["client_secret"] as? String { fields["client_secret"] = value }
+        if let bodyClientId { fields["client_id"] = bodyClientId }
+        if let bodyClientSecret { fields["client_secret"] = bodyClientSecret }
         guard let credentials = clientCredentials(authorization: authorization, fields: fields) else {
-            return json(401, "{\"error\":\"Client credentials are required\"}", cacheControl: "private, no-store")
+            return .credentialsRequired
         }
         lock.lock()
         defer { lock.unlock() }
@@ -2224,26 +2239,24 @@ public final class OAuthLedger: @unchecked Sendable {
                 && ($0.appType != "third_party_global" || $0.enabled)
                 && $0.secretHash == sha256(credentials.clientSecret)
         }) else {
-            return json(401, "{\"error\":\"Invalid client credentials\"}", cacheControl: "private, no-store")
+            return .invalidCredentials
         }
-        let raw = object?["server_id"] ?? object?["serverId"]
-        let serverId = (raw as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let serverId = (rawServerId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !serverId.isEmpty else {
-            return json(400, "{\"error\":\"server_id is required\"}", cacheControl: "private, no-store")
+            return .serverIdRequired
         }
         guard serverId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
-            return json(400, "{\"error\":\"server_id must be a Server ID\"}", cacheControl: "private, no-store")
+            return .serverIdInvalid
         }
         guard client.enabled else {
-            return json(404, "{\"error\":\"Active installation not found\"}", cacheControl: "private, no-store")
+            return .notFound
         }
         guard let installation = installations.first(where: {
             $0.clientId == client.id && $0.serverId == serverId && $0.status == "active"
         }) else {
-            return json(404, "{\"error\":\"Active installation not found\"}", cacheControl: "private, no-store")
+            return .notFound
         }
-        let document = "{\"installation_id\":\(jsonString(installation.id)),\"server_id\":\(jsonString(installation.serverId)),\"setup\":{\"status\":\"not_required\",\"url\":null,\"description\":null,\"revision\":1,\"completedAt\":null}}"
-        return json(200, document, cacheControl: "private, no-store")
+        return .found(installationId: installation.id, serverId: installation.serverId)
     }
 
     public struct AgentGrantRow: Sendable, Equatable {
