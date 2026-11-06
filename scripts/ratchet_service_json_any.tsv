@@ -6,8 +6,7 @@ Sources/RaftHTTP/Services/AgentPrivateSurfaceService.swift	22
 Sources/RaftHTTP/Services/AgentsLifecycleService.swift	8
 Sources/RaftHTTP/Services/AttachmentsAndNotificationsService.swift	9
 Sources/RaftHTTP/Services/AuthCoreService.swift	16
-Sources/RaftHTTP/Services/FeedbackMultiAppService.swift	16
-Sources/RaftHTTP/Services/FeedbackService.swift	8
+Sources/RaftHTTP/Services/FeedbackService.swift	4
 Sources/RaftHTTP/Services/HumanMessageCreateService.swift	12
 Sources/RaftHTTP/Services/IntegrationsAndAppAccessService.swift	16
 Sources/RaftHTTP/Services/MachinesAndHostedRuntimeService.swift	14

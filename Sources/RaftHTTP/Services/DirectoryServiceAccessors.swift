@@ -282,4 +282,45 @@ extension EmailLoginDirectory {
     public func authenticatedUserId(authorization: String?) -> String? {
         sessionUserId(authorization: authorization)
     }
+
+    /// Product-feedback ticket routes (`/api/product-feedback/tickets…`). The
+    /// Hands transport, route binding and reporter session are still owned by
+    /// the not-yet-migrated `FeedbackService`, so they enter as closures; the
+    /// session lookup and the account row come from their domains.
+    public var feedbackMultiApp: FeedbackMultiAppService {
+        let feedback = FeedbackService(directory: self)
+        return FeedbackMultiAppService(
+            dependencies: FeedbackMultiAppDependencies(
+                userId: { [self] authorization in
+                    sessionUserId(authorization: authorization)
+                },
+                emailVerified: { [authProfileStore] userId in
+                    authProfileStore.account(userId: userId)?.emailVerified == true
+                },
+                routeEnvironment: { source, userId in
+                    try feedback.routeEnvironment(source: source, userId: userId)
+                },
+                ensureRouteBinding: { userId, environment in
+                    try await feedback.ensureRouteBindingAsync(userId: userId, environment: environment)
+                },
+                bearer: { userId, reporterId, environment in
+                    try await feedback.bearerAsync(userId: userId, reporterId: reporterId, environment: environment)
+                },
+                handsRequest: { environment, method, path, bearer, reporterId, headers, body in
+                    await feedback.handsRequestAsync(
+                        environment: environment,
+                        method: method,
+                        path: path,
+                        bearer: bearer,
+                        reporterId: reporterId,
+                        headers: headers,
+                        body: body
+                    )
+                },
+                warn: { message in
+                    feedback.warn(message)
+                }
+            )
+        )
+    }
 }

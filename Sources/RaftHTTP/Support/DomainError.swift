@@ -22,6 +22,10 @@ public protocol DomainError: Error, Sendable {
     /// keys (`requiredCapability`, `reason_code`, …) or a non-object body
     /// supplies `OrderedJSON` here.
     var errorBody: OrderedJSON? { get }
+    /// The complete error header policy. A requirement (not only an extension
+    /// member) so a conforming type's override is reached through the
+    /// `any DomainError` that `Respond.swift` projects.
+    var errorHeaders: ResponseHeaders { get }
 }
 
 public extension DomainError {

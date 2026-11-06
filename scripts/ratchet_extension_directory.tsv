@@ -7,7 +7,6 @@ Sources/RaftHTTP/Services/AgentsLifecycleService.swift	1
 Sources/RaftHTTP/Services/AttachmentsAndNotificationsService.swift	1
 Sources/RaftHTTP/Services/AuthCoreService.swift	2
 Sources/RaftHTTP/Services/DirectoryServiceAccessors.swift	1
-Sources/RaftHTTP/Services/FeedbackMultiAppService.swift	1
 Sources/RaftHTTP/Services/FeedbackService.swift	1
 Sources/RaftHTTP/Services/HumanMessageCreateService.swift	1
 Sources/RaftHTTP/Services/InboxAndWakeService.swift	1
