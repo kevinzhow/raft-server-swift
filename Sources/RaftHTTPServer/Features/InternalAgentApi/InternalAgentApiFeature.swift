@@ -340,17 +340,38 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.get("attachments", ":attachmentId") { request -> Response in
-            routeResponse(services.emailAccounts.agentAttachmentDownload(
-                authorization: request.headers[.authorization],
-                attachmentId: request.parameters.get("attachmentId") ?? ""
+        agentApi.get("attachments", ":attachmentId") { request async throws -> Response in
+            // The refusal projects through `respond`. The byte reply is the one
+            // shape `respond` cannot express: `Content-Length` is the stored
+            // byte count while the body is the lossily decoded text, and the
+            // `Content-Type` is the attachment's own.
+            var stored: AgentAttachmentDownload?
+            let refusal = try await respond { () throws -> OkResponse in
+                stored = try services.emailAccounts.agentAttachments.download(
+                    authorization: request.headers[.authorization],
+                    attachmentId: request.parameters.get("attachmentId") ?? ""
+                )
+                return OkResponse()
+            }
+            guard let stored else { return refusal }
+            return routeResponse(HTTPReply(
+                status: 200,
+                headers: [
+                    "Content-Type": stored.mimeType,
+                    "Content-Length": String(stored.bytes.count),
+                    "Cache-Control": "private, no-store",
+                    "Content-Disposition": "attachment; filename=\"\(stored.filename)\"; filename*=UTF-8''\(stored.encodedFilename)",
+                ],
+                body: String(decoding: stored.bytes, as: UTF8.self)
             ))
         }
-        agentApi.get("attachments", ":attachmentId", "url") { request -> Response in
-            routeResponse(services.emailAccounts.agentAttachmentDownloadURL(
-                authorization: request.headers[.authorization],
-                attachmentId: request.parameters.get("attachmentId") ?? ""
-            ))
+        agentApi.get("attachments", ":attachmentId", "url") { request async throws -> Response in
+            try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
+                try services.emailAccounts.agentAttachments.downloadURL(
+                    authorization: request.headers[.authorization],
+                    attachmentId: request.parameters.get("attachmentId") ?? ""
+                )
+            }
         }
         agentApi.get("integrations") { request async throws -> Response in
             try await respond {
@@ -412,10 +433,13 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
         }
         agentApi.post("integrations", "token") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentIntegrationToken(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
+            return try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
+                try services.emailAccounts.agentIntegrationTokens.issue(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         agentApi.get("context") { request async throws -> Response in
             try await respond {

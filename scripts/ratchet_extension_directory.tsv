@@ -1,7 +1,6 @@
 Sources/RaftHTTP/Services/ActionCardDirectoryHelpers.swift	2
 Sources/RaftHTTP/Services/ActionCardService.swift	1
 Sources/RaftHTTP/Services/AgentsLifecycleService.swift	1
-Sources/RaftHTTP/Services/AttachmentsAndNotificationsService.swift	1
 Sources/RaftHTTP/Services/AuthCoreService.swift	2
 Sources/RaftHTTP/Services/DirectoryServiceAccessors.swift	1
 Sources/RaftHTTP/Services/FeedbackService.swift	1
