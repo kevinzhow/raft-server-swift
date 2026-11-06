@@ -83,11 +83,11 @@ extension EmailLoginDirectory {
         if let hold = taskWriteFreshnessHold(
             agentId: auth.agentId, channelId: channelId,
             seenUpToSeq: object["seenUpToSeq"] as? Int, actionKey: "amend:\(taskNumber)"
-        ) { return hold }
+        ) { return Self.json(200, hold.jsonBody.render()) }
         if let hold = taskWriteFreshnessHold(
             agentId: auth.agentId, channelId: channelId,
             seenUpToSeq: object["seenUpToSeq"] as? Int, actionKey: "amend:\(taskNumber)"
-        ) { return hold }
+        ) { return Self.json(200, hold.jsonBody.render()) }
         lock.lock()
         guard let index = taskRecords.firstIndex(where: { $0.channelId == channelId && $0.taskNumber == taskNumber }) else {
             lock.unlock()

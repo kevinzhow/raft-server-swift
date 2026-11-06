@@ -99,6 +99,47 @@ extension EmailLoginDirectory {
         lock.unlock()
     }
 
+    /// Typed metadata overload: the execute service names the attested-send
+    /// fields, and the legacy sorted-key encoding still renders the row.
+    func recordAttestedSendEvent(
+        _ eventType: String,
+        agentId: String,
+        messageId: String?,
+        metadata: AttestedSendEventMetadata
+    ) {
+        switch metadata {
+        case .gateTriggered(
+            let lastSeenMessageId,
+            let latestMessageId,
+            let draftReplacedExisting,
+            let newMessageCount,
+            let boundarySource,
+            let boundarySeq,
+            let latestSeq
+        ):
+            recordAttestedSendEvent(eventType, agentId: agentId, messageId: messageId, metadata: [
+                "last_seen_msg_id": lastSeenMessageId as Any? ?? NSNull(),
+                "latest_msg_id": latestMessageId as Any? ?? NSNull(),
+                "has_formal_mention_since_last_seen": false,
+                "draft_replaced_existing": draftReplacedExisting,
+                "new_message_count": newMessageCount,
+                "boundary_source": boundarySource,
+                "boundary_seq": boundarySeq,
+                "latest_seq": latestSeq,
+            ])
+        case .mentionExemption(
+            let mentionMessageId,
+            let mentionedHandle,
+            let newMessageCountSinceLastSeen
+        ):
+            recordAttestedSendEvent(eventType, agentId: agentId, messageId: messageId, metadata: [
+                "mention_message_id": mentionMessageId,
+                "mentioned_handle": mentionedHandle,
+                "new_message_count_since_last_seen": newMessageCountSinceLastSeen,
+            ])
+        }
+    }
+
     func recordAgentSendActivity(agentId: String, title: String, text: String, producerFactId: String?) {
         lock.lock()
         agentSendActivityRecords[agentId, default: []].append((title: title, text: text, producerFactId: producerFactId))

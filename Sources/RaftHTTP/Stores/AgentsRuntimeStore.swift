@@ -608,4 +608,16 @@ final class AgentsRuntimeStore: @unchecked Sendable {
         defer { lock.unlock() }
         return storage.agentCredentials[token]?.agentId
     }
+
+    /// The first-post attention hint: the membership check and the "already
+    /// posted" insertion are one critical section, so two concurrent first
+    /// sends cannot both publish the drive-by hint.
+    func claimFirstAgentPost(channelId: String, agentId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = "\(channelId)\n\(agentId)"
+        if storage.agentChannelPosted.contains(key) { return false }
+        storage.agentChannelPosted.insert(key)
+        return true
+    }
 }

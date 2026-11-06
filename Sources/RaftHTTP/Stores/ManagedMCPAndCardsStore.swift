@@ -318,4 +318,31 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         storage.appConfigRevisions[agentId, default: [:]][appId] = current + 1
         return .applied(AppConfigSnapshot(revision: current + 1, overrides: overrides))
     }
+
+    // MARK: - Agent send receipts and the send commit lock
+
+    /// The stored idempotency receipt for one `server\nagent\nkey`.
+    func sendReceipt(key: String) -> AgentApiSendReceipt? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.agentApiSendReceipts[key]
+    }
+
+    func setSendReceipt(_ receipt: AgentApiSendReceipt, key: String) {
+        lock.lock()
+        storage.agentApiSendReceipts[key] = receipt
+        lock.unlock()
+    }
+
+    /// The cross-store commit barrier the legacy `sendFreshnessCommitLock`
+    /// provided: the freshness gate and the message commit that follows it run
+    /// under this one store lock, so two concurrent first replies cannot both
+    /// pass the gate before either lands.
+    private let sendCommitLock = NSLock()
+
+    func withSendCommit<T>(_ body: () throws -> T) rethrows -> T {
+        sendCommitLock.lock()
+        defer { sendCommitLock.unlock() }
+        return try body()
+    }
 }
