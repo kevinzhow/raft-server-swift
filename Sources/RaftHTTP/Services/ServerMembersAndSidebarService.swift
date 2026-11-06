@@ -4,6 +4,21 @@ import Foundation
 import FoundationNetworking
 #endif
 
+/// Server membership, invite/join-link and sidebar-order routes.
+///
+/// These handlers were lifted from `EmailLogin+ServerMembersAndTasks1.swift`.
+/// They stay on `EmailLoginDirectory` because the directory owns the lock and
+/// the server/channel ledgers; `ServerMembersAndSidebarService` is the named,
+/// `Sendable` handle a caller can hold instead of reaching for the composition
+/// root. The struct carries no state of its own.
+public struct ServerMembersAndSidebarService: Sendable {
+    public let directory: EmailLoginDirectory
+
+    public init(directory: EmailLoginDirectory) {
+        self.directory = directory
+    }
+}
+
 extension EmailLoginDirectory {
 
 

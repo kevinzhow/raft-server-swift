@@ -4,6 +4,67 @@ import Foundation
 import FoundationNetworking
 #endif
 
+/// The message-mutation boundary: the reaction writes and the migration
+/// receipt DM. The create and forward writes live on
+/// `HumanMessageCreateService`, which owns that body contract.
+///
+/// The state transitions stay on `EmailLoginDirectory` with unchanged
+/// signatures, so every existing caller and test compiles untouched. This type
+/// exists so a route can hand over a decoded request DTO instead of a JSON
+/// string, and so the domain has a `Service` boundary of its own.
+public struct MessageSendService: Sendable {
+    public let directory: EmailLoginDirectory
+
+    public init(directory: EmailLoginDirectory) {
+        self.directory = directory
+    }
+
+    /// `POST /api/messages/:messageId/reactions`.
+    public func addMessageReaction(
+        messageId: String,
+        body: ReactionMutationRequestDTO,
+        authorization: String?,
+        serverId: String?
+    ) -> HTTPReply {
+        directory.addMessageReaction(
+            messageId: messageId,
+            body: body.encodedBody(),
+            authorization: authorization,
+            serverId: serverId
+        )
+    }
+
+    /// `DELETE /api/messages/:messageId/reactions`.
+    public func removeMessageReaction(
+        messageId: String,
+        body: ReactionMutationRequestDTO,
+        authorization: String?,
+        serverId: String?
+    ) -> HTTPReply {
+        directory.removeMessageReaction(
+            messageId: messageId,
+            body: body.encodedBody(),
+            authorization: authorization,
+            serverId: serverId
+        )
+    }
+
+    /// A completed Computer migration writes one receipt into an agent-only DM
+    /// named `migration-receipt-<supportRef>`.
+    @discardableResult
+    public func createMigrationReceiptDm(
+        agentId: String,
+        serverId: String,
+        supportRef: String
+    ) -> String? {
+        directory.createMigrationReceiptDm(
+            agentId: agentId,
+            serverId: serverId,
+            supportRef: supportRef
+        )
+    }
+}
+
 extension EmailLoginDirectory {
 
 

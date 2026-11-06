@@ -4,6 +4,85 @@ import Foundation
 import FoundationNetworking
 #endif
 
+/// The inbox-read and wake boundary: Done/Undone per scope, read-all, the
+/// read-mutation acknowledgement and the agent wake-hint projections.
+///
+/// The state transitions stay on `EmailLoginDirectory` with unchanged
+/// signatures, so every existing caller and test compiles untouched. This type
+/// exists so a route can hand over a decoded request DTO instead of a JSON
+/// string, and so the domain has a `Service` boundary of its own.
+public struct ReactionsRealtimeService: Sendable {
+    public let directory: EmailLoginDirectory
+
+    public init(directory: EmailLoginDirectory) {
+        self.directory = directory
+    }
+
+    /// `POST /api/read-mutations`.
+    public func acknowledgeReadMutation(
+        _ body: ReadMutationAckRequestDTO,
+        authorization: String?,
+        serverId: String
+    ) -> HTTPReply {
+        directory.postReadMutation(
+            authorization: authorization,
+            serverId: serverId,
+            body: body.encodedBody()
+        )
+    }
+
+    /// `POST /api/channels/inbox/done`.
+    public func channelInboxDone(
+        authorization: String?,
+        serverId: String?,
+        body: String
+    ) -> HTTPReply {
+        directory.channelInboxDone(authorization: authorization, serverId: serverId, body: body)
+    }
+
+    /// `POST /api/channels/threads/done`.
+    public func threadInboxDone(
+        authorization: String?,
+        serverId: String?,
+        body: String
+    ) -> HTTPReply {
+        directory.threadInboxDone(authorization: authorization, serverId: serverId, body: body)
+    }
+
+    /// `POST /api/channels/inbox/undone`.
+    public func inboxUndone(
+        authorization: String?,
+        serverId: String?,
+        body: String
+    ) -> HTTPReply {
+        directory.inboxUndone(authorization: authorization, serverId: serverId, body: body)
+    }
+
+    /// `POST /api/channels/threads/undone`.
+    public func threadInboxUndone(
+        authorization: String?,
+        serverId: String?,
+        body: String
+    ) -> HTTPReply {
+        directory.threadInboxUndone(authorization: authorization, serverId: serverId, body: body)
+    }
+
+    /// `POST /api/channels/inbox/read-all`.
+    public func inboxReadAll(authorization: String?, serverId: String?) -> HTTPReply {
+        directory.inboxReadAll(authorization: authorization, serverId: serverId)
+    }
+
+    /// `GET /internal/agent-api/wake-hints`.
+    public func agentWakeHints(authorization: String?, since: String?, limit: String? = nil) -> HTTPReply {
+        directory.agentWakeHints(authorization: authorization, since: since, limit: limit)
+    }
+
+    /// `GET /internal/agent-api/third-party-events`.
+    public func agentThirdPartyEvents(authorization: String?) -> HTTPReply {
+        directory.agentThirdPartyEvents(authorization: authorization)
+    }
+}
+
 extension EmailLoginDirectory {
 
 

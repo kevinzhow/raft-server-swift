@@ -45,7 +45,16 @@ public struct ServersFeature: RouteCollection, Sendable {
             ))
         }
         servers.post() { request async throws -> Response in
-            routeResponse(services.emailAccounts.createServer(
+            // `name` and `slug` are the only body fields. A body that does not
+            // carry both strings keeps the directory's raw parser so the
+            // published `Invalid server request` 400 is unchanged.
+            if let body = try? await request.content.decode(ServerCreateRequestDTO.self) {
+                return routeResponse(services.emailAccounts.createServer(
+                    authorization: request.headers[.authorization],
+                    body: body.encodedBody()
+                ))
+            }
+            return routeResponse(services.emailAccounts.createServer(
                 authorization: request.headers[.authorization],
                 body: try await request.bodyText()
             ))
@@ -63,7 +72,16 @@ public struct ServersFeature: RouteCollection, Sendable {
             routeResponse(services.emailAccounts.serverOrder(authorization: request.headers[.authorization]))
         }
         servers.patch("order") { request async throws -> Response in
-            routeResponse(services.emailAccounts.patchServerOrder(
+            // `serverOrder` is the only field. A body that does not decode
+            // keeps the directory's raw parser, which owns the sanitizing and
+            // the `Invalid server order` 400.
+            if let body = try? await request.content.decode(ServerOrderPatchDTO.self) {
+                return routeResponse(services.emailAccounts.patchServerOrder(
+                    authorization: request.headers[.authorization],
+                    body: body.encodedBody()
+                ))
+            }
+            return routeResponse(services.emailAccounts.patchServerOrder(
                 authorization: request.headers[.authorization],
                 body: try await request.bodyText()
             ))
@@ -176,7 +194,17 @@ public struct ServersFeature: RouteCollection, Sendable {
             ))
         }
         servers.post(":id", "join-links") { request async throws -> Response in
-            routeResponse(services.emailAccounts.createJoinLink(
+            // `expiresAt` and `maxUses` are the only fields. A fractional or
+            // string `maxUses` does not decode, so that request keeps the raw
+            // parser and its `maxUses must be a positive integer` 400.
+            if let body = try? await request.content.decode(JoinLinkCreateDTO.self) {
+                return routeResponse(services.emailAccounts.createJoinLink(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    body: body.encodedBody()
+                ))
+            }
+            return routeResponse(services.emailAccounts.createJoinLink(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
                 body: try await request.bodyText()
@@ -202,14 +230,28 @@ public struct ServersFeature: RouteCollection, Sendable {
             ))
         }
         servers.post(":id", "invites") { request async throws -> Response in
-            routeResponse(services.emailAccounts.createServerInvite(
+            // `email` is required and `role` defaults to `member` in both
+            // paths. A body that does not decode keeps the raw parser so the
+            // published invite errors are unchanged.
+            if let body = try? await request.content.decode(ServerInviteCreateDTO.self) {
+                return routeResponse(services.emailAccounts.createServerInvite(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    body: body.encodedBody()
+                ))
+            }
+            return routeResponse(services.emailAccounts.createServerInvite(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
                 body: try await request.bodyText()
             ))
         }
-        servers.post(":id", "setup-reset") { request -> Response in
-            routeResponse(services.emailAccounts.serverSetupReset(
+        servers.post(":id", "setup-reset") { request async throws -> Response in
+            // The reset selects its target by path and reads no body fields.
+            // Decoding states that empty contract; a malformed body still
+            // resolves through the same path-only authorization.
+            _ = try? await request.content.decode(ServerSetupResetDTO.self)
+            return routeResponse(services.emailAccounts.serverSetupReset(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? ""
             ))
@@ -255,7 +297,18 @@ public struct ServersFeature: RouteCollection, Sendable {
             ))
         }
         servers.patch(":id", "members", ":memberId") { request async throws -> Response in
-            routeResponse(services.emailAccounts.patchServerMemberRole(
+            // `role` is the only field; the directory owns the membership and
+            // self-demotion rules. A body that does not decode keeps the raw
+            // parser so `Invalid member role` stays the same.
+            if let body = try? await request.content.decode(ServerMemberRolePatchDTO.self) {
+                return routeResponse(services.emailAccounts.patchServerMemberRole(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    memberId: request.parameters.get("memberId") ?? "",
+                    body: body.encodedBody()
+                ))
+            }
+            return routeResponse(services.emailAccounts.patchServerMemberRole(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
                 memberId: request.parameters.get("memberId") ?? "",

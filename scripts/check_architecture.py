@@ -74,9 +74,14 @@ EMAIL_LOGIN_EXTENSION_LINE_LIMIT = 1_600
 
 # ``Sources/RaftHTTP/EmailLogin/`` holds one file per upstream route family.
 # Batch A of the Phase 5 migration deleted AuthCore, AuthIdentitiesProfile and
-# OAuthFlows; Batch B deleted FeedbackMultiApp and AttachmentsMobile. The count
-# is a ratchet: lower it when a slice deletes a file, never raise it.
-EMAIL_LOGIN_EXTENSION_COUNT_BASELINE = 25
+# OAuthFlows; Batch B deleted FeedbackMultiApp and AttachmentsMobile. Batch C
+# deleted MessageSend, ReactionsRealtime, SearchMentions and ThreadsAndInbox;
+# Batch D deleted ServerMembersAndTasks1, ServerMembersAndTasks2 and
+# ComputersUsage2 (their handlers live in Services/, for Batch D
+# ServerMembersAndSidebarService.swift, TasksAndLabsService.swift,
+# ServerProfileAndOrderService.swift and AgentSendDeliveryService.swift). The
+# count is a ratchet: lower it when a slice deletes a file, never raise it.
+EMAIL_LOGIN_EXTENSION_COUNT_BASELINE = 18
 
 # A service file larger than this must split along its domain again, so a
 # migrated domain cannot simply become the next mega-file.

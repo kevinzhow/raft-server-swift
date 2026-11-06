@@ -4,6 +4,20 @@ import Foundation
 import FoundationNetworking
 #endif
 
+/// Server tasks, assignee routing, lab enrollment and workspace analytics.
+///
+/// These handlers were lifted from `EmailLogin+ServerMembersAndTasks2.swift`.
+/// They stay on `EmailLoginDirectory` because the directory owns the lock and
+/// the task/lab ledgers; `TasksAndLabsService` is the named, `Sendable` handle
+/// for the domain.
+public struct TasksAndLabsService: Sendable {
+    public let directory: EmailLoginDirectory
+
+    public init(directory: EmailLoginDirectory) {
+        self.directory = directory
+    }
+}
+
 extension EmailLoginDirectory {
 
 

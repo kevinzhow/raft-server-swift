@@ -29,6 +29,9 @@ public struct ChannelsFeature: RouteCollection, Sendable {
     /// Synchronous mount for `configure`, whose call sites are not `async`.
     public func register(routes: any RoutesBuilder) {
         let channels = routes.grouped("api", "channels")
+        let threads = ThreadsService(directory: services.emailAccounts)
+        let inbox = ReactionsRealtimeService(directory: services.emailAccounts)
+        let servedInbox = InboxAndWakeService(directory: services.emailAccounts)
         channels.post(":channelId", "archive") { request -> Response in
             routeResponse(services.emailAccounts.setChannelArchivedRoute(
                 authorization: request.headers[.authorization],
@@ -56,7 +59,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         channels.post("inbox", "done") { request async throws -> Response in
-            routeResponse(services.emailAccounts.channelInboxDone(
+            routeResponse(inbox.channelInboxDone(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!],
                 body: try await request.bodyText(default: "{}")
@@ -64,14 +67,14 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         channels.post("inbox", "read-all") { request -> Response in
-            routeResponse(services.emailAccounts.inboxReadAll(
+            routeResponse(inbox.inboxReadAll(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
 
         channels.get("inbox", "done") { request -> Response in
-            routeResponse(services.emailAccounts.doneInbox(
+            routeResponse(servedInbox.doneInbox(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!],
                 query: request.url.query
@@ -79,7 +82,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         channels.post("inbox", "undone") { request async throws -> Response in
-            routeResponse(services.emailAccounts.inboxUndone(
+            routeResponse(inbox.inboxUndone(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!],
                 body: try await request.bodyText(default: "{}")
@@ -87,7 +90,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         channels.post("threads", "undone") { request async throws -> Response in
-            routeResponse(services.emailAccounts.threadInboxUndone(
+            routeResponse(inbox.threadInboxUndone(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!],
                 body: try await request.bodyText(default: "{}")
@@ -95,7 +98,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         channels.post("threads", "done") { request async throws -> Response in
-            routeResponse(services.emailAccounts.threadInboxDone(
+            routeResponse(inbox.threadInboxDone(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!],
                 body: try await request.bodyText(default: "{}")
@@ -103,7 +106,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         channels.get("inbox", "unfollowed") { request -> Response in
-            var response = routeResponse(services.emailAccounts.unfollowedInbox(
+            var response = routeResponse(threads.unfollowedInbox(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 limit: desktopQuery(request.url.query, "limit"),
@@ -152,7 +155,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         channels.get("threads", "followers") { request -> Response in
-            routeResponse(services.emailAccounts.threadFollowerRoster(
+            routeResponse(threads.threadFollowerRoster(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 threadChannelIds: desktopQuery(request.url.query, "threadChannelIds")
@@ -160,6 +163,20 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         channels.post("threads", "follow") { request async throws -> Response in
+            // A decoded follow body is re-encoded for the directory's resolver
+            // and for the follower event published from the same canonical
+            // body; a body that does not decode keeps the raw path.
+            if let mutation = try? await request.content.decode(ThreadFollowMutationDTO.self) {
+                let body = mutation.encodedBody()
+                let reply = threads.setThreadFollow(
+                    mutation,
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    follow: true
+                )
+                publishThreadFollowers(reply, body: body, services: services)
+                return routeResponse(reply)
+            }
             let body = try await request.bodyText(default: "{}")
             let reply = services.emailAccounts.setThreadFollow(
                 authorization: request.headers[.authorization],
@@ -172,6 +189,17 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         channels.post("threads", "unfollow") { request async throws -> Response in
+            if let mutation = try? await request.content.decode(ThreadFollowMutationDTO.self) {
+                let body = mutation.encodedBody()
+                let reply = threads.setThreadFollow(
+                    mutation,
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    follow: false
+                )
+                publishThreadFollowers(reply, body: body, services: services)
+                return routeResponse(reply)
+            }
             let body = try await request.bodyText(default: "{}")
             let reply = services.emailAccounts.setThreadFollow(
                 authorization: request.headers[.authorization],
@@ -184,7 +212,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         channels.get("threads", "followed") { request -> Response in
-            routeResponse(services.emailAccounts.followedThreads(
+            routeResponse(threads.followedThreads(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 limit: desktopQuery(request.url.query, "limit"),
@@ -194,7 +222,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         channels.get(":channelId", "threads", ":messageId") { request -> Response in
-            routeResponse(services.emailAccounts.threadInfo(
+            routeResponse(threads.threadInfo(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 channelId: request.parameters.get("channelId") ?? "",
@@ -203,7 +231,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         channels.get(":channelId", "threads") { request -> Response in
-            routeResponse(services.emailAccounts.channelThreadSummaries(
+            routeResponse(threads.channelThreadSummaries(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!],
                 channelId: request.parameters.get("channelId") ?? "",
@@ -264,7 +292,17 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         channels.post("dm") { request async throws -> Response in
-            routeResponse(services.emailAccounts.createDirectChannelRoute(
+            // The peer is named by `agentId` or `userId`; both absent keeps the
+            // directory's `Invalid DM peer` 400, so the raw path stays for every
+            // body that does not decode.
+            if let body = try? await request.content.decode(ChannelCreateRequestDTO.self) {
+                return routeResponse(services.emailAccounts.createDirectChannelRoute(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    body: body.encodedBody()
+                ))
+            }
+            return routeResponse(services.emailAccounts.createDirectChannelRoute(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 body: try await request.bodyText()

@@ -34,8 +34,23 @@ public struct MessagingFeature: RouteCollection, Sendable {
         let attachments = routes.grouped("api", "attachments")
         let actions = routes.grouped("api", "actions")
         let tasks = routes.grouped("api", "tasks")
+        let messageSend = MessageSendService(directory: services.emailAccounts)
+        let humanMessageCreate = HumanMessageCreateService(directory: services.emailAccounts)
+        let searchMentions = SearchMentionsService(directory: services.emailAccounts)
+        let inboxRealtime = ReactionsRealtimeService(directory: services.emailAccounts)
+        let inbox = InboxAndWakeService(directory: services.emailAccounts)
         readMutations.post { request async throws -> Response in
-            routeResponse(services.emailAccounts.postReadMutation(
+            // A typed body re-encodes through the DTO so the directory's
+            // fingerprinting parser reads the same keys; a body that does not
+            // decode keeps the raw path and its published error codes.
+            if let body = try? await request.content.decode(ReadMutationAckRequestDTO.self) {
+                return routeResponse(inboxRealtime.acknowledgeReadMutation(
+                    body,
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+                ))
+            }
+            return routeResponse(services.emailAccounts.postReadMutation(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 body: try await request.bodyText(default: "{}")
@@ -48,7 +63,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
             ))
         }
         messages.post("mention-actions", "execute") { request async throws -> Response in
-            routeResponse(services.emailAccounts.executeMentionActions(
+            routeResponse(humanMessageCreate.executeMentionActions(
                 body: try await request.bodyText(),
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
@@ -56,14 +71,14 @@ public struct MessagingFeature: RouteCollection, Sendable {
         }
         messages.post { request async throws -> Response in
             // requireAuth runs before the body check. An invalid body writes nothing.
-            routeResponse(services.emailAccounts.createHumanMessage(
+            routeResponse(humanMessageCreate.createHumanMessage(
                 body: try await request.bodyText(),
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
         messages.get("forward", "targets", "search") { request -> Response in
-            routeResponse(services.emailAccounts.searchForwardTargets(
+            routeResponse(humanMessageCreate.searchForwardTargets(
                 query: desktopQuery(request.url.query, "q"),
                 limit: desktopQuery(request.url.query, "limit"),
                 authorization: request.headers[.authorization],
@@ -71,7 +86,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
             ))
         }
         messages.get("forward", "enabled") { request -> Response in
-            routeResponse(services.emailAccounts.messageForwardEnabled(
+            routeResponse(humanMessageCreate.messageForwardEnabled(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
@@ -92,14 +107,14 @@ public struct MessagingFeature: RouteCollection, Sendable {
             ))
         }
         messages.post("forward") { request async throws -> Response in
-            routeResponse(services.emailAccounts.forwardHumanMessage(
+            routeResponse(humanMessageCreate.forwardHumanMessage(
                 body: try await request.bodyText(),
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
         messages.get(":messageId", "mention-deliveries") { request -> Response in
-            routeResponse(services.emailAccounts.mentionDeliveries(
+            routeResponse(inbox.mentionDeliveries(
                 messageId: request.parameters.get("messageId") ?? "",
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
@@ -123,23 +138,48 @@ public struct MessagingFeature: RouteCollection, Sendable {
             ))
         }
         messages.post(":messageId", "reactions") { request async throws -> Response in
-            routeResponse(services.emailAccounts.addMessageReaction(
-                messageId: request.parameters.get("messageId") ?? "",
+            let messageId = request.parameters.get("messageId") ?? ""
+            let authorization = request.headers[.authorization]
+            let serverId = request.headers[HTTPField.Name("X-Server-Id")!]
+            // `emoji` is the only key this route reads, so a decoded body is
+            // re-encoded for the directory's reaction parser. Every other shape
+            // keeps the raw body.
+            if let body = try? await request.content.decode(ReactionMutationRequestDTO.self) {
+                return routeResponse(messageSend.addMessageReaction(
+                    messageId: messageId,
+                    body: body,
+                    authorization: authorization,
+                    serverId: serverId
+                ))
+            }
+            return routeResponse(services.emailAccounts.addMessageReaction(
+                messageId: messageId,
                 body: try await request.bodyText(),
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                authorization: authorization,
+                serverId: serverId
             ))
         }
         messages.delete(":messageId", "reactions") { request async throws -> Response in
-            routeResponse(services.emailAccounts.removeMessageReaction(
-                messageId: request.parameters.get("messageId") ?? "",
+            let messageId = request.parameters.get("messageId") ?? ""
+            let authorization = request.headers[.authorization]
+            let serverId = request.headers[HTTPField.Name("X-Server-Id")!]
+            if let body = try? await request.content.decode(ReactionMutationRequestDTO.self) {
+                return routeResponse(messageSend.removeMessageReaction(
+                    messageId: messageId,
+                    body: body,
+                    authorization: authorization,
+                    serverId: serverId
+                ))
+            }
+            return routeResponse(services.emailAccounts.removeMessageReaction(
+                messageId: messageId,
                 body: try await request.bodyText(),
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                authorization: authorization,
+                serverId: serverId
             ))
         }
         messages.get("channel", ":channelId") { request -> Response in
-            routeResponse(services.emailAccounts.listChannelMessages(
+            routeResponse(inbox.listChannelMessages(
                 channelId: request.parameters.get("channelId") ?? "",
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!],
@@ -194,7 +234,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
             ))
         }
         messages.get("sync") { request -> Response in
-            routeResponse(services.emailAccounts.syncChannelMessages(
+            routeResponse(inbox.syncChannelMessages(
                 channelId: desktopQuery(request.url.query, "channel_id"),
                 sinceSeq: desktopQuery(request.url.query, "since_seq"),
                 authorization: request.headers[.authorization],
@@ -203,7 +243,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
             ))
         }
         messages.get("search") { request -> Response in
-            routeResponse(services.emailAccounts.searchHumanMessages(
+            routeResponse(searchMentions.searchHumanMessages(
                 query: desktopQuery(request.url.query, "q"),
                 sort: desktopQuery(request.url.query, "sort"),
                 limit: desktopQuery(request.url.query, "limit"),
@@ -228,7 +268,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 serverId: serverId
             )
             if reply.status == 404,
-               let stored = services.emailAccounts.humanMessageContext(
+               let stored = searchMentions.humanMessageContext(
                    messageId: messageId,
                    channelId: channelId,
                    authorization: authorization,
@@ -404,10 +444,23 @@ public struct MessagingFeature: RouteCollection, Sendable {
             return routeResponse(reply)
         }
         tasks.patch(":taskId", "status") { request async throws -> Response in
-            routeResponse(services.emailAccounts.updateTaskStatus(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                taskId: request.parameters.get("taskId") ?? "",
+            let taskId = request.parameters.get("taskId") ?? ""
+            let authorization = request.headers[.authorization]
+            let serverId = request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+            // `status` is the only key this route reads; an unknown value still
+            // answers the directory's `Invalid task status` 400.
+            if let body = try? await request.content.decode(TaskStatusUpdateRequestDTO.self) {
+                return routeResponse(services.emailAccounts.updateTaskStatus(
+                    authorization: authorization,
+                    serverId: serverId,
+                    taskId: taskId,
+                    body: body.encodedBody()
+                ))
+            }
+            return routeResponse(services.emailAccounts.updateTaskStatus(
+                authorization: authorization,
+                serverId: serverId,
+                taskId: taskId,
                 body: try await request.bodyText()
             ))
         }
