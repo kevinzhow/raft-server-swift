@@ -1,20 +1,906 @@
-import Crypto
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
+import RaftShared
 
-/// Agent task delete/convert/create plus the inbox conversation surface.
-/// Migrated verbatim from the first half of `EmailLogin+ActionCards2.swift`.
+/// The idempotency seam for `POST /internal/agent-api/tasks`.
 ///
-/// The handlers stay on `EmailLoginDirectory`, which owns the lock and the
-/// domain ledgers. This type is the named, `Sendable` handle a route can hold
-/// instead of reaching for the composition root; it carries no state of its own.
-public struct ActionCardMarketplaceService: Sendable {
-    public let directory: EmailLoginDirectory
+/// The retired handler reused the agent-API idempotency ledger, which is keyed
+/// by `(agent, route, idempotencyKey)` and fingerprints the raw JSON object.
+/// That ledger still belongs to the unmigrated managed-MCP catalog, so the
+/// service takes a small typed port: the directory supplies a parse+lookup and
+/// a store closure, and no untyped dictionary or reply surface leaks into this
+/// file.
+public struct ActionCardTaskIdempotency: Sendable {
+    public enum Lookup: Sendable, Equatable {
+        /// No stored key for this `(agent, route)`.
+        case miss
+        /// A stored 200 body for the same request; published unchanged.
+        case replay(body: String)
+        /// The key was used for a different request; the published 409 body.
+        case conflict(body: String)
+    }
 
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
+    public var lookup: @Sendable (_ agentId: String, _ route: String, _ rawBody: String) -> Lookup
+    public var store: @Sendable (_ agentId: String, _ route: String, _ rawBody: String, _ body: String) -> Void
+
+    public init(
+        lookup: @escaping @Sendable (String, String, String) -> Lookup,
+        store: @escaping @Sendable (String, String, String, String) -> Void
+    ) {
+        self.lookup = lookup
+        self.store = store
+    }
+
+    /// A port that never replays; useful for callers that do not wire the
+    /// legacy ledger.
+    public static let disabled = ActionCardTaskIdempotency(
+        lookup: { _, _, _ in .miss },
+        store: { _, _, _, _ in }
+    )
+}
+
+/// Domain failure for the agent task and inbox operations.
+///
+/// Every case publishes the exact bytes the retired handler built: the shared
+/// `{"error","code"}` credential refusals, the scope refusal, the task-specific
+/// objects, and the inbox 503. `Respond.swift` prints `errorBody` verbatim.
+public enum ActionCardMarketplaceError: DomainError, Equatable {
+    case missingAuthorization
+    case invalidToken
+    case invalidAgentCredential
+    case capabilityNotAuthorized(capability: String)
+    case missingScope(scope: String)
+    case invalidTaskDeleteRequest
+    case invalidTaskConvertRequest
+    case invalidTaskRequest
+    case invalidResourceReceipt
+    case invalidTaskAssignRequest
+    case taskNotFound
+    case taskNotFoundForAssignment
+    case messageNotFound
+    case messageAlreadyTask
+    case assigneeNotAssignable
+    case taskDeleteForbidden
+    case inboxUnavailable
+    case invalidInboxView
+    case invalidInboxLimit
+    case invalidBeforeSeq
+    case idempotencyKeyReused(body: String)
+
+    public var status: UInt {
+        switch self {
+        case .missingAuthorization, .invalidToken, .invalidAgentCredential:
+            401
+        case .capabilityNotAuthorized, .missingScope, .taskDeleteForbidden:
+            403
+        case .taskNotFound, .taskNotFoundForAssignment, .messageNotFound, .assigneeNotAssignable:
+            404
+        case .messageAlreadyTask, .idempotencyKeyReused:
+            409
+        case .inboxUnavailable:
+            503
+        case .invalidTaskDeleteRequest, .invalidTaskConvertRequest, .invalidTaskRequest,
+             .invalidResourceReceipt, .invalidTaskAssignRequest, .invalidInboxView,
+             .invalidInboxLimit, .invalidBeforeSeq:
+            400
+        }
+    }
+
+    public var errorMessage: String {
+        switch self {
+        case .missingAuthorization:
+            "Missing or invalid Authorization header"
+        case .invalidToken:
+            "Invalid or expired token"
+        case .invalidAgentCredential:
+            "Invalid agent credential"
+        case .capabilityNotAuthorized:
+            "Agent credential is not authorized for this capability"
+        case .missingScope:
+            "missing required scope"
+        case .invalidTaskDeleteRequest:
+            "Invalid task delete request"
+        case .invalidTaskConvertRequest:
+            "Invalid task convert request"
+        case .invalidTaskRequest:
+            "Invalid task request"
+        case .invalidResourceReceipt:
+            "Invalid resource receipt"
+        case .invalidTaskAssignRequest:
+            "Invalid task assign request"
+        case .taskNotFound, .taskNotFoundForAssignment:
+            "Task not found"
+        case .messageNotFound:
+            "Message not found"
+        case .messageAlreadyTask:
+            "Message is already a task"
+        case .assigneeNotAssignable:
+            "Assignee is not assignable"
+        case .taskDeleteForbidden:
+            "Only the task creator can delete it"
+        case .inboxUnavailable:
+            "The agent inbox is unavailable"
+        case .invalidInboxView:
+            "view must be unread or mentions"
+        case .invalidInboxLimit:
+            "limit must be between 1 and 100"
+        case .invalidBeforeSeq:
+            "before_seq must be a positive integer"
+        case .idempotencyKeyReused:
+            "This idempotencyKey was already used for a different request"
+        }
+    }
+
+    public var errorBody: OrderedJSON? {
+        switch self {
+        case .missingAuthorization:
+            return Self.credentialBody(error: "Missing or invalid Authorization header", code: "auth_required")
+        case .invalidToken:
+            return Self.credentialBody(error: "Invalid or expired token", code: "auth_required")
+        case .invalidAgentCredential:
+            return Self.credentialBody(error: "Invalid agent credential", code: "auth_required")
+        case .capabilityNotAuthorized(let capability):
+            var body = OrderedJSONObject()
+            body.append("error", "Agent credential is not authorized for this capability")
+            body.append("code", "capability_not_authorized")
+            body.append("requiredCapability", capability)
+            return body.json
+        case .missingScope(let scope):
+            var body = OrderedJSONObject()
+            body.append("error", "missing required scope")
+            body.append("requiredScope", scope)
+            body.append("reason", "missing_scope")
+            return body.json
+        case .taskNotFoundForAssignment:
+            var body = OrderedJSONObject()
+            body.append("error", "Task not found")
+            body.append("code", "assignee_not_assignable")
+            return body.json
+        case .assigneeNotAssignable:
+            var body = OrderedJSONObject()
+            body.append("error", "Assignee is not assignable")
+            body.append("code", "assignee_not_assignable")
+            return body.json
+        case .taskDeleteForbidden:
+            var body = OrderedJSONObject()
+            body.append("error", "Only the task creator can delete it")
+            body.append("code", "task_delete_forbidden")
+            return body.json
+        case .inboxUnavailable:
+            var body = OrderedJSONObject()
+            body.append("error", "The agent inbox is unavailable")
+            body.append("code", "INBOX_UNAVAILABLE")
+            body.append("suggestedNextAction", "Retry after the inbox service recovers.")
+            return body.json
+        case .idempotencyKeyReused(let body):
+            return .raw(body)
+        case .invalidTaskDeleteRequest, .invalidTaskConvertRequest, .invalidTaskRequest,
+             .invalidResourceReceipt, .invalidTaskAssignRequest, .taskNotFound, .messageNotFound,
+             .messageAlreadyTask, .invalidInboxView, .invalidInboxLimit, .invalidBeforeSeq:
+            return nil
+        }
+    }
+
+    private static func credentialBody(error: String, code: String) -> OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("error", error)
+        body.append("code", code)
+        return body.json
+    }
+}
+
+/// Agent task create/convert/delete/assign/resource-receipt plus the agent
+/// inbox conversation list.
+///
+/// The row state lives in `TasksAndRemindersStore`, `MessagesAndThreadsStore`,
+/// `InboxFactStore`, `ServersAndChannelsStore`, `AuthProfileStore`,
+/// `AgentsRuntimeStore` and `ManagedMCPAndCardsStore`; every read-modify-write
+/// that used to run under the directory lock is one store critical section.
+/// This type returns ordered DTOs and throws `ActionCardMarketplaceError`
+/// instead of building a reply, and reads the OAuth ledger for authorization.
+public struct ActionCardMarketplaceService: Sendable {
+    private let tasks: TasksAndRemindersStore
+    private let messages: MessagesAndThreadsStore
+    private let inboxFacts: InboxFactStore
+    private let channels: ServersAndChannelsStore
+    private let accounts: AuthProfileStore
+    private let agents: AgentsRuntimeStore
+    private let machines: MachinesAndComputersStore
+    private let cards: ManagedMCPAndCardsStore
+    private let oauth: OAuthLedger
+    /// The typed credential/grant decisions of the selected feedback-locator
+    /// domain. The slice only calls its pure decision functions.
+    private let locator: FeedbackLocatorService
+    private let idempotency: ActionCardTaskIdempotency
+    /// Bridges the directory's message-append policy; the message ledger is
+    /// owned by an unmigrated domain and still mirrors into the OAuth ledger.
+    private let appendHumanMessage: @Sendable (StoredHumanMessage) -> Int
+    /// Legacy `serializeJSON` for the resource-receipt notes payload.
+    private let serializeReceipt: @Sendable (JSONValue) -> String
+    private let now: @Sendable () -> Date
+    private let makeId: @Sendable () -> String
+
+    init(
+        tasks: TasksAndRemindersStore,
+        messages: MessagesAndThreadsStore,
+        inboxFacts: InboxFactStore,
+        channels: ServersAndChannelsStore,
+        accounts: AuthProfileStore,
+        agents: AgentsRuntimeStore,
+        machines: MachinesAndComputersStore,
+        cards: ManagedMCPAndCardsStore,
+        oauth: OAuthLedger,
+        locator: FeedbackLocatorService,
+        idempotency: ActionCardTaskIdempotency = .disabled,
+        appendHumanMessage: @escaping @Sendable (StoredHumanMessage) -> Int,
+        serializeReceipt: @escaping @Sendable (JSONValue) -> String,
+        now: @escaping @Sendable () -> Date = { Date() },
+        makeId: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
+    ) {
+        self.tasks = tasks
+        self.messages = messages
+        self.inboxFacts = inboxFacts
+        self.channels = channels
+        self.accounts = accounts
+        self.agents = agents
+        self.machines = machines
+        self.cards = cards
+        self.oauth = oauth
+        self.locator = locator
+        self.idempotency = idempotency
+        self.appendHumanMessage = appendHumanMessage
+        self.serializeReceipt = serializeReceipt
+        self.now = now
+        self.makeId = makeId
+    }
+
+    // MARK: - POST /internal/agent-api/tasks/delete
+    //          POST /internal/agent/:agentId/tasks/delete
+
+    public func deleteTask(
+        authorization: String?,
+        body: AgentTaskDeleteRequest?,
+        legacyAgentId: String? = nil
+    ) throws -> ActionCardTaskDeleteResponse {
+        if let denial = capabilityDenial(authorization, required: "tasks") { throw denial }
+        guard let writer = taskWriter(authorization, legacyAgentId: legacyAgentId) else {
+            throw ActionCardMarketplaceError.invalidToken
+        }
+        if let denial = grantDenial(agentId: writer.agentId, scope: "task:write") { throw denial }
+        guard let body,
+              let channelRef = body.channel,
+              let channelId = taskChannel(
+                  serverId: writer.serverId,
+                  agentId: writer.agentId,
+                  reference: channelRef
+              ),
+              let taskNumber = body.taskNumber
+        else {
+            throw ActionCardMarketplaceError.invalidTaskDeleteRequest
+        }
+        let isAdmin = oauth.agentRole(serverId: writer.serverId, agentId: writer.agentId) == "admin"
+        switch tasks.deleteTask(
+            channelId: channelId,
+            taskNumber: taskNumber,
+            agentId: writer.agentId,
+            isAdmin: isAdmin
+        ) {
+        case .notFound:
+            throw ActionCardMarketplaceError.taskNotFound
+        case .forbidden:
+            throw ActionCardMarketplaceError.taskDeleteForbidden
+        case .deleted:
+            return ActionCardTaskDeleteResponse()
+        }
+    }
+
+    // MARK: - POST /internal/agent-api/tasks/convert
+    //          POST /internal/agent/:agentId/tasks/convert
+
+    public func convertTask(
+        authorization: String?,
+        body: AgentTaskConvertRequest?,
+        legacyAgentId: String? = nil
+    ) throws -> ActionCardTaskConvertResponse {
+        if let denial = capabilityDenial(authorization, required: "tasks") { throw denial }
+        guard let writer = taskWriter(authorization, legacyAgentId: legacyAgentId) else {
+            throw ActionCardMarketplaceError.invalidToken
+        }
+        if let denial = grantDenial(agentId: writer.agentId, scope: "task:write") { throw denial }
+        guard let body,
+              let channelRef = body.channel,
+              let channelId = taskChannel(
+                  serverId: writer.serverId,
+                  agentId: writer.agentId,
+                  reference: channelRef
+              ),
+              let messageRef = body.messageId
+        else {
+            throw ActionCardMarketplaceError.invalidTaskConvertRequest
+        }
+        guard let message = messages.messageForConvert(prefix: messageRef, channelId: channelId) else {
+            throw ActionCardMarketplaceError.messageNotFound
+        }
+        switch tasks.convertMessage(
+            channelId: channelId,
+            messageId: message.id,
+            creatorId: writer.agentId,
+            now: now()
+        ) {
+        case .alreadyTask:
+            throw ActionCardMarketplaceError.messageAlreadyTask
+        case .created(let record):
+            return ActionCardTaskConvertResponse(task: record)
+        }
+    }
+
+    // MARK: - POST /internal/agent-api/tasks
+    //          POST /internal/agent/:agentId/tasks
+
+    public func createTasks(
+        authorization: String?,
+        body: AgentTaskCreateRequest?,
+        rawBody: String,
+        legacyAgentId: String? = nil
+    ) throws -> ActionCardTaskCreateResponse {
+        if let denial = capabilityDenial(authorization, required: "tasks") { throw denial }
+        let auth: (agentId: String, serverId: String)
+        switch taskAuth(authorization, legacyAgentId: legacyAgentId) {
+        case .missingAuthorization:
+            throw ActionCardMarketplaceError.missingAuthorization
+        case .invalidCredential:
+            throw ActionCardMarketplaceError.invalidToken
+        case .ok(let agentId, let serverId):
+            auth = (agentId, serverId)
+        }
+        if let denial = grantDenial(agentId: auth.agentId, scope: "task:write") { throw denial }
+        guard let body,
+              let channelRef = body.channel,
+              let channelId = taskChannel(
+                  serverId: auth.serverId,
+                  agentId: auth.agentId,
+                  reference: channelRef
+              ),
+              body.hasTasksKey,
+              body.hasValidTasks
+        else {
+            throw ActionCardMarketplaceError.invalidTaskRequest
+        }
+        if let replay = try idempotencyReplay(agentId: auth.agentId, rawBody: rawBody) {
+            return replay
+        }
+        let titles = body.tasks.compactMap { task -> String? in
+            let title = task.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            return title.isEmpty ? nil : title
+        }
+        guard !titles.isEmpty, titles.count == body.tasks.count else {
+            throw ActionCardMarketplaceError.invalidTaskRequest
+        }
+        var assignee: (id: String, type: String, name: String)?
+        if let rawAssignee = body.assignee, !rawAssignee.isEmpty {
+            guard let resolved = resolveAssignee(
+                channelId: channelId,
+                rawAssignee: rawAssignee
+            ) else {
+                throw ActionCardMarketplaceError.assigneeNotAssignable
+            }
+            assignee = resolved
+        }
+        let created = tasks.appendTaskBatch(
+            channelId: channelId,
+            titles: titles,
+            creatorId: auth.agentId,
+            now: now()
+        )
+        let ids = created.map(\.id)
+        let resourceFlags = body.tasks.map(\.createsResource)
+        if resourceFlags.contains(true) {
+            tasks.markRequiresResourceReceipt(taskIds: ids, flags: resourceFlags)
+        }
+        var receipt: ActionCardTaskAssignmentReceipt?
+        if let assignee {
+            let updated = tasks.applyAssignment(
+                taskIds: ids,
+                assigneeId: assignee.id,
+                assigneeType: assignee.type
+            )
+            for task in updated {
+                inboxFacts.append(StoredInboxFact(
+                    messageId: task.messageId,
+                    receiverType: assignee.type,
+                    receiverId: assignee.id,
+                    channelId: channelId,
+                    serverId: auth.serverId,
+                    personalMention: true,
+                    unreadEligible: true
+                ))
+            }
+            let receiptId = makeId()
+            let receiptContent = "@\(assignee.name) assigned you: \(titles.first ?? "task")"
+            _ = appendHumanMessage(StoredHumanMessage(
+                id: receiptId,
+                channelId: channelId,
+                senderId: auth.agentId,
+                content: receiptContent,
+                randomId: nil,
+                messageType: "task_assignment",
+                senderType: "agent"
+            ))
+            inboxFacts.append(StoredInboxFact(
+                messageId: receiptId,
+                receiverType: assignee.type,
+                receiverId: assignee.id,
+                channelId: channelId,
+                serverId: auth.serverId,
+                personalMention: true,
+                unreadEligible: true
+            ))
+            receipt = ActionCardTaskAssignmentReceipt(
+                messageId: receiptId,
+                content: receiptContent,
+                assignee: "@\(assignee.name)"
+            )
+        }
+        let rows = tasks.tasks(ids: ids)
+        let response = ActionCardTaskCreateResponse(
+            taskIds: ids,
+            tasks: rows,
+            assignmentReceipt: receipt
+        )
+        idempotency.store(auth.agentId, "taskCreate", rawBody, response.jsonBody.render())
+        return response
+    }
+
+    // MARK: - POST /internal/agent-api/tasks/resource-receipt
+
+    public func resourceReceipt(
+        authorization: String?,
+        body: AgentTaskResourceReceiptRequest?
+    ) throws -> ActionCardTaskResourceReceiptResponse {
+        guard let writer = taskWriter(authorization, legacyAgentId: nil) else {
+            throw ActionCardMarketplaceError.invalidToken
+        }
+        if let denial = grantDenial(agentId: writer.agentId, scope: "task:write") { throw denial }
+        guard let body,
+              let channelRef = body.channel,
+              let channelId = taskChannel(
+                  serverId: writer.serverId,
+                  agentId: writer.agentId,
+                  reference: channelRef
+              ),
+              let taskNumber = body.taskNumber,
+              let receipt = body.receipt
+        else {
+            throw ActionCardMarketplaceError.invalidResourceReceipt
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let expiry = formatter.date(from: receipt.expiry) else {
+            throw ActionCardMarketplaceError.invalidResourceReceipt
+        }
+        let receiptJSON = serializeReceipt(receipt.payload)
+        let reminder = ReminderRecord(
+            id: makeId(),
+            serverId: writer.serverId,
+            ownerAgentId: writer.agentId,
+            title: "Resource receipt expiry: \(receipt.object)",
+            fireAt: expiry,
+            notes: receiptJSON,
+            channelId: channelId
+        )
+        let stored: (task: TaskRecord, reminder: ReminderRecord)
+        switch tasks.storeResourceReceipt(
+            channelId: channelId,
+            taskNumber: taskNumber,
+            receiptJSON: receiptJSON,
+            reminder: reminder
+        ) {
+        case .notFound:
+            throw ActionCardMarketplaceError.taskNotFound
+        case .stored(let task, let reminder):
+            stored = (task, reminder)
+        }
+        let agentName = oauth.agentRuntimeInfo(id: writer.agentId)?.name ?? "agent"
+        return ActionCardTaskResourceReceiptResponse(
+            taskNumber: stored.task.taskNumber,
+            expiryFollowup: ActionCardTaskExpiryFollowup(
+                ownerAgentId: writer.agentId,
+                owner: "@\(agentName)",
+                msgId: stored.task.messageId,
+                targetChannelId: channelId,
+                reminderId: stored.reminder.id,
+                fireAt: receipt.expiry
+            )
+        )
+    }
+
+    // MARK: - POST /internal/agent-api/tasks/assign
+
+    public func assignTask(
+        authorization: String?,
+        body: AgentTaskAssignRequest?
+    ) throws -> ActionCardTaskPayload {
+        if let denial = capabilityDenial(authorization, required: "tasks") { throw denial }
+        guard let token = bearerToken(authorization),
+              let credential = agents.useAgentCredential(token: token, now: now()),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            throw ActionCardMarketplaceError.invalidToken
+        }
+        if let denial = grantDenial(agentId: agent.id, scope: "task:write") { throw denial }
+        guard let body,
+              let channelRef = body.channel,
+              let channelId = taskChannel(
+                  serverId: agent.serverId,
+                  agentId: agent.id,
+                  reference: channelRef
+              ),
+              let taskNumber = body.taskNumber,
+              let rawAssignee = body.assignee, !rawAssignee.isEmpty
+        else {
+            throw ActionCardMarketplaceError.invalidTaskAssignRequest
+        }
+        guard let resolved = resolveAssignee(channelId: channelId, rawAssignee: rawAssignee) else {
+            throw ActionCardMarketplaceError.assigneeNotAssignable
+        }
+        switch tasks.assignTask(
+            channelId: channelId,
+            taskNumber: taskNumber,
+            assigneeId: resolved.id,
+            assigneeType: resolved.type
+        ) {
+        case .notFound:
+            throw ActionCardMarketplaceError.taskNotFoundForAssignment
+        case .assigned(let task):
+            return ActionCardTaskPayload(task)
+        }
+    }
+
+    // MARK: - GET /internal/agent-api/inbox/conversations
+
+    public func inboxConversations(
+        authorization: String?,
+        limit rawLimit: String?,
+        beforeSeq rawBefore: String?,
+        view rawView: String?
+    ) throws -> ActionCardInboxResponse {
+        let identity: (agentId: String, serverId: String)
+        switch locator.identityResolution(authorization: authorization, capability: "read") {
+        case .success(let agentId, let serverId):
+            identity = (agentId, serverId)
+        case .missingAuthorization:
+            throw ActionCardMarketplaceError.missingAuthorization
+        case .invalidAccessToken:
+            throw ActionCardMarketplaceError.invalidToken
+        case .capabilityNotAuthorized(let capability):
+            throw ActionCardMarketplaceError.capabilityNotAuthorized(capability: capability)
+        case .invalidAgentCredential:
+            throw ActionCardMarketplaceError.invalidAgentCredential
+        }
+        guard (agents.agentInboxAvailable ?? true) else {
+            throw ActionCardMarketplaceError.inboxUnavailable
+        }
+        let view = rawView ?? "unread"
+        guard view == "unread" || view == "mentions" else {
+            throw ActionCardMarketplaceError.invalidInboxView
+        }
+        let limit: Int
+        if let rawLimit, !rawLimit.isEmpty {
+            guard let parsed = Int(rawLimit), parsed >= 1, parsed <= 100 else {
+                throw ActionCardMarketplaceError.invalidInboxLimit
+            }
+            limit = parsed
+        } else {
+            limit = 20
+        }
+        var before: Int?
+        if let rawBefore, !rawBefore.isEmpty {
+            guard let parsed = Int(rawBefore), parsed > 0 else {
+                throw ActionCardMarketplaceError.invalidBeforeSeq
+            }
+            before = parsed
+        }
+
+        let serverId = identity.serverId
+        let agentId = identity.agentId
+        let snapshot = messages.inboxSnapshot()
+        let channelRows = channels.postableChannels
+        let jointProjections = channels.jointProjections
+        let accountRows = accounts.accounts
+        var rows: [ActionCardInboxItem] = []
+
+        func latestMessage(_ storageChannelId: String) -> (seq: Int, message: StoredHumanMessage?) {
+            let channelMessages = snapshot.messages.filter { $0.channelId == storageChannelId }
+            guard let last = channelMessages.max(by: { $0.seq < $1.seq }) else { return (0, nil) }
+            return (last.seq, last)
+        }
+        func senderName(_ message: StoredHumanMessage?) -> String? {
+            guard let message else { return nil }
+            if let external = message.externalSenderName { return external }
+            if message.senderId == "system" { return "system" }
+            return accountRows.values.first { $0.id == message.senderId }?.name
+                ?? oauth.agentRuntimeInfo(id: message.senderId)?.name
+        }
+        func mentionStats(channelId: String) -> (count: Int, maxSeq: Int?) {
+            let ids = Set(snapshot.mentions.filter {
+                $0.targetType == "agent" && $0.targetId == agentId && $0.channelId == channelId
+            }.map(\.messageId))
+            guard !ids.isEmpty else { return (0, nil) }
+            let channelMessages = snapshot.messages.filter { $0.channelId == channelId }
+            var maxSeq: Int?
+            for message in channelMessages where ids.contains(message.id) {
+                maxSeq = message.seq
+            }
+            return (ids.count, maxSeq)
+        }
+
+        // Channel and DM rows.
+        for (id, channel) in channelRows {
+            guard channel.serverId == serverId, channel.deletedAt == nil else { continue }
+            let visible = channel.kind == "channel"
+                || channel.memberIds.contains(agentId)
+                || oauth.channelAgentIds(channelId: id).contains(agentId)
+            guard visible else { continue }
+            var target: String
+            var kind: String
+            if channel.kind == "dm", channel.name.hasPrefix("migration-receipt-"), channel.memberIds == [agentId] {
+                target = "dm:@\(channel.name)"
+                kind = "dm"
+            } else if channel.kind == "dm" {
+                let peer = channel.memberIds.compactMap { member -> (String, String)? in
+                    guard member != agentId,
+                          let account = accountRows.values.first(where: { $0.id == member }),
+                          oauth.memberRole(serverId: serverId, userId: member) != nil
+                    else { return nil }
+                    return (member, account.name)
+                }.first
+                guard let peer else { continue }
+                target = "dm:@\(peer.1)"
+                kind = "dm"
+            } else if channel.kind == "channel" || channel.kind == "private" || channel.kind == "joint" {
+                target = "#\(channel.name)"
+                kind = "channel"
+            } else {
+                continue
+            }
+            let storage = jointProjections.first { $0.localChannelId == id }?.canonicalChannelId ?? id
+            let latest = latestMessage(storage)
+            guard latest.seq > 0 else { continue }
+            let cursor = snapshot.readCursors["\(id)\n\(agentId)"]?.seq ?? 0
+            let unread = snapshot.messages.filter {
+                $0.channelId == storage && $0.seq > cursor && $0.senderId != agentId
+            }.count
+            let mentions = mentionStats(channelId: storage)
+            rows.append(ActionCardInboxItem(
+                target: target,
+                kind: kind,
+                unread: unread,
+                mentions: mentions.count,
+                lastReadSeq: cursor,
+                activitySeq: latest.seq,
+                latestSenderName: senderName(latest.message) ?? "",
+                latestAt: latest.message.map { EmailLoginDirectory.isoMillis($0.createdAt) }
+            ))
+        }
+
+        // Followed thread rows.
+        for follow in snapshot.threadFollows.values where follow.userId == agentId && follow.serverId == serverId {
+            guard let thread = channelRows[follow.threadChannelId], thread.deletedAt == nil,
+                  let parentId = thread.parentChannelId,
+                  let parent = channelRows[parentId], parent.deletedAt == nil
+            else { continue }
+            let visible = thread.memberIds.contains(agentId)
+                || oauth.channelAgentIds(channelId: follow.threadChannelId).contains(agentId)
+                || parent.memberIds.contains(agentId)
+                || oauth.channelAgentIds(channelId: parentId).contains(agentId)
+            guard visible else { continue }
+            let storage = jointProjections.first {
+                $0.localChannelId == follow.threadChannelId
+            }?.canonicalChannelId ?? follow.threadChannelId
+            let latest = latestMessage(storage)
+            guard latest.seq > 0 else { continue }
+            let cursor = snapshot.readCursors["\(follow.threadChannelId)\n\(agentId)"]?.seq ?? 0
+            let unread = snapshot.messages.filter {
+                $0.channelId == storage && $0.seq > cursor && $0.senderId != agentId
+            }.count
+            let mentions = mentionStats(channelId: storage)
+            let parentShort = String((thread.parentMessageId ?? "").prefix(8))
+            let target: String
+            if parent.kind == "dm" {
+                let peer = parent.memberIds.compactMap { member -> String? in
+                    guard member != agentId,
+                          let account = accountRows.values.first(where: { $0.id == member }),
+                          oauth.memberRole(serverId: serverId, userId: member) != nil
+                    else { return nil }
+                    return account.name
+                }.first ?? "unknown"
+                target = "dm:@\(peer):\(parentShort)"
+            } else {
+                target = "#\(parent.name):\(parentShort)"
+            }
+            rows.append(ActionCardInboxItem(
+                target: target,
+                kind: "thread",
+                unread: unread,
+                mentions: mentions.count,
+                lastReadSeq: cursor,
+                activitySeq: latest.seq,
+                latestSenderName: senderName(latest.message) ?? "",
+                latestAt: latest.message.map { EmailLoginDirectory.isoMillis($0.createdAt) }
+            ))
+        }
+
+        let totals = (
+            conversations: rows.count,
+            dms: rows.filter { $0.kind == "dm" }.count,
+            mentions: rows.filter { $0.mentions > 0 }.count
+        )
+        var filtered = rows
+        if view == "mentions" {
+            filtered = filtered.filter { $0.mentions > 0 }
+        } else {
+            filtered = filtered.filter { $0.unread > 0 || $0.mentions > 0 }
+        }
+        if let before {
+            filtered = filtered.filter { $0.activitySeq < before }
+        }
+        filtered.sort { left, right in
+            if left.activitySeq != right.activitySeq { return left.activitySeq > right.activitySeq }
+            return left.target < right.target
+        }
+        let hasMore = filtered.count > limit
+        let page = Array(filtered.prefix(limit))
+        return ActionCardInboxResponse(
+            view: view,
+            items: page,
+            conversations: totals.conversations,
+            dms: totals.dms,
+            mentionConversations: totals.mentions,
+            hasMore: hasMore,
+            nextBeforeSeq: hasMore ? page.last?.activitySeq : nil
+        )
+    }
+
+    // MARK: - Credential and channel policy
+
+    private func bearerToken(_ authorization: String?) -> String? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        return String(authorization.dropFirst("Bearer ".count))
+    }
+
+    /// The legacy `agentCapabilityDenial`: a live credential that does not
+    /// carry `required` is the only refusal (anything else passes here).
+    private func capabilityDenial(
+        _ authorization: String?,
+        required: String
+    ) -> ActionCardMarketplaceError? {
+        guard let token = bearerToken(authorization),
+              let credential = agents.agentCredential(token: token),
+              credential.revokedAt == nil
+        else { return nil }
+        return credential.scopes.contains(required)
+            ? nil
+            : .capabilityNotAuthorized(capability: required)
+    }
+
+    /// The legacy `agentGrantDenial`: an agent without a stored grant row has
+    /// every grantable scope.
+    private func grantDenial(agentId: String, scope: String) -> ActionCardMarketplaceError? {
+        guard let grants = cards.agentGrantSets[agentId], !grants.contains(scope) else { return nil }
+        return .missingScope(scope: scope)
+    }
+
+    private enum TaskAuthResult {
+        case missingAuthorization
+        case invalidCredential
+        case ok(agentId: String, serverId: String)
+    }
+
+    /// The legacy `agentTaskAuth` reading order: credential path first (a live
+    /// credential without `tasks` is the published invalid-token 401), then the
+    /// machine key plus the path agent id.
+    private func taskAuth(
+        _ authorization: String?,
+        legacyAgentId: String?
+    ) -> TaskAuthResult {
+        guard let token = bearerToken(authorization) else { return .missingAuthorization }
+        let credential = agents.agentCredential(token: token)
+        let machine = machines.machines.first { $0.apiKey == token }
+        if let credential, credential.revokedAt == nil {
+            guard credential.scopes.contains("tasks") else { return .invalidCredential }
+            guard let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else {
+                return .invalidCredential
+            }
+            return .ok(agentId: agent.id, serverId: agent.serverId)
+        }
+        if let machine, let legacyAgentId,
+           let agent = oauth.agentRuntimeInfo(id: legacyAgentId), !agent.deleted,
+           agent.serverId == machine.serverId {
+            return .ok(agentId: agent.id, serverId: agent.serverId)
+        }
+        return .invalidCredential
+    }
+
+    /// The legacy `agentTaskWriter`: write routes accept both an `sk_agent_*`
+    /// credential and the legacy machine key plus path agent id.
+    private func taskWriter(
+        _ authorization: String?,
+        legacyAgentId: String?
+    ) -> (agentId: String, serverId: String)? {
+        guard let token = bearerToken(authorization) else { return nil }
+        let credential = agents.agentCredential(token: token)
+        let machine = machines.machines.first { $0.apiKey == token }
+        if let credential, credential.revokedAt == nil,
+           let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted {
+            return (agent.id, agent.serverId)
+        }
+        if let machine, let legacyAgentId,
+           let agent = oauth.agentRuntimeInfo(id: legacyAgentId), !agent.deleted,
+           agent.serverId == machine.serverId {
+            return (agent.id, agent.serverId)
+        }
+        return nil
+    }
+
+    /// The legacy `agentTaskChannel` reference resolution.
+    private func taskChannel(serverId: String, agentId: String, reference: String) -> String? {
+        let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let channelRows = channels.postableChannels
+        if trimmed.hasPrefix("#") {
+            let name = String(trimmed.dropFirst())
+            for (id, channel) in channelRows {
+                guard channel.serverId == serverId, channel.name == name, channel.deletedAt == nil else { continue }
+                guard channel.kind == "channel"
+                    || channel.memberIds.contains(agentId)
+                    || oauth.channelAgentIds(channelId: id).contains(agentId)
+                else { continue }
+                return id
+            }
+            return nil
+        }
+        guard channelRows[trimmed]?.serverId == serverId else { return nil }
+        return trimmed
+    }
+
+    /// Resolves `@handle` to exactly one visible agent or human channel member.
+    /// Both matches or neither is the published `assignee_not_assignable`.
+    private func resolveAssignee(
+        channelId: String,
+        rawAssignee: String
+    ) -> (id: String, type: String, name: String)? {
+        let handle = rawAssignee.hasPrefix("@") ? String(rawAssignee.dropFirst()) : rawAssignee
+        let lowered = handle.lowercased()
+        let agentMatch = oauth.channelAgentIds(channelId: channelId)
+            .compactMap { oauth.agentRuntimeInfo(id: $0) }
+            .first { $0.name.lowercased() == lowered || $0.displayName.lowercased() == lowered }
+        let channelHumans = oauth.channelHumanIds(channelId: channelId)
+        let humanMatch = channelHumans.compactMap { userId in
+            accounts.accounts.values.first { $0.id == userId }
+        }.first { $0.name.lowercased() == lowered }
+        guard (agentMatch == nil) != (humanMatch == nil) else { return nil }
+        if let agentMatch {
+            return (agentMatch.id, "agent", agentMatch.name)
+        }
+        if let humanMatch {
+            return (humanMatch.id, "user", humanMatch.name)
+        }
+        return nil
+    }
+
+    /// The legacy idempotency lookup, which runs after the request shape check
+    /// and before title validation.
+    private func idempotencyReplay(
+        agentId: String,
+        rawBody: String
+    ) throws -> ActionCardTaskCreateResponse? {
+        switch idempotency.lookup(agentId, "taskCreate", rawBody) {
+        case .miss:
+            return nil
+        case .replay(let body):
+            return ActionCardTaskCreateResponse(replayedBody: body)
+        case .conflict(let body):
+            throw ActionCardMarketplaceError.idempotencyKeyReused(body: body)
+        }
     }
 }
 
@@ -57,723 +943,5 @@ extension EmailLoginDirectory {
             seenUpToSeq: seenUpToSeq,
             actionKey: actionKey
         )
-    }
-    public func agentTaskDelete(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
-        if let denial = agentCapabilityDenial(authorization, required: "tasks") { return denial }
-        guard let writer = agentTaskWriter(authorization, legacyAgentId: legacyAgentId)
-        else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
-        }
-        if let reply = agentGrantDenial(agentId: writer.agentId, scope: "task:write") { return reply }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let channelRef = object["channel"] as? String,
-              let channelId = agentTaskChannel(serverId: writer.serverId, agentId: writer.agentId, reference: channelRef),
-              let taskNumber = object["task_number"] as? Int
-        else {
-            return Self.json(400, "{\"error\":\"Invalid task delete request\"}")
-        }
-        lock.lock()
-        guard let index = taskRecords.firstIndex(where: { $0.channelId == channelId && $0.taskNumber == taskNumber }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Task not found\"}")
-        }
-        let task = taskRecords[index]
-        let isAdmin = oauth.agentRole(serverId: writer.serverId, agentId: writer.agentId) == "admin"
-        guard isAdmin || task.creatorId == writer.agentId else {
-            lock.unlock()
-            return Self.json(403, "{\"error\":\"Only the task creator can delete it\",\"code\":\"task_delete_forbidden\"}")
-        }
-        taskRecords.remove(at: index)
-        lock.unlock()
-        return Self.json(200, "{\"ok\":true}")
-    }
-
-    public func agentTaskConvert(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
-        if let denial = agentCapabilityDenial(authorization, required: "tasks") { return denial }
-        guard let writer = agentTaskWriter(authorization, legacyAgentId: legacyAgentId)
-        else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
-        }
-        if let reply = agentGrantDenial(agentId: writer.agentId, scope: "task:write") { return reply }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let channelRef = object["channel"] as? String,
-              let channelId = agentTaskChannel(serverId: writer.serverId, agentId: writer.agentId, reference: channelRef),
-              let messageRef = object["message_id"] as? String
-        else {
-            return Self.json(400, "{\"error\":\"Invalid task convert request\"}")
-        }
-        lock.lock()
-        guard let message = humanMessageRows.first(where: { $0.id == messageRef || $0.id.hasPrefix(messageRef) }), message.channelId == channelId else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Message not found\"}")
-        }
-        if taskRecords.contains(where: { $0.messageId == message.id }) {
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"Message is already a task\"}")
-        }
-        let taskNumber = taskRecords.filter { $0.channelId == channelId }.count + 1
-        let id = UUID().uuidString.lowercased()
-        var record = TaskRecord(
-            id: id,
-            channelId: channelId,
-            title: "Converted message",
-            description: nil,
-            status: "todo",
-            taskNumber: taskNumber,
-            messageId: message.id,
-            createdAt: Date()
-        )
-        record.creatorId = writer.agentId
-        taskRecords.append(record)
-        let json = taskJSON(record)
-        lock.unlock()
-        return Self.json(200, "{\"task\":\(json)}")
-    }
-
-    public func agentTasksCreate(authorization: String?, legacyAgentId: String?, body: String) -> HTTPReply {
-        if let denial = agentCapabilityDenial(authorization, required: "tasks") { return denial }
-        let auth: (agentId: String, serverId: String)
-        switch agentTaskAuth(authorization: authorization, legacyAgentId: legacyAgentId) {
-        case .refused(let reply): return reply
-        case .ok(let agentId, let serverId): auth = (agentId, serverId)
-        }
-        if let reply = agentGrantDenial(agentId: auth.agentId, scope: "task:write") { return reply }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let channelRef = object["channel"] as? String,
-              let channelId = agentTaskChannel(serverId: auth.serverId, agentId: auth.agentId, reference: channelRef),
-              let rawTasks = object["tasks"] as? [[String: Any]]
-        else {
-            return Self.json(400, "{\"error\":\"Invalid task request\"}")
-        }
-        if let reply = agentApiIdempotencyReply(agentId: auth.agentId, route: "taskCreate", object: object) {
-            return reply
-        }
-        let titles = rawTasks.compactMap { task -> String? in
-            let title = (task["title"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            return title.isEmpty ? nil : title
-        }
-        guard !titles.isEmpty, titles.count == rawTasks.count else {
-            return Self.json(400, "{\"error\":\"Invalid task request\"}")
-        }
-        var assignee: (id: String, type: String, name: String)?
-        if let rawAssignee = object["assignee"] as? String, !rawAssignee.isEmpty {
-            let handle = rawAssignee.hasPrefix("@") ? String(rawAssignee.dropFirst()) : rawAssignee
-            let lowered = handle.lowercased()
-            let agentMatch = oauth.channelAgentIds(channelId: channelId).compactMap { oauth.agentRuntimeInfo(id: $0) }.first {
-                $0.name.lowercased() == lowered || $0.displayName.lowercased() == lowered
-            }
-            let humanMatch = oauth.channelHumanIds(channelId: channelId).compactMap { userId in
-                accounts.values.first { $0.id == userId }
-            }.first { $0.name.lowercased() == lowered }
-            guard (agentMatch == nil) != (humanMatch == nil) else {
-                return Self.json(404, "{\"error\":\"Assignee is not assignable\",\"code\":\"assignee_not_assignable\"}")
-            }
-            if let agentMatch {
-                assignee = (agentMatch.id, "agent", agentMatch.name)
-            } else if let humanMatch {
-                assignee = (humanMatch.id, "user", humanMatch.name)
-            }
-        }
-        let ids = addTasks(channelId: channelId, titles: titles, creatorId: auth.agentId, creatorType: "agent")
-        let resourceFlags = rawTasks.map { $0["creates_resource"] as? Bool == true }
-        if resourceFlags.contains(true) {
-            lock.lock()
-            for (offset, id) in ids.enumerated() where offset < resourceFlags.count && resourceFlags[offset] {
-                if let index = taskRecords.firstIndex(where: { $0.id == id }) {
-                    taskRecords[index].requiresResourceReceipt = true
-                }
-            }
-            lock.unlock()
-        }
-        let idsJSON = ids.map { jsonString($0) }.joined(separator: ",")
-        var receiptJSON = "null"
-        lock.lock()
-        if let assignee {
-            for id in ids {
-                guard let index = taskRecords.firstIndex(where: { $0.id == id }) else { continue }
-                taskRecords[index].assigneeId = assignee.id
-                taskRecords[index].assigneeType = assignee.type
-                taskRecords[index].revision += 1
-                inboxFactStore.append(StoredInboxFact(
-                    messageId: taskRecords[index].messageId,
-                    receiverType: assignee.type,
-                    receiverId: assignee.id,
-                    channelId: channelId,
-                    serverId: auth.serverId,
-                    personalMention: true,
-                    unreadEligible: true
-                ))
-            }
-            let receiptId = UUID().uuidString.lowercased()
-            let receiptContent = "@\(assignee.name) assigned you: \(titles.first ?? "task")"
-            appendHumanMessageLocked(StoredHumanMessage(
-                id: receiptId,
-                channelId: channelId,
-                senderId: auth.agentId,
-                content: receiptContent,
-                randomId: nil,
-                messageType: "task_assignment",
-                senderType: "agent"
-            ))
-            inboxFactStore.append(StoredInboxFact(
-                messageId: receiptId,
-                receiverType: assignee.type,
-                receiverId: assignee.id,
-                channelId: channelId,
-                serverId: auth.serverId,
-                personalMention: true,
-                unreadEligible: true
-            ))
-            receiptJSON = "{\"messageId\":\(jsonString(receiptId)),\"content\":\(jsonString(receiptContent)),\"assignee\":\(jsonString("@\(assignee.name)")),\"state\":\"assigned\"}"
-        }
-        let taskJSONs = ids.compactMap { id in taskRecords.first { $0.id == id }.map(taskJSON) }
-        lock.unlock()
-        let idempotentReply = Self.json(200, "{\"taskIds\":[\(idsJSON)],\"tasks\":[\(taskJSONs.joined(separator: ","))],\"assignmentReceipt\":\(receiptJSON)}")
-        storeAgentApiIdempotency(agentId: auth.agentId, route: "taskCreate", object: object, reply: idempotentReply)
-        return idempotentReply
-    }
-
-    public func agentTaskResourceReceipt(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
-        guard let writer = agentTaskWriter(authorization, legacyAgentId: legacyAgentId) else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
-        }
-        if let reply = agentGrantDenial(agentId: writer.agentId, scope: "task:write") { return reply }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let channelRef = object["channel"] as? String,
-              let channelId = agentTaskChannel(serverId: writer.serverId, agentId: writer.agentId, reference: channelRef),
-              let taskNumber = object["task_number"] as? Int,
-              let receipt = object["receipt"] as? [String: Any],
-              let objectName = (receipt["object"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !objectName.isEmpty,
-              let purpose = (receipt["purpose"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !purpose.isEmpty,
-              let teardownOwner = (receipt["teardown_owner"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !teardownOwner.isEmpty,
-              let securityPrivacy = (receipt["security_privacy"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !securityPrivacy.isEmpty,
-              let expiryRaw = receipt["expiry"] as? String,
-              let runbook = (receipt["runbook"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !runbook.isEmpty,
-              let tracking = (receipt["tracking"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !tracking.isEmpty
-        else {
-            return Self.json(400, "{\"error\":\"Invalid resource receipt\"}")
-        }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        guard let expiry = formatter.date(from: expiryRaw) else {
-            return Self.json(400, "{\"error\":\"Invalid resource receipt\"}")
-        }
-        lock.lock()
-        guard let index = taskRecords.firstIndex(where: { $0.channelId == channelId && $0.taskNumber == taskNumber }),
-              taskRecords[index].requiresResourceReceipt
-        else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Task not found\"}")
-        }
-        let receiptJSON = Self.serializeJSON(receipt)
-        taskRecords[index].resourceReceiptJSON = receiptJSON
-        taskRecords[index].revision += 1
-        let task = taskRecords[index]
-        let agentName = oauth.agentRuntimeInfo(id: writer.agentId)?.name ?? "agent"
-        let reminder = ReminderRecord(
-            id: UUID().uuidString.lowercased(),
-            serverId: writer.serverId,
-            ownerAgentId: writer.agentId,
-            title: "Resource receipt expiry: \(objectName)",
-            fireAt: expiry,
-            notes: receiptJSON,
-            channelId: channelId
-        )
-        reminderRecords.append(reminder)
-        lock.unlock()
-        let follow = "{\"ownerAgentId\":\(jsonString(writer.agentId)),\"owner\":\(jsonString("@" + agentName)),\"msgId\":\(jsonString(task.messageId)),\"targetChannelId\":\(jsonString(channelId)),\"reminderId\":\(jsonString(reminder.id)),\"fireAt\":\(jsonString(expiryRaw))}"
-        return Self.json(200, "{\"ok\":true,\"taskNumber\":\(task.taskNumber),\"expiryFollowup\":\(follow)}")
-    }
-
-    public func agentTaskAssign(authorization: String?, body: String) -> HTTPReply {
-        if let denial = agentCapabilityDenial(authorization, required: "tasks") { return denial }
-        guard let credential = agentCredentialAgent(authorization),
-              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
-        else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
-        }
-        if let reply = agentGrantDenial(agentId: agent.id, scope: "task:write") { return reply }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let channelRef = object["channel"] as? String,
-              let channelId = agentTaskChannel(serverId: agent.serverId, agentId: agent.id, reference: channelRef),
-              let taskNumber = object["task_number"] as? Int,
-              let rawAssignee = object["assignee"] as? String, !rawAssignee.isEmpty
-        else {
-            return Self.json(400, "{\"error\":\"Invalid task assign request\"}")
-        }
-        let handle = rawAssignee.hasPrefix("@") ? String(rawAssignee.dropFirst()) : rawAssignee
-        let lowered = handle.lowercased()
-        let agentMatch = oauth.channelAgentIds(channelId: channelId).compactMap { oauth.agentRuntimeInfo(id: $0) }.first {
-            $0.name.lowercased() == lowered || $0.displayName.lowercased() == lowered
-        }
-        let humanMatch = oauth.channelHumanIds(channelId: channelId).compactMap { userId in
-            accounts.values.first { $0.id == userId }
-        }.first { $0.name.lowercased() == lowered }
-        guard (agentMatch == nil) != (humanMatch == nil) else {
-            return Self.json(404, "{\"error\":\"Assignee is not assignable\",\"code\":\"assignee_not_assignable\"}")
-        }
-        lock.lock()
-        guard let index = taskRecords.firstIndex(where: { $0.channelId == channelId && $0.taskNumber == taskNumber }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Task not found\",\"code\":\"assignee_not_assignable\"}")
-        }
-        if let agentMatch {
-            taskRecords[index].assigneeId = agentMatch.id
-            taskRecords[index].assigneeType = "agent"
-        } else if let humanMatch {
-            taskRecords[index].assigneeId = humanMatch.id
-            taskRecords[index].assigneeType = "user"
-        }
-        taskRecords[index].claimedAt = nil
-        taskRecords[index].revision += 1
-        let task = taskRecords[index]
-        lock.unlock()
-        return Self.json(200, taskJSON(task))
-    }
-
-    /// `GET /internal/agent-api/inbox/conversations`.
-    public func agentInboxConversations(
-        authorization: String?,
-        limit rawLimit: String?,
-        beforeSeq rawBefore: String?,
-        view rawView: String?
-    ) -> HTTPReply {
-        let identity: (agentId: String, serverId: String)
-        switch feedbackLocatorIdentity(authorization: authorization, capability: "read") {
-        case .refused(let reply): return reply
-        case .success(let agentId, let serverId): identity = (agentId, serverId)
-        }
-        lock.lock()
-        let available = agentInboxAvailable ?? true
-        lock.unlock()
-        guard available else {
-            return Self.json(503, "{\"error\":\"The agent inbox is unavailable\",\"code\":\"INBOX_UNAVAILABLE\",\"suggestedNextAction\":\"Retry after the inbox service recovers.\"}")
-        }
-        let view = rawView ?? "unread"
-        guard view == "unread" || view == "mentions" else {
-            return Self.json(400, "{\"error\":\"view must be unread or mentions\"}")
-        }
-        let limit: Int
-        if let rawLimit, !rawLimit.isEmpty {
-            guard let parsed = Int(rawLimit), parsed >= 1, parsed <= 100 else {
-                return Self.json(400, "{\"error\":\"limit must be between 1 and 100\"}")
-            }
-            limit = parsed
-        } else {
-            limit = 20
-        }
-        var before: Int?
-        if let rawBefore, !rawBefore.isEmpty {
-            guard let parsed = Int(rawBefore), parsed > 0 else {
-                return Self.json(400, "{\"error\":\"before_seq must be a positive integer\"}")
-            }
-            before = parsed
-        }
-        lock.lock()
-        let serverId = identity.serverId
-        let agentId = identity.agentId
-        var rows: [AgentInboxRow] = []
-
-        func latestMessage(_ storageChannelId: String) -> (seq: Int, message: StoredHumanMessage?) {
-            let messages = humanMessageRows.filter { $0.channelId == storageChannelId }
-            guard let last = messages.max(by: { $0.seq < $1.seq }) else { return (0, nil) }
-            return (last.seq, last)
-        }
-        func senderName(_ message: StoredHumanMessage?) -> String? {
-            guard let message else { return nil }
-            if let external = message.externalSenderName { return external }
-            if message.senderId == "system" { return "system" }
-            return accounts.values.first { $0.id == message.senderId }?.name
-                ?? oauth.agentRuntimeInfo(id: message.senderId)?.name
-        }
-        func mentionStats(channelId: String) -> (count: Int, maxSeq: Int?) {
-            let ids = Set(storedMentions.filter {
-                $0.targetType == "agent" && $0.targetId == agentId && $0.channelId == channelId
-            }.map(\.messageId))
-            guard !ids.isEmpty else { return (0, nil) }
-            let messages = humanMessageRows.filter { $0.channelId == channelId }
-            var maxSeq: Int?
-            for message in messages where ids.contains(message.id) {
-                maxSeq = message.seq
-            }
-            return (ids.count, maxSeq)
-        }
-
-        // Channel and DM rows.
-        for (id, channel) in postableChannels {
-            guard channel.serverId == serverId, channel.deletedAt == nil else { continue }
-            let visible = channel.kind == "channel"
-                || channel.memberIds.contains(agentId)
-                || oauth.channelAgentIds(channelId: id).contains(agentId)
-            guard visible else { continue }
-            var target: String
-            var kind: String
-            if channel.kind == "dm", channel.name.hasPrefix("migration-receipt-"), channel.memberIds == [agentId] {
-                target = "dm:@\(channel.name)"
-                kind = "dm"
-            } else if channel.kind == "dm" {
-                let peer = channel.memberIds.compactMap { member -> (String, String)? in
-                    guard member != agentId,
-                          let account = accounts.values.first(where: { $0.id == member }),
-                          oauth.memberRole(serverId: serverId, userId: member) != nil
-                    else { return nil }
-                    return (member, account.name)
-                }.first
-                guard let peer else { continue }
-                target = "dm:@\(peer.1)"
-                kind = "dm"
-            } else if channel.kind == "channel" || channel.kind == "private" || channel.kind == "joint" {
-                target = "#\(channel.name)"
-                kind = "channel"
-            } else {
-                continue
-            }
-            let storage = jointProjections.first { $0.localChannelId == id }?.canonicalChannelId ?? id
-            let latest = latestMessage(storage)
-            guard latest.seq > 0 else { continue }
-            let cursor = agentChannelReadCursors["\(id)\n\(agentId)"]?.seq ?? 0
-            let unread = humanMessageRows.filter { $0.channelId == storage && $0.seq > cursor && $0.senderId != agentId }.count
-            let mentions = mentionStats(channelId: storage)
-            rows.append(AgentInboxRow(
-                target: target,
-                kind: kind,
-                lastReadSeq: cursor,
-                unread: unread,
-                mentions: mentions.count,
-                latestSeq: latest.seq,
-                activitySeq: latest.seq,
-                latestSenderName: senderName(latest.message) ?? "",
-                latestAt: latest.message?.createdAt,
-                joinedAt: latest.message?.createdAt ?? Date()
-            ))
-        }
-
-        // Followed thread rows.
-        for follow in threadFollows.values where follow.userId == agentId && follow.serverId == serverId {
-            guard let thread = postableChannels[follow.threadChannelId], thread.deletedAt == nil,
-                  let parentId = thread.parentChannelId,
-                  let parent = postableChannels[parentId], parent.deletedAt == nil
-            else { continue }
-            let visible = thread.memberIds.contains(agentId)
-                || oauth.channelAgentIds(channelId: follow.threadChannelId).contains(agentId)
-                || parent.memberIds.contains(agentId)
-                || oauth.channelAgentIds(channelId: parentId).contains(agentId)
-            guard visible else { continue }
-            let storage = jointProjections.first { $0.localChannelId == follow.threadChannelId }?.canonicalChannelId ?? follow.threadChannelId
-            let latest = latestMessage(storage)
-            guard latest.seq > 0 else { continue }
-            let cursor = agentChannelReadCursors["\(follow.threadChannelId)\n\(agentId)"]?.seq ?? 0
-            let unread = humanMessageRows.filter { $0.channelId == storage && $0.seq > cursor && $0.senderId != agentId }.count
-            let mentions = mentionStats(channelId: storage)
-            let parentShort = String((thread.parentMessageId ?? "").prefix(8))
-            let target: String
-            if parent.kind == "dm" {
-                let peer = parent.memberIds.compactMap { member -> String? in
-                    guard member != agentId,
-                          let account = accounts.values.first(where: { $0.id == member }),
-                          oauth.memberRole(serverId: serverId, userId: member) != nil
-                    else { return nil }
-                    return account.name
-                }.first ?? "unknown"
-                target = "dm:@\(peer):\(parentShort)"
-            } else {
-                target = "#\(parent.name):\(parentShort)"
-            }
-            rows.append(AgentInboxRow(
-                target: target,
-                kind: "thread",
-                lastReadSeq: cursor,
-                unread: unread,
-                mentions: mentions.count,
-                latestSeq: latest.seq,
-                activitySeq: latest.seq,
-                latestSenderName: senderName(latest.message) ?? "",
-                latestAt: latest.message?.createdAt,
-                joinedAt: threadFollowStarts["\(serverId)\n\(agentId)\n\(follow.threadChannelId)"] ?? Date()
-            ))
-        }
-        lock.unlock()
-
-        let totals = (
-            conversations: rows.count,
-            dms: rows.filter { $0.kind == "dm" }.count,
-            mentions: rows.filter { $0.mentions > 0 }.count
-        )
-        var filtered = rows
-        if view == "mentions" {
-            filtered = filtered.filter { $0.mentions > 0 }
-        } else {
-            filtered = filtered.filter { $0.unread > 0 || $0.mentions > 0 }
-        }
-        if let before {
-            filtered = filtered.filter { $0.activitySeq < before }
-        }
-        filtered.sort { left, right in
-            if left.activitySeq != right.activitySeq { return left.activitySeq > right.activitySeq }
-            return left.target < right.target
-        }
-        let hasMore = filtered.count > limit
-        let page = Array(filtered.prefix(limit))
-        let nextBefore = hasMore ? page.last?.activitySeq : nil
-        let items = page.map { row -> String in
-            let latestAt = row.latestAt.map { jsonString(Self.isoMillis($0)) } ?? "null"
-            return "{\"target\":\(jsonString(row.target)),\"kind\":\(jsonString(row.kind)),\"unread\":\(row.unread),\"mentions\":\(row.mentions),\"lastReadSeq\":\(row.lastReadSeq),\"activitySeq\":\(row.activitySeq),\"latestSenderName\":\(jsonString(row.latestSenderName)),\"latestAt\":\(latestAt)}"
-        }.joined(separator: ",")
-        let nextJSON = nextBefore.map(String.init) ?? "null"
-        return Self.json(200, "{\"view\":\(jsonString(view)),\"items\":[\(items)],\"totals\":{\"conversations\":\(totals.conversations),\"dms\":\(totals.dms),\"mentions\":\(totals.mentions)},\"hasMore\":\(hasMore),\"nextBeforeSeq\":\(nextJSON)}")
-    }
-
-    func agentHistoryThread(parentId: String, anchorMessageId: String) -> String? {
-        for (id, channel) in postableChannels {
-            guard channel.kind == "thread" else { continue }
-            guard channel.parentChannelId == parentId else { continue }
-            guard channel.parentMessageId == anchorMessageId else { continue }
-            guard channel.deletedAt == nil else { continue }
-            return id
-        }
-        return nil
-    }
-
-    func agentHistoryThreadById(parentId: String, suffix: String) -> String? {
-        for (id, channel) in postableChannels {
-            guard channel.kind == "thread" else { continue }
-            guard channel.parentChannelId == parentId else { continue }
-            guard id.hasPrefix(suffix) else { continue }
-            guard channel.deletedAt == nil else { continue }
-            return id
-        }
-        return nil
-    }
-
-    func agentHistoryThreadByAnchorPrefix(parentId: String, suffix: String) -> String? {
-        for (id, channel) in postableChannels {
-            guard channel.kind == "thread" else { continue }
-            guard channel.parentChannelId == parentId else { continue }
-            guard channel.parentMessageId?.hasPrefix(suffix) == true else { continue }
-            guard channel.deletedAt == nil else { continue }
-            return id
-        }
-        return nil
-    }
-
-    func actionCardTarget(serverId: String, agentId: String, target: String) -> (local: String, storage: String)? {
-        guard target.hasPrefix("#") else { return nil }
-        let name = String(target.dropFirst())
-        lock.lock()
-        var local: String?
-        for (id, channel) in postableChannels {
-            guard channel.serverId == serverId, channel.name == name, channel.deletedAt == nil,
-                  channel.kind == "channel" || channel.kind == "private" || channel.kind == "joint"
-            else { continue }
-            if channel.kind != "channel",
-               !channel.memberIds.contains(agentId),
-               !oauth.channelAgentIds(channelId: id).contains(agentId) {
-                continue
-            }
-            local = id
-            break
-        }
-        let storage = local.flatMap { id in jointProjections.first { $0.localChannelId == id }?.canonicalChannelId } ?? local
-        lock.unlock()
-        guard let local, let storage else { return nil }
-        return (local, storage)
-    }
-
-    /// Third-party text is rendered inert before it reaches agents: agent
-    /// markup literals are escaped and `@name` refs become plain `user:name`
-    /// labels, so a publisher name cannot fabricate a mention or a result tag.
-
-    /// `@name` outside markdown code becomes the plain `user:name` label;
-    /// backticked spans are literal data and keep their shape.
-
-    func marketplaceInstallActionJSON(_ card: MarketplaceInstallCard, includeDraftHint: Bool = true) -> String {
-        let scopes = card.scopes.map(jsonString).joined(separator: ",")
-        let draftHint = includeDraftHint
-            ? ",\"draftHint\":\(jsonString("\(card.agentName) requested \(card.clientName), which is public in the Raft Marketplace but is not installed on this Server. Installing is a Server owner/admin action; the Agent cannot install it automatically."))"
-            : ""
-        let setupUrl = card.setupUrl.map(jsonString) ?? "null"
-        return "{\"type\":\"integration:install_marketplace_app\",\"clientId\":\(jsonString(card.clientRecordId)),\"clientKey\":\(jsonString(card.clientKey)),\"clientName\":\(jsonString(card.clientName)),\"clientNameSha256\":\(jsonString(card.clientNameSha256)),\"agentId\":\(jsonString(card.agentId)),\"agentName\":\(jsonString(card.agentName)),\"scopes\":[\(scopes)],\"setupUrl\":\(setupUrl),\"setupRevision\":\(card.setupRevision)\(draftHint)}"
-    }
-
-    func marketplaceInstallPresentationJSON(_ card: MarketplaceInstallCard) -> String {
-        var items: [String] = []
-        items.append("{\"key\":\"clientId\",\"value\":\(jsonString(card.clientRecordId))}")
-        items.append("{\"key\":\"clientKey\",\"value\":\(jsonString(card.clientKey))}")
-        items.append("{\"key\":\"clientName\",\"value\":\(jsonString(card.clientName))}")
-        items.append("{\"key\":\"agentId\",\"value\":\(jsonString(card.agentId))}")
-        items.append("{\"key\":\"agentName\",\"value\":\(jsonString(card.agentName))}")
-        if !card.scopes.isEmpty {
-            let scopes = card.scopes.map(jsonString).joined(separator: ", ")
-            items.append("{\"key\":\"scopes\",\"value\":\(jsonString(scopes))}")
-        }
-        let warning = "This installs the Marketplace app for this Server so @\(card.agentName) can request the listed scopes."
-        return "{\"title\":\(jsonString("Install \(card.clientName) on this Server")),\"confirmLabel\":\"Install App\",\"genericApprovalAllowed\":true,\"displayItems\":[\(items.joined(separator: ","))],\"warning\":\(jsonString(warning)),\"riskLevel\":\"elevated\"}"
-    }
-
-    func marketplaceInstallMetadataJSON(_ card: MarketplaceInstallCard) -> String {
-        let executedAt = card.state == "executed" ? jsonString(ISO8601DateFormatter().string(from: Date())) : "null"
-        let executedBy = card.executedByUserId.map(jsonString) ?? "null"
-        let result = card.resultJSON ?? "null"
-        return "{\"kind\":\"action-card\",\"sourceServerId\":\(jsonString(card.serverId)),\"targetServerName\":\(jsonString(actionCardServerName(card.serverId))),\"action\":\(marketplaceInstallActionJSON(card)),\"presentation\":\(marketplaceInstallPresentationJSON(card)),\"state\":\(jsonString(card.state)),\"executedAt\":\(executedAt),\"executedByUserId\":\(executedBy),\"result\":\(result)}"
-    }
-
-    /// The message projection of every prepared card, keyed by message id.
-    func actionCardMetadataLocked(messageId: String) -> String? {
-        if let card = marketplaceInstallCards[messageId] {
-            return marketplaceInstallMetadataJSON(card)
-        }
-        if let card = integrationRegisterCards[messageId] {
-            return integrationRegisterMetadataJSON(card)
-        }
-        return nil
-    }
-
-    func integrationRegisterActionJSON(_ card: IntegrationRegisterCard) -> String {
-        var fields: [String] = [
-            "\"type\":\"integration:register_app\"",
-            "\"name\":\(jsonString(card.name))",
-        ]
-        if let clientKey = card.clientKey { fields.append("\"clientKey\":\(jsonString(clientKey))") }
-        if let homepageUrl = card.homepageUrl { fields.append("\"homepageUrl\":\(jsonString(homepageUrl))") }
-        fields.append("\"returnUrl\":\(jsonString(card.returnUrl))")
-        if let agentManifestUrl = card.agentManifestUrl {
-            fields.append("\"agentManifestUrl\":\(jsonString(agentManifestUrl))")
-        }
-        let scopes = card.scopes.map(jsonString).joined(separator: ",")
-        fields.append("\"scopes\":[" + scopes + "]")
-        if let setupUrl = card.setupUrl { fields.append("\"setupUrl\":\(jsonString(setupUrl))") }
-        if let setupDescription = card.setupDescription { fields.append("\"setupDescription\":\(jsonString(setupDescription))") }
-        return "{" + fields.joined(separator: ",") + "}"
-    }
-
-    func integrationRegisterPresentationJSON(_ card: IntegrationRegisterCard) -> String {
-        var items: [String] = [
-            "{\"key\":\"name\",\"value\":\(jsonString(card.name))}",
-        ]
-        if let clientKey = card.clientKey {
-            items.append("{\"key\":\"clientKey\",\"value\":\(jsonString(clientKey))}")
-        }
-        items.append("{\"key\":\"returnUrl\",\"value\":\(jsonString(card.returnUrl))}")
-        if !card.scopes.isEmpty {
-            let scopes = card.scopes.map(jsonString).joined(separator: ", ")
-            items.append("{\"key\":\"scopes\",\"value\":\(jsonString(scopes))}")
-        }
-        return "{\"title\":\(jsonString("Register Connected App \(card.name)")),\"confirmLabel\":\"Register App\",\"genericApprovalAllowed\":true,\"displayItems\":[\(items.joined(separator: ","))],\"warning\":\"The requesting agent becomes the initial app owner. No client secret is stored in this card.\",\"riskLevel\":\"elevated\"}"
-    }
-
-    func integrationRegisterMetadataJSON(_ card: IntegrationRegisterCard) -> String {
-        let executedBy = card.executedByUserId.map(jsonString) ?? "null"
-        let result = card.resultJSON ?? "null"
-        return "{\"kind\":\"action-card\",\"sourceServerId\":\(jsonString(card.serverId)),\"targetServerName\":\(jsonString(actionCardServerName(card.serverId))),\"action\":\(integrationRegisterActionJSON(card)),\"presentation\":\(integrationRegisterPresentationJSON(card)),\"state\":\(jsonString(card.state)),\"executedByUserId\":\(executedBy),\"result\":\(result)}"
-    }
-
-    func prepareIntegrationRegisterCard(
-        serverId: String,
-        agent: OAuthLedger.AgentRuntimeInfo,
-        name: String,
-        clientKey: String?,
-        homepageUrl: String?,
-        returnUrl: String,
-        agentManifestUrl: String?,
-        setupUrl: String? = nil,
-        setupDescription: String? = nil,
-        scopes: [String],
-        target: (local: String, storage: String)
-    ) -> String {
-        let messageId = UUID().uuidString.lowercased()
-        let agentName = agent.displayName.isEmpty ? agent.name : agent.displayName
-        let card = IntegrationRegisterCard(
-            messageId: messageId,
-            serverId: serverId,
-            agentId: agent.id,
-            agentName: agentName,
-            storageChannelId: target.storage,
-            localCarrierChannelId: target.local,
-            name: name,
-            clientKey: clientKey,
-            homepageUrl: homepageUrl,
-            returnUrl: returnUrl,
-            agentManifestUrl: agentManifestUrl,
-            setupUrl: setupUrl,
-            setupDescription: setupDescription,
-            scopes: scopes,
-            state: "prepared",
-            executedByUserId: nil,
-            resultJSON: nil
-        )
-        let content = "Operation: register Login with Raft app \(name) (\(clientKey ?? "auto-generated client key"))"
-        lock.lock()
-        appendHumanMessageLocked(StoredHumanMessage(
-            id: messageId,
-            channelId: target.storage,
-            senderId: agent.id,
-            content: content,
-            randomId: nil,
-            messageType: "chat",
-            senderType: "agent",
-            actionKind: "action-card"
-        ))
-        integrationRegisterCards[messageId] = card
-        lock.unlock()
-        return messageId
-    }
-
-    func executeIntegrationRegisterCard(
-        _ card: IntegrationRegisterCard,
-        userId: String,
-        serverId: String,
-        body: String
-    ) -> HTTPReply {
-        guard card.serverId == serverId else {
-            return Self.json(404, "{\"error\":\"Action card not found\",\"code\":\"NOT_FOUND\"}")
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
-        guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Only Server owners and admins can register apps\",\"errorCode\":\"FORBIDDEN\"}")
-        }
-        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
-        if let expectedState = object?["expectedState"] as? String, expectedState != card.state {
-            return Self.json(409, "{\"error\":\"The action card state changed\",\"code\":\"STATE_MISMATCH\"}")
-        }
-        if card.state == "executed" {
-            return Self.json(200, "{\"messageId\":\(jsonString(card.messageId)),\"metadata\":\(integrationRegisterMetadataJSON(card))}")
-        }
-        guard let agent = oauth.agentRuntimeInfo(id: card.agentId), !agent.deleted else {
-            return Self.json(409, "{\"error\":\"Requesting agent no longer exists; prepare a fresh request\",\"errorCode\":\"AGENT_BINDING_CHANGED\"}")
-        }
-        let clientKey = card.clientKey ?? Self.generatedIntegrationClientKey(card.name)
-        let created: CreatedOAuthClient
-        do {
-            created = try oauth.createClient(
-                serverId: card.serverId,
-                createdByUserId: userId,
-                name: card.name,
-                clientId: clientKey,
-                appType: "server_local",
-                homepageUrl: card.homepageUrl,
-                returnUrl: card.returnUrl,
-                allowedScopes: card.scopes,
-                agentManifestUrl: card.agentManifestUrl,
-                setupUrl: card.setupUrl,
-                setupDescription: card.setupDescription
-            )
-        } catch let error as OAuthClientRejection {
-            return Self.json(409, "{\"error\":\(jsonString(error.message)),\"errorCode\":\"APP_REGISTRATION_REJECTED\"}")
-        } catch {
-            return Self.json(400, "{\"error\":\"Invalid app registration\",\"errorCode\":\"INVALID_APP_METADATA\"}")
-        }
-        oauth.addClientMaintainer(clientRecordId: created.id, agentId: card.agentId)
-        let scopes = card.scopes.map(jsonString).joined(separator: ",")
-        let result = "{\"kind\":\"integration-app-registration\",\"mode\":\"register\",\"clientId\":\(jsonString(created.id)),\"clientKey\":\(jsonString(created.clientId)),\"clientName\":\(jsonString(card.name)),\"scopes\":[\(scopes)]}"
-        var updated = card
-        updated.state = "executed"
-        updated.executedByUserId = userId
-        updated.resultJSON = result
-        lock.lock()
-        integrationRegisterCards[card.messageId] = updated
-        lock.unlock()
-        return Self.json(200, "{\"messageId\":\(jsonString(card.messageId)),\"metadata\":\(integrationRegisterMetadataJSON(updated))}")
     }
 }

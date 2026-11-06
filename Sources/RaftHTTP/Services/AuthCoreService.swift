@@ -1,5 +1,6 @@
 import Crypto
 import Foundation
+import RaftShared
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -945,6 +946,55 @@ extension EmailLoginDirectory {
         SearchMentionsService(directory: self)
     }
 
+    /// Agent task create/convert/delete/assign/resource-receipt and the agent
+    /// inbox conversation list. The directory supplies the domain stores and
+    /// the OAuth ledger; the idempotency ledger (managed-MCP catalog) and the
+    /// message-append policy (messaging) are not-yet-migrated dependencies and
+    /// enter as the two closures below.
+    public var actionCardMarketplace: ActionCardMarketplaceService {
+        ActionCardMarketplaceService(
+            tasks: tasksAndRemindersStore,
+            messages: messagesAndThreadsStore,
+            inboxFacts: inboxFactStore,
+            channels: serversAndChannelsStore,
+            accounts: authProfileStore,
+            agents: agentsRuntimeStore,
+            machines: machinesAndComputersStore,
+            cards: managedMCPAndCardsStore,
+            oauth: oauth,
+            locator: FeedbackLocatorService(directory: self),
+            idempotency: ActionCardTaskIdempotency(
+                lookup: { [self] agentId, route, rawBody in
+                    guard let object = (try? JSONSerialization.jsonObject(with: Data(rawBody.utf8))) as? [String: Any],
+                          let reply = agentApiIdempotencyReply(agentId: agentId, route: route, object: object)
+                    else { return .miss }
+                    if reply.status == 409 { return .conflict(body: reply.body) }
+                    return .replay(body: reply.body)
+                },
+                store: { [self] agentId, route, rawBody, body in
+                    guard let object = (try? JSONSerialization.jsonObject(with: Data(rawBody.utf8))) as? [String: Any]
+                    else { return }
+                    storeAgentApiIdempotency(
+                        agentId: agentId,
+                        route: route,
+                        object: object,
+                        reply: HTTPReply(status: 200, headers: [:], body: body)
+                    )
+                }
+            ),
+            appendHumanMessage: { [self] message in
+                lock.lock()
+                let seq = appendHumanMessageLocked(message)
+                lock.unlock()
+                return seq
+            },
+            serializeReceipt: { payload in
+                guard let object = legacyJSONObject(payload) as? [String: Any] else { return "{}" }
+                return EmailLoginDirectory.serializeJSON(object)
+            }
+        )
+    }
+
     /// Product feedback locators for `POST/GET /internal/agent-api/feedback-locators`
     /// plus the agent credential/grant decisions the rest of the agent API
     /// shares. The directory only supplies its stores and the OAuth ledger.
@@ -1093,4 +1143,26 @@ extension EmailLoginDirectory {
         ServerMembersAndSidebarService(directory: self)
     }
 
+}
+
+/// Bridges a decoded `JSONValue` back to the `Any` tree the legacy
+/// `serializeJSON` helper expects. Only the resource-receipt notes field uses
+/// it; the value was produced by the same JSON decoder the raw parser fed.
+private func legacyJSONObject(_ value: JSONValue) -> Any {
+    switch value {
+    case .object(let members):
+        return members.mapValues(legacyJSONObject)
+    case .array(let values):
+        return values.map(legacyJSONObject)
+    case .string(let string):
+        return string
+    case .number(let number):
+        return number
+    case .integer(let integer):
+        return integer
+    case .bool(let boolean):
+        return boolean
+    case .null:
+        return NSNull()
+    }
 }
