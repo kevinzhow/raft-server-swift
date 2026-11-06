@@ -1130,4 +1130,59 @@ extension EmailLoginDirectory {
     public var serverMembersAndSidebar: ServerMembersAndSidebarService {
         ServerMembersAndSidebarService(directory: self)
     }
+
+    /// Server tasks: channel task reads, the assignee write and the agent amend.
+    public var tasksAndLabs: TasksAndLabsService {
+        TasksAndLabsService(
+            sessionUserId: { [self] in sessionUserId(authorization: $0) },
+            oauth: oauth,
+            tasks: tasksAndRemindersStore,
+            agentTasks: actionCardExecute,
+            feedbackLocators: feedbackLocators
+        )
+    }
+
+    /// The system notice (and the acting agent's born-read cursor) the channel
+    /// membership writes post; the append still serializes under the directory lock.
+    private var systemNoticeAppender: @Sendable (StoredHumanMessage, String?) -> Int {
+        { [self] message, bornReadAgentId in
+            lock.lock()
+            defer { lock.unlock() }
+            let seq = appendHumanMessageLocked(message)
+            if let bornReadAgentId {
+                messagesAndThreadsStore.markBornRead(
+                    channelId: message.channelId, agentId: bornReadAgentId, seq: seq
+                )
+            }
+            return seq
+        }
+    }
+
+    /// Channel archive, human join and the agent join/leave of a plain channel.
+    public var channelMembership: ChannelMembershipService {
+        ChannelMembershipService(
+            sessionUserId: { [self] in sessionUserId(authorization: $0) },
+            oauth: oauth,
+            channels: serversAndChannelsStore,
+            agents: agentsRuntimeStore,
+            feedbackLocators: feedbackLocators,
+            channelActorCanSee: { [self] channelId, userId in
+                channelActorCanSee(channelId: channelId, userId: userId)
+            },
+            appendSystemNotice: systemNoticeAppender
+        )
+    }
+
+    /// The agent-principal channel and server management surface.
+    public var agentChannels: AgentChannelsService {
+        AgentChannelsService(
+            oauth: oauth,
+            channels: serversAndChannelsStore,
+            agents: agentsRuntimeStore,
+            machines: machinesAndComputersStore,
+            profiles: authProfileStore,
+            feedbackLocators: feedbackLocators,
+            appendSystemNotice: systemNoticeAppender
+        )
+    }
 }

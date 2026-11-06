@@ -494,6 +494,94 @@ extension EmailLoginDirectory {
 
 
 
+    // MARK: - Task and channel helpers shared with unmigrated services
+    //
+    // The decisions live in `TasksAndLabsService`, `ChannelMembershipService` and
+    // `AgentChannelsService`; these keep the legacy signatures the managed-MCP,
+    // integrations, agents and message services still hold.
+
+    /// One task row in the published order.
+    func taskJSON(_ task: TaskRecord) -> String {
+        ActionCardTaskPayload(task).jsonBody.render()
+    }
+
+    func taskChannelAccess(serverId: String, channelId: String, userId: String) -> TaskChannelAccess {
+        TasksAndLabsService.channelAccess(oauth: oauth, serverId: serverId, channelId: channelId, userId: userId)
+    }
+
+    /// Public projection of `taskChannelAccess` for the channel-messaging
+    /// service wiring.
+    public func channelTaskAccess(serverId: String, channelId: String, userId: String) -> ChannelTaskAccess {
+        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
+        case .missing:
+            .missing
+        case .readOnly:
+            .readOnly
+        case .write:
+            .write
+        }
+    }
+
+    public func addTasks(
+        channelId: String, titles: [String], descriptions: [String?]? = nil,
+        creatorId: String? = nil, creatorType: String = "user"
+    ) -> [String] {
+        // The directory lock keeps this append ordered with the readers that
+        // still snapshot `taskRecords`; the store method itself is one locked
+        // read-modify-write for the row array. `creatorType` is accepted for
+        // callers but the row has no column for it, as before.
+        lock.lock()
+        defer { lock.unlock() }
+        return tasksAndRemindersStore.appendTasks(
+            channelId: channelId,
+            titles: titles,
+            descriptions: descriptions,
+            creatorId: creatorId
+        )
+    }
+
+    func archivedChannelReply(_ channelId: String) -> HTTPReply? {
+        guard oauth.channelArchivedAt(id: channelId) != nil else { return nil }
+        return Self.json(409, ChannelMembershipError.channelArchived.publishedErrorBody.render())
+    }
+
+    func joinPublicChannelForAgent(agentId: String, serverId: String, channelId: String) -> HTTPReply {
+        legacyMembershipReply {
+            try channelMembership.joinPublicChannel(agentId: agentId, serverId: serverId, channelId: channelId)
+        }
+    }
+
+    func leaveChannelForAgent(agentId: String, serverId: String, channelId: String) -> HTTPReply {
+        legacyMembershipReply {
+            try channelMembership.leaveChannel(agentId: agentId, serverId: serverId, channelId: channelId)
+        }
+    }
+
+    private func legacyMembershipReply(_ call: () throws -> OkResponse) -> HTTPReply {
+        do {
+            _ = try call()
+            return Self.json(200, "{\"ok\":true}")
+        } catch let error as any DomainError {
+            return Self.json(Int(error.status), error.publishedErrorBody.render())
+        } catch {
+            return Self.json(500, "{\"error\":\"Internal error\"}")
+        }
+    }
+
+    /// The bearer credential of an agent, marking its use.
+    func agentCredentialAgent(_ authorization: String?) -> (agentId: String, scopes: [String])? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        return agentsRuntimeStore.useAgentCredential(token: token, now: Date())
+    }
+
+    func agentWriterAndRole(
+        authorization: String?,
+        legacyAgentId: String?,
+        scopes: [String]
+    ) -> (agent: OAuthLedger.AgentRuntimeInfo, role: String?)? {
+        agentChannels.writerAndRole(authorization: authorization, legacyAgentId: legacyAgentId, scopes: scopes)
+    }
 }
 
 /// One stored agent runtime profile row: the machine it runs on plus any

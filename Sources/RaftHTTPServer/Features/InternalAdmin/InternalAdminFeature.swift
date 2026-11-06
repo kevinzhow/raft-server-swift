@@ -130,58 +130,68 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.get("server") { request -> Response in
-            routeResponse(services.emailAccounts.agentServerInfo(
-                authorization: request.headers[.authorization],
-                legacyAgentId: request.parameters.get("agentId") ?? ""
-            ))
+        agent.get("server") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentChannels.serverInfo(
+                    authorization: request.headers[.authorization],
+                    legacyAgentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
         agent.patch("server") { request async throws -> Response in
-            if let body = try? await request.content.decode(LegacyAgentServerPatchDTO.self) {
-                return routeResponse(services.emailAccounts.agentUpdateServer(
+            let body = await jsonRequestBody(AgentServerUpdateRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentChannels.updateServer(
                     authorization: request.headers[.authorization],
-                    body: body.encodedBody(),
+                    body: body,
                     legacyAgentId: request.parameters.get("agentId") ?? ""
-                ))
+                )
             }
-            return routeResponse(services.emailAccounts.agentUpdateServer(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}"),
-                legacyAgentId: request.parameters.get("agentId") ?? ""
-            ))
         }
         agent.post("channels") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentCreateChannel(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}"),
-                legacyAgentId: request.parameters.get("agentId") ?? ""
-            ))
+            let body = await jsonRequestBody(AgentCreateChannelRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentChannels.createChannel(
+                    authorization: request.headers[.authorization],
+                    body: body,
+                    legacyAgentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
         agent.patch("channels", ":channelId") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentUpdateChannel(
-                authorization: request.headers[.authorization],
-                channelId: request.parameters.get("channelId") ?? "",
-                body: try await request.bodyText(default: "{}"),
-                legacyAgentId: request.parameters.get("agentId") ?? ""
-            ))
+            let body = await jsonRequestBody(AgentChannelUpdateRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentChannels.updateChannel(
+                    authorization: request.headers[.authorization],
+                    channelId: request.parameters.get("channelId") ?? "",
+                    body: body,
+                    legacyAgentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
         agent.post("channels", ":channelId", "members") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentChannelMemberWrite(
-                authorization: request.headers[.authorization],
-                channelId: request.parameters.get("channelId") ?? "",
-                body: try await request.bodyText(default: "{}"),
-                remove: false,
-                legacyAgentId: request.parameters.get("agentId") ?? ""
-            ))
+            let body = await jsonRequestBody(AgentChannelMemberRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentChannels.writeChannelMember(
+                    authorization: request.headers[.authorization],
+                    channelId: request.parameters.get("channelId") ?? "",
+                    body: body,
+                    remove: false,
+                    legacyAgentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
         agent.delete("channels", ":channelId", "members") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentChannelMemberWrite(
-                authorization: request.headers[.authorization],
-                channelId: request.parameters.get("channelId") ?? "",
-                body: try await request.bodyText(default: "{}"),
-                remove: true,
-                legacyAgentId: request.parameters.get("agentId") ?? ""
-            ))
+            let body = await jsonRequestBody(AgentChannelMemberRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentChannels.writeChannelMember(
+                    authorization: request.headers[.authorization],
+                    channelId: request.parameters.get("channelId") ?? "",
+                    body: body,
+                    remove: true,
+                    legacyAgentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
         agent.post("channels", ":channelId", "join") { request -> Response in
             routeResponse(services.emailAccounts.agentChannelMembershipFromMachine(
@@ -199,13 +209,15 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 join: false
             ))
         }
-        agent.get("channel-members") { request -> Response in
-            routeResponse(services.emailAccounts.agentChannelMembers(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId"),
-                channelRef: desktopQuery(request.url.query, "channel"),
-                legacyAgentId: request.parameters.get("agentId") ?? ""
-            ))
+        agent.get("channel-members") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentChannels.channelMembers(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId"),
+                    channelRef: desktopQuery(request.url.query, "channel"),
+                    legacyAgentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
         agent.get("history") { request -> Response in
             routeResponse(services.emailAccounts.agentHistory(

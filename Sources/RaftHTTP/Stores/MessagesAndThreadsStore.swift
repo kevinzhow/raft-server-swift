@@ -948,3 +948,15 @@ final class MessagesAndThreadsStore: @unchecked Sendable {
         return .restored
     }
 }
+
+extension MessagesAndThreadsStore {
+    /// A system notice the acting agent caused is born read for that agent: the
+    /// cursor passes `seq` and its version bumps, in one critical section.
+    func markBornRead(channelId: String, agentId: String, seq: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = "\(channelId)\n\(agentId)"
+        let previous = storage.agentChannelReadCursors[key] ?? (seq: 0, version: 0)
+        storage.agentChannelReadCursors[key] = (max(previous.seq, seq), previous.version + 1)
+    }
+}
