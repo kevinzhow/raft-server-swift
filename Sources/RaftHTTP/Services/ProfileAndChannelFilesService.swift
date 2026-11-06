@@ -6,7 +6,6 @@ import FoundationNetworking
 
 extension EmailLoginDirectory {
 
-
     /// Third-party content stays inert: mentions read as plain `user:<handle>`.
     static func neutralizeExternalProjectionContent(_ text: String) -> String {
         var value = text
@@ -17,7 +16,6 @@ extension EmailLoginDirectory {
         value = value.replacingOccurrences(of: "#([A-Za-z0-9_.-]+)", with: "channel:$1", options: .regularExpression)
         return value
     }
-
 
     /// `GET /internal/agent-api/wake-hints/stream`. The SSE projection opens
     /// with the same pending hints; reading it does not drain the inbox.
@@ -45,7 +43,6 @@ extension EmailLoginDirectory {
             return Self.json(200, "{\"ok\":true,\"delivered\":\(delivered)}")
         }
     }
-
 
     func agentReadCredential(_ authorization: String?) -> AgentRead {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
@@ -78,57 +75,6 @@ extension EmailLoginDirectory {
         machineKeys[key] = (serverId: serverId, agentId: agentId)
         lock.unlock()
         return key
-    }
-
-    public func addMessageReactionForTesting(messageId: String, emoji: String, reactorId: String, reactorType: String) {
-        lock.lock()
-        messageReactions.append(StoredReaction(messageId: messageId, emoji: emoji, reactorId: reactorId, reactorType: reactorType))
-        noteDiscussionChangeLocked(messageId: messageId, emoji: emoji)
-        lock.unlock()
-    }
-
-    public func markAgentLegacyReadForTesting(agentId: String, channelId: String, seq: Int) {
-        lock.lock()
-        let key = "\(channelId)\n\(agentId)"
-        let previous = agentChannelReadCursors[key] ?? (seq: 0, version: 0)
-        agentChannelReadCursors[key] = (max(previous.seq, seq), previous.version + 1)
-        lock.unlock()
-    }
-
-    public func agentReadCursorForTesting(agentId: String, channelId: String) -> Int {
-        lock.lock(); defer { lock.unlock() }
-        return agentChannelReadCursors["\(channelId)\n\(agentId)"]?.seq ?? 0
-    }
-
-    public func setMachineModelSeenCapabilityForTesting(agentId: String, enabled: Bool) {
-        lock.lock()
-        if enabled {
-            machineModelSeenCapability.insert(agentId)
-        } else {
-            machineModelSeenCapability.remove(agentId)
-        }
-        lock.unlock()
-    }
-
-    /// Written attested-send events (`gate_triggered`, `e1_exempt`), oldest first.
-    public func attestedSendEventsForTesting() -> [[String: Any]] {
-        lock.lock(); defer { lock.unlock() }
-        return attestedSendEventRecords.map { record in
-            var row: [String: Any] = ["eventType": record.eventType, "agentId": record.agentId]
-            if let messageId = record.messageId { row["messageId"] = messageId }
-            row["metadata"] = (try? JSONSerialization.jsonObject(with: Data(record.metadataJSON.utf8))) ?? [:]
-            return row
-        }
-    }
-
-    /// Send-side activity log projections (held context / E1 exemption).
-    public func recentAgentSendActivityForTesting(agentId: String) -> [[String: String]] {
-        lock.lock(); defer { lock.unlock() }
-        return (agentSendActivityRecords[agentId] ?? []).map { entry in
-            var row = ["title": entry.title, "text": entry.text]
-            if let producerFactId = entry.producerFactId { row["producerFactId"] = producerFactId }
-            return row
-        }
     }
 
     func recordAttestedSendEvent(
@@ -164,31 +110,6 @@ extension EmailLoginDirectory {
             serverId: serverId, eventType: eventType, subjectType: subjectType,
             subjectId: subjectId, provenanceJSON: provenanceJSON, deliveryQueued: true
         ))
-    }
-
-    public func setSidebarReadAllEnabledForTesting(_ enabled: Bool) {
-        lock.lock(); sidebarReadAllEnabled = enabled; lock.unlock()
-    }
-
-    public func serverMemberEventsForTesting(serverId: String, eventType: String?) -> [(subjectType: String, subjectId: String, provenanceJSON: String, deliveryQueued: Bool)] {
-        lock.lock(); defer { lock.unlock() }
-        return serverMemberEvents
-            .filter { $0.serverId == serverId && (eventType == nil || $0.eventType == eventType) }
-            .map { ($0.subjectType, $0.subjectId, $0.provenanceJSON, $0.deliveryQueued) }
-    }
-
-    public func setJointProjectionStatusForTesting(localChannelId: String, serverId: String, status: String) {
-        lock.lock()
-        if let index = jointProjections.firstIndex(where: { $0.localChannelId == localChannelId && $0.serverId == serverId }) {
-            jointProjections[index].status = status
-        }
-        lock.unlock()
-    }
-
-    public func setAgentChannelJoinedAtForTesting(agentId: String, channelId: String, at: Date) {
-        lock.lock()
-        agentChannelJoinedAt["\(channelId)\n\(agentId)"] = at
-        lock.unlock()
     }
 
     public func addChannelAgent(channelId: String, agentId: String) {
@@ -611,11 +532,6 @@ extension EmailLoginDirectory {
         return channel.memberIds.contains(userId)
     }
 
-
-
-
-
-
     /// A short id counts only messages this user can see. Hidden private rows with the same prefix stay out of the match.
     /// A joint guest resolves the canonical message through that server's local projection.
     func resolveReactionTargetLocked(messageId: String, userId: String, serverId: String?) -> ReactionTarget {
@@ -687,7 +603,6 @@ extension EmailLoginDirectory {
         let list = emojis.map { jsonString($0) }.joined(separator: ",")
         return "{\"serverId\":\(jsonString(serverId)),\"messageId\":\(jsonString(messageId)),\"viewerVersion\":\(version),\"reactedEmojis\":[\(list)]}"
     }
-
 
     /// Node `uuidShortIdRange`: the half-open prefix of canonical lowercase UUID text.
 
