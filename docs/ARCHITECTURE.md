@@ -137,6 +137,9 @@ strings (`Self.json(200, "{…}")`). The DTO layer is now in place:
   encoding, and escaping cannot drift between features;
 - a handler that needs an upstream-exact string (for example a webhook body)
   documents why in a comment next to the DTO;
+- a body whose key order is part of the contract is a `JSONBodyConvertible`
+  `OrderedJSON` tree rendered by `Respond.swift`; the API and the rebase map
+  live in `docs/PHASE6_JSON.md`;
 - `[String: Any]` dictionaries are not used to build responses.
 
 ### 2.5 Test seams

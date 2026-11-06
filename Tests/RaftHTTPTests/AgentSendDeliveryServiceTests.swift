@@ -73,7 +73,7 @@ private struct DeliveryFixture {
         agentId: fixture.agentId,
         body: AgentSendRequest(target: "#general", content: "hello")
     )
-    #expect(reply.jsonBody() == #"{"id":"fixed-message-id","channelId":"\#(fixture.channelId)"}"#)
+    #expect(reply.jsonBody.render() == #"{"id":"fixed-message-id","channelId":"\#(fixture.channelId)"}"#)
 }
 
 @Test func agentSendRefusalsKeepTheLegacyErrorBytes() throws {
@@ -87,7 +87,7 @@ private struct DeliveryFixture {
         )
         Issue.record("expected Invalid target")
     } catch let error as AgentSendDeliveryError {
-        #expect(error.errorJSONBody() == #"{"error":"Invalid target"}"#)
+        #expect(error.publishedErrorBody.render() == #"{"error":"Invalid target"}"#)
     }
 
     fixture.directory.serversAndChannelsStore.postableChannels[fixture.channelId]?.archived = true
@@ -100,7 +100,7 @@ private struct DeliveryFixture {
         Issue.record("expected channel archived")
     } catch let error as AgentSendDeliveryError {
         #expect(
-            error.errorJSONBody()
+            error.publishedErrorBody.render()
                 == #"{"error":"This channel is archived","code":"channel_archived"}"#
         )
     }
@@ -139,7 +139,7 @@ private struct DeliveryFixture {
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     let followedAt = formatter.string(from: Date(timeIntervalSince1970: 1_789_000_000))
     let expected = ##"{"threads":[{"target":"#general:abcdefgh","threadChannelId":"\##(threadId)","parentChannelRef":"#general","parentMessageId":"abcdefgh12345678","parentMessageShortId":"abcdefgh","followedAt":"\##(followedAt)","reason":"manual","doneAt":null}]}"##
-    #expect(reply.jsonBody() == expected)
+    #expect(reply.jsonBody.render() == expected)
 }
 
 /// The ack's cursor bump is one locked read-modify-write: concurrent acks all

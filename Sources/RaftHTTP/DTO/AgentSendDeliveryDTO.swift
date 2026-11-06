@@ -166,7 +166,7 @@ public struct AgentActivityEvent: Decodable, Sendable, Equatable {
 
 // MARK: - Responses
 
-public struct AgentSendResponse: Codable, Sendable, Equatable, OrderedJSONBody {
+public struct AgentSendResponse: Codable, Sendable, Equatable, JSONBodyConvertible {
     public let id: String
     public let channelId: String
 
@@ -176,8 +176,11 @@ public struct AgentSendResponse: Codable, Sendable, Equatable, OrderedJSONBody {
     }
 
     /// Legacy order: `id`, then `channelId`.
-    public func jsonBody() -> String {
-        "{\"id\":\(jsonString(id)),\"channelId\":\(jsonString(channelId))}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("id", id)
+        body.append("channelId", channelId)
+        return body.json
     }
 }
 
@@ -186,7 +189,7 @@ public struct AgentSendResponse: Codable, Sendable, Equatable, OrderedJSONBody {
 /// The route is a deprecated acknowledgement: `noop` is present only when the
 /// request carried no `migrationKey`. Legacy order is `ok`, `deprecated`,
 /// optional `noop`, then `message`.
-public struct AgentRuntimeProfileMigrationResponse: Codable, Sendable, Equatable, OrderedJSONBody {
+public struct AgentRuntimeProfileMigrationResponse: Codable, Sendable, Equatable, JSONBodyConvertible {
     public static let message = "Runtime Profile migration acknowledgments are deprecated; runtime changes reset the session automatically."
 
     public let noop: Bool
@@ -195,9 +198,13 @@ public struct AgentRuntimeProfileMigrationResponse: Codable, Sendable, Equatable
         self.noop = noop
     }
 
-    public func jsonBody() -> String {
-        let noopField = noop ? ",\"noop\":\"no pending migration\"" : ""
-        return "{\"ok\":true,\"deprecated\":true\(noopField),\"message\":\(jsonString(Self.message))}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("ok", true)
+        body.append("deprecated", true)
+        if noop { body.append("noop", "no pending migration") }
+        body.append("message", Self.message)
+        return body.json
     }
 }
 
@@ -205,7 +212,7 @@ public struct AgentRuntimeProfileMigrationResponse: Codable, Sendable, Equatable
 ///
 /// `ignoredFields` appears only for the v1 schema and only when it is non-empty,
 /// always after `droppedCount` and sorted by name.
-public struct AgentActivityIngestResponse: Codable, Sendable, Equatable, OrderedJSONBody {
+public struct AgentActivityIngestResponse: Codable, Sendable, Equatable, JSONBodyConvertible {
     public let acceptedCount: Int
     public let rejectedCount: Int
     public let droppedCount: Int
@@ -223,29 +230,33 @@ public struct AgentActivityIngestResponse: Codable, Sendable, Equatable, Ordered
         self.ignoredFields = ignoredFields
     }
 
-    public func jsonBody() -> String {
-        var body = "{\"ok\":true,\"acceptedCount\":\(acceptedCount),\"rejectedCount\":\(rejectedCount),\"droppedCount\":\(droppedCount)"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("ok", true)
+        body.append("acceptedCount", acceptedCount)
+        body.append("rejectedCount", rejectedCount)
+        body.append("droppedCount", droppedCount)
         if let ignoredFields, !ignoredFields.isEmpty {
-            body += ",\"ignoredFields\":[\(ignoredFields.map(jsonString).joined(separator: ","))]"
+            body.append("ignoredFields", .array(ignoredFields.map(OrderedJSON.string)))
         }
-        return body + "}"
+        return body.json
     }
 }
 
 /// `GET /internal/agent-api/threads` body.
-public struct AgentThreadListResponse: Codable, Sendable, Equatable, OrderedJSONBody {
+public struct AgentThreadListResponse: Codable, Sendable, Equatable, JSONBodyConvertible {
     public let threads: [AgentThreadListEntry]
 
     public init(threads: [AgentThreadListEntry]) {
         self.threads = threads
     }
 
-    public func jsonBody() -> String {
-        "{\"threads\":[\(threads.map { $0.jsonBody() }.joined(separator: ","))]}"
+    public var jsonBody: OrderedJSON {
+        .object([OrderedJSONField("threads", .array(threads.map(\.jsonBody)))])
     }
 }
 
-public struct AgentThreadListEntry: Codable, Sendable, Equatable, OrderedJSONBody {
+public struct AgentThreadListEntry: Codable, Sendable, Equatable, JSONBodyConvertible {
     public let target: String
     public let threadChannelId: String
     public let parentChannelRef: String
@@ -277,13 +288,22 @@ public struct AgentThreadListEntry: Codable, Sendable, Equatable, OrderedJSONBod
 
     /// Legacy order: target, threadChannelId, parentChannelRef,
     /// parentMessageId, parentMessageShortId, followedAt, reason, doneAt.
-    public func jsonBody() -> String {
-        "{\"target\":\(jsonString(target)),\"threadChannelId\":\(jsonString(threadChannelId)),\"parentChannelRef\":\(jsonString(parentChannelRef)),\"parentMessageId\":\(jsonString(parentMessageId)),\"parentMessageShortId\":\(jsonString(parentMessageShortId)),\"followedAt\":\(jsonString(followedAt)),\"reason\":\(jsonString(reason)),\"doneAt\":\(doneAt.map(jsonString) ?? "null")}"
+    public var jsonBody: OrderedJSON {
+        .object([
+            OrderedJSONField("target", target),
+            OrderedJSONField("threadChannelId", threadChannelId),
+            OrderedJSONField("parentChannelRef", parentChannelRef),
+            OrderedJSONField("parentMessageId", parentMessageId),
+            OrderedJSONField("parentMessageShortId", parentMessageShortId),
+            OrderedJSONField("followedAt", followedAt),
+            OrderedJSONField("reason", reason),
+            OrderedJSONField("doneAt", optional: doneAt),
+        ])
     }
 }
 
 /// `GET /internal/agent-api/integrations` body.
-public struct AgentIntegrationListResponse: Codable, Sendable, Equatable, OrderedJSONBody {
+public struct AgentIntegrationListResponse: Codable, Sendable, Equatable, JSONBodyConvertible {
     public let services: [AgentIntegrationServiceSnapshot]
     public let activeLogins: [AgentIntegrationActiveLogin]
 
@@ -295,8 +315,11 @@ public struct AgentIntegrationListResponse: Codable, Sendable, Equatable, Ordere
         self.activeLogins = activeLogins
     }
 
-    public func jsonBody() -> String {
-        "{\"services\":[\(services.map { $0.jsonBody() }.joined(separator: ","))],\"activeLogins\":[\(activeLogins.map { $0.jsonBody() }.joined(separator: ","))]}"
+    public var jsonBody: OrderedJSON {
+        .object([
+            OrderedJSONField("services", .array(services.map(\.jsonBody))),
+            OrderedJSONField("activeLogins", .array(activeLogins.map(\.jsonBody))),
+        ])
     }
 }
 
@@ -304,7 +327,7 @@ public struct AgentIntegrationListResponse: Codable, Sendable, Equatable, Ordere
 /// `Sources/RaftHTTP/Support/AgentIntegrationProjection.swift` maps the
 /// OAuth ledger's untyped client row into this shape, so the service and this
 /// DTO never touch an untyped JSON dictionary.
-public struct AgentIntegrationServiceSnapshot: Codable, Sendable, Equatable, OrderedJSONBody {
+public struct AgentIntegrationServiceSnapshot: Codable, Sendable, Equatable, JSONBodyConvertible {
     public let id: String?
     public let clientId: String?
     public let name: String?
@@ -364,25 +387,31 @@ public struct AgentIntegrationServiceSnapshot: Codable, Sendable, Equatable, Ord
     /// Legacy order: id, clientId, name, description, homepageUrl,
     /// agentManifestUrl, agentManifestUrlSource, allowedScopes, whenToUse,
     /// appType, then the optional setup object.
-    public func jsonBody() -> String {
-        var body = "{\"id\":\(id.map(jsonString) ?? "null")"
-        body += ",\"clientId\":\(clientId.map(jsonString) ?? "null")"
-        body += ",\"name\":\(name.map(jsonString) ?? "null")"
-        body += ",\"description\":\(description.map(jsonString) ?? "null")"
-        body += ",\"homepageUrl\":\(homepageUrl.map(jsonString) ?? "null")"
-        body += ",\"agentManifestUrl\":\(agentManifestUrl.map(jsonString) ?? "null")"
-        body += ",\"agentManifestUrlSource\":\(agentManifestUrlSource.map(jsonString) ?? "null")"
-        body += ",\"allowedScopes\":\(allowedScopes.map { "[\($0.map(jsonString).joined(separator: ","))]" } ?? "null")"
-        body += ",\"whenToUse\":\(whenToUse.map(jsonString) ?? "null")"
-        body += ",\"appType\":\(appType.map(jsonString) ?? "null")"
-        if let setup {
-            body += ",\"setup\":\(setup.jsonBody())"
-        }
-        return body + "}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("id", optional: id)
+        body.append("clientId", optional: clientId)
+        body.append("name", optional: name)
+        body.append("description", optional: description)
+        body.append("homepageUrl", optional: homepageUrl)
+        body.append("agentManifestUrl", optional: agentManifestUrl)
+        body.append("agentManifestUrlSource", optional: agentManifestUrlSource)
+        body.append("allowedScopes", allowedScopesBody)
+        body.append("whenToUse", optional: whenToUse)
+        body.append("appType", optional: appType)
+        if let setup { body.append("setup", setup.jsonBody) }
+        return body.json
+    }
+
+    /// A nullable scope array: `null` when absent, otherwise its strings in
+    /// the ledger's order.
+    private var allowedScopesBody: OrderedJSON {
+        guard let allowedScopes else { return .null }
+        return .array(allowedScopes.map(OrderedJSON.string))
     }
 }
 
-public struct AgentIntegrationSetup: Codable, Sendable, Equatable, OrderedJSONBody {
+public struct AgentIntegrationSetup: Codable, Sendable, Equatable, JSONBodyConvertible {
     public let status: String
     public let url: String?
     public let description: String?
@@ -395,12 +424,17 @@ public struct AgentIntegrationSetup: Codable, Sendable, Equatable, OrderedJSONBo
         self.revision = revision
     }
 
-    public func jsonBody() -> String {
-        "{\"status\":\(jsonString(status)),\"url\":\(url.map(jsonString) ?? "null"),\"description\":\(description.map(jsonString) ?? "null"),\"revision\":\(revision)}"
+    public var jsonBody: OrderedJSON {
+        .object([
+            OrderedJSONField("status", status),
+            OrderedJSONField("url", optional: url),
+            OrderedJSONField("description", optional: description),
+            OrderedJSONField("revision", revision),
+        ])
     }
 }
 
-public struct AgentIntegrationActiveLogin: Codable, Sendable, Equatable, OrderedJSONBody {
+public struct AgentIntegrationActiveLogin: Codable, Sendable, Equatable, JSONBodyConvertible {
     public let clientId: String
     public let agentManifestUrl: String?
     public let agentManifestUrlSource: String?
@@ -411,8 +445,12 @@ public struct AgentIntegrationActiveLogin: Codable, Sendable, Equatable, Ordered
         self.agentManifestUrlSource = agentManifestUrlSource
     }
 
-    public func jsonBody() -> String {
-        "{\"clientId\":\(jsonString(clientId)),\"agentManifestUrl\":\(agentManifestUrl.map(jsonString) ?? "null"),\"agentManifestUrlSource\":\(agentManifestUrlSource.map(jsonString) ?? "null")}"
+    public var jsonBody: OrderedJSON {
+        .object([
+            OrderedJSONField("clientId", clientId),
+            OrderedJSONField("agentManifestUrl", optional: agentManifestUrl),
+            OrderedJSONField("agentManifestUrlSource", optional: agentManifestUrlSource),
+        ])
     }
 }
 

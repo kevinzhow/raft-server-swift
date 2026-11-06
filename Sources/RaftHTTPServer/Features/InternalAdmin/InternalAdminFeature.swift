@@ -102,7 +102,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
         }
         agent.post("send") { request async throws -> Response in
             let body = await jsonRequestBody(AgentSendRequest.self, request)
-            return try respond(errors: AgentSendDeliveryError.self) {
+            return try await respond {
                 try services.emailAccounts.agentSendDelivery.agentSend(
                     authorization: request.headers[.authorization],
                     agentId: request.parameters.get("agentId") ?? "",
@@ -112,7 +112,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
         }
         agent.post("receive-ack") { request async throws -> Response in
             let body = await jsonRequestBody(AgentReceiveAckRequest.self, request)
-            return try respond(errors: AgentSendDeliveryError.self) {
+            return try await respond {
                 try services.emailAccounts.agentSendDelivery.legacyAgentReceiveAck(
                     authorization: request.headers[.authorization],
                     agentId: request.parameters.get("agentId") ?? "",
@@ -122,7 +122,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
         }
         agent.post("runtime-profile", "migration-done") { request async throws -> Response in
             let body = await jsonRequestBody(AgentRuntimeProfileMigrationDTO.self, request)
-            return try respond(errors: AgentSendDeliveryError.self) {
+            return try await respond {
                 try services.emailAccounts.agentSendDelivery.runtimeProfileMigrationDone(
                     authorization: request.headers[.authorization],
                     agentId: request.parameters.get("agentId") ?? "",
@@ -274,7 +274,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
         }
         agent.post("threads", "unfollow") { request async throws -> Response in
             let body = await jsonRequestBody(AgentThreadUnfollowRequest.self, request)
-            return try respond(errors: AgentSendDeliveryError.self) {
+            return try await respond {
                 try services.emailAccounts.agentSendDelivery.agentThreadUnfollow(
                     authorization: request.headers[.authorization],
                     body: body,

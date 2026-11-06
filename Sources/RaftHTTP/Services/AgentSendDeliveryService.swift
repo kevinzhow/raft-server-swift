@@ -8,9 +8,9 @@ import FoundationNetworking
 /// agent-thread operations.
 ///
 /// `status`, `errorMessage` and `errorCode` are the published values; the
-/// feature layer's `respond(errors:)` overload writes `errorJSONBody()` so the
-/// legacy `{"error": …,"code": …}` key order stays fixed.
-public enum AgentSendDeliveryError: DomainError, OrderedJSONError, Equatable {
+/// canonical `DomainError` body already prints `error` then the optional
+/// `code`, so the legacy `{"error": …,"code": …}` bytes need no override.
+public enum AgentSendDeliveryError: DomainError, Equatable {
     case missingAuthorization
     case invalidToken
     case agentNotFound
@@ -113,13 +113,6 @@ public enum AgentSendDeliveryError: DomainError, OrderedJSONError, Equatable {
         }
     }
 
-    /// Legacy order: `error`, then the optional `code`.
-    public func errorJSONBody() -> String {
-        if let errorCode {
-            return "{\"error\":\(jsonString(errorMessage)),\"code\":\(jsonString(errorCode))}"
-        }
-        return "{\"error\":\(jsonString(errorMessage))}"
-    }
 }
 
 /// Agent send, delivery ack, activity ingest, thread-follow and integration
