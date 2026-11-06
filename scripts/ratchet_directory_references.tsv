@@ -21,5 +21,5 @@ Sources/RaftHTTP/Stores/MessagesAndThreadsStore.swift	3
 Sources/RaftHTTP/Stores/ProductEventStore.swift	1
 Sources/RaftHTTP/Stores/ServersAndChannelsStore.swift	2
 Sources/RaftHTTP/Stores/TasksAndRemindersStore.swift	2
-Sources/RaftHTTPServer/FallbackApplication.swift	4
+Sources/RaftHTTPServer/FallbackApplication.swift	3
 Sources/RaftServer/main.swift	1

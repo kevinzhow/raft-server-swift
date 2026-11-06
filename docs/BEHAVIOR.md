@@ -2236,3 +2236,8 @@ RFC 074 personal assistant：
 - claimForUser/applyHumanStatus 不再接受 arbitrary channelDeleted callback，改用持实际 Channels owner 的 TaskChannelDeletionQuery。每次仍在原 Tasks borrow 内、原 row lookup 之后读取 postableChannel.deletedAt，缺失或仅 archived 均为 false；不提早取快照、释放/重入 Tasks 或加强权限。
 - 原 notFound/deleted/non-assignee 拒绝优先级、零写、time/claimedAt/revision/status/assignee/event 顺序保持；deleted channel 的 claim 与非 terminal status 仍是原 409/JSON，done/closed/cancelled 仍按旧规则允许。静态当前生产图无 Channels-held→Tasks 回边；deleteChannel 先释放 Channels 再 cleanup，七个 generic Channels callback API 仍是债务，不被该固定叶豁免。
 - 原 direct Store 调用已改真实 Channels，新增同 query 后续 delete、missing/archived 与拒绝不改行的输出验收。旧 TaskRealtimeEvents/NSLock tracer 已删除，真实 Hub/Socket 对404、成功claim、DELETE、409分别用同session FIFO fence；成功窗口比较完整task帧，拒绝窗口无task/message帧，DELETE独立drain不限制合法清理输出。Relay安装仅生产forward，不记录事件。
+
+### 实验入口的窄 runtime policy
+
+- ExperimentalSurfaceGate 只持 DirectoryRuntimePolicy，与旧 Root.authCore 指向同一 AuthProfile owner；构造不读 State/env。每请求仍先读当前 override，nil 才读 environment、trim/lowercase 后与 true 比较，注册后开关 true→false 生效。
+- 两个 internal path prefix、gate 相对 body/auth 的执行位置、next await、503 code/error/retry_after 的成员顺序及 Content-Type/Sec-Slock-Api-Version 完全保持。公开路径仍不受该开关影响，完整 middleware 字节与动态开关验收继续通过。

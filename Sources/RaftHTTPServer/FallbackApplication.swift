@@ -300,7 +300,7 @@ public func configure(_ app: Application, services: FallbackServices) {
     var middleware = Middlewares()
     internalSurface.set(InternalSurfacePolicy.snapshot(routes: app.routes.all))
     middleware.use(JSONErrorBoundaryMiddleware())
-    middleware.use(ExperimentalSurfaceGate(directory: services.emailAccounts))
+    middleware.use(ExperimentalSurfaceGate(policy: DirectoryRuntimePolicy(auth: services.emailAccounts.authCore)))
     middleware.use(RequestBodyLimitMiddleware(runtimeForms: services.emailAccounts.runtimeFormsAndProbes))
     middleware.use(CorsMiddleware(origins: services.corsOrigins))
     middleware.use(PublicSearchMiddleware(
@@ -433,12 +433,12 @@ private func publicSearchResponse(_ response: Response, isHead: Bool) -> Respons
 }
 
 private struct ExperimentalSurfaceGate: Middleware {
-    let directory: EmailLoginDirectory
+    let policy: DirectoryRuntimePolicy
 
     func respond(to request: Request, chainingTo next: any Responder) async throws -> Response {
         let path = request.url.path
         let isExperimental = path.hasPrefix("/internal/agent-api") || path.hasPrefix("/internal/computer")
-        if isExperimental, DirectoryRuntimePolicy(auth: directory.authCore).experimentalSurfacesDisabled {
+        if isExperimental, policy.experimentalSurfacesDisabled {
             return RaftHTTPServer.respond(
                 status: 503,
                 headers: .exact(["Content-Type": "application/json", "Sec-Slock-Api-Version": "1"]),
