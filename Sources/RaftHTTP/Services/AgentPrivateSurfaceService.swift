@@ -756,7 +756,7 @@ extension EmailLoginDirectory {
         let owner = assistantOwners[agentId]
         lock.unlock()
         guard let owner, oauth.memberRole(serverId: serverId, userId: owner) != nil else { return nil }
-        guard featureFlagEnabledForServer("identity_borrowing", serverId: serverId) else { return nil }
+        guard agentsRuntimeStore.featureFlagEnabled(key: "identity_borrowing", serverId: serverId) else { return nil }
         return owner
     }
 
@@ -794,7 +794,7 @@ extension EmailLoginDirectory {
         guard info.creatorUserId == userId else {
             return Self.json(403, "{\"code\":\"assistant_requires_creator\",\"error\":\"Only the agent creator can lend assistant ownership\"}")
         }
-        guard featureFlagEnabledForServer("identity_borrowing", serverId: serverId) else {
+        guard agentsRuntimeStore.featureFlagEnabled(key: "identity_borrowing", serverId: serverId) else {
             return Self.json(403, "{\"code\":\"assistant_not_enabled\",\"error\":\"Assistant ownership is not enabled\"}")
         }
         if method == "DELETE" {
@@ -820,7 +820,7 @@ extension EmailLoginDirectory {
             return Self.json(409, "{\"code\":\"assistant_has_channels\",\"error\":\"An assistant can only be in its DM with its owner\"}")
         }
         lock.lock()
-        let existingDM = dmChannelIdLocked(serverId: serverId, agentId: agentId, peerId: userId)
+        let existingDM = actionCardPrepare.dmChannelId(serverId: serverId, agentId: agentId, peerId: userId)
         lock.unlock()
         let dmId = existingDM ?? oauth.createDirectChannel(serverId: serverId, firstUserId: agentId, secondUserId: userId)
         addPostableChannel(serverId: serverId, channelId: dmId, memberId: agentId, kind: "dm", name: "dm")

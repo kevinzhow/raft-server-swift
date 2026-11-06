@@ -300,6 +300,27 @@ final class AgentsRuntimeStore: @unchecked Sendable {
         set { state.featureFlagRuleRecords = newValue }
     }
 
+    /// The server-scoped rollout decision for one feature flag.
+    ///
+    /// The legacy helper read the flag row, the kill switch and the ordered
+    /// rules in one expression while holding the directory lock. Keeping the
+    /// decision here takes the same read under one store critical section so a
+    /// concurrent flag edit cannot produce a torn decision.
+    func featureFlagEnabled(key: String, serverId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let flag = storage.featureFlagRecords[key], flag.enabled, !flag.killSwitch else {
+            return false
+        }
+        let rules = storage.featureFlagRuleRecords
+            .filter { $0.key == key && $0.stage == "server" && $0.values.contains(serverId) }
+            .sorted { $0.priority < $1.priority }
+        if let rule = rules.first {
+            return rule.decision == "allow"
+        }
+        return flag.defaultEnabled
+    }
+
     // MARK: - Injected agent relays and configuration
 
     var agentMigrationCancelDispatch: (@Sendable (_ machineId: String, _ role: String, _ migrationRef: String, _ transportGeneration: String, _ stopAgent: Bool) -> Void)? {

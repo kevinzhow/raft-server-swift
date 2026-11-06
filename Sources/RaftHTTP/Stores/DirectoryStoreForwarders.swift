@@ -103,8 +103,6 @@ extension EmailLoginDirectory {
     var agentApiSendReceipts: [String: AgentApiSendReceipt] { get { managedMCPAndCardsStore.agentApiSendReceipts } set { managedMCPAndCardsStore.agentApiSendReceipts = newValue } }
     var pendingActionMessageEvents: [(agentId: String, messageId: String, content: String)] { get { managedMCPAndCardsStore.pendingActionMessageEvents } set { managedMCPAndCardsStore.pendingActionMessageEvents = newValue } }
     var agentGrantSets: [String: Set<String>] { get { managedMCPAndCardsStore.agentGrantSets } set { managedMCPAndCardsStore.agentGrantSets = newValue } }
-    var appConfigOverrides: [String: [String: [String: Any]]] { get { managedMCPAndCardsStore.appConfigOverrides } set { managedMCPAndCardsStore.appConfigOverrides = newValue } }
-    var appConfigRevisions: [String: [String: Int]] { get { managedMCPAndCardsStore.appConfigRevisions } set { managedMCPAndCardsStore.appConfigRevisions = newValue } }
     var agentIntegrationGrants: [String: Bool] { get { managedMCPAndCardsStore.agentIntegrationGrants } set { managedMCPAndCardsStore.agentIntegrationGrants = newValue } }
     var agentAudienceStatusOverrides: [String: String] { get { managedMCPAndCardsStore.agentAudienceStatusOverrides } set { managedMCPAndCardsStore.agentAudienceStatusOverrides = newValue } }
     var agentIntegrationLogins: [String: AgentIntegrationLoginRecord] { get { managedMCPAndCardsStore.agentIntegrationLogins } set { managedMCPAndCardsStore.agentIntegrationLogins = newValue } }
@@ -636,10 +634,6 @@ extension EmailLoginDirectory {
         set { feedbackStore.handsFeedbackConfigured = newValue }
     }
 
-    var marketplaceReviewerOverride: Set<String>? {
-        get { feedbackStore.marketplaceReviewerOverride }
-        set { feedbackStore.marketplaceReviewerOverride = newValue }
-    }
 }
 
 // MARK: - Store-backed accessors

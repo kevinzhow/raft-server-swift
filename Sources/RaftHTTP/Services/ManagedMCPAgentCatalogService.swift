@@ -341,7 +341,7 @@ extension EmailLoginDirectory {
     static let remindersMovedReply = json(409, "{\"error\":\"Reminders are managed by the Reminder App now\",\"code\":\"reminders_moved_to_app\"}")
 
     func legacyReminderWritesMoved(serverId: String) -> Bool {
-        featureFlagEnabledForServer("reminder_app", serverId: serverId)
+        agentsRuntimeStore.featureFlagEnabled(key: "reminder_app", serverId: serverId)
     }
 
     func legacyReminderMachine(_ authorization: String?) -> (machineId: String, serverId: String)? {

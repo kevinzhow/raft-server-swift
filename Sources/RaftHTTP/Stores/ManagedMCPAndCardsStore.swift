@@ -1,5 +1,31 @@
 import Foundation
 
+/// One validated `system.cleaner` app-config override.
+///
+/// The legacy handler stored `NSNumber`/`Bool` values in a `[String: Any]`
+/// dictionary. Only two shapes can pass the published validation: `enabled`
+/// accepts boolean values (including the `0`/`1` numbers Foundation bridges),
+/// and the two interval keys accept integers. Keeping the two cases explicit
+/// lets the store own typed state without changing the rendered value: the
+/// legacy writer always printed `number.intValue`.
+enum AppConfigValue: Sendable, Equatable {
+    case boolean(Bool)
+    case integer(Int)
+}
+
+/// One locked read of an agent's app-config state.
+struct AppConfigSnapshot: Sendable, Equatable {
+    var revision: Int
+    var overrides: [String: AppConfigValue]
+}
+
+/// Result of the compare-and-set app-config write. The store decides; the
+/// service maps a refusal to its published `RAP_APP_CONFIG_REVISION_STALE` 409.
+enum AppConfigPatchResult: Sendable, Equatable {
+    case applied(AppConfigSnapshot)
+    case revisionStale(current: Int)
+}
+
 /// Owns the managed-MCP, action-card and integration rows that used to be stored inline on
 /// `EmailLoginDirectory`.
 ///
@@ -27,7 +53,7 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         var agentApiSendReceipts: [String: AgentApiSendReceipt] = [:]
         var pendingActionMessageEvents: [(agentId: String, messageId: String, content: String)] = []
         var agentGrantSets: [String: Set<String>] = [:]
-        var appConfigOverrides: [String: [String: [String: Any]]] = [:]
+        var appConfigOverrides: [String: [String: [String: AppConfigValue]]] = [:]
         var appConfigRevisions: [String: [String: Int]] = [:]
         var agentIntegrationGrants: [String: Bool] = [:]
         var agentAudienceStatusOverrides: [String: String] = [:]
@@ -95,7 +121,7 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         set { state.agentGrantSets = newValue }
     }
 
-    var appConfigOverrides: [String: [String: [String: Any]]] {
+    var appConfigOverrides: [String: [String: [String: AppConfigValue]]] {
         get { state.appConfigOverrides }
         set { state.appConfigOverrides = newValue }
     }
@@ -248,5 +274,48 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
             $0.connectionId == connectionId && $0.serverId == serverId
         }
         return storage.providerConnections.count != before
+    }
+
+    // MARK: - Agent app config
+
+    /// One locked read of the revision and the overrides a reply projects.
+    ///
+    /// The legacy handler read the two dictionaries under the directory lock
+    /// and then released it before rendering. Taking both under this store's
+    /// lock keeps the reply's pair consistent.
+    func appConfigSnapshot(agentId: String, appId: String) -> AppConfigSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return AppConfigSnapshot(
+            revision: storage.appConfigRevisions[agentId]?[appId] ?? 0,
+            overrides: storage.appConfigOverrides[agentId]?[appId] ?? [:]
+        )
+    }
+
+    /// The compare-and-set app-config write.
+    ///
+    /// The revision check, the merge and the revision bump are one critical
+    /// section, so two concurrent patches with the same expected revision
+    /// cannot both commit (the legacy handler held the directory lock across
+    /// the same three steps).
+    func patchAppConfig(
+        agentId: String,
+        appId: String,
+        expectedRevision: Int,
+        set: [String: AppConfigValue],
+        unset: [String]
+    ) -> AppConfigPatchResult {
+        lock.lock()
+        defer { lock.unlock() }
+        let current = storage.appConfigRevisions[agentId]?[appId] ?? 0
+        guard expectedRevision == current else {
+            return .revisionStale(current: current)
+        }
+        var overrides = storage.appConfigOverrides[agentId]?[appId] ?? [:]
+        for (key, value) in set { overrides[key] = value }
+        for key in unset { overrides.removeValue(forKey: key) }
+        storage.appConfigOverrides[agentId, default: [:]][appId] = overrides
+        storage.appConfigRevisions[agentId, default: [:]][appId] = current + 1
+        return .applied(AppConfigSnapshot(revision: current + 1, overrides: overrides))
     }
 }

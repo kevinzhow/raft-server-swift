@@ -3,194 +3,338 @@ import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
+import RaftShared
 
-/// Action-card preparation and the agent context / app-config / send surfaces.
-/// Migrated verbatim from the first half of `EmailLogin+ActionCards1.swift`.
+/// Domain failure for the action-card prepare, agent-context and app-config
+/// routes.
 ///
-/// The handlers stay on `EmailLoginDirectory`, which owns the lock and the
-/// domain ledgers. This type is the named, `Sendable` handle a route can hold
-/// instead of reaching for the composition root; it carries no state of its own.
-public struct ActionCardPrepareService: Sendable {
-    public let directory: EmailLoginDirectory
+/// Every case names the published error object the route answers with; the
+/// feature layer only projects `status`, `errorBody` and headers through
+/// `Respond.swift`. The bodies keep the legacy member order
+/// (`error`, then `code`/`errorCode`, then `requiredCapability`/`currentRevision`).
+public enum ActionCardPrepareError: DomainError, Equatable {
+    case unauthorized
+    case notAMember
+    case invalidExpectedRevision
+    case appNotFound
+    case permissionRevisionStale
+    case notOwnerOrAdmin
+    case appNotOnServer
+    case agentJWTFixed
+    case missingAgentAuthorization
+    case invalidAccessToken
+    case invalidAgentCredential
+    case capabilityNotAuthorized(capability: String)
+    case missingRequiredCapability(capability: String)
+    case serverNotFound
+    case appConfigUnknownApp
+    case appConfigInvalid
+    case appConfigInvalidValue(key: String)
+    case appConfigUnknownKey
+    case appConfigRevisionStale(currentRevision: Int)
 
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
+    public var status: UInt {
+        switch self {
+        case .unauthorized, .missingAgentAuthorization, .invalidAccessToken,
+             .invalidAgentCredential:
+            401
+        case .notAMember, .notOwnerOrAdmin, .capabilityNotAuthorized,
+             .missingRequiredCapability:
+            403
+        case .invalidExpectedRevision, .appConfigInvalid, .appConfigInvalidValue,
+             .appConfigUnknownKey:
+            400
+        case .appNotFound, .appNotOnServer, .serverNotFound, .appConfigUnknownApp:
+            404
+        case .permissionRevisionStale, .appConfigRevisionStale:
+            409
+        case .agentJWTFixed:
+            410
+        }
+    }
+
+    /// The legacy Agent-JWT settings routes attach `Cache-Control: private,
+    /// no-store` to their 403/404/410 replies (the 401 reads do not).
+    public var responseHeaders: [String: String] {
+        switch self {
+        case .notOwnerOrAdmin, .appNotOnServer, .agentJWTFixed:
+            ["Cache-Control": "private, no-store"]
+        default:
+            [:]
+        }
+    }
+
+    /// The single published failure object: `error` first, then at most one of
+    /// `code`/`errorCode`, then at most one of
+    /// `requiredCapability`/`currentRevision`. That is the legacy member order
+    /// for every branch this domain publishes.
+    public var errorBody: OrderedJSON? {
+        let published = publishedFields
+        var body = OrderedJSONObject()
+        body.append("error", published.error)
+        body.append("code", ifPresent: published.code)
+        body.append("errorCode", ifPresent: published.errorCode)
+        body.append("requiredCapability", ifPresent: published.requiredCapability)
+        body.append("currentRevision", ifPresent: published.currentRevision)
+        return body.json
+    }
+
+    public var errorMessage: String { publishedFields.error }
+
+    /// The legacy fields each case publishes, in published order.
+    private var publishedFields: (
+        error: String,
+        code: String?,
+        errorCode: String?,
+        requiredCapability: String?,
+        currentRevision: Int?
+    ) {
+        switch self {
+        case .unauthorized:
+            ("Unauthorized", nil, nil, nil, nil)
+        case .notAMember:
+            ("Not a member of this server", nil, nil, nil, nil)
+        case .invalidExpectedRevision:
+            (
+                "expected_revision_id must be a revision UUID",
+                "invalid_expected_revision_id", nil, nil, nil
+            )
+        case .appNotFound:
+            ("App not found", nil, nil, nil, nil)
+        case .permissionRevisionStale:
+            (
+                "The permission request changed since it was displayed",
+                "permission_revision_stale", nil, nil, nil
+            )
+        case .notOwnerOrAdmin:
+            ("Only server owners and admins can read Agent JWT access", nil, nil, nil, nil)
+        case .appNotOnServer:
+            ("App not found on this Server", nil, nil, nil, nil)
+        case .agentJWTFixed:
+            (
+                "Agent JWT is built in for every App; there is no setting to change",
+                nil, nil, nil, nil
+            )
+        case .missingAgentAuthorization:
+            ("Missing or invalid Authorization header", "auth_required", nil, nil, nil)
+        case .invalidAccessToken:
+            ("Invalid or expired token", "auth_required", nil, nil, nil)
+        case .invalidAgentCredential:
+            ("Invalid agent credential", "auth_required", nil, nil, nil)
+        case .capabilityNotAuthorized(let capability):
+            (
+                "Agent credential is not authorized for this capability",
+                "capability_not_authorized", nil, capability, nil
+            )
+        case .missingRequiredCapability(let capability):
+            ("missing required capability", nil, nil, capability, nil)
+        case .serverNotFound:
+            ("Server not found", nil, nil, nil, nil)
+        case .appConfigUnknownApp:
+            ("Unknown app", nil, "RAP_APP_CONFIG_APP_UNKNOWN", nil, nil)
+        case .appConfigInvalid:
+            ("Invalid config request", nil, "RAP_APP_CONFIG_INVALID", nil, nil)
+        case .appConfigInvalidValue(let key):
+            ("Invalid value for \(key)", nil, "RAP_APP_CONFIG_INVALID", nil, nil)
+        case .appConfigUnknownKey:
+            ("Unknown config key", nil, "RAP_APP_CONFIG_INVALID", nil, nil)
+        case .appConfigRevisionStale(let currentRevision):
+            (
+                "Config revision is stale; current revision is \(currentRevision)",
+                nil, "RAP_APP_CONFIG_REVISION_STALE", nil, currentRevision
+            )
+        }
     }
 }
 
-extension EmailLoginDirectory {
+/// Action-card preparation, the agent context / app-config surface, and the
+/// shared agent-target projections other (not-yet-migrated) domain extensions
+/// call while they hold the directory lock.
+///
+/// The service owns no state: app config lives in `ManagedMCPAndCardsStore`,
+/// feature flags and agent credentials in `AgentsRuntimeStore`, channels in
+/// `ServersAndChannelsStore`, accounts in `AuthProfileStore`, messages in
+/// `MessagesAndThreadsStore`, and the marketplace reviewer override in
+/// `FeedbackStore`. Every compare-and-set write is one store critical section.
+/// Two dependencies are still owned by unmigrated domains, so they enter as
+/// closures: `sessionUserId` (the session ledger) and `assistantOwner` (the
+/// assistant-owner policy in `AgentPrivateSurfaceService`).
+public struct ActionCardPrepareService: Sendable {
+    /// Config keys the app accepts, in the order the reply renders them.
+    private static let appConfigKeyOrder = ["enabled", "threshold_bytes", "interval_seconds"]
+    private static let appConfigKeys = Set(appConfigKeyOrder)
+    private static let systemCleaner = "system.cleaner"
 
-    // MARK: - Action cards (`POST /internal/agent-api/prepare-action`, `POST /api/actions/:id/execute`)
+    private let oauth: OAuthLedger
+    private let cards: ManagedMCPAndCardsStore
+    private let feedback: FeedbackStore
+    private let agents: AgentsRuntimeStore
+    private let channels: ServersAndChannelsStore
+    private let accounts: AuthProfileStore
+    private let messages: MessagesAndThreadsStore
+    private let sessionUserId: @Sendable (String?) -> String?
+    private let assistantOwner: @Sendable (String, String) -> String?
+    private let environment: @Sendable (String) -> String?
 
-    static let appConfigSchemaJSON = "{\"enabled\":{\"type\":\"boolean\"},\"threshold_bytes\":{\"type\":\"integer\",\"minimum\":4096,\"maximum\":1073741824},\"interval_seconds\":{\"type\":\"integer\",\"minimum\":900,\"maximum\":604800}}"
-
-    func appConfigReply(agentId: String, appId: String) -> HTTPReply? {
-        guard appId == "system.cleaner" else { return nil }
-        lock.lock()
-        let revision = appConfigRevisions[agentId]?[appId] ?? 0
-        let overrides = appConfigOverrides[agentId]?[appId] ?? [:]
-        lock.unlock()
-        var effective = Self.appConfigDefaults()
-        for (key, value) in overrides {
-            effective[key] = value
-        }
-        let order = ["enabled", "threshold_bytes", "interval_seconds"]
-        var overridesJSON: [String] = []
-        for key in order {
-            guard let value = overrides[key] else { continue }
-            overridesJSON.append("\(jsonString(key)):\(Self.appConfigValueJSON(value))")
-        }
-        var effectiveJSON: [String] = []
-        for key in order {
-            guard let value = effective[key] else { continue }
-            effectiveJSON.append("\(jsonString(key)):\(Self.appConfigValueJSON(value))")
-        }
-        let body = "{\"appId\":\(jsonString(appId)),\"revision\":\(revision),\"schema\":\(Self.appConfigSchemaJSON),\"defaults\":{\"enabled\":true,\"threshold_bytes\":65536,\"interval_seconds\":3600},\"overrides\":{\(overridesJSON.joined(separator: ","))},\"effective\":{\(effectiveJSON.joined(separator: ","))}}"
-        return Self.json(200, body)
+    init(
+        oauth: OAuthLedger,
+        cards: ManagedMCPAndCardsStore,
+        feedback: FeedbackStore,
+        agents: AgentsRuntimeStore,
+        channels: ServersAndChannelsStore,
+        accounts: AuthProfileStore,
+        messages: MessagesAndThreadsStore,
+        sessionUserId: @escaping @Sendable (String?) -> String?,
+        assistantOwner: @escaping @Sendable (String, String) -> String?,
+        environment: @escaping @Sendable (String) -> String? = { ProcessInfo.processInfo.environment[$0] }
+    ) {
+        self.oauth = oauth
+        self.cards = cards
+        self.feedback = feedback
+        self.agents = agents
+        self.channels = channels
+        self.accounts = accounts
+        self.messages = messages
+        self.sessionUserId = sessionUserId
+        self.assistantOwner = assistantOwner
+        self.environment = environment
     }
 
-    func appConfigError(_ status: Int, error: String, code: String) -> HTTPReply {
-        Self.json(status, "{\"error\":\(jsonString(error)),\"errorCode\":\(jsonString(code))}")
-    }
+    // MARK: - Integration marketplace (`GET /api/integrations/marketplace`)
 
-    func featureFlagEnabledForServer(_ key: String, serverId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let flag = featureFlagRecords[key], flag.enabled, !flag.killSwitch else { return false }
-        let rules = featureFlagRuleRecords
-            .filter { $0.key == key && $0.stage == "server" && $0.values.contains(serverId) }
-            .sorted { $0.priority < $1.priority }
-        if let rule = rules.first {
-            return rule.decision == "allow"
-        }
-        return flag.defaultEnabled
-    }
-
-    func marketplaceReviewerIds() -> Set<String> {
-        lock.lock()
-        let override = marketplaceReviewerOverride
-        lock.unlock()
-        if let override { return override }
-        let raw = ProcessInfo.processInfo.environment["SLOCK_MARKETPLACE_REVIEWER_USER_IDS"] ?? ""
-        return Set(raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
-    }
-
-    public func integrationMarketplace(authorization: String?, serverId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    /// Lists the apps that can publish app-notification permission requests.
+    public func integrationMarketplace(
+        authorization: String?,
+        serverId: String
+    ) throws -> IntegrationMarketplaceListing {
+        guard let userId = sessionUserId(authorization) else {
+            throw ActionCardPrepareError.unauthorized
         }
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw ActionCardPrepareError.notAMember
         }
         let reviewers = marketplaceReviewerIds()
-        let rows = oauth.appPermissionReviewRows(serverId: serverId).map { row -> String in
-            let groups = row.pendingGroups.map { jsonString($0) }.joined(separator: ",")
-            let revision = row.pendingRevisionId.map(jsonString) ?? "null"
-            return "{\"id\":\(jsonString(row.id)),\"clientId\":\(jsonString(row.clientId)),\"name\":\(jsonString(row.name)),\"appNotificationPendingGroups\":[\(groups)],\"appNotificationPendingRevisionId\":\(revision),\"canReviewAppNotifications\":\(reviewers.contains(userId))}"
-        }.joined(separator: ",")
-        return Self.json(200, "[\(rows)]")
+        let rows = oauth.appPermissionReviewRows(serverId: serverId).map { row in
+            IntegrationMarketplaceRow(
+                id: row.id,
+                clientId: row.clientId,
+                name: row.name,
+                pendingGroups: row.pendingGroups,
+                pendingRevisionId: row.pendingRevisionId,
+                canReviewAppNotifications: reviewers.contains(userId)
+            )
+        }
+        return IntegrationMarketplaceListing(rows: rows)
     }
 
+    // MARK: - App-notification permission review
+
+    /// Approves the displayed permission revision.
+    ///
+    /// The caller passes `nil` when the request body did not decode. The legacy
+    /// handler authorized before parsing, so the service checks the session and
+    /// membership first and only then answers the body-shaped 400.
     public func reviewAppNotificationPermissions(
         authorization: String?,
         serverId: String,
         clientId: String,
-        body: String
-    ) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        body: ReviewAppNotificationPermissionsRequest?
+    ) throws -> ReviewAppNotificationPermissionsResponse {
+        guard let userId = sessionUserId(authorization) else {
+            throw ActionCardPrepareError.unauthorized
         }
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw ActionCardPrepareError.notAMember
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let raw = object["expected_revision_id"] as? String,
-              ServerScope.isUUID(raw)
-        else {
-            return Self.json(400, "{\"error\":\"expected_revision_id must be a revision UUID\",\"code\":\"invalid_expected_revision_id\"}")
+        guard let raw = body?.expectedRevisionId, ServerScope.isUUID(raw) else {
+            throw ActionCardPrepareError.invalidExpectedRevision
         }
         do {
-            let groups = try oauth.approveAppOutboundPermission(clientRecordId: clientId, expectedRevisionId: raw)
-            let groupsJSON = groups.map { jsonString($0) }.joined(separator: ",")
-            return Self.json(200, "{\"ok\":true,\"groups\":[\(groupsJSON)]}")
+            let groups = try oauth.approveAppOutboundPermission(
+                clientRecordId: clientId,
+                expectedRevisionId: raw
+            )
+            return ReviewAppNotificationPermissionsResponse(groups: groups)
         } catch OAuthLedger.AppPermissionReviewError.notFound {
-            return Self.json(404, "{\"error\":\"App not found\"}")
+            throw ActionCardPrepareError.appNotFound
         } catch {
-            return Self.json(409, "{\"error\":\"The permission request changed since it was displayed\",\"code\":\"permission_revision_stale\"}")
+            throw ActionCardPrepareError.permissionRevisionStale
         }
     }
 
-    /// `GET /api/integrations/clients/:clientId/agent-jwt`. Read-only state for
-    /// web bundles from the previous release.
-    public func legacyAppAgentJWTSettings(authorization: String?, serverId: String, clientRecordId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    // MARK: - Legacy Agent-JWT settings
+
+    /// `GET /api/integrations/clients/:clientId/agent-jwt`.
+    public func legacyAppAgentJWTSettings(
+        authorization: String?,
+        serverId: String,
+        clientRecordId: String
+    ) throws -> LegacyAppAgentJWTResponse {
+        guard let userId = sessionUserId(authorization) else {
+            throw ActionCardPrepareError.unauthorized
         }
         let role = oauth.memberRole(serverId: serverId, userId: userId)
         guard role == "owner" || role == "admin" else {
-            var reply = Self.json(403, "{\"error\":\"Only server owners and admins can read Agent JWT access\"}")
-            reply.headers["Cache-Control"] = "private, no-store"
-            return reply
+            throw ActionCardPrepareError.notOwnerOrAdmin
         }
         guard let client = oauth.legacyAgentJWTClient(clientRecordId: clientRecordId) else {
-            var reply = Self.json(404, "{\"error\":\"App not found on this Server\"}")
-            reply.headers["Cache-Control"] = "private, no-store"
-            return reply
+            throw ActionCardPrepareError.appNotOnServer
         }
         let source = client.serverId == serverId
-        let installationStatus = oauth.legacyAgentJWTInstallationStatus(clientRecordId: clientRecordId, serverId: serverId)
+        let installationStatus = oauth.legacyAgentJWTInstallationStatus(
+            clientRecordId: clientRecordId,
+            serverId: serverId
+        )
         if !source, client.appType != "third_party_global" || installationStatus == nil {
-            var reply = Self.json(404, "{\"error\":\"App not found on this Server\"}")
-            reply.headers["Cache-Control"] = "private, no-store"
-            return reply
+            throw ActionCardPrepareError.appNotOnServer
         }
-        let scopesOK = client.allowedScopes.contains("openid") && client.allowedScopes.contains("profile")
+        let scopesOK = client.allowedScopes.contains("openid")
+            && client.allowedScopes.contains("profile")
         let installationOK = installationStatus == nil || installationStatus == "active"
         let effective = client.enabled && scopesOK && installationOK
             && (client.appType == "server_local" || installationStatus == "active")
-        let scopeValue = source ? "app" : "installation"
-        let body = "{\"scope\":\(jsonString(scopeValue)),\"enabled\":true,\"appEnabled\":true,\"effectiveEnabled\":\(effective),\"canEnable\":false,\"audience\":\(jsonString(client.clientKey)),\"expiresIn\":300}"
-        var reply = Self.json(200, body)
-        reply.headers["Cache-Control"] = "private, no-store"
-        return reply
+        return LegacyAppAgentJWTResponse(
+            scope: source ? "app" : "installation",
+            effectiveEnabled: effective,
+            audience: client.clientKey
+        )
     }
 
-    public func refuseLegacyAppAgentJWTWrite() -> HTTPReply {
-        var reply = Self.json(410, "{\"error\":\"Agent JWT is built in for every App; there is no setting to change\"}")
-        reply.headers["Cache-Control"] = "private, no-store"
-        return reply
+    /// `PUT /api/integrations/clients/:clientId/agent-jwt` always answers 410.
+    public func refuseLegacyAppAgentJWTWrite() throws -> LegacyAppAgentJWTResponse {
+        throw ActionCardPrepareError.agentJWTFixed
     }
 
-    public func agentContext(authorization: String?) -> HTTPReply {
-        guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+    // MARK: - Agent context (`GET /internal/agent-api/context`)
+
+    public func agentContext(authorization: String?) throws -> AgentContextResponse {
+        let identity: (agentId: String, serverId: String, scopes: [String])
+        switch agentIdentity(authorization: authorization, capability: "read") {
+        case .success(let agentId, let serverId, let scopes):
+            identity = (agentId, serverId, scopes)
+        case .missingAuthorization:
+            throw ActionCardPrepareError.missingAgentAuthorization
+        case .invalidAccessToken, .invalidAgentCredential:
+            // The context route collapses a missing/deleted agent into the same
+            // expired-token reply the legacy handler published.
+            throw ActionCardPrepareError.invalidAccessToken
+        case .capabilityNotAuthorized(let capability):
+            throw ActionCardPrepareError.capabilityNotAuthorized(capability: capability)
         }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        let credential = agentCredentials[token]
-        lock.unlock()
-        guard let credential, credential.revokedAt == nil,
-              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
-        else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        guard let agent = oauth.agentRuntimeInfo(id: identity.agentId) else {
+            throw ActionCardPrepareError.invalidAccessToken
         }
-        guard credential.scopes.contains("read") else {
-            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\",\"requiredCapability\":\"read\"}")
-        }
-        guard let server = oauth.serverProfile(id: agent.serverId) else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
+        guard let server = oauth.serverProfile(id: identity.serverId) else {
+            throw ActionCardPrepareError.serverNotFound
         }
         let role = oauth.agentRole(serverId: agent.serverId, agentId: agent.id) ?? "member"
         let external = agent.runtime == "external"
-        let capabilities = credential.scopes.sorted().map { jsonString($0) }.joined(separator: ",")
-        let description = agent.description.map { jsonString($0) } ?? "null"
-        let prompt: String
+        let prompt: AgentContextPrompt?
         if external {
-            let displayName = agent.displayName
             let text = """
             # Raft CLI operating guide
 
-            You are "\(displayName)" (@\(agent.name)), an external AI agent in the Raft server "\(server.name)".
+            You are "\(agent.displayName)" (@\(agent.name)), an external AI agent in the Raft server "\(server.name)".
 
             Your server role is \(role). Permission checks always use your current role.
 
@@ -198,116 +342,160 @@ extension EmailLoginDirectory {
 
             reminders_unsupported_for_external_agents — external agents cannot create reminders; ask a human instead.
             """
-            prompt = "{\"audience\":\"self-hosted-runner\",\"text\":\(jsonString(text))}"
+            prompt = AgentContextPrompt(text: text)
         } else {
-            prompt = "null"
+            prompt = nil
         }
-        let features = "{\"reminderApp\":\(featureFlagEnabledForServer("reminder_app", serverId: server.id)),\"vaultApp\":\(featureFlagEnabledForServer("vault_app", serverId: server.id))}"
-        let assistantJSON: String
-        if let owner = assistantOwnerFor(agentId: agent.id, serverId: agent.serverId) {
-            assistantJSON = "{\"userId\":\(jsonString(owner))}"
-        } else {
-            assistantJSON = "null"
-        }
-        let body = "{\"agent\":{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"description\":\(description),\"runtime\":\(jsonString(agent.runtime)),\"external\":\(external),\"assistantOf\":\(assistantJSON),\"serverRole\":\(jsonString(role))},\"server\":{\"id\":\(jsonString(server.id)),\"slug\":\(jsonString(server.slug)),\"name\":\(jsonString(server.name))},\"credential\":{\"capabilities\":[\(capabilities)]},\"prompt\":\(prompt),\"features\":\(features)}"
-        return Self.json(200, body)
+        let assistant = assistantOwner(agent.id, agent.serverId)
+        return AgentContextResponse(
+            agent: AgentContextAgent(
+                id: agent.id,
+                name: agent.name,
+                displayName: agent.displayName,
+                description: agent.description,
+                runtime: agent.runtime,
+                external: external,
+                assistantOf: assistant,
+                serverRole: role
+            ),
+            server: AgentContextServer(id: server.id, slug: server.slug, name: server.name),
+            capabilities: identity.scopes,
+            prompt: prompt,
+            features: AgentContextFeatures(
+                reminderApp: agents.featureFlagEnabled(key: "reminder_app", serverId: server.id),
+                vaultApp: agents.featureFlagEnabled(key: "vault_app", serverId: server.id)
+            )
+        )
     }
 
-    public func agentAppConfig(authorization: String?, appId: String) -> HTTPReply {
-        let identity: (agentId: String, serverId: String)
-        switch feedbackLocatorIdentity(authorization: authorization, capability: "read") {
-        case .refused(let reply): return reply
-        case .success(let agentId, let serverId): identity = (agentId, serverId)
+    // MARK: - Agent app config
+
+    /// `GET /internal/agent-api/apps/:appId/config`.
+    public func agentAppConfig(
+        authorization: String?,
+        appId: String
+    ) throws -> AgentAppConfigResponse {
+        let agentId: String
+        switch agentIdentity(authorization: authorization, capability: "read") {
+        case .success(let id, _, _):
+            agentId = id
+        case .missingAuthorization:
+            throw ActionCardPrepareError.missingAgentAuthorization
+        case .invalidAccessToken:
+            throw ActionCardPrepareError.invalidAccessToken
+        case .invalidAgentCredential:
+            throw ActionCardPrepareError.invalidAgentCredential
+        case .capabilityNotAuthorized(let capability):
+            throw ActionCardPrepareError.capabilityNotAuthorized(capability: capability)
         }
-        guard let reply = appConfigReply(agentId: identity.agentId, appId: appId) else {
-            return appConfigError(404, error: "Unknown app", code: "RAP_APP_CONFIG_APP_UNKNOWN")
+        guard appId == Self.systemCleaner else {
+            throw ActionCardPrepareError.appConfigUnknownApp
         }
-        return reply
+        return appConfigResponse(
+            appId: appId,
+            snapshot: cards.appConfigSnapshot(agentId: agentId, appId: appId)
+        )
     }
 
-    public func patchAgentAppConfig(authorization: String?, appId: String, body: String) -> HTTPReply {
+    /// `PATCH /internal/agent-api/apps/:appId/config`.
+    ///
+    /// The body is `nil` when the request body did not decode. Authorization,
+    /// the capability gate and the app lookup run before the published
+    /// `Invalid config request` 400, matching the legacy handler's order.
+    public func patchAgentAppConfig(
+        authorization: String?,
+        appId: String,
+        body: AgentAppConfigPatchRequest?
+    ) throws -> AgentAppConfigResponse {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+            throw ActionCardPrepareError.missingAgentAuthorization
         }
         let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        let credential = agentCredentials[token]
-        lock.unlock()
-        guard let credential, credential.revokedAt == nil,
+        guard let credential = agents.agentCredentials[token], credential.revokedAt == nil,
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
         else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            throw ActionCardPrepareError.invalidAccessToken
         }
         guard credential.scopes.contains("tasks") else {
-            return Self.json(403, "{\"error\":\"missing required capability\",\"requiredCapability\":\"tasks\"}")
+            throw ActionCardPrepareError.missingRequiredCapability(capability: "tasks")
         }
-        guard appId == "system.cleaner" else {
-            return appConfigError(404, error: "Unknown app", code: "RAP_APP_CONFIG_APP_UNKNOWN")
+        guard appId == Self.systemCleaner else {
+            throw ActionCardPrepareError.appConfigUnknownApp
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let expectedRevision = object["expectedRevision"] as? NSNumber
-        else {
-            return Self.json(400, "{\"error\":\"Invalid config request\",\"errorCode\":\"RAP_APP_CONFIG_INVALID\"}")
+        guard let body else {
+            throw ActionCardPrepareError.appConfigInvalid
         }
-        let set = object["set"] as? [String: Any] ?? [:]
-        let unset = (object["unset"] as? [Any])?.compactMap { $0 as? String } ?? []
-        for (key, value) in set {
+        var normalized: [String: AppConfigValue] = [:]
+        for (key, value) in body.set.sorted(by: { $0.key < $1.key }) {
             switch key {
             case "enabled":
-                guard value is Bool || (value as? NSNumber).map({ String(cString: $0.objCType) == "c" || String(cString: $0.objCType) == "B" }) == true else {
-                    return Self.json(400, "{\"error\":\"Invalid value for enabled\",\"errorCode\":\"RAP_APP_CONFIG_INVALID\"}")
+                guard let boolean = Self.legacyBoolean(value) else {
+                    throw ActionCardPrepareError.appConfigInvalidValue(key: key)
                 }
+                normalized[key] = .boolean(boolean)
             case "threshold_bytes", "interval_seconds":
-                guard let number = value as? NSNumber,
-                      String(cString: number.objCType) != "c", String(cString: number.objCType) != "B"
-                else {
-                    return Self.json(400, "{\"error\":\"Invalid value for \(key)\",\"errorCode\":\"RAP_APP_CONFIG_INVALID\"}")
+                guard let integer = Self.legacyConfigInteger(value) else {
+                    throw ActionCardPrepareError.appConfigInvalidValue(key: key)
                 }
-                let intValue = number.intValue
-                if key == "threshold_bytes", intValue < 4096 || intValue > 1_073_741_824 {
-                    return Self.json(400, "{\"error\":\"Invalid value for threshold_bytes\",\"errorCode\":\"RAP_APP_CONFIG_INVALID\"}")
+                if key == "threshold_bytes", integer < 4096 || integer > 1_073_741_824 {
+                    throw ActionCardPrepareError.appConfigInvalidValue(key: key)
                 }
-                if key == "interval_seconds", intValue < 900 || intValue > 604_800 {
-                    return Self.json(400, "{\"error\":\"Invalid value for interval_seconds\",\"errorCode\":\"RAP_APP_CONFIG_INVALID\"}")
+                if key == "interval_seconds", integer < 900 || integer > 604_800 {
+                    throw ActionCardPrepareError.appConfigInvalidValue(key: key)
                 }
+                normalized[key] = .integer(integer)
             default:
-                return Self.json(400, "{\"error\":\"Unknown config key\",\"errorCode\":\"RAP_APP_CONFIG_INVALID\"}")
+                throw ActionCardPrepareError.appConfigUnknownKey
             }
         }
-        for key in unset where !["enabled", "threshold_bytes", "interval_seconds"].contains(key) {
-            return Self.json(400, "{\"error\":\"Unknown config key\",\"errorCode\":\"RAP_APP_CONFIG_INVALID\"}")
+        for key in body.unset where !Self.appConfigKeys.contains(key) {
+            throw ActionCardPrepareError.appConfigUnknownKey
         }
-        lock.lock()
-        let current = appConfigRevisions[agent.id]?[appId] ?? 0
-        guard expectedRevision.intValue == current else {
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"Config revision is stale; current revision is \(current)\",\"errorCode\":\"RAP_APP_CONFIG_REVISION_STALE\",\"currentRevision\":\(current)}")
+        switch cards.patchAppConfig(
+            agentId: agent.id,
+            appId: appId,
+            expectedRevision: body.expectedRevision,
+            set: normalized,
+            unset: body.unset
+        ) {
+        case .applied(let snapshot):
+            return appConfigResponse(appId: appId, snapshot: snapshot)
+        case .revisionStale(let current):
+            throw ActionCardPrepareError.appConfigRevisionStale(currentRevision: current)
         }
-        var overrides = appConfigOverrides[agent.id]?[appId] ?? [:]
-        for (key, value) in set { overrides[key] = value }
-        for key in unset { overrides.removeValue(forKey: key) }
-        appConfigOverrides[agent.id, default: [:]][appId] = overrides
-        appConfigRevisions[agent.id, default: [:]][appId] = current + 1
-        lock.unlock()
-        return appConfigReply(agentId: agent.id, appId: appId) ?? appConfigError(404, error: "Unknown app", code: "RAP_APP_CONFIG_APP_UNKNOWN")
     }
 
-    /// Callers hold the directory lock.
-    func resolveDMPeerLocked(serverId: String, agentId: String, name rawName: String, kind rawKind: String?) -> DMPeerResolution {
+    // MARK: - Shared agent-target projections
+    //
+    // These helpers still belong to the execute/send domains, which call them
+    // while holding the directory lock. They live on the service type, so this
+    // file carries no directory extension; each one reads stores through their
+    // locked accessors.
+
+    /// Resolves one `dm:@name[~kind]` target.
+    ///
+    /// A migration-receipt DM has no peer account: its only member is the
+    /// migrated agent, and only that agent may name it.
+    func resolveDMPeer(
+        serverId: String,
+        agentId: String,
+        name rawName: String,
+        kind rawKind: String?
+    ) -> DMPeerResolution {
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         let kind = rawKind?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if let kind, kind != "agent", kind != "human" {
             return .invalidKind(kind, name)
         }
-        // A migration receipt DM has no peer account: its only member is the
-        // migrated agent, and only that agent may name it. Caller holds the lock.
         if kind == nil, name.hasPrefix("migration-receipt-") {
-            let owned = postableChannels.first { _, channel in
+            let postable = channels.postableChannels
+            let owned = postable.first { _, channel in
                 channel.kind == "dm" && channel.name == name && channel.memberIds == [agentId]
             }
             guard let owned else { return .notFound }
             return .resolved(peerId: agentId, peerKind: "agent", name: name)
         }
+        let accounts = self.accounts.accounts
         let humans = accounts.values.filter {
             $0.id != agentId
                 && ($0.name.caseInsensitiveCompare(name) == .orderedSame
@@ -332,9 +520,9 @@ extension EmailLoginDirectory {
         }
     }
 
-    /// Callers hold the directory lock.
-    func dmChannelIdLocked(serverId: String, agentId: String, peerId: String) -> String? {
-        postableChannels.first { _, channel in
+    /// Finds the live DM channel between an agent and a peer.
+    func dmChannelId(serverId: String, agentId: String, peerId: String) -> String? {
+        channels.postableChannels.first { _, channel in
             channel.serverId == serverId
                 && channel.kind == "dm"
                 && channel.deletedAt == nil
@@ -343,55 +531,40 @@ extension EmailLoginDirectory {
         }?.key
     }
 
-    func dmPeerFailure(_ resolution: DMPeerResolution) -> HTTPReply? {
-        switch resolution {
-        case .ambiguous(let name):
-            return Self.json(409, "{\"error\":\"More than one DM peer is named \(name). Address it as dm:@\(name)~agent or dm:@\(name)~human.\",\"code\":\"DM_TARGET_AMBIGUOUS\",\"suggestedNextAction\":\"Retry with dm:@\(name)~agent for the agent or dm:@\(name)~human for the human.\"}")
-        case .invalidKind(let kind, _):
-            return Self.json(400, "{\"error\":\"Unknown DM peer kind \(kind).\",\"code\":\"DM_TARGET_INVALID_PEER_KIND\",\"suggestedNextAction\":\"Use dm:@<name>~human or dm:@<name>~agent.\"}")
-        case .notFound:
-            return Self.json(404, "{\"error\":\"Channel not found or not visible\"}")
-        case .resolved:
-            return nil
-        }
-    }
-
-    /// Which attested-send freshness interface this server/agent runs under.
-    /// The upstream default is on; `off` disables the interface entirely and
-    /// `allowlist` enables it only for the listed server/agent ids (or `*`).
-    /// The channel card an agent sees for a send target: a thread shows its
-    /// parent channel's card, a DM has none.
-
-    /// Callers hold `lock`. The DM peer card exists only when the peer has a
-    /// profile description or a timezone on their latest message.
-    func peerCardJSONLocked(channelId: String, agentId: String) -> String? {
-        guard let channel = postableChannels[channelId] else { return nil }
+    /// The peer card exists only when the peer has a profile description or a
+    /// timezone on their latest message.
+    func peerCardJSON(channelId: String, agentId: String) -> String? {
+        let channels = self.channels.postableChannels
+        guard let channel = channels[channelId] else { return nil }
         let baseId: String
         if channel.kind == "dm" {
             baseId = channelId
         } else if channel.kind == "thread", let parentId = channel.parentChannelId,
-                  postableChannels[parentId]?.kind == "dm" {
+                  channels[parentId]?.kind == "dm" {
             baseId = parentId
         } else {
             return nil
         }
         guard let peerId = oauth.channelHumanIds(channelId: baseId).first(where: { $0 != agentId }),
-              let account = accounts.values.first(where: { $0.id == peerId })
+              let account = accounts.accounts.values.first(where: { $0.id == peerId })
         else { return nil }
-        let timezone = humanMessageRows.last {
+        let timezone = messages.humanMessageRows.last {
             $0.channelId == baseId && $0.senderId == peerId && ($0.senderTimezone?.isEmpty == false)
         }?.senderTimezone
         let description = account.description?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (description?.isEmpty == false) || timezone != nil else { return nil }
         var fields = "\"kind\":\"human\",\"name\":\(jsonString(account.name))"
-        if let description, !description.isEmpty { fields += ",\"description\":\(jsonString(description))" }
+        if let description, !description.isEmpty {
+            fields += ",\"description\":\(jsonString(description))"
+        }
         if let timezone { fields += ",\"timezone\":\(jsonString(timezone))" }
         return "{\(fields)}"
     }
 
-    /// Callers hold `lock`.
-    func channelCardSnapshotLocked(channelId: String) -> AgentChannelCardSnapshot? {
-        guard let channel = postableChannels[channelId], channel.kind != "dm" else { return nil }
+    /// The card an agent sees for a channel; a thread shows its parent.
+    func channelCardSnapshot(channelId: String) -> AgentChannelCardSnapshot? {
+        let channels = self.channels.postableChannels
+        guard let channel = channels[channelId], channel.kind != "dm" else { return nil }
         let cardId: String
         if channel.kind == "thread", let parentId = channel.parentChannelId {
             cardId = parentId
@@ -400,7 +573,7 @@ extension EmailLoginDirectory {
         }
         guard let info = oauth.channelInfo(id: cardId) else { return nil }
         let type = oauth.channelType(id: cardId) ?? "channel"
-        let archived = oauth.channelArchivedAt(id: cardId) != nil || postableChannels[cardId]?.archived == true
+        let archived = oauth.channelArchivedAt(id: cardId) != nil || channels[cardId]?.archived == true
         return AgentChannelCardSnapshot(
             id: cardId,
             name: info.name,
@@ -410,21 +583,24 @@ extension EmailLoginDirectory {
         )
     }
 
-    func sendFreshnessModeValue() -> String {
-        let configured = sendFreshnessModeOverride
-            ?? ProcessInfo.processInfo.environment["SLOCK_ATTESTED_SEND_MODE"]
+    /// Which attested-send freshness interface this server/agent runs under.
+    /// The upstream default is on; `off` disables the interface entirely and
+    /// `allowlist` enables it only for the listed server/agent ids (or `*`).
+    func sendFreshnessMode() -> String {
+        let configured = messages.sendFreshnessModeOverride
+            ?? environment("SLOCK_ATTESTED_SEND_MODE")
             ?? "on"
         return configured.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     func sendFreshnessInterfaceEnabled(serverId: String, agentId: String) -> Bool {
-        let mode = sendFreshnessModeValue()
+        let mode = sendFreshnessMode()
         switch mode {
         case "on", "force", "1", "true":
             return true
         case "allowlist":
             func listed(_ key: String) -> Set<String> {
-                Set((ProcessInfo.processInfo.environment[key] ?? "")
+                Set((environment(key) ?? "")
                     .split(separator: ",")
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                     .filter { !$0.isEmpty })
@@ -438,14 +614,11 @@ extension EmailLoginDirectory {
         }
     }
 
-    /// `freshness_decision_fact:<sha256>` over the shared projector's stable
-    /// input object: keys sorted, absent optional fields serialized as null.
-
     /// The conversation identity the agent sees for the target, so held
     /// messages keep a reply target instead of being dropped by clients.
-    /// Callers hold `lock`.
-    func heldConversationIdentityLocked(channelId: String, agentId: String) -> String {
-        guard let channel = postableChannels[channelId] else {
+    func heldConversationIdentity(channelId: String, agentId: String) -> String {
+        let channels = self.channels.postableChannels
+        guard let channel = channels[channelId] else {
             return "{\"channel_id\":\(jsonString(channelId)),\"channel_type\":\"channel\",\"channel_name\":\"\"}"
         }
         let channelType: String
@@ -459,16 +632,17 @@ extension EmailLoginDirectory {
         if channel.kind == "dm" || channel.kind == "thread" {
             let dmId: String? = channel.kind == "dm"
                 ? channelId
-                : (channel.parentChannelId.flatMap { postableChannels[$0]?.kind == "dm" ? $0 : nil })
-            if let dmId, let dm = postableChannels[dmId] {
+                : (channel.parentChannelId.flatMap { channels[$0]?.kind == "dm" ? $0 : nil })
+            if let dmId, let dm = channels[dmId] {
                 if let peerId = dm.memberIds.first(where: { $0 != agentId }) {
-                    peerName = accounts.values.first { $0.id == peerId }?.name
+                    peerName = accounts.accounts.values.first { $0.id == peerId }?.name
                 }
             }
         }
         let channelName = channel.kind == "dm" ? (peerName ?? channel.name) : channel.name
         var json = "{\"channel_id\":\(jsonString(channelId)),\"channel_type\":\(jsonString(channelType)),\"channel_name\":\(jsonString(channelName))"
-        if channel.kind == "thread", let parentId = channel.parentChannelId, let parent = postableChannels[parentId] {
+        if channel.kind == "thread", let parentId = channel.parentChannelId,
+           let parent = channels[parentId] {
             let parentType: String
             switch parent.kind {
             case "dm": parentType = "dm"
@@ -483,8 +657,8 @@ extension EmailLoginDirectory {
     }
 
     /// One held-context message envelope: the legacy camelCase fields plus the
-    /// agent-facing snake_case identity and sender fields. Callers hold `lock`.
-    func heldFreshnessMessageJSONLocked(
+    /// agent-facing snake_case identity and sender fields.
+    func heldFreshnessMessageJSON(
         seq: Int,
         message: StoredHumanMessage,
         conversationIdentity: String
@@ -500,9 +674,9 @@ extension EmailLoginDirectory {
             senderType = "human"
         }
         let senderName = message.externalSenderName
-            ?? accounts.values.first { $0.id == message.senderId }?.name
+            ?? accounts.accounts.values.first { $0.id == message.senderId }?.name
             ?? (message.senderId == "system" ? "system" : message.senderId)
-        let timestamp = Self.isoString(message.createdAt)
+        let timestamp = EmailLoginDirectory.isoString(message.createdAt)
         let identityFields = String(conversationIdentity.dropFirst().dropLast())
         var json = "{\"id\":\(jsonString(message.id)),\"message_id\":\(jsonString(message.id)),\"channelId\":\(jsonString(message.channelId)),\"seq\":\(seq),\"content\":\(jsonString(message.content)),\"sender_id\":\(jsonString(message.senderId)),\"sender_name\":\(jsonString(senderName)),\"senderName\":\(jsonString(senderName)),\"sender_type\":\(jsonString(senderType)),\"senderType\":\(jsonString(senderType)),\"createdAt\":\(jsonString(timestamp)),\"timestamp\":\(jsonString(timestamp))"
         if !identityFields.isEmpty {
@@ -510,5 +684,123 @@ extension EmailLoginDirectory {
         }
         json += "}"
         return json
+    }
+
+    // MARK: - Identity
+
+    /// The credential/capability outcome without an HTTP projection.
+    ///
+    /// Mirrors `FeedbackLocatorService.IdentityResolution`: the app-config and
+    /// context routes map the cases to their published refusals.
+    private enum AgentIdentity {
+        case success(agentId: String, serverId: String, scopes: [String])
+        case missingAuthorization
+        case invalidAccessToken
+        case capabilityNotAuthorized(capability: String)
+        case invalidAgentCredential
+    }
+
+    private func agentIdentity(authorization: String?, capability: String) -> AgentIdentity {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return .missingAuthorization
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        guard let credential = agents.agentCredentials[token], credential.revokedAt == nil else {
+            return .invalidAccessToken
+        }
+        guard credential.scopes.contains(capability) else {
+            return .capabilityNotAuthorized(capability: capability)
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else {
+            return .invalidAgentCredential
+        }
+        return .success(
+            agentId: credential.agentId,
+            serverId: agent.serverId,
+            scopes: credential.scopes.sorted()
+        )
+    }
+
+    // MARK: - App config projection
+
+    private func appConfigResponse(
+        appId: String,
+        snapshot: AppConfigSnapshot
+    ) -> AgentAppConfigResponse {
+        var members: [OrderedJSONField] = []
+        var effective: [OrderedJSONField] = []
+        for key in Self.appConfigKeyOrder {
+            if let value = snapshot.overrides[key] {
+                members.append(OrderedJSONField(key, Self.jsonBody(value)))
+            }
+            if let current = snapshot.overrides[key] ?? Self.defaultValue(for: key) {
+                effective.append(OrderedJSONField(key, Self.jsonBody(current)))
+            }
+        }
+        return AgentAppConfigResponse(
+            appId: appId,
+            revision: snapshot.revision,
+            overrides: members,
+            effective: effective
+        )
+    }
+
+    private static func defaultValue(for key: String) -> AppConfigValue? {
+        switch key {
+        case "enabled": .boolean(true)
+        case "threshold_bytes": .integer(65_536)
+        case "interval_seconds": .integer(3600)
+        default: nil
+        }
+    }
+
+    private static func jsonBody(_ value: AppConfigValue) -> OrderedJSON {
+        switch value {
+        case .boolean(let flag): .bool(flag)
+        case .integer(let integer): .int(integer)
+        }
+    }
+
+    /// Foundation's `NSNumber` bridging: `0`/`1` (either integer or double)
+    /// also read as a boolean, which is what the legacy `value is Bool` check
+    /// accepted.
+    private static func legacyBoolean(_ value: JSONValue) -> Bool? {
+        switch value {
+        case .bool(let flag):
+            return flag
+        case .integer(let integer) where integer == 0 || integer == 1:
+            return integer == 1
+        case .number(let number) where number == 0 || number == 1:
+            return number == 1
+        default:
+            return nil
+        }
+    }
+
+    /// The legacy integer branch rejects booleans but accepts any other
+    /// `NSNumber` through `intValue`.
+    private static func legacyConfigInteger(_ value: JSONValue) -> Int? {
+        switch value {
+        case .integer(let integer):
+            return Int(integer)
+        case .number(let number):
+            if number >= Double(Int.max) { return Int.max }
+            if number <= Double(Int.min) { return Int.min }
+            return Int(number)
+        default:
+            return nil
+        }
+    }
+
+    // MARK: - Marketplace reviewers
+
+    private func marketplaceReviewerIds() -> Set<String> {
+        if let override = feedback.marketplaceReviewerOverride { return override }
+        let raw = environment("SLOCK_MARKETPLACE_REVIEWER_USER_IDS") ?? ""
+        return Set(
+            raw.split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+        )
     }
 }

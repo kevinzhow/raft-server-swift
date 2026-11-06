@@ -860,6 +860,27 @@ extension EmailLoginDirectory {
         )
     }
 
+    /// Action-card prepare, the agent context / app-config surface, and the
+    /// agent-target projections the execute/send domains still call. The
+    /// service reads the domain stores; the session lookup and the
+    /// assistant-owner policy belong to unmigrated domains and enter as
+    /// closures.
+    public var actionCardPrepare: ActionCardPrepareService {
+        ActionCardPrepareService(
+            oauth: oauth,
+            cards: managedMCPAndCardsStore,
+            feedback: feedbackStore,
+            agents: agentsRuntimeStore,
+            channels: serversAndChannelsStore,
+            accounts: authProfileStore,
+            messages: messagesAndThreadsStore,
+            sessionUserId: { self.sessionUserId(authorization: $0) },
+            assistantOwner: { [self] agentId, serverId in
+                assistantOwnerFor(agentId: agentId, serverId: serverId)
+            }
+        )
+    }
+
     /// Product feedback locators for `POST/GET /internal/agent-api/feedback-locators`
     /// plus the agent credential/grant decisions the rest of the agent API
     /// shares. The directory only supplies its stores and the OAuth ledger.

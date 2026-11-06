@@ -487,11 +487,11 @@ extension EmailLoginDirectory {
                 kind = String(raw[raw.index(after: tilde)...])
                 raw = String(raw[..<tilde])
             }
-            let resolution = resolveDMPeerLocked(serverId: agent.serverId, agentId: agent.id, name: raw, kind: kind)
-            if let failure = dmPeerFailure(resolution) {
+            let resolution = actionCardPrepare.resolveDMPeer(serverId: agent.serverId, agentId: agent.id, name: raw, kind: kind)
+            if let failure = dmPeerFailureReply(resolution) {
                 refusal = failure
             } else if case .resolved(let peerId, _, _) = resolution {
-                if let dmId = dmChannelIdLocked(serverId: agent.serverId, agentId: agent.id, peerId: peerId) {
+                if let dmId = actionCardPrepare.dmChannelId(serverId: agent.serverId, agentId: agent.id, peerId: peerId) {
                     if let suffix, !suffix.isEmpty {
                         let anchor = oauth.historyMessages(channelId: dmId).first { $0.id.hasPrefix(suffix) }
                         var threadId = anchor.flatMap { found in
@@ -555,7 +555,7 @@ extension EmailLoginDirectory {
         let peerCard: String = {
             lock.lock()
             defer { lock.unlock() }
-            guard let card = peerCardJSONLocked(channelId: channelId, agentId: agent.id) else { return "" }
+            guard let card = actionCardPrepare.peerCardJSON(channelId: channelId, agentId: agent.id) else { return "" }
             return ",\"peer_card\":\(card)"
         }()
         let messages = oauth.historyMessages(channelId: channelId)
