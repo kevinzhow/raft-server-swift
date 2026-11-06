@@ -126,45 +126,6 @@ extension EmailLoginDirectory {
         return Self.privateJSON("[\(entries)]")
     }
 
-    public func observeTimezone(authorization: String?, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              Set(object.keys) == ["timezone"],
-              let raw = object["timezone"] as? String
-        else {
-            return Self.json(400, "{\"error\":\"Invalid timezone observation\"}")
-        }
-        let timezone = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !timezone.isEmpty, timezone.count <= 128,
-              timezone == "UTC" || timezone.contains("/"),
-              let zone = TimeZone(identifier: timezone)
-        else {
-            return Self.json(400, "{\"error\":\"Invalid timezone observation\"}")
-        }
-        let canonicalTimezone = Self.timezoneAliases[timezone] ?? zone.identifier
-        lock.lock()
-        var observation = timezoneObservations[userId]
-        let now = Date()
-        if observation == nil {
-            observation = TimezoneObservation(firstTimezone: canonicalTimezone, firstAt: now, lastTimezone: canonicalTimezone, lastAt: now)
-        } else if let existing = observation {
-            observation = TimezoneObservation(
-                firstTimezone: existing.firstTimezone,
-                firstAt: existing.firstAt,
-                lastTimezone: canonicalTimezone,
-                lastAt: now
-            )
-        }
-        timezoneObservations[userId] = observation
-        lock.unlock()
-        guard let stored = observation else {
-            return Self.json(500, "{\"error\":\"Timezone observation not stored\"}")
-        }
-        return Self.json(200, Self.timezoneJSON(stored))
-    }
-
     public func timezoneObservation(userId: String) -> TimezoneObservation? {
         lock.lock()
         defer { lock.unlock() }

@@ -110,28 +110,6 @@ extension EmailLoginDirectory {
         return Self.json(200, "{\"unlinked\":true,\"identities\":[\(state.identities)],\"passwordConfigured\":\(state.passwordConfigured)}")
     }
 
-    public func resetPassword(body: String) -> HTTPReply {
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let token = object["token"] as? String, !token.isEmpty,
-              let password = object["password"] as? String, !password.isEmpty
-        else {
-            return Self.json(400, "{\"error\":\"token and password are required\"}")
-        }
-        let hash = Self.sha256(token)
-        lock.lock()
-        guard let reset = authProfileStore.resetToken(hash: hash), reset.expiresAt > Date(),
-              let email = accounts.first(where: { $0.value.id == reset.userId })?.key
-        else {
-            lock.unlock()
-            return Self.json(400, "{\"error\":\"Invalid or expired reset token\"}")
-        }
-        authProfileStore.removeResetToken(hash: hash)
-        accounts[email]?.passwordHash = Self.sha256(password)
-        accounts[email]?.passwordCredentialEstablishedAt = Date()
-        lock.unlock()
-        return Self.json(200, "{\"ok\":true}")
-    }
-
     public func authIdentityCount(userId: String) -> Int {
         lock.lock()
         defer { lock.unlock() }

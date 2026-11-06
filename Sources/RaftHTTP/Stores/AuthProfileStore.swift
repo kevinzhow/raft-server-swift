@@ -20,6 +20,13 @@ enum IssueOutcome: Equatable, Sendable {
     case cooldown
 }
 
+/// Result of the locked reset-token consume-and-write. The store decides; the
+/// service maps a refusal to its published `AuthProfileError`.
+enum ResetPasswordOutcome: Equatable, Sendable {
+    case reset
+    case invalidOrExpiredToken
+}
+
 /// Owns account-profile ledgers: linked identities, password-reset tokens,
 /// email-verification tokens and legal acceptances. HTTP/session/account
 /// decisions stay in `EmailLoginDirectory`; this store serializes only its own
@@ -87,6 +94,57 @@ final class AuthProfileStore: @unchecked Sendable {
         lock.lock()
         passwordResetTokens[hash] = (userId, expiresAt)
         lock.unlock()
+    }
+
+    /// Mints a password-reset token for a known address. The normalized
+    /// account lookup and the insert are one critical section, so the token
+    /// always names a row that existed when it was written. An unknown
+    /// address stays a silent no-op and returns `false`.
+    @discardableResult
+    func insertResetTokenIfAccountExists(
+        email: String,
+        tokenHash: String,
+        now: Date,
+        ttl: TimeInterval
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let account = accountSurface.accounts[EmailLoginDirectory.normalize(email)] else {
+            return false
+        }
+        passwordResetTokens[tokenHash] = (account.id, now.addingTimeInterval(ttl))
+        return true
+    }
+
+    /// Spends one reset token and writes the new password in one critical
+    /// section. A missing or expired token writes nothing; two concurrent
+    /// resets therefore cannot both consume the row.
+    func consumeResetToken(
+        tokenHash: String,
+        passwordHash: String,
+        now: Date
+    ) -> ResetPasswordOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let reset = passwordResetTokens[tokenHash], reset.expiresAt > now,
+              let email = accountSurface.accounts.first(where: { $0.value.id == reset.userId })?.key
+        else {
+            return .invalidOrExpiredToken
+        }
+        passwordResetTokens.removeValue(forKey: tokenHash)
+        accountSurface.accounts[email]?.passwordHash = passwordHash
+        accountSurface.accounts[email]?.passwordCredentialEstablishedAt = now
+        return .reset
+    }
+
+    /// Cancels one pending social link. Unknown, already-cancelled and expired
+    /// tokens are the same no-op; the route answers 204 either way.
+    func markPendingSocialLinkCancelled(token: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var pending = accountSurface.pendingSocialLinks[token] else { return }
+        pending.cancelled = true
+        accountSurface.pendingSocialLinks[token] = pending
     }
 
     var legalAcceptanceCount: Int {
@@ -255,6 +313,27 @@ final class AuthProfileStore: @unchecked Sendable {
     var timezoneObservations: [String: EmailLoginDirectory.TimezoneObservation] {
         get { profileState.timezoneObservations }
         set { profileState.timezoneObservations = newValue }
+    }
+
+    /// Records one timezone observation and returns the committed pair. The
+    /// read and the write are one critical section, so concurrent observations
+    /// share one first value and every response matches a committed row.
+    func recordTimezoneObservation(
+        userId: String,
+        timezone: String,
+        now: Date
+    ) -> EmailLoginDirectory.TimezoneObservation {
+        lock.lock()
+        defer { lock.unlock() }
+        let existing = profile.timezoneObservations[userId]
+        let observation = EmailLoginDirectory.TimezoneObservation(
+            firstTimezone: existing?.firstTimezone ?? timezone,
+            firstAt: existing?.firstAt ?? now,
+            lastTimezone: timezone,
+            lastAt: now
+        )
+        profile.timezoneObservations[userId] = observation
+        return observation
     }
 
     var userOnboardingSettings: [String: UserOnboarding] {

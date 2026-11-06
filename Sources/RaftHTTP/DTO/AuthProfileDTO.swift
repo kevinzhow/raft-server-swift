@@ -40,6 +40,11 @@ public struct ForgotPasswordResponse: Codable, Sendable, Equatable {
 /// `POST /api/auth/reset-password` request body. `newPassword` is accepted as an
 /// alias shape the clients already send; only `token` and `password` select the
 /// reset.
+///
+/// The decoder mirrors the published `as? String` reads: a missing key, JSON
+/// `null` and a non-string value all read as absent, and a malformed alias does
+/// not reject the body. That keeps the typed route's replies identical to the
+/// retired raw parser for every JSON object shape.
 public struct ResetPasswordRequest: Codable, Sendable, Equatable {
     public var token: String?
     public var password: String?
@@ -50,19 +55,84 @@ public struct ResetPasswordRequest: Codable, Sendable, Equatable {
         self.password = password
         self.newPassword = newPassword
     }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.token = try? container.decode(String.self, forKey: .token)
+        self.password = try? container.decode(String.self, forKey: .password)
+        self.newPassword = try? container.decode(String.self, forKey: .newPassword)
+    }
 }
 
 /// `POST /api/auth/me/timezone-observation` request body.
 ///
-/// The mounted route deliberately validates the raw `{"timezone": ...}` key set
-/// before it stores anything; this type is the typed shape for callers that
-/// already enforce the same single-key contract.
+/// The published shape is exactly one key, `timezone`, holding a string. The
+/// decoder rejects any other key set so the typed route keeps the upstream
+/// `{"timezone": …, "source": …}` 400 without a raw JSON parser.
 public struct TimezoneObservationRequest: Codable, Sendable, Equatable {
     public var timezone: String?
 
     public init(timezone: String? = nil) {
         self.timezone = timezone
     }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: AnyCodingKey.self)
+        guard container.allKeys.map(\.stringValue) == ["timezone"] else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "timezone must be the only key"
+            ))
+        }
+        guard let key = container.allKeys.first else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "timezone is required"
+            ))
+        }
+        // A null or non-string value reads as absent; the service answers the
+        // published 400 either way.
+        self.timezone = try? container.decode(String.self, forKey: key)
+    }
+
+    private struct AnyCodingKey: CodingKey {
+        var stringValue: String
+        var intValue: Int? { nil }
+
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
+    }
+}
+
+/// The `POST /api/auth/me/timezone-observation` success body.
+///
+/// Timestamps stay preformatted ISO-8601 strings: the published bytes carry
+/// fractional seconds, which `JSONEncoder`'s date strategies do not reproduce.
+public struct TimezoneObservationResponse: Codable, Sendable, Equatable {
+    public var firstObservedTimezone: String
+    public var firstObservedTimezoneAt: String
+    public var lastObservedTimezone: String
+    public var lastObservedTimezoneAt: String
+
+    public init(
+        firstObservedTimezone: String,
+        firstObservedTimezoneAt: String,
+        lastObservedTimezone: String,
+        lastObservedTimezoneAt: String
+    ) {
+        self.firstObservedTimezone = firstObservedTimezone
+        self.firstObservedTimezoneAt = firstObservedTimezoneAt
+        self.lastObservedTimezone = lastObservedTimezone
+        self.lastObservedTimezoneAt = lastObservedTimezoneAt
+    }
+}
+
+/// A successful operation whose published reply carries no body (204).
+///
+/// `Respond.swift` has a dedicated overload for this type so it maps to the
+/// empty 204 reply instead of encoding the `{}` a `Codable` marker would emit.
+public struct NoContentResponse: Codable, Sendable, Equatable {
+    public init() {}
 }
 
 // MARK: - Phase 5 typed request bodies (Batch A)
