@@ -971,16 +971,7 @@ extension EmailLoginDirectory {
 
     public static let privacyURL = "https://raft.build/privacy"
 
-    static let doneFrontierInt4Limit = 2_147_483_647
-
     static let selfCausedFreshnessExemptSubtypes: Set<String> = ["task.created_summary"]
-
-    /// `GET /internal/agent-api/events`. Durable channel messages for the
-    /// external agent plus pending third-party events; the call drains both.
-    /// At most this many channel rows per conversation in one pull. The pull
-    /// advances each conversation's cursor, and `has_more` says whether
-    /// another call has anything left.
-    static let agentInboxPullCap = 5
 
     static let appLoginReturnUris: Set<String> = [
         "raft://login/callback",

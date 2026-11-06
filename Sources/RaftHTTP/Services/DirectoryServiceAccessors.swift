@@ -113,19 +113,34 @@ extension EmailLoginDirectory {
         agentSurface.assistantOwnerRaw(agentId: agentId)
     }
 
-    /// The content-free wake hints of one agent. The projection spans the
-    /// channel, message, joint and suppression ledgers, so it still runs under
-    /// the directory lock.
+    /// The Done/Undone, read-all, Activity page and agent mention, wake-hint and
+    /// event surface. The directory supplies its stores and the OAuth ledger;
+    /// the session lookup, the agent read credential, guest scope visibility and
+    /// account names enter as closures.
+    public var reactionsRealtime: ReactionsRealtimeService {
+        ReactionsRealtimeService(directory: self)
+    }
+
+    /// The content-free wake hints of one agent, for the wake-hint stream.
     func pendingWakeHints(
         agentId: String,
         agent: OAuthLedger.AgentRuntimeInfo,
         sinceSeq: Int?,
         limit: Int
     ) -> [AgentWakeHintRow] {
-        lock.lock()
-        defer { lock.unlock() }
-        return pendingWakeHintRowsLocked(agentId: agentId, agent: agent, sinceSeq: sinceSeq, limit: limit)
-            .rows.map { AgentWakeHintRow(seq: $0.seq, json: $0.json) }
+        reactionsRealtime.pendingWakeHints(agentId: agentId, agent: agent, sinceSeq: sinceSeq, limit: limit)
+            .hints.compactMap { hint in
+                hint.seq.map { AgentWakeHintRow(seq: $0, json: hint.jsonBody.render()) }
+            }
+    }
+
+    /// A system notice an agent caused itself, of a subtype that never trips
+    /// the send freshness gate.
+    func isSelfCausedFreshnessExemptLocked(_ message: StoredHumanMessage, agentId: String) -> Bool {
+        message.messageType == "system"
+            && message.causalActorType == "agent"
+            && message.causalActorId == agentId
+            && message.systemSubtype.map { Self.selfCausedFreshnessExemptSubtypes.contains($0) } == true
     }
 
     /// A real server-role change on an agent posts a system notice into the

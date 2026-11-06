@@ -634,11 +634,13 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.get("mentions") { request -> Response in
-            routeResponse(services.emailAccounts.agentMentionInbox(
-                authorization: request.headers[.authorization],
-                limit: desktopQuery(request.url.query, "limit")
-            ))
+        agentApi.get("mentions") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.reactionsRealtime.agentMentionInbox(
+                    authorization: request.headers[.authorization],
+                    limit: desktopQuery(request.url.query, "limit")
+                )
+            }
         }
         agentApi.post("prepare-action") { request async throws -> Response in
             let body = await jsonRequestBody(ActionCardPrepareRequest.self, request)
@@ -699,12 +701,14 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.get("wake-hints") { request -> Response in
-            routeResponse(services.emailAccounts.agentWakeHints(
-                authorization: request.headers[.authorization],
-                since: desktopQuery(request.url.query, "since"),
-                limit: desktopQuery(request.url.query, "limit")
-            ))
+        agentApi.get("wake-hints") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.reactionsRealtime.agentWakeHints(
+                    authorization: request.headers[.authorization],
+                    since: desktopQuery(request.url.query, "since"),
+                    limit: desktopQuery(request.url.query, "limit")
+                )
+            }
         }
         agentApi.get("wake-hints", "stream") { request async throws -> Response in
             // The refusal projects through `respond`; the open stream is the one
@@ -763,8 +767,12 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.get("events") { request -> Response in
-            routeResponse(services.emailAccounts.agentThirdPartyEvents(authorization: request.headers[.authorization]))
+        agentApi.get("events") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.reactionsRealtime.agentThirdPartyEvents(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         agentApi.post("third-party-events", "delivered") { request async throws -> Response in
             let body = await jsonRequestBody(ThirdPartyEventDeliveryRequestDTO.self, request)

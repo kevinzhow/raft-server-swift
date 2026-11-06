@@ -659,43 +659,6 @@ enum ReactionTarget {
         case missing
     }
 
-enum AgentRead {
-        case failure(HTTPReply)
-        case success(String)
-    }
-
-struct InboxMessageDetail {
-        var content: String
-        var senderId: String
-        var seq: Int
-        var createdAt: Date
-    }
-
-struct InboxGroup {
-        var channelId: String
-        var channelName: String
-        var channelType: String
-        var count: Int
-        var lastActivityAt: Date
-    }
-
-struct InboxRow {
-        var scopeId: String
-        var kind: String
-        var channelType: String
-        var parentChannelId: String?
-        var parentChannelType: String?
-        var lastMessageId: String
-        var lastActivityAt: Date
-        var searchText: String
-        var unreadCount: Int
-        var firstUnreadMessageId: String?
-        var firstMentionMessageId: String?
-        var hasMention: Bool
-        var isFollowing: Bool
-        var isDM: Bool
-    }
-
 enum PageCursor: Equatable {
         case absent
         case value(Int)

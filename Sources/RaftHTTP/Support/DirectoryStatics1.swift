@@ -286,16 +286,6 @@ extension EmailLoginDirectory {
         return min(parsed, 200)
     }
 
-    static func parseDoneFrontier(_ raw: Any?) -> Int? {
-        guard let text = raw as? String, !text.isEmpty,
-              text == text.trimmingCharacters(in: .whitespacesAndNewlines),
-              text.count <= 19,
-              text.range(of: "^[1-9][0-9]*$", options: .regularExpression) != nil,
-              let value = Int(text), value > 0
-        else { return nil }
-        return value
-    }
-
     static func inboxQueryParameters(_ query: String?) -> [String: String] {
         guard let query, !query.isEmpty else { return [:] }
         var result: [String: String] = [:]
@@ -306,14 +296,6 @@ extension EmailLoginDirectory {
             result[name] = value
         }
         return result
-    }
-
-    static func inertThirdPartyMentions(_ text: String) -> String {
-        text.replacingOccurrences(
-            of: "@([A-Za-z0-9_.-]+)",
-            with: "user:$1",
-            options: .regularExpression
-        )
     }
 
     static func validReactionEmoji(_ raw: String) -> String? {

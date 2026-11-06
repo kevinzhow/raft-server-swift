@@ -12,7 +12,6 @@ Sources/RaftHTTP/Services/ManagedMCPToolExecutionService.swift	1
 Sources/RaftHTTP/Services/MessageSendService.swift	1
 Sources/RaftHTTP/Services/OAuthFlowsService.swift	1
 Sources/RaftHTTP/Services/ProfileAndChannelFilesSupport.swift	1
-Sources/RaftHTTP/Services/ReactionsRealtimeService.swift	1
 Sources/RaftHTTP/Services/SearchMentionsService.swift	1
 Sources/RaftHTTP/Stores/DirectoryStoreForwarders.swift	2
 Sources/RaftHTTP/Support/DirectoryHelpers.swift	1

@@ -76,6 +76,15 @@ final class MessagesAndThreadsStore: @unchecked Sendable {
         }
     }
 
+    /// Runs `body` on the owned state in ONE critical section, for a decision
+    /// that reads and writes several rows and must not interleave with another
+    /// request. `body` must not call back into this store.
+    func withState<Result>(_ body: (inout State) -> Result) -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&storage)
+    }
+
     var humanMessageRows: [StoredHumanMessage] {
         get { state.humanMessageRows }
         set { state.humanMessageRows = newValue }

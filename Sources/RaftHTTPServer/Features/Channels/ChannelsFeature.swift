@@ -35,7 +35,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
                 services.channelMessaging.publishThreadFollowers(payload)
             }
         )
-        let inbox = ReactionsRealtimeService(directory: services.emailAccounts)
+        let inbox = services.emailAccounts.reactionsRealtime
         let servedInbox = services.emailAccounts.inboxAndWake
         channels.post(":channelId", "archive") { request async throws -> Response in
             try await respond {
@@ -70,18 +70,23 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         channels.post("inbox", "done") { request async throws -> Response in
-            routeResponse(inbox.channelInboxDone(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(InboxScopeRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try inbox.channelInboxDone(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+                    body: body
+                )
+            }
         }
 
-        channels.post("inbox", "read-all") { request -> Response in
-            routeResponse(inbox.inboxReadAll(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!]
-            ))
+        channels.post("inbox", "read-all") { request async throws -> Response in
+            try await respond {
+                try inbox.inboxReadAll(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
+            }
         }
 
         channels.get("inbox", "done") { request async throws -> Response in
@@ -95,27 +100,36 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         channels.post("inbox", "undone") { request async throws -> Response in
-            routeResponse(inbox.inboxUndone(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(InboxScopeRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try inbox.inboxUndone(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+                    body: body
+                )
+            }
         }
 
         channels.post("threads", "undone") { request async throws -> Response in
-            routeResponse(inbox.threadInboxUndone(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(InboxScopeRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try inbox.threadInboxUndone(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+                    body: body
+                )
+            }
         }
 
         channels.post("threads", "done") { request async throws -> Response in
-            routeResponse(inbox.threadInboxDone(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(InboxScopeRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try inbox.threadInboxDone(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+                    body: body
+                )
+            }
         }
 
         channels.get("inbox", "unfollowed") { request async throws -> Response in
@@ -129,15 +143,15 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             }
         }
 
-        channels.get("inbox") { request -> Response in
-            var response = routeResponse(services.emailAccounts.channelInbox(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                filter: desktopQuery(request.url.query, "filter"),
-                query: request.url.query
-            ))
-            response.headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
-            return response
+        channels.get("inbox") { request async throws -> Response in
+            try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
+                try inbox.channelInbox(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+                    filter: desktopQuery(request.url.query, "filter"),
+                    query: request.url.query
+                )
+            }
         }
 
         channels.delete(":channelId") { request async throws -> Response in
