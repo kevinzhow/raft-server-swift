@@ -318,11 +318,12 @@ struct RealtimeTransportTests {
     #expect(await client.waitForText { $0 == "42[\"rooms:joined\"]" } != nil)
 
     let relay = accounts.realtimeRelay
+    let create = accounts.humanMessageCreate
     relay.install { room, event, payload in
         relay.install(nil)
         server.hub.emit(room: room, event: event, payloadJSON: payload)
     }
-    let first = try accounts.humanMessageCreate.createHumanMessage(
+    let first = try create.createHumanMessage(
         HumanMessageCreateRequest(channelId: channelId, content: "first relay delivery"),
         authorization: "Bearer \(token)", serverId: serverId
     )
@@ -331,7 +332,7 @@ struct RealtimeTransportTests {
     #expect(frame.hasPrefix("42[\"message:new\","))
     #expect(frame.contains("\"channelId\":\"\(channelId)\""))
 
-    let second = try accounts.humanMessageCreate.createHumanMessage(
+    let second = try create.createHumanMessage(
         HumanMessageCreateRequest(channelId: channelId, content: "uninstalled relay delivery"),
         authorization: "Bearer \(token)", serverId: serverId
     )
@@ -341,7 +342,7 @@ struct RealtimeTransportTests {
     relay.install { room, event, payload in
         server.hub.emit(room: room, event: event, payloadJSON: payload)
     }
-    _ = try accounts.humanMessageCreate.createHumanMessage(
+    _ = try create.createHumanMessage(
         HumanMessageCreateRequest(channelId: channelId, content: "reinstalled relay delivery"),
         authorization: "Bearer \(token)", serverId: serverId
     )

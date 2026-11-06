@@ -84,7 +84,20 @@ extension EmailLoginDirectory {
     /// supplies the message and channel stores, the OAuth ledger, and the
     /// cross-domain closures the service takes at `init`.
     public var inboxAndWake: InboxAndWakeService {
-        InboxAndWakeService(directory: self)
+        InboxAndWakeService(
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            oauth: oauth,
+            dependencies: InboxAndWakeDependencies(
+                auth: authCore,
+                profiles: authProfileStore,
+                channelProbeAccess: agentsLifecycle.channelProbeAccess,
+                guestCanSeeScope: agentsLifecycle.guestCanSeeScope,
+                search: searchMentions,
+                projection: messageReadProjection,
+                cards: actionCardMetadata
+            )
+        )
     }
 
     /// Machine credential lookups, the onboarding identity adoption, the hosted
@@ -141,7 +154,20 @@ extension EmailLoginDirectory {
     /// the session lookup, the agent read credential, guest scope visibility and
     /// account names enter as closures.
     public var reactionsRealtime: ReactionsRealtimeService {
-        ReactionsRealtimeService(directory: self)
+        ReactionsRealtimeService(
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            inboxFacts: inboxFactStore,
+            cards: managedMCPAndCardsStore,
+            oauth: oauth,
+            dependencies: ReactionsRealtimeDependencies(
+                auth: authCore,
+                credentials: agentCredentialLookup,
+                agents: agentsRuntimeStore,
+                profiles: authProfileStore,
+                guestCanSeeScope: agentsLifecycle.guestCanSeeScope
+            )
+        )
     }
 
     /// The content-free wake hints of one agent, for the wake-hint stream.
@@ -170,7 +196,25 @@ extension EmailLoginDirectory {
     /// the forwarded-item projection still belong to unmigrated domains and
     /// enter as closures.
     public var humanMessageCreate: HumanMessageCreateService {
-        HumanMessageCreateService(directory: self)
+        HumanMessageCreateService(
+            channels: serversAndChannelsStore,
+            messages: messagesAndThreadsStore,
+            agents: agentsRuntimeStore,
+            profiles: authProfileStore,
+            oauth: oauth,
+            dependencies: HumanMessageCreateDependencies(
+                credentials: agentCredentialLookup,
+                writer: HumanMessageCommitService(
+                    messages: messagesAndThreadsStore,
+                    channels: serversAndChannelsStore,
+                    ledger: MessageLedgerPort(oauth: oauth),
+                    emit: { [relay = realtimeRelay] in relay.emit($0, $1, $2) }
+                ),
+                mentions: messageMentions,
+                channels: serversAndChannelsStore,
+                search: searchMentions
+            )
+        )
     }
 
     /// Agent lifecycle: the access-token and credential gates, attachment upload
@@ -480,7 +524,24 @@ extension EmailLoginDirectory {
     /// machine/agent credential, attachment/action-card and thread-summary
     /// projections enter as closures.
     public var searchMentions: SearchMentionsService {
-        SearchMentionsService(directory: self)
+        SearchMentionsService(
+            channels: serversAndChannelsStore,
+            messages: messagesAndThreadsStore,
+            profiles: authProfileStore,
+            machines: machinesAndComputersStore,
+            agents: agentsRuntimeStore,
+            tasks: tasksAndRemindersStore,
+            feedback: feedbackStore,
+            oauth: oauth,
+            dependencies: SearchMentionsDependencies(
+                auth: authCore,
+                credentials: agentCredentialLookup,
+                machineIdForCredential: machinesAndHostedRuntime.machineIdForCredential,
+                canMachineServeAgent: machinesAndHostedRuntime.canMachineServeAgent,
+                projection: messageReadProjection,
+                cards: actionCardMetadata
+            )
+        )
     }
 
     /// Product-feedback submission and onboarding-wizard event recording. The

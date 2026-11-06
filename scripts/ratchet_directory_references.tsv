@@ -13,17 +13,13 @@ Sources/RaftHTTP/Services/DirectoryServiceAccessors+Integrations.swift	1
 Sources/RaftHTTP/Services/DirectoryServiceAccessors+ManagedMCP.swift	1
 Sources/RaftHTTP/Services/DirectoryServiceAccessors.swift	1
 Sources/RaftHTTP/Services/FeedbackLocatorService.swift	1
-Sources/RaftHTTP/Services/HumanMessageCreateService.swift	1
-Sources/RaftHTTP/Services/InboxAndWakeService.swift	2
 Sources/RaftHTTP/Services/JoinLinksAndInvitesService.swift	1
 Sources/RaftHTTP/Services/MachinesAndHostedRuntimeService.swift	2
 Sources/RaftHTTP/Services/ManagedMCPAssignmentsService.swift	2
 Sources/RaftHTTP/Services/ManagedMCPToolExecutionService.swift	2
 Sources/RaftHTTP/Services/OAuthFlowsService.swift	1
-Sources/RaftHTTP/Services/ReactionsRealtimeService.swift	2
 Sources/RaftHTTP/Services/RuntimeFormsAndProbesService.swift	2
 Sources/RaftHTTP/Services/RuntimeUsageAndAttestationsService.swift	1
-Sources/RaftHTTP/Services/SearchMentionsService.swift	2
 Sources/RaftHTTP/Services/ServerMembersAndSidebarService.swift	2
 Sources/RaftHTTP/Services/ServerProfileAndOrderError.swift	1
 Sources/RaftHTTP/Services/ServerProfileAndOrderService.swift	1

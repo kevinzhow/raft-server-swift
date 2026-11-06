@@ -21,7 +21,7 @@ private struct SearchMentionsFixture {
     let messageId: String
     let contextMessageId: String
 
-    var service: SearchMentionsService { SearchMentionsService(directory: accounts) }
+    var service: SearchMentionsService { accounts.searchMentions }
     var ownerAuthorization: String { "Bearer \(ownerToken)" }
 }
 

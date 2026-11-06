@@ -23,56 +23,6 @@ public enum HumanMessageContract: Sendable, Equatable {
     case v2
 }
 
-/// The domains that have not migrated yet and that the create, mention-action
-/// and forward routes still depend on.
-///
-/// - `agentReadOutcome`: the agent credential check (`ProfileAndChannelFiles`).
-/// - `storeHumanMessage`: the serialized message append with its attachment
-///   links, read cursor and `message:new` broadcast (`ProfileAndChannelFiles`).
-/// - `resolveMentions` / `recordMemberMentionRows`: mention resolution and the
-///   member mention rows, shared with the agent send and the integrations
-///   (`MessageSend`).
-/// - `jointLocalChannelId`: the joint-channel projection lookup
-///   (`ProfileAndChannelFiles`, also used by the agents surface).
-/// - `messageVisibleToUser`: the shared message visibility policy
-///   (`SearchMentions`).
-/// - `renderForwardItem`: the forwarded-item projection the message read paths
-///   share (`MessageSend`).
-/// - `mentionBindingConflict`: the handle-binding rule the agent send shares.
-struct HumanMessageCreateDependencies: Sendable {
-    var agentReadOutcome: @Sendable (_ authorization: String?) -> ProfileAgentReadOutcome
-    var storeHumanMessage: @Sendable (
-        _ channelId: String,
-        _ senderId: String,
-        _ content: String,
-        _ randomId: String?,
-        _ attachmentIds: [String],
-        _ senderTimezone: String?,
-        _ mentions: [MentionInput]
-    ) -> HumanMessageWrite
-    var resolveMentions: @Sendable (
-        _ serverId: String,
-        _ senderId: String,
-        _ content: String,
-        _ typed: [MentionInput],
-        _ warnUnresolved: Bool
-    ) -> ResolvedMentions
-    var recordMemberMentionRows: @Sendable (
-        _ messageId: String,
-        _ channelId: String,
-        _ mentions: [MentionInput]
-    ) -> Void
-    var jointLocalChannelId: @Sendable (
-        _ canonicalChannelId: String,
-        _ serverId: String?,
-        _ userId: String
-    ) -> String?
-    var messageVisibleToUser: @Sendable (_ channelId: String, _ serverId: String?, _ userId: String) -> Bool
-    var renderForwardItem: @Sendable (_ item: ForwardItemRecord) -> String
-    var mentionBindingConflict: @Sendable (_ mentions: [MentionInput]) -> Bool
-    var now: @Sendable () -> Date
-}
-
 /// The human-message create boundary: the v1/v2 create route, the sender-side
 /// mention actions it leaves pending, the forward lookup and the forward write
 /// (`HumanMessageForwardService.swift`).
@@ -103,63 +53,6 @@ public struct HumanMessageCreateService: Sendable {
         self.profiles = profiles
         self.oauth = oauth
         self.dependencies = dependencies
-    }
-
-    public init(directory source: EmailLoginDirectory) {
-        let writer = HumanMessageCommitService(
-            messages: source.messagesAndThreadsStore,
-            channels: source.serversAndChannelsStore,
-            ledger: MessageLedgerPort(oauth: source.oauth),
-            emit: { [relay = source.realtimeRelay] room, event, payload in relay.emit(room, event, payload) }
-        )
-        self.init(
-            channels: source.serversAndChannelsStore,
-            messages: source.messagesAndThreadsStore,
-            agents: source.agentsRuntimeStore,
-            profiles: source.authProfileStore,
-            oauth: source.oauth,
-            dependencies: HumanMessageCreateDependencies(
-                agentReadOutcome: { [lookup = source.agentCredentialLookup] authorization in
-                    lookup.profileReadOutcome(authorization)
-                },
-                storeHumanMessage: { [writer] channelId, senderId, content, randomId, attachmentIds, timezone, mentions in
-                    writer.store(
-                        channelId: channelId, senderId: senderId, content: content, randomId: randomId,
-                        attachmentIds: attachmentIds, senderTimezone: timezone, mentions: mentions
-                    )
-                },
-                resolveMentions: { [source] serverId, senderId, content, typed, warnUnresolved in
-                    let resolved = source.messageMentions.resolve(
-                        serverId: serverId,
-                        senderId: senderId,
-                        content: content,
-                        typed: typed,
-                        warnUnresolved: warnUnresolved
-                    )
-                    return ResolvedMentions(mentions: resolved.mentions, unresolved: resolved.unresolved)
-                },
-                recordMemberMentionRows: { [source] messageId, channelId, mentions in
-                    source.messageMentions.register(messageId: messageId, channelId: channelId, mentions: mentions)
-                },
-                jointLocalChannelId: { [source] canonical, serverId, userId in
-                    MessageChannelFacts(source.serversAndChannelsStore.state).localChannel(canonical: canonical, serverId: serverId, userId: userId)
-                },
-                messageVisibleToUser: { [source] channelId, serverId, userId in
-                    source.searchMentions.messageVisible(
-                        messageChannelId: channelId,
-                        serverId: serverId,
-                        viewer: .user(userId)
-                    )
-                },
-                renderForwardItem: { item in
-                    MessageForwardProjection.forwardItemJSON(item)
-                },
-                mentionBindingConflict: { mentions in
-                    MessageMentionRules.mentionBindingConflict(mentions)
-                },
-                now: { Date() }
-            )
-        )
     }
 
     // MARK: - Session helpers

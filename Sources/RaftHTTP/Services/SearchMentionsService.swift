@@ -137,64 +137,6 @@ public enum SearchMentionsError: DomainError, Equatable, Sendable {
 
 // MARK: - Injected dependencies
 
-/// One agent credential resolved by the unmigrated agent-api domain.
-struct SearchMentionsAgentCredential: Sendable, Equatable {
-    var agentId: String
-    var scopes: [String]
-}
-
-/// Every cross-domain decision the search service needs, as injected closures.
-///
-/// The channel, message, machine, agent, task, profile and feedback rows all
-/// live in their migrated stores; these closures bridge the domains that have
-/// not moved yet: sessions, machine/agent credential resolution, the
-/// attachment-comment and action-card projections, and the thread-summary
-/// renderer. `live(directory:)` wires them to the existing entry points at the
-/// composition root.
-struct SearchMentionsDependencies: Sendable {
-    var sessionUserId: @Sendable (String?) -> String?
-    var machineIdForCredential: @Sendable (String?) -> String?
-    var agentCredential: @Sendable (String?) -> SearchMentionsAgentCredential?
-    var canMachineServeAgent: @Sendable (String, OAuthLedger.AgentRuntimeInfo) -> Bool
-    var attachmentCommentsEnabled: @Sendable (_ serverId: String, _ userId: String) -> Bool
-    var attachmentChips: @Sendable (_ ids: [String], _ commentsVisible: Bool) -> [InboxAttachmentChipDTO]
-    var commentRef: @Sendable (_ messageId: String) -> InboxCommentRefDTO?
-    var forwardMetadata: @Sendable (_ messageId: String, _ userId: String, _ serverId: String?) -> OrderedJSON?
-    var actionCardMetadataJSON: @Sendable (_ messageId: String) -> String?
-    var threadSummaries: @Sendable (_ parentChannelId: String, _ parentIds: [String]) -> OrderedJSON
-    var now: @Sendable () -> Date
-
-    static func live(directory source: EmailLoginDirectory) -> SearchMentionsDependencies {
-        SearchMentionsDependencies(
-            sessionUserId: { source.sessionUserId(authorization: $0) },
-            machineIdForCredential: { source.machineIdForCredential(authorization: $0) },
-            agentCredential: { [lookup = source.agentCredentialLookup] authorization in
-                lookup.agentCredentialAgent(authorization).map {
-                    SearchMentionsAgentCredential(agentId: $0.agentId, scopes: $0.scopes)
-                }
-            },
-            canMachineServeAgent: { machineId, agent in
-                source.canMachineServeAgent(machineId: machineId, agent: agent)
-            },
-            attachmentCommentsEnabled: { serverId, userId in
-                source.messageReadProjection.commentsEnabled(serverId: serverId, userId: userId)
-            },
-            attachmentChips: { ids, commentsVisible in
-                source.messageReadProjection.attachments(ids, commentsVisible: commentsVisible)
-            },
-            commentRef: { source.messageReadProjection.comment(messageId: $0) },
-            forwardMetadata: { messageId, userId, serverId in
-                source.messageReadProjection.forward(messageId: messageId, userId: userId, serverId: serverId)
-            },
-            actionCardMetadataJSON: { source.actionCardMetadata.metadata(messageId: $0) },
-            threadSummaries: { parentChannelId, parentIds in
-                source.messageReadProjection.threadSummaries(parentChannelId: parentChannelId, parentIds: parentIds)
-            },
-            now: { Date() }
-        )
-    }
-}
-
 // MARK: - Service
 
 /// The search and mentions boundary: human and agent message search, the
@@ -216,21 +158,6 @@ public struct SearchMentionsService: Sendable {
     private let feedback: FeedbackStore
     private let oauth: OAuthLedger
     private let dependencies: SearchMentionsDependencies
-
-    /// Production wiring through the composition root.
-    public init(directory source: EmailLoginDirectory) {
-        self.init(
-            channels: source.serversAndChannelsStore,
-            messages: source.messagesAndThreadsStore,
-            profiles: source.authProfileStore,
-            machines: source.machinesAndComputersStore,
-            agents: source.agentsRuntimeStore,
-            tasks: source.tasksAndRemindersStore,
-            feedback: source.feedbackStore,
-            oauth: source.oauth,
-            dependencies: .live(directory: source)
-        )
-    }
 
     init(
         channels: ServersAndChannelsStore,

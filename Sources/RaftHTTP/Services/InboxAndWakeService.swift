@@ -86,92 +86,6 @@ public enum InboxAndWakeError: DomainError, Equatable {
     }
 }
 
-/// The credential outcome the inbox routes need, without an HTTP reply.
-enum InboxAuthorization: Sendable, Equatable {
-    case user(String)
-    case missingAuthorization
-    case invalidAccessToken
-}
-
-/// The channel-probe outcome without an HTTP reply.
-enum InboxChannelProbe: Sendable, Equatable {
-    case allowed
-    case residue
-    case hidden
-}
-
-/// Every cross-domain decision the inbox service needs, as injected closures.
-///
-/// The message, channel and mention rows live in their own stores and the
-/// service reads them directly. Session lookup, email-verification policy, the
-/// attachment-comments flag, the channel probe, guest scope visibility, message
-/// search visibility, and the four per-message fragments owned by unmigrated
-/// domains (reaction buckets, forward metadata, action-card metadata, thread
-/// summaries) enter as ordered trees from typed projection readers. The
-/// composition root supplies their owning stores; the service places each
-/// projection at its published position.
-struct InboxAndWakeDependencies: Sendable {
-    var authorize: @Sendable (String?) -> InboxAuthorization
-    var isEmailVerified: @Sendable (String) -> Bool
-    var attachmentCommentsEnabled: @Sendable (_ serverId: String, _ userId: String?) -> Bool
-    var channelProbeAccess: @Sendable (_ channelId: String, _ serverId: String, _ userId: String) -> InboxChannelProbe
-    var guestCanSeeScope: @Sendable (_ scopeId: String) -> Bool
-    var messageSearchVisible: @Sendable (_ messageChannelId: String, _ serverId: String?, _ userId: String) -> Bool
-    var reactions: @Sendable (_ messageId: String) -> OrderedJSON
-    var forwardMetadata: @Sendable (_ messageId: String, _ userId: String, _ serverId: String?) -> OrderedJSON?
-    var actionCardMetadata: @Sendable (_ messageId: String) -> OrderedJSON?
-    var threadSummaries: @Sendable (_ parentChannelId: String, _ parentIds: [String]) -> OrderedJSON
-
-    static func live(directory source: EmailLoginDirectory) -> InboxAndWakeDependencies {
-        InboxAndWakeDependencies(
-            authorize: { authorization in
-                do {
-                    return .user(try source.authCore.authenticate(authorization))
-                } catch AuthCoreError.missingAuthorization {
-                    return .missingAuthorization
-                } catch {
-                    return .invalidAccessToken
-                }
-            },
-            isEmailVerified: { source.isEmailVerified(userId: $0) },
-            attachmentCommentsEnabled: { serverId, userId in
-                source.messageReadProjection.commentsEnabled(serverId: serverId, userId: userId)
-            },
-            channelProbeAccess: { channelId, serverId, userId in
-                switch source.channelProbeAccessLocked(
-                    channelId: channelId,
-                    serverId: serverId,
-                    userId: userId
-                ) {
-                case .allowed: .allowed
-                case .residue: .residue
-                case .hidden: .hidden
-                }
-            },
-            guestCanSeeScope: { source.guestCanSeeScopeLocked($0) },
-            messageSearchVisible: { messageChannelId, serverId, userId in
-                source.searchMentions.messageVisible(
-                    messageChannelId: messageChannelId,
-                    serverId: serverId,
-                    viewer: .user(userId)
-                )
-            },
-            reactions: { messageId in
-                .array(source.messageReadProjection.reactions(messageId: messageId).map(\.jsonBody))
-            },
-            forwardMetadata: { messageId, userId, serverId in
-                source.messageReadProjection.forward(messageId: messageId, userId: userId, serverId: serverId)
-            },
-            actionCardMetadata: { messageId in
-                source.actionCardMetadata.metadata(messageId: messageId).map(OrderedJSON.raw)
-            },
-            threadSummaries: { parentChannelId, parentIds in
-                source.messageReadProjection.threadSummaries(parentChannelId: parentChannelId, parentIds: parentIds)
-            }
-        )
-    }
-}
-
 /// The served-inbox boundary: the channel message page and its sync cursor, the
 /// mention-delivery diagnostics, and the Done inbox page.
 ///
@@ -186,15 +100,6 @@ public struct InboxAndWakeService: Sendable {
     private let channels: ServersAndChannelsStore
     private let oauth: OAuthLedger
     private let dependencies: InboxAndWakeDependencies
-
-    public init(directory source: EmailLoginDirectory) {
-        self.init(
-            messages: source.messagesAndThreadsStore,
-            channels: source.serversAndChannelsStore,
-            oauth: source.oauth,
-            dependencies: .live(directory: source)
-        )
-    }
 
     init(
         messages: MessagesAndThreadsStore,

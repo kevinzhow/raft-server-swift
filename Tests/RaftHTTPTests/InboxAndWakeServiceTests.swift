@@ -54,7 +54,15 @@ private func makeInboxService(
     channelProbeAccess: @escaping @Sendable (String, String, String) -> InboxChannelProbe = { _, _, _ in .allowed },
     forwardMetadata: @escaping @Sendable (String, String, String?) -> OrderedJSON? = { _, _, _ in nil }
 ) -> InboxAndWakeService {
-    var dependencies = InboxAndWakeDependencies.live(directory: accounts)
+    var dependencies = InboxAndWakeDependencies(
+        auth: accounts.authCore,
+        profiles: accounts.authProfileStore,
+        channelProbeAccess: accounts.agentsLifecycle.channelProbeAccess,
+        guestCanSeeScope: accounts.agentsLifecycle.guestCanSeeScope,
+        search: accounts.searchMentions,
+        projection: accounts.messageReadProjection,
+        cards: accounts.actionCardMetadata
+    )
     dependencies.authorize = authorize
     dependencies.isEmailVerified = isEmailVerified
     dependencies.attachmentCommentsEnabled = attachmentCommentsEnabled

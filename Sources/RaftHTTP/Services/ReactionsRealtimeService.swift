@@ -1,43 +1,5 @@
 import Foundation
 
-/// The agent credential facts the mentions inbox reads.
-struct ReactionsAgentCredential: Sendable, Equatable {
-    var agentId: String
-    var scopes: Set<String>
-}
-
-/// Every cross-domain decision this service needs, as injected closures.
-///
-/// The message, channel, inbox-fact and card rows live in their own stores and
-/// the OAuth ledger owns read state, so the service reads those directly.
-/// Session lookup, the agent read credential (which records a credential use),
-/// the mentions-scope credential lookup, guest scope visibility and account
-/// display names belong to unmigrated domains and enter here;
-/// `live(directory:)` wires them to the existing directory entry points.
-struct ReactionsRealtimeDependencies: Sendable {
-    var sessionUserId: @Sendable (String?) -> String?
-    var agentReadOutcome: @Sendable (String?) -> ProfileAgentReadOutcome
-    var agentCredential: @Sendable (_ token: String) -> ReactionsAgentCredential?
-    var guestCanSeeScope: @Sendable (_ scopeId: String) -> Bool
-    var userName: @Sendable (_ userId: String) -> String?
-    var now: @Sendable () -> Date
-
-    static func live(directory source: EmailLoginDirectory) -> ReactionsRealtimeDependencies {
-        ReactionsRealtimeDependencies(
-            sessionUserId: { source.sessionUserId(authorization: $0) },
-            agentReadOutcome: { [lookup = source.agentCredentialLookup] in lookup.profileReadOutcome($0) },
-            agentCredential: { token in
-                source.agentsRuntimeStore.agentCredential(token: token).map {
-                    ReactionsAgentCredential(agentId: $0.agentId, scopes: Set($0.scopes))
-                }
-            },
-            guestCanSeeScope: { source.guestCanSeeScopeLocked($0) },
-            userName: { source.authProfileStore.account(userId: $0)?.name },
-            now: { Date() }
-        )
-    }
-}
-
 /// The inbox-read and wake boundary: Done/Undone per scope, read-all, the
 /// Activity page and the agent mention, wake-hint and event reads.
 ///
@@ -55,17 +17,6 @@ public struct ReactionsRealtimeService: Sendable {
     let cards: ManagedMCPAndCardsStore
     let oauth: OAuthLedger
     let dependencies: ReactionsRealtimeDependencies
-
-    public init(directory source: EmailLoginDirectory) {
-        self.init(
-            messages: source.messagesAndThreadsStore,
-            channels: source.serversAndChannelsStore,
-            inboxFacts: source.inboxFactStore,
-            cards: source.managedMCPAndCardsStore,
-            oauth: source.oauth,
-            dependencies: .live(directory: source)
-        )
-    }
 
     init(
         messages: MessagesAndThreadsStore,

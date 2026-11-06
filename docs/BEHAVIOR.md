@@ -2153,3 +2153,9 @@ RFC 074 personal assistant：
 - Raw assistant owner 只取 stored link；live owner 仍依次要求该 link、当前 Server membership、当前 `identity_borrowing` flag。Prepare/send 保留原 actor/server 输入，assignment 的 raw 查询保留不额外查 flag 的语义；三处目录 helper 已删除，不经完整 private-surface 构造查询。
 - Self-caused freshness exemption 仍同时要求 system message、agent causal actor、相同 agent id 和既有 subtype 白名单；普通/human/other-agent/actorless 消息不额外豁免。规则纯提取，不改变 hold、catch-up、Cards barrier 或任何 subtype 集合。
 - 同 app 建立 assistant link 后修改 link、membership 或 flag，后续公开消息、inbox、owner-DM confinement 与 card 请求立即使用当前决定；查询组件只持 Agents/OAuth owner，无缓存或新增锁内 callback。
+
+### 四个消息服务的显式构造
+
+- Human/Reactions/Inbox/Search 删除 Directory initializer 与 live factory，原 owner、投影、credential 和提交能力显式注入。认证 missing/invalid、email verification、legacy revoked agent read 与 live agent API 谓词保持，Inbox probe 的 allowed/residue/hidden 映射保持。
+- 同 app 注册服务后由未验证变已验证、写消息后由 sync/search 读到新行、family revoke 后三个 human read/write 路径变 401；新构造不缓存会话或消息事实。原 randomId/attachment、mention/forward、guest probe、comments flag 和 JSON 字节继续通过公开回归。
+- 同一个已构造 Human 服务在 relay 自卸载后停止发送真实 `message:new` Socket.IO 帧，重新安装后恢复；Reactions 的 credential-use presence/throttle 帧仍按当前 slot 工作。合作生命周期/机器服务的旧 factory capture 尚未据此宣告清零。
