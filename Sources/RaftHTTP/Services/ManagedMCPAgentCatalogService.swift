@@ -136,18 +136,6 @@ extension EmailLoginDirectory {
         lock.unlock()
     }
 
-    func closeOrphanTasksLocked(channelId: String, now: Date) {
-        for index in taskRecords.indices where taskRecords[index].channelId == channelId {
-            let status = taskRecords[index].status
-            guard status != "done", status != "closed", status != "cancelled" else { continue }
-            taskRecords[index].status = "closed"
-            taskRecords[index].completedAt = now
-            taskRecords[index].closedAt = now
-            taskRecords[index].revision += 1
-            taskEvents.append((taskId: taskRecords[index].id, eventType: "closed", actorType: "system"))
-        }
-    }
-
     public func addReminder(serverId: String, ownerAgentId: String, title: String, fireAt: Date) {
         lock.lock()
         reminderRecords.append(ReminderRecord(

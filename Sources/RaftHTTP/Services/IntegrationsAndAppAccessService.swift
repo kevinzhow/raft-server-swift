@@ -812,7 +812,7 @@ extension EmailLoginDirectory {
         guard let message = humanMessageRows.first(where: { $0.id == messageRef }),
               message.senderType == "agent",
               message.senderId == agent.id,
-              messageSearchVisibleLocked(messageChannelId: message.channelId, serverId: agent.serverId, viewer: .agent(agent.id))
+              searchMentions.messageVisible(messageChannelId: message.channelId, serverId: agent.serverId, viewer: .agent(agent.id))
         else {
             lock.unlock()
             return Self.json(404, "{\"status\":\"NOT_JOINABLE\"}")
@@ -852,7 +852,7 @@ extension EmailLoginDirectory {
         }
         var matches: [(message: StoredHumanMessage, storageChannelId: String, localChannelId: String?)] = []
         for message in candidates {
-            if messageSearchVisibleLocked(messageChannelId: message.channelId, serverId: agent.serverId, viewer: .agent(agent.id)) {
+            if searchMentions.messageVisible(messageChannelId: message.channelId, serverId: agent.serverId, viewer: .agent(agent.id)) {
                 matches.append((message, message.channelId, nil))
                 continue
             }
@@ -867,7 +867,7 @@ extension EmailLoginDirectory {
             }
             if let canonicalId,
                let localId = jointLocalChannelIdForAgentLocked(canonicalChannelId: canonicalId, serverId: agent.serverId, agentId: agent.id),
-               messageSearchVisibleLocked(messageChannelId: localId, serverId: agent.serverId, viewer: .agent(agent.id)) {
+               searchMentions.messageVisible(messageChannelId: localId, serverId: agent.serverId, viewer: .agent(agent.id)) {
                 matches.append((message, storageChannelId, localId))
             }
         }

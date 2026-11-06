@@ -154,7 +154,7 @@ struct InboxAndWakeDependencies: Sendable {
             },
             guestCanSeeScope: { source.guestCanSeeScopeLocked($0) },
             messageSearchVisible: { messageChannelId, serverId, userId in
-                source.messageSearchVisibleLocked(
+                source.searchMentions.messageVisible(
                     messageChannelId: messageChannelId,
                     serverId: serverId,
                     viewer: .user(userId)

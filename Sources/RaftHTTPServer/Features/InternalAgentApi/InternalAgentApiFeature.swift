@@ -537,15 +537,17 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 messageRef: request.parameters.get("messageId") ?? ""
             ))
         }
-        agentApi.get("search") { request -> Response in
-            routeResponse(services.emailAccounts.agentApiSearch(
-                authorization: request.headers[.authorization],
-                query: desktopQuery(request.url.query, "q"),
-                channelRef: desktopQuery(request.url.query, "channel"),
-                senderRef: desktopQuery(request.url.query, "sender"),
-                sort: desktopQuery(request.url.query, "sort"),
-                limit: desktopQuery(request.url.query, "limit")
-            ))
+        agentApi.get("search") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.searchMentions.agentApiSearch(
+                    authorization: request.headers[.authorization],
+                    query: desktopQuery(request.url.query, "q"),
+                    channelRef: desktopQuery(request.url.query, "channel"),
+                    senderRef: desktopQuery(request.url.query, "sender"),
+                    sort: desktopQuery(request.url.query, "sort"),
+                    limit: desktopQuery(request.url.query, "limit")
+                )
+            }
         }
         agentApi.get("mentions") { request -> Response in
             routeResponse(services.emailAccounts.agentMentionInbox(

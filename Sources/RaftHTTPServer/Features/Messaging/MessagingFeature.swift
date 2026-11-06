@@ -36,7 +36,6 @@ public struct MessagingFeature: RouteCollection, Sendable {
         let tasks = routes.grouped("api", "tasks")
         let messageSend = MessageSendService(directory: services.emailAccounts)
         let humanMessageCreate = HumanMessageCreateService(directory: services.emailAccounts)
-        let searchMentions = SearchMentionsService(directory: services.emailAccounts)
         let inboxRealtime = ReactionsRealtimeService(directory: services.emailAccounts)
         let inbox = services.emailAccounts.inboxAndWake
         readMutations.post { request async throws -> Response in
@@ -252,20 +251,22 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 )
             }
         }
-        messages.get("search") { request -> Response in
-            routeResponse(searchMentions.searchHumanMessages(
-                query: desktopQuery(request.url.query, "q"),
-                sort: desktopQuery(request.url.query, "sort"),
-                limit: desktopQuery(request.url.query, "limit"),
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                channelId: desktopQuery(request.url.query, "channelId"),
-                senderId: desktopQuery(request.url.query, "senderId"),
-                senderType: desktopQuery(request.url.query, "senderType"),
-                mentionTarget: desktopQuery(request.url.query, "mentionTarget")
-            ))
+        messages.get("search") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.searchMentions.searchHumanMessages(
+                    query: desktopQuery(request.url.query, "q"),
+                    sort: desktopQuery(request.url.query, "sort"),
+                    limit: desktopQuery(request.url.query, "limit"),
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+                    channelId: desktopQuery(request.url.query, "channelId"),
+                    senderId: desktopQuery(request.url.query, "senderId"),
+                    senderType: desktopQuery(request.url.query, "senderType"),
+                    mentionTarget: desktopQuery(request.url.query, "mentionTarget")
+                )
+            }
         }
-        messages.get("context", ":messageId") { request -> Response in
+        messages.get("context", ":messageId") { request async throws -> Response in
             let messageId = request.parameters.get("messageId") ?? ""
             let channelId = desktopQuery(request.url.query, "channelId")
             let authorization = request.headers[.authorization]
@@ -278,7 +279,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 serverId: serverId
             )
             if reply.status == 404,
-               let stored = searchMentions.humanMessageContext(
+               let stored = services.emailAccounts.searchMentions.humanMessageContext(
                    messageId: messageId,
                    channelId: channelId,
                    authorization: authorization,
@@ -286,7 +287,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
                    before: desktopQuery(request.url.query, "before"),
                    after: desktopQuery(request.url.query, "after")
                ) {
-                return routeResponse(stored)
+                return try await respond { stored }
             }
             return routeResponse(reply)
         }

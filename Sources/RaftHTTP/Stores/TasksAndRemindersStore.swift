@@ -299,4 +299,24 @@ final class TasksAndRemindersStore: @unchecked Sendable {
         }
         return ids
     }
+
+    /// Closes every open task in a deleted channel and records the system
+    /// event in one critical section.
+    ///
+    /// `DELETE /api/channels/:channelId` used to run this while holding the
+    /// directory lock; the task rows and their events belong to this store, so
+    /// both writes stay in one locked value.
+    func closeOrphanTasks(channelId: String, now: Date) {
+        lock.lock()
+        defer { lock.unlock() }
+        for index in storage.taskRecords.indices where storage.taskRecords[index].channelId == channelId {
+            let status = storage.taskRecords[index].status
+            guard status != "done", status != "closed", status != "cancelled" else { continue }
+            storage.taskRecords[index].status = "closed"
+            storage.taskRecords[index].completedAt = now
+            storage.taskRecords[index].closedAt = now
+            storage.taskRecords[index].revision += 1
+            storage.taskEvents.append((taskId: storage.taskRecords[index].id, eventType: "closed", actorType: "system"))
+        }
+    }
 }

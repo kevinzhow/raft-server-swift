@@ -764,7 +764,7 @@ extension EmailLoginDirectory {
             }
             let jointLocalId = jointLocalChannelIdLocked(canonicalChannelId: message.channelId, serverId: serverId, userId: userId)
             let channel = jointLocalId.flatMap { postableChannels[$0] }
-                ?? (messageSearchVisibleLocked(messageChannelId: message.channelId, serverId: serverId, viewer: .user(userId))
+                ?? (searchMentions.messageVisible(messageChannelId: message.channelId, serverId: serverId, viewer: .user(userId))
                     ? postableChannels[message.channelId] : nil)
             guard let channel else {
                 lock.unlock()

@@ -684,6 +684,126 @@ final class ServersAndChannelsStore: @unchecked Sendable {
         ))
     }
 
+    /// The soft-delete decision and write are one critical section.
+    ///
+    /// `DELETE /api/channels/:channelId` used to read the row, check the role
+    /// and write `deletedAt` under the directory lock. `memberRole` is fetched
+    /// by the service before this call because it lives in the OAuth ledger,
+    /// not in this store; everything that depends on the channel row stays in
+    /// this one locked value.
+    func softDeleteChannel(
+        channelId: String,
+        serverId: String?,
+        userId: String,
+        memberRole: String?,
+        now: Date
+    ) -> SoftDeleteChannelOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var channel = storage.postableChannels[channelId],
+              channel.serverId == serverId,
+              channel.deletedAt == nil
+        else { return .notFound }
+        if let memberRole {
+            guard memberRole == "owner" || memberRole == "admin" else { return .forbidden }
+        } else if !channel.memberIds.contains(userId) {
+            return .forbidden
+        }
+        channel.deletedAt = now
+        storage.postableChannels[channelId] = channel
+        return .deleted
+    }
+
+    /// Records a channel the owner can post in. Resource-reference checks run
+    /// only after this membership is visible.
+    func addPostableChannel(
+        serverId: String,
+        channelId: String,
+        memberId: String,
+        kind: String = "channel",
+        parentChannelId: String? = nil,
+        parentMessageId: String? = nil,
+        name: String? = nil
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        var channel = storage.postableChannels[channelId] ?? PostableChannel(serverId: serverId, memberIds: [])
+        channel.serverId = serverId
+        channel.memberIds.insert(memberId)
+        if channel.kind == "channel" || kind != "channel" {
+            channel.kind = kind
+        }
+        if let parentChannelId {
+            channel.parentChannelId = parentChannelId
+        }
+        if let parentMessageId {
+            channel.parentMessageId = parentMessageId
+        }
+        if let name {
+            channel.name = name
+        }
+        storage.postableChannels[channelId] = channel
+    }
+
+    /// Server role used by the hidden human directory. Only `member` is hidden
+    /// on #all.
+    func setServerMemberRole(serverId: String, userId: String, role: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.serverMemberRoles["\(serverId)\n\(userId)"] = role
+    }
+
+    func setHideHumansFromMembers(serverId: String, hidden: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.hideHumansFromMembers[serverId] = hidden
+    }
+
+    /// Links a server's local joint channel to the canonical channel that
+    /// stores the messages.
+    func addJointChannelProjection(localChannelId: String, canonicalChannelId: String, serverId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.jointProjections.append(JointChannelLink(
+            localChannelId: localChannelId,
+            canonicalChannelId: canonicalChannelId,
+            serverId: serverId
+        ))
+    }
+
+    /// A thread whose messages hang off one parent message. Context short links
+    /// on the parent channel can land here.
+    func addThreadChannel(
+        serverId: String,
+        threadChannelId: String,
+        parentChannelId: String,
+        parentMessageId: String,
+        memberId: String
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        var channel = storage.postableChannels[threadChannelId] ?? PostableChannel(serverId: serverId, memberIds: [])
+        channel.serverId = serverId
+        channel.memberIds.insert(memberId)
+        channel.kind = "thread"
+        channel.parentChannelId = parentChannelId
+        channel.parentMessageId = parentMessageId
+        storage.postableChannels[threadChannelId] = channel
+    }
+
+    /// A user-to-user DM. Only the two participants may be notified by a
+    /// mention.
+    func addDirectMessage(serverId: String, channelId: String, participantIds: [String], agentId: String? = nil) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId] = PostableChannel(
+            serverId: serverId,
+            memberIds: Set(participantIds),
+            kind: "dm",
+            agentId: agentId
+        )
+    }
+
     private static func joinLinkExpired(_ link: JoinLinkRecord, now: Date) -> Bool {
         if let expiresAt = link.expiresAt, expiresAt <= now { return true }
         return false
@@ -693,4 +813,13 @@ final class ServersAndChannelsStore: @unchecked Sendable {
         if let maxUses = link.maxUses, link.useCount >= maxUses { return true }
         return false
     }
+}
+
+/// The decision `DELETE /api/channels/:channelId` makes while holding the
+/// channel store lock. The channel row is written in the same critical
+/// section as the decision.
+enum SoftDeleteChannelOutcome: Sendable, Equatable {
+    case deleted
+    case notFound
+    case forbidden
 }
