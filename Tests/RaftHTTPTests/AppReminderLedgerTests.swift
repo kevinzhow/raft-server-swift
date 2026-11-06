@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import RaftHTTP
+import TestSupport
 
 @Test func appReminderLifecycleIsVersionBoundAndEventful() {
     let accounts = EmailLoginDirectory()

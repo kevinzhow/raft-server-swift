@@ -262,6 +262,7 @@ lock, and owner, and no file needs to be 31k lines.
 | `feature-file-ceiling` | Every `.swift` file under `Sources/RaftHTTPServer/Features/` ≤ **1,200 lines** | Any file over the limit. A missing `Features/` directory is reported as zero files, not an error. |
 | `email-login-extension-ceiling` | Every `.swift` file under `Sources/RaftHTTP/EmailLogin/` ≤ **1,600 lines** | Any file over the limit, reported per file. A missing directory is reported as zero files, not an error. |
 | `email-login-test-seams` | `ForTesting` markers in `EmailLogin.swift` may not grow beyond the recorded **0**; `private func …ForTesting` baseline is **0** | **Warning only** (exit code unchanged). Migration to `TestSupport` is R5. |
+| `for-testing-tree-baseline` | Every `.swift` file under `Sources/` keeps its count of lines containing `ForTesting` at or below its line in `scripts/for_testing_baseline.tsv` (`path<TAB>count`; unlisted files are 0) | **Fails** when a file exceeds its baseline; warns when it is below (lower the line in the same commit). `--print-for-testing-baseline` prints the current counts. Slices moving seams into `Tests/TestSupport/` edit only that tsv. |
 
 Usage:
 

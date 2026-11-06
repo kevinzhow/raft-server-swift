@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import RaftHTTP
+import TestSupport
 
 private func ledgerFixture() throws -> (OAuthLedger, String, String, String) {
     let ledger = OAuthLedger()

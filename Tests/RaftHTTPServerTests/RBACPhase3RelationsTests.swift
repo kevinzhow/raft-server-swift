@@ -6,6 +6,7 @@ import RaftHTTP
 import RaftHTTPServer
 import RaftRealtime
 import Testing
+import TestSupport
 import Vapor
 import VaporTesting
 

@@ -4,6 +4,7 @@ import NIOPosix
 import RaftHTTP
 import Testing
 @testable import RaftRealtime
+import TestSupport
 
 @Suite(.serialized)
 struct RealtimeTransportTests {

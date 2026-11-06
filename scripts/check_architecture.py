@@ -26,6 +26,15 @@ enforces the part of it that can be measured today:
    ``EmailLogin+TestSeams.swift`` and new ones belong in the test-only
    ``TestSupport`` target (see R5 in ``docs/ARCHITECTURE.md``).
 
+6. ``ForTesting`` markers anywhere under ``Sources/`` are ratcheted per file
+   against ``scripts/for_testing_baseline.tsv`` (one ``path<TAB>count`` line per
+   production file; a marker count is the number of lines containing
+   ``ForTesting``, the same figure as ``grep -r ForTesting Sources | wc -l``).
+   A file whose count exceeds its baseline (a missing file counts as 0) fails;
+   a file below its baseline only warns, so the slice that moves seams into the
+   ``TestSupport`` target lowers that file's line in the same commit. The
+   baseline file is the only thing those slices edit.
+
 Exit codes:
     0  pass, or pass with warnings
     1  guardrail violation
@@ -35,6 +44,7 @@ Usage:
     scripts/check_architecture.py
     scripts/check_architecture.py --json
     scripts/check_architecture.py --root /path/to/checkout
+    scripts/check_architecture.py --print-for-testing-baseline
 """
 
 from __future__ import annotations
@@ -51,6 +61,8 @@ EMAIL_LOGIN_RELATIVE = Path("Sources/RaftHTTP/EmailLogin.swift")
 EMAIL_LOGIN_EXTENSIONS_RELATIVE = Path("Sources/RaftHTTP/EmailLogin")
 FEATURES_RELATIVE = Path("Sources/RaftHTTPServer/Features")
 SERVICES_RELATIVE = Path("Sources/RaftHTTP/Services")
+SOURCES_RELATIVE = Path("Sources")
+FOR_TESTING_BASELINE_RELATIVE = Path("scripts/for_testing_baseline.tsv")
 
 # Recorded on 2026-11-06 after the AuthProfile/Notifications store split, then
 # after the TasksAndReminders/MachinesAndComputers/ServersAndChannels/
@@ -330,6 +342,101 @@ def check_email_login_test_seams(root: Path) -> dict:
     }
 
 
+def count_for_testing_lines(path: Path) -> int:
+    """Number of lines containing ``ForTesting`` (what ``grep -c ForTesting`` reports)."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return sum(1 for line in text.splitlines() if FOR_TESTING_RE.search(line))
+
+
+def scan_for_testing(root: Path) -> dict[str, int]:
+    """Per-file ``ForTesting`` line counts for every Swift file under ``Sources/``."""
+    directory = root / SOURCES_RELATIVE
+    counts: dict[str, int] = {}
+    if directory.is_dir():
+        for path in sorted(directory.rglob("*.swift")):
+            if not path.is_file():
+                continue
+            count = count_for_testing_lines(path)
+            if count:
+                counts[path.relative_to(root).as_posix()] = count
+    return counts
+
+
+def read_for_testing_baseline(root: Path) -> dict[str, int]:
+    path = root / FOR_TESTING_BASELINE_RELATIVE
+    if not path.is_file():
+        raise GuardrailError(f"missing required file: {path}")
+    baseline: dict[str, int] = {}
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not raw.strip():
+            continue
+        fields = raw.split("\t")
+        if len(fields) != 2 or not fields[1].isdigit():
+            raise GuardrailError(
+                f"{FOR_TESTING_BASELINE_RELATIVE}:{number}: expected 'path<TAB>count', got {raw!r}"
+            )
+        if fields[0] in baseline:
+            raise GuardrailError(
+                f"{FOR_TESTING_BASELINE_RELATIVE}:{number}: duplicate entry for {fields[0]}"
+            )
+        baseline[fields[0]] = int(fields[1])
+    return baseline
+
+
+def render_for_testing_baseline(counts: dict[str, int]) -> str:
+    return "".join(f"{path}\t{count}\n" for path, count in sorted(counts.items()))
+
+
+def check_for_testing_tree_baseline(root: Path) -> dict:
+    counts = scan_for_testing(root)
+    baseline = read_for_testing_baseline(root)
+
+    over = sorted(
+        (path, count, baseline.get(path, 0))
+        for path, count in counts.items()
+        if count > baseline.get(path, 0)
+    )
+    stale = sorted(
+        (path, counts.get(path, 0), allowed)
+        for path, allowed in baseline.items()
+        if counts.get(path, 0) < allowed
+    )
+    violations = [
+        f"{path}: {count} ForTesting line(s) exceeds the baseline of {allowed}; "
+        "put new seams in the TestSupport target instead"
+        for path, count, allowed in over
+    ]
+    warnings = [
+        f"{path}: {count} ForTesting line(s) is below the baseline of {allowed}; "
+        f"lower its line in {FOR_TESTING_BASELINE_RELATIVE}"
+        for path, count, allowed in stale
+    ]
+    total = sum(counts.values())
+    allowed_total = sum(baseline.values())
+    message = (
+        f"{total} ForTesting line(s) in {len(counts)} {plural(len(counts), 'file')} "
+        f"(baseline {allowed_total} in {sum(1 for v in baseline.values() if v)} files)"
+    )
+    if over:
+        message += f"; {len(over)} file(s) over their baseline"
+    status = "fail" if over else ("warn" if stale else "pass")
+    return {
+        "id": "for-testing-tree-baseline",
+        "title": "Sources/ ForTesting per-file baseline",
+        "status": status,
+        "severity": "error",
+        "path": str(SOURCES_RELATIVE),
+        "baseline_path": str(FOR_TESTING_BASELINE_RELATIVE),
+        "for_testing_lines": total,
+        "for_testing_files": len(counts),
+        "baseline_lines": allowed_total,
+        "files": counts,
+        "violations_detail": violations,
+        "warnings": warnings,
+        "message": message,
+    }
+
+
 def evaluate(root: Path) -> dict:
     checks = [
         check_email_login_ceiling(root),
@@ -337,6 +444,7 @@ def evaluate(root: Path) -> dict:
         check_email_login_extension_ceilings(root),
         check_service_file_ceilings(root),
         check_email_login_test_seams(root),
+        check_for_testing_tree_baseline(root),
     ]
     warnings = [warning for check in checks for warning in check.get("warnings", [])]
     violations: list[str] = []
@@ -344,7 +452,9 @@ def evaluate(root: Path) -> dict:
         if check["status"] != "fail":
             continue
         entries = check.get("violations", [])
-        if entries:
+        if check.get("violations_detail"):
+            violations.extend(check["violations_detail"])
+        elif entries:
             violations.extend(
                 f"{entry['path']}: {entry['lines']:,} lines exceeds the "
                 f"{entry.get('limit', FEATURE_FILE_LINE_LIMIT):,}-line limit"
@@ -372,6 +482,7 @@ def evaluate(root: Path) -> dict:
             "service_file_line_limit": SERVICE_FILE_LINE_LIMIT,
             "email_login_for_testing_markers": EMAIL_LOGIN_FOR_TESTING_BASELINE,
             "email_login_private_func_for_testing": EMAIL_LOGIN_PRIVATE_FUNC_FOR_TESTING_BASELINE,
+            "for_testing_tree_baseline_file": str(FOR_TESTING_BASELINE_RELATIVE),
         },
         "checks": checks,
         "warnings": warnings,
@@ -422,9 +533,20 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="emit a machine-readable report instead of the concise text report",
     )
+    parser.add_argument(
+        "--print-for-testing-baseline",
+        action="store_true",
+        help="print the current per-file ForTesting counts as baseline TSV and exit",
+    )
     args = parser.parse_args(argv)
 
     root = Path(args.root).expanduser()
+    if args.print_for_testing_baseline:
+        if not root.is_dir():
+            print(f"check_architecture: root is not a directory: {root}", file=sys.stderr)
+            return 2
+        sys.stdout.write(render_for_testing_baseline(scan_for_testing(root)))
+        return 0
     try:
         if not root.is_dir():
             raise GuardrailError(f"root is not a directory: {root}")

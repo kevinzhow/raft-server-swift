@@ -89,9 +89,14 @@ let package = Package(
                 "RaftDaemonClient",
             ]
         ),
+        .target(
+            name: "TestSupport",
+            dependencies: ["RaftHTTP", "RaftShared"],
+            path: "Tests/TestSupport"
+        ),
         .testTarget(
             name: "RaftHTTPTests",
-            dependencies: ["RaftHTTP", "RaftShared"]
+            dependencies: ["RaftHTTP", "RaftShared", "TestSupport"]
         ),
         .testTarget(
             name: "RaftHTTPServerTests",
@@ -99,6 +104,7 @@ let package = Package(
                 "RaftHTTP",
                 "RaftHTTPServer",
                 "RaftRealtime",
+                "TestSupport",
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
@@ -136,6 +142,7 @@ let package = Package(
             dependencies: [
                 "RaftRealtime",
                 "RaftHTTP",
+                "TestSupport",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
             ]

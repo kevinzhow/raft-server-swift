@@ -4,6 +4,7 @@ import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
 import Testing
+import TestSupport
 import Vapor
 import VaporTesting
 
