@@ -270,6 +270,15 @@ final class AuthProfileStore: @unchecked Sendable {
         return accountSurface.accounts.values.first { $0.id == userId }?.emailVerified ?? false
     }
 
+    /// One locked lookup by account id. The submission and onboarding paths
+    /// read verification, the published handle and the usage-data opt-out from
+    /// the same row.
+    func account(userId: String) -> Account? {
+        lock.lock()
+        defer { lock.unlock() }
+        return accountSurface.accounts.values.first { $0.id == userId }
+    }
+
     /// The Node fixture marks a row verified without an HTTP call. Retirement
     /// refuses an unverified account.
     func markEmailVerified(userId: String) {

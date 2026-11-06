@@ -89,7 +89,7 @@ public struct FeedbackFeature: RouteCollection, Sendable {
             ))
         }
         feedback.post { request async throws -> Response in
-            routeResponse(await services.emailAccounts.submitProductFeedbackAsync(
+            let submission = ProductFeedbackSubmissionRequest(
                 authorization: request.headers[.authorization],
                 contentType: request.headers[.contentType] ?? "",
                 body: try await request.bodyText(),
@@ -97,7 +97,20 @@ public struct FeedbackFeature: RouteCollection, Sendable {
                 clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!]
                     ?? request.headers[HTTPField.Name("X-Slock-Client-Kind")!]
                     ?? ""
-            ))
+            )
+            return try await respond(
+                errors: ProductFeedbackSubmissionError.self,
+                status: 201,
+                headers: { receipt in
+                    [
+                        "Content-Type": AppFallback.jsonContentType,
+                        "Cache-Control": "no-store",
+                        "Server-Timing": receipt.serverTiming,
+                    ]
+                }
+            ) {
+                try await services.emailAccounts.productFeedbackSubmissions.submit(submission)
+            }
         }
     }
 }

@@ -73,6 +73,88 @@ func respond<DTO: Encodable, Failure: DomainErrorWithBody>(
     }
 }
 
+/// Overload for a domain whose published error body keeps a legacy key order
+/// that `JSONEncoder` cannot reproduce (`{"error": …}` before `{"code": …}`).
+///
+/// The success payload is encoded with sorted keys, which is byte-stable; for
+/// the receipts this projection serves, that is also the legacy field order.
+/// The failure body is the domain's exact bytes, and `headers` is the exact
+/// success header set: the legacy feedback `201` published `Cache-Control` and
+/// `Server-Timing` without `X-Robots-Tag`, so this overload never adds a
+/// header the domain did not ask for.
+func respond<DTO: Encodable, Failure: OrderedBodyDomainError>(
+    errors _: Failure.Type,
+    status: UInt,
+    headers: (DTO) -> [String: String],
+    _ call: () async throws -> DTO
+) async throws -> Response {
+    do {
+        let payload = try await call()
+        return routeResponse(try exactJSONReply(
+            status: status,
+            payload: payload,
+            headers: headers(payload)
+        ))
+    } catch let error as Failure {
+        return try orderedBodyErrorResponse(error)
+    }
+}
+
+/// A 204 whose pre-migration reply reused the JSON reply helper, so the
+/// published response kept the JSON header set (`X-Robots-Tag` and
+/// `Content-Type`) with an empty body. `respond(_:)` above stays the bare 204
+/// for call sites that never published those headers.
+func respond<Failure: OrderedBodyDomainError>(
+    jsonNoContent _: Failure.Type,
+    _ call: () throws -> NoContentResponse
+) throws -> Response {
+    do {
+        _ = try call()
+        return routeResponse(HTTPReply(
+            status: 204,
+            headers: [
+                "X-Robots-Tag": AppFallback.robotsTag,
+                "Content-Type": AppFallback.jsonContentType,
+                "Content-Length": "0",
+            ],
+            body: ""
+        ))
+    } catch let error as Failure {
+        return try orderedBodyErrorResponse(error)
+    }
+}
+
+/// Deterministic success encoding for the ordered-body overload. `id`/`status`
+/// sort to the legacy declaration order, and `.withoutEscapingSlashes` matches
+/// the encoder the legacy feedback replies used. Richer domains use
+/// `OrderedBodyDomainError` for the failure side.
+private func exactJSONReply<T: Encodable>(
+    status: UInt,
+    payload: T,
+    headers: [String: String]
+) throws -> HTTPReply {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+    let data = try encoder.encode(payload)
+    var resolved = headers
+    resolved["Content-Length"] = String(data.count)
+    return HTTPReply(
+        status: Int(status),
+        headers: resolved,
+        body: String(decoding: data, as: UTF8.self)
+    )
+}
+
+/// Exact-byte error projection for `OrderedBodyDomainError`.
+private func orderedBodyErrorResponse<Failure: OrderedBodyDomainError>(
+    _ error: Failure
+) throws -> Response {
+    let body = error.bodyJSON
+    var headers = error.responseHeaders
+    headers["Content-Length"] = String(body.utf8.count)
+    return routeResponse(HTTPReply(status: Int(error.status), headers: headers, body: body))
+}
+
 /// The upstream `{"error": …}` body. Domains with a richer published shape get
 /// their own DTO and a second mapping overload rather than JSON in the service.
 ///

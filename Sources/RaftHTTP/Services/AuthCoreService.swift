@@ -729,6 +729,23 @@ extension EmailLoginDirectory {
 /// Every counter is a locked snapshot; none mutates the row it counts.
 extension EmailLoginDirectory {
 
+    /// The bearer access-token check shared by the domain services that have
+    /// not migrated yet. It lives here, next to the other shared auth
+    /// primitives; the product-feedback submission slice only inherited it.
+    func authorize(_ authorization: String?) -> Auth {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            return .rejected(Self.missingAuthorization)
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        let id = accessTokens[token]
+        let family = accessTokenFamilies[token]
+        let familyRevoked = family.map { revokedFamilies.contains($0) } ?? false
+        lock.unlock()
+        guard let id, !familyRevoked else { return .rejected(Self.invalidToken) }
+        return .user(id)
+    }
+
     /// Email-verification policy for `POST /api/auth/verify-email` and
     /// `POST /api/auth/resend-verification`. The feature calls this service;
     /// the directory only supplies the profile store it reads.
@@ -807,6 +824,81 @@ extension EmailLoginDirectory {
         lock.lock()
         defer { lock.unlock() }
         return humanMessageRows.count
+    }
+
+    /// Product-feedback submission and onboarding-wizard event recording. The
+    /// Hands transport and route binding are still owned by the not-yet-migrated
+    /// `FeedbackService`, so they enter as closures; the account row, the
+    /// feature-flag decision and product-event rows come from their stores.
+    public var productFeedbackSubmissions: ProductFeedbackSubmissionService {
+        let feedback = FeedbackService(directory: self)
+        return ProductFeedbackSubmissionService(
+            dependencies: ProductFeedbackSubmissionDependencies(
+                account: { [authProfileStore] userId in
+                    authProfileStore.account(userId: userId)
+                },
+                userId: { [self] authorization in
+                    sessionUserId(authorization: authorization)
+                },
+                resolveAttribution: { [self] serverId, userId in
+                    guard ServerScope.isUUID(serverId),
+                          let profile = oauth.serverProfile(id: serverId),
+                          oauth.memberRole(serverId: serverId, userId: userId) != nil,
+                          !profile.slug.isEmpty
+                    else { return nil }
+                    return ProductFeedbackReporterAttribution(
+                        serverSlug: profile.slug,
+                        handle: authProfileStore.account(userId: userId)?.name ?? ""
+                    )
+                },
+                multiAppEnabled: { [self] userId in
+                    evaluateFeatureFlagKey(
+                        key: EmailLoginDirectory.productFeedbackMultiAppFlag,
+                        userId: userId,
+                        serverId: nil,
+                        platform: nil,
+                        client: FeatureFlagClientFacts(os: nil, buildNumber: nil, buildType: nil)
+                    ).enabled
+                },
+                configuration: { [self, feedbackStore] in
+                    let snapshot = feedbackStore.handsFeedbackSubmissionConfiguration(
+                        base: ProcessInfo.processInfo.environment,
+                        conversationSessionEnabled: authProfileStore.handsConversationSessionEnabled
+                    )
+                    return ProductFeedbackRelayConfiguration(
+                        environment: snapshot.environment,
+                        appsJSON: snapshot.appsJSON,
+                        configured: snapshot.configured
+                            || snapshot.environment["HANDS_FEEDBACK_BASE_URL"] != nil
+                    )
+                },
+                multiRouteEnvironment: { source, appsJSON, environment in
+                    try EmailLoginDirectory.feedbackMultiRouteEnvironment(
+                        source: source,
+                        appsJSON: appsJSON,
+                        environment: environment
+                    )
+                },
+                legacyRouteEnvironment: { environment in
+                    EmailLoginDirectory.feedbackLegacyRouteEnvironment(environment)
+                },
+                ensureRouteBinding: { userId, environment in
+                    try await feedback.ensureRouteBindingAsync(userId: userId, environment: environment)
+                },
+                send: { request in
+                    await feedback.sendAsync(request)
+                },
+                warn: { message in
+                    feedback.warn(message)
+                },
+                appendProductEvent: { [productEventStore] event in
+                    productEventStore.append(event)
+                },
+                serverAnalyticsAllowed: { [self] serverId in
+                    oauth.serverAnalyticsAllowed(id: serverId)
+                }
+            )
+        )
     }
 
 }

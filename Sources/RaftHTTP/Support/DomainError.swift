@@ -44,3 +44,25 @@ public protocol DomainErrorWithBody: Error, Sendable {
 public extension DomainErrorWithBody {
     var responseHeaders: [String: String] { [:] }
 }
+
+/// One typed domain failure whose published body is already serialized in the
+/// legacy key order.
+///
+/// `JSONEncoder` on Linux stores keyed containers in a dictionary, so neither
+/// declaration order nor a custom `encode(to:)` yields a stable key order. A
+/// domain whose upstream body has a fixed non-alphabetical order (for example
+/// `{"error": …}` before `{"code": …}`) carries the exact bytes instead.
+/// `Sources/RaftHTTPServer/Features/Respond.swift` sets `Content-Length` from
+/// `bodyJSON` and keeps `responseHeaders` verbatim.
+public protocol OrderedBodyDomainError: Error, Sendable {
+    /// Status the published error answers with.
+    var status: UInt { get }
+    /// Exact published body bytes, in legacy key order.
+    var bodyJSON: String { get }
+    /// Response headers verbatim; `Content-Length` is added by the projection.
+    var responseHeaders: [String: String] { get }
+}
+
+public extension OrderedBodyDomainError {
+    var responseHeaders: [String: String] { [:] }
+}

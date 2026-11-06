@@ -182,15 +182,6 @@ struct ProductFeedbackMultiAppTests {
     }
 
     private func mountHeaderAwareFeedbackRoutes(_ app: Application, accounts: EmailLoginDirectory) {
-        app.post("api", "product-feedback") { request -> Response in
-            routeResponse(accounts.submitProductFeedback(
-                authorization: request.headers[.authorization],
-                contentType: request.headers[.contentType] ?? "",
-                body: request.body.string ?? "",
-                serverId: header(request, "X-Server-Id"),
-                clientKindHeader: header(request, "X-Raft-Client-Kind")
-            ))
-        }
         app.get("api", "product-feedback", "tickets") { request -> Response in
             routeResponse(accounts.productFeedbackTickets(
                 authorization: request.headers[.authorization],

@@ -29,7 +29,6 @@ Sources/RaftHTTP/Services/ManagedMCPOAuthService.swift	1
 Sources/RaftHTTP/Services/ManagedMCPToolExecutionService.swift	1
 Sources/RaftHTTP/Services/MessageSendService.swift	1
 Sources/RaftHTTP/Services/OAuthFlowsService.swift	1
-Sources/RaftHTTP/Services/ProductFeedbackSubmissionService.swift	1
 Sources/RaftHTTP/Services/ProfileAndChannelFilesService.swift	1
 Sources/RaftHTTP/Services/ReactionsRealtimeService.swift	1
 Sources/RaftHTTP/Services/RuntimeFormsAndProbesService.swift	1

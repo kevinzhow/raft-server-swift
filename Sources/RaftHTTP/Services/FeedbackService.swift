@@ -116,29 +116,10 @@ public struct FeedbackService: Sendable {
     // MARK: - Configuration resolution
 
     func legacyEnvironmentLocked() -> [String: String] {
-        var environment = ProcessInfo.processInfo.environment
-        if let overlay = directory.handsFeedbackLegacyEnvironment {
-            for (key, value) in overlay { environment[key] = value }
-        }
-        if let handsFeedbackBaseURLOverride = directory.handsFeedbackBaseURLOverride {
-            environment["HANDS_FEEDBACK_BASE_URL"] = handsFeedbackBaseURLOverride
-        }
-        if let handsFeedbackAppIdOverride = directory.handsFeedbackAppIdOverride {
-            environment["HANDS_FEEDBACK_APP_ID"] = handsFeedbackAppIdOverride
-        }
-        if let handsFeedbackAppSlugOverride = directory.handsFeedbackAppSlugOverride {
-            environment["HANDS_FEEDBACK_APP_SLUG"] = handsFeedbackAppSlugOverride
-        }
-        if let handsFeedbackAppTokenOverride = directory.handsFeedbackAppTokenOverride {
-            environment["HANDS_FEEDBACK_APP_TOKEN"] = handsFeedbackAppTokenOverride
-        }
-        if let handsConversationSessionEnabled = directory.handsConversationSessionEnabled {
-            environment["HANDS_FEEDBACK_CONVERSATION_SESSION_ENABLED"] = handsConversationSessionEnabled ? "true" : "false"
-        }
-        if let handsConversationAppTokenOverride = directory.handsConversationAppTokenOverride {
-            environment["HANDS_FEEDBACK_CONVERSATION_APP_TOKEN"] = handsConversationAppTokenOverride
-        }
-        return environment
+        directory.feedbackStore.handsFeedbackEnvironment(
+            base: ProcessInfo.processInfo.environment,
+            conversationSessionEnabled: directory.handsConversationSessionEnabled
+        )
     }
 
     func routeEnvironment(source: String, userId: String) throws -> FeedbackRouteEnvironment {
