@@ -2,6 +2,7 @@ import Foundation
 import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
+import TestSupport
 import Testing
 import Vapor
 import VaporTesting

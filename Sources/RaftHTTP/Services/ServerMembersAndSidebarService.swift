@@ -59,9 +59,13 @@ extension EmailLoginDirectory {
             }
         }
         if targetRole == "guest", newRole == "member" {
-            lock.lock()
-            let message = seatLimitMessageLocked(serverId: serverId)
-            lock.unlock()
+            // The seat cap and the holder count are one store critical section.
+            let message = serversAndChannelsStore.seatLimitMessage(
+                serverId: serverId,
+                usedSeats: { [oauth] serverId in
+                    oauth.memberIdsWithRoles(serverId: serverId).filter { $0.role != "guest" }.count
+                }
+            )
             if let message {
                 return Self.json(409, "{\"error\":\(jsonString(message)),\"code\":\"human_seat_limit_reached\"}")
             }

@@ -58,39 +58,6 @@ public struct ServerMemberRolePatchDTO: Codable, Sendable, Equatable, ServersReq
     }
 }
 
-/// `POST /api/servers/:id/invites` request body.
-///
-/// `email` is required and validated by the directory (trimmed, then matched
-/// against the address pattern). `role` is optional and defaults to `member`
-/// both in the directory and here, so an absent key and an explicit `null`
-/// stay equivalent.
-public struct ServerInviteCreateDTO: Codable, Sendable, Equatable, ServersRequestDTO {
-    public var email: String
-    public var role: String?
-
-    public init(email: String, role: String? = nil) {
-        self.email = email
-        self.role = role
-    }
-}
-
-/// `POST /api/servers/:id/join-links` request body.
-///
-/// `expiresAt` is an ISO-8601 string the directory parses (empty means no
-/// expiry). `maxUses` is an integer; a string, a fractional number or a value
-/// below 1 does not decode as `Int`, so that request keeps the raw path and its
-/// `maxUses must be a positive integer` 400. `null` means no cap in both
-/// paths.
-public struct JoinLinkCreateDTO: Codable, Sendable, Equatable, ServersRequestDTO {
-    public var expiresAt: String?
-    public var maxUses: Int?
-
-    public init(expiresAt: String? = nil, maxUses: Int? = nil) {
-        self.expiresAt = expiresAt
-        self.maxUses = maxUses
-    }
-}
-
 /// `POST /api/servers/:id/setup-reset` request body.
 ///
 /// The reset selects its target by path and reads no fields, so the accepted

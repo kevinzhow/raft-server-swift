@@ -1,560 +1,770 @@
-import Crypto
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 
-/// Join links, server invites, membership acceptance and the server setup
-/// projections that gate them.
+/// The two not-yet-migrated domains the join-link surface still needs: the
+/// human session lookup in `AuthCoreService` and the realtime room emitter.
 ///
-/// These handlers were lifted from
-/// `EmailLogin+IntegrationsAndAccess.swift`.
+/// Everything else this service reads lives in a store or the OAuth ledger, so
+/// the service owns the orchestration and the stores own their state.
+public struct JoinLinksAndInvitesDependencies: Sendable {
+    public var sessionUserId: @Sendable (String?) -> String?
+    public var emitRealtime: @Sendable (String, String, String?) -> Void
 
-public struct JoinLinksAndInvitesService: Sendable {
-    public let directory: EmailLoginDirectory
-
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
+    public init(
+        sessionUserId: @escaping @Sendable (String?) -> String?,
+        emitRealtime: @escaping @Sendable (String, String, String?) -> Void
+    ) {
+        self.sessionUserId = sessionUserId
+        self.emitRealtime = emitRealtime
     }
 }
 
-extension EmailLoginDirectory {
+/// Domain failure for the join-link, invite, server-setup and agent-profile
+/// operations.
+///
+/// Every case publishes the exact bytes the retired handler built, so the
+/// feature layer only copies `status`, `exactBodyJSON` and `responseHeaders`.
+public enum JoinLinksAndInvitesError: ExactBodyDomainError, Equatable {
+    case authRequired(bearerPresent: Bool)
+    case unauthorized
+    case forbiddenCreateJoinLinks
+    case forbiddenViewJoinLinks
+    case forbiddenRevokeJoinLinks
+    case forbiddenRevokeInvites
+    case notAMember
+    case forbidden
+    case inviteNotFound
+    case invalidInvite
+    case invalidExpiresAt
+    case invalidMaxUses
+    case seatLimit(String)
+    case invalidEmail
+    case invalidInviteRole
+    case guestAccessDisabled
+    case ownerCannotLeave
+    case insufficientPermission
+    case serverNotFound
+    case invalidSetupAction
+    case serverAlreadySetUp
+    case invalidProfileUpdate
+    case profileNotFound
+    case agentAuthRequired
+    case missingAuthorizationHeader
+    case capabilityNotAuthorized(String?)
+    case hostedAgentDescriptionHumanOnly
+    case agreementRequired(ServerAgreementDTO)
+    case agreementChanged(ServerAgreementDTO)
 
-    public func agentProfileShow(authorization: String?, target: String?) -> HTTPReply {
-        guard let credential = agentCredentialAgent(authorization),
-              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+    public var status: UInt {
+        switch self {
+        case .authRequired, .unauthorized, .agentAuthRequired, .missingAuthorizationHeader:
+            401
+        case .forbiddenCreateJoinLinks, .forbiddenViewJoinLinks, .forbiddenRevokeJoinLinks,
+             .forbiddenRevokeInvites, .notAMember, .forbidden, .insufficientPermission,
+             .capabilityNotAuthorized, .hostedAgentDescriptionHumanOnly:
+            403
+        case .inviteNotFound, .serverNotFound, .profileNotFound:
+            404
+        case .invalidInvite, .invalidExpiresAt, .invalidMaxUses, .seatLimit, .invalidEmail,
+             .invalidInviteRole, .guestAccessDisabled, .ownerCannotLeave, .invalidSetupAction,
+             .invalidProfileUpdate:
+            400
+        case .serverAlreadySetUp, .agreementRequired, .agreementChanged:
+            409
+        }
+    }
+
+    public var responseHeaders: [String: String] {
+        switch self {
+        case .authRequired:
+            ["Cache-Control": "no-store"]
+        default:
+            [:]
+        }
+    }
+
+    /// Exact published body, in the retired handler's member order.
+    public var exactBodyJSON: String {
+        switch self {
+        case .authRequired(let bearerPresent):
+            let message = bearerPresent
+                ? "Invalid or expired token"
+                : "Missing or invalid Authorization header"
+            return "{\"error\":\(jsonString(message)),\"code\":\"auth_required\"}"
+        case .unauthorized:
+            return "{\"error\":\"Unauthorized\"}"
+        case .forbiddenCreateJoinLinks:
+            return "{\"error\":\"Only server owners and admins can create join links\"}"
+        case .forbiddenViewJoinLinks:
+            return "{\"error\":\"Only server owners and admins can view join links\"}"
+        case .forbiddenRevokeJoinLinks:
+            return "{\"error\":\"Only server owners and admins can revoke join links\"}"
+        case .forbiddenRevokeInvites:
+            return "{\"error\":\"Only server owners and admins can revoke invites\"}"
+        case .notAMember:
+            return "{\"error\":\"Not a member of this server\"}"
+        case .forbidden:
+            return "{\"error\":\"Forbidden\"}"
+        case .inviteNotFound:
+            return "{\"error\":\"Invite not found\"}"
+        case .invalidInvite:
+            return "{\"error\":\"Invalid invite\"}"
+        case .invalidExpiresAt:
+            return "{\"error\":\"expiresAt must be a valid date\"}"
+        case .invalidMaxUses:
+            return "{\"error\":\"maxUses must be a positive integer\"}"
+        case .seatLimit(let message):
+            return "{\"error\":\(jsonString(message))}"
+        case .invalidEmail:
+            return "{\"error\":\"Enter a valid email address\"}"
+        case .invalidInviteRole:
+            return "{\"error\":\"role must be one of: member, guest\"}"
+        case .guestAccessDisabled:
+            return "{\"error\":\"Guest access is not enabled for this server\"}"
+        case .ownerCannotLeave:
+            return "{\"error\":\"The owner cannot leave the server\"}"
+        case .insufficientPermission:
+            return "{\"error\":\"INSUFFICIENT_PERMISSION\"}"
+        case .serverNotFound:
+            return "{\"error\":\"Server not found\"}"
+        case .invalidSetupAction:
+            return "{\"error\":\"INVALID_SETUP_ACTION\"}"
+        case .serverAlreadySetUp:
+            return "{\"error\":\"SERVER_ALREADY_SET_UP\"}"
+        case .invalidProfileUpdate:
+            return "{\"error\":\"Invalid profile update\"}"
+        case .profileNotFound:
+            return "{\"error\":\"Profile not found\"}"
+        case .agentAuthRequired:
+            return "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"
+        case .missingAuthorizationHeader:
+            return "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}"
+        case .capabilityNotAuthorized(let required):
+            let requiredJSON = required.map { ",\"requiredCapability\":\(jsonString($0))" } ?? ""
+            return "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"\(requiredJSON)}"
+        case .hostedAgentDescriptionHumanOnly:
+            return "{\"error\":\"Hosted agents cannot change their own description\",\"code\":\"hosted_agent_description_human_only\",\"suggestedNextAction\":\"Ask a human owner or admin to edit it in your Profile tab in Raft. Nothing was changed.\"}"
+        case .agreementRequired(let agreement):
+            return "{\"error\":\"agreement_required\",\"agreement\":\(agreement.jsonBody())}"
+        case .agreementChanged(let agreement):
+            return "{\"error\":\"agreement_changed\",\"agreement\":\(agreement.jsonBody())}"
+        }
+    }
+}
+
+/// Join links, server invites, membership acceptance, the server setup
+/// projection and the agent-profile routes.
+///
+/// The row state lives in `ServersAndChannelsStore`, `AgentsRuntimeStore`,
+/// `MachinesAndComputersStore` and `AuthProfileStore`; every read-modify-write
+/// that used to run under the directory lock is one store critical section.
+/// This type returns `Codable` DTOs whose `jsonBody()` keeps the upstream member
+/// order, and throws `JoinLinksAndInvitesError` instead of building a reply.
+public struct JoinLinksAndInvitesService: Sendable {
+    private let store: ServersAndChannelsStore
+    private let accounts: AuthProfileStore
+    private let agents: AgentsRuntimeStore
+    private let computers: MachinesAndComputersStore
+    private let oauth: OAuthLedger
+    private let dependencies: JoinLinksAndInvitesDependencies
+    private let now: @Sendable () -> Date
+
+    init(
+        store: ServersAndChannelsStore,
+        accounts: AuthProfileStore,
+        agents: AgentsRuntimeStore,
+        computers: MachinesAndComputersStore,
+        oauth: OAuthLedger,
+        dependencies: JoinLinksAndInvitesDependencies,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
+        self.store = store
+        self.accounts = accounts
+        self.agents = agents
+        self.computers = computers
+        self.oauth = oauth
+        self.dependencies = dependencies
+        self.now = now
+    }
+
+    // MARK: - POST /api/servers/:id/join-links
+
+    /// Creates one member join link. The upstream order is authorization
+    /// (401), owner/admin (403, one message for a non-member too), then the
+    /// `expiresAt` and `maxUses` shape checks.
+    public func createJoinLink(
+        authorization: String?,
+        serverId: String,
+        body: CreateJoinLinkRequest
+    ) throws -> JoinLinkCreateResponseDTO {
+        let userId = try authenticatedUserId(authorization)
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId),
+              role == "owner" || role == "admin"
         else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            throw JoinLinksAndInvitesError.forbiddenCreateJoinLinks
         }
-        func agentJSON(_ row: (id: String, name: String, displayName: String, description: String, avatarUrl: String?)) -> [String: Any] {
-            [
-                "agentId": row.id,
-                "name": row.name,
-                "displayName": row.displayName,
-                "description": row.description,
-                "avatarUrl": row.avatarUrl as Any,
-            ]
-        }
-        guard let target, !target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            let json = "{\"agentId\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"description\":\(jsonString(agent.description ?? "")),\"avatarUrl\":\(agent.avatarUrl.map(jsonString) ?? "null")}"
-            return Self.json(200, json)
-        }
-        guard credential.scopes.contains("read") else {
-            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
-        }
-        let handle = target.hasPrefix("@") ? String(target.dropFirst()) : target
-        let lowered = handle.lowercased()
-        lock.lock()
-        let agentMatch = oauth.serverAgents(serverId: agent.serverId).first {
-            !$0.deleted && ($0.name.lowercased() == lowered || $0.displayName.lowercased() == lowered)
-        }
-        let accountMatch = accounts.values.first {
-            $0.name.lowercased() == lowered && oauth.memberRole(serverId: agent.serverId, userId: $0.id) != nil
-        }
-        let hiddenDirectory = hideHumansFromMembers[agent.serverId] == true
-        lock.unlock()
-        if let agentMatch {
-            return Self.json(200, "{\"agentId\":\(jsonString(agentMatch.id)),\"name\":\(jsonString(agentMatch.name)),\"displayName\":\(jsonString(agentMatch.displayName)),\"description\":\(jsonString(agentMatch.description ?? "")),\"avatarUrl\":\(agentMatch.avatarUrl.map(jsonString) ?? "null")}")
-        }
-        guard let accountMatch else {
-            return Self.json(404, "{\"error\":\"Profile not found\"}")
-        }
-        if hiddenDirectory {
-            let shared = oauth.channelsForServer(serverId: agent.serverId, userId: accountMatch.id).contains { channel in
-                oauth.channelAgentIds(channelId: channel.id).contains(agent.id)
-            }
-            guard shared else {
-                return Self.json(404, "{\"error\":\"Profile not found\"}")
-            }
-        }
-        let json = "{\"userId\":\(jsonString(accountMatch.id)),\"name\":\(jsonString(accountMatch.name)),\"displayName\":\(accountMatch.displayName.map(jsonString) ?? jsonString(accountMatch.name)),\"avatarUrl\":\(accountMatch.avatarUrl.map(jsonString) ?? "null")}"
-        return Self.json(200, json)
-    }
-
-    public func updateAgentProfile(authorization: String?, body: String) -> HTTPReply {
-        if let denial = agentCapabilityDenial(authorization, required: "send") { return denial }
-        guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
-        }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        let credential = agentCredentials[token]
-        lock.unlock()
-        guard let credential, let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
-        }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
-            return Self.json(400, "{\"error\":\"Invalid profile update\"}")
-        }
-        lock.lock()
-        let hosted = hostedAgents.contains(agent.id)
-        lock.unlock()
-        if hosted, object["description"] != nil {
-            return Self.json(403, "{\"error\":\"Hosted agents cannot change their own description\",\"code\":\"hosted_agent_description_human_only\",\"suggestedNextAction\":\"Ask a human owner or admin to edit it in your Profile tab in Raft. Nothing was changed.\"}")
-        }
-        if let description = object["description"] as? String {
-            oauth.updateAgentDescription(id: agent.id, description: description)
-        }
-        if let displayName = object["displayName"] as? String,
-           !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            oauth.updateAgentDisplayName(id: agent.id, displayName: displayName.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-        let latest = oauth.agentRuntimeInfo(id: agent.id)
-        let displayJSON = latest.map { jsonString($0.displayName) } ?? "null"
-        let descriptionJSON = latest?.description.map(jsonString) ?? "null"
-        emitRealtime("server:\(agent.serverId)", "agent:updated", "{\"agentId\":\(jsonString(agent.id)),\"displayName\":\(displayJSON)}")
-        return Self.json(200, "{\"ok\":true,\"agentId\":\(jsonString(agent.id)),\"displayName\":\(displayJSON),\"description\":\(descriptionJSON)}")
-    }
-
-    public func setServerSeats(serverId: String, seats: Int) {
-        lock.lock()
-        proSeats[serverId] = seats
-        lock.unlock()
-    }
-
-    func seatLimitMessageLocked(serverId: String) -> String? {
-        guard let seats = proSeats[serverId] else { return nil }
-        let used = oauth.memberIdsWithRoles(serverId: serverId).filter { $0.role != "guest" }.count
-        guard used >= seats else { return nil }
-        return "Seat limit reached (\(used)/\(seats) on Pro plan)"
-    }
-
-    public func createJoinLink(authorization: String?, serverId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return PublicVisits.authRequired(authorization: authorization)
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Only server owners and admins can create join links\"}")
-        }
-        guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Only server owners and admins can create join links\"}")
-        }
-        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
         var expiresAt: Date?
-        if let raw = object["expiresAt"] as? String, !raw.isEmpty {
-            guard let parsed = Self.isoDate(raw) else {
-                return Self.json(400, "{\"error\":\"expiresAt must be a valid date\"}")
+        if let raw = body.expiresAt, !raw.isEmpty {
+            guard let parsed = EmailLoginDirectory.isoDate(raw) else {
+                throw JoinLinksAndInvitesError.invalidExpiresAt
             }
             expiresAt = parsed
         }
-        var maxUses: Int?
-        if let raw = object["maxUses"], !(raw is NSNull) {
-            if let string = raw as? String, string.isEmpty {
-                maxUses = nil
-            } else if let number = raw as? NSNumber, number.doubleValue.rounded() == number.doubleValue,
-                      number.intValue >= 1 {
-                maxUses = number.intValue
-            } else {
-                return Self.json(400, "{\"error\":\"maxUses must be a positive integer\"}")
-            }
+        let maxUses: Int?
+        switch body.maxUses {
+        case .unspecified, .unlimited:
+            maxUses = nil
+        case .limited(let value):
+            maxUses = value
+        case .invalid:
+            throw JoinLinksAndInvitesError.invalidMaxUses
         }
+        let timestamp = now()
         let token = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
         let link = JoinLinkRecord(
             id: UUID().uuidString.lowercased(),
             token: token,
             serverId: serverId,
             role: "member",
-            createdAt: Date(),
+            createdAt: timestamp,
             expiresAt: expiresAt,
             maxUses: maxUses,
             useCount: 0,
             revokedAt: nil
         )
-        lock.lock()
-        joinLinks[token] = link
-        lock.unlock()
-        let expiresJSON = expiresAt.map { jsonString(Self.isoString($0)) } ?? "null"
-        let maxUsesJSON = maxUses.map(String.init) ?? "null"
-        return Self.json(200, "{\"token\":\(jsonString(token)),\"link\":\(joinLinkJSON(link)),\"maxUses\":\(maxUsesJSON),\"expiresAt\":\(expiresJSON)}")
-    }
-
-    public func listJoinLinks(authorization: String?, serverId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return PublicVisits.authRequired(authorization: authorization)
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Only server owners and admins can view join links\"}")
-        }
-        guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Only server owners and admins can view join links\"}")
-        }
-        lock.lock()
-        let now = Date()
-        let links = joinLinks.values
-            .filter { $0.serverId == serverId && $0.revokedAt == nil }
-            .filter { !Self.joinLinkExpired($0, now: now) && !Self.joinLinkExhausted($0) }
-            .sorted { $0.createdAt > $1.createdAt }
-            .map(joinLinkJSON)
-            .joined(separator: ",")
-        lock.unlock()
-        return Self.json(200, "[\(links)]")
-    }
-
-    public func revokeJoinLink(authorization: String?, serverId: String, linkId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return PublicVisits.authRequired(authorization: authorization)
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Only server owners and admins can revoke join links\"}")
-        }
-        guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Only server owners and admins can revoke join links\"}")
-        }
-        lock.lock()
-        if let key = joinLinks.first(where: { $0.value.id == linkId && $0.value.serverId == serverId })?.key {
-            joinLinks[key]?.revokedAt = Date()
-        }
-        lock.unlock()
-        return Self.json(200, "{\"ok\":true}")
-    }
-
-    public func inviteInfo(token: String?) -> HTTPReply {
-        guard let token, !token.isEmpty else {
-            return Self.json(404, "{\"error\":\"Invite not found\"}")
-        }
-        if let link = joinLinks[token.lowercased()] {
-            guard link.revokedAt == nil, !Self.joinLinkExpired(link, now: Date()), !Self.joinLinkExhausted(link) else {
-                return Self.json(404, "{\"error\":\"Invite not found\"}")
-            }
-            guard let profile = oauth.serverProfile(id: link.serverId) else {
-                return Self.json(404, "{\"error\":\"Invite not found\"}")
-            }
-            lock.lock()
-            let message = seatLimitMessageLocked(serverId: link.serverId)
-            lock.unlock()
-            return inviteInfoJSON(profile: profile, message: message)
-        }
-        let hash = Self.sha256(token)
-        lock.lock()
-        let invite = serverInvites.first { $0.tokenHash == hash }
-        lock.unlock()
-        guard let invite, let profile = oauth.serverProfile(id: invite.serverId) else {
-            return Self.json(404, "{\"error\":\"Invite not found\"}")
-        }
-        lock.lock()
-        let message = seatLimitMessageLocked(serverId: invite.serverId)
-        lock.unlock()
-        return inviteInfoJSON(profile: profile, message: message)
-    }
-
-    func inviteInfoJSON(profile: OAuthLedger.ServerProfile, message: String?) -> HTTPReply {
-        let messageJSON = message.map(jsonString) ?? "null"
-        let hidden = hideHumansFromMembers[profile.id] == true
-        let memberCount = hidden ? 0 : oauth.memberRoles(serverId: profile.id).count
-        let agentCount = hidden ? 0 : oauth.serverAgents(serverId: profile.id).count
-        let agreementJSON = oauth.activeServerAgreement(serverId: profile.id).map { Self.agreementJSON($0) } ?? "null"
-        return Self.json(200, "{\"serverId\":\(jsonString(profile.id)),\"serverName\":\(jsonString(profile.name)),\"serverSlug\":\(jsonString(profile.slug)),\"humanSeatLimitReached\":\(message != nil),\"humanSeatLimitMessage\":\(messageJSON),\"memberCount\":\(memberCount),\"agentCount\":\(agentCount),\"insideCountsHidden\":\(hidden ? "true" : "false"),\"agreement\":\(agreementJSON)}")
-    }
-
-    public func acceptInvite(authorization: String?, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return PublicVisits.authRequired(authorization: authorization)
-        }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let rawToken = object["token"] as? String
-        else {
-            return Self.json(400, "{\"error\":\"Invalid invite\"}")
-        }
-        if let existing = joinLinks[rawToken.lowercased()] {
-            guard existing.revokedAt == nil,
-                  !Self.joinLinkExpired(existing, now: Date()),
-                  !Self.joinLinkExhausted(existing)
-            else {
-                return Self.json(400, "{\"error\":\"Invalid invite\"}")
-            }
-            lock.lock()
-            let message = seatLimitMessageLocked(serverId: existing.serverId)
-            if let message {
-                lock.unlock()
-                return Self.json(400, "{\"error\":\(jsonString(message))}")
-            }
-            let active = oauth.activeServerAgreement(serverId: existing.serverId)
-            if let active {
-                guard let requested = object["agreementId"] as? String else {
-                    let agreementJSON = Self.agreementJSON(active)
-                    lock.unlock()
-                    return Self.json(409, "{\"error\":\"agreement_required\",\"agreement\":\(agreementJSON)}")
-                }
-                guard requested == active.id else {
-                    let agreementJSON = Self.agreementJSON(active)
-                    lock.unlock()
-                    return Self.json(409, "{\"error\":\"agreement_changed\",\"agreement\":\(agreementJSON)}")
-                }
-                membershipAgreementAudits.append((
-                    serverId: existing.serverId, subjectId: userId, actorUserId: userId,
-                    source: "invite", agreementId: active.id, agreementVersion: active.version
-                ))
-            }
-            let oldCount = joinLinks[rawToken.lowercased()]?.useCount ?? 0
-            joinLinks[rawToken.lowercased()]?.useCount = oldCount + 1
-            lock.unlock()
-            oauth.addMember(serverId: existing.serverId, userId: userId, role: existing.role)
-            lock.lock()
-            recordServerMemberEvent(
-                serverId: existing.serverId, eventType: "server.member_added", subjectType: "member", subjectId: userId,
-                provenanceJSON: "{\"actor_type\":\"human\",\"principal_type\":\"human\",\"reason\":\"joined\",\"role\":\(jsonString(existing.role)),\"source\":\"server_service\"}"
-            )
-            lock.unlock()
-            return Self.json(200, "{\"ok\":true,\"serverId\":\(jsonString(existing.serverId))}")
-        }
-        let hash = Self.sha256(rawToken)
-        lock.lock()
-        guard let index = serverInvites.firstIndex(where: { $0.tokenHash == hash }) else {
-            lock.unlock()
-            return Self.json(400, "{\"error\":\"Invalid invite\"}")
-        }
-        let invite = serverInvites[index]
-        let email = accounts.values.first(where: { $0.id == userId })?.email.lowercased()
-        guard email == invite.email.lowercased() else {
-            lock.unlock()
-            return Self.json(400, "{\"error\":\"Invalid invite\"}")
-        }
-        let message = seatLimitMessageLocked(serverId: invite.serverId)
-        if let message {
-            lock.unlock()
-            return Self.json(400, "{\"error\":\(jsonString(message))}")
-        }
-        if let active = oauth.activeServerAgreement(serverId: invite.serverId) {
-            guard let requested = object["agreementId"] as? String else {
-                let agreementJSON = Self.agreementJSON(active)
-                lock.unlock()
-                return Self.json(409, "{\"error\":\"agreement_required\",\"agreement\":\(agreementJSON)}")
-            }
-            guard requested == active.id else {
-                let agreementJSON = Self.agreementJSON(active)
-                lock.unlock()
-                return Self.json(409, "{\"error\":\"agreement_changed\",\"agreement\":\(agreementJSON)}")
-            }
-            membershipAgreementAudits.append((
-                serverId: invite.serverId, subjectId: userId, actorUserId: userId,
-                source: "invite", agreementId: active.id, agreementVersion: active.version
-            ))
-        }
-        serverInvites.remove(at: index)
-        lock.unlock()
-        oauth.addMember(serverId: invite.serverId, userId: userId, role: invite.role)
-        lock.lock()
-        recordServerMemberEvent(
-            serverId: invite.serverId, eventType: "server.member_added", subjectType: "member", subjectId: userId,
-            provenanceJSON: "{\"actor_type\":\"human\",\"principal_type\":\"human\",\"reason\":\"joined\",\"role\":\(jsonString(invite.role)),\"source\":\"server_service\"}"
+        store.insertJoinLink(link)
+        return JoinLinkCreateResponseDTO(
+            token: token,
+            link: JoinLinkPayloadDTO(link),
+            maxUses: maxUses,
+            expiresAt: expiresAt.map(EmailLoginDirectory.isoString)
         )
-        lock.unlock()
-        return Self.json(200, "{\"ok\":true,\"serverId\":\(jsonString(invite.serverId))}")
     }
 
-    func joinLinkJSON(_ link: JoinLinkRecord) -> String {
-        let expiresAt = link.expiresAt.map { jsonString(Self.isoString($0)) } ?? "null"
-        let revokedAt = link.revokedAt.map { jsonString(Self.isoString($0)) } ?? "null"
-        let maxUses = link.maxUses.map(String.init) ?? "null"
-        return "{\"id\":\(jsonString(link.id)),\"token\":\(jsonString(link.token)),\"createdAt\":\(jsonString(Self.isoString(link.createdAt))),\"expiresAt\":\(expiresAt),\"maxUses\":\(maxUses),\"useCount\":\(link.useCount),\"revokedAt\":\(revokedAt)}"
-    }
+    // MARK: - GET /api/servers/:id/join-links
 
-    public func listServerInvites(authorization: String?, serverId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return PublicVisits.authRequired(authorization: authorization)
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
-        guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
-        }
-        lock.lock()
-        let rows = serverInvites.filter { $0.serverId == serverId }.map { invite in
-            "{\"id\":\(jsonString(invite.id)),\"invitedEmail\":\(jsonString(invite.email)),\"email\":\(jsonString(invite.email)),\"role\":\(jsonString(invite.role)),\"status\":\"pending\"}"
-        }.joined(separator: ",")
-        lock.unlock()
-        return Self.json(200, "[\(rows)]")
-    }
-
-    public func revokeServerInvite(authorization: String?, serverId: String, inviteId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return PublicVisits.authRequired(authorization: authorization)
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Only server owners and admins can revoke invites\"}")
-        }
-        guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Only server owners and admins can revoke invites\"}")
-        }
-        lock.lock()
-        serverInvites.removeAll { $0.id == inviteId && $0.serverId == serverId }
-        lock.unlock()
-        return Self.json(200, "{\"ok\":true}")
-    }
-
-    public func createServerInvite(authorization: String?, serverId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return PublicVisits.authRequired(authorization: authorization)
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
-        guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
-        }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let rawEmail = object["email"] as? String
+    public func listJoinLinks(authorization: String?, serverId: String) throws -> JoinLinkListResponseDTO {
+        let userId = try authenticatedUserId(authorization)
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId),
+              role == "owner" || role == "admin"
         else {
-            return Self.json(400, "{\"error\":\"Enter a valid email address\"}")
+            throw JoinLinksAndInvitesError.forbiddenViewJoinLinks
+        }
+        return JoinLinkListResponseDTO(
+            links: store.activeJoinLinks(serverId: serverId, now: now()).map(JoinLinkPayloadDTO.init)
+        )
+    }
+
+    // MARK: - DELETE /api/servers/:id/join-links/:linkId
+
+    public func revokeJoinLink(
+        authorization: String?,
+        serverId: String,
+        linkId: String
+    ) throws -> JoinLinksOkResponseDTO {
+        let userId = try authenticatedUserId(authorization)
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId),
+              role == "owner" || role == "admin"
+        else {
+            throw JoinLinksAndInvitesError.forbiddenRevokeJoinLinks
+        }
+        store.revokeJoinLink(id: linkId, serverId: serverId, now: now())
+        return JoinLinksOkResponseDTO()
+    }
+
+    // MARK: - GET /api/auth/invite-info
+
+    /// The public invite preview. A missing, unknown, revoked, expired or
+    /// exhausted token all publish the same 404.
+    public func inviteInfo(token: String?) throws -> InviteInfoResponseDTO {
+        guard let token, !token.isEmpty else {
+            throw JoinLinksAndInvitesError.inviteNotFound
+        }
+        if let link = store.joinLink(token: token.lowercased()) {
+            guard link.revokedAt == nil,
+                  !Self.joinLinkExpired(link, now: now()),
+                  !Self.joinLinkExhausted(link),
+                  let profile = oauth.serverProfile(id: link.serverId)
+            else {
+                throw JoinLinksAndInvitesError.inviteNotFound
+            }
+            return try inviteInfoResponse(profile: profile, message: seatLimitMessage(serverId: link.serverId))
+        }
+        let hash = EmailLoginDirectory.sha256(token)
+        guard let invite = store.inviteRecord(tokenHash: hash),
+              let profile = oauth.serverProfile(id: invite.serverId)
+        else {
+            throw JoinLinksAndInvitesError.inviteNotFound
+        }
+        return try inviteInfoResponse(profile: profile, message: seatLimitMessage(serverId: invite.serverId))
+    }
+
+    // MARK: - POST /api/auth/accept-invite
+
+    /// Accepts a join link or an email invite.
+    ///
+    /// The link path spends the use count in a store critical section before
+    /// the membership write; the email path removes the invite in the same
+    /// section as the seat and agreement decision. Both then add the member and
+    /// queue `server.member_added`.
+    public func acceptInvite(
+        authorization: String?,
+        body: JoinLinkAcceptRequest?
+    ) throws -> JoinLinkAcceptResponseDTO {
+        let userId = try authenticatedUserId(authorization)
+        guard let body, let rawToken = body.token else {
+            throw JoinLinksAndInvitesError.invalidInvite
+        }
+        if store.joinLink(token: rawToken.lowercased()) != nil {
+            switch store.acceptJoinLink(
+                token: rawToken,
+                userId: userId,
+                requestedAgreementId: body.agreementId,
+                now: now(),
+                usedSeats: usedSeats,
+                activeAgreement: activeAgreement
+            ) {
+            case .invalid:
+                throw JoinLinksAndInvitesError.invalidInvite
+            case .seatLimit(let message):
+                throw JoinLinksAndInvitesError.seatLimit(message)
+            case .agreementRequired(let agreement):
+                throw JoinLinksAndInvitesError.agreementRequired(agreement)
+            case .agreementChanged(let agreement):
+                throw JoinLinksAndInvitesError.agreementChanged(agreement)
+            case .accepted(let serverId, let role):
+                oauth.addMember(serverId: serverId, userId: userId, role: role)
+                store.appendServerMemberEvent(
+                    serverId: serverId,
+                    eventType: "server.member_added",
+                    subjectType: "member",
+                    subjectId: userId,
+                    provenanceJSON: Self.joinedProvenance(role: role)
+                )
+                return JoinLinkAcceptResponseDTO(serverId: serverId)
+            }
+        }
+        guard let email = accounts.accountEmail(id: userId)?.lowercased() else {
+            throw JoinLinksAndInvitesError.invalidInvite
+        }
+        switch store.acceptServerInvite(
+            tokenHash: EmailLoginDirectory.sha256(rawToken),
+            userEmail: email,
+            userId: userId,
+            requestedAgreementId: body.agreementId,
+            usedSeats: usedSeats,
+            activeAgreement: activeAgreement
+        ) {
+        case .invalid:
+            throw JoinLinksAndInvitesError.invalidInvite
+        case .seatLimit(let message):
+            throw JoinLinksAndInvitesError.seatLimit(message)
+        case .agreementRequired(let agreement):
+            throw JoinLinksAndInvitesError.agreementRequired(agreement)
+        case .agreementChanged(let agreement):
+            throw JoinLinksAndInvitesError.agreementChanged(agreement)
+        case .accepted(let serverId, let role):
+            oauth.addMember(serverId: serverId, userId: userId, role: role)
+            store.appendServerMemberEvent(
+                serverId: serverId,
+                eventType: "server.member_added",
+                subjectType: "member",
+                subjectId: userId,
+                provenanceJSON: Self.joinedProvenance(role: role)
+            )
+            return JoinLinkAcceptResponseDTO(serverId: serverId)
+        }
+    }
+
+    // MARK: - Email invites
+
+    public func listServerInvites(
+        authorization: String?,
+        serverId: String
+    ) throws -> ServerInviteListResponseDTO {
+        let userId = try authenticatedUserId(authorization)
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw JoinLinksAndInvitesError.notAMember
+        }
+        guard role == "owner" || role == "admin" else {
+            throw JoinLinksAndInvitesError.forbidden
+        }
+        return ServerInviteListResponseDTO(
+            invites: store.serverInviteRows(serverId: serverId).map {
+                ServerInviteRowDTO(id: $0.id, invitedEmail: $0.email, email: $0.email, role: $0.role)
+            }
+        )
+    }
+
+    public func createServerInvite(
+        authorization: String?,
+        serverId: String,
+        body: CreateServerInviteRequest?
+    ) throws -> ServerInviteCreateResponseDTO {
+        let userId = try authenticatedUserId(authorization)
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw JoinLinksAndInvitesError.notAMember
+        }
+        guard role == "owner" || role == "admin" else {
+            throw JoinLinksAndInvitesError.forbidden
+        }
+        guard let body, let rawEmail = body.email else {
+            throw JoinLinksAndInvitesError.invalidEmail
         }
         let email = rawEmail.trimmingCharacters(in: .whitespacesAndNewlines)
         guard email.wholeMatch(of: /^[^\s@]+@[^\s@]+\.[^\s@]+$/) != nil else {
-            return Self.json(400, "{\"error\":\"Enter a valid email address\"}")
+            throw JoinLinksAndInvitesError.invalidEmail
         }
-        let inviteRole = (object["role"] as? String) ?? "member"
+        let inviteRole = body.role ?? "member"
         guard ["member", "guest"].contains(inviteRole) else {
-            return Self.json(400, "{\"error\":\"role must be one of: member, guest\"}")
+            throw JoinLinksAndInvitesError.invalidInviteRole
         }
         if inviteRole == "guest" {
-            lock.lock()
-            let enabled = guestRoleServers.contains(serverId)
-            lock.unlock()
-            guard enabled else {
-                return Self.json(400, "{\"error\":\"Guest access is not enabled for this server\"}")
+            guard store.isGuestRoleEnabled(serverId: serverId) else {
+                throw JoinLinksAndInvitesError.guestAccessDisabled
             }
         }
-        if inviteRole == "member" {
-            lock.lock()
-            let message = seatLimitMessageLocked(serverId: serverId)
-            lock.unlock()
-            if let message {
-                return Self.json(400, "{\"error\":\(jsonString(message))}")
-            }
+        if inviteRole == "member", let message = seatLimitMessage(serverId: serverId) {
+            throw JoinLinksAndInvitesError.seatLimit(message)
         }
         let id = UUID().uuidString.lowercased()
-        lock.lock()
-        serverInvites.append((id: id, serverId: serverId, email: email, role: inviteRole, tokenHash: nil))
-        lock.unlock()
-        return Self.json(200, "{\"id\":\(jsonString(id)),\"invitedEmail\":\(jsonString(email)),\"email\":\(jsonString(email)),\"role\":\(jsonString(inviteRole)),\"invite\":{\"id\":\(jsonString(id)),\"email\":\(jsonString(email)),\"role\":\(jsonString(inviteRole)),\"status\":\"pending\"}}")
+        store.insertServerInvite(id: id, serverId: serverId, email: email, role: inviteRole)
+        return ServerInviteCreateResponseDTO(id: id, invitedEmail: email, email: email, role: inviteRole)
     }
 
-    public func leaveServer(authorization: String?, serverId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return PublicVisits.authRequired(authorization: authorization)
+    public func revokeServerInvite(
+        authorization: String?,
+        serverId: String,
+        inviteId: String
+    ) throws -> JoinLinksOkResponseDTO {
+        let userId = try authenticatedUserId(authorization)
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId),
+              role == "owner" || role == "admin"
+        else {
+            throw JoinLinksAndInvitesError.forbiddenRevokeInvites
         }
+        store.removeServerInvite(id: inviteId, serverId: serverId)
+        return JoinLinksOkResponseDTO()
+    }
+
+    // MARK: - POST /api/servers/:id/leave
+
+    public func leaveServer(authorization: String?, serverId: String) throws -> JoinLinksOkResponseDTO {
+        let userId = try authenticatedUserId(authorization)
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw JoinLinksAndInvitesError.notAMember
         }
         if role == "owner", oauth.ownerCount(serverId: serverId) <= 1 {
-            return Self.json(400, "{\"error\":\"The owner cannot leave the server\"}")
+            throw JoinLinksAndInvitesError.ownerCannotLeave
         }
         oauth.removeMember(serverId: serverId, userId: userId)
-        lock.lock()
-        serverMemberStatuses["\(serverId)\n\(userId)"] = "left"
-        lock.unlock()
-        lock.lock()
-        removedServerMembers.insert("\(serverId)\n\(userId)")
-        recordServerMemberEvent(
-            serverId: serverId, eventType: "server.member_removed", subjectType: "member", subjectId: userId,
-            provenanceJSON: "{\"actor_type\":\"human\",\"principal_type\":\"human\",\"reason\":\"left\",\"role\":\(jsonString(role)),\"source\":\"server_service\"}"
+        store.markMemberLeft(
+            serverId: serverId,
+            userId: userId,
+            provenanceJSON: Self.leftProvenance(role: role)
         )
-        lock.unlock()
-        return Self.json(200, "{\"ok\":true}")
+        return JoinLinksOkResponseDTO()
     }
 
-    func setupProjectionJSON(serverId: String, userId: String, role: String) -> String {
-        lock.lock()
-        let phase = setupPhases["\(serverId)\n\(userId)"] ?? "not_started"
-        lock.unlock()
-        if role == "owner" || role == "admin" {
-            let currentStep = phase == "in_progress" ? "computer_runtime" : "computer_runtime"
-            return "{\"surface\":\"computer_runtime\",\"phase\":\(jsonString(phase)),\"currentStep\":\(jsonString(currentStep)),\"blocksChat\":true,\"allowedExits\":[\"reset\",\"return_to_server\"],\"sideEffectState\":{\"transitions\":\"enabled\",\"completion\":\"disabled\"},\"gateReason\":\"computer_offline\",\"computerStatus\":\"offline\",\"runtimeStatus\":\"unknown\",\"runtimeOptions\":[],\"hasConnectedComputer\":false,\"offlineComputers\":[],\"postSetup\":{\"surveyPending\":false,\"handoffPending\":false}}"
-        }
-        return "{\"surface\":\"none\",\"phase\":null,\"currentStep\":null,\"blocksChat\":false,\"allowedExits\":[\"return_to_server\"],\"sideEffectState\":{\"transitions\":\"disabled\",\"completion\":\"disabled\"},\"gateReason\":\"insufficient_permission\",\"computerStatus\":\"unknown\",\"runtimeStatus\":\"unknown\",\"runtimeOptions\":[],\"hasConnectedComputer\":false,\"offlineComputers\":[],\"postSetup\":{\"surveyPending\":false,\"handoffPending\":false}}"
-    }
+    // MARK: - Server setup projection
 
-    public func slackBridgeUnavailable() -> HTTPReply {
-        Self.json(503, "{\"ok\":false,\"code\":\"slack_bridge_provider_unavailable\"}")
-    }
-
-    public func serverSetupProjection(authorization: String?, serverId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    public func serverSetupProjection(
+        authorization: String?,
+        serverId: String
+    ) throws -> SetupProjectionResponseDTO {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw JoinLinksAndInvitesError.unauthorized
         }
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw JoinLinksAndInvitesError.notAMember
         }
-        return Self.json(200, setupProjectionJSON(serverId: serverId, userId: userId, role: role))
+        return SetupProjectionResponseDTO(
+            phase: store.setupPhase(serverId: serverId, userId: userId),
+            isOwnerOrAdmin: role == "owner" || role == "admin"
+        )
     }
 
-    public func serverSetupTransition(authorization: String?, serverId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    public func serverSetupTransition(
+        authorization: String?,
+        serverId: String,
+        body: ServerSetupTransitionRequest?
+    ) throws -> SetupProjectionResponseDTO {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw JoinLinksAndInvitesError.unauthorized
         }
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw JoinLinksAndInvitesError.notAMember
         }
         guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"INSUFFICIENT_PERMISSION\"}")
+            throw JoinLinksAndInvitesError.insufficientPermission
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let action = object["action"] as? String,
+        guard let body, let action = body.action,
               action == "start" || action == "reset" || action == "return_to_server"
         else {
-            return Self.json(400, "{\"error\":\"INVALID_SETUP_ACTION\"}")
+            throw JoinLinksAndInvitesError.invalidSetupAction
         }
-        lock.lock()
-        let key = "\(serverId)\n\(userId)"
+        let phase: String
         if action == "start" {
-            setupPhases[key] = "in_progress"
+            phase = store.setSetupPhase(serverId: serverId, userId: userId, phase: "in_progress")
         } else if action == "reset" {
-            setupPhases[key] = "not_started"
+            phase = store.setSetupPhase(serverId: serverId, userId: userId, phase: "not_started")
+        } else {
+            phase = store.setupPhase(serverId: serverId, userId: userId)
         }
-        lock.unlock()
-        return Self.json(200, setupProjectionJSON(serverId: serverId, userId: userId, role: role))
+        return SetupProjectionResponseDTO(phase: phase, isOwnerOrAdmin: true)
     }
 
-    public func serverSetupReset(authorization: String?, serverId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    public func serverSetupReset(
+        authorization: String?,
+        serverId: String
+    ) throws -> SetupProjectionResponseDTO {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw JoinLinksAndInvitesError.unauthorized
         }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"INSUFFICIENT_PERMISSION\"}")
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId),
+              role == "owner"
+        else {
+            throw JoinLinksAndInvitesError.insufficientPermission
         }
-        guard role == "owner" else {
-            return Self.json(403, "{\"error\":\"INSUFFICIENT_PERMISSION\"}")
+        guard !agents.hasServerAgent(serverId: serverId) else {
+            throw JoinLinksAndInvitesError.serverAlreadySetUp
         }
-        lock.lock()
-        let hasAgent = serverAgents.values.contains { $0.serverId == serverId }
-        if hasAgent {
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"SERVER_ALREADY_SET_UP\"}")
-        }
-        var revokedComputers = 0
-        for index in computers.indices where computers[index].serverId == serverId && computers[index].revokedAt == nil {
-            computers[index].revokedAt = Date()
-            if computers[index].machineId != nil { revokedComputers += 1 }
-        }
-        setupPhases = setupPhases.filter { !$0.key.hasPrefix("\(serverId)\n") }
-        setupHandoffs.remove(serverId)
-        lock.unlock()
-        var projection = setupProjectionJSON(serverId: serverId, userId: userId, role: role)
-        projection.removeLast()
-        projection += ",\"revokedComputers\":\(revokedComputers)}"
-        return Self.json(200, projection)
+        let revokedComputers = computers.revokeComputers(serverId: serverId, now: now())
+        store.clearSetupState(serverId: serverId)
+        return SetupProjectionResponseDTO(
+            phase: store.setupPhase(serverId: serverId, userId: userId),
+            isOwnerOrAdmin: true,
+            revokedComputers: revokedComputers
+        )
     }
 
-    public func serverSetupHandoff(authorization: String?, serverId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    public func serverSetupHandoff(
+        authorization: String?,
+        serverId: String
+    ) throws -> SetupProjectionResponseDTO {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw JoinLinksAndInvitesError.unauthorized
         }
         guard oauth.serverProfile(id: serverId) != nil else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
+            throw JoinLinksAndInvitesError.serverNotFound
         }
         guard oauth.memberRole(serverId: serverId, userId: userId) == "owner" else {
-            return Self.json(403, "{\"error\":\"INSUFFICIENT_PERMISSION\"}")
+            throw JoinLinksAndInvitesError.insufficientPermission
         }
-        lock.lock()
-        setupHandoffs.insert(serverId)
-        lock.unlock()
-        return Self.json(200, setupProjectionJSON(serverId: serverId, userId: userId, role: "owner"))
+        store.setSetupHandoff(serverId: serverId)
+        return SetupProjectionResponseDTO(
+            phase: store.setupPhase(serverId: serverId, userId: userId),
+            isOwnerOrAdmin: true
+        )
     }
 
-    public func enableGuestRoleTransitions(serverId: String) {
-        lock.lock()
-        guestRoleServers.insert(serverId)
-        lock.unlock()
+    // MARK: - Agent profile
+
+    /// `GET /internal/agent-api/profile`.
+    ///
+    /// Without a target the reply is the calling agent; with one it resolves an
+    /// agent or a human by handle. A hidden human directory only exposes people
+    /// who share a channel with the agent.
+    public func agentProfileShow(
+        authorization: String?,
+        target: String?
+    ) throws -> AgentProfileShowResponse {
+        let userIdToken = try bearerToken(authorization)
+        guard let credential = agents.useAgentCredential(token: userIdToken, now: now()),
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId),
+              !agent.deleted
+        else {
+            throw JoinLinksAndInvitesError.agentAuthRequired
+        }
+        guard let target, !target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .agent(AgentProfileResponseDTO(agent))
+        }
+        guard credential.scopes.contains("read") else {
+            throw JoinLinksAndInvitesError.capabilityNotAuthorized(nil)
+        }
+        let handle = target.hasPrefix("@") ? String(target.dropFirst()) : target
+        let lowered = handle.lowercased()
+        let agentMatch = oauth.serverAgents(serverId: agent.serverId).first {
+            !$0.deleted && ($0.name.lowercased() == lowered || $0.displayName.lowercased() == lowered)
+        }
+        let accountMatch = accounts.accountsMatching(name: lowered).first {
+            oauth.memberRole(serverId: agent.serverId, userId: $0.id) != nil
+        }
+        let hiddenDirectory = store.hideHumans(serverId: agent.serverId)
+        if let agentMatch {
+            return .agent(AgentProfileResponseDTO(agentMatch))
+        }
+        guard let accountMatch else {
+            throw JoinLinksAndInvitesError.profileNotFound
+        }
+        if hiddenDirectory {
+            let shared = oauth.channelsForServer(serverId: agent.serverId, userId: accountMatch.id).contains { channel in
+                oauth.channelAgentIds(channelId: channel.id).contains(agent.id)
+            }
+            guard shared else {
+                throw JoinLinksAndInvitesError.profileNotFound
+            }
+        }
+        return .human(AgentHumanProfileResponseDTO(accountMatch))
     }
 
+    /// `POST /internal/agent-api/profile`.
+    public func updateAgentProfile(
+        authorization: String?,
+        body: AgentProfileUpdateRequest?
+    ) throws -> AgentProfileUpdateResponseDTO {
+        let token = try bearerToken(authorization, missingHeader: true)
+        if agents.agentCredentialLacksScope(token: token, required: "send") {
+            throw JoinLinksAndInvitesError.capabilityNotAuthorized("send")
+        }
+        guard let agentId = agents.agentId(forCredentialToken: token),
+              let agent = oauth.agentRuntimeInfo(id: agentId),
+              !agent.deleted
+        else {
+            throw JoinLinksAndInvitesError.agentAuthRequired
+        }
+        guard let body else {
+            throw JoinLinksAndInvitesError.invalidProfileUpdate
+        }
+        if agents.isHostedAgent(agent.id), body.description != nil {
+            throw JoinLinksAndInvitesError.hostedAgentDescriptionHumanOnly
+        }
+        if let description = body.description {
+            oauth.updateAgentDescription(id: agent.id, description: description)
+        }
+        if let displayName = body.displayName,
+           !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            oauth.updateAgentDisplayName(
+                id: agent.id,
+                displayName: displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+        let latest = oauth.agentRuntimeInfo(id: agent.id)
+        let displayJSON = latest.map { jsonString($0.displayName) } ?? "null"
+        dependencies.emitRealtime(
+            "server:\(agent.serverId)",
+            "agent:updated",
+            "{\"agentId\":\(jsonString(agent.id)),\"displayName\":\(displayJSON)}"
+        )
+        return AgentProfileUpdateResponseDTO(
+            agentId: agent.id,
+            displayName: latest?.displayName,
+            description: latest?.description
+        )
+    }
+
+    // MARK: - Slack bridge
+
+    /// The Slack bridge is not available in this build; all four routes answer
+    /// the published 503 body.
+    public func slackBridgeUnavailable() -> SlackBridgeUnavailableResponseDTO {
+        SlackBridgeUnavailableResponseDTO()
+    }
+
+    // MARK: - Helpers
+
+    /// The human session behind a normal access token. The published 401 keeps
+    /// its two messages and the `Cache-Control: no-store` header.
+    private func authenticatedUserId(_ authorization: String?) throws -> String {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw JoinLinksAndInvitesError.authRequired(
+                bearerPresent: authorization?.hasPrefix("Bearer ") == true
+            )
+        }
+        return userId
+    }
+
+    /// Bearer token of an agent credential. `missingHeader` selects the
+    /// published 401 body for the profile update, whose first check is the
+    /// scope gate rather than the header shape.
+    private func bearerToken(_ authorization: String?, missingHeader: Bool = false) throws -> String {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            throw missingHeader
+                ? JoinLinksAndInvitesError.missingAuthorizationHeader
+                : JoinLinksAndInvitesError.agentAuthRequired
+        }
+        return String(authorization.dropFirst("Bearer ".count))
+    }
+
+    private func inviteInfoResponse(
+        profile: OAuthLedger.ServerProfile,
+        message: String?
+    ) throws -> InviteInfoResponseDTO {
+        let hidden = store.hideHumans(serverId: profile.id)
+        return InviteInfoResponseDTO(
+            serverId: profile.id,
+            serverName: profile.name,
+            serverSlug: profile.slug,
+            humanSeatLimitReached: message != nil,
+            humanSeatLimitMessage: message,
+            memberCount: hidden ? 0 : oauth.memberRoles(serverId: profile.id).count,
+            agentCount: hidden ? 0 : oauth.serverAgents(serverId: profile.id).count,
+            insideCountsHidden: hidden,
+            agreement: oauth.activeServerAgreement(serverId: profile.id).map(ServerAgreementDTO.init)
+        )
+    }
+
+    /// Seat-holder count for one server: every member whose role is not
+    /// `guest`, read from the OAuth ledger.
+    private var usedSeats: @Sendable (String) -> Int {
+        let oauth = self.oauth
+        return { serverId in
+            oauth.memberIdsWithRoles(serverId: serverId).filter { $0.role != "guest" }.count
+        }
+    }
+
+    /// The active agreement, projected to the published DTO.
+    private var activeAgreement: @Sendable (String) -> ServerAgreementDTO? {
+        let oauth = self.oauth
+        return { serverId in
+            oauth.activeServerAgreement(serverId: serverId).map(ServerAgreementDTO.init)
+        }
+    }
+
+    private func seatLimitMessage(serverId: String) -> String? {
+        store.seatLimitMessage(serverId: serverId, usedSeats: usedSeats)
+    }
+
+    private static func joinedProvenance(role: String) -> String {
+        "{\"actor_type\":\"human\",\"principal_type\":\"human\",\"reason\":\"joined\",\"role\":\(jsonString(role)),\"source\":\"server_service\"}"
+    }
+
+    private static func leftProvenance(role: String) -> String {
+        "{\"actor_type\":\"human\",\"principal_type\":\"human\",\"reason\":\"left\",\"role\":\(jsonString(role)),\"source\":\"server_service\"}"
+    }
+
+    private static func joinLinkExpired(_ link: JoinLinkRecord, now: Date) -> Bool {
+        if let expiresAt = link.expiresAt, expiresAt <= now { return true }
+        return false
+    }
+
+    private static func joinLinkExhausted(_ link: JoinLinkRecord) -> Bool {
+        if let maxUses = link.maxUses, link.useCount >= maxUses { return true }
+        return false
+    }
+}
+
+// MARK: - Directory entry point
+
+extension EmailLoginDirectory {
+    /// Join links, email invites, the server setup projection and the agent
+    /// profile surface. The service is stateless; the directory supplies its
+    /// stores and the two not-yet-migrated bridges (session lookup and the
+    /// realtime room emitter).
+    public var joinLinksAndInvites: JoinLinksAndInvitesService {
+        JoinLinksAndInvitesService(
+            store: serversAndChannelsStore,
+            accounts: authProfileStore,
+            agents: agentsRuntimeStore,
+            computers: machinesAndComputersStore,
+            oauth: oauth,
+            dependencies: JoinLinksAndInvitesDependencies(
+                sessionUserId: { [self] authorization in
+                    sessionUserId(authorization: authorization)
+                },
+                emitRealtime: { [self] room, event, payload in
+                    emitRealtime(room, event, payload)
+                }
+            )
+        )
+    }
 }

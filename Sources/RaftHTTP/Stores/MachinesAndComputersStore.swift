@@ -209,4 +209,20 @@ final class MachinesAndComputersStore: @unchecked Sendable {
         get { state.computerUpgradeSender }
         set { state.computerUpgradeSender = newValue }
     }
+
+    // MARK: - Server setup reset
+
+    /// Revokes every live Computer of one server and returns how many of them
+    /// had a machine attached, matching the reset reply's `revokedComputers`.
+    func revokeComputers(serverId: String, now: Date) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        var revoked = 0
+        for index in storage.computers.indices
+        where storage.computers[index].serverId == serverId && storage.computers[index].revokedAt == nil {
+            storage.computers[index].revokedAt = now
+            if storage.computers[index].machineId != nil { revoked += 1 }
+        }
+        return revoked
+    }
 }

@@ -1,4 +1,6 @@
-// Test seams for join links and invites: audits and invite token pokes.
+// Test seams for join links and invites: audits, invite token pokes and the
+// seat/guest configuration the route tests used to set through production
+// extension helpers.
 @testable import RaftHTTP
 import Foundation
 
@@ -26,10 +28,18 @@ extension EmailLoginDirectory {
     }
 
     public func setServerInviteTokenForTesting(inviteId: String, token: String) {
-        lock.lock()
-        if let index = serverInvites.firstIndex(where: { $0.id == inviteId }) {
-            serverInvites[index].tokenHash = Self.sha256(token)
-        }
-        lock.unlock()
+        serversAndChannelsStore.setInviteTokenHash(id: inviteId, tokenHash: Self.sha256(token))
+    }
+
+    /// Test-only seat cap. The production route set never writes the Pro seat
+    /// count directly; the store owns the row.
+    public func setServerSeats(serverId: String, seats: Int) {
+        serversAndChannelsStore.setSeats(serverId: serverId, seats: seats)
+    }
+
+    /// Test-only guest-role gate. The production route that flips it is owned
+    /// by the unmigrated server-settings surface.
+    public func enableGuestRoleTransitions(serverId: String) {
+        serversAndChannelsStore.enableGuestRole(serverId: serverId)
     }
 }

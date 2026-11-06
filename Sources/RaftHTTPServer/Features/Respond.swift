@@ -137,3 +137,47 @@ private func jsonReply<T: Encodable>(
     for (name, value) in extraHeaders { headers[name] = value }
     return HTTPReply(status: Int(status), headers: headers, body: String(decoding: data, as: UTF8.self))
 }
+
+/// Overload for a domain whose published success body must keep the upstream
+/// member order. `JSONEncoder` keyed containers are hash ordered on Linux, so a
+/// `Codable` re-encode cannot reproduce a fixed order; the DTO builds the exact
+/// bytes and this overload publishes them unchanged. A thrown
+/// `ExactBodyDomainError` keeps the same exact-body treatment.
+func respond<DTO: ExactJSONResponse>(
+    status: UInt = 200,
+    _ call: () throws -> DTO
+) throws -> Response {
+    do {
+        return routeResponse(try exactJSONReply(status: status, body: try call().jsonBody()))
+    } catch let error as any ExactBodyDomainError {
+        return routeResponse(try exactJSONReply(
+            status: error.status,
+            body: error.exactBodyJSON,
+            extraHeaders: error.responseHeaders
+        ))
+    } catch let error as any DomainErrorWithBody {
+        return routeResponse(try jsonReplySorted(
+            status: error.status,
+            payload: error.body,
+            extraHeaders: error.responseHeaders
+        ))
+    } catch let error as any DomainError {
+        return try domainErrorResponse(error)
+    }
+}
+
+/// The exact-body projection: the legacy `Content-Type`, `X-Robots-Tag` and
+/// byte-count `Content-Length` header set.
+private func exactJSONReply(
+    status: UInt,
+    body: String,
+    extraHeaders: [String: String] = [:]
+) throws -> HTTPReply {
+    var headers = [
+        "X-Robots-Tag": AppFallback.robotsTag,
+        "Content-Type": AppFallback.jsonContentType,
+        "Content-Length": String(Data(body.utf8).count),
+    ]
+    for (name, value) in extraHeaders { headers[name] = value }
+    return HTTPReply(status: Int(status), headers: headers, body: body)
+}

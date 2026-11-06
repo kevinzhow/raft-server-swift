@@ -339,17 +339,17 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                 cdnBase: bases.cdn
             ))
         }
-        slackBridge.post("events") { _ -> Response in
-            routeResponse(services.emailAccounts.slackBridgeUnavailable())
+        slackBridge.post("events") { _ throws -> Response in
+            try respond(status: 503) { services.emailAccounts.joinLinksAndInvites.slackBridgeUnavailable() }
         }
-        slackBridge.get("oauth", "callback") { _ -> Response in
-            routeResponse(services.emailAccounts.slackBridgeUnavailable())
+        slackBridge.get("oauth", "callback") { _ throws -> Response in
+            try respond(status: 503) { services.emailAccounts.joinLinksAndInvites.slackBridgeUnavailable() }
         }
-        slackBridge.post("oauth", "start") { _ -> Response in
-            routeResponse(services.emailAccounts.slackBridgeUnavailable())
+        slackBridge.post("oauth", "start") { _ throws -> Response in
+            try respond(status: 503) { services.emailAccounts.joinLinksAndInvites.slackBridgeUnavailable() }
         }
-        slackBridge.get("provisioning") { _ -> Response in
-            routeResponse(services.emailAccounts.slackBridgeUnavailable())
+        slackBridge.get("provisioning") { _ throws -> Response in
+            try respond(status: 503) { services.emailAccounts.joinLinksAndInvites.slackBridgeUnavailable() }
         }
         v2.post("messages") { request async throws -> Response in
             routeResponse(services.emailAccounts.createHumanMessage(

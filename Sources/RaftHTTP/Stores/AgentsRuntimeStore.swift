@@ -350,4 +350,52 @@ final class AgentsRuntimeStore: @unchecked Sendable {
         get { state.agentAttachmentPresign }
         set { state.agentAttachmentPresign = newValue }
     }
+
+    // MARK: - Join-link and agent-profile checks
+
+    /// Whether one server already has an agent row. The setup reset refuses
+    /// after this is true.
+    func hasServerAgent(serverId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.serverAgents.values.contains { $0.serverId == serverId }
+    }
+
+    func isHostedAgent(_ agentId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.hostedAgents.contains(agentId)
+    }
+
+    /// The `agentCredentialAgent` read, kept in one critical section: a revoked
+    /// credential does not resolve and a live one records the use.
+    func useAgentCredential(token: String, now: Date) -> (agentId: String, scopes: [String])? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let credential = storage.agentCredentials[token], credential.revokedAt == nil else {
+            return nil
+        }
+        storage.agentCredentials[token]?.lastUsedAt = now
+        return (credential.agentId, Array(credential.scopes))
+    }
+
+    /// The `agentCapabilityDenial` predicate: a live credential that does not
+    /// carry the required scope is the only denial.
+    func agentCredentialLacksScope(token: String, required: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let credential = storage.agentCredentials[token], credential.revokedAt == nil else {
+            return false
+        }
+        return !credential.scopes.contains(required)
+    }
+
+    /// Raw credential lookup used by the profile update. The upstream handler
+    /// does not re-check revocation here, and the parity test set depends on
+    /// that reading.
+    func agentId(forCredentialToken token: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.agentCredentials[token]?.agentId
+    }
 }
