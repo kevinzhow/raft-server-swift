@@ -1,220 +1,400 @@
-import Crypto
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 
-/// Migration status seam and lifecycle bookkeeping for one agent: the
-/// published status projection, cancellation, provider position and the
-/// external diagnostics view.
-///
-/// These handlers were lifted from `EmailLogin+Agents2.swift`.
+/// Domain failure for the three agent-migration-status operations: the
+/// published status projection, the cancellation and the external diagnostics
+/// view. The feature layer owns the wire encoding; each case owns the status,
+/// the published `error` text and, for the coded failures, the machine code.
+public enum AgentMigrationStatusError: DomainError, Equatable {
+    case unauthorized
+    case agentMissing
+    case diagnosticsForbidden
+    case migrationStatusForbidden
+    case migrationCancelForbidden
+    case agentNotExternal
+    case migrationRefInvalid
+    case migrationRevisionInvalid
+    case migrationNotFound
+    case migrationRevisionStale
+    case migrationNotCancelable
 
-public struct AgentMigrationStatusService: Sendable {
-    public let directory: EmailLoginDirectory
+    public var status: UInt {
+        switch self {
+        case .unauthorized:
+            401
+        case .agentMissing, .migrationNotFound:
+            404
+        case .diagnosticsForbidden, .migrationStatusForbidden, .migrationCancelForbidden:
+            403
+        case .agentNotExternal, .migrationRefInvalid, .migrationRevisionInvalid:
+            400
+        case .migrationRevisionStale, .migrationNotCancelable:
+            409
+        }
+    }
 
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
+    public var errorMessage: String {
+        switch self {
+        case .unauthorized:
+            "Unauthorized"
+        case .agentMissing:
+            "Agent not found"
+        case .diagnosticsForbidden:
+            "Forbidden"
+        case .migrationStatusForbidden:
+            "Agent migration status requires creator or server admin authority"
+        case .migrationCancelForbidden:
+            "Agent migration cancel requires creator or server admin authority"
+        case .agentNotExternal:
+            "External diagnostics require an external Agent"
+        case .migrationRefInvalid:
+            "migrationRef is required"
+        case .migrationRevisionInvalid:
+            "expectedRevision must be a positive integer"
+        case .migrationNotFound:
+            "Migration not found"
+        case .migrationRevisionStale:
+            "The migration changed since this action was shown"
+        case .migrationNotCancelable:
+            "This migration can no longer be canceled"
+        }
+    }
+
+    public var errorCode: String? {
+        switch self {
+        case .unauthorized, .diagnosticsForbidden:
+            nil
+        case .agentMissing:
+            "agent_missing"
+        case .migrationStatusForbidden, .migrationCancelForbidden:
+            "not_supported"
+        case .agentNotExternal:
+            "agent_not_external"
+        case .migrationRefInvalid:
+            "MIGRATION_REF_INVALID"
+        case .migrationRevisionInvalid:
+            "MIGRATION_REVISION_INVALID"
+        case .migrationNotFound:
+            "MIGRATION_NOT_FOUND"
+        case .migrationRevisionStale:
+            "MIGRATION_REVISION_STALE"
+        case .migrationNotCancelable:
+            "MIGRATION_NOT_CANCELABLE"
+        }
+    }
+
+    /// The legacy coded failure prints the machine code before the message.
+    /// The canonical default is the opposite order, so the domain owns its
+    /// tree; a failure without a code keeps the plain `{"error": …}` bytes.
+    public var errorBody: OrderedJSON? {
+        guard let errorCode else { return nil }
+        return .object([
+            OrderedJSONField("code", errorCode),
+            OrderedJSONField("error", errorMessage),
+        ])
     }
 }
 
-extension EmailLoginDirectory {
+/// Migration status, cancellation, provider position and the external
+/// diagnostics view for one agent.
+///
+/// The service owns the published order (owner/administrator/creator authority
+/// before any migration read), returns a typed DTO whose key order is the
+/// legacy key order, and throws `AgentMigrationStatusError`; it never builds a
+/// reply, JSON or header set. The two migration record families live in
+/// different stores, so each cancel decision runs as one store critical section
+/// per family: the store checks presence, revision and state and writes the
+/// cancelled record under the same lock.
+public struct AgentMigrationStatusService: Sendable {
+    private let sessionUserId: @Sendable (String?) -> String?
+    private let oauth: OAuthLedger
+    private let agents: AgentsRuntimeStore
+    private let machines: MachinesAndComputersStore
+    private let emitRealtime: @Sendable (_ room: String, _ event: String, _ payload: String) -> Void
+    private let cancelDispatch: @Sendable (
+        _ machineId: String,
+        _ role: String,
+        _ migrationRef: String,
+        _ transportGeneration: String,
+        _ stopAgent: Bool
+    ) -> Void
+    private let now: @Sendable () -> Date
 
-    public func externalAgentDiagnostics(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted, info.serverId == serverId,
-              let role = oauth.memberRole(serverId: serverId, userId: userId)
-        else {
-            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
-        }
-        guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
-        }
-        guard info.runtime == "external" else {
-            return Self.json(400, "{\"code\":\"agent_not_external\",\"error\":\"External diagnostics require an external Agent\"}")
-        }
-        lock.lock()
-        let lastSeen = agentLastSeenAt[agentId]
-        let activity = agentActivities[agentId]?.activity ?? "idle"
-        let adoptedAt = agentStatusProtocolAdoptedAt[agentId]
-        let webhook = externalPushWebhooks[agentId]
-        let cursor = agentCursorPullState[agentId]
-        let position = agentProviderPositions[agentId]
-        let hosted = hostedRuntimes[agentId]
-        lock.unlock()
+    init(
+        sessionUserId: @escaping @Sendable (String?) -> String?,
+        oauth: OAuthLedger,
+        agents: AgentsRuntimeStore,
+        machines: MachinesAndComputersStore,
+        emitRealtime: @escaping @Sendable (String, String, String) -> Void,
+        cancelDispatch: @escaping @Sendable (String, String, String, String, Bool) -> Void,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
+        self.sessionUserId = sessionUserId
+        self.oauth = oauth
+        self.agents = agents
+        self.machines = machines
+        self.emitRealtime = emitRealtime
+        self.cancelDispatch = cancelDispatch
+        self.now = now
+    }
 
-        let online = lastSeen.map { Date().timeIntervalSince($0) <= 120 } ?? false
-        let presence = "{\"lastSeenAt\":\(Self.isoOrNull(lastSeen)),\"online\":\(online),\"onlineWindowMs\":120000}"
-        let status = "{\"activity\":\(jsonString(activity)),\"statusProtocolAdoptedAt\":\(Self.isoOrNull(adoptedAt))}"
+    /// `GET /api/agents/:id/external-diagnostics`.
+    public func externalDiagnostics(
+        authorization: String?,
+        serverId: String,
+        agentId: String
+    ) throws -> ExternalAgentDiagnosticsResponse {
+        let agent = try authorized(
+            authorization: authorization,
+            serverId: serverId,
+            agentId: agentId,
+            forbidden: .diagnosticsForbidden
+        ).agent
+        guard agent.runtime == "external" else { throw AgentMigrationStatusError.agentNotExternal }
+        let facts = agents.externalDiagnosticsFacts(agentId: agentId)
+        let online = facts.lastSeenAt.map { now().timeIntervalSince($0) <= 120 } ?? false
+        // The published view reduces the registered endpoint to its host; the
+        // URL path and the delivered secret never leave the store.
+        let endpointHost = facts.pushWebhookURL.flatMap { URLComponents(string: $0)?.host }
 
-        let endpointHost = webhook.flatMap { URLComponents(string: $0.url)?.host }
-        let push = "{\"registered\":\(webhook != nil),\"enabled\":\(webhook != nil),\"endpointHost\":\(endpointHost.map(jsonString) ?? "null"),\"disabledReason\":null,\"disabledAt\":null,\"consecutiveFailures\":0,\"lastAttemptAt\":null,\"lastDeliveryAt\":null,\"lastError\":null,\"nextAttemptAt\":null}"
-
-        let events = "{\"lastCursorPullAt\":\(Self.isoOrNull(cursor?.lastPulledAt)),\"pendingCursorAckCount\":\(cursor?.pendingAcks ?? 0)}"
-
-        let provider: String
-        if let position {
-            let errorCode = position.lastErrorCode.map(jsonString) ?? "null"
-            provider = "{\"kind\":\(jsonString(position.provider)),\"state\":\(jsonString(position.state)),\"providerAgentId\":\(position.providerAgentId.map(jsonString) ?? "null"),\"syncPending\":\(position.syncPending),\"lastErrorCode\":\(errorCode),\"lastErrorAt\":\(Self.isoOrNull(position.lastErrorAt)),\"activatedAt\":\(Self.isoOrNull(position.activatedAt))}"
-        } else if let hosted {
-            provider = "{\"kind\":\"antiproton\",\"state\":\(jsonString(hosted.state)),\"providerAgentId\":null,\"syncPending\":false,\"lastErrorCode\":null,\"lastErrorAt\":null,\"activatedAt\":\(Self.isoOrNull(hosted.createdAt))}"
+        let provider: ExternalAgentProviderDiagnostics?
+        if let position = facts.providerPosition {
+            provider = ExternalAgentProviderDiagnostics(
+                kind: position.provider,
+                state: position.state,
+                providerAgentId: position.providerAgentId,
+                syncPending: position.syncPending,
+                lastErrorCode: position.lastErrorCode,
+                lastErrorAt: AgentMigrationTimestamps.string(position.lastErrorAt),
+                activatedAt: AgentMigrationTimestamps.string(position.activatedAt)
+            )
+        } else if let hosted = facts.hostedRuntime {
+            provider = ExternalAgentProviderDiagnostics(
+                kind: "antiproton",
+                state: hosted.state,
+                providerAgentId: nil,
+                syncPending: false,
+                lastErrorCode: nil,
+                lastErrorAt: nil,
+                activatedAt: AgentMigrationTimestamps.string(hosted.createdAt)
+            )
         } else {
-            provider = "null"
+            provider = nil
         }
 
-        let connections: String
-        if hosted != nil {
-            connections = "[{\"provider\":\"github\",\"state\":\"unavailable\",\"account\":null,\"reason\":\"Cloud connections are not enabled for this server\"}]"
-        } else {
-            connections = "[{\"provider\":\"github\",\"state\":\"not_applicable\",\"account\":null,\"reason\":null}]"
-        }
+        let connections = facts.hostedRuntime == nil
+            ? [ExternalAgentConnectionDiagnostics(provider: "github", state: "not_applicable", account: nil, reason: nil)]
+            : [ExternalAgentConnectionDiagnostics(
+                provider: "github",
+                state: "unavailable",
+                account: nil,
+                reason: "Cloud connections are not enabled for this server"
+            )]
 
-        return Self.json(200, "{\"agentId\":\(jsonString(agentId)),\"runtime\":\"external\",\"provider\":\(provider),\"presence\":\(presence),\"status\":\(status),\"push\":\(push),\"events\":\(events),\"connections\":\(connections)}")
+        return ExternalAgentDiagnosticsResponse(
+            agentId: agentId,
+            provider: provider,
+            presence: ExternalAgentPresenceDiagnostics(
+                lastSeenAt: AgentMigrationTimestamps.string(facts.lastSeenAt),
+                online: online
+            ),
+            status: ExternalAgentStatusDiagnostics(
+                activity: facts.activity,
+                statusProtocolAdoptedAt: AgentMigrationTimestamps.string(facts.statusProtocolAdoptedAt)
+            ),
+            push: ExternalAgentPushDiagnostics(
+                registered: facts.pushWebhookURL != nil,
+                endpointHost: endpointHost
+            ),
+            events: ExternalAgentCursorDiagnostics(
+                lastCursorPullAt: AgentMigrationTimestamps.string(facts.cursorLastPulledAt),
+                pendingCursorAckCount: facts.cursorPendingAcks
+            ),
+            connections: connections
+        )
     }
 
-    public func agentMigrationStatus(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    /// `GET /api/agents/:id/migration`. A hosted row wins over a Computer row,
+    /// which is the order the legacy read used.
+    public func migrationStatus(
+        authorization: String?,
+        serverId: String,
+        agentId: String
+    ) throws -> AgentMigrationStatusResponse {
+        _ = try authorized(
+            authorization: authorization,
+            serverId: serverId,
+            agentId: agentId,
+            forbidden: .migrationStatusForbidden
+        )
+        if let hosted = agents.hostedMigrations[agentId] {
+            return AgentMigrationStatusResponse(migration: .hosted(HostedAgentMigrationStatus(hosted)))
         }
-        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted, info.serverId == serverId,
-              let role = oauth.memberRole(serverId: serverId, userId: userId)
-        else {
-            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
+        if let machine = machines.machineMigration(agentId: agentId, serverId: serverId) {
+            return AgentMigrationStatusResponse(migration: .machine(MachineAgentMigrationStatus(machine)))
         }
-        guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
-            return Self.json(403, "{\"code\":\"not_supported\",\"error\":\"Agent migration status requires creator or server admin authority\"}")
-        }
-        lock.lock()
-        let hosted = hostedMigrations[agentId]
-        let machine = machineMigrations.values.first { $0.agentId == agentId && $0.serverId == serverId }
-        lock.unlock()
-        if let hosted {
-            return Self.json(200, "{\"migration\":\(migrationStatusJSON(hosted))}")
-        }
-        if let machine {
-            return Self.json(200, "{\"migration\":\(machineMigrationStatusJSON(machine))}")
-        }
-        return Self.json(200, "{\"migration\":null}")
+        return AgentMigrationStatusResponse()
     }
 
-    func machineMigrationStatusJSON(_ migration: MachineMigrationRecord) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        func timestamp(_ date: Date?) -> String {
-            date.map { jsonString(formatter.string(from: $0)) } ?? "null"
-        }
-        let canceledAt = timestamp(migration.canceledAt)
-        let cancelReason = migration.cancelReason.map(jsonString) ?? "null"
-        let cancelLastDispatchAt = timestamp(migration.cancelLastDispatchAt)
-        let cancelErrorCode = migration.cancelErrorCode.map(jsonString) ?? "null"
-        let failureReason = migration.failureReason.map(jsonString) ?? "null"
-        let transportErrorCode = migration.transportErrorCode.map(jsonString) ?? "null"
-        let transportErrorMessage = migration.transportErrorMessage.map(jsonString) ?? "null"
-        let transportLostAt = timestamp(migration.transportLostAt)
-        let transportTeardownAt = timestamp(migration.transportTeardownAt)
-        let autoStartFailureStage = migration.autoStartFailureStage.map(jsonString) ?? "null"
-        let autoStartFailureCode = migration.autoStartFailureCode.map(jsonString) ?? "null"
-        return "{\"migrationRef\":\(jsonString(migration.supportRef)),\"agentId\":\(jsonString(migration.agentId)),\"state\":\(jsonString(migration.state)),\"revision\":\(migration.revision),\"sourceMachineId\":\(jsonString(migration.sourceMachineId)),\"targetKind\":\"computer\",\"targetMachineId\":\(jsonString(migration.targetMachineId)),\"provider\":\(jsonString(migration.transportProvider)),\"failureReason\":\(failureReason),\"autoStartFailureStage\":\(autoStartFailureStage),\"autoStartFailureCode\":\(autoStartFailureCode),\"abortReason\":null,\"transportErrorCode\":\(transportErrorCode),\"transportErrorMessage\":\(transportErrorMessage),\"transportLostAt\":\(transportLostAt),\"transportTeardownAt\":\(transportTeardownAt),\"readyAt\":null,\"flippedAt\":\(timestamp(migration.flippedAt)),\"arrivedAt\":\(timestamp(migration.arrivedAt)),\"completedAt\":\(timestamp(migration.completedAt)),\"abortedAt\":null,\"canceledAt\":\(canceledAt),\"cancelReason\":\(cancelReason),\"cancelNeedsAttention\":false,\"cancelDispatchAttempts\":\(migration.cancelDispatchAttempts),\"cancelLastDispatchAt\":\(cancelLastDispatchAt),\"cancelErrorCode\":\(cancelErrorCode),\"cancelErrorMessage\":null}"
-    }
-
-    public func agentMigrationCancel(authorization: String?, serverId: String, agentId: String, body: String = "") -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted, info.serverId == serverId,
-              let role = oauth.memberRole(serverId: serverId, userId: userId)
-        else {
-            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
-        }
-        guard role == "owner" || role == "admin" || info.creatorUserId == userId else {
-            return Self.json(403, "{\"code\":\"not_supported\",\"error\":\"Agent migration cancel requires creator or server admin authority\"}")
-        }
-        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
-        if object["migrationId"] != nil {
-            return Self.json(400, "{\"code\":\"MIGRATION_REF_INVALID\",\"error\":\"migrationRef is required\"}")
-        }
-        guard let migrationRef = object["migrationRef"] as? String,
+    /// `POST /api/agents/:id/migration/cancel`. Authority runs before the body
+    /// is validated, so a member cannot learn whether a reference exists.
+    public func cancelMigration(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        request: AgentMigrationCancelRequest
+    ) throws -> AgentMigrationStatusResponse {
+        _ = try authorized(
+            authorization: authorization,
+            serverId: serverId,
+            agentId: agentId,
+            forbidden: .migrationCancelForbidden
+        )
+        // The retired internal `migrationId` is refused before the reference is
+        // read, exactly like the legacy object cast.
+        guard !request.includesMigrationID else { throw AgentMigrationStatusError.migrationRefInvalid }
+        guard let migrationRef = request.migrationRef,
               migrationRef.range(of: "^mig_[A-Za-z0-9_-]{22}$", options: .regularExpression) != nil
-        else {
-            return Self.json(400, "{\"code\":\"MIGRATION_REF_INVALID\",\"error\":\"migrationRef is required\"}")
+        else { throw AgentMigrationStatusError.migrationRefInvalid }
+        let expectedRevision = try Self.expectedRevision(from: request)
+        let reason = request.reason ?? "user_canceled"
+        let current = now()
+
+        switch agents.cancelHostedMigration(
+            agentId: agentId,
+            serverId: serverId,
+            migrationRef: migrationRef,
+            expectedRevision: expectedRevision,
+            reason: reason,
+            now: current
+        ) {
+        case .canceled(let migration):
+            emitMigrationUpdated(serverId: serverId, migration: migration)
+            return AgentMigrationStatusResponse(migration: .hosted(HostedAgentMigrationStatus(migration)))
+        case .stale:
+            throw AgentMigrationStatusError.migrationRevisionStale
+        case .terminal:
+            throw AgentMigrationStatusError.migrationNotCancelable
+        case .missing:
+            break
         }
-        guard let rawRevision = object["expectedRevision"] as? NSNumber,
-              rawRevision.doubleValue.rounded() == rawRevision.doubleValue,
-              rawRevision.intValue >= 1
-        else {
-            return Self.json(400, "{\"code\":\"MIGRATION_REVISION_INVALID\",\"error\":\"expectedRevision must be a positive integer\"}")
+
+        switch machines.cancelMachineMigration(
+            agentId: agentId,
+            serverId: serverId,
+            migrationRef: migrationRef,
+            expectedRevision: expectedRevision,
+            reason: reason,
+            now: current
+        ) {
+        case .canceled(let migration):
+            cancelDispatch(
+                migration.sourceMachineId,
+                "source",
+                migration.supportRef,
+                migration.transportGeneration,
+                false
+            )
+            cancelDispatch(
+                migration.targetMachineId,
+                "target",
+                migration.supportRef,
+                migration.transportGeneration,
+                false
+            )
+            emitMigrationUpdated(serverId: serverId, migration: migration)
+            return AgentMigrationStatusResponse(migration: .machine(MachineAgentMigrationStatus(migration)))
+        case .stale:
+            throw AgentMigrationStatusError.migrationRevisionStale
+        case .terminal:
+            throw AgentMigrationStatusError.migrationNotCancelable
+        case .missing:
+            throw AgentMigrationStatusError.migrationNotFound
         }
-        let expectedRevision = rawRevision.intValue
-        lock.lock()
-        let hosted = hostedMigrations[agentId].flatMap { candidate in
-            candidate.supportRef == migrationRef && candidate.serverId == serverId ? candidate : nil
-        }
-        let machine = machineMigrations[migrationRef].flatMap { candidate in
-            candidate.agentId == agentId && candidate.serverId == serverId ? candidate : nil
-        }
-        guard hosted != nil || machine != nil else {
-            lock.unlock()
-            return Self.json(404, "{\"code\":\"MIGRATION_NOT_FOUND\",\"error\":\"Migration not found\"}")
-        }
-        let revision = hosted?.revision ?? machine!.revision
-        guard revision == expectedRevision else {
-            lock.unlock()
-            return Self.json(409, "{\"code\":\"MIGRATION_REVISION_STALE\",\"error\":\"The migration changed since this action was shown\"}")
-        }
-        let state = hosted?.state ?? machine!.state
-        guard !["canceled_pre_flip", "arrived", "completed", "aborted", "failed"].contains(state) else {
-            lock.unlock()
-            return Self.json(409, "{\"code\":\"MIGRATION_NOT_CANCELABLE\",\"error\":\"This migration can no longer be canceled\"}")
-        }
-        let now = Date()
-        let reason = (object["reason"] as? String) ?? "user_canceled"
-        if var migration = hosted {
-            migration.state = "canceled_pre_flip"
-            migration.revision += 1
-            migration.canceledAt = now
-            migration.cancelReason = reason
-            migration.cancelDispatchAttempts = 1
-            migration.cancelLastDispatchAt = now
-            migration.cancelErrorCode = nil
-            hostedMigrations[agentId] = migration
-            lock.unlock()
-            for member in oauth.memberIdsWithRoles(serverId: serverId) where member.role == "owner" || member.role == "admin" {
-                emitRealtime("user:\(member.id)", "agent:migration-updated", migrationUpdatedJSON(migration))
-            }
-            return Self.json(200, "{\"migration\":\(migrationStatusJSON(migration))}")
-        }
-        var migration = machine!
-        // Once the flip committed the agent belongs to the target, so the
-        // cancellation is target-authoritative even though the agent may still
-        // be arriving/starting.
-        let postFlip = migration.flippedAt != nil
-            || ["arriving", "starting", "completed"].contains(migration.state)
-        migration.state = postFlip ? "canceled_post_flip" : "canceled_pre_flip"
-        migration.revision += 1
-        migration.canceledAt = now
-        migration.cancelReason = reason
-        migration.cancelDispatchAttempts = 1
-        migration.cancelLastDispatchAt = now
-        migration.cancelErrorCode = nil
-        migration.cancelGeneration = UUID().uuidString.lowercased()
-        migration.cancelTransportGeneration = migration.transportGeneration
-        migration.cancelDisposition = postFlip ? "post_flip_target_authoritative" : "pre_flip_source_authoritative"
-        migration.cancelSourceAck = nil
-        migration.cancelTargetAck = nil
-        migration.cancelSourceAckAt = nil
-        migration.cancelTargetAckAt = nil
-        migration.transportTeardownAt = now
-        migration.updatedAt = now
-        machineMigrations[migrationRef] = migration
-        lock.unlock()
-        agentMigrationCancelDispatch?(migration.sourceMachineId, "source", migration.supportRef, migration.transportGeneration, false)
-        agentMigrationCancelDispatch?(migration.targetMachineId, "target", migration.supportRef, migration.transportGeneration, false)
-        for member in oauth.memberIdsWithRoles(serverId: serverId) where member.role == "owner" || member.role == "admin" {
-            emitRealtime("user:\(member.id)", "agent:migration-updated", migrationUpdatedJSON(migration))
-        }
-        return Self.json(200, "{\"migration\":\(machineMigrationStatusJSON(migration))}")
     }
 
+    /// The published authority order: session, then agent/Server membership,
+    /// then owner/administrator/creator. The 403 body differs per operation, so
+    /// the caller names the failure.
+    private func authorized(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        forbidden: AgentMigrationStatusError
+    ) throws -> (userId: String, agent: OAuthLedger.AgentManagementInfo) {
+        guard let userId = sessionUserId(authorization) else {
+            throw AgentMigrationStatusError.unauthorized
+        }
+        guard let agent = oauth.agentManagementInfo(id: agentId),
+              !agent.deleted,
+              agent.serverId == serverId,
+              let role = oauth.memberRole(serverId: serverId, userId: userId)
+        else {
+            throw AgentMigrationStatusError.agentMissing
+        }
+        guard role == "owner" || role == "admin" || agent.creatorUserId == userId else {
+            throw forbidden
+        }
+        return (userId, agent)
+    }
+
+    /// The retired parser read `expectedRevision` through `as? NSNumber`: any
+    /// JSON number whose value is integral and `>= 1` passed, and a JSON
+    /// boolean bridged to 1/0. An out-of-`Int` magnitude saturated to
+    /// `Int.min` there, which fails the same `>= 1` gate.
+    private static func expectedRevision(from request: AgentMigrationCancelRequest) throws -> Int {
+        guard let raw = request.expectedRevision, raw.rounded() == raw else {
+            throw AgentMigrationStatusError.migrationRevisionInvalid
+        }
+        let value: Int
+        if raw >= Double(Int.min), raw < Double(Int.max) {
+            value = Int(raw)
+        } else {
+            value = Int.min
+        }
+        guard value >= 1 else { throw AgentMigrationStatusError.migrationRevisionInvalid }
+        return value
+    }
+
+    /// `agent:migration-updated` for every owner/administrator of the Server.
+    /// The frame payload keeps the projection's literals even after a
+    /// cancellation, so it is built from the record identity and state only.
+    private func emitMigrationUpdated(serverId: String, migration: HostedMigrationRecord) {
+        emitMigrationUpdated(
+            serverId: serverId,
+            agentId: migration.agentId,
+            migrationRef: migration.supportRef,
+            state: migration.state,
+            revision: migration.revision
+        )
+    }
+
+    private func emitMigrationUpdated(serverId: String, migration: MachineMigrationRecord) {
+        emitMigrationUpdated(
+            serverId: serverId,
+            agentId: migration.agentId,
+            migrationRef: migration.supportRef,
+            state: migration.state,
+            revision: migration.revision
+        )
+    }
+
+    private func emitMigrationUpdated(
+        serverId: String,
+        agentId: String,
+        migrationRef: String,
+        state: String,
+        revision: Int
+    ) {
+        let members = oauth.memberIdsWithRoles(serverId: serverId)
+        for member in members where member.role == "owner" || member.role == "admin" {
+            let payload = AgentMigrationUpdatedPayload(
+                agentId: agentId,
+                migrationRef: migrationRef,
+                state: state,
+                revision: revision,
+                updatedAt: now()
+            )
+            emitRealtime("user:\(member.id)", "agent:migration-updated", payload.jsonBody.render())
+        }
+    }
 }

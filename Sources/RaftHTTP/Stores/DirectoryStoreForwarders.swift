@@ -214,9 +214,6 @@ extension EmailLoginDirectory {
     var agentLastSeenAt: [String: Date] { get { agentsRuntimeStore.agentLastSeenAt } set { agentsRuntimeStore.agentLastSeenAt = newValue } }
     var agentAttachmentBytes: [String: Data] { get { agentsRuntimeStore.agentAttachmentBytes } set { agentsRuntimeStore.agentAttachmentBytes = newValue } }
     var externalPushWebhooks: [String: (url: String, secret: String)] { get { agentsRuntimeStore.externalPushWebhooks } set { agentsRuntimeStore.externalPushWebhooks = newValue } }
-    var agentStatusProtocolAdoptedAt: [String: Date] { get { agentsRuntimeStore.agentStatusProtocolAdoptedAt } set { agentsRuntimeStore.agentStatusProtocolAdoptedAt = newValue } }
-    var agentCursorPullState: [String: (lastPulledAt: Date, pendingAcks: Int)] { get { agentsRuntimeStore.agentCursorPullState } set { agentsRuntimeStore.agentCursorPullState = newValue } }
-    var agentProviderPositions: [String: (provider: String, state: String, providerAgentId: String?, syncPending: Bool, lastErrorCode: String?, lastErrorAt: Date?, activatedAt: Date?)] { get { agentsRuntimeStore.agentProviderPositions } set { agentsRuntimeStore.agentProviderPositions = newValue } }
     var hostedAgents: Set<String> { get { agentsRuntimeStore.hostedAgents } set { agentsRuntimeStore.hostedAgents = newValue } }
     var featureFlagRecords: [String: FeatureFlagRecord] { get { agentsRuntimeStore.featureFlagRecords } set { agentsRuntimeStore.featureFlagRecords = newValue } }
     var featureFlagRuleRecords: [FeatureFlagRuleRecord] { get { agentsRuntimeStore.featureFlagRuleRecords } set { agentsRuntimeStore.featureFlagRuleRecords = newValue } }

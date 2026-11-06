@@ -164,19 +164,15 @@ extension EmailLoginDirectory {
     }
 
     public func setAgentStatusProtocolAdoptedForTesting(agentId: String, at date: Date?) {
-        lock.lock()
-        agentStatusProtocolAdoptedAt[agentId] = date
-        lock.unlock()
+        agentsRuntimeStore.agentStatusProtocolAdoptedAt[agentId] = date
     }
 
     public func setAgentCursorPullStateForTesting(agentId: String, lastPulledAt: Date?, pendingAcks: Int) {
-        lock.lock()
         if let lastPulledAt {
-            agentCursorPullState[agentId] = (lastPulledAt, pendingAcks)
+            agentsRuntimeStore.agentCursorPullState[agentId] = (lastPulledAt, pendingAcks)
         } else {
-            agentCursorPullState[agentId] = nil
+            agentsRuntimeStore.agentCursorPullState[agentId] = nil
         }
-        lock.unlock()
     }
 
     public func setAgentProviderPositionForTesting(
@@ -189,9 +185,15 @@ extension EmailLoginDirectory {
         lastErrorAt: Date? = nil,
         activatedAt: Date?
     ) {
-        lock.lock()
-        agentProviderPositions[agentId] = (provider, state, providerAgentId, syncPending, lastErrorCode, lastErrorAt, activatedAt)
-        lock.unlock()
+        agentsRuntimeStore.agentProviderPositions[agentId] = (
+            provider,
+            state,
+            providerAgentId,
+            syncPending,
+            lastErrorCode,
+            lastErrorAt,
+            activatedAt
+        )
     }
 
     public func machineMigrationCancelGenerationsForTesting(migrationRef: String) -> (cancel: String, transport: String)? {

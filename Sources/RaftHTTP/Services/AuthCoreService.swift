@@ -760,6 +760,32 @@ extension EmailLoginDirectory {
         AuthProfileService(store: authProfileStore)
     }
 
+    /// Agent migration status, cancellation, provider position and the external
+    /// diagnostics view. The service owns the three published operations; the
+    /// directory supplies the two migration stores, the OAuth ledger, and the
+    /// realtime/cancel relay seams the unmigrated migration domains own.
+    public var agentMigrationStatus: AgentMigrationStatusService {
+        let accounts = self
+        return AgentMigrationStatusService(
+            sessionUserId: { accounts.sessionUserId(authorization: $0) },
+            oauth: oauth,
+            agents: agentsRuntimeStore,
+            machines: machinesAndComputersStore,
+            emitRealtime: { room, event, payload in
+                accounts.emitRealtime(room, event, payload)
+            },
+            cancelDispatch: { machineId, role, migrationRef, transportGeneration, stopAgent in
+                accounts.agentMigrationCancelDispatch?(
+                    machineId,
+                    role,
+                    migrationRef,
+                    transportGeneration,
+                    stopAgent
+                )
+            }
+        )
+    }
+
     /// Product feedback locators for `POST/GET /internal/agent-api/feedback-locators`
     /// plus the agent credential/grant decisions the rest of the agent API
     /// shares. The directory only supplies its stores and the OAuth ledger.
