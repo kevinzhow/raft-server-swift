@@ -308,9 +308,10 @@ private func event(uuid: String, name: String = "activity_open", timestamp: Stri
     let rotated = LockedBox(0)
     let rejected = LockedBox(0)
     DispatchQueue.concurrentPerform(iterations: 32) { _ in
-        switch store.rotateRefresh(refreshToken: issued.refreshToken, attemptId: nil, installationId: nil) {
-        case .rotated: rotated.mutate { $0 += 1 }
-        case .rejected: rejected.mutate { $0 += 1 }
+        if store.rotateRefreshToken(issued.refreshToken, attemptId: nil, installationId: nil, now: Date()) != nil {
+            rotated.mutate { $0 += 1 }
+        } else {
+            rejected.mutate { $0 += 1 }
         }
     }
     #expect(rotated.value == 1)
@@ -320,18 +321,16 @@ private func event(uuid: String, name: String = "activity_open", timestamp: Stri
 @Test func durableRefreshReplaysTheSameSuccessorForTheSameAttemptOnly() {
     let store = EmailLoginDirectory().authProfileStore
     let issued = store.openSession(userId: "u")
-    guard case .rotated(_, let successor) = store.rotateRefresh(refreshToken: issued.refreshToken, attemptId: "a", installationId: "i") else {
+    guard let first = store.rotateRefreshToken(issued.refreshToken, attemptId: "a", installationId: "i", now: Date()) else {
         Issue.record("first durable refresh must rotate")
         return
     }
-    guard case .rotated(_, let replay) = store.rotateRefresh(refreshToken: issued.refreshToken, attemptId: "a", installationId: "i") else {
+    guard let replay = store.rotateRefreshToken(issued.refreshToken, attemptId: "a", installationId: "i", now: Date()) else {
         Issue.record("the same attempt must replay")
         return
     }
-    #expect(replay == successor)
-    if case .rotated = store.rotateRefresh(refreshToken: issued.refreshToken, attemptId: "b", installationId: "i") {
-        Issue.record("another attempt must not replay")
-    }
+    #expect(replay.refreshToken == first.refreshToken)
+    #expect(store.rotateRefreshToken(issued.refreshToken, attemptId: "b", installationId: "i", now: Date()) == nil)
 }
 
 @Test func openSessionIssuesDistinctPairsUnderConcurrency() {

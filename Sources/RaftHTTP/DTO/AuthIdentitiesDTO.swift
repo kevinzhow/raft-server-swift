@@ -12,11 +12,11 @@ import Foundation
 
 /// The JSON shape of one value whose type the old parser reported by name.
 ///
-/// Only `LoginRequest` needs it: the login issue list prints the received type
+/// `LoginRequest` and `RegisterRequest` need it: their issue lists print the received type
 /// (`Expected string, received number`). the Foundation object parser bridged a JSON
 /// `0` or `1` to `Bool`, so those two numbers read as `boolean`; the decoder
 /// keeps that quirk because the published bytes carry it.
-private enum JSONShape: Decodable {
+enum JSONShape: Decodable {
     case null
     case string
     case boolean

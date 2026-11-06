@@ -41,17 +41,17 @@ final class AuthProfileStore: @unchecked Sendable {
         var storedMobileAppEmailJourneys: [EmailLoginDirectory.MobileAppEmailJourney] = []
     }
 
-    private let lock = NSLock()
+    let lock = NSLock()
     private var profile = ProfileState()
     private var identityRows: [String: [(provider: String, providerEmail: String)]] = [:]
     private var passwordResetTokens: [String: (userId: String, expiresAt: Date)] = [:]
-    private var legalAcceptances: [String: EmailLegalAcceptance] = [:]
+    var legalAcceptances: [String: EmailLegalAcceptance] = [:]
     /// Live tokens keyed by user id. `issueVerificationToken` replaces the
     /// user's set, which is the upstream insert-after-delete behavior.
-    private var emailVerificationTokens: [String: [EmailVerificationRecord]] = [:]
+    var emailVerificationTokens: [String: [EmailVerificationRecord]] = [:]
     /// Issue history per user. It survives token replacement so the resend
     /// rate limit can count sends from the last hour even after old rows go.
-    private var emailVerificationIssueDates: [String: [Date]] = [:]
+    var emailVerificationIssueDates: [String: [Date]] = [:]
 
     func appendIdentity(userId: String, provider: String, providerEmail: String) {
         lock.lock()
@@ -163,6 +163,19 @@ final class AuthProfileStore: @unchecked Sendable {
         now: Date = Date(),
         ttl: TimeInterval = 24 * 60 * 60
     ) {
+        lock.lock()
+        issueVerificationTokenLocked(userId: userId, token: token, tokenHash: tokenHash, now: now, ttl: ttl)
+        lock.unlock()
+    }
+
+    /// The token replacement and issue-date append. The caller holds `lock`.
+    func issueVerificationTokenLocked(
+        userId: String,
+        token: String,
+        tokenHash: String,
+        now: Date,
+        ttl: TimeInterval
+    ) {
         let record = EmailVerificationRecord(
             userId: userId,
             tokenHash: tokenHash,
@@ -170,10 +183,8 @@ final class AuthProfileStore: @unchecked Sendable {
             createdAt: now,
             expiresAt: now.addingTimeInterval(ttl)
         )
-        lock.lock()
         emailVerificationTokens[userId] = [record]
         emailVerificationIssueDates[userId, default: []].append(now)
-        lock.unlock()
     }
 
     /// The resend policy and its write in one critical section: hourly-cap
@@ -404,7 +415,7 @@ final class AuthProfileStore: @unchecked Sendable {
         var deploymentEnvironmentOverride: String?? = nil
     }
 
-    private var accountSurface = AccountState()
+    var accountSurface = AccountState()
     private var seamSurface = SeamState()
     private var configSurface = ConfigState()
 
@@ -805,7 +816,7 @@ extension AuthProfileStore {
     }
 
     /// Opens one session family. The caller holds `lock`.
-    private func openSessionLocked(userId: String) -> IssuedSessionTokens {
+    func openSessionLocked(userId: String) -> IssuedSessionTokens {
         let familyId = UUID().uuidString.lowercased()
         accountSurface.sessionFamilies[familyId] = SessionFamily(userId: userId, revokedAt: nil)
         let accessToken = EmailLoginDirectory.token()
@@ -1147,87 +1158,9 @@ extension AuthProfileStore {
     }
 }
 
-// MARK: - Session issue, refresh rotation and analytics identity
+// MARK: - Analytics identity and push family revoke
 
 extension AuthProfileStore {
-    /// Opens one session family and issues its token pair, in one critical
-    /// section (the refresh table, the family row and both token tables change
-    /// together).
-    func openSession(userId: String) -> IssuedSessionTokens {
-        lock.lock()
-        defer { lock.unlock() }
-        return openSessionLocked(userId: userId)
-    }
-
-    /// One refresh-token rotation. With an attempt and an installation id the
-    /// rotation is durable (a receipt lets the same attempt replay the
-    /// successor); otherwise it is the plain one-time rotation that keeps the
-    /// predecessor hash resolvable to its family. The whole decision and every
-    /// write is one critical section, so two concurrent refreshes of the same
-    /// token cannot both rotate it.
-    func rotateRefresh(refreshToken: String, attemptId: String?, installationId: String?) -> RefreshOutcome {
-        lock.lock()
-        defer { lock.unlock() }
-        if let attemptId, let installationId {
-            return durableRefreshLocked(
-                refreshToken: refreshToken,
-                attemptId: attemptId,
-                installationId: installationId
-            )
-        }
-        guard let live = accountSurface.sessions[refreshToken],
-              !accountSurface.revokedFamilies.contains(live.familyId)
-        else {
-            return .rejected
-        }
-        accountSurface.sessions.removeValue(forKey: refreshToken)
-        accountSurface.predecessorFamilies[EmailLoginDirectory.sha256(refreshToken)] = live.familyId
-        let successor = EmailLoginDirectory.token()
-        accountSurface.sessions[successor] = live
-        let accessToken = EmailLoginDirectory.token()
-        accountSurface.accessTokens[accessToken] = live.userId
-        accountSurface.accessTokenFamilies[accessToken] = live.familyId
-        return .rotated(IssuedRefresh(accessToken: accessToken, userId: live.userId), successor)
-    }
-
-    private func durableRefreshLocked(
-        refreshToken: String,
-        attemptId: String,
-        installationId: String
-    ) -> RefreshOutcome {
-        let hash = EmailLoginDirectory.sha256(refreshToken)
-        if let live = accountSurface.sessions.removeValue(forKey: refreshToken) {
-            if accountSurface.revokedFamilies.contains(live.familyId) {
-                return .rejected
-            }
-            let successor = EmailLoginDirectory.token()
-            accountSurface.sessions[successor] = live
-            let ciphertext = EmailLoginDirectory.sealSuccessor(successor)
-            accountSurface.rotationReceipts[hash] = RotationReceipt(
-                attemptId: attemptId,
-                installationId: installationId,
-                userId: live.userId,
-                familyId: live.familyId,
-                successor: successor,
-                ciphertext: ciphertext,
-                expiresAt: Date(timeIntervalSinceNow: 15 * 60)
-            )
-            let accessToken = EmailLoginDirectory.token()
-            accountSurface.accessTokens[accessToken] = live.userId
-            accountSurface.accessTokenFamilies[accessToken] = live.familyId
-            return .rotated(IssuedRefresh(accessToken: accessToken, userId: live.userId), successor)
-        }
-        guard let receipt = accountSurface.rotationReceipts[hash] else { return .rejected }
-        if receipt.attemptId != attemptId || receipt.installationId != installationId { return .rejected }
-        if receipt.expiresAt <= Date() || accountSurface.revokedFamilies.contains(receipt.familyId) {
-            return .rejected
-        }
-        let accessToken = EmailLoginDirectory.token()
-        accountSurface.accessTokens[accessToken] = receipt.userId
-        accountSurface.accessTokenFamilies[accessToken] = receipt.familyId
-        return .rotated(IssuedRefresh(accessToken: accessToken, userId: receipt.userId), receipt.successor)
-    }
-
     /// The user's analytics id, minted on first use. Lookup and mint are one
     /// critical section, so two concurrent first events share one id.
     func analyticsId(userId: String) -> String {

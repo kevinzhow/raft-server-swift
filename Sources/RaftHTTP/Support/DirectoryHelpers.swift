@@ -461,32 +461,6 @@ extension EmailLoginDirectory {
         return Self.json(409, ChannelMembershipError.channelArchived.publishedErrorBody.render())
     }
 
-    // MARK: - Device login and mobile return helpers (unmigrated callers)
-
-    func deviceSurfaceDisabled() -> HTTPReply? {
-        if Self.deviceLoginEnabled(deviceLoginGate) { return nil }
-        return Self.json(404, "{\"error\":\"Device login is not enabled\",\"code\":\"device_login_disabled\"}")
-    }
-
-    func deviceVerification(userCode: String) -> (uri: String, complete: String)? {
-        let trimmed = appURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return nil }
-        let base = trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
-        let uri = "\(base)/login/device"
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.!~*'()"))
-        let encoded = userCode.addingPercentEncoding(withAllowedCharacters: allowed) ?? userCode
-        return (uri, "\(uri)?user_code=\(encoded)")
-    }
-
-    func makeUserCode() -> String {
-        let alphabet = Array("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
-        var chars = ""
-        for _ in 0..<8 {
-            chars.append(alphabet[Int.random(in: 0..<alphabet.count)])
-        }
-        return "\(chars.prefix(4))-\(chars.dropFirst(4))"
-    }
-
     /// The bearer credential of an agent, marking its use.
     func agentCredentialAgent(_ authorization: String?) -> (agentId: String, scopes: [String])? {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }

@@ -539,16 +539,6 @@ struct SocialCompletion {
         var linkOnConflict: Bool = false
     }
 
-enum RefreshOutcome {
-        case rejected
-        case rotated(IssuedRefresh, String)
-    }
-
-struct IssuedRefresh {
-        var accessToken: String
-        var userId: String
-    }
-
 struct RotationReceipt {
         var attemptId: String
         var installationId: String

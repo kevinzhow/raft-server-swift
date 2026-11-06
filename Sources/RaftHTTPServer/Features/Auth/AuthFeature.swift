@@ -56,7 +56,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         let appLogin = auth.grouped("app-login")
         let appLoginRequest = appLogin.grouped("requests", ":requestId")
         let me = auth.grouped("me")
-        let authCore = AuthCoreService(directory: services.emailAccounts)
+        let authCore = services.emailAccounts.authCore
         let identityService = services.emailAccounts.authIdentities
         let oauthFlows = services.emailAccounts.oauthFlows
 
@@ -166,73 +166,62 @@ public struct AuthFeature: RouteCollection, Sendable {
             return try await respond { try oauthFlows.completeMobileOAuth(body) }
         }
         provider.post("complete") { request async throws -> Response in
-            return routeResponse(services.emailAccounts.completeSocial(
-                provider: request.parameters.get("provider") ?? "",
-                body: try await request.bodyText(),
-                userAgent: request.headers[.userAgent],
-                acceptLanguage: request.headers[.acceptLanguage],
-                authorization: request.headers[.authorization]
-            ))
+            // A body that is not a JSON object reads as an empty request, so the
+            // service answers the published "code is required" 400.
+            let body = (try await rawJSON(SocialCompleteRequest.self, request)) ?? SocialCompleteRequest()
+            return try await respond {
+                try authCore.completeSocial(
+                    provider: request.parameters.get("provider") ?? "",
+                    body: body,
+                    userAgent: request.headers[.userAgent],
+                    acceptLanguage: request.headers[.acceptLanguage],
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         device.post("authorize") { request async throws -> Response in
-            // The typed body covers the published shape; every other body keeps
-            // the directory's raw parser and its `client_name_invalid` reply.
-            if let body = try? await request.content.decode(DeviceAuthorizeRequestDTO.self) {
-                return routeResponse(authCore.authorizeDevice(body))
-            }
-            return routeResponse(services.emailAccounts.authorizeDevice(body: try await request.bodyText()))
+            let body = (try await rawJSON(DeviceAuthorizeRequest.self, request)) ?? DeviceAuthorizeRequest()
+            return try await respond(status: 201) { try authCore.authorizeDevice(body) }
         }
         device.post("approve") { request async throws -> Response in
-            if let body = try? await request.content.decode(DeviceApproveRequestDTO.self) {
-                return routeResponse(authCore.approveDevice(body, authorization: request.headers[.authorization]))
+            let body = (try await rawJSON(DeviceApproveRequest.self, request)) ?? DeviceApproveRequest()
+            return try await respond {
+                try authCore.approveDevice(body, authorization: request.headers[.authorization])
             }
-            return routeResponse(services.emailAccounts.approveDevice(
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization]
-            ))
         }
         device.post("token") { request async throws -> Response in
-            if let body = try? await request.content.decode(DeviceTokenPollRequestDTO.self) {
-                return routeResponse(authCore.pollDeviceToken(body))
-            }
-            return routeResponse(services.emailAccounts.pollDeviceToken(body: try await request.bodyText()))
+            let body = (try await rawJSON(DeviceTokenRequest.self, request)) ?? DeviceTokenRequest()
+            return try await respond { try authCore.pollDeviceToken(body) }
         }
         auth.post("staging-self-account", "retire") { request async throws -> Response in
-            return routeResponse(services.emailAccounts.retireStagingSelfAccount(
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization]
-            ))
+            let body = (try await rawJSON(RetireStagingRequest.self, request)) ?? RetireStagingRequest()
+            return try await respond {
+                try authCore.retireStagingSelfAccount(body, authorization: request.headers[.authorization])
+            }
         }
         auth.post("register") { request async throws -> Response in
-            return routeResponse(services.emailAccounts.register(
-                body: try await request.bodyText(),
-                userAgent: request.headers[.userAgent],
-                acceptLanguage: request.headers[.acceptLanguage]
-            ))
+            // A body that is not a JSON object stays `nil`: the service answers
+            // the published `Expected object` issue list.
+            let body = try await rawJSON(RegisterRequest.self, request)
+            return try await respond {
+                try authCore.register(
+                    body,
+                    userAgent: request.headers[.userAgent],
+                    acceptLanguage: request.headers[.acceptLanguage]
+                )
+            }
         }
         auth.post("refresh") { request async throws -> Response in
             let attempt = request.headers[HTTPField.Name("X-Slock-Auth-Refresh-Attempt-Id")!]
             let installation = request.headers[HTTPField.Name("X-Slock-Auth-Installation-Id")!]
-            // A body without a usable `refreshToken` falls through to the raw
-            // parser so the published "Refresh token is required" reply stands.
-            if let body = try? await request.content.decode(RefreshRequestDTO.self) {
-                return routeResponse(authCore.refresh(
-                    body,
-                    attemptHeader: attempt,
-                    installationHeader: installation
-                ))
+            let body = (try await rawJSON(RefreshTokenRequest.self, request)) ?? RefreshTokenRequest()
+            return try await respond {
+                try authCore.refresh(body, attemptHeader: attempt, installationHeader: installation)
             }
-            return routeResponse(services.emailAccounts.refresh(
-                body: try await request.bodyText(),
-                attemptHeader: attempt,
-                installationHeader: installation
-            ))
         }
         auth.post("logout") { request async throws -> Response in
-            if let body = try? await request.content.decode(LogoutRequestDTO.self) {
-                return routeResponse(authCore.logout(body))
-            }
-            return routeResponse(services.emailAccounts.logout(body: try await request.bodyText()))
+            let body = (try await rawJSON(RefreshTokenRequest.self, request)) ?? RefreshTokenRequest()
+            return try await respond { authCore.logout(body) }
         }
         identities.get { request async throws -> Response in
             try await respond { try identityService.identities(authorization: request.headers[.authorization]) }

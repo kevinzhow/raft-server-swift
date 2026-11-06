@@ -72,10 +72,10 @@ public struct AgentsLifecycleService: Sendable {
     }
 
     /// The user id behind a live access token. A missing or unknown bearer, or a
-    /// revoked session family, is nil.
+    /// revoked session family, is nil. The decision is
+    /// `AuthCoreService.authenticate`; this is the optional-valued view of it.
     public func sessionUserId(authorization: String?) -> String? {
-        guard let token = Self.bearerToken(authorization) else { return nil }
-        return profiles.userId(forAccessToken: token)
+        try? AuthCoreService(store: profiles).authenticate(authorization)
     }
 
     private func requireUser(_ authorization: String?) throws -> String {

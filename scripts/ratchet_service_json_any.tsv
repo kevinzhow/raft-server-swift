@@ -1,5 +1,4 @@
 Sources/RaftHTTP/DTO/RealtimeEventDTO.swift	1
 Sources/RaftHTTP/Services/ActionCardDirectoryHelpers.swift	5
-Sources/RaftHTTP/Services/AuthCoreService.swift	16
 Sources/RaftHTTP/Services/FeedbackService.swift	4
 Sources/RaftHTTP/Services/ReactionsRealtimeService.swift	9

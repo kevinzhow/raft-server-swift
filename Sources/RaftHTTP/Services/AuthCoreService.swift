@@ -1,987 +1,445 @@
-import Crypto
 import Foundation
-import RaftShared
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 
-
-/// Typed facade over the email/password session core: login, refresh rotation,
-/// logout, device grants and the test seams around them.
+/// Session core: provider-completion login, register, staging retirement, the
+/// device-grant flow, refresh rotation and logout, plus the bearer check the
+/// unmigrated domains still share.
 ///
-/// The state transitions stay on `EmailLoginDirectory` with unchanged
-/// signatures, so every existing caller and test compiles untouched. This type
-/// exists so a route can hand over a decoded request DTO instead of a JSON
-/// string, and so the domain has a `Service` boundary of its own.
+/// The service validates the decoded request, calls the account store (every
+/// read-modify-write is one store critical section) and returns a DTO or
+/// throws `AuthCoreError`; the feature owns the HTTP projection. There are no
+/// cross-domain dependencies: the account, session, grant and legal rows all
+/// live in `AuthProfileStore`.
 public struct AuthCoreService: Sendable {
-    public let directory: EmailLoginDirectory
+    let store: AuthProfileStore
+    let now: @Sendable () -> Date
 
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
+    init(store: AuthProfileStore, now: @escaping @Sendable () -> Date = { Date() }) {
+        self.store = store
+        self.now = now
     }
 
-    /// `POST /api/auth/refresh`. The replay-binding identifiers stay headers.
-    public func refresh(
-        _ body: RefreshRequestDTO,
-        attemptHeader: String?,
-        installationHeader: String?
-    ) -> HTTPReply {
-        directory.refresh(
-            body: body.encodedBody(),
-            attemptHeader: attemptHeader,
-            installationHeader: installationHeader
-        )
-    }
+    // MARK: Bearer check
 
-    /// `POST /api/auth/logout`.
-    public func logout(_ body: LogoutRequestDTO) -> HTTPReply {
-        directory.logout(body: body.encodedBody())
-    }
-
-    /// `POST /api/auth/device/authorize`.
-    public func authorizeDevice(_ body: DeviceAuthorizeRequestDTO) -> HTTPReply {
-        directory.authorizeDevice(body: body.encodedBody())
-    }
-
-    /// `POST /api/auth/device/approve`.
-    public func approveDevice(_ body: DeviceApproveRequestDTO, authorization: String?) -> HTTPReply {
-        directory.approveDevice(body: body.encodedBody(), authorization: authorization)
-    }
-
-    /// `POST /api/auth/device/token`.
-    public func pollDeviceToken(_ body: DeviceTokenPollRequestDTO) -> HTTPReply {
-        directory.pollDeviceToken(body: body.encodedBody())
-    }
-}
-
-extension EmailLoginDirectory {
-
-
-    public func markPasswordCredentialEstablished(userId: String) {
-        lock.lock()
-        if let key = accounts.first(where: { $0.value.id == userId })?.key {
-            var account = accounts[key]!
-            account.passwordCredentialEstablishedAt = Date()
-            accounts[key] = account
+    /// The user behind a live access token. A missing or non-bearer header is
+    /// `missingAuthorization`; an unknown token or a revoked family is
+    /// `invalidToken`.
+    func authenticate(_ authorization: String?) throws -> String {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            throw AuthCoreError.missingAuthorization
         }
-        lock.unlock()
+        let token = String(authorization.dropFirst("Bearer ".count))
+        guard let userId = store.userId(forAccessToken: token) else {
+            throw AuthCoreError.invalidToken
+        }
+        return userId
     }
 
-    public func hasAccount(email: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return accounts[Self.normalize(email)] != nil
-    }
+    // MARK: Social completion
 
-    public func legalAcceptance(userId: String) -> EmailLegalAcceptance? {
-        lock.lock()
-        defer { lock.unlock() }
-        return authProfileStore.legalAcceptance(userId: userId)
-    }
-
-    public func userId(forEmail email: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return accounts[Self.normalize(email)]?.id
-    }
-
-    /// A provider callback already exchanged. The raw code is what `POST /:provider/complete` spends.
-
-    public func addSocialCompletion(
-        provider: String,
-        code: String,
-        email: String,
-        mode: String = "login",
-        intendedAction: String = "login",
-        returnTo: String = "/",
-        userId: String? = nil,
-        providerUserId: String? = nil,
-        linkOnConflict: Bool = false
-    ) {
-        lock.lock()
-        socialCompletions.append(SocialCompletion(
-            provider: provider,
-            code: code,
-            mode: mode,
-            intendedAction: intendedAction,
-            email: Self.normalize(email),
-            returnTo: returnTo,
-            userId: userId,
-            providerUserId: providerUserId,
-            linkOnConflict: linkOnConflict
-        ))
-        lock.unlock()
-    }
-
-    public func linkedProviderUserIds(userId: String, provider: String) -> [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return linkedIdentities.filter { $0.userId == userId && $0.provider == provider }.map(\.providerUserId)
-    }
-
-    public func linkedProviderEmail(userId: String, provider: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return linkedIdentities.first { $0.userId == userId && $0.provider == provider }?.providerEmail
-    }
-
-    /// `POST /api/auth/:provider/complete`. A first login checks legal acceptance before the code is spent.
+    /// `POST /api/auth/:provider/complete`. A first login checks legal
+    /// acceptance before the code is spent.
     public func completeSocial(
         provider: String,
-        body: String,
+        body: SocialCompleteRequest,
         userAgent: String?,
         acceptLanguage: String?,
-        authorization: String? = nil
-    ) -> HTTPReply {
-        guard Self.socialProviders.contains(provider) else {
-            return Self.json(404, "{\"error\":\"Not found\"}")
+        authorization: String?
+    ) throws -> SocialCompleteResponse {
+        guard EmailLoginDirectory.socialProviders.contains(provider) else {
+            throw AuthCoreError.notFound
         }
-        guard let data = body.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
-            return Self.json(400, "{\"error\":\"Sign-in completion code is required\"}")
+        guard let code = body.code, !code.isEmpty else {
+            throw AuthCoreError.socialCompletionCodeRequired
         }
-        guard let code = object["code"] as? String, !code.isEmpty else {
-            return Self.json(400, "{\"error\":\"Sign-in completion code is required\"}")
-        }
-        lock.lock()
-        guard let index = socialCompletions.firstIndex(where: { $0.provider == provider && $0.code == code }) else {
-            lock.unlock()
-            return Self.json(400, "{\"error\":\"Invalid or expired social auth completion\"}")
-        }
-        let completion = socialCompletions[index]
-        if completion.mode == "link" {
-            guard let authorization, authorization.hasPrefix("Bearer ") else {
-                lock.unlock()
-                return Self.linkAuthRequired
-            }
-            let token = String(authorization.dropFirst("Bearer ".count))
-            guard let caller = accessTokens[token] else {
-                lock.unlock()
-                return Self.linkAuthRequired
-            }
-            guard completion.userId == caller else {
-                lock.unlock()
-                return Self.linkMismatch
-            }
-            socialCompletions.remove(at: index)
-            let providerUserId = completion.providerUserId ?? ""
-            if !linkedIdentities.contains(where: {
-                $0.userId == caller && $0.provider == provider && $0.providerUserId == providerUserId
-            }) {
-                linkedIdentities.append(LinkedIdentity(
-                    userId: caller,
-                    provider: provider,
-                    providerUserId: providerUserId
-                ))
-            }
-            let rows = linkedIdentities.filter { $0.userId == caller }
-            lock.unlock()
-            let listed = rows.map {
-                "{\"provider\":\(jsonString($0.provider)),\"providerUserId\":\(jsonString($0.providerUserId))}"
-            }.joined(separator: ",")
-            let linked = "{\"provider\":\(jsonString(provider)),\"mode\":\"link\",\"returnTo\":\(jsonString(completion.returnTo)),\"identities\":[\(listed)]}"
-            return Self.json(200, linked)
-        }
-        if let rawToken = object["pendingLinkToken"] as? String, !rawToken.isEmpty {
-            guard var pending = pendingSocialLinks[rawToken], !pending.consumed, !pending.cancelled,
-                  pending.expiresAt > Date()
-            else {
-                lock.unlock()
-                return Self.json(410, "{\"error\":\"This sign-in link expired. Sign in again to connect the account.\",\"code\":\"pending_link_expired\"}")
-            }
-            let identityOwner = linkedIdentities.first {
-                $0.provider == provider && $0.providerUserId == (completion.providerUserId ?? "")
-            }?.userId
-            let pendingOwner = accounts[pending.email]?.id
-            guard let identityOwner, identityOwner == pendingOwner else {
-                lock.unlock()
-                return Self.json(403, "{\"error\":\"The pending link belongs to a different account\",\"code\":\"pending_link_account_mismatch\"}")
-            }
-            pending.consumed = true
-            pendingSocialLinks[rawToken] = pending
-            if !linkedIdentities.contains(where: {
-                $0.userId == identityOwner && $0.provider == pending.provider && $0.providerUserId == pending.providerUserId
-            }) {
-                linkedIdentities.append(LinkedIdentity(
-                    userId: identityOwner, provider: pending.provider,
-                    providerUserId: pending.providerUserId, providerEmail: pending.email
-                ))
-            }
-            socialCompletions.remove(at: index)
-            let accessToken = Self.token()
-            let refreshToken = Self.token()
-            sessions[refreshToken] = LiveSession(userId: identityOwner, familyId: UUID().uuidString.lowercased())
-            accessTokens[accessToken] = identityOwner
-            lock.unlock()
-            return Self.json(200, "{\"provider\":\(jsonString(provider)),\"mode\":\"login\",\"returnTo\":\(jsonString(completion.returnTo)),\"accessToken\":\(jsonString(accessToken)),\"refreshToken\":\(jsonString(refreshToken)),\"linkedProvider\":\(jsonString(pending.provider))}")
-        }
-        if completion.userId == nil, completion.intendedAction == "link",
-           completion.linkOnConflict, let existing = accounts[completion.email] {
-            let token = Self.randomHex(32)
-            pendingSocialLinks[token] = PendingSocialLink(
-                token: token, provider: provider,
-                providerUserId: completion.providerUserId ?? "",
-                email: completion.email, returnTo: completion.returnTo, returnUri: nil,
-                expiresAt: Date().addingTimeInterval(600)
+        let moment = now()
+        let outcome = store.completeSocial(SocialCompletionAttempt(
+            provider: provider,
+            code: code,
+            pendingLinkToken: body.pendingLinkToken,
+            acceptTerms: body.acceptTerms,
+            termsVersion: body.termsVersion,
+            privacyVersion: body.privacyVersion,
+            legalAcceptanceSource: body.legalAcceptanceSource,
+            bearerToken: Self.bearerToken(authorization),
+            userAgentHash: userAgent.flatMap { $0.isEmpty ? nil : EmailLoginDirectory.sha256($0) },
+            locale: acceptLanguage,
+            now: moment
+        ))
+        switch outcome {
+        case .invalidCompletion:
+            throw AuthCoreError.socialCompletionInvalid
+        case .linkAuthRequired:
+            throw AuthCoreError.linkAuthRequired
+        case .linkMismatch:
+            throw AuthCoreError.linkUserMismatch
+        case .linked(let returnTo, let identities):
+            return .linked(
+                provider: provider,
+                returnTo: returnTo,
+                identities: identities.map {
+                    SocialLinkedIdentityDTO(provider: $0.provider, providerUserId: $0.providerUserId)
+                }
             )
-            let linkedProviders = Set(linkedIdentities.filter { $0.userId == existing.id }.map(\.provider)).sorted()
-            let providersJSON = linkedProviders.map(jsonString).joined(separator: ",")
-            let hasPassword = existing.passwordCredentialEstablishedAt != nil
-            let expiry = ISO8601DateFormatter().string(from: Date().addingTimeInterval(600))
-            lock.unlock()
-            return Self.json(409, "{\"code\":\"account_link_required\",\"pendingLinkToken\":\(jsonString(token)),\"provider\":\(jsonString(provider)),\"email\":\(jsonString(existing.email)),\"expiresAt\":\(jsonString(expiry)),\"signInMethods\":{\"password\":\(hasPassword ? "true" : "false"),\"providers\":[\(providersJSON)]},\"returnTo\":\(jsonString(completion.returnTo))}")
-        }
-        if completion.mode == "login", completion.userId == nil {
-            if object["acceptTerms"] as? Bool != true {
-                lock.unlock()
-                return Self.legalRequired
-            }
-            let terms = object["termsVersion"] as? String
-            let privacy = object["privacyVersion"] as? String
-            if terms != Self.termsVersion || privacy != Self.privacyVersion {
-                lock.unlock()
-                return Self.termsChanged
-            }
-        }
-        socialCompletions.remove(at: index)
-        let id = completion.userId ?? UUID().uuidString.lowercased()
-        let taken = Set(accounts.values.map(\.name))
-        let pendingName = Self.pendingHandle(taken: taken)
-        let suggested = Self.availableUserName(
-            seed: String(completion.email.split(separator: "@").first ?? "user"),
-            taken: taken
-        )
-        if completion.userId == nil, accounts[completion.email] != nil {
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"An account with this email already exists. Sign in with email and password first, then connect \(provider) in Settings.\"}")
-        }
-        if completion.userId == nil {
-            accounts[completion.email] = Account(
-                id: id,
-                email: completion.email,
-                passwordHash: Self.sha256(Self.token()),
-                displayLanguage: nil,
-                name: pendingName,
-                profileSetupSuggestedHandle: suggested
+        case .pendingLinkExpired:
+            throw AuthCoreError.pendingLinkExpired
+        case .pendingLinkAccountMismatch:
+            throw AuthCoreError.pendingLinkAccountMismatch
+        case .pendingLinkLogin(let returnTo, let tokens, let linkedProvider):
+            return .session(
+                provider: provider,
+                mode: "login",
+                returnTo: returnTo,
+                accessToken: tokens.accessToken,
+                refreshToken: tokens.refreshToken,
+                linkedProvider: linkedProvider
             )
-            let source = (object["legalAcceptanceSource"] as? String) == "invite" ? "invite" : "oauth"
-            authProfileStore.setLegalAcceptance(EmailLegalAcceptance(
-                termsVersion: Self.termsVersion,
-                privacyVersion: Self.privacyVersion,
-                termsUrl: Self.termsURL,
-                privacyUrl: Self.privacyURL,
-                source: source,
-                userAgentHash: userAgent.flatMap { $0.isEmpty ? nil : Self.sha256($0) },
-                locale: acceptLanguage
-            ), userId: id)
+        case .accountLinkRequired(let handle):
+            throw AuthCoreError.accountLinkRequired(AccountLinkRequiredBody(
+                pendingLinkToken: handle.pendingLinkToken,
+                provider: provider,
+                email: handle.email,
+                expiresAt: ISO8601DateFormatter().string(from: moment.addingTimeInterval(600)),
+                hasPassword: handle.hasPassword,
+                providers: handle.linkedProviders,
+                returnTo: handle.returnTo
+            ))
+        case .legalRequired:
+            throw AuthCoreError.legalAcceptanceRequired
+        case .termsChanged:
+            throw AuthCoreError.termsChanged
+        case .emailExists:
+            throw AuthCoreError.socialEmailExists(provider: provider)
+        case .loggedIn(let mode, let returnTo, let tokens):
+            return .session(
+                provider: provider,
+                mode: mode,
+                returnTo: returnTo,
+                accessToken: tokens.accessToken,
+                refreshToken: tokens.refreshToken,
+                linkedProvider: nil
+            )
         }
-        let accessToken = Self.token()
-        let refreshToken = Self.token()
-        sessions[refreshToken] = LiveSession(userId: id, familyId: UUID().uuidString.lowercased())
-        accessTokens[accessToken] = id
-        lock.unlock()
-        let response = "{\"provider\":\(jsonString(provider)),\"mode\":\(jsonString(completion.mode)),\"returnTo\":\(jsonString(completion.returnTo)),\"accessToken\":\(jsonString(accessToken)),\"refreshToken\":\(jsonString(refreshToken))}"
-        return Self.json(200, response)
     }
 
-    /// `POST /api/auth/register`. A non-string email, password, or name is 400 before any account exists. Missing acceptance is 422. A stale version is 409 and creates no account.
-    public func register(body: String, userAgent: String?, acceptLanguage: String?) -> HTTPReply {
-        guard let data = body.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
-            return Self.registerInvalid([Issue(path: "", message: "Expected object, received string")])
+    private static func bearerToken(_ authorization: String?) -> String? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        return String(authorization.dropFirst("Bearer ".count))
+    }
+
+    // MARK: Register
+
+    /// `POST /api/auth/register`. A non-string email, password, or name is 400
+    /// before any account exists. Missing acceptance is 422. A stale version is
+    /// 409 and creates no account.
+    public func register(
+        _ body: RegisterRequest?,
+        userAgent: String?,
+        acceptLanguage: String?
+    ) throws -> RegisterResponse {
+        guard let body else {
+            throw AuthCoreError.registerBodyInvalid([
+                AuthRequestIssue(path: "", message: "Expected object, received string"),
+            ])
         }
-        var issues: [Issue] = []
-        let email = Self.stringField(object["email"], path: "email", into: &issues)
-        let password = Self.stringField(object["password"], path: "password", into: &issues)
-        if object["name"] != nil {
-            _ = Self.stringField(object["name"], path: "name", into: &issues)
+        var issues: [AuthRequestIssue] = []
+        let email = Self.requiredString(body.email, path: "email", into: &issues)
+        let password = Self.requiredString(body.password, path: "password", into: &issues)
+        if body.name != .absent {
+            _ = Self.requiredString(body.name, path: "name", into: &issues)
         }
-        let capability = Self.stagingCapability(object["stagingSelfAccountCapability"], into: &issues)
+        let capability = Self.stagingCapability(body.stagingSelfAccountCapability, into: &issues)
         guard let email, let password, issues.isEmpty else {
-            return Self.registerInvalid(issues)
+            throw AuthCoreError.registerBodyInvalid(issues)
         }
         if capability != nil {
             let stagingEmail = email.wholeMatch(of: /(?i).*@mail\.build/) != nil
-            if releaseBranch != "staging" || !stagingEmail {
-                return Self.json(403, "{\"error\":\"Staging self-account registration is unavailable\"}")
+            if store.releaseBranch != "staging" || !stagingEmail {
+                throw AuthCoreError.stagingRegistrationUnavailable
             }
         }
-        if let name = object["name"] as? String, Self.isReservedAgentName(name) {
-            return Self.json(400, "{\"error\":\"This username is reserved. Choose another name.\"}")
+        var requestedName: String?
+        if case .string(let name) = body.name {
+            if EmailLoginDirectory.isReservedAgentName(name) { throw AuthCoreError.reservedName }
+            requestedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        if object["acceptTerms"] as? Bool != true {
-            return Self.legalRequired
+        guard body.acceptTerms else { throw AuthCoreError.legalAcceptanceRequired }
+        if body.termsVersion != EmailLoginDirectory.termsVersion
+            || body.privacyVersion != EmailLoginDirectory.privacyVersion {
+            throw AuthCoreError.termsChanged
         }
-        let terms = object["termsVersion"] as? String
-        let privacy = object["privacyVersion"] as? String
-        if terms != Self.termsVersion || privacy != Self.privacyVersion {
-            return Self.termsChanged
+        let autoVerify = ProcessInfo.processInfo.environment["SLOCK_E2E_AUTO_VERIFY_EMAIL"] == "1"
+            && body.e2eAutoVerify
+        let outcome = store.registerAccount(RegistrationAttempt(
+            normalizedEmail: EmailLoginDirectory.normalize(email),
+            passwordHash: EmailLoginDirectory.sha256(password),
+            requestedName: requestedName,
+            capabilityHash: capability.map(EmailLoginDirectory.sha256),
+            legalAcceptanceSource: body.legalAcceptanceSource == "invite" ? "invite" : "signup",
+            userAgentHash: userAgent.flatMap { $0.isEmpty ? nil : EmailLoginDirectory.sha256($0) },
+            locale: acceptLanguage,
+            autoVerify: autoVerify,
+            now: now()
+        ))
+        switch outcome {
+        case .emailTaken:
+            throw AuthCoreError.emailAlreadyRegistered
+        case .created(let account):
+            return RegisterResponse(
+                id: account.id,
+                email: account.email,
+                name: account.name,
+                emailVerified: account.emailVerified,
+                profileSetupSuggestedHandle: account.suggestedHandle,
+                accessToken: account.tokens.accessToken,
+                refreshToken: account.tokens.refreshToken
+            )
         }
-
-        let normalized = Self.normalize(email)
-        let source = (object["legalAcceptanceSource"] as? String) == "invite" ? "invite" : "signup"
-        let requestedName = (object["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        lock.lock()
-        if accounts[normalized] != nil {
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"Email already registered\"}")
-        }
-        let taken = Set(accounts.values.map(\.name))
-        let pendingName = Self.pendingHandle(taken: taken)
-        let suggested = Self.availableUserName(
-            seed: (requestedName?.isEmpty == false ? requestedName! : String(normalized.split(separator: "@").first ?? "user")),
-            taken: taken
-        )
-        let id = UUID().uuidString.lowercased()
-        accounts[normalized] = Account(
-            id: id,
-            email: normalized,
-            passwordHash: Self.sha256(password),
-            displayLanguage: nil,
-            name: pendingName,
-            profileSetupSuggestedHandle: suggested,
-            stagingSelfAccountCapabilityHash: capability.map(Self.sha256)
-        )
-        authProfileStore.setLegalAcceptance(EmailLegalAcceptance(
-            termsVersion: Self.termsVersion,
-            privacyVersion: Self.privacyVersion,
-            termsUrl: Self.termsURL,
-            privacyUrl: Self.privacyURL,
-            source: source,
-            userAgentHash: userAgent.flatMap { $0.isEmpty ? nil : Self.sha256($0) },
-            locale: acceptLanguage
-        ), userId: id)
-        // Upstream inserts a 24h `email_verifications` row during createUser.
-        // The E2E-only double gate (env flag AND per-request opt-in) can mark
-        // the account verified immediately; the normal signup stays unverified.
-        let verificationToken = Self.randomHex(32)
-        authProfileStore.issueVerificationToken(
-            userId: id,
-            token: verificationToken,
-            tokenHash: Self.sha256(verificationToken)
-        )
-        let autoVerified = ProcessInfo.processInfo.environment["SLOCK_E2E_AUTO_VERIFY_EMAIL"] == "1"
-            && object["__e2eAutoVerify"] as? Bool == true
-        if autoVerified {
-            accounts[normalized]?.emailVerified = true
-        }
-        let issued = openSessionLocked(userId: id)
-        emailVerifications += 1
-        lock.unlock()
-        let user = "{\"id\":\(jsonString(id)),\"email\":\(jsonString(normalized)),\"name\":\(jsonString(pendingName)),\"emailVerified\":\(autoVerified ? "true" : "false"),\"profileSetupCompletedAt\":null,\"profileSetupSuggestedHandle\":\(jsonString(suggested)),\"profileSetupProvider\":null}"
-        let response = "{\"user\":\(user),\"accessToken\":\(jsonString(issued.accessToken)),\"refreshToken\":\(jsonString(issued.refreshToken))}"
-        return Self.json(200, response)
     }
 
-    /// `POST /api/auth/staging-self-account/retire`. The caller's access token stays usable after the sessions are revoked.
-    public func retireStagingSelfAccount(body: String, authorization: String?) -> HTTPReply {
-        guard let actorId = retirementActor(authorization) else { return Self.invalidToken }
-        if releaseBranch != "staging" {
-            return Self.json(404, "{\"error\":\"Not found\"}")
-        }
-        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
-        let userId = object?["userId"] as? String ?? ""
-        let capability = object?["capability"] as? String ?? ""
-        if userId != actorId {
-            return Self.json(403, "{\"error\":\"User ownership mismatch\"}")
-        }
-        if capability.isEmpty {
-            return Self.json(403, "{\"error\":\"Invalid retirement capability\"}")
-        }
-        guard userId.wholeMatch(of: /(?i)[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/) != nil else {
-            return Self.json(404, "{\"error\":\"User not found\"}")
-        }
-        lock.lock()
-        guard let key = accounts.first(where: { $0.value.id == userId })?.key, var account = accounts[key] else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"User not found\"}")
-        }
-        if !account.emailVerified || account.email.wholeMatch(of: /(?i).*@mail\.build/) == nil {
-            lock.unlock()
-            return Self.json(403, "{\"error\":\"Unsupported account\"}")
-        }
-        if account.stagingSelfAccountCapabilityHash == nil || account.stagingSelfAccountCapabilityHash != Self.sha256(capability) {
-            lock.unlock()
-            return Self.json(403, "{\"error\":\"Invalid retirement capability\"}")
-        }
-        if account.retiredAt != nil {
-            let receipt = retirementReceipts[userId]
-            lock.unlock()
-            guard let receipt else { return Self.json(500, "{\"error\":\"Retirement receipt unavailable\"}") }
-            return Self.retirementJSON(receipt)
-        }
-        let now = Date()
-        account.retiredAt = now
-        accounts[key] = account
-        let live = sessions.filter { $0.value.userId == userId }
-        for (token, session) in live {
-            sessions.removeValue(forKey: token)
-            revokedFamilies.insert(session.familyId)
-        }
-        let familyIds = sessionFamilies.compactMap { $0.value.userId == userId ? $0.key : nil }
-        for familyId in familyIds {
-            revokedFamilies.insert(familyId)
-            if sessionFamilies[familyId]?.revokedAt == nil {
-                sessionFamilies[familyId]?.revokedAt = now
+    private static func requiredString(
+        _ field: LoginBodyField,
+        path: String,
+        into issues: inout [AuthRequestIssue]
+    ) -> String? {
+        switch field {
+        case .absent:
+            issues.append(AuthRequestIssue(path: path, message: "Required"))
+            return nil
+        case .string(let value):
+            if value.isEmpty {
+                issues.append(AuthRequestIssue(path: path, message: "String must contain at least 1 character(s)"))
+                return nil
             }
+            return value
+        case .wrongType(let shape):
+            issues.append(AuthRequestIssue(path: path, message: "Expected string, received \(shape)"))
+            return nil
         }
-        let receipt = RetirementReceipt(
+    }
+
+    private static func stagingCapability(
+        _ field: LoginBodyField,
+        into issues: inout [AuthRequestIssue]
+    ) -> String? {
+        let path = "stagingSelfAccountCapability"
+        switch field {
+        case .absent:
+            return nil
+        case .wrongType(let shape):
+            issues.append(AuthRequestIssue(path: path, message: "Expected string, received \(shape)"))
+            return nil
+        case .string(let text):
+            if text.count < 32 {
+                issues.append(AuthRequestIssue(path: path, message: "String must contain at least 32 character(s)"))
+                return nil
+            }
+            if text.count > 256 {
+                issues.append(AuthRequestIssue(path: path, message: "String must contain at most 256 character(s)"))
+                return nil
+            }
+            return text
+        }
+    }
+
+    // MARK: Staging retirement
+
+    /// `POST /api/auth/staging-self-account/retire`. The caller's access token
+    /// stays usable after the sessions are revoked.
+    public func retireStagingSelfAccount(
+        _ body: RetireStagingRequest,
+        authorization: String?
+    ) throws -> StagingRetirementResponse {
+        guard let token = Self.bearerToken(authorization),
+              let actorId = store.accessTokenOwner(token)
+        else { throw AuthCoreError.invalidToken }
+        guard store.releaseBranch == "staging" else { throw AuthCoreError.notFound }
+        let userId = body.userId ?? ""
+        let capability = body.capability ?? ""
+        if userId != actorId { throw AuthCoreError.retirementOwnershipMismatch }
+        if capability.isEmpty { throw AuthCoreError.invalidRetirementCapability }
+        guard userId.wholeMatch(of: /(?i)[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/) != nil else {
+            throw AuthCoreError.userNotFound
+        }
+        let outcome = store.retireStagingAccount(
             userId: userId,
             actorUserId: actorId,
-            environment: "staging",
-            terminalState: "retired",
-            sessionsRevoked: live.count
+            capabilityHash: EmailLoginDirectory.sha256(capability),
+            now: now()
         )
-        retirementReceipts[userId] = receipt
-        lock.unlock()
-        return Self.retirementJSON(receipt)
+        switch outcome {
+        case .userNotFound:
+            throw AuthCoreError.userNotFound
+        case .unsupportedAccount:
+            throw AuthCoreError.unsupportedAccount
+        case .invalidCapability:
+            throw AuthCoreError.invalidRetirementCapability
+        case .alreadyRetired(let receipt):
+            guard let receipt else { throw AuthCoreError.retirementReceiptUnavailable }
+            return Self.response(receipt)
+        case .retired(let receipt):
+            return Self.response(receipt)
+        }
     }
 
-    /// `POST /api/auth/device/authorize`. The surface is on unless the gate is an explicit off value.
-    public func authorizeDevice(body: String) -> HTTPReply {
-        if let disabled = deviceSurfaceDisabled() { return disabled }
-        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
-        var clientName: String?
-        if object.keys.contains("clientName"), !(object["clientName"] is NSNull) {
-            guard let name = object["clientName"] as? String, name.count <= 200 else {
-                return Self.json(400, "{\"error\":\"clientName must be a string up to 200 chars\",\"code\":\"client_name_invalid\"}")
-            }
-            clientName = name
+    private static func response(_ receipt: RetirementReceipt) -> StagingRetirementResponse {
+        StagingRetirementResponse(
+            userId: receipt.userId,
+            actorUserId: receipt.actorUserId,
+            environment: receipt.environment,
+            terminalState: receipt.terminalState,
+            sessionsRevoked: receipt.sessionsRevoked
+        )
+    }
+
+    // MARK: Device grants
+
+    private func requireDeviceSurface() throws {
+        guard EmailLoginDirectory.deviceLoginEnabled(store.deviceLoginGate) else {
+            throw AuthCoreError.deviceLoginDisabled
         }
-        let userCode = makeUserCode()
-        let deviceCode = Self.deviceSecret()
-        let expiresAt = Date(timeIntervalSinceNow: 600)
-        lock.lock()
-        deviceGrants[deviceCode] = DeviceGrant(
+    }
+
+    /// `POST /api/auth/device/authorize`. The surface is on unless the gate is
+    /// an explicit off value. The grant is stored before the login URL is
+    /// checked, as before.
+    public func authorizeDevice(_ body: DeviceAuthorizeRequest) throws -> DeviceAuthorizeResponse {
+        try requireDeviceSurface()
+        var clientName: String?
+        switch body.clientName {
+        case .absent:
+            break
+        case .string(let name):
+            guard name.count <= 200 else { throw AuthCoreError.clientNameInvalid }
+            clientName = name
+        case .invalidType:
+            throw AuthCoreError.clientNameInvalid
+        }
+        let userCode = Self.makeUserCode()
+        let deviceCode = EmailLoginDirectory.deviceSecret()
+        store.registerDeviceGrant(
             deviceCode: deviceCode,
             userCode: userCode,
-            status: "pending",
-            approvedByUserId: nil,
-            expiresAt: expiresAt,
-            clientName: clientName
+            clientName: clientName,
+            expiresAt: now().addingTimeInterval(600)
         )
-        deviceUserCodes[userCode] = deviceCode
-        lock.unlock()
         guard let verification = deviceVerification(userCode: userCode) else {
-            return Self.json(503, "{\"error\":\"Device login URL is not configured\",\"code\":\"DEVICE_LOGIN_URL_UNAVAILABLE\"}")
+            throw AuthCoreError.deviceLoginURLUnavailable
         }
-        let response = "{\"deviceCode\":\(jsonString(deviceCode)),\"userCode\":\(jsonString(userCode)),\"verificationUri\":\(jsonString(verification.uri)),\"verificationUriComplete\":\(jsonString(verification.complete)),\"expiresIn\":600,\"interval\":5}"
-        return Self.json(201, response)
+        return DeviceAuthorizeResponse(
+            deviceCode: deviceCode,
+            userCode: userCode,
+            verificationUri: verification.uri,
+            verificationUriComplete: verification.complete
+        )
     }
 
-    /// `POST /api/auth/device/approve`. Only the signed-in user can approve or deny a code.
-    public func approveDevice(body: String, authorization: String?) -> HTTPReply {
-        if let disabled = deviceSurfaceDisabled() { return disabled }
-        let actor: String
-        switch authorize(authorization) {
-        case .rejected(let reply):
-            return reply
-        case .user(let id):
-            actor = id
-        }
-        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
-        guard let rawCode = object["userCode"] as? String, !rawCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return Self.json(400, "{\"error\":\"userCode is required\",\"code\":\"user_code_required\"}")
-        }
-        let approve = object["approve"] == nil ? true : (object["approve"] as? Bool == true)
+    /// `POST /api/auth/device/approve`. Only the signed-in user can approve or
+    /// deny a code.
+    public func approveDevice(
+        _ body: DeviceApproveRequest,
+        authorization: String?
+    ) throws -> DeviceDecisionResponse {
+        try requireDeviceSurface()
+        let actor = try authenticate(authorization)
+        guard let rawCode = body.userCode,
+              !rawCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { throw AuthCoreError.userCodeRequired }
         let normalized = rawCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        lock.lock()
-        guard let deviceCode = deviceUserCodes[normalized], var grant = deviceGrants[deviceCode] else {
-            lock.unlock()
-            return Self.deviceUpdateFailed("user_code_invalid", status: 404)
+        switch store.decideDeviceGrant(
+            userCode: normalized,
+            approve: body.approve,
+            actorUserId: actor,
+            now: now()
+        ) {
+        case .userCodeInvalid:
+            throw AuthCoreError.deviceUpdateFailed(code: "user_code_invalid", status: 404)
+        case .alreadyResolved:
+            throw AuthCoreError.deviceUpdateFailed(code: "already_resolved", status: 409)
+        case .expired:
+            throw AuthCoreError.deviceUpdateFailed(code: "expired", status: 410)
+        case .decided:
+            return DeviceDecisionResponse(approved: body.approve)
         }
-        if grant.status != "pending" {
-            lock.unlock()
-            return Self.deviceUpdateFailed("already_resolved", status: 409)
-        }
-        if grant.expiresAt <= Date() {
-            lock.unlock()
-            return Self.deviceUpdateFailed("expired", status: 410)
-        }
-        if approve {
-            grant.status = "approved"
-            grant.approvedByUserId = actor
-        } else {
-            grant.status = "denied"
-            grant.approvedByUserId = nil
-        }
-        deviceGrants[deviceCode] = grant
-        lock.unlock()
-        let action = approve ? "approved" : "denied"
-        return Self.json(200, "{\"ok\":true,\"action\":\(jsonString(action))}")
     }
 
-    /// `POST /api/auth/device/token`. A pending grant stays pending. Approval issues one session, then the code is spent.
-    public func pollDeviceToken(body: String) -> HTTPReply {
-        if let disabled = deviceSurfaceDisabled() { return disabled }
-        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
-        guard let deviceCode = object["deviceCode"] as? String, !deviceCode.isEmpty else {
-            return Self.json(400, "{\"error\":\"deviceCode is required\",\"code\":\"device_code_required\"}")
+    /// `POST /api/auth/device/token`. A pending grant stays pending. Approval
+    /// issues one session, then the code is spent.
+    public func pollDeviceToken(_ body: DeviceTokenRequest) throws -> DeviceTokenResponse {
+        try requireDeviceSurface()
+        guard let deviceCode = body.deviceCode, !deviceCode.isEmpty else {
+            throw AuthCoreError.deviceCodeRequired
         }
-        lock.lock()
-        guard var grant = deviceGrants[deviceCode] else {
-            lock.unlock()
-            return Self.deviceNotReady("device_code_invalid", status: 400)
+        switch store.consumeDeviceGrant(deviceCode: deviceCode, now: now()) {
+        case .deviceCodeInvalid:
+            throw AuthCoreError.deviceNotReady(code: "device_code_invalid", status: 400)
+        case .consumed:
+            throw AuthCoreError.deviceNotReady(code: "device_code_consumed", status: 410)
+        case .expired:
+            throw AuthCoreError.deviceNotReady(code: "expired_token", status: 410)
+        case .denied:
+            throw AuthCoreError.deviceNotReady(code: "access_denied", status: 403)
+        case .pending:
+            throw AuthCoreError.deviceNotReady(code: "authorization_pending", status: 400)
+        case .issued(let userId, let tokens):
+            return DeviceTokenResponse(
+                accessToken: tokens.accessToken,
+                refreshToken: tokens.refreshToken,
+                userId: userId
+            )
         }
-        if grant.status == "consumed" {
-            lock.unlock()
-            return Self.deviceNotReady("device_code_consumed", status: 410)
-        }
-        if grant.expiresAt <= Date() {
-            lock.unlock()
-            return Self.deviceNotReady("expired_token", status: 410)
-        }
-        if grant.status == "denied" {
-            lock.unlock()
-            return Self.deviceNotReady("access_denied", status: 403)
-        }
-        guard grant.status == "approved", let userId = grant.approvedByUserId else {
-            lock.unlock()
-            return Self.deviceNotReady("authorization_pending", status: 400)
-        }
-        grant.status = "consumed"
-        deviceGrants[deviceCode] = grant
-        let issued = openSessionLocked(userId: userId)
-        lock.unlock()
-        let response = "{\"accessToken\":\(jsonString(issued.accessToken)),\"refreshToken\":\(jsonString(issued.refreshToken)),\"userId\":\(jsonString(userId))}"
-        return Self.json(200, response)
     }
 
-    /// `POST /api/auth/refresh`. A matching attempt and installation replay the same successor.
-    public func refresh(body: String, attemptHeader: String?, installationHeader: String?) -> HTTPReply {
-        guard let data = body.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let refreshToken = object["refreshToken"] as? String, !refreshToken.isEmpty
-        else {
-            return Self.json(400, "{\"error\":\"Refresh token is required\"}")
+    private func deviceVerification(userCode: String) -> (uri: String, complete: String)? {
+        let trimmed = store.appURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        let base = trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
+        let uri = "\(base)/login/device"
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.!~*'()"))
+        let encoded = userCode.addingPercentEncoding(withAllowedCharacters: allowed) ?? userCode
+        return (uri, "\(uri)?user_code=\(encoded)")
+    }
+
+    private static func makeUserCode() -> String {
+        let alphabet = Array("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
+        var chars = ""
+        for _ in 0..<8 {
+            chars.append(alphabet[Int.random(in: 0..<alphabet.count)])
         }
-        let attempt = Self.refreshAttempt(attemptHeader)
-        let installation = Self.refreshInstallation(installationHeader)
+        return "\(chars.prefix(4))-\(chars.dropFirst(4))"
+    }
+
+    // MARK: Refresh and logout
+
+    /// `POST /api/auth/refresh`. A matching attempt and installation replay the
+    /// same successor. The replay-binding identifiers stay headers.
+    public func refresh(
+        _ body: RefreshTokenRequest,
+        attemptHeader: String?,
+        installationHeader: String?
+    ) throws -> RefreshResponse {
+        guard let refreshToken = body.refreshToken, !refreshToken.isEmpty else {
+            throw AuthCoreError.refreshTokenRequired
+        }
+        let attempt = EmailLoginDirectory.refreshAttempt(attemptHeader)
+        let installation = EmailLoginDirectory.refreshInstallation(installationHeader)
         if installationHeader != nil, attempt == nil || installation == nil {
-            return Self.json(400, "{\"error\":\"Invalid refresh replay binding\"}")
+            throw AuthCoreError.invalidRefreshBinding
         }
-        lock.lock()
-        let outcome = refreshLocked(
-            refreshToken: refreshToken,
+        guard let rotation = store.rotateRefreshToken(
+            refreshToken,
             attemptId: attempt,
-            installationId: installation
-        )
-        lock.unlock()
-        switch outcome {
-        case .rejected:
-            return Self.json(401, "{\"error\":\"Invalid or expired refresh token\"}")
-        case .rotated(let userId, let successor):
-            return Self.json(200, "{\"accessToken\":\(jsonString(userId.accessToken)),\"refreshToken\":\(jsonString(successor))}")
+            installationId: installation,
+            now: now()
+        ) else { throw AuthCoreError.invalidRefreshToken }
+        return RefreshResponse(accessToken: rotation.accessToken, refreshToken: rotation.refreshToken)
+    }
+
+    /// `POST /api/auth/logout`. Revoking the predecessor's family blocks a later
+    /// replay. A body without a usable token still answers `{"ok":true}`.
+    public func logout(_ body: RefreshTokenRequest) -> OkResponse {
+        if let refreshToken = body.refreshToken, !refreshToken.isEmpty {
+            store.revokeRefreshFamily(refreshToken: refreshToken, now: now())
         }
-    }
-
-    public func refreshRotationReceipts() -> [RefreshRotationReceipt] {
-        lock.lock()
-        defer { lock.unlock() }
-        return rotationReceipts.values.map {
-            RefreshRotationReceipt(
-                attemptId: $0.attemptId,
-                installationId: $0.installationId,
-                successorTokenCiphertext: $0.ciphertext
-            )
-        }
-    }
-
-    public func expireRefreshReceipts() {
-        lock.lock()
-        for key in rotationReceipts.keys {
-            rotationReceipts[key]?.expiresAt = Date(timeIntervalSinceNow: -1)
-        }
-        lock.unlock()
-    }
-
-    /// Moves one mobile OAuth request's expiry into the past. Completion then reports `handoff_code_expired`.
-    public func expireMobileOAuthRequest(id: String) {
-        lock.lock()
-        mobileRequests[id]?.expiresAt = Date(timeIntervalSinceNow: -1)
-        lock.unlock()
-    }
-
-    /// `POST /api/auth/logout`. Revoking the predecessor's family blocks a later replay.
-    public func logout(body: String) -> HTTPReply {
-        if let data = body.data(using: .utf8),
-           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let refreshToken = object["refreshToken"] as? String, !refreshToken.isEmpty {
-            lock.lock()
-            if let live = sessions.removeValue(forKey: refreshToken) {
-                revokedFamilies.insert(live.familyId)
-                sessionFamilies[live.familyId]?.revokedAt = Date()
-                sessionFamilies[live.familyId]?.revokedReason = "logout"
-                sessionFamilies[live.familyId]?.capabilityRetainUntil = Date().addingTimeInterval(30 * 24 * 60 * 60)
-                let familyTokens = sessions.filter { $0.value.familyId == live.familyId }.map { $0.key }
-                for token in familyTokens { sessions.removeValue(forKey: token) }
-            } else if let predecessorFamily = predecessorFamilies[Self.sha256(refreshToken)] {
-                revokedFamilies.insert(predecessorFamily)
-                sessionFamilies[predecessorFamily]?.revokedAt = Date()
-                sessionFamilies[predecessorFamily]?.revokedReason = "logout"
-                sessionFamilies[predecessorFamily]?.capabilityRetainUntil = Date().addingTimeInterval(30 * 24 * 60 * 60)
-                let familyTokens = sessions.filter { $0.value.familyId == predecessorFamily }.map { $0.key }
-                for token in familyTokens { sessions.removeValue(forKey: token) }
-            } else if let receipt = rotationReceipts[Self.sha256(refreshToken)] {
-                revokedFamilies.insert(receipt.familyId)
-                sessionFamilies[receipt.familyId]?.revokedAt = Date()
-                sessionFamilies[receipt.familyId]?.revokedReason = "logout"
-                sessionFamilies[receipt.familyId]?.capabilityRetainUntil = Date().addingTimeInterval(30 * 24 * 60 * 60)
-            }
-            lock.unlock()
-        }
-        return Self.json(200, "{\"ok\":true}")
-    }
-
-    public func oauthRequestStatus(id: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return mobileRequests[id]?.status
-    }
-
-    public func oauthRequestReturnUri(id: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return mobileRequests[id]?.returnUri
-    }
-
-    public func oauthRequestCodeHash(id: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return mobileRequests[id]?.codeHash
-    }
-
-    public func oauthRequestExpiresAt(id: String) -> Date? {
-        lock.lock()
-        defer { lock.unlock() }
-        return mobileRequests[id]?.expiresAt
-    }
-
-    public func oauthRequestProviderUserId(id: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return mobileRequests[id]?.profileUserId
-    }
-
-    public func oauthRequestProviderEmail(id: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return mobileRequests[id]?.profileEmail
-    }
-
-    /// `requireVerified` reads this from the profile store; the verification
-    /// service writes it through the same locked store.
-    public func isEmailVerified(userId: String) -> Bool {
-        authProfileStore.isEmailVerified(userId: userId)
-    }
-
-    /// The Node fixture marks a row verified without an HTTP call. Retirement refuses an unverified account.
-    public func markEmailVerified(userId: String) {
-        authProfileStore.markEmailVerified(userId: userId)
-    }
-
-    public func stagingSelfAccountCapabilityHash(userId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return accounts.values.first { $0.id == userId }?.stagingSelfAccountCapabilityHash
-    }
-
-    public func retiredAt(userId: String) -> Date? {
-        lock.lock()
-        defer { lock.unlock() }
-        return accounts.values.first { $0.id == userId }?.retiredAt
-    }
-
-    public func sessionCount(for userId: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return sessions.values.filter { $0.userId == userId }.count
-    }
-
-    public func sessionFamilyRevokedAts(userId: String) -> [Date?] {
-        lock.lock()
-        defer { lock.unlock() }
-        return sessionFamilies.values.filter { $0.userId == userId }.map(\.revokedAt)
-    }
-
-    public func oauthRequestCodeChallenge(id: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return mobileRequests[id]?.codeChallenge
-    }
-
-    /// Adds platform allow rules for Apple sign-in. An empty set leaves Apple disabled on every platform.
-    public func allowAppleLogin(on platforms: [String]) {
-        lock.lock()
-        appleLoginPlatforms.formUnion(platforms)
-        lock.unlock()
-    }
-}
-
-/// Directory services and counters the startup log and acceptance tests read.
-/// Every counter is a locked snapshot; none mutates the row it counts.
-extension EmailLoginDirectory {
-
-    /// The bearer access-token check shared by the domain services that have
-    /// not migrated yet. It lives here, next to the other shared auth
-    /// primitives; the product-feedback submission slice only inherited it.
-    func authorize(_ authorization: String?) -> Auth {
-        guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return .rejected(Self.missingAuthorization)
-        }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        let id = accessTokens[token]
-        let family = accessTokenFamilies[token]
-        let familyRevoked = family.map { revokedFamilies.contains($0) } ?? false
-        lock.unlock()
-        guard let id, !familyRevoked else { return .rejected(Self.invalidToken) }
-        return .user(id)
-    }
-
-    /// Email-verification policy for `POST /api/auth/verify-email` and
-    /// `POST /api/auth/resend-verification`. The feature calls this service;
-    /// the directory only supplies the profile store it reads.
-    public var authVerification: AuthVerificationService {
-        AuthVerificationService(store: authProfileStore)
-    }
-
-    /// The message-send boundary: the attachment download URL, the
-    /// thread-follower undo routes and the migration receipt DM. It reads the
-    /// message/channel/profile stores and the OAuth ledger directly; the
-    /// attachment-visibility policy, the socket emitter and the serialized
-    /// message append still live in unmigrated directory code and enter as
-    /// closures (`MessageSendService.live`).
-    public var messageSend: MessageSendService {
-        MessageSendService(
-            messages: messagesAndThreadsStore,
-            channels: serversAndChannelsStore,
-            profiles: authProfileStore,
-            oauth: oauth,
-            visibleAttachment: { [self] userId, serverId, attachment in
-                visibleAttachment(userId: userId, serverId: serverId, attachment: attachment)
-            },
-            emitRealtime: { [self] room, event, payload in
-                emitRealtime(room, event, payload)
-            },
-            registerPostableChannel: { [self] serverId, channelId, memberId, kind, name in
-                addPostableChannel(
-                    serverId: serverId,
-                    channelId: channelId,
-                    memberId: memberId,
-                    kind: kind,
-                    name: name
-                )
-            },
-            appendHumanMessage: { [self] message in
-                // The append still serializes with every other message writer
-                // under the directory lock until the channel-message domain
-                // moves its seq stamping into `MessagesAndThreadsStore`.
-                lock.lock()
-                defer { lock.unlock() }
-                return appendHumanMessageLocked(message)
-            }
-        )
-    }
-
-    /// Socket room membership: connect-time visibility, thread-room
-    /// enumeration, `sync:resume` catch-up and membership revocation. The
-    /// directory supplies the channel/message stores and the OAuth ledger; the
-    /// attachment-comments feature flag is owned by the unmigrated integrations
-    /// domain, so it enters the service as a closure.
-    public var socketMembership: SocketMembershipService {
-        SocketMembershipService(
-            channels: serversAndChannelsStore,
-            messages: messagesAndThreadsStore,
-            oauth: oauth,
-            attachmentCommentsEnabled: { [self] serverId, userId in
-                attachmentCommentsEnabled(serverId: serverId, userId: userId)
-            }
-        )
-    }
-
-    /// Server usage, system attention, mention-delivery diagnostics, session
-    /// transcripts, transcript feedback and share artifacts. The directory
-    /// supplies the machine/agent/message stores and the OAuth ledger; session
-    /// lookup and the unmigrated channel access policy enter as closures.
-    public var runtimeUsageAttestations: RuntimeUsageAndAttestationsService {
-        RuntimeUsageAndAttestationsService(
-            machines: machinesAndComputersStore,
-            messages: messagesAndThreadsStore,
-            channels: serversAndChannelsStore,
-            agents: agentsRuntimeStore,
-            oauth: oauth,
-            sessionUserId: { [self] authorization in
-                sessionUserId(authorization: authorization)
-            },
-            channelAccess: { [self] serverId, channelId, userId in
-                switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
-                case .missing: false
-                case .readOnly, .write: true
-                }
-            }
-        )
-    }
-
-    /// Account-profile policy for `POST /api/auth/reset-password`,
-    /// `POST /api/auth/pending-link/cancel` and
-    /// `POST /api/auth/me/timezone-observation`. The feature calls this
-    /// service; the directory only supplies the profile store it reads.
-    public var authProfile: AuthProfileService {
-        AuthProfileService(store: authProfileStore)
-    }
-
-    /// Session, identity, app-login and profile operations: identity list and
-    /// unlink, password login, the HarmonyOS app-login handoff, `GET`/`PATCH`
-    /// `/api/auth/me`, the avatar upload and the integration settings list. The
-    /// directory supplies the profile store and the OAuth ledger.
-    public var authIdentities: AuthIdentitiesService {
-        AuthIdentitiesService(store: authProfileStore, oauth: oauth)
-    }
-
-    /// Agent migration status, cancellation, provider position and the external
-    /// diagnostics view. The service owns the three published operations; the
-    /// directory supplies the agent runtime store (both migration families), the OAuth ledger, and the
-    /// realtime/cancel relay seams the unmigrated migration domains own.
-    public var agentMigrationStatus: AgentMigrationStatusService {
-        let accounts = self
-        return AgentMigrationStatusService(
-            sessionUserId: { accounts.sessionUserId(authorization: $0) },
-            oauth: oauth,
-            agents: agentsRuntimeStore,
-            emitRealtime: { room, event, payload in
-                accounts.emitRealtime(room, event, payload)
-            },
-            cancelDispatch: { machineId, role, migrationRef, transportGeneration, stopAgent in
-                accounts.agentMigrationCancelDispatch?(
-                    machineId,
-                    role,
-                    migrationRef,
-                    transportGeneration,
-                    stopAgent
-                )
-            }
-        )
-    }
-
-    /// Agent send, delivery-ack, activity, thread-follow and integration
-    /// operations. The directory supplies the stores; the closures bridge the
-    /// not-yet-migrated message-visibility, message-append and OAuth
-    /// integration-projection domains.
-    public var agentSendDelivery: AgentSendDeliveryService {
-        AgentSendDeliveryService(
-            machines: machinesAndComputersStore,
-            channels: serversAndChannelsStore,
-            messages: messagesAndThreadsStore,
-            agents: agentsRuntimeStore,
-            threadFollows: threadFollowStore,
-            managedMCP: managedMCPAndCardsStore,
-            oauth: oauth,
-            searchVisible: { [self] messageChannelId, serverId, viewer in
-                searchMentions.messageVisible(
-                    messageChannelId: messageChannelId,
-                    serverId: serverId,
-                    viewer: viewer
-                )
-            },
-            appendHumanMessage: { [self] message in
-                lock.lock()
-                let seq = appendHumanMessageLocked(message)
-                lock.unlock()
-                return seq
-            },
-            integrationServices: { [self] serverId in
-                oauth.integrationServices(serverId: serverId).map(AgentIntegrationProjection.snapshot)
-            }
-        )
-    }
-
-    /// Message reactions, the reaction viewer/actor pages, both agent reaction
-    /// routes and the managed-daemon third-party delivery report. The directory
-    /// supplies the stores; the session and agent-credential/grant decisions and
-    /// the attachment-comment projections belong to unmigrated domains and enter
-    /// as closures.
-    public var profileAndChannelFiles: ProfileAndChannelFilesService {
-        ProfileAndChannelFilesService(
-            messages: messagesAndThreadsStore,
-            channels: serversAndChannelsStore,
-            accounts: authProfileStore,
-            agents: agentsRuntimeStore,
-            machines: machinesAndComputersStore,
-            oauth: oauth,
-            dependencies: ProfileAndChannelFilesDependencies(
-                sessionUserId: { [self] authorization in
-                    sessionUserId(authorization: authorization)
-                },
-                agentRead: { [self] authorization in
-                    profileAgentReadOutcome(authorization)
-                },
-                capabilityDenial: { [self] authorization, capability in
-                    switch FeedbackLocatorService(directory: self)
-                        .capabilityDecision(authorization: authorization, capability: capability) {
-                    case .allowed:
-                        return nil
-                    case .denied(let denied):
-                        return denied
-                    }
-                },
-                emitRealtime: { [self] room, event, payload in
-                    emitRealtime(room, event, payload)
-                },
-                attachmentCommentsEnabled: { [self] serverId, userId in
-                    attachmentCommentsEnabled(serverId: serverId, userId: userId)
-                },
-                attachmentsJSON: { [self] ids, commentsVisible in
-                    lock.lock()
-                    defer { lock.unlock() }
-                    return "[" + messageAttachmentsJSONLocked(ids, commentsVisible: commentsVisible) + "]"
-                },
-                commentRefJSON: { [self] messageId in
-                    lock.lock()
-                    defer { lock.unlock() }
-                    return commentRefJSONLocked(messageId: messageId)
-                }
-            )
-        )
-    }
-
-    /// Action-card prepare, the agent context / app-config surface, and the
-    /// agent-target projections the execute/send domains still call. The
-    /// service reads the domain stores; the session lookup and the
-    /// assistant-owner policy belong to unmigrated domains and enter as
-    /// closures.
-    public var actionCardPrepare: ActionCardPrepareService {
-        ActionCardPrepareService(
-            oauth: oauth,
-            cards: managedMCPAndCardsStore,
-            feedback: feedbackStore,
-            agents: agentsRuntimeStore,
-            channels: serversAndChannelsStore,
-            accounts: authProfileStore,
-            messages: messagesAndThreadsStore,
-            sessionUserId: { self.sessionUserId(authorization: $0) },
-            assistantOwner: { [self] agentId, serverId in
-                assistantOwnerFor(agentId: agentId, serverId: serverId)
-            }
-        )
-    }
-
-    /// Agent task list, claim and update-status. The service owns the task
-    /// policy and reads the task/message/channel/agent/machine stores; the
-    /// directory accessor stays here so the feature layer never touches the
-    /// composition root.
-    public var actionCardExecute: ActionCardExecuteService {
-        ActionCardExecuteService(directory: self)
-    }
-
-    /// Message search, the stored context fallback, the shared message
-    /// visibility policy and channel soft-delete. The directory supplies the
-    /// domain stores and the OAuth ledger; the not-yet-migrated session,
-    /// machine/agent credential, attachment/action-card and thread-summary
-    /// projections enter as closures.
-    public var searchMentions: SearchMentionsService {
-        SearchMentionsService(directory: self)
+        return OkResponse()
     }
 }
