@@ -15,17 +15,6 @@ struct AttachmentsAndNotificationsService {
         self.directory = directory
     }
 
-    // MARK: - Experimental surfaces
-
-    /// Operator kill switch for `/internal/agent-api` and `/internal/computer`.
-    /// `SLOCK_EXPERIMENTAL_SURFACES_DISABLED=true` disables them; tests may
-    /// override without touching the process environment.
-    func setExperimentalSurfacesDisabled(_ value: Bool?) {
-        directory.lock.lock()
-        directory.experimentalSurfacesDisabledOverride = value
-        directory.lock.unlock()
-    }
-
     // MARK: - Enrollment grants
 
     func nativeEnrollmentGrantRecords() -> [EmailLoginDirectory.NativeEnrollmentGrantRecord] {
@@ -528,17 +517,6 @@ struct AttachmentsAndNotificationsService {
 
     // MARK: - Account helpers used by the shared fixtures
 
-    func setAccountProfile(id: String, name: String, displayName: String? = nil) {
-        directory.lock.lock()
-        if let key = directory.accounts.first(where: { $0.value.id == id })?.key,
-           var account = directory.accounts[key] {
-            account.name = name
-            account.displayName = displayName ?? name
-            directory.accounts[key] = account
-        }
-        directory.lock.unlock()
-    }
-
     func addAccount(id: String, email: String, password: String, avatarUrl: String? = nil, passwordCredentialEstablished: Bool = true) {
         let normalized = EmailLoginDirectory.normalize(email)
         directory.lock.lock()
@@ -565,15 +543,6 @@ struct AttachmentsAndNotificationsService {
         return directory.analyticsIds[userId]
     }
 
-    func socialCompletionUserId(provider: String, code: String) -> String?? {
-        directory.lock.lock()
-        defer { directory.lock.unlock() }
-        guard let completion = directory.socialCompletions.first(where: { $0.provider == provider && $0.code == code }) else {
-            return nil
-        }
-        return .some(completion.userId)
-    }
-
     // MARK: - Built-in catalog admission
 
     /// `409` when the target Computer cannot answer for its Built-in catalog.
@@ -593,38 +562,6 @@ struct AttachmentsAndNotificationsService {
     }
 
     // MARK: - Agent attachments and integration tokens
-
-    func setAgentAttachmentPresign(_ handler: (@Sendable (String, Int, String, String) throws -> String)?) {
-        directory.lock.lock()
-        directory.agentAttachmentPresign = handler
-        directory.lock.unlock()
-    }
-
-    func addAgentAttachment(
-        channelId: String,
-        id: String,
-        uploaderId: String,
-        filename: String,
-        mimeType: String,
-        sizeBytes: Int,
-        storageKey: String? = nil,
-        bytes: Data
-    ) {
-        directory.lock.lock()
-        directory.channelAttachments[id] = ChannelAttachment(
-            id: id,
-            channelId: channelId,
-            uploaderId: uploaderId,
-            filename: filename,
-            messageId: nil,
-            messagePosition: nil,
-            mimeType: mimeType,
-            sizeBytes: sizeBytes,
-            storageKey: storageKey
-        )
-        directory.agentAttachmentBytes[id] = bytes
-        directory.lock.unlock()
-    }
 
     static let agentAttachmentUnavailableMessage = "Attachment is unavailable."
     static let agentAttachmentUnavailableNextAction = "If this value came from a feedback report, do not use its artifactId here. Use the reportId with the Raft Feedback Admin integration instead: run `raft integration invoke --service \"Raft Feedback Admin\" --action download_feedback_transcript --param id=REPORT_ID --output PATH`."
@@ -718,30 +655,6 @@ struct AttachmentsAndNotificationsService {
         var reply = EmailLoginDirectory.json(200, "{\"url\":\(jsonString(url)),\"expiresAt\":\(jsonString(expiresAt)),\"filename\":\(jsonString(filename)),\"mimeType\":\(jsonString(mimeType))}")
         reply.headers["Cache-Control"] = "private, no-store"
         return reply
-    }
-
-    func setAgentAudienceStatus(agentId: String, status: String) {
-        directory.lock.lock()
-        directory.agentAudienceStatusOverrides[agentId] = status
-        directory.lock.unlock()
-    }
-
-    func revokeAgentIntegrationGrant(agentId: String, clientKey: String) {
-        directory.lock.lock()
-        directory.agentIntegrationGrants["\(agentId)\n\(clientKey)"] = true
-        directory.lock.unlock()
-    }
-
-    func restoreAgentIntegrationGrant(agentId: String, clientKey: String) {
-        directory.lock.lock()
-        directory.agentIntegrationGrants["\(agentId)\n\(clientKey)"] = false
-        directory.lock.unlock()
-    }
-
-    func revokeAgentCredential(apiKey: String) {
-        directory.lock.lock()
-        directory.agentCredentials[apiKey]?.revokedAt = Date()
-        directory.lock.unlock()
     }
 
     func agentIntegrationToken(authorization: String?, body: String) -> HTTPReply {
@@ -838,13 +751,6 @@ extension EmailLoginDirectory {
     public static func rotationProofTranscript(credential: String, deviceId: String) -> Data {
         let joined = ["raft-desktop-notification-rotation-v1", sha256(credential), deviceId].joined(separator: "\u{0}")
         return Data(joined.utf8)
-    }
-
-    /// Operator kill switch for `/internal/agent-api` and `/internal/computer`.
-    /// `SLOCK_EXPERIMENTAL_SURFACES_DISABLED=true` disables them; tests may
-    /// override without touching the process environment.
-    public func setExperimentalSurfacesDisabledForTesting(_ value: Bool?) {
-        AttachmentsAndNotificationsService(directory: self).setExperimentalSurfacesDisabled(value)
     }
 
     public func nativeEnrollmentGrantRecords() -> [NativeEnrollmentGrantRecord] {
@@ -973,10 +879,6 @@ extension EmailLoginDirectory {
         AttachmentsAndNotificationsService(directory: self).mobileAppEmailContacts()
     }
 
-    public func setAccountProfileForTesting(id: String, name: String, displayName: String? = nil) {
-        AttachmentsAndNotificationsService(directory: self).setAccountProfile(id: id, name: name, displayName: displayName)
-    }
-
     public func addAccount(id: String, email: String, password: String, avatarUrl: String? = nil, passwordCredentialEstablished: Bool = true) {
         AttachmentsAndNotificationsService(directory: self).addAccount(
             id: id,
@@ -992,10 +894,6 @@ extension EmailLoginDirectory {
         AttachmentsAndNotificationsService(directory: self).analyticsId(userId: userId)
     }
 
-    public func socialCompletionUserIdForTesting(provider: String, code: String) -> String?? {
-        AttachmentsAndNotificationsService(directory: self).socialCompletionUserId(provider: provider, code: code)
-    }
-
     /// `409` when the target Computer cannot answer for its Built-in catalog.
     func builtinCatalogFailureReply() -> HTTPReply {
         AttachmentsAndNotificationsService(directory: self).builtinCatalogFailureReply()
@@ -1004,32 +902,6 @@ extension EmailLoginDirectory {
     /// Built-in model admission check. Anything but a Built-in runtime is not ours to judge.
     func builtinModelCheck(machineId: String?, config: [String: Any]) -> BuiltinModelCatalogResult? {
         AttachmentsAndNotificationsService(directory: self).builtinModelCheck(machineId: machineId, config: config)
-    }
-
-    public func setAgentAttachmentPresignForTesting(_ handler: (@Sendable (String, Int, String, String) throws -> String)?) {
-        AttachmentsAndNotificationsService(directory: self).setAgentAttachmentPresign(handler)
-    }
-
-    public func addAgentAttachmentForTesting(
-        channelId: String,
-        id: String,
-        uploaderId: String,
-        filename: String,
-        mimeType: String,
-        sizeBytes: Int,
-        storageKey: String? = nil,
-        bytes: Data
-    ) {
-        AttachmentsAndNotificationsService(directory: self).addAgentAttachment(
-            channelId: channelId,
-            id: id,
-            uploaderId: uploaderId,
-            filename: filename,
-            mimeType: mimeType,
-            sizeBytes: sizeBytes,
-            storageKey: storageKey,
-            bytes: bytes
-        )
     }
 
     func agentVisibleAttachment(agentId: String, serverId: String, attachmentId: String) -> ChannelAttachment? {
@@ -1052,22 +924,6 @@ extension EmailLoginDirectory {
             authorization: authorization,
             attachmentId: attachmentId
         )
-    }
-
-    public func setAgentAudienceStatusForTesting(agentId: String, status: String) {
-        AttachmentsAndNotificationsService(directory: self).setAgentAudienceStatus(agentId: agentId, status: status)
-    }
-
-    public func revokeAgentIntegrationGrantForTesting(agentId: String, clientKey: String) {
-        AttachmentsAndNotificationsService(directory: self).revokeAgentIntegrationGrant(agentId: agentId, clientKey: clientKey)
-    }
-
-    public func restoreAgentIntegrationGrantForTesting(agentId: String, clientKey: String) {
-        AttachmentsAndNotificationsService(directory: self).restoreAgentIntegrationGrant(agentId: agentId, clientKey: clientKey)
-    }
-
-    public func revokeAgentCredentialForTesting(apiKey: String) {
-        AttachmentsAndNotificationsService(directory: self).revokeAgentCredential(apiKey: apiKey)
     }
 
     public func agentIntegrationToken(authorization: String?, body: String) -> HTTPReply {

@@ -227,18 +227,6 @@ extension EmailLoginDirectory {
         "values", "wider_window", "window",
     ]
 
-    public func setAgentGrantsForTesting(agentId: String, scopes: [String]) {
-        lock.lock()
-        agentGrantSets[agentId] = Set(scopes)
-        lock.unlock()
-    }
-
-    public func resetAgentGrantsForTesting(agentId: String) {
-        lock.lock()
-        agentGrantSets.removeValue(forKey: agentId)
-        lock.unlock()
-    }
-
     func agentCapabilityDenial(_ authorization: String?, required: String) -> HTTPReply? {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
         let token = String(authorization.dropFirst("Bearer ".count))

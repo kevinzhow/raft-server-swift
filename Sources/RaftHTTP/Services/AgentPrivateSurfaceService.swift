@@ -383,12 +383,6 @@ extension EmailLoginDirectory {
 
     /// nil means the field was absent and must be ignored.
 
-    /// Write-only provider secrets never leave the server: HTTP projections
-    /// blank the provider apiKey while the stored config keeps it.
-    public func agentRuntimeConfigForTesting(agentId: String) -> String? {
-        oauth.agentRuntimeInfo(id: agentId)?.runtimeConfigJSON
-    }
-
     public func uploadAgentAvatar(authorization: String?, agentId: String, byteCount: Int) -> HTTPReply {
         switch agentAuthority(authorization, agentId: agentId) {
         case .denied(let reply):
@@ -433,31 +427,6 @@ extension EmailLoginDirectory {
         }
         let usedJSON = lastUsedAt.map { jsonString(ISO8601DateFormatter().string(from: $0)) } ?? "null"
         return Self.json(200, "{\"setupState\":\(jsonString(setupState)),\"credentialLastUsedAt\":\(usedJSON),\"lastActivityAt\":null}")
-    }
-
-    public func setWakeStreamHeartbeatMsForTesting(_ value: Int?) {
-        lock.lock()
-        wakeStreamHeartbeatOverrideMs = value
-        lock.unlock()
-    }
-
-    public func setAgentCredentialUseThrottleMsForTesting(_ value: Int?) {
-        lock.lock()
-        agentCredentialUseThrottleOverrideMs = value
-        lock.unlock()
-    }
-
-    public func agentCredentialLastUsedAtForTesting(apiKey: String) -> Date? {
-        lock.lock()
-        defer { lock.unlock() }
-        return agentCredentials[apiKey]?.lastUsedAt
-    }
-
-    /// Inventory size only — enough to prove a read-only surface minted nothing.
-    public func agentCredentialInventoryCountForTesting() -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return agentCredentials.count
     }
 
     func recordAgentCredentialUse(token: String) {
@@ -778,23 +747,6 @@ extension EmailLoginDirectory {
             ))
         }
         lock.unlock()
-    }
-
-    public func channelSystemMessagesForTesting(channelId: String) -> [(content: String, subtype: String?)] {
-        lock.lock()
-        defer { lock.unlock() }
-        return humanMessageRows
-            .filter { $0.channelId == channelId && $0.messageType == "system" }
-            .map { ($0.content, $0.actionKind) }
-    }
-
-    public func directChannelIdForTesting(serverId: String, firstId: String, secondId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return postableChannels.first { _, channel in
-            channel.serverId == serverId && channel.kind == "dm"
-                && channel.memberIds.contains(firstId) && channel.memberIds.contains(secondId)
-        }?.key
     }
 
     /// The assistant link is live only while the flag is on and the owner is

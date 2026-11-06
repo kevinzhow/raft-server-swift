@@ -299,18 +299,6 @@ extension EmailLoginDirectory {    public func agentSend(authorization: String?,
         return Self.json(200, "{\"ok\":true,\"acceptedCount\":\(accepted),\"rejectedCount\":\(rejected),\"droppedCount\":0}")
     }
 
-    public func agentActivityForTesting(agentId: String) -> (activity: String, detail: String)? {
-        lock.lock()
-        defer { lock.unlock() }
-        return agentActivities[agentId]
-    }
-
-    public func agentStatusAdoptedForTesting(agentId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return agentStatusAdopted.contains(agentId)
-    }
-
     public func followThreadForAgentTesting(
         serverId: String,
         agentId: String,
