@@ -60,7 +60,8 @@ public var errorBody: OrderedJSON? {
 | | error overload with `code` before `error` | `DomainError.errorBody` in that order |
 | productfeedback | `OrderedBodyDomainError.bodyJSON` | `DomainError.errorBody` (tree, or `.raw(bodyJSON)`) |
 | | success/error header sets | `headers: { dto in .exact([…]) }`, `errorHeaders = .exact(…)` |
-| | `respond(jsonNoContent:)` | `respond(status: 204, headers: .exact([…]), rawJSON: "")` |
+| | `respond(jsonNoContent:)` | `respond(status: 204, headers: .exact([…])) { … }` (extension below) |
+| | `ProductFeedbackErrorEnvelope.bodyJSON` | `DomainError.errorBody` built from `OrderedJSONObject` |
 | agentsend | `OrderedJSONBody.jsonBody() -> String` | `JSONBodyConvertible.jsonBody: OrderedJSON` |
 | | `OrderedJSONError.errorJSONBody()` | `DomainError.errorBody` |
 | | `respond(errors:)` | plain `respond` (the thrown error carries its body) |
@@ -78,3 +79,23 @@ public var errorBody: OrderedJSON? {
 `respond(errors:)` no longer exists: every `DomainError` carries its own body.
 `ResponseHeaders.standard(extra:)` merges the published header set;
 `.exact(…)` replaces it (the domain owns `Content-Type`/`Retry-After`).
+
+## Extension: a 204 with a header policy
+
+`respond(_:)` publishes the bare `Content-Length: 0` 204. The onboarding-wizard
+ack reused the legacy JSON reply helper, so it also published `X-Robots-Tag`
+and `Content-Type`. `respond(status:headers:_:)` was added to `Respond.swift`
+for that case; it reuses `resolvedHeaders` and the shared `DomainError`
+projection, and leaves the bare overload unchanged for every other 204.
+
+```swift
+return try await respond(
+    status: 204,
+    headers: .exact([
+        "X-Robots-Tag": AppFallback.robotsTag,
+        "Content-Type": AppFallback.jsonContentType,
+    ])
+) {
+    try services.emailAccounts.productFeedbackSubmissions.recordOnboardingWizard(…)
+}
+```

@@ -12,6 +12,7 @@ import Vapor
 //   respond(status:headers:_:)          `JSONBodyConvertible` DTO (exact order)
 //   respond(status:headers:_:)          payload-dependent header policy
 //   respond(_:)                         bare 204 (`NoContentResponse`)
+//   respond(status:headers:_:)          204 with a custom header policy
 //   respond(status:headers:rawJSON:)    body the domain already rendered
 //
 // Errors are not a separate overload: every `DomainError` carries its exact
@@ -89,6 +90,32 @@ func respond(_ call: () async throws -> NoContentResponse) async throws -> Respo
     do {
         _ = try await call()
         return response(HTTPReply(status: 204, headers: ["Content-Length": "0"], body: ""))
+    } catch let error as any DomainError {
+        return domainErrorResponse(error)
+    } catch let error as any DomainErrorWithBody {
+        return try richBodyErrorResponse(error)
+    }
+}
+
+/// A `204` whose legacy reply still published a header set of its own.
+///
+/// The onboarding-wizard ack reused the JSON reply helper before the
+/// migration, so it kept `X-Robots-Tag`, `Content-Type` and
+/// `Content-Length: 0`. `respond(_:)` above stays the bare no-header reply for
+/// routes that never published those headers; a thrown `DomainError` keeps its
+/// own body and header policy.
+func respond(
+    status: UInt,
+    headers: ResponseHeaders,
+    _ call: () async throws -> NoContentResponse
+) async throws -> Response {
+    do {
+        _ = try await call()
+        return response(HTTPReply(
+            status: Int(status),
+            headers: resolvedHeaders(headers, contentLength: 0),
+            body: ""
+        ))
     } catch let error as any DomainError {
         return domainErrorResponse(error)
     } catch let error as any DomainErrorWithBody {

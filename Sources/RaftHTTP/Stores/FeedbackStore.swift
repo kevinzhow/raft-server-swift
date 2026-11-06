@@ -173,4 +173,77 @@ final class FeedbackStore: @unchecked Sendable {
         get { state.marketplaceReviewerOverride }
         set { state.marketplaceReviewerOverride = newValue }
     }
+
+    // MARK: - Hands feedback configuration
+
+    /// The merged `HANDS_FEEDBACK_*` view: the process environment plus the
+    /// injectable overlay and per-key overrides this store owns.
+    ///
+    /// The legacy `FeedbackService.legacyEnvironmentLocked` merged the same
+    /// keys; reading them here gives the merge one critical section and keeps
+    /// the submission path off the directory lock. `conversationSessionEnabled`
+    /// is a test seam that lives in `AuthProfileStore`, so the caller passes it
+    /// in rather than this store reaching across a lock.
+    func handsFeedbackEnvironment(
+        base: [String: String],
+        conversationSessionEnabled: Bool?
+    ) -> [String: String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Self.mergedEnvironment(
+            storage,
+            base: base,
+            conversationSessionEnabled: conversationSessionEnabled
+        )
+    }
+
+    /// One atomic read of the three configuration facts the submission path
+    /// consumes together: the merged environment, the multi-app apps payload
+    /// and the configured flag.
+    func handsFeedbackSubmissionConfiguration(
+        base: [String: String],
+        conversationSessionEnabled: Bool?
+    ) -> (environment: [String: String], appsJSON: String?, configured: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (
+            Self.mergedEnvironment(
+                storage,
+                base: base,
+                conversationSessionEnabled: conversationSessionEnabled
+            ),
+            storage.handsFeedbackAppsJSON,
+            storage.handsFeedbackConfigured
+        )
+    }
+
+    private static func mergedEnvironment(
+        _ state: State,
+        base: [String: String],
+        conversationSessionEnabled: Bool?
+    ) -> [String: String] {
+        var environment = base
+        if let overlay = state.handsFeedbackLegacyEnvironment {
+            for (key, value) in overlay { environment[key] = value }
+        }
+        if let value = state.handsFeedbackBaseURLOverride {
+            environment["HANDS_FEEDBACK_BASE_URL"] = value
+        }
+        if let value = state.handsFeedbackAppIdOverride {
+            environment["HANDS_FEEDBACK_APP_ID"] = value
+        }
+        if let value = state.handsFeedbackAppSlugOverride {
+            environment["HANDS_FEEDBACK_APP_SLUG"] = value
+        }
+        if let value = state.handsFeedbackAppTokenOverride {
+            environment["HANDS_FEEDBACK_APP_TOKEN"] = value
+        }
+        if let value = conversationSessionEnabled {
+            environment["HANDS_FEEDBACK_CONVERSATION_SESSION_ENABLED"] = value ? "true" : "false"
+        }
+        if let value = state.handsConversationAppTokenOverride {
+            environment["HANDS_FEEDBACK_CONVERSATION_APP_TOKEN"] = value
+        }
+        return environment
+    }
 }

@@ -231,11 +231,33 @@ public struct NotificationsFeature: RouteCollection, Sendable {
             ))
         }
         productEvents.post("onboarding-wizard") { request async throws -> Response in
-            routeResponse(services.emailAccounts.recordOnboardingWizard(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: try await request.bodyText()
-            ))
+            // The legacy handler read the raw JSON body regardless of the
+            // request content type. Decode through `content` when the client
+            // sent a JSON content type and fall back to the raw body bytes so a
+            // body without one still parses.
+            let body: ProductEventOnboardingWizardRequest
+            if let typed = try? await request.content.decode(ProductEventOnboardingWizardRequest.self) {
+                body = typed
+            } else {
+                let raw = try await request.bodyText()
+                body = (try? JSONDecoder().decode(
+                    ProductEventOnboardingWizardRequest.self,
+                    from: Data(raw.utf8)
+                )) ?? ProductEventOnboardingWizardRequest()
+            }
+            return try await respond(
+                status: 204,
+                headers: .exact([
+                    "X-Robots-Tag": AppFallback.robotsTag,
+                    "Content-Type": AppFallback.jsonContentType,
+                ])
+            ) {
+                try services.emailAccounts.productFeedbackSubmissions.recordOnboardingWizard(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    body: body
+                )
+            }
         }
         publicVisits.post(":slug") { request async throws -> Response in
             services.publicVisits?.record(
