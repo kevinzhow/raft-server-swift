@@ -22,7 +22,6 @@ final class MachinesAndComputersStore: @unchecked Sendable {
         var deletedMachineWorkspaces: Set<String> = []
         var machineMigrationCapabilities: [String: Set<String>] = [:]
         var machineRuntimeDetections: [String: (status: String, unfinished: Set<String>)] = [:]
-        var machineMigrations: [String: MachineMigrationRecord] = [:]
         var machineRuntimeModels: [String: [String: (models: [(id: String, label: String)], updatedAt: Date)]] = [:]
         var runtimeAccountUsage: [String: (json: String, staleAfter: Date)] = [:]
         var runtimeAccountUsageRefreshAt: [String: Date] = [:]
@@ -106,11 +105,6 @@ final class MachinesAndComputersStore: @unchecked Sendable {
     var machineRuntimeDetections: [String: (status: String, unfinished: Set<String>)] {
         get { state.machineRuntimeDetections }
         set { state.machineRuntimeDetections = newValue }
-    }
-
-    var machineMigrations: [String: MachineMigrationRecord] {
-        get { state.machineMigrations }
-        set { state.machineMigrations = newValue }
     }
 
     var machineRuntimeModels: [String: [String: (models: [(id: String, label: String)], updatedAt: Date)]] {
@@ -208,63 +202,6 @@ final class MachinesAndComputersStore: @unchecked Sendable {
     var computerUpgradeSender: (@Sendable (_ machineId: String, _ targetVersion: String, _ requestId: String) -> Bool)? {
         get { state.computerUpgradeSender }
         set { state.computerUpgradeSender = newValue }
-    }
-
-    // MARK: - Machine migration status and cancellation
-
-    /// The migration row the status route publishes: the first row for this
-    /// agent in this Server, in the store's own iteration order (the legacy
-    /// `values.first` selection).
-    func machineMigration(agentId: String, serverId: String) -> MachineMigrationRecord? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.machineMigrations.values.first { $0.agentId == agentId && $0.serverId == serverId }
-    }
-
-    /// One locked cancel transition for one Computer migration: presence,
-    /// revision, terminal-state check and the post-flip decision share the lock
-    /// with the write, so two concurrent cancels cannot both pass the revision
-    /// gate.
-    func cancelMachineMigration(
-        agentId: String,
-        serverId: String,
-        migrationRef: String,
-        expectedRevision: Int,
-        reason: String,
-        now: Date
-    ) -> AgentMigrationCancelOutcome<MachineMigrationRecord> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let candidate = storage.machineMigrations[migrationRef],
-              candidate.agentId == agentId,
-              candidate.serverId == serverId
-        else { return .missing }
-        guard candidate.revision == expectedRevision else { return .stale }
-        guard !AgentMigrationCancelPolicy.terminalStates.contains(candidate.state) else { return .terminal }
-        var migration = candidate
-        // Once the flip committed the agent belongs to the target, so the
-        // cancellation is target-authoritative even though the agent may still
-        // be arriving/starting.
-        let postFlip = migration.flippedAt != nil
-            || AgentMigrationCancelPolicy.postFlipStates.contains(migration.state)
-        migration.state = postFlip ? "canceled_post_flip" : "canceled_pre_flip"
-        migration.revision += 1
-        migration.canceledAt = now
-        migration.cancelReason = reason
-        migration.cancelDispatchAttempts = 1
-        migration.cancelLastDispatchAt = now
-        migration.cancelErrorCode = nil
-        migration.cancelGeneration = UUID().uuidString.lowercased()
-        migration.cancelTransportGeneration = migration.transportGeneration
-        migration.cancelDisposition = postFlip ? "post_flip_target_authoritative" : "pre_flip_source_authoritative"
-        migration.cancelSourceAck = nil
-        migration.cancelTargetAck = nil
-        migration.cancelSourceAckAt = nil
-        migration.cancelTargetAckAt = nil
-        migration.transportTeardownAt = now
-        migration.updatedAt = now
-        storage.machineMigrations[migrationRef] = migration
-        return .canceled(migration)
     }
 
     // MARK: - Agent send / delivery credentials
@@ -425,6 +362,31 @@ final class MachinesAndComputersStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return storage.computers.contains { $0.apiKey == token && $0.revokedAt == nil }
+    }
+
+    /// The machine a live Computer credential is attached to, for the
+    /// migration target callbacks. A live credential without a machine answers
+    /// `nil`, like an unknown one.
+    func attachedMachineId(computerKey token: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.computers.first { $0.apiKey == token && $0.revokedAt == nil }?.machineId
+    }
+
+    /// Appends one machine row with a fresh key and returns its id.
+    func registerMachine(serverId: String, userId: String, name: String) -> String {
+        let id = UUID().uuidString.lowercased()
+        lock.lock()
+        storage.machines.append(MachineRecord(
+            id: id,
+            serverId: serverId,
+            userId: userId,
+            name: name,
+            description: nil,
+            apiKey: EmailLoginDirectory.machineAPIKeyMaterial()
+        ))
+        lock.unlock()
+        return id
     }
 
     /// The `/daemon/connect` lookup by machine id.

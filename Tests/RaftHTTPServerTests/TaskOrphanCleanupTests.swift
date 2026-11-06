@@ -82,8 +82,13 @@ private func orphanObject(_ response: ClientResponse) throws -> [String: Any] {
     accounts.setTaskAssigneeForTesting(taskId: task, type: "agent", id: agent)
     accounts.reopenTaskForTesting(taskId: task, status: "in_progress")
 
-    let deleted = accounts.deleteAgentRoute(authorization: "Bearer \(f.ownerToken)", agentId: agent)
-    #expect(deleted.status == 200)
+    let deleted = try accounts.agentMachineMigrationControl.deleteAgent(
+        authorization: "Bearer \(f.ownerToken)",
+        agentId: agent,
+        serverId: "",
+        request: AgentDeleteRequest()
+    )
+    #expect(deleted == OkResponse())
     #expect(accounts.taskAssigneeForTesting(taskId: task) == nil)
     #expect(accounts.taskStatusForTesting(taskId: task) == "in_progress")
 }

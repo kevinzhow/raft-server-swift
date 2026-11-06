@@ -12,7 +12,7 @@ import Foundation
 struct RuntimeFormsAndProbesDependencies: Sendable {
     var sessionUserId: @Sendable (String?) -> String?
     var emitRealtime: @Sendable (String, String, String?) -> Void
-    /// `registerMachine` of the unmigrated hosted-migration domain.
+    /// `MachinesAndComputersStore.registerMachine`, the machine row insert.
     var registerMachine: @Sendable (_ serverId: String, _ userId: String, _ name: String) -> String
     /// `machineAPIKey` of the unmigrated hosted-runtime domain.
     var machineAPIKey: @Sendable (_ machineId: String) -> String?
@@ -30,7 +30,7 @@ struct RuntimeFormsAndProbesDependencies: Sendable {
                 source.emitRealtime(room, event, payload)
             },
             registerMachine: { serverId, userId, name in
-                source.registerMachine(serverId: serverId, userId: userId, name: name)
+                source.machinesAndComputersStore.registerMachine(serverId: serverId, userId: userId, name: name)
             },
             machineAPIKey: { source.machineAPIKey(machineId: $0) },
             oauth: source.oauth,

@@ -666,3 +666,22 @@ extension TasksAndRemindersStore {
         return .reassigned(storage.taskRecords[index])
     }
 }
+
+// MARK: - Agent delete cleanup
+
+extension TasksAndRemindersStore {
+    /// Drops the agent's reminders and returns its claimed tasks to the pool, in
+    /// one critical section.
+    func releaseAgentWork(agentId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.reminderRecords.removeAll { $0.ownerAgentId == agentId }
+        for index in storage.taskRecords.indices where
+            storage.taskRecords[index].assigneeType == "agent" && storage.taskRecords[index].assigneeId == agentId {
+            storage.taskRecords[index].assigneeId = nil
+            storage.taskRecords[index].assigneeType = nil
+            storage.taskRecords[index].claimedAt = nil
+            storage.taskRecords[index].revision += 1
+        }
+    }
+}
