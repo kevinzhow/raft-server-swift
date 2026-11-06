@@ -329,7 +329,7 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                let buffer = try await request.body.collect(max: .specified(ByteCount(value: 11 * 1024 * 1024))) {
                 parsed = parseShareArtifactMultipart(data: buffer, boundary: boundary)
             }
-            return try respond {
+            return try await respond {
                 try services.emailAccounts.runtimeUsageAttestations.createShareArtifact(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",

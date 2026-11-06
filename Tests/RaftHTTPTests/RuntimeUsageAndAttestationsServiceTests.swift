@@ -51,7 +51,7 @@ private func makeService(_ accounts: EmailLoginDirectory) -> RuntimeUsageAndAtte
         authorization: "Bearer \(token)",
         serverId: serverId
     )
-    #expect(dto.jsonBody() == #"{"agents":2,"machines":1,"channels":2}"#)
+    #expect(dto.jsonBody.render() == #"{"agents":2,"machines":1,"channels":2}"#)
 }
 
 @Test func systemNotificationsBodyIsByteExact() throws {
@@ -74,7 +74,7 @@ private func makeService(_ accounts: EmailLoginDirectory) -> RuntimeUsageAndAtte
     let body = try makeService(accounts).serverSystemNotifications(
         authorization: "Bearer \(token)",
         serverId: serverId
-    ).jsonBody()
+    ).jsonBody.render()
 
     #expect(body == #"""
     {"contractVersion":"server-system-notifications-v1","generatedAt":"2025-10-11T08:00:00.000Z","snapshotMode":"replace","clientState":{"read":"none","dismiss":"local_by_notification_id"},"notifications":[{"id":"machine-offline:\#(ids)","type":"machine.offline","schemaVersion":1,"state":"active","kind":"error","title":"\#(names) are offline","body":"1 agent is active on these computers and can't run until they reconnect.","copy":{"titleKey":"machine.offline.title.many","bodyKey":"machine.offline.body.active.many","actionLabelKey":"common.view","params":{"machineNames":"\#(names)","machineCount":2,"activeAgentCount":1,"targetDaemonVersion":null}},"action":{"label":"View","targetType":"machine","targetId":"\#(sorted[0].id)"},"payload":{"machines":[\#(machineRefs)],"activeAgentCount":1,"targetDaemonVersion":null,"evaluation":{"clock":"server","evaluatedAt":"2025-10-11T08:00:00.000Z","offlineAfterMs":0,"statusAuthority":"canonical_machine_read_model","runKind":"raw_daemon","versionAuthority":"latest_daemon_release"}}}]}
@@ -97,7 +97,7 @@ private func makeService(_ accounts: EmailLoginDirectory) -> RuntimeUsageAndAtte
     let body = try service.listSystemAttention(
         authorization: "Bearer \(token)",
         serverId: serverId
-    ).jsonBody()
+    ).jsonBody.render()
 
     #expect(body == #"""
     {"contractVersion":"server-system-attention-v1","generatedAt":"2025-10-11T08:00:00.000Z","snapshotMode":"replace","unseenCount":1,"notifications":[{"id":"\#(incident)","kind":"usage_limit_reached","severity":"warning","state":"active","activatedAt":"2025-10-11T07:00:00.000Z","lastObservedAt":"2025-10-11T07:00:00.000Z","seenAt":null,"machine":{"id":"\#(machine)","name":"Attention Daemon"},"provider":"codex","windowKey":"primary","resetsAt":null,"affectedAgentIds":["agent-a","agent-b"]}]}
@@ -163,7 +163,7 @@ private func makeService(_ accounts: EmailLoginDirectory) -> RuntimeUsageAndAtte
     // `NSNumber` accepted booleans and integral doubles, so the typed parser
     // must accept the same spellings instead of publishing INVALID_REQUEST.
     for body in [#"{"expectedVersion":0}"#, #"{"expectedVersion":1.0}"#, #"{"expectedVersion":true}"#] {
-        #expect(try redrive(body).jsonBody() == #"{"status":"NOT_JOINABLE"}"#)
+        #expect(try redrive(body).jsonBody.render() == #"{"status":"NOT_JOINABLE"}"#)
     }
     for body in [#"{"expectedVersion":-1}"#, #"{"expectedVersion":1,"extra":2}"#, #"{"expectedVersion":"1"}"#, "{}"] {
         #expect(throws: RuntimeUsageAndAttestationsError.invalidRequest) {
@@ -189,7 +189,7 @@ private func makeService(_ accounts: EmailLoginDirectory) -> RuntimeUsageAndAtte
         )
     }
 
-    #expect(try submit("").jsonBody() == #"{"accepted":true,"feedbackReportId":"\#(reportId)","agentId":"\#(agent)"}"#)
+    #expect(try submit("").jsonBody.render() == #"{"accepted":true,"feedbackReportId":"\#(reportId)","agentId":"\#(agent)"}"#)
     #expect(try submit(#"{"reportGeneratedAt":null}"#).accepted)
     #expect(try submit(#"{"reportGeneratedAt":"2026-07-20T16:40:04.797Z"}"#).accepted)
     #expect(try submit(#"{"reportGeneratedAt":"2026-07-20T16:40:04Z"}"#).accepted)

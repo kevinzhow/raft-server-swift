@@ -1,28 +1,5 @@
 import Foundation
 
-// MARK: - Exact published bodies
-
-/// A response body whose published bytes are already the contract.
-///
-/// `JSONEncoder` on Linux stores keyed containers in a hash container, so it
-/// emits the same object with different member order on two calls (and it
-/// escapes `/` differently from the archive's `jsonString`). A domain whose
-/// legacy body has a fixed upstream member order therefore supplies the exact
-/// JSON string; the type still conforms to `Encodable` so it stays a typed DTO
-/// and `Sources/RaftHTTPServer/Features/Respond.swift` can project it.
-public protocol CanonicalJSONBody: Encodable {
-    /// The exact published body (no trailing newline).
-    func jsonBody() -> String
-}
-
-/// A `DomainError` whose published error object also has a fixed member order.
-/// `Respond.swift` maps it through the same exact-bytes reply as
-/// `CanonicalJSONBody`, so a two-key or three-key error cannot be reordered.
-public protocol CanonicalDomainErrorBody: DomainError {
-    /// The exact published error body (no trailing newline).
-    var bodyJSON: String { get }
-}
-
 /// ISO-8601 with fractional seconds: the archive's `isoString` formatter.
 enum RuntimeUsageISO {
     static func string(_ value: Date) -> String {
@@ -244,9 +221,15 @@ public enum RuntimeUsageDiagnosticBody {
 }
 
 // MARK: - Responses
+//
+// Every published body has a fixed upstream member order, which a synthesized
+// `Codable` body cannot keep on Linux (`JSONEncoder` hash-orders keyed
+// containers). Each response is therefore a `JSONBodyConvertible` tree; the
+// canonical `Sources/RaftHTTPServer/Features/Respond.swift` prints it once.
 
-/// `GET /api/servers/:id/usage`.
-public struct ServerUsageDTO: Codable, Sendable, Equatable, CanonicalJSONBody {
+/// `GET /api/servers/:id/usage`. Published order: `agents`, `machines`,
+/// `channels`.
+public struct ServerUsageDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var agents: Int
     public var machines: Int
     public var channels: Int
@@ -257,13 +240,17 @@ public struct ServerUsageDTO: Codable, Sendable, Equatable, CanonicalJSONBody {
         self.channels = channels
     }
 
-    public func jsonBody() -> String {
-        "{\"agents\":\(agents),\"machines\":\(machines),\"channels\":\(channels)}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("agents", agents)
+        body.append("machines", machines)
+        body.append("channels", channels)
+        return body.json
     }
 }
 
 /// One daemon row inside the machine-offline notification payload.
-public struct SystemNotificationMachineDTO: Codable, Sendable, Equatable {
+public struct SystemNotificationMachineDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var id: String
     public var name: String
 
@@ -272,13 +259,16 @@ public struct SystemNotificationMachineDTO: Codable, Sendable, Equatable {
         self.name = name
     }
 
-    func jsonBody() -> String {
-        "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name))}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("id", id)
+        body.append("name", name)
+        return body.json
     }
 }
 
 /// Localized-copy parameters of the machine-offline notification.
-public struct SystemNotificationCopyParamsDTO: Codable, Sendable, Equatable {
+public struct SystemNotificationCopyParamsDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var machineNames: String
     public var machineCount: Int
     public var activeAgentCount: Int
@@ -289,13 +279,18 @@ public struct SystemNotificationCopyParamsDTO: Codable, Sendable, Equatable {
         self.activeAgentCount = activeAgentCount
     }
 
-    func jsonBody() -> String {
-        "{\"machineNames\":\(jsonString(machineNames)),\"machineCount\":\(machineCount),\"activeAgentCount\":\(activeAgentCount),\"targetDaemonVersion\":null}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("machineNames", machineNames)
+        body.append("machineCount", machineCount)
+        body.append("activeAgentCount", activeAgentCount)
+        body.append("targetDaemonVersion", OrderedJSON.null)
+        return body.json
     }
 }
 
 /// Copy keys for the machine-offline notification.
-public struct SystemNotificationCopyDTO: Codable, Sendable, Equatable {
+public struct SystemNotificationCopyDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var titleKey: String
     public var bodyKey: String
     public var actionLabelKey: String
@@ -313,13 +308,18 @@ public struct SystemNotificationCopyDTO: Codable, Sendable, Equatable {
         self.params = params
     }
 
-    func jsonBody() -> String {
-        "{\"titleKey\":\(jsonString(titleKey)),\"bodyKey\":\(jsonString(bodyKey)),\"actionLabelKey\":\(jsonString(actionLabelKey)),\"params\":\(params.jsonBody())}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("titleKey", titleKey)
+        body.append("bodyKey", bodyKey)
+        body.append("actionLabelKey", actionLabelKey)
+        body.append("params", params.jsonBody)
+        return body.json
     }
 }
 
 /// The target of the machine-offline notification.
-public struct SystemNotificationActionDTO: Codable, Sendable, Equatable {
+public struct SystemNotificationActionDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var label: String
     public var targetType: String
     public var targetId: String
@@ -330,13 +330,17 @@ public struct SystemNotificationActionDTO: Codable, Sendable, Equatable {
         self.targetId = targetId
     }
 
-    func jsonBody() -> String {
-        "{\"label\":\(jsonString(label)),\"targetType\":\(jsonString(targetType)),\"targetId\":\(jsonString(targetId))}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("label", label)
+        body.append("targetType", targetType)
+        body.append("targetId", targetId)
+        return body.json
     }
 }
 
 /// The evaluation block embedded in the machine-offline payload.
-public struct SystemNotificationEvaluationDTO: Codable, Sendable, Equatable {
+public struct SystemNotificationEvaluationDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var clock: String
     public var evaluatedAt: Date
     public var offlineAfterMs: Int
@@ -360,13 +364,20 @@ public struct SystemNotificationEvaluationDTO: Codable, Sendable, Equatable {
         self.versionAuthority = versionAuthority
     }
 
-    func jsonBody() -> String {
-        "{\"clock\":\(jsonString(clock)),\"evaluatedAt\":\(jsonString(RuntimeUsageISO.string(evaluatedAt))),\"offlineAfterMs\":\(offlineAfterMs),\"statusAuthority\":\(jsonString(statusAuthority)),\"runKind\":\(jsonString(runKind)),\"versionAuthority\":\(jsonString(versionAuthority))}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("clock", clock)
+        body.append("evaluatedAt", RuntimeUsageISO.string(evaluatedAt))
+        body.append("offlineAfterMs", offlineAfterMs)
+        body.append("statusAuthority", statusAuthority)
+        body.append("runKind", runKind)
+        body.append("versionAuthority", versionAuthority)
+        return body.json
     }
 }
 
 /// The machine-offline payload.
-public struct SystemNotificationPayloadDTO: Codable, Sendable, Equatable {
+public struct SystemNotificationPayloadDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var machines: [SystemNotificationMachineDTO]
     public var activeAgentCount: Int
     public var evaluation: SystemNotificationEvaluationDTO
@@ -381,14 +392,18 @@ public struct SystemNotificationPayloadDTO: Codable, Sendable, Equatable {
         self.evaluation = evaluation
     }
 
-    func jsonBody() -> String {
-        let rows = machines.map { $0.jsonBody() }.joined(separator: ",")
-        return "{\"machines\":[\(rows)],\"activeAgentCount\":\(activeAgentCount),\"targetDaemonVersion\":null,\"evaluation\":\(evaluation.jsonBody())}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("machines", .array(machines.map(\.jsonBody)))
+        body.append("activeAgentCount", activeAgentCount)
+        body.append("targetDaemonVersion", OrderedJSON.null)
+        body.append("evaluation", evaluation.jsonBody)
+        return body.json
     }
 }
 
 /// One `machine.offline` notification.
-public struct SystemNotificationDTO: Codable, Sendable, Equatable {
+public struct SystemNotificationDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var id: String
     public var type: String
     public var schemaVersion: Int
@@ -424,13 +439,24 @@ public struct SystemNotificationDTO: Codable, Sendable, Equatable {
         self.payload = payload
     }
 
-    func jsonBody() -> String {
-        "{\"id\":\(jsonString(id)),\"type\":\(jsonString(type)),\"schemaVersion\":\(schemaVersion),\"state\":\(jsonString(state)),\"kind\":\(jsonString(kind)),\"title\":\(jsonString(title)),\"body\":\(jsonString(body)),\"copy\":\(copy.jsonBody()),\"action\":\(action.jsonBody()),\"payload\":\(payload.jsonBody())}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("id", id)
+        body.append("type", type)
+        body.append("schemaVersion", schemaVersion)
+        body.append("state", state)
+        body.append("kind", kind)
+        body.append("title", title)
+        body.append("body", self.body)
+        body.append("copy", copy.jsonBody)
+        body.append("action", action.jsonBody)
+        body.append("payload", payload.jsonBody)
+        return body.json
     }
 }
 
 /// Client read/dismiss policy of the system-notification feed.
-public struct SystemNotificationsClientStateDTO: Codable, Sendable, Equatable {
+public struct SystemNotificationsClientStateDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var read: String
     public var dismiss: String
 
@@ -439,13 +465,18 @@ public struct SystemNotificationsClientStateDTO: Codable, Sendable, Equatable {
         self.dismiss = dismiss
     }
 
-    func jsonBody() -> String {
-        "{\"read\":\(jsonString(read)),\"dismiss\":\(jsonString(dismiss))}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("read", read)
+        body.append("dismiss", dismiss)
+        return body.json
     }
 }
 
-/// `GET /api/servers/:id/system-notifications`.
-public struct SystemNotificationsDTO: Codable, Sendable, Equatable, CanonicalJSONBody {
+/// `GET /api/servers/:id/system-notifications`. Published order:
+/// `contractVersion`, `generatedAt`, `snapshotMode`, `clientState`,
+/// `notifications`.
+public struct SystemNotificationsDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var contractVersion: String
     public var generatedAt: Date
     public var snapshotMode: String
@@ -466,14 +497,19 @@ public struct SystemNotificationsDTO: Codable, Sendable, Equatable, CanonicalJSO
         self.notifications = notifications
     }
 
-    public func jsonBody() -> String {
-        let rows = notifications.map { $0.jsonBody() }.joined(separator: ",")
-        return "{\"contractVersion\":\(jsonString(contractVersion)),\"generatedAt\":\(jsonString(RuntimeUsageISO.string(generatedAt))),\"snapshotMode\":\(jsonString(snapshotMode)),\"clientState\":\(clientState.jsonBody()),\"notifications\":[\(rows)]}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("contractVersion", contractVersion)
+        body.append("generatedAt", RuntimeUsageISO.string(generatedAt))
+        body.append("snapshotMode", snapshotMode)
+        body.append("clientState", clientState.jsonBody)
+        body.append("notifications", .array(notifications.map(\.jsonBody)))
+        return body.json
     }
 }
 
 /// The machine projection of one system-attention incident.
-public struct SystemAttentionMachineDTO: Codable, Sendable, Equatable {
+public struct SystemAttentionMachineDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var id: String
     public var name: String
 
@@ -482,13 +518,16 @@ public struct SystemAttentionMachineDTO: Codable, Sendable, Equatable {
         self.name = name
     }
 
-    func jsonBody() -> String {
-        "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name))}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("id", id)
+        body.append("name", name)
+        return body.json
     }
 }
 
 /// One `usage_limit_reached` system-attention notification.
-public struct SystemAttentionNotificationDTO: Codable, Sendable, Equatable {
+public struct SystemAttentionNotificationDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var id: String
     public var kind: String
     public var severity: String
@@ -530,16 +569,28 @@ public struct SystemAttentionNotificationDTO: Codable, Sendable, Equatable {
         self.affectedAgentIds = affectedAgentIds
     }
 
-    func jsonBody() -> String {
-        let agents = affectedAgentIds.map(jsonString).joined(separator: ",")
-        let seen = seenAt.map { jsonString(RuntimeUsageISO.string($0)) } ?? "null"
-        let resets = resetsAt.map { jsonString(RuntimeUsageISO.string($0)) } ?? "null"
-        return "{\"id\":\(jsonString(id)),\"kind\":\(jsonString(kind)),\"severity\":\(jsonString(severity)),\"state\":\(jsonString(state)),\"activatedAt\":\(jsonString(RuntimeUsageISO.string(activatedAt))),\"lastObservedAt\":\(jsonString(RuntimeUsageISO.string(lastObservedAt))),\"seenAt\":\(seen),\"machine\":\(machine.jsonBody()),\"provider\":\(jsonString(provider)),\"windowKey\":\(jsonString(windowKey)),\"resetsAt\":\(resets),\"affectedAgentIds\":[\(agents)]}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("id", id)
+        body.append("kind", kind)
+        body.append("severity", severity)
+        body.append("state", state)
+        body.append("activatedAt", RuntimeUsageISO.string(activatedAt))
+        body.append("lastObservedAt", RuntimeUsageISO.string(lastObservedAt))
+        body.append("seenAt", OrderedJSON.stringOrNull(seenAt.map(RuntimeUsageISO.string)))
+        body.append("machine", machine.jsonBody)
+        body.append("provider", provider)
+        body.append("windowKey", windowKey)
+        body.append("resetsAt", OrderedJSON.stringOrNull(resetsAt.map(RuntimeUsageISO.string)))
+        body.append("affectedAgentIds", .array(affectedAgentIds.map(OrderedJSON.string)))
+        return body.json
     }
 }
 
-/// `GET /api/servers/:id/system-notifications-v2`.
-public struct SystemAttentionDTO: Codable, Sendable, Equatable, CanonicalJSONBody {
+/// `GET /api/servers/:id/system-notifications-v2`. Published order:
+/// `contractVersion`, `generatedAt`, `snapshotMode`, `unseenCount`,
+/// `notifications`.
+public struct SystemAttentionDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var contractVersion: String
     public var generatedAt: Date
     public var snapshotMode: String
@@ -560,28 +611,35 @@ public struct SystemAttentionDTO: Codable, Sendable, Equatable, CanonicalJSONBod
         self.notifications = notifications
     }
 
-    public func jsonBody() -> String {
-        let rows = notifications.map { $0.jsonBody() }.joined(separator: ",")
-        return "{\"contractVersion\":\(jsonString(contractVersion)),\"generatedAt\":\(jsonString(RuntimeUsageISO.string(generatedAt))),\"snapshotMode\":\(jsonString(snapshotMode)),\"unseenCount\":\(unseenCount),\"notifications\":[\(rows)]}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("contractVersion", contractVersion)
+        body.append("generatedAt", RuntimeUsageISO.string(generatedAt))
+        body.append("snapshotMode", snapshotMode)
+        body.append("unseenCount", unseenCount)
+        body.append("notifications", .array(notifications.map(\.jsonBody)))
+        return body.json
     }
 }
 
 /// The single-key `{"status": …}` diagnostic body.
-public struct RuntimeStatusDTO: Codable, Sendable, Equatable, CanonicalJSONBody {
+public struct RuntimeStatusDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var status: String
 
     public init(status: String) {
         self.status = status
     }
 
-    public func jsonBody() -> String {
-        "{\"status\":\(jsonString(status))}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("status", status)
+        return body.json
     }
 }
 
 /// `GET …/diagnostic/session-transcript`. The diagnostic read model is empty in
 /// this build; the published session id is always null.
-public struct SessionTranscriptDTO: Codable, Sendable, Equatable, CanonicalJSONBody {
+public struct SessionTranscriptDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var sessionId: String?
     public var transcript: [String]
 
@@ -590,13 +648,17 @@ public struct SessionTranscriptDTO: Codable, Sendable, Equatable, CanonicalJSONB
         self.transcript = transcript
     }
 
-    public func jsonBody() -> String {
-        "{\"sessionId\":null,\"transcript\":[]}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("sessionId", OrderedJSON.null)
+        body.append("transcript", .array([]))
+        return body.json
     }
 }
 
-/// `POST …/feedback/:reportId/transcript` acceptance.
-public struct TranscriptFeedbackAcceptedDTO: Codable, Sendable, Equatable, CanonicalJSONBody {
+/// `POST …/feedback/:reportId/transcript` acceptance. The published reply is
+/// always `"accepted":true`; the stored flag is not the wire body.
+public struct TranscriptFeedbackAcceptedDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var accepted: Bool
     public var feedbackReportId: String
     public var agentId: String
@@ -607,13 +669,18 @@ public struct TranscriptFeedbackAcceptedDTO: Codable, Sendable, Equatable, Canon
         self.agentId = agentId
     }
 
-    public func jsonBody() -> String {
-        "{\"accepted\":true,\"feedbackReportId\":\(jsonString(feedbackReportId)),\"agentId\":\(jsonString(agentId))}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("accepted", true)
+        body.append("feedbackReportId", feedbackReportId)
+        body.append("agentId", agentId)
+        return body.json
     }
 }
 
-/// `POST /api/share-artifacts/message-selection`.
-public struct ShareArtifactDTO: Codable, Sendable, Equatable, CanonicalJSONBody {
+/// `POST /api/share-artifacts/message-selection`. Published order: `id`, `url`,
+/// `imageUrl`.
+public struct ShareArtifactDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var id: String
     public var url: String
     public var imageUrl: String
@@ -624,8 +691,12 @@ public struct ShareArtifactDTO: Codable, Sendable, Equatable, CanonicalJSONBody 
         self.imageUrl = imageUrl
     }
 
-    public func jsonBody() -> String {
-        "{\"id\":\(jsonString(id)),\"url\":\(jsonString(url)),\"imageUrl\":\(jsonString(imageUrl))}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("id", id)
+        body.append("url", url)
+        body.append("imageUrl", imageUrl)
+        return body.json
     }
 }
 

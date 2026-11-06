@@ -91,7 +91,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             // Content-Type keeps the raw parser, which is the authority for the
             // published `Invalid transcript request` and timestamp errors.
             if let body = try? await request.content.decode(TranscriptFeedbackRequestDTO.self) {
-                return try respond(status: 202) {
+                return try await respond(status: 202) {
                     try services.emailAccounts.runtimeUsageAttestations.submitTranscriptFeedback(
                         authorization: request.headers[.authorization],
                         serverId: request.parameters.get("id") ?? "",
@@ -102,7 +102,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 }
             }
             let raw = try await request.bodyText()
-            return try respond(status: 202) {
+            return try await respond(status: 202) {
                 try services.emailAccounts.runtimeUsageAttestations.submitTranscriptFeedback(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",
@@ -120,8 +120,8 @@ public struct ServersFeature: RouteCollection, Sendable {
                 body: try await request.bodyText()
             ))
         }
-        servers.get(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "mention-delivery", ":messageId") { request throws -> Response in
-            try respond(status: 404) {
+        servers.get(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "mention-delivery", ":messageId") { request async throws -> Response in
+            try await respond(status: 404) {
                 try services.emailAccounts.runtimeUsageAttestations.mentionDeliveryDiagnostic(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",
@@ -131,8 +131,8 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "session-transcript") { request throws -> Response in
-            try respond {
+        servers.get(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "session-transcript") { request async throws -> Response in
+            try await respond {
                 try services.emailAccounts.runtimeUsageAttestations.agentSessionTranscript(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",
@@ -146,7 +146,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             // the route on `content.decode`, and every other spelling (boolean
             // or zero-fraction numbers included) stays on the legacy parser.
             if let typed = try? await request.content.decode(MentionRedriveRequestDTO.self) {
-                return try respond(status: 404) {
+                return try await respond(status: 404) {
                     try services.emailAccounts.runtimeUsageAttestations.redriveMentionDelivery(
                         authorization: request.headers[.authorization],
                         serverId: request.parameters.get("id") ?? "",
@@ -158,7 +158,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 }
             }
             let raw = try await request.bodyText()
-            return try respond(status: 404) {
+            return try await respond(status: 404) {
                 try services.emailAccounts.runtimeUsageAttestations.redriveMentionDelivery(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",
@@ -462,8 +462,8 @@ public struct ServersFeature: RouteCollection, Sendable {
             ))
         }
         registerServerMachineDelete(on: servers)
-        servers.get(":id", "usage") { request throws -> Response in
-            try respond {
+        servers.get(":id", "usage") { request async throws -> Response in
+            try await respond {
                 try services.emailAccounts.runtimeUsageAttestations.serverUsage(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? ""
@@ -581,8 +581,8 @@ public struct ServersFeature: RouteCollection, Sendable {
                 directoryName: request.parameters.get("directoryName") ?? ""
             ))
         }
-        servers.get(":id", "system-notifications") { request throws -> Response in
-            var response = try respond {
+        servers.get(":id", "system-notifications") { request async throws -> Response in
+            var response = try await respond {
                 try services.emailAccounts.runtimeUsageAttestations.serverSystemNotifications(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? ""
@@ -591,8 +591,8 @@ public struct ServersFeature: RouteCollection, Sendable {
             response.headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
             return response
         }
-        servers.get(":id", "system-notifications-v2") { request throws -> Response in
-            var response = try respond {
+        servers.get(":id", "system-notifications-v2") { request async throws -> Response in
+            var response = try await respond {
                 try services.emailAccounts.runtimeUsageAttestations.listSystemAttention(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? ""
@@ -601,8 +601,8 @@ public struct ServersFeature: RouteCollection, Sendable {
             response.headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
             return response
         }
-        servers.post(":id", "system-notifications-v2", ":incidentId", "seen") { request throws -> Response in
-            try respond {
+        servers.post(":id", "system-notifications-v2", ":incidentId", "seen") { request async throws -> Response in
+            try await respond {
                 try services.emailAccounts.runtimeUsageAttestations.markSystemAttentionSeen(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",
@@ -610,8 +610,8 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.post(":id", "system-notifications-v2", ":incidentId", "dismiss") { request throws -> Response in
-            try respond {
+        servers.post(":id", "system-notifications-v2", ":incidentId", "dismiss") { request async throws -> Response in
+            try await respond {
                 try services.emailAccounts.runtimeUsageAttestations.dismissSystemAttention(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",

@@ -3,11 +3,11 @@ import Foundation
 /// Typed failures for the server-usage, system-attention and attested
 /// diagnostic surface.
 ///
-/// Every case names the published error object. `bodyJSON` keeps the archive's
-/// member order for the multi-key bodies (`{"status": …}`,
-/// `{"error": …,"code": …}` and the 413 upload cap); the single-key
-/// `{"error": …}` cases fall back to `errorMessage`.
-public enum RuntimeUsageAndAttestationsError: CanonicalDomainErrorBody, Equatable {
+/// Every case names the published error object. `errorBody` keeps the archive's
+/// member order for the bodies that are not the default `{"error": …}`
+/// (`{"status": …}`, `{"error": …,"code": …}` and the 413 upload cap); the
+/// single-key cases fall back to the canonical default body.
+public enum RuntimeUsageAndAttestationsError: DomainError, Equatable {
     case unauthorized
     case serverNotFound
     case notAMemberOfServer
@@ -60,7 +60,7 @@ public enum RuntimeUsageAndAttestationsError: CanonicalDomainErrorBody, Equatabl
     }
 
     /// The published upstream `error` text. `{"status": …}` failures never use
-    /// it for the wire body; `bodyJSON` is the exact contract.
+    /// it for the wire body; `errorBody` is the exact contract.
     public var errorMessage: String {
         switch self {
         case .unauthorized:
@@ -116,29 +116,27 @@ public enum RuntimeUsageAndAttestationsError: CanonicalDomainErrorBody, Equatabl
         }
     }
 
-    public var errorCode: String? {
-        switch self {
-        case .machineOffline:
-            "machine_offline"
-        default:
-            nil
-        }
-    }
-
-    public var bodyJSON: String {
+    public var errorBody: OrderedJSON? {
         switch self {
         case .notJoinable:
-            "{\"status\":\"NOT_JOINABLE\"}"
+            return .object([OrderedJSONField("status", "NOT_JOINABLE")])
         case .notAccessible:
-            "{\"status\":\"NOT_ACCESSIBLE\"}"
+            return .object([OrderedJSONField("status", "NOT_ACCESSIBLE")])
         case .invalidRequest:
-            "{\"status\":\"INVALID_REQUEST\"}"
+            return .object([OrderedJSONField("status", "INVALID_REQUEST")])
         case .machineOffline:
-            "{\"error\":\"Computer is offline\",\"code\":\"machine_offline\"}"
+            return .object([
+                OrderedJSONField("error", "Computer is offline"),
+                OrderedJSONField("code", "machine_offline"),
+            ])
         case .shareArtifactTooLarge:
-            "{\"error\":\"Max 10MB per image\",\"errorCode\":\"SHARE_ARTIFACT_TOO_LARGE\",\"maxBytes\":10485760}"
+            return .object([
+                OrderedJSONField("error", "Max 10MB per image"),
+                OrderedJSONField("errorCode", "SHARE_ARTIFACT_TOO_LARGE"),
+                OrderedJSONField("maxBytes", 10_485_760),
+            ])
         default:
-            "{\"error\":\(jsonString(errorMessage))}"
+            return nil
         }
     }
 }

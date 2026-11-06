@@ -64,6 +64,8 @@ private func feedbackLocatorObject(_ response: ClientResponse) throws -> [String
 
             let first = try await ingest()
             #expect(first.status == .ok)
+            // The accepted body keeps the legacy key order through the route.
+            #expect(first.body.string?.hasPrefix("{\"status\":\"accepted\",\"receipt_id\":\"") == true)
             let accepted = try feedbackLocatorObject(first)
             #expect(accepted["status"] as? String == "accepted")
             #expect(accepted["report_id"] as? String == reportId)
@@ -107,6 +109,9 @@ private func feedbackLocatorObject(_ response: ClientResponse) throws -> [String
             }
             #expect(refused.status == .forbidden)
             #expect(try feedbackLocatorObject(refused)["code"] as? String == "capability_not_authorized")
+            // The refusal keeps the legacy key order byte for byte through the
+            // typed service and `respond`.
+            #expect(refused.body.string == "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\",\"requiredCapability\":\"send\"}")
         }
     }
 }
@@ -162,6 +167,42 @@ private func feedbackLocatorObject(_ response: ClientResponse) throws -> [String
             let foreignResponse = try await ingest(foreignProducer)
             #expect(foreignResponse.status == .badRequest)
             #expect(try failure(foreignResponse) as NSDictionary == ["status": "failed", "reason_code": "invalid_payload"] as NSDictionary)
+        }
+    }
+}
+
+@Test func feedbackLocatorIngestAcceptsAJSONBodyWithoutAContentType() async throws {
+    let fixture = try makeFeedbackLocatorFixture(suffix: "723")
+    let reportId = UUID().uuidString.lowercased()
+    let payload = feedbackLocatorPayload(
+        serverId: fixture.serverId,
+        agentId: fixture.agentId,
+        reportId: reportId
+    )
+    let body = "{\"artifact_kind\":\"raft-feedback-locator-v0\",\"event_kind\":\"feedback-locator:created\",\"payload\":\(payload)}"
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: fixture.accounts
+        ))
+        try await app.testing { client in
+            // The legacy route parsed the raw text, so a body sent without a
+            // `Content-Type` header still reaches the locator service.
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(fixture.apiKey)"
+            let response = try await client.send(
+                .post,
+                headers: headers,
+                to: "/internal/agent-api/feedback-locators"
+            ) { request in
+                request.body = .init(string: body)
+            }
+            #expect(response.status == .ok)
+            #expect(try feedbackLocatorObject(response)["duplicate"] as? Bool == false)
+            #expect(try feedbackLocatorObject(response)["report_id"] as? String == reportId)
         }
     }
 }
