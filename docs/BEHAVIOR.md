@@ -2159,3 +2159,9 @@ RFC 074 personal assistant：
 - Human/Reactions/Inbox/Search 删除 Directory initializer 与 live factory，原 owner、投影、credential 和提交能力显式注入。认证 missing/invalid、email verification、legacy revoked agent read 与 live agent API 谓词保持，Inbox probe 的 allowed/residue/hidden 映射保持。
 - 同 app 注册服务后由未验证变已验证、写消息后由 sync/search 读到新行、family revoke 后三个 human read/write 路径变 401；新构造不缓存会话或消息事实。原 randomId/attachment、mention/forward、guest probe、comments flag 和 JSON 字节继续通过公开回归。
 - 同一个已构造 Human 服务在 relay 自卸载后停止发送真实 `message:new` Socket.IO 帧，重新安装后恢复；Reactions 的 credential-use presence/throttle 帧仍按当前 slot 工作。合作生命周期/机器服务的旧 factory capture 尚未据此宣告清零。
+
+### 机器与 runtime 服务的显式构造
+
+- MachinesAndHostedRuntime 与 RuntimeFormsAndProbes 直接接收原 owners、AuthCore 和两个 relay 能力，不保留目录构造器/live。公开 credential、hosted status/model/retry、runtime form/options、onboarding/notification 与 fallback 的操作代码不变；session 仍为原 AuthCore.authenticate 的 optional 结果。
+- 注册与 API-key 查询直接使用同一个 Machines owner、同一事务，不反取宽机器服务。Provider/realtime relay 每次调用读取当前 slot，connection origin 与配置保持实时；provider 在请求内卸载后，下个 HTTP 请求仍见 unavailable。
+- Computer pre-parser 仍先验凭据再处理较大 manifest，保持 401-before-413；NIO upgrade、Computer denial 五态与 legacy key 握手回归通过，未改变 credential 接受集。

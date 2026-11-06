@@ -2,19 +2,14 @@ import Foundation
 
 // MARK: - Injected dependencies
 
-/// Every dependency the runtime-form surface reads.
-///
-/// The machine, notification, onboarding and agent rows belong to their stores.
-/// The human session lookup, the realtime emitter and the machine registration
-/// (which the Computer lifecycle and the hosted-migration domains also use)
-/// belong to domains that have not migrated, so they enter as closures wired by
-/// `live(directory:)`.
+/// The runtime-form surface's owners and operations, assembled by its explicit
+/// constructor. Registration and API-key lookup use the machine owner directly.
 struct RuntimeFormsAndProbesDependencies: Sendable {
     var sessionUserId: @Sendable (String?) -> String?
     var emitRealtime: @Sendable (String, String, String?) -> Void
     /// `MachinesAndComputersStore.registerMachine`, the machine row insert.
     var registerMachine: @Sendable (_ serverId: String, _ userId: String, _ name: String) -> String
-    /// `machineAPIKey` of the unmigrated hosted-runtime domain.
+    /// The machine owner's current API-key read.
     var machineAPIKey: @Sendable (_ machineId: String) -> String?
     var oauth: OAuthLedger
     var machines: MachinesAndComputersStore
@@ -22,25 +17,6 @@ struct RuntimeFormsAndProbesDependencies: Sendable {
     var notifications: NotificationsStore
     var agents: AgentsRuntimeStore
     var now: @Sendable () -> Date
-
-    static func live(directory source: EmailLoginDirectory) -> RuntimeFormsAndProbesDependencies {
-        RuntimeFormsAndProbesDependencies(
-            sessionUserId: { source.sessionUserId(authorization: $0) },
-            emitRealtime: { room, event, payload in
-                source.realtimeRelay.emit(room, event, payload)
-            },
-            registerMachine: { serverId, userId, name in
-                source.machinesAndComputersStore.registerMachine(serverId: serverId, userId: userId, name: name)
-            },
-            machineAPIKey: { source.machineAPIKey(machineId: $0) },
-            oauth: source.oauth,
-            machines: source.machinesAndComputersStore,
-            servers: source.serversAndChannelsStore,
-            notifications: source.notificationsStore,
-            agents: source.agentsRuntimeStore,
-            now: { Date() }
-        )
-    }
 }
 
 // MARK: - Service
@@ -57,9 +33,30 @@ struct RuntimeFormsAndProbesDependencies: Sendable {
 public struct RuntimeFormsAndProbesService: Sendable {
     let dependencies: RuntimeFormsAndProbesDependencies
 
-    /// Production wiring.
-    public init(directory: EmailLoginDirectory) {
-        self.init(dependencies: .live(directory: directory))
+    init(
+        auth: AuthCoreService,
+        oauth: OAuthLedger,
+        machines: MachinesAndComputersStore,
+        servers: ServersAndChannelsStore,
+        notifications: NotificationsStore,
+        agents: AgentsRuntimeStore,
+        realtime: RealtimeRelayService,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
+        self.init(dependencies: RuntimeFormsAndProbesDependencies(
+            sessionUserId: { try? auth.authenticate($0) },
+            emitRealtime: { room, event, payload in realtime.emit(room, event, payload) },
+            registerMachine: { serverId, userId, name in
+                machines.registerMachine(serverId: serverId, userId: userId, name: name)
+            },
+            machineAPIKey: { machines.machineAPIKey(machineId: $0) },
+            oauth: oauth,
+            machines: machines,
+            servers: servers,
+            notifications: notifications,
+            agents: agents,
+            now: now
+        ))
     }
 
     init(dependencies: RuntimeFormsAndProbesDependencies) {

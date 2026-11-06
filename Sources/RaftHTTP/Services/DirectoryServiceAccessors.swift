@@ -100,12 +100,19 @@ extension EmailLoginDirectory {
         )
     }
 
-    /// Machine credential lookups, the onboarding identity adoption, the hosted
-    /// runtime and the provider account connections. The directory supplies its
-    /// stores; the session lookup, the realtime emitter and the provider relay
-    /// enter as closures.
+    /// Machine credentials, hosted runtime and provider connections, composed
+    /// from their owners and the current relay capabilities.
     public var machinesAndHostedRuntime: MachinesAndHostedRuntimeService {
-        MachinesAndHostedRuntimeService(directory: self)
+        MachinesAndHostedRuntimeService(
+            auth: authCore,
+            oauth: oauth,
+            agents: agentsRuntimeStore,
+            machines: machinesAndComputersStore,
+            channels: serversAndChannelsStore,
+            profiles: authProfileStore,
+            realtime: realtimeRelay,
+            provider: agentConnectionRelay
+        )
     }
 
     public func machineIdForCredential(authorization: String?) -> String? {
@@ -735,13 +742,18 @@ extension EmailLoginDirectory {
         return machinesAndComputersStore.computerCredentialIsLive(token: key)
     }
 
-    /// Runtime forms, option sources and probes, runtime account usage, the
-    /// server onboarding/notification settings and machine registration. The
-    /// machine, notification, onboarding and agent rows live in their stores;
-    /// the session lookup, the realtime emitter and `registerMachine` /
-    /// `machineAPIKey` enter as closures (`RuntimeFormsAndProbesDependencies`).
+    /// Runtime forms, probes, settings and machine registration, composed from
+    /// their owners, session authentication and realtime delivery capability.
     public var runtimeFormsAndProbes: RuntimeFormsAndProbesService {
-        RuntimeFormsAndProbesService(directory: self)
+        RuntimeFormsAndProbesService(
+            auth: authCore,
+            oauth: oauth,
+            machines: machinesAndComputersStore,
+            servers: serversAndChannelsStore,
+            notifications: notificationsStore,
+            agents: agentsRuntimeStore,
+            realtime: realtimeRelay
+        )
     }
 
     /// Server profile, switcher order, pre-join agreement, translation, the

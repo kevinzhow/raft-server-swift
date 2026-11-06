@@ -2,12 +2,8 @@ import Foundation
 
 // MARK: - Injected dependencies
 
-/// Everything the machine, hosted runtime and provider connection surface needs.
-///
-/// The hosted rows, the machine rows, the server rows and the account rows
-/// belong to their stores. The human session lookup, the realtime emitter and
-/// the provider relay belong to domains that have not migrated and stay behind
-/// closures; `live(directory:)` wires them at the composition root.
+/// The machine surface's owners and operations, assembled by its explicit
+/// constructor. Provider and configuration closures read the current owners.
 struct MachinesAndHostedRuntimeDependencies: Sendable {
     var sessionUserId: @Sendable (String?) -> String?
     var emitRealtime: @Sendable (String, String, String?) -> Void
@@ -19,24 +15,6 @@ struct MachinesAndHostedRuntimeDependencies: Sendable {
     /// The provider relay; `.unavailable` when none is configured.
     var callProvider: @Sendable (AgentConnectionProviderRequest) -> AgentConnectionProviderResult
     var connectionOrigin: @Sendable () -> String
-
-    static func live(directory source: EmailLoginDirectory) -> MachinesAndHostedRuntimeDependencies {
-        MachinesAndHostedRuntimeDependencies(
-            sessionUserId: { source.sessionUserId(authorization: $0) },
-            emitRealtime: { [relay = source.realtimeRelay] room, event, payload in
-                relay.emit(room, event, payload)
-            },
-            oauth: source.oauth,
-            agents: source.agentsRuntimeStore,
-            machines: source.machinesAndComputersStore,
-            channels: source.serversAndChannelsStore,
-            profiles: source.authProfileStore,
-            callProvider: { [relay = source.agentConnectionRelay] request in
-                relay.call(request)
-            },
-            connectionOrigin: { [agents = source.agentsRuntimeStore] in agents.agentConnectionOrigin }
-        )
-    }
 }
 
 // MARK: - Service
@@ -53,9 +31,27 @@ public struct MachinesAndHostedRuntimeService: Sendable {
 
     private static let connectionProviders: Set<String> = ["github"]
 
-    /// Production wiring.
-    public init(directory: EmailLoginDirectory) {
-        self.init(dependencies: .live(directory: directory))
+    init(
+        auth: AuthCoreService,
+        oauth: OAuthLedger,
+        agents: AgentsRuntimeStore,
+        machines: MachinesAndComputersStore,
+        channels: ServersAndChannelsStore,
+        profiles: AuthProfileStore,
+        realtime: RealtimeRelayService,
+        provider: AgentConnectionRelayService
+    ) {
+        self.init(dependencies: MachinesAndHostedRuntimeDependencies(
+            sessionUserId: { try? auth.authenticate($0) },
+            emitRealtime: { room, event, payload in realtime.emit(room, event, payload) },
+            oauth: oauth,
+            agents: agents,
+            machines: machines,
+            channels: channels,
+            profiles: profiles,
+            callProvider: { request in provider.call(request) },
+            connectionOrigin: { agents.agentConnectionOrigin }
+        ))
     }
 
     init(dependencies: MachinesAndHostedRuntimeDependencies) {
