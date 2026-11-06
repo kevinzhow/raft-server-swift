@@ -1,0 +1,17 @@
+Sources/RaftHTTP/Services/ActionCardService.swift	44
+Sources/RaftHTTP/Services/AttachmentsAndNotificationsService.swift	172
+Sources/RaftHTTP/Services/AuthCoreService.swift	6
+Sources/RaftHTTP/Services/AuthIdentitiesService.swift	6
+Sources/RaftHTTP/Services/AuthVerificationService.swift	1
+Sources/RaftHTTP/Services/FeedbackLocatorService.swift	15
+Sources/RaftHTTP/Services/FeedbackMultiAppService.swift	12
+Sources/RaftHTTP/Services/FeedbackService.swift	40
+Sources/RaftHTTP/Services/HumanMessageCreateService.swift	7
+Sources/RaftHTTP/Services/InboxAndWakeService.swift	5
+Sources/RaftHTTP/Services/MessageSendService.swift	3
+Sources/RaftHTTP/Services/OAuthFlowsService.swift	4
+Sources/RaftHTTP/Services/ProfileAndChannelFilesService.swift	4
+Sources/RaftHTTP/Services/ReactionsRealtimeService.swift	8
+Sources/RaftHTTP/Services/SearchMentionsService.swift	7
+Sources/RaftHTTP/Services/SocketMembershipService.swift	30
+Sources/RaftHTTP/Services/ThreadsService.swift	6

@@ -380,3 +380,30 @@ Generated knowledge corpus lives in `Sources/RaftHTTPServer/Generated/KnowledgeC
   header, stored properties, `init`) is byte-identical.
 - Next: continue R3 by extracting domain stores (state + its own lock) out of
   the directory; the split just made the candidate domains explicit.
+
+
+## Phase 6 ratchets
+
+`scripts/check_architecture.py` also ratchets six per-file metrics, each backed
+by its own baseline TSV in `scripts/` (`path<TAB>count`; an unlisted file counts
+as 0, and a missing TSV ratchets every file against 0). Generated sources under
+`Sources/RaftHTTPServer/Generated/` are never scanned.
+
+| Metric | Scanned | Counted | Baseline file | Current total |
+| --- | --- | --- | --- | --- |
+| `extension_directory` | `Sources/RaftHTTP` | occurrences of `extension EmailLoginDirectory` | `scripts/ratchet_extension_directory.tsv` | 51 in 47 files |
+| `service_httpreply` | `Sources/RaftHTTP/Services` | `HTTPReply` tokens | `scripts/ratchet_service_httpreply.tsv` | 612 in 43 files |
+| `service_json_any` | `Sources/RaftHTTP/Services`, `Sources/RaftHTTP/DTO` | `JSONSerialization`, `[String: Any]`, `[String:Any]` | `scripts/ratchet_service_json_any.tsv` | 498 in 41 files |
+| `unchecked_sendable` | `Sources` | `@unchecked Sendable` | `scripts/ratchet_unchecked_sendable.tsv` | 71 in 57 files |
+| `directory_forwarder` | `Sources/RaftHTTP/Stores/DirectoryStoreForwarders.swift` | line count (0 when the file is gone) | `scripts/ratchet_directory_forwarder.tsv` | 710 in 1 file |
+| `service_directory_calls` | `Sources/RaftHTTP/Services` | `directory.` call sites | `scripts/ratchet_service_directory_calls.tsv` | 370 in 17 files |
+
+Every ratchet is bidirectional: a file above its baseline fails, and so does a
+file below it, because **the baseline may only decrease**. A slice that shrinks a
+metric runs `python3 scripts/check_architecture.py --update-baselines` in the
+same commit to rewrite all six TSVs from the tree; no slice hand-raises a
+baseline. The update command never touches `scripts/for_testing_baseline.tsv`.
+
+The services layer also carries a hard zero, not a baseline: no file under
+`Sources/RaftHTTP/Services/**` may contain `import Vapor` (currently 0 in 45
+service files), because services are called from Vapor-free domain code.
