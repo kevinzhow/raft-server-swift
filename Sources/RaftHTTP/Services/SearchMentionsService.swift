@@ -186,7 +186,7 @@ struct SearchMentionsDependencies: Sendable {
             forwardMetadataJSON: { messageId, userId, serverId in
                 source.forwardMetadataJSONLocked(messageId: messageId, userId: userId, serverId: serverId)
             },
-            actionCardMetadataJSON: { source.actionCardMetadataLocked(messageId: $0) },
+            actionCardMetadataJSON: { source.actionCardMetadata.metadata(messageId: $0) },
             threadSummariesJSON: { parentChannelId, parentIds in
                 source.threadSummariesJSONLocked(parentChannelId: parentChannelId, parentIds: parentIds)
             },

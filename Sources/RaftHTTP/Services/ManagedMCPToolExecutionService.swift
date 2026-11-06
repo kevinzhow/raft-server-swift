@@ -277,12 +277,12 @@ extension EmailLoginDirectory {
     /// the agent receiver, not the channel, and only channel members may set it.
     public func agentChannelArchive(authorization: String?, body: String, archive: Bool) -> HTTPReply {
         if let denial = agentCapabilityDenial(authorization, required: "channels") { return denial }
-        guard let writer = agentTaskWriter(authorization, legacyAgentId: nil) else {
+        guard let writer = actionCardExecute.taskWriter(authorization: authorization, legacyAgentId: nil) else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
               let target = object["target"] as? String,
-              let channelId = agentTaskChannel(serverId: writer.serverId, agentId: writer.agentId, reference: target)
+              let channelId = actionCardExecute.taskChannel(serverId: writer.serverId, agentId: writer.agentId, reference: target)
         else {
             return Self.json(400, "{\"error\":\"Invalid channel target\"}")
         }

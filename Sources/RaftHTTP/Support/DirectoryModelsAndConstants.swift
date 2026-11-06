@@ -101,7 +101,7 @@ extension EmailLoginDirectory {
     static func feedbackSource(_ header: String) throws -> String {
         let normalized = header.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if normalized.isEmpty { return "web" }
-        guard productFeedbackSources.contains(normalized) else { throw FeedbackRouteFailure.invalidSource }
+        guard FeedbackService.productFeedbackSources.contains(normalized) else { throw FeedbackRouteFailure.invalidSource }
         return normalized
     }
 
@@ -167,8 +167,8 @@ extension EmailLoginDirectory {
             keyId: environment.routeSubjectKeyId,
             root: environment.routeSubjectRoot,
             commitmentLabel: environment.routeCommitmentScope == "multi"
-                ? Self.productFeedbackMultiCommitmentLabel
-                : Self.productFeedbackLegacyCommitmentLabel,
+                ? FeedbackService.productFeedbackMultiCommitmentLabel
+                : FeedbackService.productFeedbackLegacyCommitmentLabel,
             reporterIdSecret: environment.reporterIdSecret
         )
     }

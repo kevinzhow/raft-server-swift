@@ -8,71 +8,49 @@ import FoundationNetworking
 
 extension EmailLoginDirectory {
     public func setHandsFeedbackForTesting(baseURL: String?, appId: String?, appToken: String?, appSlug: String? = nil) {
-        lock.lock()
-        handsFeedbackBaseURLOverride = baseURL
-        handsFeedbackAppIdOverride = appId
-        handsFeedbackAppSlugOverride = appSlug
-        handsFeedbackAppTokenOverride = appToken
-        productFeedbackReporterSessionCache.removeAll()
-        productFeedbackRouteBindingSuccesses.removeAll()
-        productFeedbackRouteVerifiedCommitments.removeAll()
-        lock.unlock()
+        feedbackStore.handsFeedbackBaseURLOverride = baseURL
+        feedbackStore.handsFeedbackAppIdOverride = appId
+        feedbackStore.handsFeedbackAppSlugOverride = appSlug
+        feedbackStore.handsFeedbackAppTokenOverride = appToken
+        feedbackStore.clearRouteBindingCache(includingReporterSessions: true)
     }
 
     public func setHandsFeedbackUpstreamForTesting(_ handler: ((URLRequest) -> (status: Int, headers: [String: String], body: Data))?) {
-        lock.lock(); handsFeedbackUpstreamHandler = handler; lock.unlock()
+        feedbackStore.handsFeedbackUpstreamHandler = handler
     }
 
     /// Installs the SecureString-shaped `HANDS_FEEDBACK_APPS` JSON. Production
     /// reads this from SSM; the port has no AWS client, so the composition root
     /// (or a test) supplies the payload.
     public func setHandsFeedbackAppsForTesting(_ appsJSON: String?) {
-        lock.lock()
-        handsFeedbackAppsJSON = appsJSON
-        productFeedbackReporterSessionCache.removeAll()
-        productFeedbackRouteBindingSuccesses.removeAll()
-        productFeedbackRouteVerifiedCommitments.removeAll()
-        lock.unlock()
+        feedbackStore.handsFeedbackAppsJSON = appsJSON
+        feedbackStore.clearRouteBindingCache(includingReporterSessions: true)
     }
 
     /// Overlays the legacy `HANDS_FEEDBACK_*` environment view for a test.
     public func setHandsFeedbackLegacyEnvironmentForTesting(_ values: [String: String]?) {
-        lock.lock()
-        handsFeedbackLegacyEnvironment = values
-        productFeedbackReporterSessionCache.removeAll()
-        productFeedbackRouteBindingSuccesses.removeAll()
-        productFeedbackRouteVerifiedCommitments.removeAll()
-        lock.unlock()
+        feedbackStore.handsFeedbackLegacyEnvironment = values
+        feedbackStore.clearRouteBindingCache(includingReporterSessions: true)
     }
 
     /// Operator log sink (upstream uses `console.warn`). Tests install one to
     /// assert the fixed reason codes without reading process output.
     public func setHandsFeedbackWarningSinkForTesting(_ sink: ((String) -> Void)?) {
-        lock.lock()
-        handsFeedbackWarningSink = sink
-        lock.unlock()
+        authProfileStore.handsFeedbackWarningSink = sink
     }
 
     /// Labels committed into `integrationSecretCommitments` by route binding.
     public func productFeedbackRouteCommitmentLabelsForTesting() -> [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return Array(productFeedbackRouteCommitments.keys).sorted()
+        feedbackStore.routeCommitmentLabels()
     }
 
     public func resetProductFeedbackRouteBindingCacheForTesting() {
-        lock.lock()
-        productFeedbackRouteBindingSuccesses.removeAll()
-        productFeedbackRouteVerifiedCommitments.removeAll()
-        productFeedbackRouteCommitments.removeAll()
-        lock.unlock()
+        feedbackStore.clearRouteBindingCache(includingCommitments: true)
     }
 
     public func setHandsConversationForTesting(enabled: Bool, appToken: String?) {
-        lock.lock()
-        handsConversationSessionEnabled = enabled
-        handsConversationAppTokenOverride = appToken
-        productFeedbackReporterSessionCache.removeAll()
-        lock.unlock()
+        authProfileStore.handsConversationSessionEnabled = enabled
+        feedbackStore.handsConversationAppTokenOverride = appToken
+        feedbackStore.clearReporterSessions()
     }
 }

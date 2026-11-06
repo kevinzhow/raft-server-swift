@@ -14,10 +14,9 @@ enum ActionCardWriteDecision: Sendable, Equatable {
 /// The closure dependencies of the action-card integration-register domain
 /// that still live in not-yet-migrated domains.
 ///
-/// Everything else is a store or the OAuth ledger. `actionCardTarget`,
-/// `prepareIntegrationRegisterCard` and the two card projections stay in
-/// `ActionCardMarketplaceService` until that module gets its own slice;
-/// `appendHumanMessage` is the directory-lock message append (sequence stamp +
+/// Everything else is a store or the OAuth ledger: the marketplace target
+/// resolver, the integration-card preparer and the card projections are owned
+/// by this service (`ActionCardMetadataProjection`). `appendHumanMessage` is the directory-lock message append (sequence stamp +
 /// OAuth mirror); `emitRealtime` is the realtime relay; `sessionUserId` is the
 /// human session ledger; `agentCredential` is the agent credential lookup that
 /// records `lastUsedAt`.
@@ -36,22 +35,6 @@ struct ActionCardIntegrationRegisterDependencies: Sendable {
         _ name: String?
     ) -> Void
     var emitRealtime: @Sendable (String, String, String?) -> Void
-    var actionCardTarget: @Sendable (String, String, String) -> (local: String, storage: String)?
-    var prepareIntegrationRegisterCard: @Sendable (
-        _ serverId: String,
-        _ agent: OAuthLedger.AgentRuntimeInfo,
-        _ name: String,
-        _ clientKey: String?,
-        _ homepageUrl: String?,
-        _ returnUrl: String,
-        _ agentManifestUrl: String?,
-        _ setupUrl: String?,
-        _ setupDescription: String?,
-        _ scopes: [String],
-        _ target: (local: String, storage: String)
-    ) -> String
-    var marketplaceInstallMetadata: @Sendable (MarketplaceInstallCard) -> String
-    var integrationRegisterMetadata: @Sendable (IntegrationRegisterCard) -> String
     var marketplaceInstallableClient: @Sendable (String) -> MarketplaceClientIdentity?
     var publicIntegrationClient: @Sendable (String) -> MarketplaceClientIdentity?
 }
@@ -146,7 +129,7 @@ public struct ActionCardIntegrationRegisterService: Sendable {
             throw ActionCardIntegrationRegisterError.invalidAppRegistrationRequest
         }
         let targetRef = (request.target ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let resolved = dependencies.actionCardTarget(agent.serverId, agent.id, targetRef) else {
+        guard let resolved = actionCardTarget(serverId: agent.serverId, agentId: agent.id, target: targetRef) else {
             throw ActionCardIntegrationRegisterError.targetChannelNotFound
         }
         let clientKey = request.clientKey?
@@ -171,18 +154,18 @@ public struct ActionCardIntegrationRegisterService: Sendable {
                 }
             }
         }
-        let messageId = dependencies.prepareIntegrationRegisterCard(
-            agent.serverId,
-            agent,
-            name,
-            (clientKey?.isEmpty == false) ? clientKey : nil,
-            (homepageUrl?.isEmpty == false) ? homepageUrl : nil,
-            returnUrl,
-            (agentManifestUrl?.isEmpty == false) ? agentManifestUrl : nil,
-            nil,
-            nil,
-            scopes,
-            resolved
+        let messageId = prepareIntegrationRegisterCard(
+            serverId: agent.serverId,
+            agent: agent,
+            name: name,
+            clientKey: (clientKey?.isEmpty == false) ? clientKey : nil,
+            homepageUrl: (homepageUrl?.isEmpty == false) ? homepageUrl : nil,
+            returnUrl: returnUrl,
+            agentManifestUrl: (agentManifestUrl?.isEmpty == false) ? agentManifestUrl : nil,
+            setupUrl: nil,
+            setupDescription: nil,
+            scopes: scopes,
+            target: resolved
         )
         return IntegrationAppPrepareResponse(
             actionCardMessageId: messageId,
@@ -295,10 +278,10 @@ public struct ActionCardIntegrationRegisterService: Sendable {
             }
             resolved = (target, target)
         } else {
-            guard let byName = dependencies.actionCardTarget(
-                identity.serverId,
-                identity.agentId,
-                target
+            guard let byName = actionCardTarget(
+                serverId: identity.serverId,
+                agentId: identity.agentId,
+                target: target
             ) else {
                 throw ActionCardIntegrationRegisterError.targetChannelNotFound
             }
@@ -479,10 +462,10 @@ public struct ActionCardIntegrationRegisterService: Sendable {
         else {
             return nil
         }
-        guard let resolved = dependencies.actionCardTarget(
-            identity.serverId,
-            identity.agentId,
-            target
+        guard let resolved = actionCardTarget(
+            serverId: identity.serverId,
+            agentId: identity.agentId,
+            target: target
         ) else {
             throw ActionCardIntegrationRegisterError.targetChannelNotFound
         }
@@ -513,7 +496,7 @@ public struct ActionCardIntegrationRegisterService: Sendable {
                 throw ActionCardIntegrationRegisterError.integrationAppNotFound
             }
             let metadata = cards.marketplaceInstallCard(messageId: messageId)
-                .map { dependencies.marketplaceInstallMetadata($0) } ?? "null"
+                .map { metadataProjection.marketplaceInstall($0) } ?? "null"
             return ActionCardPrepareResponse(messageId: messageId, metadataJSON: metadata)
         }
         let rawScopes = action["scopes"]?.legacyStringArray ?? []
@@ -557,23 +540,23 @@ public struct ActionCardIntegrationRegisterService: Sendable {
         let clientKey = action["clientKey"]?.legacyString?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-        let messageId = dependencies.prepareIntegrationRegisterCard(
-            identity.serverId,
-            agent,
-            name,
-            (clientKey?.isEmpty == false) ? clientKey : nil,
-            action["homepageUrl"]?.legacyString?
+        let messageId = prepareIntegrationRegisterCard(
+            serverId: identity.serverId,
+            agent: agent,
+            name: name,
+            clientKey: (clientKey?.isEmpty == false) ? clientKey : nil,
+            homepageUrl: action["homepageUrl"]?.legacyString?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
-            returnUrl,
-            action["agentManifestUrl"]?.legacyString?
+            returnUrl: returnUrl,
+            agentManifestUrl: action["agentManifestUrl"]?.legacyString?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
-            setupUrl,
-            setupDescription,
-            rawScopes,
-            resolved
+            setupUrl: setupUrl,
+            setupDescription: setupDescription,
+            scopes: rawScopes,
+            target: resolved
         )
         let metadata = cards.integrationRegisterCard(messageId: messageId)
-            .map { dependencies.integrationRegisterMetadata($0) } ?? "null"
+            .map { metadataProjection.integrationRegister($0) } ?? "null"
         return ActionCardPrepareResponse(messageId: messageId, metadataJSON: metadata)
     }
 
@@ -766,7 +749,7 @@ public struct ActionCardIntegrationRegisterService: Sendable {
         if card.state == "executed" {
             return ActionCardExecuteResponse(
                 messageId: card.messageId,
-                metadataJSON: dependencies.marketplaceInstallMetadata(card)
+                metadataJSON: metadataProjection.marketplaceInstall(card)
             )
         }
         guard let client = dependencies.marketplaceInstallableClient(card.clientRecordId),
@@ -823,7 +806,7 @@ public struct ActionCardIntegrationRegisterService: Sendable {
         }
         return ActionCardExecuteResponse(
             messageId: card.messageId,
-            metadataJSON: dependencies.marketplaceInstallMetadata(updated)
+            metadataJSON: metadataProjection.marketplaceInstall(updated)
         )
     }
 
@@ -848,7 +831,7 @@ public struct ActionCardIntegrationRegisterService: Sendable {
         if card.state == "executed" {
             return ActionCardExecuteResponse(
                 messageId: card.messageId,
-                metadataJSON: dependencies.integrationRegisterMetadata(card)
+                metadataJSON: metadataProjection.integrationRegister(card)
             )
         }
         guard let agent = oauth.agentRuntimeInfo(id: card.agentId), !agent.deleted else {
@@ -894,15 +877,99 @@ public struct ActionCardIntegrationRegisterService: Sendable {
         }
         return ActionCardExecuteResponse(
             messageId: card.messageId,
-            metadataJSON: dependencies.integrationRegisterMetadata(updated)
+            metadataJSON: metadataProjection.integrationRegister(updated)
         )
     }
 
     // MARK: - Shared action-card policy
 
-    /// The live server name an action-card metadata projection publishes.
-    func actionCardServerName(_ serverId: String) -> String {
-        oauth.serverProfile(id: serverId)?.name ?? "this Server"
+    /// The card metadata projections (`kind: "action-card"`).
+    var metadataProjection: ActionCardMetadataProjection {
+        ActionCardMetadataProjection(cards: cards, oauth: oauth, now: now)
+    }
+
+    /// Resolves a `#channel` target to the local carrier and its storage
+    /// channel: a live named channel on the server that the agent can post to
+    /// (a plain channel, or a private/joint one the agent belongs to). The
+    /// storage channel is the joint canonical one when the local channel is a
+    /// joint projection.
+    func actionCardTarget(
+        serverId: String,
+        agentId: String,
+        target: String
+    ) -> (local: String, storage: String)? {
+        guard target.hasPrefix("#") else { return nil }
+        let name = String(target.dropFirst())
+        let snapshot = channels.state
+        var local: String?
+        for (id, channel) in snapshot.postableChannels {
+            guard channel.serverId == serverId, channel.name == name, channel.deletedAt == nil,
+                  channel.kind == "channel" || channel.kind == "private" || channel.kind == "joint"
+            else { continue }
+            if channel.kind != "channel",
+               !channel.memberIds.contains(agentId),
+               !oauth.channelAgentIds(channelId: id).contains(agentId) {
+                continue
+            }
+            local = id
+            break
+        }
+        let storage = local.flatMap { id in
+            snapshot.jointProjections.first { $0.localChannelId == id }?.canonicalChannelId
+        } ?? local
+        guard let local, let storage else { return nil }
+        return (local, storage)
+    }
+
+    /// Creates the carrier message and the prepared `integration:register_app`
+    /// card. The card is stored first so any reader that can see the carrier
+    /// message also sees its card (the legacy append and card write were one
+    /// directory-lock section).
+    func prepareIntegrationRegisterCard(
+        serverId: String,
+        agent: OAuthLedger.AgentRuntimeInfo,
+        name: String,
+        clientKey: String?,
+        homepageUrl: String?,
+        returnUrl: String,
+        agentManifestUrl: String?,
+        setupUrl: String?,
+        setupDescription: String?,
+        scopes: [String],
+        target: (local: String, storage: String)
+    ) -> String {
+        let messageId = makeId()
+        let agentName = agent.displayName.isEmpty ? agent.name : agent.displayName
+        cards.insertIntegrationRegisterCard(IntegrationRegisterCard(
+            messageId: messageId,
+            serverId: serverId,
+            agentId: agent.id,
+            agentName: agentName,
+            storageChannelId: target.storage,
+            localCarrierChannelId: target.local,
+            name: name,
+            clientKey: clientKey,
+            homepageUrl: homepageUrl,
+            returnUrl: returnUrl,
+            agentManifestUrl: agentManifestUrl,
+            setupUrl: setupUrl,
+            setupDescription: setupDescription,
+            scopes: scopes,
+            state: "prepared",
+            executedByUserId: nil,
+            resultJSON: nil
+        ))
+        _ = dependencies.appendHumanMessage(StoredHumanMessage(
+            id: messageId,
+            channelId: target.storage,
+            senderId: agent.id,
+            content: "Operation: register Login with Raft app \(name) (\(clientKey ?? "auto-generated client key"))",
+            randomId: nil,
+            messageType: "chat",
+            senderType: "agent",
+            actionKind: "action-card"
+        ))
+        return messageId
     }
 
     /// The write policy without an HTTP reply: owner/admin or a carrier-channel

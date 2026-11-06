@@ -38,7 +38,6 @@ Sources/RaftHTTP/PublicSearchServiceAccess.swift	2
 Sources/RaftHTTP/PublicServerDirectory.swift	1
 Sources/RaftHTTP/PublicVisits.swift	1
 Sources/RaftHTTP/RouteError.swift	1
-Sources/RaftHTTP/Services/FeedbackService.swift	2
 Sources/RaftHTTP/Stores/AgentsRuntimeStore.swift	1
 Sources/RaftHTTP/Stores/AuthProfileStore.swift	1
 Sources/RaftHTTP/Stores/FeedbackStore.swift	1

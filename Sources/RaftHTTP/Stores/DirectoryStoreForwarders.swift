@@ -86,9 +86,6 @@ extension EmailLoginDirectory {
 
     // Rows for the agent-reminder and product-feedback surface live in `FeedbackStore`.
     var agentReminderSurfaceChannels: [String: String] { get { feedbackStore.agentReminderSurfaceChannels } set { feedbackStore.agentReminderSurfaceChannels = newValue } }
-    var productFeedbackReporterSessionCache: [String: (token: String, expiresAt: Date)] { get { feedbackStore.productFeedbackReporterSessionCache } set { feedbackStore.productFeedbackReporterSessionCache = newValue } }
-    var productFeedbackRouteBindingSuccesses: [String: Date] { get { feedbackStore.productFeedbackRouteBindingSuccesses } set { feedbackStore.productFeedbackRouteBindingSuccesses = newValue } }
-    var productFeedbackRouteCommitments: [String: Data] { get { feedbackStore.productFeedbackRouteCommitments } set { feedbackStore.productFeedbackRouteCommitments = newValue } }
     var productFeedbackRouteVerifiedCommitments: Set<String> { get { feedbackStore.productFeedbackRouteVerifiedCommitments } set { feedbackStore.productFeedbackRouteVerifiedCommitments = newValue } }
     var feedbackLocatorRecords: [FeedbackLocatorRecord] { get { feedbackStore.feedbackLocatorRecords } set { feedbackStore.feedbackLocatorRecords = newValue } }
 
@@ -545,43 +542,6 @@ extension EmailLoginDirectory {
         set { messagesAndThreadsStore.realtimeEmitterStorage = newValue }
     }
 
-    // MARK: - Feedback transport configuration (FeedbackStore)
-
-    public var handsFeedbackUpstreamHandler: ((URLRequest) -> (status: Int, headers: [String: String], body: Data))? {
-        get { feedbackStore.handsFeedbackUpstreamHandler }
-        set { feedbackStore.handsFeedbackUpstreamHandler = newValue }
-    }
-
-    var handsConversationAppTokenOverride: String? {
-        get { feedbackStore.handsConversationAppTokenOverride }
-        set { feedbackStore.handsConversationAppTokenOverride = newValue }
-    }
-
-    var handsFeedbackBaseURLOverride: String? {
-        get { feedbackStore.handsFeedbackBaseURLOverride }
-        set { feedbackStore.handsFeedbackBaseURLOverride = newValue }
-    }
-
-    var handsFeedbackAppIdOverride: String? {
-        get { feedbackStore.handsFeedbackAppIdOverride }
-        set { feedbackStore.handsFeedbackAppIdOverride = newValue }
-    }
-
-    var handsFeedbackAppSlugOverride: String? {
-        get { feedbackStore.handsFeedbackAppSlugOverride }
-        set { feedbackStore.handsFeedbackAppSlugOverride = newValue }
-    }
-
-    var handsFeedbackAppTokenOverride: String? {
-        get { feedbackStore.handsFeedbackAppTokenOverride }
-        set { feedbackStore.handsFeedbackAppTokenOverride = newValue }
-    }
-
-    public var handsFeedbackConfigured: Bool {
-        get { feedbackStore.handsFeedbackConfigured }
-        set { feedbackStore.handsFeedbackConfigured = newValue }
-    }
-
 }
 
 // MARK: - Store-backed accessors
@@ -589,16 +549,6 @@ extension EmailLoginDirectory {
 /// Directory-level accessors for store properties that production services read
 /// and write. Each forwards to the domain store property of the same name.
 extension EmailLoginDirectory {
-    var handsConversationSessionEnabled: Bool? {
-        get { authProfileStore.handsConversationSessionEnabled }
-        set { authProfileStore.handsConversationSessionEnabled = newValue }
-    }
-
-    var handsFeedbackWarningSink: ((String) -> Void)? {
-        get { authProfileStore.handsFeedbackWarningSink }
-        set { authProfileStore.handsFeedbackWarningSink = newValue }
-    }
-
     var experimentalSurfacesDisabledOverride: Bool? {
         get { authProfileStore.experimentalSurfacesDisabledOverride }
         set { authProfileStore.experimentalSurfacesDisabledOverride = newValue }
@@ -634,13 +584,4 @@ extension EmailLoginDirectory {
         set { machinesAndComputersStore.latestComputerRelease = newValue }
     }
 
-    var handsFeedbackAppsJSON: String? {
-        get { feedbackStore.handsFeedbackAppsJSON }
-        set { feedbackStore.handsFeedbackAppsJSON = newValue }
-    }
-
-    var handsFeedbackLegacyEnvironment: [String: String]? {
-        get { feedbackStore.handsFeedbackLegacyEnvironment }
-        set { feedbackStore.handsFeedbackLegacyEnvironment = newValue }
-    }
 }

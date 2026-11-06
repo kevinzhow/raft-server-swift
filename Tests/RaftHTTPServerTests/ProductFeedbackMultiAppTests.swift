@@ -158,7 +158,7 @@ struct ProductFeedbackMultiAppTests {
     }
 
     private func enableMultiApp(_ accounts: EmailLoginDirectory) {
-        accounts.createFeatureFlagForTesting(key: EmailLoginDirectory.productFeedbackMultiAppFlag, defaultEnabled: true, enabled: true)
+        accounts.createFeatureFlagForTesting(key: FeedbackService.productFeedbackMultiAppFlag, defaultEnabled: true, enabled: true)
     }
 
     // MARK: - HTTP wiring

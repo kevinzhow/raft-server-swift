@@ -188,11 +188,6 @@ struct AgentInboxRow {
         var joinedAt: Date
     }
 
-enum AgentTaskAuthResult {
-        case ok(agentId: String, serverId: String)
-        case refused(HTTPReply)
-    }
-
 struct AgentChannelCardSnapshot {
         let id: String
         let name: String
