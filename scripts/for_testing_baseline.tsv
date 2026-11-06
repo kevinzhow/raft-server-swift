@@ -11,13 +11,9 @@ Sources/RaftHTTP/Services/AgentPrivateSurfaceService.swift	7
 Sources/RaftHTTP/Services/AgentSendDeliveryService.swift	2
 Sources/RaftHTTP/Services/AgentsLifecycleService.swift	9
 Sources/RaftHTTP/Services/AttachmentsAndNotificationsService.swift	9
-Sources/RaftHTTP/Services/AuthCoreService.swift	6
-Sources/RaftHTTP/Services/AuthIdentitiesService.swift	4
 Sources/RaftHTTP/Services/ComputersFleetService.swift	9
 Sources/RaftHTTP/Services/FeedbackLocatorService.swift	2
 Sources/RaftHTTP/Services/FeedbackService.swift	6
-Sources/RaftHTTP/Services/HumanMessageCreateService.swift	1
-Sources/RaftHTTP/Services/InboxAndWakeService.swift	17
 Sources/RaftHTTP/Services/JoinLinksAndInvitesService.swift	4
 Sources/RaftHTTP/Services/MachinesAndHostedRuntimeService.swift	9
 Sources/RaftHTTP/Services/ManagedMCPAgentCatalogService.swift	17
@@ -25,8 +21,6 @@ Sources/RaftHTTP/Services/ManagedMCPAssignmentsService.swift	2
 Sources/RaftHTTP/Services/ManagedMCPControlPlaneService.swift	2
 Sources/RaftHTTP/Services/ManagedMCPOAuthService.swift	9
 Sources/RaftHTTP/Services/ManagedMCPToolExecutionService.swift	9
-Sources/RaftHTTP/Services/MessageSendService.swift	6
-Sources/RaftHTTP/Services/OAuthFlowsService.swift	4
 Sources/RaftHTTP/Services/ProfileAndChannelFilesService.swift	10
 Sources/RaftHTTP/Services/ReactionsRealtimeService.swift	7
 Sources/RaftHTTP/Services/RuntimeFormsAndProbesService.swift	14
