@@ -19,6 +19,27 @@ public struct ComputersFleetService: Sendable {
 
 extension EmailLoginDirectory {
 
+    /// Exact key match wins, then a revoked row with the same 16-character
+    /// prefix, then a live row whose key does not verify, then absence.
+    public func computerCredential(apiKey: String) -> ComputerCredentialLookup {
+        lock.lock()
+        defer { lock.unlock() }
+        let prefix = String(apiKey.prefix(Self.computerAPIKeyPrefixLength))
+        let candidates = computers.filter {
+            String($0.apiKey.prefix(Self.computerAPIKeyPrefixLength)) == prefix
+        }
+        if let computer = candidates.first(where: { $0.apiKey == apiKey }) {
+            if computer.revokedAt != nil { return .revoked }
+            guard let machineId = computer.machineId,
+                  machines.contains(where: { $0.id == machineId })
+            else { return .machineUnlinked }
+            return .linked(computerId: computer.id, machineId: machineId)
+        }
+        if candidates.contains(where: { $0.revokedAt != nil }) { return .revoked }
+        if !candidates.isEmpty { return .keyMismatch }
+        return .notFound
+    }
+
     public func deleteMachineWorkspace(authorization: String?, serverId: String, machineId: String, directoryName: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

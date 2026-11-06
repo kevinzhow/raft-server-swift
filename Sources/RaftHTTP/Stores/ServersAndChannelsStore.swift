@@ -28,6 +28,10 @@ final class ServersAndChannelsStore: @unchecked Sendable {
         var serverInvites: [(id: String, serverId: String, email: String, role: String, tokenHash: String?)] = []
         var serverSwitcherOrders: [String: (ids: [String], version: Int)] = [:]
         var serverOnboardingSettings: [String: (agentId: String?, greeting: Bool)] = [:]
+        /// Per-member onboarding progress, keyed `serverId\nuserId`. It lives
+        /// beside the per-server rows so one patch updates both in a single
+        /// critical section.
+        var userOnboardingSettings: [String: UserOnboarding] = [:]
         var setupPhases: [String: String] = [:]
         var setupHandoffs: Set<String> = []
         var guestRoleServers: Set<String> = []
@@ -1238,6 +1242,82 @@ final class ServersAndChannelsStore: @unchecked Sendable {
     private static func joinLinkExhausted(_ link: JoinLinkRecord) -> Bool {
         if let maxUses = link.maxUses, link.useCount >= maxUses { return true }
         return false
+    }
+
+    // MARK: - Onboarding settings
+
+    /// One server row plus one member row, read together.
+    struct OnboardingSnapshot {
+        let agentId: String?
+        let greeting: Bool
+        let user: UserOnboarding
+    }
+
+    /// What `PATCH .../onboarding-settings` writes. `serverChange` is applied
+    /// only for an owner or admin; the member row is always written.
+    struct OnboardingPatch {
+        enum Change<Value: Sendable>: Sendable {
+            case keep
+            case set(Value)
+            case clear
+        }
+
+        var isAdmin: Bool
+        var agentId: Change<String> = .keep
+        var greeting: Bool? = nil
+        var reminderOptOut: Bool? = nil
+        var currentStep: Change<String> = .keep
+        /// Wizard step names whose dismissal timestamp is stamped when unset.
+        var dismissedSteps: [String] = []
+    }
+
+    /// The server and member onboarding rows read in one critical section.
+    func onboardingSnapshot(serverId: String, userId: String) -> OnboardingSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        let server = storage.serverOnboardingSettings[serverId] ?? (agentId: nil, greeting: true)
+        let user = storage.userOnboardingSettings["\(serverId)\n\(userId)"] ?? UserOnboarding()
+        return OnboardingSnapshot(agentId: server.agentId, greeting: server.greeting, user: user)
+    }
+
+    /// The whole onboarding patch as one critical section: the server row (for
+    /// an admin) and the member row are read, updated and written together,
+    /// and the stored result is returned so the reply reflects exactly it.
+    func applyOnboardingPatch(
+        serverId: String,
+        userId: String,
+        patch: OnboardingPatch,
+        now: Date
+    ) -> OnboardingSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        var server = storage.serverOnboardingSettings[serverId] ?? (agentId: nil, greeting: true)
+        if patch.isAdmin {
+            switch patch.agentId {
+            case .keep: break
+            case .clear: server.agentId = nil
+            case .set(let agentId): server.agentId = agentId
+            }
+            if let greeting = patch.greeting {
+                server.greeting = greeting
+            }
+            storage.serverOnboardingSettings[serverId] = server
+        }
+        let key = "\(serverId)\n\(userId)"
+        var user = storage.userOnboardingSettings[key] ?? UserOnboarding()
+        if let optOut = patch.reminderOptOut {
+            user.reminderOptOut = optOut
+        }
+        switch patch.currentStep {
+        case .keep: break
+        case .clear: user.currentStep = nil
+        case .set(let step): user.currentStep = step
+        }
+        for step in patch.dismissedSteps where user.dismissed[step] == nil {
+            user.dismissed[step] = now
+        }
+        storage.userOnboardingSettings[key] = user
+        return OnboardingSnapshot(agentId: server.agentId, greeting: server.greeting, user: user)
     }
 }
 

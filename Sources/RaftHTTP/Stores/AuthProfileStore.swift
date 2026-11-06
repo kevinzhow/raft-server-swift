@@ -33,11 +33,10 @@ enum ResetPasswordOutcome: Equatable, Sendable {
 /// rows and returns strong Swift values, never JSON or `HTTPReply`.
 final class AuthProfileStore: @unchecked Sendable {
     /// Profile surface rows that used to be stored inline on
-    /// `EmailLoginDirectory`: timezone history, onboarding progress and the
+    /// `EmailLoginDirectory`: timezone history and the
     /// mobile-app lifecycle email audience.
     struct ProfileState {
         var timezoneObservations: [String: EmailLoginDirectory.TimezoneObservation] = [:]
-        var userOnboardingSettings: [String: UserOnboarding] = [:]
         var mobileAppEmailContactsByKey: [String: EmailLoginDirectory.MobileAppEmailContact] = [:]
         var storedMobileAppEmailJourneys: [EmailLoginDirectory.MobileAppEmailJourney] = []
     }
@@ -343,11 +342,6 @@ final class AuthProfileStore: @unchecked Sendable {
         )
         profile.timezoneObservations[userId] = observation
         return observation
-    }
-
-    var userOnboardingSettings: [String: UserOnboarding] {
-        get { profileState.userOnboardingSettings }
-        set { profileState.userOnboardingSettings = newValue }
     }
 
     var mobileAppEmailContactsByKey: [String: EmailLoginDirectory.MobileAppEmailContact] {

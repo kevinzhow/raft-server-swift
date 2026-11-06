@@ -620,4 +620,27 @@ final class AgentsRuntimeStore: @unchecked Sendable {
         storage.agentChannelPosted.insert(key)
         return true
     }
+
+    // MARK: - Runtime options and workspaces
+
+    /// Whether the `grok` runtime is offered to one Server.
+    func isGrokRuntimeEnabled(serverId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.grokRuntimeServers.contains(serverId)
+    }
+
+    /// The agents bound to one machine, in the store's own iteration order.
+    func agentIds(boundToMachine machineId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.agentMachineIds.filter { $0.value == machineId }.map(\.key)
+    }
+
+    /// The directory status of one agent, if the agent is registered.
+    func agentStatus(agentId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.serverAgents[agentId]?.status
+    }
 }

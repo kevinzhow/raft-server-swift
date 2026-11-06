@@ -410,13 +410,15 @@ public struct AgentsFeature: RouteCollection, Sendable {
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
             ))
         }
-        agents.get(":id", "runtime-form") { request -> Response in
-            var response = routeResponse(services.emailAccounts.agentRuntimeForm(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                agentId: request.parameters.get("id") ?? "",
-                language: request.headers[HTTPField.Name("Accept-Language")!]
-            ))
+        agents.get(":id", "runtime-form") { request async throws -> Response in
+            var response = try await respond {
+                try services.emailAccounts.runtimeFormsAndProbes.agentRuntimeForm(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    agentId: request.parameters.get("id") ?? "",
+                    language: request.headers[HTTPField.Name("Accept-Language")!]
+                )
+            }
             applyRuntimeFormLanguage(&response, language: request.headers[HTTPField.Name("Accept-Language")!])
             return response
         }

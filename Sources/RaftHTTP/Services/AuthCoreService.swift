@@ -1130,4 +1130,13 @@ extension EmailLoginDirectory {
     public var serverMembersAndSidebar: ServerMembersAndSidebarService {
         ServerMembersAndSidebarService(directory: self)
     }
+
+    /// Runtime forms, option sources and probes, runtime account usage, the
+    /// server onboarding/notification settings and machine registration. The
+    /// machine, notification, onboarding and agent rows live in their stores;
+    /// the session lookup, the realtime emitter and `registerMachine` /
+    /// `machineAPIKey` enter as closures (`RuntimeFormsAndProbesDependencies`).
+    public var runtimeFormsAndProbes: RuntimeFormsAndProbesService {
+        RuntimeFormsAndProbesService(directory: self)
+    }
 }

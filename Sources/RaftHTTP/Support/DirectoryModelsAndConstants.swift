@@ -1126,46 +1126,6 @@ extension EmailLoginDirectory {
 
     static let computerAPIKeyPrefixLength = 16
 
-    static let onboardingSteps: Set<String> = [
-        "add-computer", "create-agent", "invite-teammates", "join-community", "notifications",
-    ]
-
-    static let runtimeFormSchemas: [String: String] = [
-        "builtin": "builtin-pi.create.v3",
-        "claude": "claude.create.v1",
-        "codex": "codex.create.v1",
-        "kimi-sdk": "kimi-sdk.create.v1",
-        "cursor": "cursor.create.v1",
-        "opencode": "opencode.create.v1",
-        "pi": "pi.create.v1",
-        "gemini": "gemini.create.v1",
-        "kimi": "kimi.create.v1",
-        "antigravity": "antigravity.create.v1",
-        "grok": "grok.create.v1",
-    ]
-
-    /// Runtimes that still publish a v1 form definition.
-    static let runtimeFormV1Runtimes: Set<String> = ["builtin", "claude", "cursor", "kimi-sdk"]
-
-    /// Runtimes whose released form only exists at protocol v2; v1 clients
-    /// must see them as having no form at all.
-    static let runtimeFormV2Only: Set<String> = [
-        "pi", "opencode", "gemini", "codex", "grok", "antigravity", "kimi",
-    ]
-
-    static let grokBundledModels: [RuntimeModelProbeModel] = [
-        RuntimeModelProbeModel(
-            id: "grok-4.5",
-            label: "Grok 4.5",
-            supportedReasoningEfforts: ["high", "medium", "low"],
-            defaultReasoningEffort: "high"
-        ),
-        RuntimeModelProbeModel(id: "grok-4.6", label: "Grok 4.6"),
-        RuntimeModelProbeModel(id: "grok-composer-2.5-fast", label: "Composer 2.5"),
-    ]
-
-    static let runtimeAccountUsageProviders: Set<String> = ["claude", "codex", "kimi", "grok"]
-
     public static let sharePNGData = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=") ?? Data()
 
     static let timezoneAliases: [String: String] = [

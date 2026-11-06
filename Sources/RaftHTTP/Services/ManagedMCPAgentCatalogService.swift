@@ -19,6 +19,22 @@ public struct ManagedMCPAgentCatalogService: Sendable {
 }
 
 extension EmailLoginDirectory {
+
+    /// Keyed lookup shared by `/daemon/connect` and the legacy machine surface.
+    /// A row that was adopted into a Computer attachment carries its migration
+    /// stamp so the connect handshake refuses the legacy key immediately, with
+    /// no TTL window.
+    public func machineCredential(apiKey: String) -> MachineCredentialIdentity? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let machine = machines.first(where: { $0.apiKey == apiKey }) else { return nil }
+        return MachineCredentialIdentity(
+            machineId: machine.id,
+            serverId: machine.serverId,
+            legacyKeyMigratedAt: machine.legacyKeyMigratedAt
+        )
+    }
+
     func orderedTasks(
         serverId: String,
         userId: String,
