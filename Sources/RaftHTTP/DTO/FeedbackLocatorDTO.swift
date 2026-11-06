@@ -7,28 +7,8 @@ import RaftShared
 // alphabetical (`status, receipt_id, report_id, duplicate` and
 // `error, code, requiredCapability`). Linux `JSONEncoder` writes keyed
 // containers in hash order, so a synthesized `Codable` body would reorder keys
-// between runs. A DTO that adopts `OrderedJSONBody` renders its exact published
-// text; `Sources/RaftHTTPServer/Features/Respond.swift` has one overload for it
-// and every other domain keeps the plain encoder path.
-
-/// A response whose published key order is part of the wire contract.
-///
-/// Adopters are still `Codable` so they can be decoded in tests and reused, but
-/// the bytes a client sees come from `orderedJSONString()`.
-public protocol OrderedJSONBody: Sendable {
-    /// The exact published JSON text, keys in the upstream order.
-    func orderedJSONString() -> String
-}
-
-/// A typed domain failure whose published error object is also byte-ordered.
-///
-/// It refines `DomainError` so a service still throws one typed enum, and
-/// `Respond.swift` gets a projection overload that uses the ordered bytes
-/// instead of the plain `{"error": …}` encoder.
-public protocol OrderedJSONDomainError: DomainError {
-    /// The exact published error JSON text, keys in the upstream order.
-    func orderedJSONString() -> String
-}
+// between runs. Each body is a `JSONBodyConvertible` tree, and
+// `Sources/RaftHTTPServer/Features/Respond.swift` has one overload for it.
 
 // MARK: - Request
 
@@ -65,7 +45,7 @@ public struct FeedbackLocatorIngestRequest: Codable, Sendable, Equatable {
 /// `200` body of `POST /internal/agent-api/feedback-locators`.
 ///
 /// Published order: `status`, `receipt_id`, `report_id`, `duplicate`.
-public struct FeedbackLocatorAcceptedResponse: Codable, Sendable, Equatable, OrderedJSONBody {
+public struct FeedbackLocatorAcceptedResponse: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var status: String
     public var receiptId: String
     public var reportId: String
@@ -85,8 +65,13 @@ public struct FeedbackLocatorAcceptedResponse: Codable, Sendable, Equatable, Ord
         self.duplicate = duplicate
     }
 
-    public func orderedJSONString() -> String {
-        "{\"status\":\(jsonString(status)),\"receipt_id\":\(jsonString(receiptId)),\"report_id\":\(jsonString(reportId)),\"duplicate\":\(duplicate ? "true" : "false")}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("status", status)
+        body.append("receipt_id", receiptId)
+        body.append("report_id", reportId)
+        body.append("duplicate", duplicate)
+        return body.json
     }
 }
 
@@ -94,7 +79,7 @@ public struct FeedbackLocatorAcceptedResponse: Codable, Sendable, Equatable, Ord
 ///
 /// Published order matches the legacy serializer exactly, including the two
 /// nullable route fields and the served-exact array.
-public struct FeedbackLocatorRow: Codable, Sendable, Equatable, OrderedJSONBody {
+public struct FeedbackLocatorRow: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var reportId: String
     public var receiptId: String
     public var capturedAt: String
@@ -147,23 +132,32 @@ public struct FeedbackLocatorRow: Codable, Sendable, Equatable, OrderedJSONBody 
         self.routeTarget = routeTarget
     }
 
-    public func orderedJSONString() -> String {
-        let shas = servedExactSha256.map { jsonString($0) }.joined(separator: ",")
-        let basis = routeBasis.map(jsonString) ?? "null"
-        let target = routeTarget.map(jsonString) ?? "null"
-        return "{\"report_id\":\(jsonString(reportId)),\"receipt_id\":\(jsonString(receiptId)),\"captured_at\":\(jsonString(capturedAt)),\"runtime\":\(jsonString(runtime)),\"native_status\":\(jsonString(nativeStatus)),\"native_lookup_method\":\(jsonString(nativeLookupMethod)),\"native_locator_kind\":\(jsonString(nativeLocatorKind)),\"has_served_exact\":\(hasServedExact ? "true" : "false"),\"served_exact_sha256\":[\(shas)],\"route_basis\":\(basis),\"route_target\":\(target)}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("report_id", reportId)
+        body.append("receipt_id", receiptId)
+        body.append("captured_at", capturedAt)
+        body.append("runtime", runtime)
+        body.append("native_status", nativeStatus)
+        body.append("native_lookup_method", nativeLookupMethod)
+        body.append("native_locator_kind", nativeLocatorKind)
+        body.append("has_served_exact", hasServedExact)
+        body.append("served_exact_sha256", .array(servedExactSha256.map(OrderedJSON.string)))
+        body.append("route_basis", optional: routeBasis)
+        body.append("route_target", optional: routeTarget)
+        return body.json
     }
 }
 
 /// `200` body of `GET /internal/agent-api/feedback-locators`.
-public struct FeedbackLocatorListResponse: Codable, Sendable, Equatable, OrderedJSONBody {
+public struct FeedbackLocatorListResponse: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var locators: [FeedbackLocatorRow]
 
     public init(locators: [FeedbackLocatorRow]) {
         self.locators = locators
     }
 
-    public func orderedJSONString() -> String {
-        "{\"locators\":[" + locators.map { $0.orderedJSONString() }.joined(separator: ",") + "]}"
+    public var jsonBody: OrderedJSON {
+        .object([OrderedJSONField("locators", .array(locators.map(\.jsonBody)))])
     }
 }

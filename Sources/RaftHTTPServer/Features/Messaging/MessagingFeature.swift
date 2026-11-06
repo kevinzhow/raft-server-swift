@@ -228,7 +228,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
         actions.post(":messageId", "mark-executed") { request async throws -> Response in
             let body = (try? await request.content.decode(MarkActionCardExecutedRequest.self))
                 ?? MarkActionCardExecutedRequest()
-            return try respond(errors: ActionCardServiceError.self) {
+            return try await respond {
                 try services.emailAccounts.actionCards.markActionCardExecuted(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -406,7 +406,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
         }
         tasks.post("channel", ":channelId") { request async throws -> Response in
             let body = try await request.bodyText()
-            return try respond {
+            return try await respond {
                 try services.channelMessaging.createChannelTasks(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",

@@ -296,7 +296,7 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         }
 
         providerConnections.delete(":id", "agents", ":agentId") { request async throws -> Response in
-            try respond(errors: ActionCardServiceError.self) {
+            try await respond {
                 try services.emailAccounts.actionCards.detachProviderAgent(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -307,7 +307,7 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         }
 
         providerConnections.delete(":id") { request async throws -> Response in
-            try respond(errors: ActionCardServiceError.self) {
+            try await respond {
                 try services.emailAccounts.actionCards.deleteProviderConnection(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
