@@ -282,4 +282,85 @@ final class MessagesAndThreadsStore: @unchecked Sendable {
         get { state.realtimeEmitterStorage }
         set { state.realtimeEmitterStorage = newValue }
     }
+
+    // MARK: - Socket room membership
+
+    /// Human message rows after `lastSeq`, copied under one lock. The caller
+    /// sorts the page; the store only owns the read.
+    func messagesForResume(afterSeq: Int) -> [StoredHumanMessage] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.humanMessageRows.filter { $0.seq > afterSeq }
+    }
+
+    /// Follow/unfollow keys as one snapshot so the recursive parent-visibility
+    /// check does not take the store lock once per thread.
+    struct ThreadFollowSnapshot {
+        let follows: Set<String>
+        let unfollows: Set<String>
+    }
+
+    func threadFollowSnapshot() -> ThreadFollowSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return ThreadFollowSnapshot(
+            follows: Set(storage.threadFollows.keys),
+            unfollows: Set(storage.threadUnfollows.keys)
+        )
+    }
+
+    /// Removes every follow row for `keys` in one critical section.
+    func removeThreadFollows(keys: [String]) {
+        guard !keys.isEmpty else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        for key in keys {
+            storage.threadFollows.removeValue(forKey: key)
+            storage.threadUnfollows.removeValue(forKey: key)
+            storage.threadFollowStarts.removeValue(forKey: key)
+        }
+    }
+
+    /// Attachment chip counts for one replayed message, in request order.
+    struct AttachmentCommentSummary {
+        let attachmentId: String
+        let commentCount: Int
+    }
+
+    func attachmentCommentSummaries(ids: [String], commentsVisible: Bool) -> [AttachmentCommentSummary] {
+        lock.lock()
+        defer { lock.unlock() }
+        return ids.map { id in
+            AttachmentCommentSummary(
+                attachmentId: id,
+                commentCount: commentsVisible ? (storage.attachmentCommentRecords[id]?.count ?? 0) : 0
+            )
+        }
+    }
+
+    /// Scoped comment chip anchored on `messageId`, as one locked snapshot.
+    struct AttachmentCommentRef {
+        let attachmentId: String
+        let hostMessageId: String
+        let hostChannelId: String
+        let threadChannelId: String?
+    }
+
+    func commentRef(messageId: String) -> AttachmentCommentRef? {
+        lock.lock()
+        defer { lock.unlock() }
+        for (attachmentId, records) in storage.attachmentCommentRecords {
+            guard let record = records.first(where: { $0.id == messageId }),
+                  let hostMessageId = record.hostMessageId,
+                  let hostChannelId = record.hostChannelId
+            else { continue }
+            return AttachmentCommentRef(
+                attachmentId: attachmentId,
+                hostMessageId: hostMessageId,
+                hostChannelId: hostChannelId,
+                threadChannelId: record.threadChannelId
+            )
+        }
+        return nil
+    }
 }

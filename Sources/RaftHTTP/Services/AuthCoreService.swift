@@ -767,6 +767,22 @@ extension EmailLoginDirectory {
         AuthVerificationService(store: authProfileStore)
     }
 
+    /// Socket room membership: connect-time visibility, thread-room
+    /// enumeration, `sync:resume` catch-up and membership revocation. The
+    /// directory supplies the channel/message stores and the OAuth ledger; the
+    /// attachment-comments feature flag is owned by the unmigrated integrations
+    /// domain, so it enters the service as a closure.
+    public var socketMembership: SocketMembershipService {
+        SocketMembershipService(
+            channels: serversAndChannelsStore,
+            messages: messagesAndThreadsStore,
+            oauth: oauth,
+            attachmentCommentsEnabled: { [self] serverId, userId in
+                attachmentCommentsEnabled(serverId: serverId, userId: userId)
+            }
+        )
+    }
+
     public var sessionCount: Int {
         lock.lock()
         defer { lock.unlock() }

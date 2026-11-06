@@ -229,4 +229,73 @@ final class ServersAndChannelsStore: @unchecked Sendable {
         get { state.installedServerApps }
         set { state.installedServerApps = newValue }
     }
+
+    // MARK: - Socket room membership
+
+    /// Read-only view the `sync:resume` visibility rules need: channels and the
+    /// guest-visibility flags observed in the same critical section.
+    struct ChannelReadSnapshot {
+        let channels: [String: PostableChannel]
+        let guestVisibleChannels: [String: Bool]
+    }
+
+    /// Channel ids the guest gate currently marks visible.
+    func guestVisibleChannelIds(_ channelIds: [String]) -> Set<String> {
+        lock.lock()
+        defer { lock.unlock() }
+        return Set(channelIds.filter { storage.guestVisibleChannels[$0] == true })
+    }
+
+    /// One locked snapshot for the viewer-filtered `sync:resume` replay.
+    func channelReadSnapshot() -> ChannelReadSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return ChannelReadSnapshot(
+            channels: storage.postableChannels,
+            guestVisibleChannels: storage.guestVisibleChannels
+        )
+    }
+
+    /// `channel:<id>` plus every child thread room, in one critical section.
+    func channelRoomIds(channelId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        var rooms = ["channel:\(channelId)"]
+        for (id, channel) in storage.postableChannels
+        where channel.kind == "thread" && channel.parentChannelId == channelId {
+            rooms.append("channel:\(id)")
+        }
+        return rooms
+    }
+
+    /// Cascade of a departed server member over the channel rows this store
+    /// owns: every channel loses the member, and thread keys hanging off a
+    /// private/DM parent are returned in the same critical section for the
+    /// thread-follow store to delete.
+    struct MembershipRevocation {
+        let channelIds: [String]
+        let threadKeys: [String]
+    }
+
+    func revokeMembership(serverId: String, userId: String) -> MembershipRevocation {
+        lock.lock()
+        defer { lock.unlock() }
+        let channels = storage.postableChannels
+        var channelIds: [String] = []
+        var threadKeys: [String] = []
+        for (id, channel) in channels where channel.serverId == serverId {
+            channelIds.append(id)
+            storage.postableChannels[id]?.memberIds.remove(userId)
+            // Mirrors `removeMember`: only follows hanging off a private/DM
+            // parent die with the server membership; public-parent follows
+            // survive so the thread stays in Activity after a rejoin.
+            guard channel.kind == "thread",
+                  let parentId = channel.parentChannelId,
+                  let parent = channels[parentId],
+                  parent.kind == "private" || parent.kind == "dm"
+            else { continue }
+            threadKeys.append("\(serverId)\n\(userId)\n\(id)")
+        }
+        return MembershipRevocation(channelIds: channelIds, threadKeys: threadKeys)
+    }
 }

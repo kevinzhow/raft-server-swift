@@ -407,7 +407,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
                 hub.leaveUserRooms(
                     userId: userId,
                     serverId: serverId,
-                    rooms: services.emailAccounts.realtimeChannelRoomIds(channelId: channelId)
+                    rooms: services.emailAccounts.socketMembership.channelRoomIds(channelId: channelId).rooms
                 )
             }
             return routeResponse(reply)
@@ -471,7 +471,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
                 hub.leaveUserRooms(
                     userId: memberId,
                     serverId: serverId,
-                    rooms: services.emailAccounts.realtimeChannelRoomIds(channelId: channelId)
+                    rooms: services.emailAccounts.socketMembership.channelRoomIds(channelId: channelId).rooms
                 )
             }
             return routeResponse(reply)

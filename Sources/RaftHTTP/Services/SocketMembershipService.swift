@@ -1,21 +1,46 @@
-import Crypto
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
+
+/// OAuth-ledger surface the socket membership rules read. The OAuth domain is
+/// not migrated yet, so its ledger is injected behind this small protocol
+/// instead of the service holding `EmailLoginDirectory`.
+protocol SocketMembershipOAuthProviding: Sendable {
+    func memberRole(serverId: String, userId: String) -> String?
+    func visibleChannels(serverId: String, userId: String) -> [SocketChannelVisibility]
+    func channelHumanIds(channelId: String) -> [String]
+    func removeChannelHuman(channelId: String, userId: String)
+}
+
+extension OAuthLedger: SocketMembershipOAuthProviding {
+    func visibleChannels(serverId: String, userId: String) -> [SocketChannelVisibility] {
+        channelsForServer(serverId: serverId, userId: userId).map {
+            SocketChannelVisibility(id: $0.id, name: $0.name, type: $0.type)
+        }
+    }
+}
 
 /// Socket room membership: connect-time visibility, thread-room enumeration,
 /// `sync:resume` catch-up and server-membership resource revocation.
 ///
-/// The directory owns only the stores and locks. Every decision here reads the
-/// ledger through the directory's forwarding accessors so the upstream
-/// visibility rules stay in one place instead of an `EmailLogin+*.swift`
-/// fragment.
-struct SocketMembershipService {
-    let directory: EmailLoginDirectory
+/// The service owns the visibility rules and returns typed DTOs; the channel
+/// and message rows stay in their per-domain stores, each read behind that
+/// store's own lock. It holds no `EmailLoginDirectory` and no lock of its own.
+public struct SocketMembershipService: Sendable {
+    private let channels: ServersAndChannelsStore
+    private let messages: MessagesAndThreadsStore
+    private let oauth: any SocketMembershipOAuthProviding
+    /// Feature-flag gate owned by the not-yet-migrated integrations domain.
+    private let attachmentCommentsEnabled: @Sendable (String, String) -> Bool
 
-    init(directory: EmailLoginDirectory) {
-        self.directory = directory
+    init(
+        channels: ServersAndChannelsStore,
+        messages: MessagesAndThreadsStore,
+        oauth: any SocketMembershipOAuthProviding,
+        attachmentCommentsEnabled: @escaping @Sendable (String, String) -> Bool
+    ) {
+        self.channels = channels
+        self.messages = messages
+        self.oauth = oauth
+        self.attachmentCommentsEnabled = attachmentCommentsEnabled
     }
 
     // MARK: - Socket membership: room visibility, sync:resume, room cleanup
@@ -25,18 +50,21 @@ struct SocketMembershipService {
     /// are followed, not joined at connect. Guests only see guest-visible
     /// regular channels other than `#all`, the same gate the HTTP channel list
     /// applies.
-    func visibleChannelIds(serverId: String, userId: String) -> [String] {
-        guard let role = directory.oauth.memberRole(serverId: serverId, userId: userId) else { return [] }
+    public func visibleChannelIds(serverId: String, userId: String) -> SocketVisibleChannelsDTO {
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return SocketVisibleChannelsDTO(channelIds: [])
+        }
         let isGuest = role == "guest"
+        let candidateChannels = oauth.visibleChannels(serverId: serverId, userId: userId)
+        let guestVisible = isGuest
+            ? channels.guestVisibleChannelIds(candidateChannels.map(\.id))
+            : []
         var ids: [String] = []
-        for channel in directory.oauth.channelsForServer(serverId: serverId, userId: userId) {
+        for channel in candidateChannels {
             switch channel.type {
             case "channel":
                 if isGuest {
-                    directory.lock.lock()
-                    let visible = directory.guestVisibleChannels[channel.id] ?? false
-                    directory.lock.unlock()
-                    guard visible, channel.name != "all" else { continue }
+                    guard guestVisible.contains(channel.id), channel.name != "all" else { continue }
                 }
                 ids.append(channel.id)
             case "private", "dm":
@@ -45,21 +73,14 @@ struct SocketMembershipService {
                 continue
             }
         }
-        return ids
+        return SocketVisibleChannelsDTO(channelIds: ids)
     }
 
     /// `channel:<id>` plus every child thread room. A membership change that
     /// loses the parent channel must also drop existing child-room
     /// subscriptions.
-    func channelRoomIds(channelId: String) -> [String] {
-        directory.lock.lock()
-        defer { directory.lock.unlock() }
-        var rooms = ["channel:\(channelId)"]
-        for (id, channel) in directory.postableChannels
-        where channel.kind == "thread" && channel.parentChannelId == channelId {
-            rooms.append("channel:\(id)")
-        }
-        return rooms
+    public func channelRoomIds(channelId: String) -> SocketChannelRoomsDTO {
+        SocketChannelRoomsDTO(rooms: channels.channelRoomIds(channelId: channelId))
     }
 
     /// Viewer-filtered catch-up for the `sync:resume` socket outlet. Mirrors
@@ -67,87 +88,97 @@ struct SocketMembershipService {
     /// regular channels are server-readable (guests need `guestVisible`),
     /// private/DM channels require membership, and threads require an active
     /// follow plus a readable parent channel. Returns nil without a server role.
-    func syncMessagesPayload(
+    public func syncMessages(
         serverId: String,
         userId: String,
         lastSeq: Int,
         limit: Int
-    ) -> String? {
+    ) -> SocketSyncResumeDTO? {
         guard lastSeq > 0, limit > 0 else { return nil }
-        guard let role = directory.oauth.memberRole(serverId: serverId, userId: userId) else { return nil }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else { return nil }
         let isGuest = role == "guest"
-        let commentsVisible = directory.attachmentCommentsEnabled(serverId: serverId, userId: userId)
-        directory.lock.lock()
+        let commentsVisible = attachmentCommentsEnabled(serverId, userId)
+        let channelState = channels.channelReadSnapshot()
+        let follows = messages.threadFollowSnapshot()
         var readable: [String: Bool] = [:]
-        var rows: [(seq: Int, json: String)] = []
-        for message in directory.humanMessageRows where message.seq > lastSeq {
-            guard let channel = directory.postableChannels[message.channelId],
+        var rows: [(seq: Int, message: SocketSyncMessageDTO)] = []
+        for message in messages.messagesForResume(afterSeq: lastSeq) {
+            guard let channel = channelState.channels[message.channelId],
                   channel.serverId == serverId,
                   channel.deletedAt == nil
             else { continue }
-            guard channelReadableLocked(
+            guard channelReadable(
                 channelId: message.channelId,
                 userId: userId,
                 isGuest: isGuest,
+                channels: channelState.channels,
+                guestVisibleChannels: channelState.guestVisibleChannels,
+                follows: follows,
                 cache: &readable
             ) else { continue }
-            var row = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(message.channelId)),\"seq\":\(message.seq),\"content\":\(jsonString(message.content)),\"attachments\":[\(directory.messageAttachmentsJSONLocked(message.attachmentIds, commentsVisible: commentsVisible))]"
-            if commentsVisible, let commentRef = directory.commentRefJSONLocked(messageId: message.id) {
-                row += ",\"commentRef\":\(commentRef)"
+            let attachments = messages.attachmentCommentSummaries(
+                ids: message.attachmentIds,
+                commentsVisible: commentsVisible
+            ).map { SocketSyncAttachmentDTO(id: $0.attachmentId, commentCount: $0.commentCount) }
+            var commentRef: SocketSyncCommentRefDTO?
+            if commentsVisible, let ref = messages.commentRef(messageId: message.id) {
+                commentRef = SocketSyncCommentRefDTO(
+                    attachmentId: ref.attachmentId,
+                    hostMessageId: ref.hostMessageId,
+                    hostSource: SocketSyncCommentSourceDTO(
+                        type: "channel",
+                        routeKind: "channel",
+                        channelId: ref.hostChannelId,
+                        rootThreadChannelId: ref.threadChannelId
+                    )
+                )
             }
-            rows.append((message.seq, row + "}"))
+            rows.append((message.seq, SocketSyncMessageDTO(
+                id: message.id,
+                channelId: message.channelId,
+                seq: message.seq,
+                content: message.content,
+                attachments: attachments,
+                commentRef: commentRef
+            )))
         }
-        directory.lock.unlock()
         rows.sort { $0.seq < $1.seq }
         let page = rows.prefix(limit)
         let currentSeq = page.last?.seq ?? lastSeq
         let hasMore = rows.count >= limit
-        let body = page.map(\.json).joined(separator: ",")
-        return "{\"messages\":[\(body)],\"currentSeq\":\(currentSeq),\"hasMore\":\(hasMore)}"
+        return SocketSyncResumeDTO(
+            messages: page.map(\.message),
+            currentSeq: currentSeq,
+            hasMore: hasMore
+        )
     }
 
     /// Upstream `serverService.removeMember` cascades resource rows:
     /// private/DM-parent thread follows and channel membership for the
     /// server's channels die with the server membership. Routes call this after
     /// a successful leave/remove so a departed member loses channel access.
-    func revokeServerMembershipResources(serverId: String, userId: String) {
-        directory.lock.lock()
-        var channelIds: [String] = []
-        var threadKeys: [String] = []
-        for (id, channel) in directory.postableChannels where channel.serverId == serverId {
-            channelIds.append(id)
-            directory.postableChannels[id]?.memberIds.remove(userId)
-            // Mirrors `removeMember`: only follows hanging off a private/DM
-            // parent die with the server membership; public-parent follows
-            // survive so the thread stays in Activity after a rejoin.
-            guard channel.kind == "thread",
-                  let parentId = channel.parentChannelId,
-                  let parent = directory.postableChannels[parentId],
-                  parent.kind == "private" || parent.kind == "dm"
-            else { continue }
-            threadKeys.append("\(serverId)\n\(userId)\n\(id)")
-        }
-        for key in threadKeys {
-            directory.threadFollows.removeValue(forKey: key)
-            directory.threadUnfollows.removeValue(forKey: key)
-            directory.threadFollowStarts.removeValue(forKey: key)
-        }
-        directory.lock.unlock()
-        for channelId in channelIds {
-            directory.oauth.removeChannelHuman(channelId: channelId, userId: userId)
+    public func revokeServerMembershipResources(serverId: String, userId: String) {
+        let revocation = channels.revokeMembership(serverId: serverId, userId: userId)
+        messages.removeThreadFollows(keys: revocation.threadKeys)
+        for channelId in revocation.channelIds {
+            oauth.removeChannelHuman(channelId: channelId, userId: userId)
         }
     }
 
-    /// The per-channel read gate used by `sync:resume`. Caller holds the
-    /// directory lock.
-    private func channelReadableLocked(
+    /// The per-channel read gate used by `sync:resume`. Reads one channel
+    /// snapshot and one thread-follow snapshot; no store lock is held while the
+    /// recursion runs.
+    private func channelReadable(
         channelId: String,
         userId: String,
         isGuest: Bool,
+        channels: [String: PostableChannel],
+        guestVisibleChannels: [String: Bool],
+        follows: MessagesAndThreadsStore.ThreadFollowSnapshot,
         cache: inout [String: Bool]
     ) -> Bool {
         if let cached = cache[channelId] { return cached }
-        guard let channel = directory.postableChannels[channelId], channel.deletedAt == nil else {
+        guard let channel = channels[channelId], channel.deletedAt == nil else {
             cache[channelId] = false
             return false
         }
@@ -155,12 +186,15 @@ struct SocketMembershipService {
         switch channel.kind {
         case "thread":
             let key = "\(channel.serverId)\n\(userId)\n\(channelId)"
-            let followed = directory.threadFollows[key] != nil && directory.threadUnfollows[key] == nil
+            let followed = follows.follows.contains(key) && !follows.unfollows.contains(key)
             if followed, let parentId = channel.parentChannelId {
-                readable = channelReadableLocked(
+                readable = channelReadable(
                     channelId: parentId,
                     userId: userId,
                     isGuest: isGuest,
+                    channels: channels,
+                    guestVisibleChannels: guestVisibleChannels,
+                    follows: follows,
                     cache: &cache
                 )
             } else {
@@ -168,45 +202,12 @@ struct SocketMembershipService {
             }
         case "private", "dm":
             readable = channel.memberIds.contains(userId)
-                || directory.oauth.channelHumanIds(channelId: channelId).contains(userId)
+                || oauth.channelHumanIds(channelId: channelId).contains(userId)
         default:
-            readable = !isGuest || ((directory.guestVisibleChannels[channelId] ?? false) && channel.name != "all")
+            readable = !isGuest
+                || ((guestVisibleChannels[channelId] ?? false) && channel.name != "all")
         }
         cache[channelId] = readable
         return readable
-    }
-}
-
-// MARK: - Directory entry points
-
-extension EmailLoginDirectory {
-    /// Channel rooms a socket joins at connect time. See `SocketMembershipService`.
-    public func realtimeVisibleChannelIds(serverId: String, userId: String) -> [String] {
-        SocketMembershipService(directory: self).visibleChannelIds(serverId: serverId, userId: userId)
-    }
-
-    /// `channel:<id>` plus every child thread room.
-    public func realtimeChannelRoomIds(channelId: String) -> [String] {
-        SocketMembershipService(directory: self).channelRoomIds(channelId: channelId)
-    }
-
-    /// Viewer-filtered catch-up for the `sync:resume` socket outlet.
-    public func realtimeSyncMessagesPayload(
-        serverId: String,
-        userId: String,
-        lastSeq: Int,
-        limit: Int
-    ) -> String? {
-        SocketMembershipService(directory: self).syncMessagesPayload(
-            serverId: serverId,
-            userId: userId,
-            lastSeq: lastSeq,
-            limit: limit
-        )
-    }
-
-    /// Revokes a departed member's channel membership and private-parent thread follows.
-    public func revokeServerMembershipResources(serverId: String, userId: String) {
-        SocketMembershipService(directory: self).revokeServerMembershipResources(serverId: serverId, userId: userId)
     }
 }
