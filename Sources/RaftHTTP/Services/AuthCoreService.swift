@@ -91,37 +91,6 @@ extension EmailLoginDirectory {
 
     /// A provider callback already exchanged. The raw code is what `POST /:provider/complete` spends.
 
-    /// `POST /api/auth/pending-link/cancel`. Cancelling twice stays 204.
-    /// The route already decoded `CancelPendingLinkRequest`, so a nil, empty
-    /// or unknown token is a no-op that still answers 204.
-    public func cancelPendingSocialLink(token: String?) -> HTTPReply {
-        if let token {
-            lock.lock()
-            if var pending = pendingSocialLinks[token] {
-                pending.cancelled = true
-                pendingSocialLinks[token] = pending
-            }
-            lock.unlock()
-        }
-        return Self.empty(204)
-    }
-
-    /// `POST /api/auth/forgot-password` side effect: mint a reset token hash for
-    /// a known account. An unknown address stays a silent no-op so the route can
-    /// answer the same acceptance message either way.
-    public func requestPasswordReset(email: String) {
-        guard let userId = userId(forEmail: email) else { return }
-        let token = Self.randomHex(32)
-        lock.lock()
-        authProfileStore.setResetToken(
-            hash: Self.sha256(token),
-            userId: userId,
-            expiresAt: Date().addingTimeInterval(60 * 60)
-        )
-        lock.unlock()
-    }
-
-
     public func addSocialCompletion(
         provider: String,
         code: String,
@@ -765,6 +734,14 @@ extension EmailLoginDirectory {
     /// the directory only supplies the profile store it reads.
     public var authVerification: AuthVerificationService {
         AuthVerificationService(store: authProfileStore)
+    }
+
+    /// Account-profile policy for `POST /api/auth/reset-password`,
+    /// `POST /api/auth/pending-link/cancel` and
+    /// `POST /api/auth/me/timezone-observation`. The feature calls this
+    /// service; the directory only supplies the profile store it reads.
+    public var authProfile: AuthProfileService {
+        AuthProfileService(store: authProfileStore)
     }
 
     public var sessionCount: Int {

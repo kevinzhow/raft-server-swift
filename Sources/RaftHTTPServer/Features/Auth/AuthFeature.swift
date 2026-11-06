@@ -18,6 +18,16 @@ public struct AuthFeature: RouteCollection, Sendable {
         self.services = services
     }
 
+    /// Decodes one typed JSON body even when the client omitted a JSON
+    /// `Content-Type`. The published handlers accepted a raw JSON body before
+    /// the typed migration, so the fallback keeps that behavior without a
+    /// second raw parser in the service.
+    private func jsonBody<T: Decodable>(_ type: T.Type, _ request: Request) async throws -> T? {
+        if let decoded = try? await request.content.decode(type) { return decoded }
+        guard let data = try await request.body.collect() else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
     public func boot(routes: any RoutesBuilder) async throws {
         register(routes: routes)
     }
@@ -36,7 +46,6 @@ public struct AuthFeature: RouteCollection, Sendable {
         let appLogin = auth.grouped("app-login")
         let appLoginRequest = appLogin.grouped("requests", ":requestId")
         let me = auth.grouped("me")
-        let profile = AuthProfileService(emailAccounts: services.emailAccounts)
         let authCore = AuthCoreService(directory: services.emailAccounts)
         let identityService = AuthIdentitiesService(directory: services.emailAccounts)
 
@@ -201,20 +210,18 @@ public struct AuthFeature: RouteCollection, Sendable {
             ))
         }
         auth.post("reset-password") { request async throws -> Response in
-            // Typed bodies go through the profile service; anything that does
-            // not decode keeps the original raw-body path so an untyped client
-            // still gets the upstream validation replies.
-            if let body = try? await request.content.decode(ResetPasswordRequest.self) {
-                return routeResponse(profile.resetPassword(body))
-            }
-            return routeResponse(services.emailAccounts.resetPassword(body: try await request.bodyText()))
+            // The typed body covers the published shape; a body sent without a
+            // JSON Content-Type goes through the same byte decode so the
+            // published validation replies do not depend on the header.
+            let body = (try await jsonBody(ResetPasswordRequest.self, request)) ?? ResetPasswordRequest()
+            return try respond { try services.emailAccounts.authProfile.resetPassword(body) }
         }
         auth.post("pending-link", "cancel") { request async throws -> Response in
             // An empty or malformed body still answers 204, so cancel stays
             // idempotent for every client shape.
             let body = (try? await request.content.decode(CancelPendingLinkRequest.self))
                 ?? CancelPendingLinkRequest()
-            return routeResponse(profile.cancelPendingLink(body))
+            return try respond { services.emailAccounts.authProfile.cancelPendingLink(body) }
         }
         auth.post("login") { request async throws -> Response in
             // A typed body needs both required strings; anything else (missing
@@ -276,10 +283,14 @@ public struct AuthFeature: RouteCollection, Sendable {
             ))
         }
         me.post("timezone-observation") { request async throws -> Response in
-            return routeResponse(services.emailAccounts.observeTimezone(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
+            let body = (try await jsonBody(TimezoneObservationRequest.self, request))
+                ?? TimezoneObservationRequest()
+            return try respond(extraHeaders: ["Cache-Control": "private, no-store"]) {
+                try services.emailAccounts.authProfile.observeTimezone(
+                    authorization: request.headers[.authorization],
+                    body
+                )
+            }
         }
         me.patch { request async throws -> Response in
             return routeResponse(services.emailAccounts.patch(

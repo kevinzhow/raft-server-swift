@@ -12,7 +12,7 @@ Sources/RaftHTTP/Services/AgentSendDeliveryService.swift	12
 Sources/RaftHTTP/Services/AgentsLifecycleService.swift	8
 Sources/RaftHTTP/Services/AttachmentsAndNotificationsService.swift	9
 Sources/RaftHTTP/Services/AuthCoreService.swift	16
-Sources/RaftHTTP/Services/AuthIdentitiesService.swift	9
+Sources/RaftHTTP/Services/AuthIdentitiesService.swift	7
 Sources/RaftHTTP/Services/ChannelMessagingService.swift	1
 Sources/RaftHTTP/Services/ComputersFleetService.swift	14
 Sources/RaftHTTP/Services/FeedbackLocatorService.swift	14
@@ -36,6 +36,6 @@ Sources/RaftHTTP/Services/ReactionsRealtimeService.swift	9
 Sources/RaftHTTP/Services/RuntimeFormsAndProbesService.swift	16
 Sources/RaftHTTP/Services/RuntimeUsageAndAttestationsService.swift	4
 Sources/RaftHTTP/Services/ServerMembersAndSidebarService.swift	11
-Sources/RaftHTTP/Services/ServerProfileAndOrderService.swift	20
+Sources/RaftHTTP/Services/ServerProfileAndOrderService.swift	18
 Sources/RaftHTTP/Services/TasksAndLabsService.swift	18
 Sources/RaftHTTP/Services/ThreadsService.swift	2
