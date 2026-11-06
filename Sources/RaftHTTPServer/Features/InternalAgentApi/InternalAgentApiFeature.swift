@@ -519,16 +519,22 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 body: try await request.bodyText()
             ))
         }
-        agentApi.get("mcp", "tools") { request -> Response in
-            routeResponse(services.emailAccounts.managedMCPToolSnapshot(
-                authorization: request.headers[.authorization]
-            ))
+        agentApi.get("mcp", "tools") { request async throws -> Response in
+            try respond(errors: ActionCardServiceError.self) {
+                try services.emailAccounts.actionCards.managedMCPToolSnapshot(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         agentApi.post("mcp", "call") { request async throws -> Response in
-            routeResponse(services.emailAccounts.callManagedMCPTool(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
+            let body = (try? await request.content.decode(ManagedMCPToolCallRequest.self))
+                ?? ManagedMCPToolCallRequest()
+            return try respond(errors: ActionCardServiceError.self) {
+                try services.emailAccounts.actionCards.callManagedMCPTool(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         agentApi.post("feedback-locators") { request async throws -> Response in
             routeResponse(services.emailAccounts.ingestFeedbackLocator(

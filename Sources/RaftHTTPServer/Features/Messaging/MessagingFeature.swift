@@ -226,12 +226,16 @@ public struct MessagingFeature: RouteCollection, Sendable {
             ))
         }
         actions.post(":messageId", "mark-executed") { request async throws -> Response in
-            routeResponse(services.emailAccounts.markActionCardExecuted(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                messageId: request.parameters.get("messageId") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = (try? await request.content.decode(MarkActionCardExecutedRequest.self))
+                ?? MarkActionCardExecutedRequest()
+            return try respond(errors: ActionCardServiceError.self) {
+                try services.emailAccounts.actionCards.markActionCardExecuted(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    messageId: request.parameters.get("messageId") ?? "",
+                    body: body
+                )
+            }
         }
         messages.get("sync") { request -> Response in
             routeResponse(inbox.syncChannelMessages(

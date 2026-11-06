@@ -18,6 +18,16 @@ public struct ActionCardIntegrationRegisterService: Sendable {
     }
 }
 
+/// The typed outcome of the action-card write policy shared by the execute and
+/// mark-executed routes. The HTTP wrapper below maps it back to the exact
+/// published replies, so the legacy path keeps its bytes.
+enum ActionCardWriteDecision: Sendable, Equatable {
+    case allowed
+    case notMember
+    case forbidden
+    case notFound
+}
+
 extension EmailLoginDirectory {
     static let oauthClientCategories: Set<String> = [
         "AI & Automation", "Communication", "Productivity & Collaboration",
@@ -633,9 +643,11 @@ extension EmailLoginDirectory {
         emitRealtime("channel:\(threadId)", "message:new", "{\"id\":\(jsonString(replyId)),\"channelId\":\(jsonString(threadId)),\"content\":\(jsonString(content))}")
     }
 
-    func actionCardWriteAuthorization(userId: String, card: ActionCardRecord) -> HTTPReply? {
+    /// The write policy without an HTTP reply, for callers that own their own
+    /// error projection (the mark-executed service).
+    func actionCardWriteDecision(userId: String, card: ActionCardRecord) -> ActionCardWriteDecision {
         guard oauth.memberRole(serverId: card.serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            return .notMember
         }
         let role = oauth.memberRole(serverId: card.serverId, userId: userId)
         let allowed = role == "owner" || role == "admin"
@@ -646,10 +658,21 @@ extension EmailLoginDirectory {
             || oauth.channelHumanIds(channelId: card.storageChannelId).contains(userId)
         let closed = channel.map { $0.kind != "channel" } ?? (oauth.channelKind(channelId: card.localCarrierChannelId) != "channel")
         lock.unlock()
-        if allowed || isMember { return nil }
-        return closed
-            ? Self.json(404, "{\"error\":\"Action card not found\",\"code\":\"NOT_FOUND\"}")
-            : Self.json(403, "{\"error\":\"Forbidden\"}")
+        if allowed || isMember { return .allowed }
+        return closed ? .notFound : .forbidden
+    }
+
+    func actionCardWriteAuthorization(userId: String, card: ActionCardRecord) -> HTTPReply? {
+        switch actionCardWriteDecision(userId: userId, card: card) {
+        case .allowed:
+            return nil
+        case .notMember:
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        case .forbidden:
+            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        case .notFound:
+            return Self.json(404, "{\"error\":\"Action card not found\",\"code\":\"NOT_FOUND\"}")
+        }
     }
 
     public func executeActionCard(authorization: String?, serverId: String, messageId: String, body: String) -> HTTPReply {

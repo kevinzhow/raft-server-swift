@@ -19,27 +19,58 @@ struct FeedbackLocatorService {
 
     // MARK: - Credential identity
 
-    func locatorIdentity(
+    /// The credential/capability outcome without an HTTP reply, for callers
+    /// that own their own error projection (the managed-MCP service).
+    ///
+    /// `locatorIdentity` below maps these cases back to the exact published
+    /// refusals, so the feedback-locator routes keep their bytes.
+    enum IdentityResolution: Sendable, Equatable {
+        case success(agentId: String, serverId: String)
+        case missingAuthorization
+        case invalidAccessToken
+        case capabilityNotAuthorized(capability: String)
+        case invalidAgentCredential
+    }
+
+    func identityResolution(
         authorization: String?,
         capability: String
-    ) -> FeedbackLocatorIdentityResult {
+    ) -> IdentityResolution {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return .refused(EmailLoginDirectory.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}"))
+            return .missingAuthorization
         }
         let token = String(authorization.dropFirst("Bearer ".count))
         directory.lock.lock()
         let credential = directory.agentCredentials[token]
         directory.lock.unlock()
         guard let credential, credential.revokedAt == nil else {
-            return .refused(EmailLoginDirectory.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
+            return .invalidAccessToken
         }
         guard credential.scopes.contains(capability) else {
-            return .refused(EmailLoginDirectory.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\",\"requiredCapability\":\(jsonString(capability))}"))
+            return .capabilityNotAuthorized(capability: capability)
         }
         guard let agent = directory.oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else {
-            return .refused(EmailLoginDirectory.json(401, "{\"error\":\"Invalid agent credential\",\"code\":\"auth_required\"}"))
+            return .invalidAgentCredential
         }
         return .success(agentId: credential.agentId, serverId: agent.serverId)
+    }
+
+    func locatorIdentity(
+        authorization: String?,
+        capability: String
+    ) -> FeedbackLocatorIdentityResult {
+        switch identityResolution(authorization: authorization, capability: capability) {
+        case .success(let agentId, let serverId):
+            return .success(agentId: agentId, serverId: serverId)
+        case .missingAuthorization:
+            return .refused(EmailLoginDirectory.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}"))
+        case .invalidAccessToken:
+            return .refused(EmailLoginDirectory.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
+        case .capabilityNotAuthorized(let capability):
+            return .refused(EmailLoginDirectory.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\",\"requiredCapability\":\(jsonString(capability))}"))
+        case .invalidAgentCredential:
+            return .refused(EmailLoginDirectory.json(401, "{\"error\":\"Invalid agent credential\",\"code\":\"auth_required\"}"))
+        }
     }
 
     func failure(_ status: Int, _ reason: String) -> HTTPReply {
