@@ -39,18 +39,20 @@ struct TranslationFeature: RouteCollection {
             }
         }
         publicServer.post("message-translations:batch") { request async throws -> Response in
-            let client = request.remoteAddress?.host ?? "unknown"
-            if !services.publicTranslationBudget.allow(ip: client) {
-                return routeResponse(PublicTranslations.tooMany())
-            }
-            let slug = request.parameters.get("slug") ?? ""
-            return routeResponse(PublicTranslations.reply(
-                body: try await request.bodyText(),
-                gate: services.publicVisits?.translationGate(slug: slug),
-                translator: services.publicVisits.map { visits in
-                    { ids, target in visits.publicTranslationResults(slug: slug, targetLanguage: target, messageIds: ids) }
+            try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
+                let client = request.remoteAddress?.host ?? "unknown"
+                if !services.publicTranslationBudget.allow(ip: client) {
+                    throw PublicTranslations.tooMany()
                 }
-            ))
+                let slug = request.parameters.get("slug") ?? ""
+                return try PublicTranslations.reply(
+                    body: try await request.bodyText(),
+                    gate: services.publicVisits?.translationGate(slug: slug),
+                    translator: services.publicVisits.map { visits in
+                        { ids, target in visits.publicTranslationResults(slug: slug, targetLanguage: target, messageIds: ids) }
+                    }
+                )
+            }
         }
     }
 }

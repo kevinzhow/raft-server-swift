@@ -177,7 +177,7 @@ public struct ActionCardExecuteService: Sendable {
               ),
               let taskNumber = body.taskNumber,
               let status = body.status,
-              EmailLoginDirectory.validTaskStatuses.contains(status)
+              TaskCatalogPolicy.validTaskStatuses.contains(status)
         else {
             throw ActionCardExecuteError.invalidTaskStatus
         }
@@ -502,7 +502,7 @@ public struct ActionCardExecuteService: Sendable {
                     let reason = boundarySource == "none" || boundarySource == "thread_parent"
                         ? "server_first_touch_context"
                         : "server_stale_model_boundary"
-                    let producerFactId = EmailLoginDirectory.freshnessDecisionProducerFactId(
+                    let producerFactId = AgentFreshnessIdentity.freshnessDecisionProducerFactId(
                         agentId: identity.agentId,
                         target: trimmed,
                         reason: reason,
@@ -591,7 +591,7 @@ public struct ActionCardExecuteService: Sendable {
             }
 
             let typedMentions = body.mentions
-            if v2, EmailLoginDirectory.mentionBindingConflict(typedMentions) {
+            if v2, MessageMentionRules.mentionBindingConflict(typedMentions) {
                 throw AgentSendError.mentionBindingConflict
             }
             let mentionResolution = dependencies.resolvedMentions(
@@ -871,7 +871,7 @@ public struct ActionCardExecuteService: Sendable {
         senderAgentId: String,
         messageId: String
     ) -> [String] {
-        let handles = EmailLoginDirectory.mentionHandlesOutsideCode(content)
+        let handles = MessageMentionRules.mentionHandlesOutsideCode(content)
         guard !handles.isEmpty else { return [] }
         var typedByName: [String: (type: String, id: String)] = [:]
         for mention in typedMentions {
@@ -889,7 +889,7 @@ public struct ActionCardExecuteService: Sendable {
                     if !serverAgents.contains(where: { $0.id == typed.id }) { continue }
                     if v2 { continue }
                     if !channelAgents.contains(typed.id) {
-                        pending.append(EmailLoginDirectory.pendingMentionActionJSON(
+                        pending.append(MessageMentionRules.pendingMentionActionJSON(
                             messageId: messageId,
                             handle: handle,
                             avatarUrl: oauth.agentRuntimeInfo(id: typed.id)?.avatarUrl
@@ -902,7 +902,7 @@ public struct ActionCardExecuteService: Sendable {
             if let agent = serverAgents.first(where: { $0.name == handle }) {
                 if v2 { continue }
                 if !channelAgents.contains(agent.id) {
-                    pending.append(EmailLoginDirectory.pendingMentionActionJSON(
+                    pending.append(MessageMentionRules.pendingMentionActionJSON(
                         messageId: messageId,
                         handle: handle,
                         avatarUrl: agent.avatarUrl

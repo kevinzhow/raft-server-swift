@@ -67,8 +67,8 @@ public struct AuthVerificationService: Sendable {
     init(
         store: AuthProfileStore,
         now: @escaping @Sendable () -> Date = { Date() },
-        makeToken: @escaping @Sendable () -> String = { EmailLoginDirectory.randomHex(32) },
-        hashToken: @escaping @Sendable (String) -> String = { EmailLoginDirectory.sha256($0) }
+        makeToken: @escaping @Sendable () -> String = { AuthTokenCodec.randomHex(32) },
+        hashToken: @escaping @Sendable (String) -> String = { AuthTokenCodec.sha256($0) }
     ) {
         self.store = store
         self.now = now

@@ -2069,3 +2069,13 @@ RFC 074 personal assistant：
 - `Tests/RaftHTTPServerTests/SocketMembershipRevocationTests.swift` 以黑盒 socket + HTTP 锁定访客可见性：guest 仅收到 `guestVisible` 且非 `#all` 常规频道的 live `message:new` / `task:*` 帧，hidden 频道即使显式 `join:channel` 也不可达；`sync:resume` 只回放可见频道与可见 parent 下已 follow 的 thread，hidden 频道及其 thread 被过滤（断言同一响应内的 `messages` 集合）。
 - 成员变更回收房间：private channel 成员移除、`POST /api/channels/:id/leave`、server 成员移除/离开成功后，`leaveUserRooms` 取消该用户的 `channel:<id>` 及同 parent 的全部 thread 房间；HTTP 已拒绝的成员不再收到旧 socket 广播，server 成员移除仍先发 `server:membership-removed` 再关闭连接。
 - 接线：`RealtimeAuthorizing` 新增 `syncResumePayload` 默认 nil seam，`LedgerRealtimeAuth` 走 `realtimeSyncMessagesPayload`（`socketResumeLimit = 500`、`currentSeq`/`hasMore`）；`realtimeVisibleChannelIds` 统一 channel 可见性；`revokeServerMembershipResources` 在 server 离开/移除后级联清理 channel membership，并只删除 private/DM parent 的 thread follows（public parent 的 follow 保留，与 `ThreadRemovalScopeTests` 一致）。
+
+### Public、OAuth 与消息输出的字节兼容回归
+
+- Public release notes 的明细与列表保留既有字段顺序、UTF-8 Content-Length、当前 revision 的 entries 与正文 SHA-256 ETag；匹配 If-None-Match 时 304 空体、Content-Length 0，保留 ETag/缓存/robots 头且不新增 Content-Type。
+- Public search 的正常、错误与已填充 server/channel/thread 页面：HEAD 和 GET 状态、Content-Type、缓存策略一致；HEAD 正文为空，Content-Length 保留对应 GET 表示的字节长度。公开消息与附件投影不泄露 actorId、storageKey 等私有字段。
+- Public settings 的重复 JSON 键取最后值，原 Bool 桥接继续接受数字 0/1（含 0.0/1.0）而拒绝 2；权限拒绝先于字段校验。Release cursor 继续接受原空白/未知字段和最后一组重复值；公共翻译继续过滤异构 messageIds 并使用最后一个 targetLanguage。
+- OAuth discovery、JWKS、token/identity、userinfo/serverinfo 与各类失败保留有序字节、null/省略和各自缓存头。请求重复键仍取最后值；Agent event 的数组 payload、超出 Int64 范围的正整数及其排序字节指纹不经过有损数值转换，幂等重放不产生新的 event。
+- 各 Feature 的非法 JSON、错误 Content-Type、空白/空 body 与宽松字段解码保留原鉴权优先级、状态、正文与头；统一解码 helper 不把这些策略统一为另一种行为。
+- 人类发消息时，HTTP ack 与实际 `message:new` 的 attachment 顺序都等于请求选择顺序；相同 randomId 与正文重放返回原消息 id 和附件列表，不发送第二个 live event。该断言观察真实 emitter，不再读取 recorded-event 旁路。
+- Runtime config 的存储、归一化、provider-key 合并与脱敏保持 Foundation 的排序和数值字节，包括 Int64 边界、UInt64 大正数、精细小数、斜杠、布尔/0/1、重复键及嵌套数值；移除输入兼容序列化器中的有损 Int64 转换。

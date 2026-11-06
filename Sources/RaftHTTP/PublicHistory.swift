@@ -191,44 +191,47 @@ public struct PublicMentionDirectory: Sendable {
     public static let empty = PublicMentionDirectory()
 }
 
+public struct PublicHistoryResponse: JSONBodyConvertible {
+    public let messages: [PublicHistoryMessage]
+    public let serverId: String
+    public let mentions: PublicMentionDirectory
+    public var jsonBody: OrderedJSON {
+        PublicHistoryProjection.messagesBody(messages, serverId: serverId, mentions: mentions)
+    }
+}
+
 enum PublicHistoryProjection {
-    static func messagesJSON(
+    static func messagesBody(
         _ messages: [PublicHistoryMessage],
         serverId: String,
         mentions directory: PublicMentionDirectory = .empty
-    ) -> String {
-        let rows = messages.map { messageJSON($0, serverId: serverId, mentions: directory) }.joined(separator: ",")
-        return "{\"messages\":[\(rows)]}"
+    ) -> OrderedJSON {
+        .object([.init("messages", .array(messages.map {
+            messageBody($0, serverId: serverId, mentions: directory)
+        }))])
     }
 
-    static func messageJSON(
+    static func messageBody(
         _ message: PublicHistoryMessage,
         serverId: String,
         mentions directory: PublicMentionDirectory = .empty
-    ) -> String {
+    ) -> OrderedJSON {
         let replies = message.replies.sorted { $0.seq < $1.seq }
-        let preview = replies.suffix(3)
-        let lastReplyAt = replies.last.map { jsonString($0.createdAt) } ?? "null"
-        let threadId = message.threadId.map { jsonString($0) } ?? "null"
-        let latest = preview.map { replyJSON($0, serverId: serverId) }.joined(separator: ",")
-        let attachments = message.attachments.map(attachmentJSON).joined(separator: ",")
-        let mentions = visibleMentions(message, directory: directory).map(mentionJSON).joined(separator: ",")
-        let reactions = groupedReactions(message.reactions).map(reactionJSON).joined(separator: ",")
-        return "{"
-            + "\"id\":\(jsonString(message.id)),"
-            + "\"senderType\":\(jsonString(message.senderType)),"
-            + "\"sender\":\(senderJSON(message.sender, type: message.senderType, serverId: serverId)),"
-            + "\"messageType\":\(jsonString(message.messageType)),"
-            + "\"content\":\(jsonString(message.content)),"
-            + "\"createdAt\":\(jsonString(message.createdAt)),"
-            + "\"attachments\":[\(attachments)],"
-            + "\"mentions\":[\(mentions)],"
-            + "\"reactions\":[\(reactions)],"
-            + "\"threadId\":\(threadId),"
-            + "\"replyCount\":\(replies.count),"
-            + "\"lastReplyAt\":\(lastReplyAt),"
-            + "\"latestReplies\":[\(latest)]"
-            + "}"
+        return .object([
+            .init("id", message.id),
+            .init("senderType", message.senderType),
+            .init("sender", senderBody(message.sender, type: message.senderType, serverId: serverId)),
+            .init("messageType", message.messageType),
+            .init("content", message.content),
+            .init("createdAt", message.createdAt),
+            .init("attachments", .array(message.attachments.map(attachmentBody))),
+            .init("mentions", .array(visibleMentions(message, directory: directory).map(mentionBody))),
+            .init("reactions", .array(groupedReactions(message.reactions).map(reactionBody))),
+            .init("threadId", optional: message.threadId),
+            .init("replyCount", replies.count),
+            .init("lastReplyAt", optional: replies.last?.createdAt),
+            .init("latestReplies", .array(replies.suffix(3).map { replyBody($0, serverId: serverId) })),
+        ])
     }
 
     /// Stored facts whose token is still in the content, then typed `@name`s that name a current member or agent.
@@ -329,21 +332,23 @@ enum PublicHistoryProjection {
         }.map { ($0, count[$0] ?? 0) }
     }
 
-    private static func attachmentJSON(_ item: PublicHistoryAttachment) -> String {
-        let filename = normalizeFilename(item.filename)
-        let mime = resolveMime(item.mimeType)
-        let width = item.width.map(String.init) ?? "null"
-        let height = item.height.map(String.init) ?? "null"
-        return "{\"id\":\(jsonString(item.id)),\"filename\":\(jsonString(filename)),\"mimeType\":\(jsonString(mime)),\"sizeBytes\":\(item.sizeBytes),\"width\":\(width),\"height\":\(height)}"
+    private static func attachmentBody(_ item: PublicHistoryAttachment) -> OrderedJSON {
+        .object([
+            .init("id", item.id), .init("filename", normalizeFilename(item.filename)),
+            .init("mimeType", resolveMime(item.mimeType)), .init("sizeBytes", item.sizeBytes),
+            .init("width", optional: item.width), .init("height", optional: item.height),
+        ])
     }
 
-    private static func mentionJSON(_ item: PublicHistoryMention) -> String {
-        let display = item.displayName.isEmpty ? item.name : item.displayName
-        return "{\"type\":\(jsonString(item.type)),\"name\":\(jsonString(item.name)),\"displayName\":\(jsonString(display))}"
+    private static func mentionBody(_ item: PublicHistoryMention) -> OrderedJSON {
+        .object([
+            .init("type", item.type), .init("name", item.name),
+            .init("displayName", item.displayName.isEmpty ? item.name : item.displayName),
+        ])
     }
 
-    private static func reactionJSON(_ item: (emoji: String, count: Int)) -> String {
-        "{\"emoji\":\(jsonString(item.emoji)),\"count\":\(item.count)}"
+    private static func reactionBody(_ item: (emoji: String, count: Int)) -> OrderedJSON {
+        .object([.init("emoji", item.emoji), .init("count", item.count)])
     }
 
     /// ASCII names pass through. A non-ASCII name is left unchanged until a test needs the latin1 repair.
@@ -392,19 +397,14 @@ enum PublicHistoryProjection {
         }
     }
 
-    static func replyJSON(_ reply: PublicHistoryReply, serverId: String) -> String {
-        let avatar = avatarURL(reply.sender, type: reply.senderType, serverId: serverId)
-        let avatarJSON = avatar.map { jsonString($0) } ?? "null"
-        let name = senderName(reply.sender, type: reply.senderType, serverId: serverId)
-        return "{"
-            + "\"messageId\":\(jsonString(reply.id)),"
-            + "\"seq\":\(reply.seq),"
-            + "\"preview\":\(jsonString(reply.content)),"
-            + "\"senderType\":\(jsonString(reply.senderType)),"
-            + "\"senderName\":\(jsonString(name)),"
-            + "\"senderAvatarUrl\":\(avatarJSON),"
-            + "\"createdAt\":\(jsonString(reply.createdAt))"
-            + "}"
+    static func replyBody(_ reply: PublicHistoryReply, serverId: String) -> OrderedJSON {
+        .object([
+            .init("messageId", reply.id), .init("seq", reply.seq), .init("preview", reply.content),
+            .init("senderType", reply.senderType),
+            .init("senderName", senderName(reply.sender, type: reply.senderType, serverId: serverId)),
+            .init("senderAvatarUrl", optional: avatarURL(reply.sender, type: reply.senderType, serverId: serverId)),
+            .init("createdAt", reply.createdAt),
+        ])
     }
 
     static func page<Item: SequenceItem>(_ items: [Item], limit: Int, beforeId: String?) -> [Item]? {
@@ -421,15 +421,14 @@ enum PublicHistoryProjection {
         return Array(pool[start...])
     }
 
-    private static func senderJSON(_ sender: PublicHistorySender, type: String, serverId: String) -> String {
-        if type == "agent", let home = sender.homeServerId, home != serverId {
-            return "{\"displayName\":\"Unknown agent\",\"handle\":null,\"avatarUrl\":null,\"description\":null}"
-        }
-        let handle = sender.handle.map { jsonString($0) } ?? "null"
-        let avatar = avatarURL(sender, type: type, serverId: serverId).map { jsonString($0) } ?? "null"
-        let description = sender.description.map { jsonString($0) } ?? "null"
-        let name = senderName(sender, type: type, serverId: serverId)
-        return "{\"displayName\":\(jsonString(name)),\"handle\":\(handle),\"avatarUrl\":\(avatar),\"description\":\(description)}"
+    private static func senderBody(_ sender: PublicHistorySender, type: String, serverId: String) -> OrderedJSON {
+        let foreignAgent = type == "agent" && sender.homeServerId.map { $0 != serverId } == true
+        return .object([
+            .init("displayName", senderName(sender, type: type, serverId: serverId)),
+            .init("handle", optional: foreignAgent ? nil : sender.handle),
+            .init("avatarUrl", optional: avatarURL(sender, type: type, serverId: serverId)),
+            .init("description", optional: foreignAgent ? nil : sender.description),
+        ])
     }
 
     private static func senderName(_ sender: PublicHistorySender, type: String, serverId: String) -> String {

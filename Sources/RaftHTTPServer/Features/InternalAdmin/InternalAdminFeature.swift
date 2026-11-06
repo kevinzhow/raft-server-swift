@@ -259,8 +259,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             // decode falls back to the collected bytes. The raw text is also
             // what the idempotency fingerprint covers.
             let rawBody = try await request.bodyText()
-            let body = (try? await request.content.decode(AgentTaskCreateRequest.self))
-                ?? (try? JSONDecoder().decode(AgentTaskCreateRequest.self, from: Data(rawBody.utf8)))
+            let body = try await decodeJSONRequestBody(AgentTaskCreateRequest.self, request, rawFallback: rawBody)
             return try await respond(headers: { $0.headers }) {
                 try services.emailAccounts.actionCardMarketplace.createTasks(
                     authorization: request.headers[.authorization],
@@ -372,14 +371,14 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                     .trimmingCharacters(in: CharacterSet(charactersIn: "\"")),
                   !boundary.isEmpty
             else {
-                return respond(status: 400, headers: .exact([:]), rawJSON: "{\"error\":\"Invalid multipart upload\"}")
+                return respond(status: 400, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Invalid multipart upload")]).render())
             }
             let buffer = try await request.body.collect(max: .specified(ByteCount(value: 300 * 1024 * 1024)))
             guard let buffer,
                   let parsed = parseAttachmentMultipart(data: buffer, boundary: boundary),
                   let file = parsed.files.first
             else {
-                return respond(status: 400, headers: .exact([:]), rawJSON: "{\"error\":\"Invalid multipart upload\"}")
+                return respond(status: 400, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Invalid multipart upload")]).render())
             }
             return try await respond {
                 try services.emailAccounts.agentsLifecycle.uploadAgentAttachment(
@@ -402,9 +401,14 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             }
         }
         computer.post("attachment", "revoke") { _ -> Response in
-            var headers = HTTPFields()
-            headers[.contentType] = "application/json"
-            return Response(status: .unauthorized, headers: headers, body: .init(string: "{\"error\":\"Authentication policy not registered for this path\",\"code\":\"auth_policy_unregistered_path\"}"))
+            respond(
+                status: 401,
+                headers: .exact(["Content-Type": "application/json"]),
+                rawJSON: OrderedJSON.object([
+                    OrderedJSONField("error", "Authentication policy not registered for this path"),
+                    OrderedJSONField("code", "auth_policy_unregistered_path"),
+                ]).render()
+            )
         }
         computer.post("runners", ":agentId", "credentials") { request async throws -> Response in
             let body = await jsonRequestBody(ComputerRunnerCredentialRequest.self, request)
@@ -464,7 +468,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "resumable", "chunks", ":chunkIndex", "receipt") { request async throws -> Response in
-            let body = try await migrationBody(MigrationChunkReceiptRequest.self, request)
+            let body = try await decodeJSONRequestBody(MigrationChunkReceiptRequest.self, request) ?? MigrationChunkReceiptRequest()
             return try await respond {
                 try services.emailAccounts.agentHostedMigration.putMigrationChunkReceipt(
                     authorization: request.headers[.authorization],
@@ -499,7 +503,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "start-transfer") { request async throws -> Response in
-            let body = try await migrationBody(MigrationGenerationRequest.self, request)
+            let body = try await decodeJSONRequestBody(MigrationGenerationRequest.self, request) ?? MigrationGenerationRequest()
             return try await respond {
                 try services.emailAccounts.agentHostedMigration.startMigrationTransfer(
                     authorization: request.headers[.authorization],
@@ -509,7 +513,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "flip-machine") { request async throws -> Response in
-            let body = try await migrationBody(MigrationGenerationRequest.self, request)
+            let body = try await decodeJSONRequestBody(MigrationGenerationRequest.self, request) ?? MigrationGenerationRequest()
             return try await respond {
                 try services.emailAccounts.agentHostedMigration.flipMigrationMachine(
                     authorization: request.headers[.authorization],
@@ -519,7 +523,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "arrived") { request async throws -> Response in
-            let body = try await migrationBody(MigrationArrivalRequest.self, request)
+            let body = try await decodeJSONRequestBody(MigrationArrivalRequest.self, request) ?? MigrationArrivalRequest()
             return try await respond {
                 try await services.emailAccounts.agentHostedMigration.completeMigrationArrival(
                     authorization: request.headers[.authorization],
@@ -529,7 +533,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "transport-lost") { request async throws -> Response in
-            let body = try await migrationBody(MigrationTransportLostRequest.self, request)
+            let body = try await decodeJSONRequestBody(MigrationTransportLostRequest.self, request) ?? MigrationTransportLostRequest()
             return try await respond {
                 try services.emailAccounts.agentHostedMigration.markMigrationTransportLostFromComputer(
                     authorization: request.headers[.authorization],
@@ -539,7 +543,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "cancel-ack") { request async throws -> Response in
-            let body = try await migrationBody(MigrationCancelAckRequest.self, request)
+            let body = try await decodeJSONRequestBody(MigrationCancelAckRequest.self, request) ?? MigrationCancelAckRequest()
             return try await respond {
                 try services.emailAccounts.agentHostedMigration.acknowledgeMigrationCancellation(
                     authorization: request.headers[.authorization],
@@ -549,7 +553,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "resumable", "source-quiesced") { request async throws -> Response in
-            let body = try await migrationBody(MigrationSourceQuiescedRequest.self, request)
+            let body = try await decodeJSONRequestBody(MigrationSourceQuiescedRequest.self, request) ?? MigrationSourceQuiescedRequest()
             return try await respond {
                 try services.emailAccounts.agentHostedMigration.recordMigrationSourceQuiesced(
                     authorization: request.headers[.authorization],
@@ -570,16 +574,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
         }
     }
 
-    /// Decodes one typed migration callback body even when the client omitted a
-    /// JSON `Content-Type`: the retired handlers parsed the raw body regardless
-    /// of the header. A body that is not JSON reads as the empty request, which
-    /// is the `?? [:]` the old parser used.
-    private func migrationBody<T: Decodable>(_ type: T.Type, _ request: Request) async throws -> T {
-        if let decoded = try? await request.content.decode(type) { return decoded }
-        let empty = try JSONDecoder().decode(type, from: Data("{}".utf8))
-        guard let data = try await request.body.collect() else { return empty }
-        return (try? JSONDecoder().decode(type, from: data)) ?? empty
-    }
+
 }
 
 // MARK: - File-private helpers copied verbatim from `FallbackApplication.swift`
@@ -651,12 +646,6 @@ private func parseAttachmentMultipart(data: Data, boundary: String) -> (channelI
     return (channelId, files)
 }
 
-private func jsonString(_ value: String) -> String {
-    let data = try? JSONSerialization.data(withJSONObject: [value])
-    let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
-    return String(text.dropFirst().dropLast())
-}
-
 private func publishReminderEvent(
     event: String, reminderId: String, agentId: String, services: FallbackServices
 ) {
@@ -670,7 +659,10 @@ private func publishReminderEvent(
         recipients.insert(member.userId)
     }
     guard !recipients.isEmpty else { return }
-    let payload = "{\"reminderId\":\(jsonString(reminderId)),\"ownerAgentId\":\(jsonString(agentId))}"
+    let payload = OrderedJSON.object([
+        OrderedJSONField("reminderId", reminderId),
+        OrderedJSONField("ownerAgentId", agentId),
+    ]).render()
     for userId in recipients {
         hub.emit(room: "user:\(userId)", event: event, payloadJSON: payload)
     }

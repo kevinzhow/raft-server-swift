@@ -35,7 +35,7 @@ enforces the part of it that can be measured today:
    ``TestSupport`` target lowers that file's line in the same commit. The
    baseline file is the only thing those slices edit.
 
-7. Phase 6 ratchets: six per-file metrics are each ratcheted against
+7. Phase 6 ratchets: eleven per-file metrics are each ratcheted against
    ``scripts/ratchet_<metric>.tsv`` (``path<TAB>count``; a file that is not
    listed counts as 0, and a missing baseline file means every count is
    ratcheted against 0):
@@ -58,6 +58,20 @@ enforces the part of it that can be measured today:
                                0 when the file is gone)
    ``service_directory_calls`` ``directory.`` call sites under
                                ``Sources/RaftHTTP/Services``
+   ``httpreply_sources``       ``HTTPReply`` text under the seven local targets
+                               in RaftServer's dependency closure (listed in
+                               ``SERVER_SURFACE_RELATIVE``)
+   ``json_any_sources``        ``JSONSerialization``, ``[String: Any]`` or
+                               ``[String:Any]`` under the same seven targets;
+                               this does not detect string-built JSON
+   ``directory_references``    identifier ``EmailLoginDirectory`` (every
+                               occurrence) under ``Sources``
+   ``unchecked_sendable_server`` ``@unchecked Sendable`` under the same seven
+                               targets only
+   ``json_string_payloads``    object/array-shaped Swift string literal candidates
+                               under the same seven targets, excluding comments;
+                               see ``count_json_string_payloads`` for the lexical
+                               boundary (not complete Swift/JSON semantics)
    ==========================  ===============================================
 
    A file above its baseline fails, and so does a file below it: the baseline
@@ -67,6 +81,9 @@ enforces the part of it that can be measured today:
 
 8. Hard zero: no file under ``Sources/RaftHTTP/Services/`` may contain
    ``import Vapor``; the service layer is Vapor-free by construction.
+
+9. Every Swift file under ``Sources/RaftHTTP/Stores/`` must stay at or below
+   1,000 physical lines, including nested files and extension files.
 
 Exit codes:
     0  pass, or pass with warnings
@@ -97,6 +114,19 @@ FEATURES_RELATIVE = Path("Sources/RaftHTTPServer/Features")
 SERVICES_RELATIVE = Path("Sources/RaftHTTP/Services")
 DTO_RELATIVE = Path("Sources/RaftHTTP/DTO")
 SOURCES_RELATIVE = Path("Sources")
+# The complete local-target dependency closure of RaftServer. Shared targets
+# belong to the server surface once; daemon-only targets stay outside it and
+# remain covered by the all-Sources metrics.
+SERVER_SURFACE_RELATIVE = (
+    Path("Sources/RaftHTTP"),
+    Path("Sources/RaftHTTPServer"),
+    Path("Sources/RaftRealtime"),
+    Path("Sources/RaftServer"),
+    Path("Sources/RaftMachineSocket"),
+    Path("Sources/RaftConnectAuth"),
+    Path("Sources/RaftShared"),
+)
+SERVER_SURFACE_SCAN_PATH = ", ".join(path.as_posix() for path in SERVER_SURFACE_RELATIVE)
 FOR_TESTING_BASELINE_RELATIVE = Path("scripts/for_testing_baseline.tsv")
 
 # Generated sources are data-only corpora (for example
@@ -156,6 +186,9 @@ RATCHET_HTTPREPLY_RE = re.compile(r"HTTPReply")
 RATCHET_JSON_ANY_RE = re.compile(r"JSONSerialization|\[String: Any\]|\[String:Any\]")
 RATCHET_UNCHECKED_SENDABLE_RE = re.compile(r"@unchecked Sendable")
 RATCHET_DIRECTORY_CALL_RE = re.compile(r"directory\.")
+# Whole-server-surface ratchets. ``directory_references`` matches the bare
+# identifier (word boundaries), so ``extension EmailLoginDirectory`` counts too.
+RATCHET_DIRECTORY_REFERENCE_RE = re.compile(r"\bEmailLoginDirectory\b")
 # The services layer must not depend on Vapor; this is a hard zero, not a
 # baseline. It matches the literal ``import Vapor`` token, so a comment that
 # mentions the token also fails, which is the strict reading.
@@ -222,6 +255,55 @@ RATCHET_METRICS: tuple[dict, ...] = (
         "kind": "matches",
         "pattern": RATCHET_DIRECTORY_CALL_RE,
         "unit": "occurrence",
+    },
+    {
+        "id": "httpreply_sources",
+        "title": "Server surface HTTPReply tokens",
+        "baseline": Path("scripts/ratchet_httpreply_sources.tsv"),
+        "scan_path": SERVER_SURFACE_SCAN_PATH,
+        "roots": SERVER_SURFACE_RELATIVE,
+        "kind": "matches",
+        "pattern": RATCHET_HTTPREPLY_RE,
+        "unit": "occurrence",
+    },
+    {
+        "id": "json_any_sources",
+        "title": "Server surface JSON any-typed payloads",
+        "baseline": Path("scripts/ratchet_json_any_sources.tsv"),
+        "scan_path": SERVER_SURFACE_SCAN_PATH,
+        "roots": SERVER_SURFACE_RELATIVE,
+        "kind": "matches",
+        "pattern": RATCHET_JSON_ANY_RE,
+        "unit": "occurrence",
+    },
+    {
+        "id": "directory_references",
+        "title": "Sources/** EmailLoginDirectory references",
+        "baseline": Path("scripts/ratchet_directory_references.tsv"),
+        "scan_path": "Sources",
+        "roots": (SOURCES_RELATIVE,),
+        "kind": "matches",
+        "pattern": RATCHET_DIRECTORY_REFERENCE_RE,
+        "unit": "occurrence",
+    },
+    {
+        "id": "unchecked_sendable_server",
+        "title": "Server surface @unchecked Sendable",
+        "baseline": Path("scripts/ratchet_unchecked_sendable_server.tsv"),
+        "scan_path": SERVER_SURFACE_SCAN_PATH,
+        "roots": SERVER_SURFACE_RELATIVE,
+        "kind": "matches",
+        "pattern": RATCHET_UNCHECKED_SENDABLE_RE,
+        "unit": "occurrence",
+    },
+    {
+        "id": "json_string_payloads",
+        "title": "Server surface JSON string literal candidates",
+        "baseline": Path("scripts/ratchet_json_string_payloads.tsv"),
+        "scan_path": SERVER_SURFACE_SCAN_PATH,
+        "roots": SERVER_SURFACE_RELATIVE,
+        "kind": "json_strings",
+        "unit": "candidate",
     },
 )
 
@@ -353,6 +435,56 @@ def check_service_file_ceilings(root: Path) -> dict:
         "path": str(SERVICES_RELATIVE),
         "directory_present": present,
         "limit": SERVICE_FILE_LINE_LIMIT,
+        "files": files,
+        "violations": violations,
+        "message": message,
+    }
+
+
+# A store file larger than this must split along its concern again (Phase 6
+# store split: ``ServersAndChannelsStore+Channels.swift`` style extensions).
+STORE_FILE_LINE_LIMIT = 1_000
+STORES_RELATIVE = Path("Sources/RaftHTTP/Stores")
+
+
+def check_store_file_ceilings(root: Path) -> dict:
+    directory = root / STORES_RELATIVE
+    files: list[dict] = []
+    if directory.is_dir():
+        for path in sorted(directory.rglob("*.swift")):
+            if not path.is_file():
+                continue
+            lines = count_lines(path)
+            files.append(
+                {
+                    "path": str(path.relative_to(root)),
+                    "lines": lines,
+                    "limit": STORE_FILE_LINE_LIMIT,
+                    "status": "fail" if lines > STORE_FILE_LINE_LIMIT else "pass",
+                }
+            )
+    violations = [entry for entry in files if entry["status"] == "fail"]
+    present = directory.is_dir()
+    if not present:
+        message = f"{STORES_RELATIVE} does not exist yet (0 store files)"
+    elif not files:
+        message = f"{STORES_RELATIVE} exists but has no .swift files (0 store files)"
+    else:
+        largest = max(entry["lines"] for entry in files)
+        message = (
+            f"{len(files)} store {plural(len(files), 'file')}, "
+            f"largest {largest:,} / {STORE_FILE_LINE_LIMIT:,} lines"
+        )
+        if violations:
+            message += f"; {len(violations)} over the limit"
+    return {
+        "id": "store-file-ceiling",
+        "title": "Stores/*.swift line ceiling",
+        "status": "fail" if violations else "pass",
+        "severity": "error",
+        "path": str(STORES_RELATIVE),
+        "directory_present": present,
+        "limit": STORE_FILE_LINE_LIMIT,
         "files": files,
         "violations": violations,
         "message": message,
@@ -593,6 +725,134 @@ def count_matches(path: Path, pattern: re.Pattern[str]) -> int:
     return len(pattern.findall(text))
 
 
+SWIFT_STRING_START_RE = re.compile(r'(#+)?("""|")')
+JSON_ARRAY_VALUE_START_RE = re.compile(r'-?(?:0|[1-9]\d*)(?:[.eE]|\s|,|\]|$)|(?:true|false|null)(?:\s|,|\]|$)')
+
+
+def count_json_string_payloads(text: str) -> int:
+    r"""Count object/array-shaped Swift string literal candidates, not JSON semantics.
+
+    Each literal counts once, including constants, interpolation and concatenation
+    fragments. Ordinary, raw # (any hash count), and multiline literals are scanned;
+    // and nested /* */ comments are skipped, including inside interpolation.
+    Active Swift quote/backslash/whitespace escapes are decoded for this prefix
+    test. Interpolation expressions are replaced by a marker; string literals
+    inside those expressions are scanned independently. Unicode escapes are not
+    decoded. An object prefix needs a quote, }, or interpolation after {; an array
+    prefix needs a JSON value start, ], or interpolation after [. A bare { or [
+    fragment counts only when followed directly by + (ignoring whitespace/comments).
+    Thus OrderedJSON field names and [INFO]/standalone [ labels do not count.
+
+    Valid JSON-shaped labels such as [1] can still be candidates. This scanner does
+    not validate full JSON, resolve variables/calls, follow appends, or reconstruct
+    arbitrarily split strings. Delimiters made with Unicode escapes, JSON assembled
+    without such a literal prefix, and Swift regex-literal syntax are out of scope.
+    """
+    literals: list[tuple[str, int]] = []
+    marker = "\ufffc"
+    size = len(text)
+
+    def skip_comment(index: int) -> int:
+        if text.startswith("//", index):
+            newline = text.find("\n", index + 2)
+            return size if newline < 0 else newline + 1
+        if text.startswith("/*", index):
+            index += 2
+            depth = 1
+            while index < size and depth:
+                if text.startswith("/*", index):
+                    depth += 1
+                    index += 2
+                elif text.startswith("*/", index):
+                    depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            return index
+        return index
+
+    def scan_code(index: int, interpolation: bool = False) -> int:
+        depth = 1
+        while index < size:
+            following = skip_comment(index)
+            if following != index:
+                index = following
+                continue
+            if text[index] in '#"':
+                opening = SWIFT_STRING_START_RE.match(text, index)
+                if opening:
+                    index = scan_string(opening)
+                    continue
+            if interpolation:
+                if text[index] == "(":
+                    depth += 1
+                elif text[index] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        return index + 1
+            index += 1
+        return index
+
+    def scan_string(opening: re.Match[str]) -> int:
+        hashes, quotes = opening.group(1) or "", opening.group(2)
+        closing, escape = quotes + hashes, "\\" + hashes
+        index = opening.end()
+        value: list[str] = []
+        while index < size:
+            if text.startswith(closing, index):
+                end = index + len(closing)
+                literals.append(("".join(value), end))
+                return end
+            if text.startswith(escape, index):
+                escaped = index + len(escape)
+                if escaped < size:
+                    char = text[escaped]
+                    if char == "(":
+                        value.append(marker)
+                        index = scan_code(escaped + 1, interpolation=True)
+                        continue
+                    replacements = {'"': '"', "\\": "\\", "n": "\n", "r": "\r", "t": "\t", "0": "\0"}
+                    if char in replacements:
+                        value.append(replacements[char])
+                        index = escaped + 1
+                        continue
+                    if char in "\r\n":
+                        index = escaped + 1
+                        while index < size and text[index] in " \t\r\n":
+                            index += 1
+                        continue
+            value.append(text[index])
+            index += 1
+        return index
+
+    def directly_concatenated(index: int) -> bool:
+        while index < size:
+            if text[index].isspace():
+                index += 1
+                continue
+            following = skip_comment(index)
+            if following != index:
+                index = following
+                continue
+            return text[index] == "+"
+        return False
+
+    scan_code(0)
+    count = 0
+    for value, end in literals:
+        prefix = value.lstrip()
+        if not prefix or prefix[0] not in "{[":
+            continue
+        tail = prefix[1:].lstrip()
+        if not tail:
+            count += directly_concatenated(end)
+        elif prefix[0] == "{":
+            count += tail[0] in ('"', "}", marker)
+        else:
+            count += tail[0] in ('"', "{", "[", "]", marker) or bool(JSON_ARRAY_VALUE_START_RE.match(tail))
+    return count
+
+
 def scan_ratchet_metric(root: Path, metric: dict) -> dict[str, int]:
     """Per-file counts for one ratchet metric; files with a zero count are omitted."""
     if metric["kind"] == "lines":
@@ -603,7 +863,10 @@ def scan_ratchet_metric(root: Path, metric: dict) -> dict[str, int]:
 
     counts: dict[str, int] = {}
     for relative, path in iter_swift_sources(root, metric["roots"]):
-        count = count_matches(path, metric["pattern"])
+        if metric["kind"] == "json_strings":
+            count = count_json_string_payloads(path.read_text(encoding="utf-8", errors="replace"))
+        else:
+            count = count_matches(path, metric["pattern"])
         if count:
             counts[relative] = count
     return counts
@@ -683,10 +946,32 @@ def check_ratchet_metric(root: Path, metric: dict) -> dict:
 
 
 def update_ratchet_baselines(root: Path) -> list[dict]:
-    """Rewrite every ``scripts/ratchet_<metric>.tsv`` from the current tree."""
-    written: list[dict] = []
+    """Lower baselines atomically with respect to validation of every metric.
+
+    Initial metrics and scope migrations use --print-ratchet-baseline for an
+    explicit review of the newly counted files. This command never adopts growth.
+    """
+    pending: list[tuple[dict, dict[str, int]]] = []
+    growth: list[str] = []
     for metric in RATCHET_METRICS:
         counts = scan_ratchet_metric(root, metric)
+        baseline = read_ratchet_baseline(root, metric)
+        pending.append((metric, counts))
+        growth.extend(
+            f"{metric['id']}: {path}: {count} exceeds baseline {baseline.get(path, 0)}"
+            for path, count in sorted(counts.items())
+            if count > baseline.get(path, 0)
+        )
+    if growth:
+        raise GuardrailError(
+            "refusing to raise ratchet baselines; no baselines written:\n"
+            + "\n".join(growth)
+            + "\nFor a new metric or an expanded scan scope, use "
+            "--print-ratchet-baseline METRIC and review the explicit migration separately."
+        )
+
+    written: list[dict] = []
+    for metric, counts in pending:
         path = root / metric["baseline"]
         rendered = render_baseline_tsv(counts)
         previous = path.read_text(encoding="utf-8") if path.is_file() else None
@@ -745,6 +1030,7 @@ def evaluate(root: Path) -> dict:
         check_feature_file_ceilings(root),
         check_email_login_extension_ceilings(root),
         check_service_file_ceilings(root),
+        check_store_file_ceilings(root),
         check_email_login_test_seams(root),
         check_for_testing_tree_baseline(root),
         *(check_ratchet_metric(root, metric) for metric in RATCHET_METRICS),
@@ -787,6 +1073,7 @@ def evaluate(root: Path) -> dict:
             "email_login_extension_line_limit": EMAIL_LOGIN_EXTENSION_LINE_LIMIT,
             "email_login_extension_count_baseline": EMAIL_LOGIN_EXTENSION_COUNT_BASELINE,
             "service_file_line_limit": SERVICE_FILE_LINE_LIMIT,
+            "store_file_line_limit": STORE_FILE_LINE_LIMIT,
             "email_login_for_testing_markers": EMAIL_LOGIN_FOR_TESTING_BASELINE,
             "email_login_private_func_for_testing": EMAIL_LOGIN_PRIVATE_FUNC_FOR_TESTING_BASELINE,
             "for_testing_tree_baseline_file": str(FOR_TESTING_BASELINE_RELATIVE),
@@ -847,16 +1134,29 @@ def main(argv: list[str]) -> int:
         help="print the current per-file ForTesting counts as baseline TSV and exit",
     )
     parser.add_argument(
+        "--print-ratchet-baseline",
+        choices=[metric["id"] for metric in RATCHET_METRICS],
+        metavar="METRIC",
+        help="print current counts for an explicit new-metric or scope migration review; writes nothing",
+    )
+    parser.add_argument(
         "--update-baselines",
         action="store_true",
         help=(
-            "rewrite every scripts/ratchet_<metric>.tsv from the current tree and exit "
-            "(scripts/for_testing_baseline.tsv is never rewritten)"
+            "lower every scripts/ratchet_<metric>.tsv from the current tree; refuse any growth "
+            "before writing (scripts/for_testing_baseline.tsv is never rewritten)"
         ),
     )
     args = parser.parse_args(argv)
 
     root = Path(args.root).expanduser()
+    if args.print_ratchet_baseline:
+        if not root.is_dir():
+            print(f"check_architecture: root is not a directory: {root}", file=sys.stderr)
+            return 2
+        metric = next(metric for metric in RATCHET_METRICS if metric["id"] == args.print_ratchet_baseline)
+        sys.stdout.write(render_baseline_tsv(scan_ratchet_metric(root, metric)))
+        return 0
     if args.print_for_testing_baseline:
         if not root.is_dir():
             print(f"check_architecture: root is not a directory: {root}", file=sys.stderr)
@@ -867,7 +1167,13 @@ def main(argv: list[str]) -> int:
         if not root.is_dir():
             print(f"check_architecture: root is not a directory: {root}", file=sys.stderr)
             return 2
-        written = update_ratchet_baselines(root)
+        try:
+            written = update_ratchet_baselines(root)
+        except GuardrailError as error:
+            if args.json:
+                print(json.dumps({"result": "error", "exit_code": 2, "error": str(error)}))
+            print(f"check_architecture: {error}", file=sys.stderr)
+            return 2
         if args.json:
             print(
                 json.dumps(

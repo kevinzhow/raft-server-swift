@@ -45,7 +45,7 @@ public struct AuthCoreService: Sendable {
         acceptLanguage: String?,
         authorization: String?
     ) throws -> SocialCompleteResponse {
-        guard EmailLoginDirectory.socialProviders.contains(provider) else {
+        guard AuthRedirects.socialProviders.contains(provider) else {
             throw AuthCoreError.notFound
         }
         guard let code = body.code, !code.isEmpty else {
@@ -61,7 +61,7 @@ public struct AuthCoreService: Sendable {
             privacyVersion: body.privacyVersion,
             legalAcceptanceSource: body.legalAcceptanceSource,
             bearerToken: Self.bearerToken(authorization),
-            userAgentHash: userAgent.flatMap { $0.isEmpty ? nil : EmailLoginDirectory.sha256($0) },
+            userAgentHash: userAgent.flatMap { $0.isEmpty ? nil : AuthTokenCodec.sha256($0) },
             locale: acceptLanguage,
             now: moment
         ))
@@ -159,23 +159,23 @@ public struct AuthCoreService: Sendable {
         }
         var requestedName: String?
         if case .string(let name) = body.name {
-            if EmailLoginDirectory.isReservedAgentName(name) { throw AuthCoreError.reservedName }
+            if AccountNaming.isReservedAgentName(name) { throw AuthCoreError.reservedName }
             requestedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         guard body.acceptTerms else { throw AuthCoreError.legalAcceptanceRequired }
-        if body.termsVersion != EmailLoginDirectory.termsVersion
-            || body.privacyVersion != EmailLoginDirectory.privacyVersion {
+        if body.termsVersion != AuthLegalPolicy.termsVersion
+            || body.privacyVersion != AuthLegalPolicy.privacyVersion {
             throw AuthCoreError.termsChanged
         }
         let autoVerify = ProcessInfo.processInfo.environment["SLOCK_E2E_AUTO_VERIFY_EMAIL"] == "1"
             && body.e2eAutoVerify
         let outcome = store.registerAccount(RegistrationAttempt(
-            normalizedEmail: EmailLoginDirectory.normalize(email),
-            passwordHash: EmailLoginDirectory.sha256(password),
+            normalizedEmail: AccountNaming.normalize(email),
+            passwordHash: AuthTokenCodec.sha256(password),
             requestedName: requestedName,
-            capabilityHash: capability.map(EmailLoginDirectory.sha256),
+            capabilityHash: capability.map(AuthTokenCodec.sha256),
             legalAcceptanceSource: body.legalAcceptanceSource == "invite" ? "invite" : "signup",
-            userAgentHash: userAgent.flatMap { $0.isEmpty ? nil : EmailLoginDirectory.sha256($0) },
+            userAgentHash: userAgent.flatMap { $0.isEmpty ? nil : AuthTokenCodec.sha256($0) },
             locale: acceptLanguage,
             autoVerify: autoVerify,
             now: now()
@@ -263,7 +263,7 @@ public struct AuthCoreService: Sendable {
         let outcome = store.retireStagingAccount(
             userId: userId,
             actorUserId: actorId,
-            capabilityHash: EmailLoginDirectory.sha256(capability),
+            capabilityHash: AuthTokenCodec.sha256(capability),
             now: now()
         )
         switch outcome {
@@ -294,7 +294,7 @@ public struct AuthCoreService: Sendable {
     // MARK: Device grants
 
     private func requireDeviceSurface() throws {
-        guard EmailLoginDirectory.deviceLoginEnabled(store.deviceLoginGate) else {
+        guard AuthRedirects.deviceLoginEnabled(store.deviceLoginGate) else {
             throw AuthCoreError.deviceLoginDisabled
         }
     }
@@ -315,7 +315,7 @@ public struct AuthCoreService: Sendable {
             throw AuthCoreError.clientNameInvalid
         }
         let userCode = Self.makeUserCode()
-        let deviceCode = EmailLoginDirectory.deviceSecret()
+        let deviceCode = AuthTokenCodec.deviceSecret()
         store.registerDeviceGrant(
             deviceCode: deviceCode,
             userCode: userCode,
@@ -420,8 +420,8 @@ public struct AuthCoreService: Sendable {
         guard let refreshToken = body.refreshToken, !refreshToken.isEmpty else {
             throw AuthCoreError.refreshTokenRequired
         }
-        let attempt = EmailLoginDirectory.refreshAttempt(attemptHeader)
-        let installation = EmailLoginDirectory.refreshInstallation(installationHeader)
+        let attempt = AuthTokenCodec.refreshAttempt(attemptHeader)
+        let installation = AuthTokenCodec.refreshInstallation(installationHeader)
         if installationHeader != nil, attempt == nil || installation == nil {
             throw AuthCoreError.invalidRefreshBinding
         }

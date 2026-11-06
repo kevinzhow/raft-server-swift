@@ -246,10 +246,10 @@ public enum OAuthFlowsError: DomainError, Equatable {
 
     private static var legal: OrderedJSON {
         .object([
-            OrderedJSONField("termsVersion", EmailLoginDirectory.termsVersion),
-            OrderedJSONField("privacyVersion", EmailLoginDirectory.privacyVersion),
-            OrderedJSONField("termsUrl", EmailLoginDirectory.termsURL),
-            OrderedJSONField("privacyUrl", EmailLoginDirectory.privacyURL),
+            OrderedJSONField("termsVersion", AuthLegalPolicy.termsVersion),
+            OrderedJSONField("privacyVersion", AuthLegalPolicy.privacyVersion),
+            OrderedJSONField("termsUrl", AuthLegalPolicy.termsURL),
+            OrderedJSONField("privacyUrl", AuthLegalPolicy.privacyURL),
         ])
     }
 }

@@ -19,8 +19,10 @@ private func legacyObject(_ value: JSONValue) -> Any {
 }
 
 private func legacyRender(_ value: JSONValue) -> String {
-    guard let object = legacyObject(value) as? [String: Any] else { return "{}" }
-    return EmailLoginDirectory.serializeJSON(object)
+    guard let object = legacyObject(value) as? [String: Any],
+          let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    else { return "{}" }
+    return String(decoding: data, as: UTF8.self)
 }
 
 private struct Rng: RandomNumberGenerator {

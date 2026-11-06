@@ -279,8 +279,8 @@ public struct AuthIdentitiesService: Sendable {
         let password = Self.requiredString(request.password, path: "password", into: &issues)
         if !issues.isEmpty { throw AuthIdentitiesError.invalidLoginBody(issues) }
         switch store.authenticate(
-            email: EmailLoginDirectory.normalize(email ?? ""),
-            passwordHash: EmailLoginDirectory.sha256(password ?? ""),
+            email: AccountNaming.normalize(email ?? ""),
+            passwordHash: AuthTokenCodec.sha256(password ?? ""),
             pendingLinkToken: request.pendingLinkToken,
             now: now()
         ) {
@@ -329,7 +329,7 @@ public struct AuthIdentitiesService: Sendable {
         guard let returnUri = request.returnUri, !returnUri.isEmpty,
               let codeChallenge = request.codeChallenge, !codeChallenge.isEmpty
         else { throw AuthIdentitiesError.invalidAppLoginRequest }
-        guard EmailLoginDirectory.appLoginReturnUris.contains(returnUri) else {
+        guard AuthRedirects.appLoginReturnUris.contains(returnUri) else {
             throw AuthIdentitiesError.returnUriNotAllowed
         }
         if let method = request.codeChallengeMethod, method != "S256" {
@@ -339,7 +339,7 @@ public struct AuthIdentitiesService: Sendable {
             throw AuthIdentitiesError.challengeInvalid
         }
         let requestId = UUID().uuidString.lowercased()
-        let expiresAt = EmailLoginDirectory.appLoginExpiresAt(now())
+        let expiresAt = AuthRedirects.appLoginExpiresAt(now())
         store.insertAppLoginRequest(AppLoginRequest(
             id: requestId,
             returnUri: returnUri,
@@ -353,7 +353,7 @@ public struct AuthIdentitiesService: Sendable {
         return AppLoginStartResponse(
             requestId: requestId,
             loginUrl: "\(store.appURL)/login/app?request=\(requestId)",
-            expiresAt: EmailLoginDirectory.iso8601(expiresAt)
+            expiresAt: DateText.iso8601(expiresAt)
         )
     }
 
@@ -374,15 +374,15 @@ public struct AuthIdentitiesService: Sendable {
             requestId: request.id,
             status: request.status,
             returnUri: request.returnUri,
-            expiresAt: EmailLoginDirectory.iso8601(request.expiresAt)
+            expiresAt: DateText.iso8601(request.expiresAt)
         )
     }
 
     /// `POST /api/auth/app-login/requests/:requestId/approve`.
     public func appLoginApprove(authorization: String?, requestId: String) throws -> AppLoginRedirectResponse {
         let userId = try appLoginActor(authorization)
-        let request = try decide(requestId: requestId, .approve(userId: userId, code: EmailLoginDirectory.token()))
-        return AppLoginRedirectResponse(redirectUrl: EmailLoginDirectory.appLoginRedirect(
+        let request = try decide(requestId: requestId, .approve(userId: userId, code: AuthTokenCodec.token()))
+        return AppLoginRedirectResponse(redirectUrl: AuthRedirects.appLoginRedirect(
             request.returnUri,
             requestId: request.id,
             query: "code=\(request.code ?? "")"
@@ -393,7 +393,7 @@ public struct AuthIdentitiesService: Sendable {
     public func appLoginDeny(authorization: String?, requestId: String) throws -> AppLoginRedirectResponse {
         _ = try appLoginActor(authorization)
         let request = try decide(requestId: requestId, .deny)
-        return AppLoginRedirectResponse(redirectUrl: EmailLoginDirectory.appLoginRedirect(
+        return AppLoginRedirectResponse(redirectUrl: AuthRedirects.appLoginRedirect(
             request.returnUri,
             requestId: request.id,
             query: "error=access_denied"
@@ -407,7 +407,7 @@ public struct AuthIdentitiesService: Sendable {
         case .notFound:
             throw AuthIdentitiesError.requestNotFound
         case .expired(let request):
-            throw AuthIdentitiesError.requestExpired(redirectUrl: EmailLoginDirectory.appLoginRedirect(
+            throw AuthIdentitiesError.requestExpired(redirectUrl: AuthRedirects.appLoginRedirect(
                 request.returnUri,
                 requestId: request.id,
                 query: "error=expired"
@@ -425,7 +425,7 @@ public struct AuthIdentitiesService: Sendable {
         else { throw AuthIdentitiesError.invalidAppLoginCompletion }
         switch store.completeAppLogin(
             code: code,
-            verifierChallenge: EmailLoginDirectory.pkceS256(verifier),
+            verifierChallenge: AuthTokenCodec.pkceS256(verifier),
             now: now()
         ) {
         case .completed(let account, let tokens):
@@ -461,9 +461,9 @@ public struct AuthIdentitiesService: Sendable {
         let observed = store.timezoneObservation(userId: userId).map {
             TimezoneObservationResponse(
                 firstObservedTimezone: $0.firstTimezone,
-                firstObservedTimezoneAt: EmailLoginDirectory.iso8601($0.firstAt),
+                firstObservedTimezoneAt: DateText.iso8601($0.firstAt),
                 lastObservedTimezone: $0.lastTimezone,
-                lastObservedTimezoneAt: EmailLoginDirectory.iso8601($0.lastAt)
+                lastObservedTimezoneAt: DateText.iso8601($0.lastAt)
             )
         }
         return AuthMeResponse(user: AuthUserDTO(account: account), observedTimezone: observed)
@@ -476,13 +476,13 @@ public struct AuthIdentitiesService: Sendable {
         body: Data
     ) throws -> AuthProfileUserResponse {
         let userId = try authorizedUser(authorization)
-        guard let file = EmailLoginDirectory.multipartFile(named: "avatar", contentType: contentType, body: body) else {
+        guard let file = FormPayload.multipartFile(named: "avatar", contentType: contentType, body: body) else {
             throw AuthIdentitiesError.noAvatarProvided
         }
-        if file.count > EmailLoginDirectory.maxProfileAvatarBytes {
-            throw AuthIdentitiesError.avatarTooLarge(maxBytes: EmailLoginDirectory.maxProfileAvatarBytes)
+        if file.count > AccountNaming.maxProfileAvatarBytes {
+            throw AuthIdentitiesError.avatarTooLarge(maxBytes: AccountNaming.maxProfileAvatarBytes)
         }
-        let hash = String(EmailLoginDirectory.sha256(file).prefix(32))
+        let hash = String(AuthTokenCodec.sha256(file).prefix(32))
         guard let account = store.setAvatarURL(userId: userId, url: "/api/avatars/users/\(hash).webp") else {
             throw AuthIdentitiesError.invalidToken
         }
@@ -508,8 +508,8 @@ public struct AuthIdentitiesService: Sendable {
             }
             switch store.changePassword(
                 userId: userId,
-                currentHash: EmailLoginDirectory.sha256(current),
-                newHash: EmailLoginDirectory.sha256(newPassword)
+                currentHash: AuthTokenCodec.sha256(current),
+                newHash: AuthTokenCodec.sha256(newPassword)
             ) {
             case .changed: break
             case .accountMissing: throw AuthIdentitiesError.invalidToken
@@ -543,7 +543,7 @@ public struct AuthIdentitiesService: Sendable {
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
                 update.displayLanguage = .some(nil)
-            } else if let normalized = EmailLoginDirectory.normalizeDisplayLocale(trimmed) {
+            } else if let normalized = AccountNaming.normalizeDisplayLocale(trimmed) {
                 update.displayLanguage = .some(normalized)
             } else {
                 throw AuthIdentitiesError.invalidProfile("displayLanguage must be a supported UI display locale")

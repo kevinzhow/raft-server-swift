@@ -290,11 +290,11 @@ public struct JoinLinkPayloadDTO: Codable, Sendable, Equatable, JSONBodyConverti
         self.init(
             id: record.id,
             token: record.token,
-            createdAt: EmailLoginDirectory.isoString(record.createdAt),
-            expiresAt: record.expiresAt.map(EmailLoginDirectory.isoString),
+            createdAt: DateText.isoString(record.createdAt),
+            expiresAt: record.expiresAt.map(DateText.isoString),
             maxUses: record.maxUses,
             useCount: record.useCount,
-            revokedAt: record.revokedAt.map(EmailLoginDirectory.isoString)
+            revokedAt: record.revokedAt.map(DateText.isoString)
         )
     }
 

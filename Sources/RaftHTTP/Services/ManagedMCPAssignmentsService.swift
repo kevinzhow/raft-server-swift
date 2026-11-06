@@ -39,12 +39,12 @@ struct ManagedMCPAssignmentsDependencies: Sendable {
                 try source.channelMembership.leaveChannel(agentId: agentId, serverId: serverId, channelId: channelId)
             },
             orderedTasks: { serverId, userId, status in
-                source.orderedTasks(serverId: serverId, userId: userId, status: status)
+                DirectoryTaskCatalog(directory: source).orderedTasks(serverId: serverId, userId: userId, status: status)
             },
             taskFragment: { task, channelName, channelType, summary in
                 summary
-                    ? source.summaryTaskJSON(task, channelName: channelName, channelType: channelType)
-                    : source.fullTaskJSON(task, channelName: channelName, channelType: channelType)
+                    ? DirectoryTaskCatalog(directory: source).summaryTaskJSON(task, channelName: channelName, channelType: channelType)
+                    : DirectoryTaskCatalog(directory: source).fullTaskJSON(task, channelName: channelName, channelType: channelType)
             },
             now: { Date() }
         )
@@ -672,7 +672,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
         body: TaskStatusRequest?
     ) throws -> ActionCardTaskPayload {
         let userId = try requireSession(authorization)
-        guard let status = body?.status, EmailLoginDirectory.validTaskStatuses.contains(status) else {
+        guard let status = body?.status, TaskCatalogPolicy.validTaskStatuses.contains(status) else {
             throw ManagedMCPAssignmentsError.invalidTaskStatus
         }
         guard let task = tasks.task(id: taskId) else { throw ManagedMCPAssignmentsError.taskNotFound }
@@ -768,7 +768,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
         var cursor: (channelId: String, taskNumber: Int)?
         if let rawCursor = params["cursor"] {
             guard limit != nil else { throw ManagedMCPAssignmentsError.cursorRequiresLimit }
-            guard let decoded = EmailLoginDirectory.decodeCursor(rawCursor) else {
+            guard let decoded = TaskCatalogPolicy.decodeCursor(rawCursor) else {
                 throw ManagedMCPAssignmentsError.invalidCursor
             }
             cursor = decoded
@@ -789,7 +789,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
             let slice = Array(ordered.dropFirst(startIndex).prefix(limit))
             page = slice
             if let last = slice.last, startIndex + slice.count < ordered.count {
-                nextCursor = EmailLoginDirectory.encodeCursor(channelId: last.task.channelId, taskNumber: last.task.taskNumber)
+                nextCursor = TaskCatalogPolicy.encodeCursor(channelId: last.task.channelId, taskNumber: last.task.taskNumber)
             }
         }
         let response = ServerTasksResponse(

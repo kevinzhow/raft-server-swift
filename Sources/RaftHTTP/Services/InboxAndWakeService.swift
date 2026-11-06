@@ -126,15 +126,12 @@ struct InboxAndWakeDependencies: Sendable {
     static func live(directory source: EmailLoginDirectory) -> InboxAndWakeDependencies {
         InboxAndWakeDependencies(
             authorize: { authorization in
-                switch source.authorize(authorization) {
-                case .user(let id):
-                    .user(id)
-                case .rejected(let reply):
-                    // `authorize` has exactly two rejections: a missing/foreign
-                    // header and a token that is unknown or in a revoked family.
-                    reply == EmailLoginDirectory.missingAuthorization
-                        ? .missingAuthorization
-                        : .invalidAccessToken
+                do {
+                    return .user(try source.authCore.authenticate(authorization))
+                } catch AuthCoreError.missingAuthorization {
+                    return .missingAuthorization
+                } catch {
+                    return .invalidAccessToken
                 }
             },
             isEmailVerified: { source.isEmailVerified(userId: $0) },
@@ -250,7 +247,7 @@ public struct InboxAndWakeService: Sendable {
         guard dependencies.isEmailVerified(userId) else {
             throw InboxAndWakeError.emailVerificationRequired
         }
-        let pageLimit = EmailLoginDirectory.messagePageLimit(rawLimit)
+        let pageLimit = MessagePageCursor.messagePageLimit(rawLimit)
         let commentsVisible = dependencies.attachmentCommentsEnabled(serverId ?? "", userId)
         let messageState = messages.state
         let channelState = channels.state
@@ -402,8 +399,8 @@ public struct InboxAndWakeService: Sendable {
                 throw InboxAndWakeError.forbidden
             }
         }
-        let before = EmailLoginDirectory.parsePageCursor(rawBefore)
-        let after = EmailLoginDirectory.parsePageCursor(rawAfter)
+        let before = MessagePageCursor.parsePageCursor(rawBefore)
+        let after = MessagePageCursor.parsePageCursor(rawAfter)
         if before == .invalid || after == .invalid
             || (before.value != nil && after.value != nil && rawBefore != nil && rawAfter != nil) {
             throw InboxAndWakeError.invalidMessagePageCursor
@@ -452,7 +449,7 @@ public struct InboxAndWakeService: Sendable {
             if let after = after.value, row.seq <= after { return false }
             return true
         }
-        let pageRows = Array(cursorRows.suffix(EmailLoginDirectory.messagePageLimit(rawLimit)))
+        let pageRows = Array(cursorRows.suffix(MessagePageCursor.messagePageLimit(rawLimit)))
         let statusRequests = pageRows.map { (id: $0.id, senderId: $0.senderId, senderType: $0.senderType) }
         let memberStatusSnapshot = channelState.serverMemberStatuses
         var senderStatuses: [String: String] = [:]
@@ -588,7 +585,7 @@ public struct InboxAndWakeService: Sendable {
         guard let userId = sessionUserId(authorization) else {
             throw InboxAndWakeError.unauthorized
         }
-        let params = EmailLoginDirectory.inboxQueryParameters(query)
+        let params = MessagePageCursor.inboxQueryParameters(query)
         let limit = min(max(Int(params["limit"] ?? "") ?? 30, 1), 100)
         let q = (params["q"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let channelFilter = params["channelId"]

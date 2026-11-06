@@ -30,29 +30,10 @@ public func makeActionCardMarketplaceService(
             return seq
         },
         serializeReceipt: { payload in
-            guard let object = marketplaceLegacyJSONObject(payload) as? [String: Any] else { return "{}" }
-            return EmailLoginDirectory.serializeJSON(object)
+            guard case .object = payload else { return "{}" }
+            return LegacySortedJSON.render(payload) ?? "{}"
         },
         now: now,
         makeId: makeId
     )
-}
-
-private func marketplaceLegacyJSONObject(_ value: JSONValue) -> Any {
-    switch value {
-    case .object(let members):
-        return members.mapValues(marketplaceLegacyJSONObject)
-    case .array(let values):
-        return values.map(marketplaceLegacyJSONObject)
-    case .string(let string):
-        return string
-    case .number(let number):
-        return number
-    case .integer(let integer):
-        return integer
-    case .bool(let boolean):
-        return boolean
-    case .null:
-        return NSNull()
-    }
 }

@@ -436,11 +436,11 @@ public struct AuthUserDTO: JSONBodyConvertible, Equatable {
         name = account.name
         emailVerified = account.emailVerified
         displayName = account.displayName ?? account.name
-        gravatarHash = EmailLoginDirectory.sha256(
+        gravatarHash = AuthTokenCodec.sha256(
             account.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         )
         displayLanguage = account.displayLanguage
-        profileSetupCompletedAt = account.profileSetupCompletedAt.map(EmailLoginDirectory.iso8601)
+        profileSetupCompletedAt = account.profileSetupCompletedAt.map(DateText.iso8601)
         profileSetupSuggestedHandle = account.profileSetupSuggestedHandle
         profileSetupProvider = account.profileSetupProvider
         avatarUrl = account.avatarUrl
@@ -454,7 +454,7 @@ public struct AuthUserDTO: JSONBodyConvertible, Equatable {
         preferredMessageBodyFontSize = account.preferredMessageBodyFontSize
         referralSource = account.referralSource
         referralSourceOther = account.referralSourceOther
-        referralSourceSkippedAt = account.referralSourceSkippedAt.map(EmailLoginDirectory.iso8601)
+        referralSourceSkippedAt = account.referralSourceSkippedAt.map(DateText.iso8601)
     }
 
     var fields: [OrderedJSONField] {

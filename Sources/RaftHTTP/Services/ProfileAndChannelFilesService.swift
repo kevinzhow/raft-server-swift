@@ -178,7 +178,7 @@ public struct ProfileAndChannelFilesService: Sendable {
                 bearerPresent: authorization?.hasPrefix("Bearer ") == true
             )
         }
-        guard let emoji, let validEmoji = EmailLoginDirectory.validReactionEmoji(emoji) else {
+        guard let emoji, let validEmoji = MessagePageCursor.validReactionEmoji(emoji) else {
             throw ProfileAndChannelFilesError.invalidActorEmoji
         }
         let pageLimit: Int
@@ -221,7 +221,7 @@ public struct ProfileAndChannelFilesService: Sendable {
         var afterKind: String?
         var afterId: String?
         if let cursor {
-            guard let decoded = EmailLoginDirectory.decodeActorCursor(cursor) else {
+            guard let decoded = MessagePageCursor.decodeActorCursor(cursor) else {
                 throw ProfileAndChannelFilesError.invalidActorCursor
             }
             guard decoded.principalId == userId,
@@ -269,7 +269,7 @@ public struct ProfileAndChannelFilesService: Sendable {
         let page = Array(actors.prefix(pageLimit))
         let nextCursor: String?
         if hasMore, let last = page.last {
-            nextCursor = EmailLoginDirectory.encodeActorCursor(ActorCursor(
+            nextCursor = MessagePageCursor.encodeActorCursor(ActorCursor(
                 principalId: userId,
                 serverId: serverId ?? "",
                 messageId: message.id,
@@ -318,7 +318,7 @@ public struct ProfileAndChannelFilesService: Sendable {
         authorization: String?,
         remove: Bool
     ) throws -> ReactionMutationResponseDTO {
-        guard let emoji, let validEmoji = EmailLoginDirectory.validReactionEmoji(emoji) else {
+        guard let emoji, let validEmoji = MessagePageCursor.validReactionEmoji(emoji) else {
             throw ProfileAndChannelFilesError.invalidEmoji
         }
         guard let authorization, authorization.hasPrefix("Bearer ") else {
@@ -366,7 +366,7 @@ public struct ProfileAndChannelFilesService: Sendable {
         if let denied = dependencies.capabilityDenial(authorization, "reactions") {
             throw ProfileAndChannelFilesError.capabilityNotAuthorized(capability: denied)
         }
-        guard let emoji, let validEmoji = EmailLoginDirectory.validReactionEmoji(emoji) else {
+        guard let emoji, let validEmoji = MessagePageCursor.validReactionEmoji(emoji) else {
             throw ProfileAndChannelFilesError.invalidEmoji
         }
         guard let authorization, authorization.hasPrefix("Bearer ") else {
@@ -490,7 +490,7 @@ public struct ProfileAndChannelFilesService: Sendable {
                 bearerPresent: authorization?.hasPrefix("Bearer ") == true
             )
         }
-        guard let emoji, let validEmoji = EmailLoginDirectory.validReactionEmoji(emoji) else {
+        guard let emoji, let validEmoji = MessagePageCursor.validReactionEmoji(emoji) else {
             throw ProfileAndChannelFilesError.invalidEmoji
         }
         let state = channelState()
@@ -570,7 +570,7 @@ public struct ProfileAndChannelFilesService: Sendable {
     ) -> ReactionTargetResolution {
         if MessageContext.isShortId(messageId) {
             let matches = rows.filter {
-                EmailLoginDirectory.messageIdHasShortPrefix($0.id, prefix: messageId)
+                MessageSearchText.messageIdHasShortPrefix($0.id, prefix: messageId)
                     && reactionMessageVisible($0, userId: userId, serverId: serverId, state: state)
             }
             if matches.count > 1 { return .ambiguous }
@@ -702,7 +702,7 @@ public struct ProfileAndChannelFilesService: Sendable {
                     $0.reactorType == "user" && $0.reactorId == actorId
                 }
                 .map(\.emoji)
-                .sorted(by: EmailLoginDirectory.utf16Ascending)
+                .sorted(by: MessageSearchText.utf16Ascending)
             var body = OrderedJSONObject()
             body.append("serverId", serverId ?? "")
             body.append("messageId", message.id)
@@ -832,7 +832,7 @@ public struct ProfileAndChannelFilesService: Sendable {
     }
 
     private func viewerCanReadForwardedSource(
-        _ item: EmailLoginDirectory.ForwardedSource,
+        _ item: ForwardedSource,
         userId: String,
         serverId: String?,
         state: ChannelState

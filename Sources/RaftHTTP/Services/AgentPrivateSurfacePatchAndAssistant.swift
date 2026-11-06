@@ -65,7 +65,7 @@ extension AgentPrivateSurfaceService {
         var envVarsJSON = info.envVarsJSON
         var replacedRuntime: String?
         if let legacyRuntime = fields["runtime"]?.legacyString {
-            if EmailLoginDirectory.deprecatedAgentRuntimes.contains(legacyRuntime), legacyRuntime != info.runtime {
+            if MachineMigrationPolicy.deprecatedAgentRuntimes.contains(legacyRuntime), legacyRuntime != info.runtime {
                 throw AgentPrivateSurfaceError.deprecatedRuntime(legacyRuntime)
             }
             replacedRuntime = legacyRuntime
@@ -74,7 +74,7 @@ extension AgentPrivateSurfaceService {
         var config = AgentRuntimeConfigDocument(storedJSON: runtimeConfigJSON)
         if let rawConfig = AgentRuntimeConfigDocument(request: fields["runtimeConfig"]) {
             if let configRuntime = rawConfig.runtime,
-               EmailLoginDirectory.deprecatedAgentRuntimes.contains(configRuntime), configRuntime != info.runtime {
+               MachineMigrationPolicy.deprecatedAgentRuntimes.contains(configRuntime), configRuntime != info.runtime {
                 throw AgentPrivateSurfaceError.deprecatedRuntime(configRuntime)
             }
             try Self.checkStructure(rawConfig)

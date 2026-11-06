@@ -6,7 +6,7 @@ extension EmailLoginDirectory {
         lock.lock()
         defer { lock.unlock() }
         guard let live = sessions[refreshToken], let family = sessionFamilies[live.familyId] else { return nil }
-        let nonce = family.revokeCapabilityNonce ?? Self.randomHex(16)
+        let nonce = family.revokeCapabilityNonce ?? AuthTokenCodec.randomHex(16)
         var updated = family
         updated.revokeCapabilityNonce = nonce
         sessionFamilies[live.familyId] = updated
@@ -14,14 +14,14 @@ extension EmailLoginDirectory {
     }
 
     public static func pkceChallengeForTesting(_ verifier: String) -> String {
-        pkceS256(verifier)
+        AuthTokenCodec.pkceS256(verifier)
     }
 
     public func setPasswordForTesting(userId: String, password: String) {
         lock.lock()
         if let key = accounts.first(where: { $0.value.id == userId })?.key {
             var account = accounts[key]!
-            account.passwordHash = Self.sha256(password)
+            account.passwordHash = AuthTokenCodec.sha256(password)
             account.passwordCredentialEstablishedAt = Date()
             accounts[key] = account
         }
@@ -42,11 +42,11 @@ extension EmailLoginDirectory {
         returnTo: String? = nil, returnUri: String? = nil,
         expiresAt: Date = Date().addingTimeInterval(600)
     ) -> String {
-        let token = Self.randomHex(32)
+        let token = AuthTokenCodec.randomHex(32)
         lock.lock()
         pendingSocialLinks[token] = PendingSocialLink(
             token: token, provider: provider, providerUserId: providerUserId,
-            email: Self.normalize(email), returnTo: returnTo, returnUri: returnUri,
+            email: AccountNaming.normalize(email), returnTo: returnTo, returnUri: returnUri,
             expiresAt: expiresAt
         )
         lock.unlock()
@@ -68,7 +68,7 @@ extension EmailLoginDirectory {
     }
 
     public func hasAccount(email: String) -> Bool {
-        authProfileStore.accountState.accounts[Self.normalize(email)] != nil
+        authProfileStore.accountState.accounts[AccountNaming.normalize(email)] != nil
     }
 
     public func legalAcceptance(userId: String) -> EmailLegalAcceptance? {
@@ -76,7 +76,7 @@ extension EmailLoginDirectory {
     }
 
     public func userId(forEmail email: String) -> String? {
-        authProfileStore.accountState.accounts[Self.normalize(email)]?.id
+        authProfileStore.accountState.accounts[AccountNaming.normalize(email)]?.id
     }
 
     /// A provider callback already exchanged. The raw code is what
@@ -98,7 +98,7 @@ extension EmailLoginDirectory {
             code: code,
             mode: mode,
             intendedAction: intendedAction,
-            email: Self.normalize(email),
+            email: AccountNaming.normalize(email),
             returnTo: returnTo,
             userId: userId,
             providerUserId: providerUserId,

@@ -52,7 +52,7 @@ extension EmailLoginDirectory {
             id: UUID().uuidString.lowercased(),
             serverId: serverId,
             name: "linked-computer",
-            apiKey: Self.computerAPIKeyMaterial(),
+            apiKey: MachineCredentialMaterial.computerAPIKeyMaterial(),
             machineId: machineId,
             revokedAt: nil,
             online: online,
@@ -69,7 +69,7 @@ extension EmailLoginDirectory {
         apiKey providedApiKey: String? = nil
     ) -> (id: String, apiKey: String, fingerprint: String) {
         let id = UUID().uuidString.lowercased()
-        let apiKey = providedApiKey ?? Self.machineAPIKeyMaterial()
+        let apiKey = providedApiKey ?? MachineCredentialMaterial.machineAPIKeyMaterial()
         let fingerprint = ComputersFleetService.apiKeyFingerprint(apiKey)
         lock.lock()
         machines.append(MachineRecord(

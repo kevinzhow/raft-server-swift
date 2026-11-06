@@ -110,11 +110,11 @@ public struct FallbackServices: Sendable {
                     accounts.oauth.memberRole(serverId: serverId, userId: userId)
                 },
                 taskChannelAccess: { serverId, channelId, userId in
-                    accounts.channelTaskAccess(serverId: serverId, channelId: channelId, userId: userId)
+                    DirectoryTaskCatalog(directory: accounts).channelTaskAccess(serverId: serverId, channelId: channelId, userId: userId)
                 },
                 isChannelArchived: { accounts.oauth.channelArchivedAt(id: $0) != nil },
                 addTasks: { channelId, titles, descriptions, creatorId in
-                    accounts.addTasks(
+                    DirectoryTaskCatalog(directory: accounts).addTasks(
                         channelId: channelId,
                         titles: titles,
                         descriptions: descriptions,
@@ -359,26 +359,27 @@ private struct PublicSearchMiddleware: Middleware {
     var serviceLimits: PublicSearchServiceLimits
 
     private func serviceRefusal(_ status: Int, _ code: String) -> Response {
-        var headers = HTTPFields()
-        headers[.contentType] = "application/json"
-        headers[HTTPField.Name("Cache-Control")!] = "no-store"
-        let body = ChannelMessagingService.errorPayload(
-            "Public search service access refused",
-            code: code
-        ) ?? "{}"
-        return Response(status: httpStatus(status), headers: headers, body: .init(string: body))
+        RaftHTTPServer.respond(
+            status: UInt(status),
+            headers: .exact(["Content-Type": "application/json", "Cache-Control": "no-store"]),
+            rawJSON: OrderedJSON.object([
+                OrderedJSONField("code", code),
+                OrderedJSONField("error", "Public search service access refused"),
+            ]).render()
+        )
     }
 
     private func serviceLimited(_ retryAfter: Int) -> Response {
-        var headers = HTTPFields()
-        headers[.contentType] = "application/json"
-        headers[HTTPField.Name("Cache-Control")!] = "no-store"
-        headers[HTTPField.Name("Retry-After")!] = String(retryAfter)
-        let body = ChannelMessagingService.errorPayload(
-            "Public search service rate limit exceeded",
-            code: "service_rate_limited"
-        ) ?? "{}"
-        return Response(status: .tooManyRequests, headers: headers, body: .init(string: body))
+        RaftHTTPServer.respond(
+            status: 429,
+            headers: .exact([
+                "Content-Type": "application/json", "Cache-Control": "no-store", "Retry-After": String(retryAfter),
+            ]),
+            rawJSON: OrderedJSON.object([
+                OrderedJSONField("code", "service_rate_limited"),
+                OrderedJSONField("error", "Public search service rate limit exceeded"),
+            ]).render()
+        )
     }
 
     func respond(to request: Request, chainingTo next: any Responder) async throws -> Response {
@@ -411,23 +412,42 @@ private struct PublicSearchMiddleware: Middleware {
         }
         let method = request.method.rawValue
         if request.method != .get && request.method != .head {
-            return routeResponse(PublicSearch.methodNotAllowed(method: method))
+            return try await RaftHTTPServer.respond { () throws -> NoContentResponse in
+                throw PublicSearch.methodNotAllowed(method: method)
+            }
         }
         let enabled = directory?.searchIndexEnabled ?? indexEnabled
         let current = directory?.projectedCatalog() ?? catalog
-        if let reply = PublicSearch.route(
-            method: method,
-            path: request.url.path,
-            cursor: desktopQuery(request.url.query, "cursor"),
-            indexEnabled: enabled,
-            catalog: current
-        ) {
-            return routeResponse(reply)
+        do {
+            if let payload = try PublicSearch.route(
+                method: method,
+                path: request.url.path,
+                cursor: desktopQuery(request.url.query, "cursor"),
+                indexEnabled: enabled,
+                catalog: current
+            ) {
+                let response = try await RaftHTTPServer.respond(headers: .standard(extra: ["Cache-Control": "no-store"])) { payload }
+                return publicSearchResponse(response, isHead: payload.isHead)
+            }
+        } catch let error as PublicSearchError {
+            let response = try await RaftHTTPServer.respond { () throws -> NoContentResponse in throw error }
+            return publicSearchResponse(response, isHead: error.isHead)
         }
         var response = try await next.respond(to: request)
         response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
         return response
     }
+}
+
+/// HEAD keeps the GET entity length even though Vapor resets it when the body
+/// changes. Service credential refusals above keep their own legacy behavior.
+private func publicSearchResponse(_ response: Response, isHead: Bool) -> Response {
+    guard isHead else { return response }
+    var response = response
+    let length = response.headers[.contentLength]
+    response.body = .init(string: "")
+    response.headers[.contentLength] = length
+    return response
 }
 
 private struct ExperimentalSurfaceGate: Middleware {
@@ -436,19 +456,16 @@ private struct ExperimentalSurfaceGate: Middleware {
     func respond(to request: Request, chainingTo next: any Responder) async throws -> Response {
         let path = request.url.path
         let isExperimental = path.hasPrefix("/internal/agent-api") || path.hasPrefix("/internal/computer")
-        if isExperimental, directory.experimentalSurfacesDisabled {
-            var headers = HTTPFields()
-            headers[.contentType] = "application/json"
-            headers[HTTPField.Name("Sec-Slock-Api-Version")!] = "1"
-            // `errorPayload` owns the shared `{error, code}` shape; the gate
-            // appends the upstream `retry_after` field, which is always null
-            // for a kill switch.
-            let payload = ChannelMessagingService.errorPayload(
-                "Experimental internal surface is disabled",
-                code: "experimental_surface_disabled"
-            ) ?? #"{"code":"experimental_surface_disabled","error":"Experimental internal surface is disabled"}"#
-            let body = String(payload.dropLast()) + #","retry_after":null}"#
-            return Response(status: .serviceUnavailable, headers: headers, body: .init(string: body))
+        if isExperimental, DirectoryRuntimePolicy(directory: directory).experimentalSurfacesDisabled {
+            return RaftHTTPServer.respond(
+                status: 503,
+                headers: .exact(["Content-Type": "application/json", "Sec-Slock-Api-Version": "1"]),
+                rawJSON: OrderedJSON.object([
+                    OrderedJSONField("code", "experimental_surface_disabled"),
+                    OrderedJSONField("error", "Experimental internal surface is disabled"),
+                    OrderedJSONField("retry_after", .null),
+                ]).render()
+            )
         }
         return try await next.respond(to: request)
     }
@@ -510,16 +527,7 @@ private func resolveOIDCScope(_ segment: String, oauth: OAuthLedger) -> OIDCScop
 }
 
 private func pixelAvatarError(_ status: Int, _ error: String) -> Response {
-    let body = ChannelMessagingService.errorPayload(error) ?? "{}"
-    return routeResponse(HTTPReply(
-        status: status,
-        headers: [
-            "X-Robots-Tag": AppFallback.robotsTag,
-            "Content-Type": AppFallback.jsonContentType,
-            "Content-Length": String(Data(body.utf8).count),
-        ],
-        body: body
-    ))
+    respond(status: UInt(status), rawJSON: OrderedJSON.object([OrderedJSONField("error", error)]).render())
 }
 
 private func publicMessageWindow(_ query: String?) -> (limit: Int, before: String?)? {

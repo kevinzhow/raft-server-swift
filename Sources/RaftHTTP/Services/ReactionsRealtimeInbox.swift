@@ -44,7 +44,7 @@ extension ReactionsRealtimeService {
         guard let userId = dependencies.sessionUserId(authorization) else {
             throw ReactionsRealtimeError.inboxAuthRequired(bearer: authorization?.hasPrefix("Bearer ") == true)
         }
-        let params = EmailLoginDirectory.inboxQueryParameters(query)
+        let params = MessagePageCursor.inboxQueryParameters(query)
         let effectiveFilter = params["filter"] ?? filter ?? "all"
         let limit = min(max(Int(params["limit"] ?? "") ?? 30, 1), 100)
         let offset = max(Int(params["offset"] ?? "") ?? 0, 0)
@@ -303,7 +303,7 @@ extension ReactionsRealtimeService {
                 channelName: group.channelName,
                 channelType: group.channelType,
                 count: group.count,
-                lastActivityAt: EmailLoginDirectory.isoString(group.lastActivityAt)
+                lastActivityAt: DateText.isoString(group.lastActivityAt)
             )
         }
 

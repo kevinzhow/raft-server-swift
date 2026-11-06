@@ -713,7 +713,7 @@ private final class HookLog: @unchecked Sendable {
             let body = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
             #expect(body?["code"] as? String == "native_credential_proof_invalid")
             let secret = enrolled.credential.split(separator: ".").last.map(String.init) ?? ""
-            let secretHash = EmailLoginDirectory.sha256Hex(secret)
+            let secretHash = AuthTokenCodec.sha256Hex(secret)
             for forbidden in [enrolled.grant, enrolled.credential, secretHash, proof, token] {
                 #expect(text.contains(forbidden) == false)
             }

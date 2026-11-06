@@ -11,7 +11,7 @@ public enum NativeNotificationCredentials {
     public static func enrollmentProofTranscript(grant: String, appId: String, protocolVersion: Int, appVersion: String, releaseChannel: String, appInstanceId: String, publicKey: String, nonce: String) -> Data {
         let joined = [
             "raft-desktop-notification-enrollment-v1",
-            EmailLoginDirectory.sha256(grant),
+            AuthTokenCodec.sha256(grant),
             appId,
             String(protocolVersion),
             appVersion,
@@ -25,7 +25,7 @@ public enum NativeNotificationCredentials {
 
     /// The bytes an Ed25519 rotation proof signs.
     public static func rotationProofTranscript(credential: String, deviceId: String) -> Data {
-        let joined = ["raft-desktop-notification-rotation-v1", EmailLoginDirectory.sha256(credential), deviceId].joined(separator: "\u{0}")
+        let joined = ["raft-desktop-notification-rotation-v1", AuthTokenCodec.sha256(credential), deviceId].joined(separator: "\u{0}")
         return Data(joined.utf8)
     }
 
@@ -47,9 +47,9 @@ public enum NativeNotificationCredentials {
 
     static func canonicalBase64URL(_ value: String, minBytes: Int, maxBytes: Int) -> Data? {
         guard value.wholeMatch(of: /^[A-Za-z0-9_-]+$/) != nil,
-              let bytes = EmailLoginDirectory.base64urlDecode(value),
+              let bytes = AuthTokenCodec.base64urlDecode(value),
               (minBytes...maxBytes).contains(bytes.count),
-              EmailLoginDirectory.base64url(bytes) == value
+              AuthTokenCodec.base64url(bytes) == value
         else { return nil }
         return bytes
     }
@@ -59,8 +59,8 @@ public enum NativeNotificationCredentials {
         for index in bytes.indices {
             bytes[index] = UInt8.random(in: 0...255)
         }
-        let secret = EmailLoginDirectory.base64url(bytes)
-        return ("\(prefix).\(id).\(secret)", EmailLoginDirectory.sha256(secret))
+        let secret = AuthTokenCodec.base64url(bytes)
+        return ("\(prefix).\(id).\(secret)", AuthTokenCodec.sha256(secret))
     }
 
     static func verifyEd25519(publicKeySPKI: String, transcript: Data, proof: String) -> Bool {

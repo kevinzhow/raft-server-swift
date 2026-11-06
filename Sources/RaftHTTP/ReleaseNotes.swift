@@ -86,11 +86,11 @@ public enum ReleaseNotes {
         return error.code == "23505" && identityConstraints.contains(error.constraint)
     }
 
-    public static func list(limit rawLimit: String?, cursor: String?, ifNoneMatch: String?, notes: [ReleaseNoteRecord]) -> HTTPReply {
+    public static func list(limit rawLimit: String?, cursor: String?, ifNoneMatch: String?, notes: [ReleaseNoteRecord]) throws -> ReleaseNotesResponse<ReleaseNotesListDTO> {
         let limit: Int
         if let rawLimit {
             guard let parsed = Int(rawLimit), rawLimit.allSatisfy(\.isNumber), (1...100).contains(parsed) else {
-                return failure(400, "invalid_limit")
+                throw ReleaseNotesError.invalidLimit
             }
             limit = parsed
         } else {
@@ -99,7 +99,7 @@ public enum ReleaseNotes {
         let after: (date: String, id: String)?
         if let cursor {
             guard cursor.count <= 256, let decoded = decodeCursor(cursor) else {
-                return failure(400, "invalid_cursor")
+                throw ReleaseNotesError.invalidCursor
             }
             after = decoded
         } else {
@@ -114,71 +114,25 @@ public enum ReleaseNotes {
             return note.date == after.date && note.id < after.id
         }
         let page = Array(published.prefix(limit))
-        let items = page.map { itemJSON($0) }.joined(separator: ",")
-        let next: String
-        if published.count > limit, let last = page.last {
-            next = jsonString(encodeCursor(date: last.date, id: last.id))
-        } else {
-            next = "null"
-        }
-        let body = "{\"items\":[\(items)],\"nextCursor\":\(next)}"
-        return cached(body, ifNoneMatch: ifNoneMatch)
+        let next = published.count > limit ? page.last.map { encodeCursor(date: $0.date, id: $0.id) } : nil
+        return cached(ReleaseNotesListDTO(items: page.map { ReleaseNoteDTO(note: $0) }, nextCursor: next), ifNoneMatch: ifNoneMatch)
     }
 
-    public static func detail(id: String, ifNoneMatch: String?, notes: [ReleaseNoteRecord]) -> HTTPReply {
+    public static func detail(id: String, ifNoneMatch: String?, notes: [ReleaseNoteRecord]) throws -> ReleaseNotesResponse<ReleaseNoteDTO> {
         guard id.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
-            return failure(400, "invalid_release_id")
+            throw ReleaseNotesError.invalidReleaseId
         }
         guard let note = notes.first(where: { $0.id.caseInsensitiveCompare(id) == .orderedSame && $0.currentRevision != nil }) else {
-            return failure(404, "not_found")
+            throw ReleaseNotesError.notFound
         }
-        return cached(rowJSON(note), ifNoneMatch: ifNoneMatch)
+        return cached(ReleaseNoteDTO(note: note), ifNoneMatch: ifNoneMatch)
     }
 
-    private static func itemJSON(_ note: ReleaseNoteRecord) -> String {
-        rowJSON(note)
-    }
-
-    private static func rowJSON(_ note: ReleaseNoteRecord) -> String {
-        let state = note.retracted ? "retracted" : "published"
-        let entries = note.retracted ? "" : note.entries
-            .filter { $0.revision == note.currentRevision }
-            .sorted { $0.ordinal < $1.ordinal }
-            .map { entry in
-                "{\"entryId\":\(jsonString(entry.entryId)),\"type\":\(jsonString(entry.type)),\"text\":\(jsonString(entry.text)),\"emphasis\":\(entry.emphasis),\"ordinal\":\(entry.ordinal)}"
-            }
-            .joined(separator: ",")
-        let publishedAt = note.publishedAt.map(jsonString) ?? "null"
-        return "{\"releaseId\":\(jsonString(note.id)),\"releaseKey\":\(jsonString(note.releaseKey)),\"version\":\(jsonString(note.version)),\"tag\":\(jsonString(note.tag)),\"date\":\(jsonString(note.date)),\"revision\":\(note.currentRevision ?? 0),\"snapshotHash\":\(jsonString(note.snapshotHash)),\"publishedAt\":\(publishedAt),\"state\":\(jsonString(state)),\"entries\":[\(entries)]}"
-    }
-
-    private static func cached(_ body: String, ifNoneMatch: String?) -> HTTPReply {
+    private static func cached<Payload: JSONBodyConvertible>(_ payload: Payload, ifNoneMatch: String?) -> ReleaseNotesResponse<Payload> {
+        let body = payload.jsonBody.render()
         let digest = SHA256.hash(data: Data(body.utf8)).map { String(format: "%02x", $0) }.joined()
         let etag = "\"\(digest)\""
-        if ifNoneMatch == etag {
-            return HTTPReply(status: 304, headers: [
-                "X-Robots-Tag": AppFallback.robotsTag,
-                "ETag": etag,
-                "Cache-Control": "public, max-age=30",
-                "Content-Length": "0",
-            ], body: "")
-        }
-        return HTTPReply(status: 200, headers: [
-            "X-Robots-Tag": AppFallback.robotsTag,
-            "Content-Type": AppFallback.jsonContentType,
-            "ETag": etag,
-            "Cache-Control": "public, max-age=30",
-            "Content-Length": String(Data(body.utf8).count),
-        ], body: body)
-    }
-
-    private static func failure(_ status: Int, _ code: String) -> HTTPReply {
-        let body = "{\"code\":\(jsonString(code))}"
-        return HTTPReply(status: status, headers: [
-            "X-Robots-Tag": AppFallback.robotsTag,
-            "Content-Type": AppFallback.jsonContentType,
-            "Content-Length": String(Data(body.utf8).count),
-        ], body: body)
+        return ifNoneMatch == etag ? .notModified(etag: etag) : .published(payload, etag: etag)
     }
 
     private static func decodeCursor(_ value: String) -> (date: String, id: String)? {
@@ -195,7 +149,7 @@ public enum ReleaseNotes {
     }
 
     private static func encodeCursor(date: String, id: String) -> String {
-        let raw = "{\"date\":\(jsonString(date)),\"id\":\(jsonString(id))}"
+        let raw = OrderedJSON.object([.init("date", date), .init("id", id)]).render()
         var encoded = Data(raw.utf8).base64EncodedString()
         encoded = encoded.replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
         while encoded.hasSuffix("=") { encoded.removeLast() }

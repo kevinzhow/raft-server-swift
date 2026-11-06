@@ -26,14 +26,6 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
         self.services = services
     }
 
-    /// Decodes one typed JSON body even when the client omitted a JSON
-    /// `Content-Type`; the published handler accepted a raw JSON body before
-    /// the typed migration.
-    private func typedJSONBody<T: Decodable>(_ type: T.Type, _ request: Request) async throws -> T? {
-        if let decoded = try? await request.content.decode(type) { return decoded }
-        guard let data = try await request.body.collect() else { return nil }
-        return try? JSONDecoder().decode(type, from: data)
-    }
 
     public func boot(routes: any RoutesBuilder) async throws {
         register(routes: routes)
@@ -152,7 +144,7 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
         }
         agentApi.post("profile") { request async throws -> Response in
-            let body = try await typedJSONBody(AgentProfileUpdateRequest.self, request)
+            let body = try await decodeJSONRequestBody(AgentProfileUpdateRequest.self, request)
             return try await respond {
                 try services.emailAccounts.joinLinksAndInvites.updateAgentProfile(
                     authorization: request.headers[.authorization],
@@ -463,7 +455,7 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
         agentApi.patch("apps", ":appId", "config") { request async throws -> Response in
             // A body that does not decode stays `nil`: the service authorizes
             // before answering the legacy `Invalid config request` 400.
-            let body = try await typedJSONBody(AgentAppConfigPatchRequest.self, request)
+            let body = try await decodeJSONRequestBody(AgentAppConfigPatchRequest.self, request)
             return try await respond {
                 try services.emailAccounts.actionCardPrepare.patchAgentAppConfig(
                     authorization: request.headers[.authorization],
@@ -508,8 +500,7 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             // decode falls back to the collected bytes. The raw text is also
             // what the idempotency fingerprint covers.
             let rawBody = try await request.bodyText()
-            let body = (try? await request.content.decode(AgentTaskCreateRequest.self))
-                ?? (try? JSONDecoder().decode(AgentTaskCreateRequest.self, from: Data(rawBody.utf8)))
+            let body = try await decodeJSONRequestBody(AgentTaskCreateRequest.self, request, rawFallback: rawBody)
             return try await respond(headers: { $0.headers }) {
                 try services.emailAccounts.actionCardMarketplace.createTasks(
                     authorization: request.headers[.authorization],
@@ -709,7 +700,7 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
         }
         agentApi.post("mcp", "call") { request async throws -> Response in
-            let body = (try? await request.content.decode(ManagedMCPToolCallRequest.self))
+            let body = (try? await decodeJSONRequestBody(ManagedMCPToolCallRequest.self, request, decoding: .contentOnly))
                 ?? ManagedMCPToolCallRequest()
             return try await respond {
                 try services.emailAccounts.actionCards.callManagedMCPTool(
@@ -719,7 +710,7 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
         }
         agentApi.post("feedback-locators") { request async throws -> Response in
-            let body = await feedbackLocatorEnvelope(request)
+            let body = await jsonRequestBody(FeedbackLocatorIngestRequest.self, request, emptyDefault: "")
             return try await respond {
                 try services.emailAccounts.feedbackLocators.ingest(
                     authorization: request.headers[.authorization],
@@ -837,14 +828,14 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                     .trimmingCharacters(in: CharacterSet(charactersIn: "\"")),
                   !boundary.isEmpty
             else {
-                return respond(status: 400, headers: .exact([:]), rawJSON: "{\"error\":\"Invalid multipart upload\"}")
+                return respond(status: 400, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Invalid multipart upload")]).render())
             }
             let buffer = try await request.body.collect(max: .specified(ByteCount(value: 300 * 1024 * 1024)))
             guard let buffer,
                   let parsed = parseAttachmentMultipart(data: buffer, boundary: boundary),
                   let file = parsed.files.first
             else {
-                return respond(status: 400, headers: .exact([:]), rawJSON: "{\"error\":\"Invalid multipart upload\"}")
+                return respond(status: 400, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Invalid multipart upload")]).render())
             }
             return try await respond {
                 try services.emailAccounts.agentsLifecycle.uploadAgentAttachmentIdless(
@@ -929,12 +920,6 @@ private func parseAttachmentMultipart(data: Data, boundary: String) -> (channelI
     return (channelId, files)
 }
 
-private func jsonString(_ value: String) -> String {
-    let data = try? JSONSerialization.data(withJSONObject: [value])
-    let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
-    return String(text.dropFirst().dropLast())
-}
-
 private func publishReminderEvent(
     event: String, reminderId: String, agentId: String, services: FallbackServices
 ) {
@@ -948,30 +933,11 @@ private func publishReminderEvent(
         recipients.insert(member.userId)
     }
     guard !recipients.isEmpty else { return }
-    let payload = "{\"reminderId\":\(jsonString(reminderId)),\"ownerAgentId\":\(jsonString(agentId))}"
+    let payload = OrderedJSON.object([
+        OrderedJSONField("reminderId", reminderId),
+        OrderedJSONField("ownerAgentId", agentId),
+    ]).render()
     for userId in recipients {
         hub.emit(room: "user:\(userId)", event: event, payloadJSON: payload)
     }
-}
-
-/// Decodes one typed JSON body even when the client omitted a JSON
-/// `Content-Type`. The published handler accepted a raw JSON body before the
-/// typed migration, so the fallback keeps that behavior.
-private func typedJSONBody<T: Decodable>(_ type: T.Type, _ request: Request) async throws -> T? {
-    if let decoded = try? await request.content.decode(type) { return decoded }
-    guard let data = try? await request.body.collect() else { return nil }
-    return try? JSONDecoder().decode(type, from: data)
-}
-
-/// `POST /internal/agent-api/feedback-locators` accepted a JSON body with or
-/// without a `Content-Type` header, so the typed decode runs first and a
-/// header-less body falls back to the raw bytes. A body that is not a JSON
-/// object stays `nil`, which the service answers with the published
-/// `invalid_payload`.
-private func feedbackLocatorEnvelope(_ request: Request) async -> FeedbackLocatorIngestRequest? {
-    if let typed = try? await request.content.decode(FeedbackLocatorIngestRequest.self) {
-        return typed
-    }
-    guard let raw = try? await request.bodyText() else { return nil }
-    return try? JSONDecoder().decode(FeedbackLocatorIngestRequest.self, from: Data(raw.utf8))
 }

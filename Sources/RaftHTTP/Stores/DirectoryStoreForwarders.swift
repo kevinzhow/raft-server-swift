@@ -110,8 +110,7 @@ extension EmailLoginDirectory {
 
     var humanMessageRows: [StoredHumanMessage] { get { messagesAndThreadsStore.humanMessageRows } set { messagesAndThreadsStore.humanMessageRows = newValue } }
     var channelAttachments: [String: ChannelAttachment] { get { messagesAndThreadsStore.channelAttachments } set { messagesAndThreadsStore.channelAttachments = newValue } }
-    var recordedChannelMessageEvents: [EmailLoginDirectory.ChannelMessageEvent] { get { messagesAndThreadsStore.recordedChannelMessageEvents } set { messagesAndThreadsStore.recordedChannelMessageEvents = newValue } }
-    var forwardedBundles: [String: [EmailLoginDirectory.ForwardedSource]] { get { messagesAndThreadsStore.forwardedBundles } set { messagesAndThreadsStore.forwardedBundles = newValue } }
+    var forwardedBundles: [String: [ForwardedSource]] { get { messagesAndThreadsStore.forwardedBundles } set { messagesAndThreadsStore.forwardedBundles = newValue } }
     var forwardRecords: [String: StoredForwardRecord] { get { messagesAndThreadsStore.forwardRecords } set { messagesAndThreadsStore.forwardRecords = newValue } }
     var messageReactions: [StoredReaction] { get { messagesAndThreadsStore.messageReactions } set { messagesAndThreadsStore.messageReactions = newValue } }
     var reactionViewerVersions: [String: Int] { get { messagesAndThreadsStore.reactionViewerVersions } set { messagesAndThreadsStore.reactionViewerVersions = newValue } }

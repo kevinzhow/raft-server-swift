@@ -156,10 +156,10 @@ extension EmailLoginDirectory {
 
     /// Signed token for `GET/POST /api/email/mobile-app/unsubscribe`. A missing locale is `en`.
     public func createMobileAppEmailUnsubscribeToken(userId: String, locale: String? = nil) -> String {
-        let canonical = EmailLoginDirectory.mobileAppUnsubscribeLocale(locale)
+        let canonical = MobileAppEmailUnsubscribe.mobileAppUnsubscribeLocale(locale)
         let claims = "{\"v\":1,\"typ\":\"mobile-app-email-unsubscribe\",\"sub\":\(jsonString(userId)),\"locale\":\(jsonString(canonical))}"
-        let payload = EmailLoginDirectory.base64url(Data(claims.utf8))
-        let signature = EmailLoginDirectory.mobileAppUnsubscribeSignature(payload: payload, secret: mobileAppEmailUnsubscribeSecret)
+        let payload = AuthTokenCodec.base64url(Data(claims.utf8))
+        let signature = MobileAppEmailUnsubscribe.mobileAppUnsubscribeSignature(payload: payload, secret: mobileAppEmailUnsubscribeSecret)
         return "\(payload).\(signature)"
     }
 
@@ -168,7 +168,7 @@ extension EmailLoginDirectory {
         lock.lock()
         storedMobileAppEmailJourneys.append(MobileAppEmailJourney(
             userId: userId,
-            email: EmailLoginDirectory.normalize(email),
+            email: AccountNaming.normalize(email),
             journeyKey: journeyKey,
             day1Status: day1Status,
             day1EmailId: day1EmailId,
@@ -194,12 +194,12 @@ extension EmailLoginDirectory {
     // MARK: - Accounts
 
     public func addAccount(id: String, email: String, password: String, avatarUrl: String? = nil, passwordCredentialEstablished: Bool = true) {
-        let normalized = EmailLoginDirectory.normalize(email)
+        let normalized = AccountNaming.normalize(email)
         lock.lock()
         accounts[normalized] = Account(
             id: id,
             email: normalized,
-            passwordHash: EmailLoginDirectory.sha256(password),
+            passwordHash: AuthTokenCodec.sha256(password),
             passwordCredentialEstablishedAt: passwordCredentialEstablished ? Date() : nil,
             displayLanguage: nil,
             name: String(normalized.split(separator: "@").first ?? "user"),

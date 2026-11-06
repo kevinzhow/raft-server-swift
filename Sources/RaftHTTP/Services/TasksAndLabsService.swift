@@ -145,7 +145,7 @@ public struct TasksAndLabsService: Sendable {
         guard statusOccurrences.count <= 1 else { return .invalid }
         guard let occurrence = statusOccurrences.first else { return .valid(nil) }
         let value = String(occurrence.dropFirst("status=".count)).removingPercentEncoding ?? ""
-        guard EmailLoginDirectory.validTaskStatuses.contains(value) else { return .invalid }
+        guard TaskCatalogPolicy.validTaskStatuses.contains(value) else { return .invalid }
         return .valid(value)
     }
 

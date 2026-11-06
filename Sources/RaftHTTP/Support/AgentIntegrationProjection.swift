@@ -1,25 +1,21 @@
 import Foundation
 
-/// Maps the OAuth ledger's untyped integration-client rows into the typed
-/// snapshot the agent delivery service consumes.
-///
-/// `OAuthLedger.integrationServices` exposes `[[String: Any]]` because its
-/// callers predate the DTO layer. This bridge lives in `Support/` so a service
-/// method never has to name that dictionary shape; the service only sees
-/// `AgentIntegrationServiceSnapshot`.
+/// Maps the OAuth ledger's typed integration-service rows into the snapshot the
+/// agent delivery service consumes. Third-party text is made inert here, so the
+/// service only ever sees `AgentIntegrationServiceSnapshot`.
 enum AgentIntegrationProjection {
-    static func snapshot(_ service: [String: Any]) -> AgentIntegrationServiceSnapshot {
+    static func snapshot(_ service: IntegrationServiceRow) -> AgentIntegrationServiceSnapshot {
         AgentIntegrationServiceSnapshot(
-            id: service["id"] as? String,
-            clientId: service["clientId"] as? String,
-            name: (service["name"] as? String).map(EmailLoginDirectory.inertThirdPartyText),
-            description: service["description"] as? String,
-            homepageUrl: service["homepageUrl"] as? String,
-            agentManifestUrl: service["agentManifestUrl"] as? String,
-            agentManifestUrlSource: service["agentManifestUrlSource"] as? String,
-            allowedScopes: service["allowedScopes"] as? [String],
-            whenToUse: (service["whenToUse"] as? String).map(EmailLoginDirectory.inertThirdPartyText),
-            appType: service["appType"] as? String
+            id: service.id,
+            clientId: service.clientId,
+            name: ThirdPartyText.inertThirdPartyText(service.name),
+            description: service.description,
+            homepageUrl: service.homepageUrl,
+            agentManifestUrl: service.agentManifestUrl,
+            agentManifestUrlSource: service.agentManifestUrlSource,
+            allowedScopes: service.allowedScopes,
+            whenToUse: service.whenToUse.map(ThirdPartyText.inertThirdPartyText),
+            appType: service.appType
         )
     }
 }

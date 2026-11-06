@@ -51,7 +51,7 @@ public struct PublicFeatureFlag: Equatable, Sendable {
 public enum PublicFeatureFlags {
     public static let maxKeys = 50
 
-    public static func reply(keysQuery: String?, platformQuery: String?, flags: [PublicFeatureFlag]) -> HTTPReply {
+    public static func reply(keysQuery: String?, platformQuery: String?, flags: [PublicFeatureFlag]) throws -> PublicFeatureFlagsResponse {
         let keys: [String]
         if let keysQuery {
             keys = keysQuery.split(separator: ",", omittingEmptySubsequences: false).map {
@@ -61,24 +61,13 @@ public enum PublicFeatureFlags {
             keys = []
         }
         if keys.isEmpty || keys.count > maxKeys || keys.contains(where: { !isValidKey($0) }) {
-            return error("keys must contain 1-\(maxKeys) valid feature flag keys")
+            throw PublicFeatureFlagsError.invalidKeys
         }
         if let platformQuery, platformQuery != "web", platformQuery != "mobile" {
-            return error("platform must be web or mobile")
+            throw PublicFeatureFlagsError.invalidPlatform
         }
         let evaluated = evaluate(keys: keys, platform: platformQuery, flags: flags)
-        let pairs = evaluated.map { "\(jsonString($0.key)):\($0.enabled ? "true" : "false")" }
-        let body = "{\"flags\":{\(pairs.joined(separator: ","))}}"
-        return HTTPReply(
-            status: 200,
-            headers: [
-                "X-Robots-Tag": AppFallback.robotsTag,
-                "Content-Type": AppFallback.jsonContentType,
-                "Cache-Control": "public, max-age=60",
-                "Content-Length": String(Data(body.utf8).count),
-            ],
-            body: body
-        )
+        return PublicFeatureFlagsResponse(flags: evaluated.map { .init(key: $0.key, enabled: $0.enabled) })
     }
 
     /// Before-login evaluation. Platform rules are the only rules that can flip
@@ -118,16 +107,4 @@ public enum PublicFeatureFlags {
         return match.range.location == 0 && match.range.length == range.length
     }
 
-    private static func error(_ message: String) -> HTTPReply {
-        let body = "{\"error\":\(jsonString(message))}"
-        return HTTPReply(
-            status: 400,
-            headers: [
-                "X-Robots-Tag": AppFallback.robotsTag,
-                "Content-Type": AppFallback.jsonContentType,
-                "Content-Length": String(Data(body.utf8).count),
-            ],
-            body: body
-        )
-    }
 }

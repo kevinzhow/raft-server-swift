@@ -2,6 +2,7 @@ import Foundation
 import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
+import Synchronization
 import Testing
 import Vapor
 import VaporTesting
@@ -234,6 +235,13 @@ private func deleteJSON(
     let uploadedFirst = accounts.addChannelAttachment(channelId: channelId, uploaderId: userId, filename: "uploaded-first-b.png")
     let uploadedSecond = accounts.addChannelAttachment(channelId: channelId, uploaderId: userId, filename: "uploaded-second-a.png")
     let requestedOrder = [uploadedSecond, uploadedFirst]
+    let sendBody = "{\"channelId\":\"\(channelId)\",\"content\":\"attachment selection order\",\"randomId\":\"attachment-selection-order-replay\",\"attachmentIds\":[\"\(uploadedSecond)\",\"\(uploadedFirst)\"]}"
+    let realtimeEvents = Mutex<[(room: String, name: String, payload: String?)]>([])
+    accounts.realtimeEmitter = { room, name, payload in
+        if name == "message:new" {
+            realtimeEvents.withLock { $0.append((room, name, payload)) }
+        }
+    }
     try await withApp { app in
         configure(app, services: FallbackServices(
             nodeEnv: "test",
@@ -252,7 +260,7 @@ private func deleteJSON(
             let send = try await postJSON(
                 client,
                 path: "/api/messages",
-                body: "{\"channelId\":\"\(channelId)\",\"content\":\"attachment selection order\",\"attachmentIds\":[\"\(uploadedSecond)\",\"\(uploadedFirst)\"]}",
+                body: sendBody,
                 authorization: "Bearer \(token)",
                 serverId: serverId
             )
@@ -262,10 +270,33 @@ private func deleteJSON(
             let ackIds = (sent?["attachments"] as? [[String: Any]])?.compactMap { $0["id"] as? String } ?? []
             #expect(ackIds == requestedOrder)
 
-            let realtime = accounts.channelMessageEvents().first {
-                $0.room == "channel:\(channelId)" && $0.name == "message:new" && $0.messageId == sentId
-            }
-            #expect(realtime?.attachmentIds == requestedOrder)
+            #expect(sentId.isEmpty == false)
+            let emitted = realtimeEvents.withLock { $0 }
+            #expect(emitted.count == 1)
+            let realtime = try #require(emitted.first)
+            #expect(realtime.room == "channel:\(channelId)")
+            #expect(realtime.name == "message:new")
+            let payload = try #require(realtime.payload)
+            let decodedPayload = try JSONSerialization.jsonObject(with: Data(payload.utf8))
+            let message = try #require(decodedPayload as? [String: Any])
+            #expect(message["id"] as? String == sentId)
+            #expect(message["channelId"] as? String == channelId)
+            let realtimeAttachmentIds = (message["attachments"] as? [[String: Any]])?.compactMap { $0["id"] as? String } ?? []
+            #expect(realtimeAttachmentIds == requestedOrder)
+
+            let replay = try await postJSON(
+                client,
+                path: "/api/messages",
+                body: sendBody,
+                authorization: "Bearer \(token)",
+                serverId: serverId
+            )
+            #expect(replay.status == .ok)
+            let replayed = try JSONSerialization.jsonObject(with: Data(bodyText(replay).utf8)) as? [String: Any]
+            #expect(replayed?["id"] as? String == sentId)
+            let replayAttachmentIds = (replayed?["attachments"] as? [[String: Any]])?.compactMap { $0["id"] as? String } ?? []
+            #expect(replayAttachmentIds == requestedOrder)
+            #expect(realtimeEvents.withLock { $0.count } == 1)
 
             var headers = HTTPFields()
             headers[.authorization] = "Bearer \(token)"
@@ -1454,7 +1485,7 @@ private func deleteJSON(
             #expect(sent.status == .ok)
             let messageId = ((try JSONSerialization.jsonObject(with: Data(bodyText(sent).utf8)) as? [String: Any])?["id"] as? String) ?? ""
             accounts.setForwardedBundle(messageId: messageId, items: [
-                EmailLoginDirectory.ForwardedSource(
+                ForwardedSource(
                     sourceServerId: serverId,
                     sourceTargetId: channelId,
                     sourceMessageId: "source-message",

@@ -101,7 +101,7 @@ public struct AgentPrivateSurfaceService: Sendable {
     ]
 
     private static func fractionalISO(_ date: Date) -> String {
-        EmailLoginDirectory.isoString(date)
+        DateText.isoString(date)
     }
 
     // MARK: - POST /api/agents
@@ -154,11 +154,11 @@ public struct AgentPrivateSurfaceService: Sendable {
         let rawConfig = AgentRuntimeConfigDocument(request: fields["runtimeConfig"]) ?? AgentRuntimeConfigDocument()
         try validateFormValues(fields, serverId: serverId)
         if let legacyRuntime = fields["runtime"]?.legacyString,
-           EmailLoginDirectory.deprecatedAgentRuntimes.contains(legacyRuntime) {
+           MachineMigrationPolicy.deprecatedAgentRuntimes.contains(legacyRuntime) {
             throw AgentPrivateSurfaceError.deprecatedRuntime(legacyRuntime)
         }
         if let configRuntime = rawConfig.runtime,
-           EmailLoginDirectory.deprecatedAgentRuntimes.contains(configRuntime) {
+           MachineMigrationPolicy.deprecatedAgentRuntimes.contains(configRuntime) {
             throw AgentPrivateSurfaceError.deprecatedRuntime(configRuntime)
         }
         try Self.checkStructure(rawConfig)
@@ -587,7 +587,7 @@ public struct AgentPrivateSurfaceService: Sendable {
         guard let agentId = dependencies.agents.recordCredentialUse(
             token: token,
             now: Date(),
-            defaultThrottleMs: EmailLoginDirectory.agentCredentialUseDefaultThrottleMs
+            defaultThrottleMs: AuthTokenCodec.agentCredentialUseDefaultThrottleMs
         ) else { return }
         guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.runtime == "external" else { return }
         dependencies.emitRealtime(

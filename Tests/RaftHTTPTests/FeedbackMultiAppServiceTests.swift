@@ -343,12 +343,12 @@ private func errorOf(_ operation: () async throws -> FeedbackHandsReply) async -
     #expect(wrapped != "hands-page-2")
     #expect(reply.body.hasPrefix(#"{"next_cursor":""#))
     #expect(reply.body.hasSuffix(#","tickets":[{"id":"a\/b"}],"unread_total":3}"#))
-    #expect(try EmailLoginDirectory.feedbackDecodeCursor(
+    #expect(try FeedbackRouting.feedbackDecodeCursor(
         wrapped, route: "ticket_list", userId: "user-1", ticketId: nil, cursorKey: cursorSecret
     ) == "hands-page-2")
     // The wrapped cursor is bound to its route, user and ticket.
     #expect(throws: (any Error).self) {
-        try EmailLoginDirectory.feedbackDecodeCursor(
+        try FeedbackRouting.feedbackDecodeCursor(
             wrapped, route: "ticket_comments", userId: "user-1", ticketId: nil, cursorKey: cursorSecret
         )
     }
@@ -395,7 +395,7 @@ private func errorOf(_ operation: () async throws -> FeedbackHandsReply) async -
     #expect(recorder.relayed.first?.path == "/api/apps/\(appId)/reporter-feedback/\(ticketId)?comment_limit=7")
     let object = try #require((try JSONSerialization.jsonObject(with: Data(reply.body.utf8))) as? [String: Any])
     let wrapped = try #require(object["next_comment_cursor"] as? String)
-    #expect(try EmailLoginDirectory.feedbackDecodeCursor(
+    #expect(try FeedbackRouting.feedbackDecodeCursor(
         wrapped, route: "ticket_comments", userId: "user-1", ticketId: ticketId, cursorKey: cursorSecret
     ) == "c2")
     #expect(reply.headers.values["Server-Timing"] == "raft_feedback_hands;dur=0.0")

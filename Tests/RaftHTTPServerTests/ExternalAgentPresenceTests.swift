@@ -89,7 +89,7 @@ private func agentRows(_ client: any Client, token: String, serverId: String) as
     accounts.realtimeEmitter = { room, event, payload in
         events.append(room: room, event: event, payload: payload)
     }
-    #expect(EmailLoginDirectory.agentCredentialUseDefaultThrottleMs == 60_000)
+    #expect(AuthTokenCodec.agentCredentialUseDefaultThrottleMs == 60_000)
 
     try await withApp { app in
         configure(app, services: FallbackServices(

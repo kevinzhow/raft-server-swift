@@ -34,7 +34,7 @@ public struct ProductFeedbackSubmissionService: Sendable {
         guard dependencies.account(userId)?.emailVerified == true else {
             throw ProductFeedbackSubmissionError.accountUnverified
         }
-        guard let fields = EmailLoginDirectory.multipartFields(body: request.body, contentType: request.contentType),
+        guard let fields = FormPayload.multipartFields(body: request.body, contentType: request.contentType),
               let submissionId = fields["submission_id"],
               submissionId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil,
               let type = fields["type"], ["idea", "problem"].contains(type),
@@ -70,7 +70,7 @@ public struct ProductFeedbackSubmissionService: Sendable {
         }
         let trustedClientKind: String
         do {
-            trustedClientKind = try EmailLoginDirectory.feedbackSource(request.clientKindHeader)
+            trustedClientKind = try FeedbackRouting.feedbackSource(request.clientKindHeader)
         } catch {
             throw ProductFeedbackSubmissionError.invalidSubmission
         }
@@ -137,7 +137,7 @@ public struct ProductFeedbackSubmissionService: Sendable {
         var presignedJSON: String?
         if let rawDiagnostics = fields["diagnostics"], !rawDiagnostics.isEmpty {
             guard let native = clientKind, ["android", "ios", "ohos"].contains(native),
-                  let diagnostics = EmailLoginDirectory.validatedFeedbackDiagnostics(rawDiagnostics, appId: routeEnvironment.appId)
+                  let diagnostics = FeedbackRouting.validatedFeedbackDiagnostics(rawDiagnostics, appId: routeEnvironment.appId)
             else {
                 throw ProductFeedbackSubmissionError.diagnosticsInvalid
             }
@@ -265,7 +265,7 @@ public struct ProductFeedbackSubmissionService: Sendable {
             return ProductFeedbackReceipt(
                 id: id,
                 status: status,
-                serverTiming: EmailLoginDirectory.feedbackTimingHeader(
+                serverTiming: FeedbackRouting.feedbackTimingHeader(
                     elapsedMs: now.timeIntervalSince(feedbackStartedAt) * 1000,
                     upstreamHeaders: upstreamHeaders
                 )
@@ -284,7 +284,7 @@ public struct ProductFeedbackSubmissionService: Sendable {
         if upstreamStatus == 401 || upstreamStatus == 403 {
             throw ProductFeedbackSubmissionError.integrationUnavailableForUpstream(
                 status: upstreamStatus,
-                error: EmailLoginDirectory.feedbackUpstreamError(upstreamJSON?.productFeedbackString("error"))
+                error: FeedbackRouting.feedbackUpstreamError(upstreamJSON?.productFeedbackString("error"))
             )
         }
         if upstreamStatus == 413 {

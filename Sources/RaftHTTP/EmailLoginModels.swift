@@ -304,11 +304,6 @@ struct AttachedComputer {
         let apiKey: String
     }
 
-enum Auth {
-        case user(String)
-        case rejected(HTTPReply)
-    }
-
 struct ChannelAttachment {
         var id: String
         var channelId: String

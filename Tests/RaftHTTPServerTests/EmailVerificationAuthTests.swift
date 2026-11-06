@@ -55,8 +55,8 @@ private func postJSON(
 
 private func registrationBody(email: String, extra: String = "") -> String {
     "{\"email\":\"\(email)\",\"password\":\"password123\",\"name\":\"Verifier\",\"acceptTerms\":true,"
-        + "\"termsVersion\":\"\(EmailLoginDirectory.termsVersion)\","
-        + "\"privacyVersion\":\"\(EmailLoginDirectory.privacyVersion)\"\(extra)}"
+        + "\"termsVersion\":\"\(AuthLegalPolicy.termsVersion)\","
+        + "\"privacyVersion\":\"\(AuthLegalPolicy.privacyVersion)\"\(extra)}"
 }
 
 private func register(

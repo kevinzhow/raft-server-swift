@@ -32,7 +32,7 @@ extension ReactionsRealtimeService {
             throw ReactionsRealtimeError.agentTokenInvalid
         }
         let rows = messages.agentMentionRows(agentId: credential.agentId)
-        let page = Array(rows.reversed().prefix(EmailLoginDirectory.messagePageLimit(rawLimit)))
+        let page = Array(rows.reversed().prefix(MessagePageCursor.messagePageLimit(rawLimit)))
         return AgentMentionInboxResponse(
             messageIds: page.map(\.messageId),
             hasMore: rows.count > page.count
@@ -166,7 +166,7 @@ extension ReactionsRealtimeService {
                 channelId: conversation.id,
                 channelName: conversation.name,
                 channelType: conversation.kind == "dm" ? "dm" : "channel",
-                timestamp: EmailLoginDirectory.isoString(message.createdAt),
+                timestamp: DateText.isoString(message.createdAt),
                 external: senderType == "third_party_app"
                     ? AgentEventEntry.ExternalMessage(
                         messageId: message.externalMessageId,

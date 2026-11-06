@@ -154,10 +154,10 @@ public struct HumanMessageCreateService: Sendable {
                     )
                 },
                 renderForwardItem: { item in
-                    EmailLoginDirectory.forwardItemJSON(item)
+                    MessageForwardProjection.forwardItemJSON(item)
                 },
                 mentionBindingConflict: { mentions in
-                    EmailLoginDirectory.mentionBindingConflict(mentions)
+                    MessageMentionRules.mentionBindingConflict(mentions)
                 },
                 now: { Date() }
             )

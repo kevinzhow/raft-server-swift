@@ -44,21 +44,18 @@ public struct AttachmentPreviewTokens: Sendable {
         // Legacy wrote the object with `JSONSerialization` and `.sortedKeys`:
         // attachmentId, actorId, aud, audience, exp, serverId, type.
         let expiry = Int(now.timeIntervalSince1970) + expiresIn
-        let payload = "{"
-            + "\"attachmentId\":\(jsonString(attachmentId))"
-            + ",\"actorId\":\(jsonString(actorId))"
-            + ",\"aud\":\(jsonString(audience))"
-            + ",\"audience\":\(jsonString(audience))"
-            + ",\"exp\":\(expiry)"
-            + ",\"serverId\":\(jsonString(serverId))"
-            + ",\"type\":\(jsonString(type))"
-            + "}"
-        let payloadPart = EmailLoginDirectory.previewBase64URL(Data(payload.utf8))
+        let payload = OrderedJSON.object([
+            OrderedJSONField("attachmentId", attachmentId), OrderedJSONField("actorId", actorId),
+            OrderedJSONField("aud", audience), OrderedJSONField("audience", audience),
+            OrderedJSONField("exp", expiry), OrderedJSONField("serverId", serverId),
+            OrderedJSONField("type", type),
+        ]).render()
+        let payloadPart = MessagePageCursor.previewBase64URL(Data(payload.utf8))
         let signature = HMAC<SHA256>.authenticationCode(
             for: Data(payloadPart.utf8),
             using: secret()
         )
-        return payloadPart + "." + EmailLoginDirectory.previewBase64URL(Data(signature))
+        return payloadPart + "." + MessagePageCursor.previewBase64URL(Data(signature))
     }
 
     /// The verified payload, or `nil` for a malformed, mis-signed, mis-scoped
@@ -84,8 +81,8 @@ public struct AttachmentPreviewTokens: Sendable {
         } else {
             return nil
         }
-        guard let signature = EmailLoginDirectory.previewBase64URLDecode(signaturePart),
-              let payloadData = EmailLoginDirectory.previewBase64URLDecode(payloadPart),
+        guard let signature = MessagePageCursor.previewBase64URLDecode(signaturePart),
+              let payloadData = MessagePageCursor.previewBase64URLDecode(payloadPart),
               HMAC<SHA256>.isValidAuthenticationCode(
                   signature,
                   authenticating: Data(signedPart.utf8),

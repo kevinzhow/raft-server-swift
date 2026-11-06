@@ -225,13 +225,13 @@ extension HumanMessageCreateService {
             if lhs.0.createdAt != rhs.0.createdAt { return lhs.0.createdAt < rhs.0.createdAt }
             return lhs.0.messageId < rhs.0.messageId
         }
-        var legacy: [EmailLoginDirectory.ForwardedSource] = []
+        var legacy: [ForwardedSource] = []
         var itemRecords: [ForwardItemRecord] = []
         var projections: [(attachment: ChannelAttachment, id: String, position: Int)] = []
         var position = 0
         for (source, context) in ordered {
             let exposed = context.sourceTargetId != nil
-            legacy.append(EmailLoginDirectory.ForwardedSource(
+            legacy.append(ForwardedSource(
                 sourceServerId: exposed ? serverId : "",
                 sourceTargetId: context.sourceTargetId ?? "",
                 sourceMessageId: exposed ? source.messageId : "",

@@ -676,7 +676,7 @@ public struct ActionCardPrepareService: Sendable {
         let senderName = message.externalSenderName
             ?? accounts.accounts.values.first { $0.id == message.senderId }?.name
             ?? (message.senderId == "system" ? "system" : message.senderId)
-        let timestamp = EmailLoginDirectory.isoString(message.createdAt)
+        let timestamp = DateText.isoString(message.createdAt)
         let identityFields = String(conversationIdentity.dropFirst().dropLast())
         var json = "{\"id\":\(jsonString(message.id)),\"message_id\":\(jsonString(message.id)),\"channelId\":\(jsonString(message.channelId)),\"seq\":\(seq),\"content\":\(jsonString(message.content)),\"sender_id\":\(jsonString(message.senderId)),\"sender_name\":\(jsonString(senderName)),\"senderName\":\(jsonString(senderName)),\"sender_type\":\(jsonString(senderType)),\"senderType\":\(jsonString(senderType)),\"createdAt\":\(jsonString(timestamp)),\"timestamp\":\(jsonString(timestamp))"
         if !identityFields.isEmpty {

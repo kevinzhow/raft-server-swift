@@ -163,10 +163,8 @@ public enum PublicSearch {
     }
 
     /// Non-GET/HEAD under `/api/public/search`. Nil when this request is not that surface.
-    public static func methodNotAllowed(method: String) -> HTTPReply {
-        json(status: 405, body: "{\"error\":\"Method not allowed\"}", method: method, extra: [
-            "Allow": "GET, HEAD",
-        ])
+    public static func methodNotAllowed(method: String) -> PublicSearchError {
+        PublicSearchError(reason: .methodNotAllowed, isHead: method.uppercased() == "HEAD")
     }
 
     /// Answer a public-search path. Nil when the path is not one of the search routes.
@@ -176,46 +174,46 @@ public enum PublicSearch {
         cursor: String?,
         indexEnabled: Bool,
         catalog: PublicSearchCatalog = PublicSearchCatalog()
-    ) -> HTTPReply? {
+    ) throws -> PublicSearchResponse? {
         if path == "/api/public/search/index" {
             if parseIndexCursor(cursor) == .invalid {
-                return notFound(method: method)
+                throw notFound(method: method)
             }
-            let body = indexEnabled ? indexBody(catalog, cursor: cursor) : "{\"entries\":[],\"nextCursor\":null}"
-            return json(status: 200, body: body, method: method, extra: [:])
+            let page = indexEnabled ? indexPage(catalog, cursor: cursor) : PublicSearchIndexResponse(entries: [], nextCursor: nil)
+            return PublicSearchResponse(page: .index(page), isHead: method.uppercased() == "HEAD")
         }
         guard indexEnabled else {
             if isServerPath(path) || isChannelPath(path) || isThreadPath(path) {
-                return notFound(method: method)
+                throw notFound(method: method)
             }
             return nil
         }
         let pieces = parts(path)
         if isServerPath(path), let serverPid = pieces.dropFirst(4).first {
-            guard let server = searchableServer(serverPid, catalog) else { return notFound(method: method) }
-            return json(status: 200, body: serverBody(server), method: method, extra: [:])
+            guard let server = searchableServer(serverPid, catalog) else { throw notFound(method: method) }
+            return PublicSearchResponse(page: .server(serverPage(server)), isHead: method.uppercased() == "HEAD")
         }
         if isChannelPath(path) {
             guard let serverPid = pieces.dropFirst(4).first, let channelPid = pieces.dropFirst(6).first else {
-                return notFound(method: method)
+                throw notFound(method: method)
             }
             guard isPublicId(channelPid), let server = searchableServer(serverPid, catalog),
                   let channel = guestChannel(channelPid, on: server)
-            else { return notFound(method: method) }
+            else { throw notFound(method: method) }
             if let cursor, cursor.wholeMatch(of: /^\d{1,18}$/) == nil {
-                return notFound(method: method)
+                throw notFound(method: method)
             }
             let seq = cursor.flatMap(Int.init)
-            return json(status: 200, body: channelBody(server, channel, beforeSeq: seq), method: method, extra: [:])
+            return PublicSearchResponse(page: .channel(channelPage(server, channel, beforeSeq: seq)), isHead: method.uppercased() == "HEAD")
         }
         if isThreadPath(path) {
             guard let serverPid = pieces.dropFirst(4).first, let threadPid = pieces.dropFirst(6).first else {
-                return notFound(method: method)
+                throw notFound(method: method)
             }
             guard isPublicId(threadPid), let server = searchableServer(serverPid, catalog),
                   let located = guestThread(threadPid, on: server)
-            else { return notFound(method: method) }
-            return json(status: 200, body: threadBody(server, located.channel, located.thread), method: method, extra: [:])
+            else { throw notFound(method: method) }
+            return PublicSearchResponse(page: .thread(threadPage(server, located.channel, located.thread)), isHead: method.uppercased() == "HEAD")
         }
         return nil
     }
@@ -224,20 +222,8 @@ public enum PublicSearch {
         path == "/api/public/search" || path.hasPrefix("/api/public/search/")
     }
 
-    private static func notFound(method: String) -> HTTPReply {
-        json(status: 404, body: "{\"error\":\"Not found\"}", method: method, extra: [:])
-    }
-
-    private static func json(status: Int, body: String, method: String, extra: [String: String]) -> HTTPReply {
-        let length = Data(body.utf8).count
-        var headers = [
-            "X-Robots-Tag": AppFallback.robotsTag,
-            "Content-Type": AppFallback.jsonContentType,
-            "Cache-Control": "no-store",
-            "Content-Length": String(length),
-        ]
-        for (name, value) in extra { headers[name] = value }
-        return HTTPReply(status: status, headers: headers, body: method.uppercased() == "HEAD" ? "" : body)
+    private static func notFound(method: String) -> PublicSearchError {
+        PublicSearchError(reason: .notFound, isHead: method.uppercased() == "HEAD")
     }
 
     private static func isServerPath(_ path: String) -> Bool {
@@ -300,58 +286,54 @@ public enum PublicSearch {
         return "\(channelPath(server, channel))/\(encodeURIComponent(thread.publicId))/\(encodeURIComponent(slugifyForPublicPath(title, fallback: "discussion")))"
     }
 
-    private static func serverBody(_ server: PublicSearchServer) -> String {
-        let channels = server.channels.filter(\.guestVisible).sorted { $0.name < $1.name }
-        let listed = channels.map { channel in
-            let description = channel.description.map(jsonString) ?? "null"
-            return "{\"publicId\":\(jsonString(channel.publicId)),\"name\":\(jsonString(channel.name)),\"description\":\(description),\"canonicalPath\":\(jsonString(channelPath(server, channel)))}"
-        }.joined(separator: ",")
-        return "{\"server\":{\"publicId\":\(jsonString(server.publicId)),\"name\":\(jsonString(server.name)),\"slug\":\(jsonString(server.slug)),\"avatarUrl\":null,\"updatedAt\":\(jsonString(server.updatedAt)),\"canonicalPath\":\(jsonString(serverPath(server)))},\"channels\":[\(listed)]}"
+    private static func serverSummary(_ server: PublicSearchServer) -> PublicSearchServerSummary {
+        .init(publicId: server.publicId, name: server.name, slug: server.slug, canonicalPath: serverPath(server))
     }
 
-    private static func channelBody(_ server: PublicSearchServer, _ channel: PublicSearchChannel, beforeSeq: Int?) -> String {
+    private static func channelSummary(_ server: PublicSearchServer, _ channel: PublicSearchChannel) -> PublicSearchChannelSummary {
+        .init(publicId: channel.publicId, name: channel.name, description: channel.description,
+              canonicalPath: channelPath(server, channel))
+    }
+
+    private static func serverPage(_ server: PublicSearchServer) -> PublicSearchServerResponse {
+        let channels = server.channels.filter(\.guestVisible).sorted { $0.name < $1.name }
+        return .init(server: serverSummary(server), updatedAt: server.updatedAt,
+                     channels: channels.map { channelSummary(server, $0) })
+    }
+
+    private static func channelPage(_ server: PublicSearchServer, _ channel: PublicSearchChannel, beforeSeq: Int?) -> PublicSearchChannelResponse {
         var threads = channel.threads.filter { !$0.replies.isEmpty }
-        if let beforeSeq {
-            threads = threads.filter { $0.parentSeq < beforeSeq }
-        }
+        if let beforeSeq { threads = threads.filter { $0.parentSeq < beforeSeq } }
         threads.sort { $0.parentSeq > $1.parentSeq }
         let page = Array(threads.prefix(50))
-        let next = threads.count > 50 ? jsonString(String(page[page.count - 1].parentSeq)) : "null"
-        let listed = page.map { thread -> String in
-            let title = publicThreadTitle(thread.parentContent)
-            let last = thread.replies.map(\.createdAt).max().map(jsonString) ?? "null"
-            let path = threadPath(server, channel, thread)
-            return "{\"publicId\":\(jsonString(thread.publicId)),\"title\":\(jsonString(title)),\"replyCount\":\(thread.replies.count),\"lastReplyAt\":\(last),\"canonicalPath\":\(jsonString(path))}"
-        }.joined(separator: ",")
-        let serverJSON = "{\"publicId\":\(jsonString(server.publicId)),\"name\":\(jsonString(server.name)),\"slug\":\(jsonString(server.slug)),\"canonicalPath\":\(jsonString(serverPath(server)))}"
-        let description = channel.description.map(jsonString) ?? "null"
-        let channelJSON = "{\"publicId\":\(jsonString(channel.publicId)),\"name\":\(jsonString(channel.name)),\"description\":\(description),\"canonicalPath\":\(jsonString(channelPath(server, channel)))}"
-        return "{\"server\":\(serverJSON),\"channel\":\(channelJSON),\"threads\":[\(listed)],\"nextCursor\":\(next)}"
+        return .init(
+            server: serverSummary(server), channel: channelSummary(server, channel),
+            threads: page.map { thread in
+                .init(publicId: thread.publicId, title: publicThreadTitle(thread.parentContent),
+                      replyCount: thread.replies.count, lastReplyAt: thread.replies.map(\.createdAt).max(),
+                      canonicalPath: threadPath(server, channel, thread))
+            },
+            nextCursor: threads.count > 50 ? String(page[page.count - 1].parentSeq) : nil
+        )
     }
 
-    private static func threadBody(_ server: PublicSearchServer, _ channel: PublicSearchChannel, _ thread: PublicSearchThread) -> String {
-        let title = publicThreadTitle(thread.parentContent)
-        let path = threadPath(server, channel, thread)
+    private static func threadPage(_ server: PublicSearchServer, _ channel: PublicSearchChannel, _ thread: PublicSearchThread) -> PublicSearchThreadResponse {
         let shown = Array(thread.replies.prefix(50))
-        let replies = shown.map { reply in
-            "{\"sender\":\(senderJSON(reply.senderName, reply.senderType)),\"content\":\(jsonString(reply.content)),\"createdAt\":\(jsonString(reply.createdAt)),\"updatedAt\":\(jsonString(reply.updatedAt))}"
-        }.joined(separator: ",")
-        let parent = "{\"sender\":\(senderJSON(thread.senderName, thread.senderType)),\"content\":\(jsonString(thread.parentContent)),\"createdAt\":\(jsonString(thread.parentCreatedAt)),\"updatedAt\":\(jsonString(thread.parentUpdatedAt))}"
-        let serverJSON = "{\"publicId\":\(jsonString(server.publicId)),\"name\":\(jsonString(server.name)),\"slug\":\(jsonString(server.slug)),\"canonicalPath\":\(jsonString(serverPath(server)))}"
-        let channelJSON = "{\"publicId\":\(jsonString(channel.publicId)),\"name\":\(jsonString(channel.name)),\"canonicalPath\":\(jsonString(channelPath(server, channel)))}"
-        let truncated = thread.replies.count > shown.count ? "true" : "false"
-        return "{\"server\":\(serverJSON),\"channel\":\(channelJSON),\"thread\":{\"publicId\":\(jsonString(thread.publicId)),\"title\":\(jsonString(title)),\"canonicalPath\":\(jsonString(path)),\"parent\":\(parent),\"replies\":[\(replies)],\"replyCount\":\(thread.replies.count),\"truncated\":\(truncated)}}"
+        return .init(
+            server: serverSummary(server), channel: channelSummary(server, channel), publicId: thread.publicId,
+            title: publicThreadTitle(thread.parentContent), canonicalPath: threadPath(server, channel, thread),
+            parent: .init(senderName: thread.senderName, senderType: thread.senderType, content: thread.parentContent,
+                          createdAt: thread.parentCreatedAt, updatedAt: thread.parentUpdatedAt),
+            replies: shown.map { .init(senderName: $0.senderName, senderType: $0.senderType, content: $0.content,
+                                      createdAt: $0.createdAt, updatedAt: $0.updatedAt) },
+            replyCount: thread.replies.count, truncated: thread.replies.count > shown.count
+        )
     }
 
-    private static func senderJSON(_ name: String, _ type: String) -> String {
-        let kind = type == "user" || type == "agent" ? type : "external"
-        return "{\"type\":\(jsonString(kind)),\"displayName\":\(jsonString(name)),\"avatarUrl\":null}"
-    }
-
-    private static func indexBody(_ catalog: PublicSearchCatalog, cursor: String?) -> String {
+    private static func indexPage(_ catalog: PublicSearchCatalog, cursor: String?) -> PublicSearchIndexResponse {
         let servers = catalog.servers.sorted { $0.publicId < $1.publicId }
         let start = cursor.flatMap { Int($0.prefix(32), radix: 16) } ?? 0
-        var entries: [String] = []
+        var entries: [PublicSearchIndexResponse.Entry] = []
         var index = max(0, min(start, servers.count))
         var scanned = 0
         while index < servers.count, scanned < 500, entries.count < 75 {
@@ -361,7 +343,7 @@ public enum PublicSearch {
                 scanned += 1
                 continue
             }
-            var serverEntries: [String] = []
+            var serverEntries: [PublicSearchIndexResponse.Entry] = []
             let serverLastmod = server.indexLastmod ?? server.updatedAt
             serverEntries.append(indexEntry("server", serverPath(server), serverLastmod))
             let channels = server.channels.filter(\.guestVisible).sorted { $0.publicId < $1.publicId }
@@ -379,17 +361,17 @@ public enum PublicSearch {
             index += 1
             scanned += 1
         }
-        var nextCursorJSON = "null"
+        var nextCursor: String?
         if index < servers.count {
             let hex = String(index, radix: 16)
             let padded = String(repeating: "0", count: max(0, 32 - hex.count)) + hex + ":done"
-            nextCursorJSON = jsonString(padded)
+            nextCursor = padded
         }
-        return "{\"entries\":[\("\(entries.joined(separator: ","))")],\"nextCursor\":\(nextCursorJSON)}"
+        return PublicSearchIndexResponse(entries: entries, nextCursor: nextCursor)
     }
 
-    private static func indexEntry(_ type: String, _ path: String, _ lastmod: String) -> String {
-        "{\"type\":\(jsonString(type)),\"canonicalPath\":\(jsonString(path)),\"lastmod\":\(jsonString(lastmod))}"
+    private static func indexEntry(_ type: String, _ path: String, _ lastmod: String) -> PublicSearchIndexResponse.Entry {
+        .init(type: type, canonicalPath: path, lastmod: lastmod)
     }
 
     private static func encodeURIComponent(_ value: String) -> String {

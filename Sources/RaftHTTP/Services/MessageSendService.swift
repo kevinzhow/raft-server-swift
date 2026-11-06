@@ -364,8 +364,8 @@ extension EmailLoginDirectory {
         guard let record = forwardRecords[messageId] else { return nil }
         let rendered = record.items.map { item in
             forwardItemReadableLocked(item, userId: userId, serverId: serverId)
-                ? Self.forwardItemJSON(item)
-                : Self.scrubbedForwardItemJSON(item)
+                ? MessageForwardProjection.forwardItemJSON(item)
+                : MessageForwardProjection.scrubbedForwardItemJSON(item)
         }.joined(separator: ",")
         return "{\"kind\":\"forwarded-bundle\",\"forwardedItems\":[\(rendered)]}"
     }
@@ -446,7 +446,7 @@ extension EmailLoginDirectory {
         var unresolved: [String] = []
         let hiddenDirectory = hiddenDirectoryForSender
         var seenHandles = Set<String>()
-        for handle in Self.mentionHandlesOutsideCode(content)
+        for handle in MessageMentionRules.mentionHandlesOutsideCode(content)
             where !typedNames.contains(handle.lowercased()) && seenHandles.insert(handle).inserted {
             let humanMatches = accounts.values.filter { account in
                 account.id != senderId

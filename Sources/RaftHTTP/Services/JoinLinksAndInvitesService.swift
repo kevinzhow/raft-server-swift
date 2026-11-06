@@ -255,7 +255,7 @@ public struct JoinLinksAndInvitesService: Sendable {
         }
         var expiresAt: Date?
         if let raw = body.expiresAt, !raw.isEmpty {
-            guard let parsed = EmailLoginDirectory.isoDate(raw) else {
+            guard let parsed = DateText.isoDate(raw) else {
                 throw JoinLinksAndInvitesError.invalidExpiresAt
             }
             expiresAt = parsed
@@ -287,7 +287,7 @@ public struct JoinLinksAndInvitesService: Sendable {
             token: token,
             link: JoinLinkPayloadDTO(link),
             maxUses: maxUses,
-            expiresAt: expiresAt.map(EmailLoginDirectory.isoString)
+            expiresAt: expiresAt.map(DateText.isoString)
         )
     }
 
@@ -340,7 +340,7 @@ public struct JoinLinksAndInvitesService: Sendable {
             }
             return try inviteInfoResponse(profile: profile, message: seatLimitMessage(serverId: link.serverId))
         }
-        let hash = EmailLoginDirectory.sha256(token)
+        let hash = AuthTokenCodec.sha256(token)
         guard let invite = store.inviteRecord(tokenHash: hash),
               let profile = oauth.serverProfile(id: invite.serverId)
         else {
@@ -398,7 +398,7 @@ public struct JoinLinksAndInvitesService: Sendable {
             throw JoinLinksAndInvitesError.invalidInvite
         }
         switch store.acceptServerInvite(
-            tokenHash: EmailLoginDirectory.sha256(rawToken),
+            tokenHash: AuthTokenCodec.sha256(rawToken),
             userEmail: email,
             userId: userId,
             requestedAgreementId: body.agreementId,

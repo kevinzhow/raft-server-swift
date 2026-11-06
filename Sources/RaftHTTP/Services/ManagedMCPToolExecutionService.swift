@@ -28,7 +28,7 @@ struct ManagedMCPToolExecutionDependencies: Sendable {
                 source.actionCardExecute.taskChannel(serverId: serverId, agentId: agentId, reference: reference)
             },
             agentWriter: { authorization in
-                source.agentWriterAndRole(authorization: authorization, legacyAgentId: nil, scopes: [])?.agent
+                AgentCredentialLookup(directory: source).agentWriterAndRole(authorization: authorization, legacyAgentId: nil, scopes: [])?.agent
             },
             now: { Date() }
         )

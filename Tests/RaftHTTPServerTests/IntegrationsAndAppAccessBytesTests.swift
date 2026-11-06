@@ -211,11 +211,11 @@ private func uuidIn(_ body: String, key: String) -> String {
             try await call("revoke-unauth", .post, "/api/integrations/grants/\(grantId)/revoke")
 
             // Access requests.
-            let requested = accounts.oauth.requestAgentAccess(
+            let requested = try accounts.oauth.requestAgentAccess(
                 authorization: nil,
                 body: "{\"clientId\":\"member-app\",\"clientSecret\":\"\(memberApp.clientSecret)\",\"serverSlug\":\"bytes-dst\",\"agentId\":\"\(agent)\",\"scopes\":[\"agent:notification:write\"]}"
             )
-            let requestId = uuidIn(requested.body, key: "requestId")
+            let requestId = requested.requestId
             try await call("approve-stranger", .post, "/api/integrations/requests/\(requestId)/approve", token: stranger, server: s, body: "{\"remember\":true}")
             try await call("approve-unknown", .post, "/api/integrations/requests/\(UUID().uuidString.lowercased())/approve", token: creator, server: s, body: "{}")
             try await call("approve-unauth", .post, "/api/integrations/requests/\(requestId)/approve")

@@ -25,7 +25,8 @@ import TestSupport
         let legacy = try #require(
             try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
         )
-        #expect(document.serialized() == EmailLoginDirectory.serializeJSON(legacy), "\(text)")
+        let expected = String(decoding: try JSONSerialization.data(withJSONObject: legacy, options: [.sortedKeys]), as: UTF8.self)
+        #expect(document.serialized() == expected, "\(text)")
     }
 }
 

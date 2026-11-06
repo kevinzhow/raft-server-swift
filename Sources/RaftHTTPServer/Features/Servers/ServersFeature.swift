@@ -18,15 +18,6 @@ public struct ServersFeature: RouteCollection, Sendable {
         self.services = services
     }
 
-    /// Decodes one typed JSON body even when the client omitted a JSON
-    /// `Content-Type`. The published handlers accepted a raw JSON body before
-    /// the typed migration, so the fallback keeps that behavior without a
-    /// second raw parser in the service.
-    private func typedJSONBody<T: Decodable>(_ type: T.Type, _ request: Request) async throws -> T? {
-        if let decoded = try? await request.content.decode(type) { return decoded }
-        guard let data = try await request.body.collect() else { return nil }
-        return try? JSONDecoder().decode(type, from: data)
-    }
 
     public func boot(routes: any RoutesBuilder) async throws {
         register(routes: routes)
@@ -36,18 +27,16 @@ public struct ServersFeature: RouteCollection, Sendable {
         let servers = routes.grouped("api", "servers")
 
         servers.post("join-community") { request async throws -> Response in
-            guard let directory = services.publicVisits else {
-                return routeResponse(PublicVisits.authRequired(authorization: request.headers[.authorization]))
+            try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
+                guard let directory = services.publicVisits else {
+                    throw PublicVisits.authRequired(authorization: request.headers[.authorization])
+                }
+                let body = try? await decodeJSONRequestBody(LegacyJSONObjectBody.self, request, decoding: .json, emptyDefault: "")
+                guard let userId = services.emailAccounts.authenticatedUserId(authorization: request.headers[.authorization]) else {
+                    throw PublicVisits.authRequired(authorization: request.headers[.authorization])
+                }
+                return try directory.joinCommunity(userId: userId, slug: body?.string("slug"))
             }
-            let rawBody = (try? await request.bodyText()) ?? ""
-            let slug = (try? JSONSerialization.jsonObject(with: Data(rawBody.utf8))) as? [String: Any]
-            guard let userId = services.emailAccounts.authenticatedUserId(authorization: request.headers[.authorization]) else {
-                return routeResponse(PublicVisits.authRequired(authorization: request.headers[.authorization]))
-            }
-            return routeResponse(directory.joinCommunity(
-                userId: userId,
-                slug: slug?["slug"] as? String
-            ))
         }
         servers.get("unread-summary") { request async throws -> Response in
             try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
@@ -71,10 +60,12 @@ public struct ServersFeature: RouteCollection, Sendable {
             if let ordered = services.emailAccounts.serverProfileAndOrder.orderedServerList(authorization: request.headers[.authorization]) {
                 return try await respond { ordered }
             }
-            guard let directory = services.publicVisits else {
-                return routeResponse(PublicVisits.authRequired(authorization: request.headers[.authorization]))
+            return try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
+                guard let directory = services.publicVisits else {
+                    throw PublicVisits.authRequired(authorization: request.headers[.authorization])
+                }
+                return try directory.serverList(authorization: request.headers[.authorization])
             }
-            return routeResponse(directory.serverList(authorization: request.headers[.authorization]))
         }
         servers.get("order") { request async throws -> Response in
             try await respond {
@@ -96,7 +87,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             // A typed body is the common case; a body without a JSON
             // Content-Type keeps the raw parser, which is the authority for the
             // published `Invalid transcript request` and timestamp errors.
-            if let body = try? await request.content.decode(TranscriptFeedbackRequestDTO.self) {
+            if let body = try? await decodeJSONRequestBody(TranscriptFeedbackRequestDTO.self, request, decoding: .contentOnly) {
                 return try await respond(status: 202) {
                     try services.emailAccounts.runtimeUsageAttestations.submitTranscriptFeedback(
                         authorization: request.headers[.authorization],
@@ -154,7 +145,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             // Same split as transcript feedback: a decodable typed body keeps
             // the route on `content.decode`, and every other spelling (boolean
             // or zero-fraction numbers included) stays on the legacy parser.
-            if let typed = try? await request.content.decode(MentionRedriveRequestDTO.self) {
+            if let typed = try? await decodeJSONRequestBody(MentionRedriveRequestDTO.self, request, decoding: .contentOnly) {
                 return try await respond(status: 404) {
                     try services.emailAccounts.runtimeUsageAttestations.redriveMentionDelivery(
                         authorization: request.headers[.authorization],
@@ -268,7 +259,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             // `expiresAt` and `maxUses` are the only fields. The typed decoder
             // keeps the raw parser's tolerance: a wrong-typed field reads as
             // absent and an invalid cap still answers the published 400.
-            let body = (try await typedJSONBody(CreateJoinLinkRequest.self, request)) ?? CreateJoinLinkRequest()
+            let body = (try await decodeJSONRequestBody(CreateJoinLinkRequest.self, request)) ?? CreateJoinLinkRequest()
             return try await respond {
                 try services.emailAccounts.joinLinksAndInvites.createJoinLink(
                     authorization: request.headers[.authorization],
@@ -306,7 +297,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             // `email` is required and `role` defaults to `member`. A body that
             // is not a JSON object falls back to the empty request, which is
             // the published invite error for a missing address.
-            let body = try await typedJSONBody(CreateServerInviteRequest.self, request)
+            let body = try await decodeJSONRequestBody(CreateServerInviteRequest.self, request)
             return try await respond {
                 try services.emailAccounts.joinLinksAndInvites.createServerInvite(
                     authorization: request.headers[.authorization],
@@ -319,7 +310,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             // The reset selects its target by path and reads no body fields.
             // Decoding states that empty contract; a malformed body still
             // resolves through the same path-only authorization.
-            _ = try? await request.content.decode(ServerSetupResetDTO.self)
+            _ = try? await decodeJSONRequestBody(ServerSetupResetDTO.self, request, decoding: .contentOnly)
             return try await respond {
                 try services.emailAccounts.joinLinksAndInvites.serverSetupReset(
                     authorization: request.headers[.authorization],
@@ -372,7 +363,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             }
         }
         servers.post(":id", "setup-transition") { request async throws -> Response in
-            let body = try await typedJSONBody(ServerSetupTransitionRequest.self, request)
+            let body = try await decodeJSONRequestBody(ServerSetupTransitionRequest.self, request)
             return try await respond {
                 try services.emailAccounts.joinLinksAndInvites.serverSetupTransition(
                     authorization: request.headers[.authorization],
@@ -500,7 +491,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             }
         }
         servers.patch(":id", "notification-settings") { request async throws -> Response in
-            let body = try await typedJSONBody(ServerNotificationPatchRequest.self, request)
+            let body = try await decodeJSONRequestBody(ServerNotificationPatchRequest.self, request)
             return try await respond {
                 try services.emailAccounts.runtimeFormsAndProbes.patchServerNotificationSettings(
                     authorization: request.headers[.authorization],
@@ -518,7 +509,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             }
         }
         servers.patch(":id", "onboarding-settings") { request async throws -> Response in
-            let body = try await typedJSONBody(ServerOnboardingPatchRequest.self, request)
+            let body = try await decodeJSONRequestBody(ServerOnboardingPatchRequest.self, request)
             return try await respond {
                 try services.emailAccounts.runtimeFormsAndProbes.patchServerOnboardingSettings(
                     authorization: request.headers[.authorization],
@@ -662,7 +653,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             return response
         }
         servers.post(":id", "machines", ":machineId", "runtime-account-usage", ":provider", "refresh") { request async throws -> Response in
-            let body = try await typedJSONBody(RuntimeAccountUsageRefreshRequest.self, request)
+            let body = try await decodeJSONRequestBody(RuntimeAccountUsageRefreshRequest.self, request)
             return try await respond {
                 try services.emailAccounts.runtimeFormsAndProbes.refreshMachineRuntimeAccountUsage(
                     authorization: request.headers[.authorization],
@@ -722,7 +713,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             }
         }
         servers.post(":id", "machines") { request async throws -> Response in
-            let body = try await typedJSONBody(ServerMachineRegistrationRequest.self, request)
+            let body = try await decodeJSONRequestBody(ServerMachineRegistrationRequest.self, request)
             return try await respond {
                 try services.emailAccounts.runtimeFormsAndProbes.registerServerMachine(
                     authorization: request.headers[.authorization],
@@ -840,41 +831,47 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "public-visibility") { request -> Response in
+        servers.get(":id", "public-visibility") { request async throws -> Response in
             guard let directory = services.publicServerDirectory, let id = request.parameters.get("id") else {
-                return routeResponse(HTTPReply(status: 404, headers: [:], body: "{\"error\":\"Not found\"}"))
+                return respond(status: 404, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Not found")]).render())
             }
-            return routeResponse(directory.readVisibility(serverId: id, authorization: request.headers[.authorization]))
+            return try await respond { try directory.readVisibility(serverId: id, authorization: request.headers[.authorization]) }
         }
         servers.patch(":id", "public-guest-join") { request async throws -> Response in
             guard let directory = services.publicServerDirectory, let id = request.parameters.get("id") else {
-                return routeResponse(HTTPReply(status: 404, headers: [:], body: "{\"error\":\"Not found\"}"))
+                return respond(status: 404, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Not found")]).render())
             }
-            return routeResponse(directory.patchGuestJoin(
+            return try await respond {
+                try directory.patchGuestJoin(
                 serverId: id,
                 authorization: request.headers[.authorization],
                 body: try await request.bodyText()
-            ))
+                )
+            }
         }
         servers.patch(":id", "public-visibility") { request async throws -> Response in
             guard let directory = services.publicServerDirectory, let id = request.parameters.get("id") else {
-                return routeResponse(HTTPReply(status: 404, headers: [:], body: "{\"error\":\"Not found\"}"))
+                return respond(status: 404, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Not found")]).render())
             }
-            return routeResponse(directory.patchVisibility(
+            return try await respond {
+                try directory.patchVisibility(
                 serverId: id,
                 authorization: request.headers[.authorization],
                 body: try await request.bodyText()
-            ))
+                )
+            }
         }
         servers.patch(":id", "public-search") { request async throws -> Response in
             guard let directory = services.publicServerDirectory, let id = request.parameters.get("id") else {
-                return routeResponse(HTTPReply(status: 404, headers: [:], body: "{\"error\":\"Not found\"}"))
+                return respond(status: 404, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Not found")]).render())
             }
-            return routeResponse(directory.patchSearch(
+            return try await respond {
+                try directory.patchSearch(
                 serverId: id,
                 authorization: request.headers[.authorization],
                 body: try await request.bodyText()
-            ))
+                )
+            }
         }
     }
 

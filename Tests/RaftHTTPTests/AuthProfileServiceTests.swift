@@ -30,7 +30,7 @@ import TestSupport
     let known = try service.forgotPassword(ForgotPasswordRequest(email: "  PROFILE@example.test "))
     #expect(known.ok)
     let stored = directory.authProfileStore.resetToken(
-        hash: EmailLoginDirectory.sha256("profile-reset-token")
+        hash: AuthTokenCodec.sha256("profile-reset-token")
     )
     #expect(stored?.userId == userId)
     #expect(stored?.expiresAt == now.addingTimeInterval(60 * 60))
@@ -38,7 +38,7 @@ import TestSupport
     // An unknown address answers the same acceptance and grows no token.
     let unknown = try service.forgotPassword(ForgotPasswordRequest(email: "missing@example.test"))
     #expect(unknown.ok)
-    #expect(directory.authProfileStore.resetToken(hash: EmailLoginDirectory.sha256("profile-reset-token"))?.userId == userId)
+    #expect(directory.authProfileStore.resetToken(hash: AuthTokenCodec.sha256("profile-reset-token"))?.userId == userId)
 }
 
 @Test func authProfileResetPasswordConsumesTheTokenOnceAndWritesTheCredential() throws {
@@ -64,15 +64,15 @@ import TestSupport
         ResetPasswordRequest(token: "profile-reset-token", password: "new-password-123")
     )
     #expect(ok.ok)
-    let account = directory.authProfileStore.accounts[EmailLoginDirectory.normalize("reset@profile.test")]
-    #expect(account?.passwordHash == EmailLoginDirectory.sha256("new-password-123"))
+    let account = directory.authProfileStore.accounts[AccountNaming.normalize("reset@profile.test")]
+    #expect(account?.passwordHash == AuthTokenCodec.sha256("new-password-123"))
     #expect(account?.passwordCredentialEstablishedAt == now)
 
     // The token was spent by the first success; the replay writes nothing.
     #expect(throws: AuthProfileError.invalidOrExpiredResetToken) {
         try service.resetPassword(ResetPasswordRequest(token: "profile-reset-token", password: "second-password"))
     }
-    #expect(account?.passwordHash == EmailLoginDirectory.sha256("new-password-123"))
+    #expect(account?.passwordHash == AuthTokenCodec.sha256("new-password-123"))
 }
 
 @Test func authProfileResetPasswordKeepsTheTypedRequestLenient() throws {

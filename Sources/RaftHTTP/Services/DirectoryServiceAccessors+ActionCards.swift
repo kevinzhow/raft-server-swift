@@ -94,7 +94,7 @@ extension EmailLoginDirectory {
                     sessionUserId(authorization: authorization)
                 },
                 agentCredential: { [self] authorization in
-                    agentCredentialAgent(authorization)
+                    AgentCredentialLookup(directory: self).agentCredentialAgent(authorization)
                 },
                 identityResolution: { [self] authorization, capability in
                     FeedbackLocatorService(

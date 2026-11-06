@@ -68,16 +68,16 @@ public struct OAuthFlowsService: Sendable {
 
     /// `GET /api/auth/:provider/start`. Apple stays closed until its web platform rule is allowed.
     public func startWebOAuth(provider: String, returnTo: String?, linkOnConflict: Bool = false) throws -> OAuthRedirect {
-        guard EmailLoginDirectory.socialProviders.contains(provider) else {
+        guard AuthRedirects.socialProviders.contains(provider) else {
             throw OAuthFlowsError.notFound
         }
         let config = store.config()
         guard Self.webProviderAvailable(provider, config) else {
             throw OAuthFlowsError.providerNotConfigured(provider: provider)
         }
-        let nonce = EmailLoginDirectory.randomHex(16)
-        let safeReturn = EmailLoginDirectory.sanitizeReturnTo(returnTo)
-        let state = EmailLoginDirectory.signSocialAuthState(SocialAuthState(
+        let nonce = AuthTokenCodec.randomHex(16)
+        let safeReturn = AuthRedirects.sanitizeReturnTo(returnTo)
+        let state = AuthTokenCodec.signSocialAuthState(SocialAuthState(
             provider: provider,
             mode: "login",
             nonce: nonce,
@@ -99,7 +99,7 @@ public struct OAuthFlowsService: Sendable {
         body: WebOAuthLinkStartRequest,
         authorization: String?
     ) throws -> WebOAuthLinkStarted {
-        guard EmailLoginDirectory.socialProviders.contains(provider) else {
+        guard AuthRedirects.socialProviders.contains(provider) else {
             throw OAuthFlowsError.notFound
         }
         let userId = try authorizedUser(authorization)
@@ -107,9 +107,9 @@ public struct OAuthFlowsService: Sendable {
         guard Self.webProviderAvailable(provider, config) else {
             throw OAuthFlowsError.providerNotConfigured(provider: provider)
         }
-        let nonce = EmailLoginDirectory.randomHex(16)
-        let safeReturn = EmailLoginDirectory.sanitizeReturnTo(body.returnTo)
-        let state = EmailLoginDirectory.signSocialAuthState(SocialAuthState(
+        let nonce = AuthTokenCodec.randomHex(16)
+        let safeReturn = AuthRedirects.sanitizeReturnTo(body.returnTo)
+        let state = AuthTokenCodec.signSocialAuthState(SocialAuthState(
             provider: provider,
             mode: "link",
             nonce: nonce,
@@ -133,12 +133,12 @@ public struct OAuthFlowsService: Sendable {
     /// and the legacy field parser does not fold `+` into a space, so it stays
     /// raw text rather than going through a typed content decoder.
     public func webOAuthCallback(provider: String, body: String, cookie: String?) throws -> OAuthRedirect {
-        guard EmailLoginDirectory.socialProviders.contains(provider) else {
+        guard AuthRedirects.socialProviders.contains(provider) else {
             throw OAuthFlowsError.notFound
         }
-        let fields = EmailLoginDirectory.formFields(body)
+        let fields = FormPayload.formFields(body)
         if let stateToken = fields["state"],
-           let parsed = EmailLoginDirectory.verifySocialAuthState(stateToken),
+           let parsed = AuthTokenCodec.verifySocialAuthState(stateToken),
            parsed.kind == "mobile" {
             return try mobileOAuthCallback(
                 provider: provider,
@@ -149,7 +149,7 @@ public struct OAuthFlowsService: Sendable {
         }
         let config = store.config()
         let appURL = config.appURL
-        let invalid = OAuthRedirect(location: EmailLoginDirectory.socialCallbackURL(
+        let invalid = OAuthRedirect(location: AuthRedirects.socialCallbackURL(
             appURL: appURL,
             provider: provider,
             mode: "login",
@@ -157,7 +157,7 @@ public struct OAuthFlowsService: Sendable {
             error: "This sign-in link is invalid or expired. Please try again."
         ))
         guard let stateToken = fields["state"],
-              let state = EmailLoginDirectory.verifySocialAuthState(stateToken),
+              let state = AuthTokenCodec.verifySocialAuthState(stateToken),
               state.kind != "mobile",
               state.provider == provider,
               state.mode == "login" || state.mode == "link"
@@ -166,19 +166,19 @@ public struct OAuthFlowsService: Sendable {
         }
         let returnTo = state.returnTo ?? "/"
         func redirect(mode: String, error: String? = nil, code: String? = nil) -> OAuthRedirect {
-            OAuthRedirect(location: EmailLoginDirectory.socialCallbackURL(
+            OAuthRedirect(location: AuthRedirects.socialCallbackURL(
                 appURL: appURL, provider: provider, mode: mode,
                 returnTo: returnTo, error: error, code: code
             ))
         }
         if state.mode == "login" {
-            let nonce = EmailLoginDirectory.cookieValue(cookie, name: "slock_\(provider)_oauth_nonce")
+            let nonce = FormPayload.cookieValue(cookie, name: "slock_\(provider)_oauth_nonce")
             if nonce != state.nonce { return invalid }
         }
         let code = fields["code"] ?? ""
         if code.isEmpty {
             let provided = fields["error"] ?? ""
-            let error = provided.isEmpty ? "\(EmailLoginDirectory.providerLabel(provider)) sign-in was cancelled" : provided
+            let error = provided.isEmpty ? "\(AuthRedirects.providerLabel(provider)) sign-in was cancelled" : provided
             return redirect(mode: state.mode, error: error)
         }
         guard let profile = config.webProviderProfile,
@@ -189,12 +189,12 @@ public struct OAuthFlowsService: Sendable {
         if !profile.emailVerified {
             return redirect(mode: state.mode, error: "\(provider) account email is not verified")
         }
-        let completionCode = EmailLoginDirectory.randomHex(32)
+        let completionCode = AuthTokenCodec.randomHex(32)
         if state.mode == "login" {
             let outcome = store.recordWebLogin(
                 provider: provider,
                 providerUserId: profile.providerUserId,
-                email: EmailLoginDirectory.normalize(profile.email),
+                email: AccountNaming.normalize(profile.email),
                 linkOnConflict: state.linkOnConflict,
                 returnTo: returnTo,
                 code: completionCode
@@ -215,7 +215,7 @@ public struct OAuthFlowsService: Sendable {
             code: completionCode,
             mode: "link",
             intendedAction: "link",
-            email: EmailLoginDirectory.normalize(profile.email),
+            email: AccountNaming.normalize(profile.email),
             returnTo: returnTo,
             userId: linkUserId,
             providerUserId: profile.providerUserId
@@ -264,7 +264,7 @@ public struct OAuthFlowsService: Sendable {
             expiresAt: expiresAt,
             userId: linkUserId
         ))
-        let token = EmailLoginDirectory.signNativeAppleRequestToken(
+        let token = AuthTokenCodec.signNativeAppleRequestToken(
             secret: config.nativeAppleStateSecret,
             requestId: id,
             mode: mode,
@@ -296,7 +296,7 @@ public struct OAuthFlowsService: Sendable {
             throw OAuthFlowsError.nativeAppleInvalidCredential
         }
         let claims: NativeAppleRequestClaims
-        switch EmailLoginDirectory.verifyNativeAppleRequestToken(requestToken, secret: config.nativeAppleStateSecret) {
+        switch AuthTokenCodec.verifyNativeAppleRequestToken(requestToken, secret: config.nativeAppleStateSecret) {
         case .expired:
             throw OAuthFlowsError.nativeAppleRequestExpired
         case .invalid:
@@ -338,8 +338,8 @@ public struct OAuthFlowsService: Sendable {
         )
         let exchangedToken = await config.exchangeNativeAppleCode?(exchange)
         guard let exchangedToken, !exchangedToken.isEmpty,
-              let supplied = EmailLoginDirectory.parseAppleIdentity(identityToken, clientId: config.nativeAppleClientId),
-              let exchanged = EmailLoginDirectory.parseAppleIdentity(exchangedToken, clientId: config.nativeAppleClientId),
+              let supplied = AuthTokenCodec.parseAppleIdentity(identityToken, clientId: config.nativeAppleClientId),
+              let exchanged = AuthTokenCodec.parseAppleIdentity(exchangedToken, clientId: config.nativeAppleClientId),
               supplied.subject == exchanged.subject,
               supplied.nonce == challenge,
               exchanged.nonce == challenge
@@ -357,7 +357,7 @@ public struct OAuthFlowsService: Sendable {
             throw OAuthFlowsError.nativeAppleInvalidCredential
         }
         let loginUserId = claims.mode == "login" ? stored?.userId : nil
-        let handoff = EmailLoginDirectory.randomHex(32)
+        let handoff = AuthTokenCodec.randomHex(32)
         guard let mode = store.finishNativeApple(
             requestId: requestId,
             email: email,
@@ -416,12 +416,12 @@ public struct OAuthFlowsService: Sendable {
     /// Primary env wins when it parses to at least one URI. Otherwise the legacy
     /// list replaces the defaults. An empty parse falls through.
     static func returnURIAllowed(_ returnUri: String, _ config: OAuthFlowsConfig) -> Bool {
-        if EmailLoginDirectory.isDesktopLoopback(returnUri) { return true }
-        let primary = EmailLoginDirectory.parseConfiguredMobileReturnURIs(config.mobileOAuthReturnURI)
+        if AuthRedirects.isDesktopLoopback(returnUri) { return true }
+        let primary = AuthRedirects.parseConfiguredMobileReturnURIs(config.mobileOAuthReturnURI)
         if !primary.isEmpty { return primary.contains(returnUri) }
-        let legacy = EmailLoginDirectory.parseConfiguredMobileReturnURIs(config.mobileOAuthAllowedReturnURIs)
+        let legacy = AuthRedirects.parseConfiguredMobileReturnURIs(config.mobileOAuthAllowedReturnURIs)
         if !legacy.isEmpty { return legacy.contains(returnUri) }
-        return EmailLoginDirectory.defaultMobileReturnURIs.contains(returnUri)
+        return AuthRedirects.defaultMobileReturnURIs.contains(returnUri)
     }
 
     static func nativeAppleAvailable(_ config: OAuthFlowsConfig) -> Bool {
@@ -446,7 +446,7 @@ public struct OAuthFlowsService: Sendable {
         config: OAuthFlowsConfig
     ) -> String {
         guard provider == "apple" else {
-            return EmailLoginDirectory.authorizationURL(provider: provider, state: state)
+            return AuthRedirects.authorizationURL(provider: provider, state: state)
         }
         let serverURL = config.serverURL
         let base = serverURL.hasSuffix("/") ? String(serverURL.dropLast()) : serverURL

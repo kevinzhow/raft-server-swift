@@ -594,7 +594,7 @@ private func makeControlService(_ accounts: EmailLoginDirectory) -> AgentMachine
     #expect(throws: AgentMigrationControlError.hostedModelPickerDisabled) {
         try start(HostedMigrationTarget(hostedModel: .value("some-other-model")))
     }
-    #expect(try start(HostedMigrationTarget(hostedModel: .value(EmailLoginDirectory.hostedDefaultModel))).status == 200)
+    #expect(try start(HostedMigrationTarget(hostedModel: .value(HostedModelPolicy.hostedDefaultModel))).status == 200)
 }
 
 @Test func deleteArchivesTheAgentAndReleasesItsWork() throws {

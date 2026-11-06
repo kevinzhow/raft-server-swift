@@ -1,415 +1,140 @@
 # Architecture: target Swift layering
 
-**Status**: implemented target design with executable guardrails. The Phase 5
-Strangler-Fig migration (Batches A–F) is complete: `EmailLogin.swift` is a
-48-line composition root, `Sources/RaftHTTP/EmailLogin/` contains zero
-extension files, and the route surface is registered through 16
-`RouteCollection` feature modules. This document defines the layering that is
-now in place, and `scripts/check_architecture.py` enforces the measurable part
-of it.
+**Status**: Phase 5 extracted the old `EmailLogin/` files; Phase 6 is removing the remaining transport, directory, and concurrency coupling. An empty old directory and a 48-line class body do not mean that migration is complete. `EmailLoginDirectory` still owns a global lock, has extensions outside that directory, and is referenced by services and tests. The remaining milestones live in `docs/PLAN.md`.
 
-**Scope**: the HTTP/frame server surface (`RaftHTTP`, `RaftHTTPServer`,
-`RaftRealtime`). The daemon targets (`RaftDaemonClient`, `RaftDaemon`,
-`RaftMachineSocket`, `RaftConnectAuth`) keep their own layout and only consume
-shared contracts once `RaftShared` exists.
+**Specification**: observable HTTP status codes, JSON bytes, response headers, and socket frames asserted by the upstream suite at `v1.21.23-source.1`. Refactoring preserves those contracts, including validation order, omission versus null, input coercion, and stored JSON fingerprints.
 
-**Specification**: observable behavior (status codes, JSON bodies, headers,
-socket frames asserted by the upstream Node suite), per `AGENTS.md`. This
-document does not add behavior; it only says where behavior belongs.
+**Scope**: the complete local dependency closure of `RaftServer`: `RaftHTTP`, `RaftHTTPServer`, `RaftRealtime`, `RaftServer`, `RaftMachineSocket`, `RaftConnectAuth`, and `RaftShared`. The daemon-only targets are `RaftDaemonClient` and `RaftDaemon`. Shared targets are counted once. The ratchets exclude `Sources/RaftHTTPServer/Generated/`; that exception is explicit and does not apply to the production `ForTesting` scan.
 
-## 1. Why the port needs layers
+## 1. Current structure
 
-Upstream `raft-source` (`v1.21.23-source.1`) is a modular Express 5 server:
+The upstream server separates route modules, services, database schema, middleware, and shared contracts. This port has extracted those boundaries progressively while retaining an in-memory backend.
 
-| Upstream | Count | Role |
-| --- | --- | --- |
-| `packages/server/src/routes/*.ts` | 77 router modules, 149 `*.api.test.ts` files | One `Router` per domain, mounted in `app.ts` |
-| `packages/server/src/services/*.ts` | 320 service modules | Domain logic and persistence calls |
-| `packages/server/src/db/schema.ts` + drizzle | 1 schema + migrations | Persistence shape |
-| `packages/server/src/middleware/` | auth, route-auth policy, observability | Cross-cutting request policy |
-| `packages/shared` (`@botiverse/raft-shared`) | 116 modules | Request/response/event contracts shared by server, daemon, web, SDK |
-| `__set…ForTests` helpers (guarded by `NODE_ENV === "test"`) | several | Test seams are explicit, exported, and environment-gated |
+| Path | Current role |
+| --- | --- |
+| `Sources/RaftHTTPServer/FallbackApplication.swift` | Composition, middleware order, lifecycle wiring, and policy catch-alls |
+| `Sources/RaftHTTPServer/Features/` | 16 `RouteCollection` modules plus request/response helpers; 19 Swift files |
+| `Sources/RaftHTTP/EmailLogin.swift` | 48-line directory root: 12 principal store instances, OAuth ledger, and remaining transaction/relay locks |
+| `Sources/RaftHTTP/Services/` | 96 Swift files of domain services and remaining directory accessors; no Vapor imports |
+| `Sources/RaftHTTP/Stores/` | 50 Swift files; large store implementations split into extensions by responsibility; every file at most 1,000 lines |
+| `Sources/RaftHTTP/DTO/` | Codable request shapes, ordered response payloads, and semantic outcomes |
+| `Sources/RaftHTTP/Support/` | Naming, token, cursor, projection, runtime-config, and policy helpers; no directory extensions or legacy reply factories |
+| `Sources/RaftHTTP/OAuthLedger.swift` and `OAuth/` | 95-line ledger root plus 18 domain files; the largest OAuth file is 466 lines |
+| `Sources/RaftShared/` | Shared value contracts, including `JSONValue` |
+| `Tests/TestSupport/` | Test-only seams, deterministic setup, and injected dependencies; never a production dependency |
 
-The port originally collapsed those boundaries into one composition root and
-one ledger class. The migration replaced them with the layered tree below:
-
-| Path (measured 2026-11-06) | Size | Contents |
-| --- | --- | --- |
-| `Sources/RaftHTTPServer/FallbackApplication.swift` | 594 lines | Composition root: registers feature collections, installs middleware, and keeps the policy catch-alls |
-| `Sources/RaftHTTP/EmailLogin.swift` | 48 lines, 0 `ForTesting` | Composition root for the in-memory ledger: one lock, the 12 store instances, the relay slots, the `OAuthLedger`, and `init()` |
-| `Sources/RaftHTTP/EmailLogin/` | 0 `.swift` files (was 34) | Empty; every extension was deleted after its domain moved |
-| `Sources/RaftHTTPServer/Features/` | 16 modules, 5,892 lines, largest 748 | One `RouteCollection` per upstream route family |
-| `Sources/RaftHTTP/Services/` | 45 modules, 32,996 lines, largest 1,085 | Vapor-free domain orchestration |
-| `Sources/RaftHTTP/Stores/` | 12 stores + `DirectoryStoreForwarders.swift` | Per-domain state, each behind its own lock |
-| `Sources/RaftHTTP/DTO/` | 8 `Codable` modules | Request, response, and event shapes |
-| `Tests/RaftHTTPServerTests/*.swift` | 499 files | Mostly black-box HTTP tests through `configure(app:services:)` |
-
-Parallel slices now have isolated write scopes: one feature module, one service
-module, one store, and one DTO file per domain. No file needs to be 31k lines.
+`Sources/RaftHTTP/EmailLogin/` has no Swift files. The remaining directory extensions are under `Services/` and `Stores/`, not hidden by that empty-directory result. Large store splits retain each store's original transaction lock and method bodies; the required cross-file access changes do not make state private to individual extension files.
 
 ## 2. Target layers
 
-| Layer | Swift path | Owns | Must not |
-| --- | --- | --- | --- |
-| **Features** | `Sources/RaftHTTPServer/Features/<Name>/<Name>Feature.swift` | A `RouteCollection`: method, path, parameters, headers, body extraction, `routeResponse`/service invocation. One feature per upstream router module. | Contain domain rules, locks, persistence, or ad-hoc JSON string building. |
-| **Services** | `Sources/RaftHTTP/Services/` | Orchestration: authorize, validate request shape, call stores, map results to DTOs, choose status/error codes. Vapor-free enough to unit test. | Store state, hold `NSLock`, or import `Vapor`/`RaftRealtime`. |
-| **Stores** | `Sources/RaftHTTP/Stores/` | Domain state with a per-domain lock (`NSLock` today, `actor` where async is unavoidable), or the Postgres adapter behind the same API. One store per domain. | Build HTTP responses, know about routes, or call other stores while holding a lock. |
-| **DTO** | `Sources/RaftHTTP/DTO/` | `Codable` request/response/event structs and one canonical encoder (`JSONEncoder` configuration or a shared `JSONValue`). Shapes follow upstream JSON exactly. | Hold mutable state or depend on Vapor. |
-| **Test seams** | `Tests/TestSupport/` (test-only SwiftPM target) | Fakes, clocks, deterministic IDs, and hooks needed to assert behavior. | Be imported by a production target; appear as `…ForTesting` members on production types. |
-| **Shared contracts** | `Sources/RaftShared/` (new dependency-free target) | Codable contracts and constants used by more than one target (server ↔ realtime ↔ daemon). | Import any other target, `Vapor`, or `Foundation` beyond pure Codable needs. |
+| Layer | Owns | Boundary |
+| --- | --- | --- |
+| Feature | Registration, request extraction, response status/headers/body projection | Calls services; does not implement domain state or hand-build JSON |
+| Service | Authorization and validation order, domain orchestration, typed results/errors | Vapor-free; state belongs in stores |
+| Store | Domain records and atomic domain operations | Does not create HTTP replies or invoke another store while holding its state lock |
+| DTO | Codable request values, `JSONBodyConvertible` response payloads, explicit domain outcomes | No mutable shared state and no Vapor dependency |
+| Support | Small functions and policies with a named responsibility | Does not become another directory or a generic reply factory |
+| Shared | Contracts consumed by multiple targets | Does not depend on server, daemon, or Vapor targets |
+| TestSupport | Test setup and observation of real outputs | Not imported by production targets |
 
-### 2.1 Features
-
-```swift
-// Sources/RaftHTTPServer/Features/Notifications/NotificationsFeature.swift
-import HTTPTypes
-import RaftHTTP
-import Vapor
-
-public struct NotificationsFeature: RouteCollection, Sendable {
-    public let services: FallbackServices
-
-    public init(services: FallbackServices) {
-        self.services = services
-    }
-
-    public func boot(routes: any RoutesBuilder) throws {
-        routes.get("api", "notifications", "devices") { request -> Response in
-            routeResponse(services.notifications.listDevices(
-                authorization: request.headers[.authorization]
-            ))
-        }
-        // …one block per upstream route, copied verbatim from the composition root
-    }
-}
-```
-
-Rules:
-
-- The file name is `<Name>Feature.swift`; the directory is the upstream router
-  module name in PascalCase (`notifications.ts` → `Notifications/`).
-- `boot` registers routes only. The handler body is the existing block moved
-  unchanged: same method, path, header reads, `routeResponse` call. Extraction
-  slices must not change behavior.
-- The 1,200-line ceiling is the split signal: a feature that outgrows it gets
-  split along an upstream route group, not left to grow.
-- Features never access `EmailLoginDirectory` directly. They call
-  `FallbackServices`/services entry points; the composition root constructs the
-  services.
-
-### 2.2 Services
-
-A service is the transcription of an upstream `services/<name>Service.ts` (or a
-cohesive group of route handlers) into Swift:
-
-- takes explicit dependencies (`any Clock`, stores, emitters) via `init`;
-- returns typed results or a small error enum; the feature (or a shared
-  `routeResponse` helper) owns HTTP status/header projection;
-- keeps the upstream error codes and statuses in one place per service;
-- does not import `Vapor` so it can be tested without an `Application`.
-
-### 2.3 Stores
-
-The current `EmailLoginDirectory` already has the seed of this design: one
-unchecked-Sendable class owning several per-domain `NSLock`s (accounts, agent
-connections, realtime emitter, migrations, …). Target:
-
-- one store type per domain (`AccountsStore`, `ChannelsStore`,
-  `NotificationsStore`, `AgentKnowledgeStore`, …) in `Sources/RaftHTTP/Stores/`;
-- state and its lock are private to the store; every mutation that spans fields
-  happens under that store's lock;
-- no store calls another store while holding a lock; orchestration is a
-  service's job;
-- an in-memory and a Postgres-backed implementation may share one protocol; the
-  composition root chooses one (the database stays optional, per `AGENTS.md`);
-- stores throw domain errors, never build JSON or HTTP responses.
-
-### 2.4 DTO and JSON
-
-The ledger originally interleaved `Codable` model structs with hand-built JSON
-strings (`Self.json(200, "{…}")`). The DTO layer is now in place:
-
-- request/response/event shapes are `Codable` structs in `Sources/RaftHTTP/DTO/`
-  (8 modules: `AuthVerificationDTO`, `AuthProfileDTO`, `FeedbackDTO`,
-  `RealtimeEventDTO`, `MessagingAndChannelsDTO`, `ServersAndTasksDTO`,
-  `AgentsAndComputersDTO`, `InternalAgentApiDTO`);
-- one canonical JSON encoder is used for API responses so key order, date
-  encoding, and escaping cannot drift between features;
-- a handler that needs an upstream-exact string (for example a webhook body)
-  documents why in a comment next to the DTO;
-- a body whose key order is part of the contract is a `JSONBodyConvertible`
-  `OrderedJSON` tree rendered by `Respond.swift`; the API and the rebase map
-  live in `docs/PHASE6_JSON.md`;
-- `[String: Any]` dictionaries are not used to build responses.
-
-### 2.5 Test seams
-
-The production ledger once carried 243 `…ForTesting` markers. `EmailLogin.swift`
-now has **0**; the remaining seams are being moved into the `TestSupport`
-target slice by slice (per-file baseline in `scripts/for_testing_baseline.tsv`,
-enforced by `make architecture`). The rule is:
-
-- deterministic seams live in `Tests/TestSupport/` as fakes/hooks passed through
-  `FallbackServices`, not as mutable members on a production type;
-- a production type keeps a `ForTesting` member only when the seam cannot be
-  expressed as an injected dependency; the guardrail script counts them and
-  warns on growth;
-- new `private func …ForTesting` members in `EmailLogin.swift` are a hard
-  design smell; the baseline is 0.
-
-### 2.6 Shared contracts
-
-`RaftShared` is a new dependency-free library target for shapes that cross
-target boundaries: socket.io frame payloads used by both `RaftHTTPServer` and
-`RaftRealtime`, daemon handshake/machine context types, and constants such as
-error codes. `Package.swift` is not editable from this slice; the target lands
-with the first contract that is actually duplicated across targets. Until then,
-duplicate shapes stay in `RaftHTTP` and are marked for extraction.
-
-## 3. Target tree
+Allowed dependency direction:
 
 ```text
-Sources/
-  RaftShared/                     # Codable contracts, zero deps (JSONValue)
-  RaftHTTP/                       # framework-independent domain
-    EmailLogin.swift              # composition root only (48 lines)
-    EmailLogin/                   # empty: no extension files remain
-    Stores/<Domain>Store.swift    # 12 per-domain stores + DirectoryStoreForwarders
-    Services/<Domain>Service.swift# 45 Vapor-free domain services
-    DTO/<Domain>DTO.swift         # 8 Codable shape modules
-    Support/                      # DirectoryStatics1-2, DirectoryModelsAndConstants,
-                                  # DirectoryHelpers, HTTPReply+JSONValue
-  RaftHTTPServer/
-    FallbackApplication.swift     # composition root only (middleware + register)
-    Features/<Name>/<Name>Feature.swift   # 16 RouteCollection modules
-    Middleware/                   # existing middleware, unchanged
-  RaftRealtime/                   # frame assembly, consumes RaftShared
-Tests/
-  RaftHTTPServerTests/            # black-box HTTP assertions
-  RaftHTTPTests/
-  TestSupport/                    # new: fakes, clocks, IDs, hooks
+Feature -> Service -> Store
+    |          |        |
+    +----------+--------+--> DTO / RaftShared
+RaftRealtime -----------------> RaftShared
+Tests ------------------------> TestSupport
 ```
 
-## 4. Dependency rules
+This is the target boundary. Directory accessors, cross-domain snapshots, and global-lock critical sections remain migration debt, even when their source file is under `Services/`. The script enforces measurable rules, not every architectural property in this table.
 
-Allowed import direction (arrows mean "may import"):
+### 2.1 Features and request decoding
 
-```text
-Features ──▶ Services ──▶ Stores ──▶ DTO
-    │            │           │
-    └────────────┴───────────┴──────▶ RaftShared
-RaftRealtime ────────────────────────▶ RaftShared
-Tests (any target) ──▶ TestSupport
-```
+`configure(app:services:)` installs middleware and feature collections. Route handlers retain the published method/path pairs and authorization order. Migrated domains invoke typed services and use `Features/Respond.swift` for JSON projection. Other JSON paths, including knowledge replies and some channel/message handlers, still use the legacy reply adapter; the remaining reply tokens are not all transport-only infrastructure.
 
-- `RaftHTTP` never imports `Vapor`, `RaftHTTPServer`, or `RaftRealtime`.
-- `RaftHTTPServer` never imports test targets and never state that belongs to a
-  store.
-- No feature imports a store directly; it goes through a service.
-- `RaftShared` imports nothing from this package.
-- No cycles between targets.
+`Features/RequestBody.swift` centralizes the existing typed request policies: registered content decoder with raw-JSON fallback, explicit JSON decoding, or content decoder only. Callers select their established empty/blank-body defaults and read-error behavior. Form bodies, file uploads, and existing raw-text compatibility paths remain explicit. There are no synchronous `request.body.string` reads and no global body-buffering middleware.
 
-## 5. Composition root
+Moving a route to a helper must not silently change these policies. In particular, malformed JSON must not precede an authentication refusal, and adding a content-type requirement must not turn an accepted raw-JSON request into a 415.
 
-`FallbackApplication.configure(_:services:)` keeps exactly three jobs:
+### 2.2 Services, outcomes, and response projection
 
-1. build services from `FallbackServices` (and wire lifecycle hooks, e.g. the
-   agent-read emitter);
-2. register one `RouteCollection` per feature:
+A domain returns a named payload or a semantic outcome and throws a `DomainError`. `Respond.swift` projects the error's published body and complete header policy. The success path uses `JSONBodyConvertible` when member order matters, or an Encodable payload when sorted encoding is the contract.
 
-   ```swift
-   try app.register(collection: NotificationsFeature(services: services))
-   try app.register(collection: AuthFeature(services: services))
-   ```
+Examples of semantic outcomes are public attachment file/redirect results, release-note published/not-modified results, and mobile-email unsubscribe confirmation/invalid-link/unsubscribed/one-click results. These preserve non-JSON responses without replacing `HTTPReply` with another generic status/headers/body container.
 
-3. install middleware in the existing order, with `FallbackMiddleware` last so
-   unmatched paths keep the upstream JSON 404:
+Conditional release-note responses retain their ETag and the original 304 header omissions. Public-search HEAD suppresses the body while retaining the corresponding GET representation length, including errors. No adapter may recompute that length from the suppressed body.
 
-   ```swift
-   middleware.use(JSONErrorBoundaryMiddleware())
-   middleware.use(ExperimentalSurfaceGate(directory: …))
-   middleware.use(RequestBodyLimitMiddleware(accounts: …))
-   middleware.use(CorsMiddleware(origins: …))
-   middleware.use(PublicSearchMiddleware(…))
-   middleware.use(FallbackMiddleware(services: services))
-   app.middleware = middleware
-   ```
+### 2.3 Stores and concurrency
 
-Route registration order inside `boot` is irrelevant to Vapor routing except
-for duplicate paths; the upstream path + method pair is the contract.
-Request bodies are decoded asynchronously in each feature handler; there is no
-global body-buffering middleware.
+Each principal store owns one record family. Its methods retain their existing critical sections during file extraction. Splitting a file is distinct from changing its synchronization model.
 
-## 6. Migration order
+The current directory still supplies a global `NSLock`, relay locks, and the freshness-commit lock. Several stores and the OAuth ledger still declare unchecked Sendable conformance. OAuth's signing secret now lives in a `Mutex` because token signing can occur after a record transaction releases its lock; that change does not make the rest of the ledger checked Sendable.
 
-The layers land in slices, without a behavior change in the extraction steps:
+The remaining work is to give mutable state checked `Mutex` or actor isolation and move each read-modify-write into its owning store before removing the global lock. Merely removing a lock around separately locked snapshot getters/setters would allow lost updates. Cross-domain transaction and lock-order assumptions must be reviewed explicitly.
 
-| Step | Slice | Exit criterion |
+### 2.4 JSON and compatibility boundaries
+
+`Support/OrderedJSON.swift` preserves member order, omission versus null, string escaping, and scalar types. `JSONBodyConvertible` supplies the exact published body; `Respond.swift` maps it to Vapor. The contract and migration recipe are in `docs/PHASE6_JSON.md` and `docs/PHASE6_RECIPE.md`.
+
+Foundation remains at specific input or stored-text compatibility boundaries. Its JSON object parser takes the last duplicate key, while Swift's keyed JSONDecoder can take the first. Existing Foundation Bool casts accept numeric 0/1, and some inputs filter heterogeneous arrays or distinguish missing/null values. Public settings, translations, visits, release cursors, signed-token verification, and OAuth input parsing preserve those established rules.
+
+Stored runtime configuration and OAuth event fingerprints also retain Foundation's sorted serialization where client-supplied numbers must keep Foundation's established representation after parsing and serialization. Routing those values through an Int64/Double-only tree can overflow UInt64 values or alter decimal bytes. Differential tests cover large integers, decimals, booleans, slashes, duplicate keys, normalization, redaction, and provider-key merging. These compatibility writers are counted as remaining JSON-any text; they are not claimed to be typed response serialization.
+
+### 2.5 Test seams and real outputs
+
+Production `ForTesting` markers are a hard zero. Test setup lives in `Tests/TestSupport/`, with explicit injected dependencies where possible. The production behavior remains observable through HTTP or socket output.
+
+The channel-message recorded-event side channel has been removed. The attachment-order regression captures the actual `message:new` sink, checks its payload, and verifies that an idempotent replay emits no second event. Other retained audit/recorded collections require separate evaluation; extracting their files does not count as removing them.
+
+## 3. Architecture guardrails
+
+Run `make architecture` or `python3 scripts/check_architecture.py`. `--json` returns a machine-readable report; `--root PATH` checks another checkout. Python exit codes are 0 for pass/warnings, 1 for a guardrail violation, and 2 for invalid input or an operational error. The Makefile target is installed.
+
+| Check | Rule |
+| --- | --- |
+| Directory root size | `EmailLogin.swift` at most 48 lines; the ceiling only decreases |
+| Feature size | Every feature/helper Swift file at most 1,200 lines |
+| Service size | Every service/accessor Swift file at most 1,200 lines |
+| Store size | Every Store Swift file, including nested extension files, at most 1,000 lines |
+| Retired directory | No Swift files under `Sources/RaftHTTP/EmailLogin/`; legacy per-file limit 1,600 |
+| Production test markers | `ForTesting` per-file baseline is empty across all `Sources/`; root warning baseline is also zero |
+| Service imports | `import Vapor` is a hard zero in `Services/` |
+
+### 3.1 Per-file ratchets
+
+Each metric has `scripts/ratchet_<metric>.tsv` with `path<TAB>count`. An unlisted file has a baseline of zero. Except for the string-literal scanner, these are textual occurrence counts and include comments; they are not counts of runtime operations.
+
+| Metric | Scope | Counted |
 | --- | --- | --- |
-| R1 | Move route blocks from `FallbackApplication.swift` into `Features/<Name>/<Name>Feature.swift`, register collections | Each feature file ≤ 1,200 lines; registration tests assert method/path pairs; route-table output identical |
-| R2 | Move handler orchestration into `Services/` | Services are Vapor-free and unit-testable; features shrink to route + `routeResponse` |
-| R3 | Split `EmailLoginDirectory` into `Stores/` with one lock per domain | Store tests cover lock boundaries; `EmailLogin.swift` only shrinks |
-| R4 | Architecture documentation + guardrail script (this slice) | `scripts/check_architecture.py` exits 0; baseline recorded |
-| R5 | Extract test seams to `TestSupport`, duplicated contracts to `RaftShared` | `ForTesting` count in production targets does not grow; shared target has zero package deps |
+| `extension_directory` | `Sources/RaftHTTP` | Literal directory extension declarations |
+| `service_httpreply` | Services | Legacy reply tokens |
+| `service_json_any` | Services and DTO | `JSONSerialization`, `[String: Any]`, `[String:Any]` |
+| `unchecked_sendable` | Sources excluding Generated | Explicit unchecked Sendable declarations |
+| `directory_forwarder` | Directory forwarding file | Physical lines; zero after deletion |
+| `service_directory_calls` | Services | Literal `directory.` text, including comments |
+| `httpreply_sources` | Seven server targets | Legacy reply tokens, including transport adapters and comments |
+| `json_any_sources` | Seven server targets | The same three JSON-any text patterns |
+| `directory_references` | Sources excluding Generated | Bare directory type identifiers, with word boundaries |
+| `unchecked_sendable_server` | Seven server targets | Explicit unchecked Sendable declarations |
+| `json_string_payloads` | Seven server targets | Object/array-shaped Swift string literal candidates |
 
-The end state is not "no ledger": domain state still exists. The end state is
-that each upstream route module, service module, and store has its own file,
-lock, and owner, and no file needs to be 31k lines.
+The two JSON metrics measure different things. The string scanner handles ordinary, raw, and multiline strings, interpolation, nested strings inside interpolation, and concatenation prefixes. It skips line and nested block comments. Constants and DTO defaults are candidates too; a JSON-shaped label such as `[1]` can be a false positive. It does not validate complete JSON, follow variables/appends/arbitrary splits, decode Unicode escapes, or parse Swift regex literals. Neither metric proves that all handwritten response construction is gone.
 
-## 7. Guardrails
+The updater validates every metric before writing any TSV. Ordinary `--update-baselines` refuses per-file growth and cannot partially lower earlier metrics after a later validation failure. Both growth and stale higher baselines fail the gate, so reductions are recorded in the same change.
 
-`scripts/check_architecture.py` enforces the measurable boundaries:
+For a new metric, expanded scope, or a reviewed pure file move, `--print-ratchet-baseline METRIC` exports the current data without writing it. Review the scope and before/after totals, explicitly adopt the migration, then use the ordinary decreasing-only updater. Hand-editing a TSV is not evidence of a legitimate reduction. The updater never changes `for_testing_baseline.tsv`.
 
-| Check | Rule | Failure |
-| --- | --- | --- |
-| `email-login-ceiling` | `Sources/RaftHTTP/EmailLogin.swift` must stay at or below its recorded baseline of **48 lines** (composition root + stored state that has not moved into a domain store) | New line count > baseline. Lowering the file is always allowed; the baseline constant may then be lowered, never raised. |
-| `feature-file-ceiling` | Every `.swift` file under `Sources/RaftHTTPServer/Features/` ≤ **1,200 lines** | Any file over the limit. A missing `Features/` directory is reported as zero files, not an error. |
-| `email-login-extension-ceiling` | Every `.swift` file under `Sources/RaftHTTP/EmailLogin/` ≤ **1,600 lines** | Any file over the limit, reported per file. A missing directory is reported as zero files, not an error. |
-| `email-login-test-seams` | `ForTesting` markers in `EmailLogin.swift` may not grow beyond the recorded **0**; `private func …ForTesting` baseline is **0** | **Warning only** (exit code unchanged). Migration to `TestSupport` is R5. |
-| `for-testing-tree-baseline` | Every `.swift` file under `Sources/` keeps its count of lines containing `ForTesting` at or below its line in `scripts/for_testing_baseline.tsv` (`path<TAB>count`; unlisted files are 0) | **Fails** when a file exceeds its baseline. The tsv is now empty, so the check is a hard zero over `Sources/`: any `ForTesting` marker fails. `--print-for-testing-baseline` prints the current counts. |
+`PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p 'test_*.py' -v` covers scan scope, duplicate roots, exclusions, scanner boundaries, decreasing-only updates, validation before writes, and file-size boundaries.
 
-Usage:
+### 3.2 Snapshot and exclusions
 
-```console
-$ scripts/check_architecture.py                 # concise report, exit 0/1/2
-$ scripts/check_architecture.py --json          # machine-readable report
-$ scripts/check_architecture.py --root PATH     # check another checkout
-```
+The current handwritten-source snapshot has 12 directory extension occurrences, a 580-line forwarding file, 60 server reply tokens, 94 server JSON-any text occurrences, 98 directory type references, and 185 string-literal candidates. Services have zero reply tokens; the combined Services/DTO JSON-any occurrence and the two Services `directory.` occurrences are comments. Source-level transport and string construction remain outside those narrow service zeros.
 
-Exit codes: `0` pass or warnings only, `1` guardrail violation, `2` missing
-required input or invalid root. The script is standard-library-only Python 3, is
-not wired into `make` in this slice, and is safe to run from CI or a review
-script once a Makefile owner adds a target.
+The unchecked conformance ratchet remains 69 across handwritten Sources: 28 in the server dependency closure and 41 in daemon-only targets. Generated knowledge telemetry contains one additional explicit unchecked conformance, so the physical full-source count is 70. The generated exception is not a concurrency-safety conclusion. Removing unchecked conformance outside the daemon, including that generated helper, remains planned work; the daemon's NIO handlers and process handles require individual assessment.
 
-Baseline policy: the constants are a ratchet. A slice that shrinks the file or
-moves test seams updates the constant downward in the same commit and records
-the new number here. No slice raises a
-constant to make the check pass.
+## 4. Behavioral gates and remaining work
 
-## 8. Non-goals
+Every accepted slice runs relevant published-path regressions, `make test`, `make test-e2e`, `scripts/smoke-server.sh`, `make architecture`, and `make parity-check`. Smoke is supplemental evidence for real-process wiring, not proof of every locked module. Coverage progress comes from `make parity` and the qualifications in `docs/PARITY.tsv`.
 
-- No behavior change in an extraction slice; the acceptance test is the same
-  upstream assertion, now routed through the new file.
-- No port of private upstream helpers, query-count spies, tracer sinks,
-  failpoints, or orchestrator injection (`AGENTS.md`).
-- No new third-party dependency and no `Package.swift` change in R4.
-- No `recorded*` side channel added; a slice that touches one removes it.
-
-
-## Current migration status (2026-11-05)
-
-| Stage | State | Evidence |
-| --- | --- | --- |
-| R1 route extraction | done for auth, feedback, public, translations, servers, channels, messaging, OAuth/OIDC, internal agent-api, internal admin, integrations, notifications/misc, agents, computers, reminders | `Sources/RaftHTTPServer/Features/` (16 collections, including `AgentsFeature`, `ComputersFeature`, `RemindersFeature`; largest 712 lines); `configure()` 4,520 -> 667 lines (only policy catch-alls + wiring); per-feature registration tests |
-| R2 canonical JSON | foundation done | `Sources/RaftHTTP/Support/JSONValue.swift` + `HTTPReply.jsonValue` + `Tests/RaftHTTPTests/JSONValueTests.swift`; feature handlers migrate as they are rewritten. `Sources/RaftHTTP/DTO/` now holds 4 DTO modules (`AuthVerificationDTO`, `AuthProfileDTO`, `FeedbackDTO`, `RealtimeEventDTO`), and `Sources/RaftHTTP/Services/` holds 7 Vapor-free services (`AuthVerificationService`, `AuthProfileService`, `FeedbackService`, `ChannelMessagingService`, `SocketMembershipService`, `FeedbackLocatorService`, `ActionCardService`) |
-| R3 store/lock split | started | 12 dedicated stores under `Sources/RaftHTTP/Stores/`: `AuthProfileStore` (linked identities, password-reset tokens, legal acceptances), `NotificationsStore`, `TasksAndRemindersStore`, `MachinesAndComputersStore`, `ServersAndChannelsStore`, `ManagedMCPAndCardsStore`, `FeedbackStore`, `MessagesAndThreadsStore`, `AgentsRuntimeStore`, `InboxFactStore`, `ProductEventStore` (product/client events + idempotency), `ThreadFollowStore` (agent thread-follow rows). `Sources/RaftHTTP/EmailLogin.swift` is down to 48 lines with 0 `ForTesting` markers. |
-| R4 guardrails | done | `scripts/check_architecture.py`, `make architecture`: EmailLogin line ratchet (48 after the store/DTO/service split), Features <= 1,200 lines, EmailLogin/*.swift <= 1,600 lines, ForTesting warning baseline 0; 12 `Stores/`, 7 `Services/` and 4 `DTO/` modules now live outside `EmailLogin.swift` |
-| R5 shared contracts | started | `Sources/RaftShared` target added; canonical `JSONValue` moved there, `HTTPReply.jsonValue` stays in RaftHTTP; next: capability/error-code contracts and feature DTOs |
-
-Remaining composition-root route families: internal agent-api, internal agent/computer/machine,
-integrations, MCP, provider-connections, notifications/product-events and misc.
-
-
-## Remaining parity work (2026-11-06, 219/219 route modules locked)
-
-All 219 route modules (2000/2000 cases), 7/7 socket modules and 180/180 daemon
-modules are locked in `docs/PARITY.tsv`; no pending or partial module remains.
-The remaining work is converting the ledger's noted non-executable exclusions
-(staging raftbench, real-PG rails, external integrations) into executable
-coverage where feasible, plus the R3-R5 architecture refactors below.
-
-Generated knowledge corpus lives in `Sources/RaftHTTPServer/Generated/KnowledgeCorpus.swift` (data-only, outside the Features line ceiling); regenerate from upstream `manual/agent-knowledge` + `manual/recipes` when the corpus changes.
-
-
-## EmailLogin split progress (2026-11-05)
-
-- `Sources/RaftHTTP/EmailLogin.swift`: 34,306 -> 48 lines (-34,258, -99.86%).
-  The residue is the composition root: the class shell, stored properties whose
-  state has not moved into a domain store, and `init`, with 0 `ForTesting`
-  markers left. Twelve dedicated stores live under `Sources/RaftHTTP/Stores/`
-  (`AuthProfileStore`, `NotificationsStore`, `TasksAndRemindersStore`,
-  `MachinesAndComputersStore`, `ServersAndChannelsStore`,
-  `ManagedMCPAndCardsStore`, `FeedbackStore`, `MessagesAndThreadsStore`,
-  `AgentsRuntimeStore`, `InboxFactStore`, `ProductEventStore`,
-  `ThreadFollowStore`); seven Vapor-free services live
-  under `Sources/RaftHTTP/Services/` (`AuthVerificationService`,
-  `AuthProfileService`, `FeedbackService`, `ChannelMessagingService`,
-  `SocketMembershipService`, `FeedbackLocatorService`, `ActionCardService`); and
-  four DTO modules live under `Sources/RaftHTTP/DTO/` (`AuthVerificationDTO`,
-  `AuthProfileDTO`, `FeedbackDTO`, `RealtimeEventDTO`).
-- All 748 instance/static `func` members (20,057 lines) moved **verbatim** into
-  19 domain extension files under `Sources/RaftHTTP/EmailLogin/` (30 files in
-  total with the pre-existing extensions below), each
-  `extension EmailLoginDirectory { … }` and each at or below 1,600 lines. The
-  split is contiguous by domain, so every file is cohesive. Subsequent slices
-  moved domain state and orchestration out of these extensions into the stores,
-  services and DTO modules listed above.
-
-  | File | Lines | Domain |
-  | --- | --- | --- |
-  | `EmailLogin+AttachmentsMobile.swift` | 579 | agent attachments, native notifications, mobile email |
-  | `EmailLogin+AuthCore.swift` | 736 | social completion, register, device, refresh, logout |
-  | `EmailLogin+OAuthFlows.swift` | 1,047 | OAuth providers/flows, feature flags |
-  | `EmailLogin+SearchMentions.swift` | 1,506 | search, mentions, human message create |
-  | `EmailLogin+MessageSend.swift` | 717 | v2 send, migration receipt DM, mention actions, attachment preview/download |
-  | `EmailLogin+ThreadsAndInbox.swift` | 1,231 | threads, inbox, wake hints, third-party events |
-  | `EmailLogin+ReactionsRealtime.swift` | 863 | reactions, realtime emit, human message store |
-  | `EmailLogin+AuthIdentitiesProfile.swift` | 1,437 | auth identities/login/profile/attachments/channel files/product events |
-  | `EmailLogin+Agents1.swift` | 1,047 | agent authority, create/list/patch, assistant |
-  | `EmailLogin+Agents2.swift` | 1,226 | agent migration status, DM/workspace, agent surface |
-  | `EmailLogin+AgentMigrations1.swift` | 927 | machine migration control/chunks |
-  | `EmailLogin+AgentMigrations2.swift` | 906 | migration arrival, hosted migration |
-  | `EmailLogin+MachinesAndRuntime1.swift` | 968 | machines, hosted runtime, connections |
-  | `EmailLogin+MachinesAndRuntime2.swift` | 985 | runtime forms, runtime model probes |
-  | `EmailLogin+ComputersUsage1.swift` | 1,442 | computers, usage, attestations |
-  | `EmailLogin+ComputersUsage2.swift` | 1,461 | server order/profile/members, agent send |
-  | `EmailLogin+IntegrationsAndAccess.swift` | 1,487 | integrations, agent app access, attachment comments, agent profile, join links/invites |
-  | `EmailLogin+ServerMembersAndTasks1.swift` | 853 | server member roles/removal/delete, sidebar |
-  | `EmailLogin+ServerMembersAndTasks2.swift` | 829 | tasks/labs/metrics, channel join, agent API |
-
-- Pre-existing extension files from earlier slices (`EmailLoginStatics1-3`,
-  `EmailLogin+ActionCards1-3`, `EmailLogin+ManagedMCP1-4`,
-  `EmailLogin+FeedbackLocators`, `EmailLogin+FeedbackMultiApp`,
-  `EmailLogin+TestSeams`) are unchanged; all 30 files in the directory are now
-  under the new 1,600-line ceiling (largest `EmailLogin+ManagedMCP1.swift` at
-  1,572).
-- Earlier slices moved 109 nested data-model declarations (1,171 lines) into
-  `Sources/RaftHTTP/EmailLoginModels.swift` and 210 static helpers (2,567 lines)
-  into `EmailLoginStatics.swift`.
-- The class has zero `private`/`fileprivate` members and zero file-private
-  top-level helpers, so moved members still resolve across files in the module.
-  Verified: concatenating the moved chunks in original order reproduces the
-  original body byte-for-byte, and the untouched head (top-level structs, class
-  header, stored properties, `init`) is byte-identical.
-- Next: continue R3 by extracting domain stores (state + its own lock) out of
-  the directory; the split just made the candidate domains explicit.
-
-
-## Phase 6 ratchets
-
-`scripts/check_architecture.py` also ratchets six per-file metrics, each backed
-by its own baseline TSV in `scripts/` (`path<TAB>count`; an unlisted file counts
-as 0, and a missing TSV ratchets every file against 0). Generated sources under
-`Sources/RaftHTTPServer/Generated/` are never scanned.
-
-| Metric | Scanned | Counted | Baseline file | Current total |
-| --- | --- | --- | --- | --- |
-| `extension_directory` | `Sources/RaftHTTP` | occurrences of `extension EmailLoginDirectory` | `scripts/ratchet_extension_directory.tsv` | 50 in 47 files |
-| `service_httpreply` | `Sources/RaftHTTP/Services` | `HTTPReply` tokens | `scripts/ratchet_service_httpreply.tsv` | 612 in 43 files |
-| `service_json_any` | `Sources/RaftHTTP/Services`, `Sources/RaftHTTP/DTO` | `JSONSerialization`, `[String: Any]`, `[String:Any]` | `scripts/ratchet_service_json_any.tsv` | 498 in 41 files |
-| `unchecked_sendable` | `Sources` | `@unchecked Sendable` | `scripts/ratchet_unchecked_sendable.tsv` | 71 in 57 files |
-| `directory_forwarder` | `Sources/RaftHTTP/Stores/DirectoryStoreForwarders.swift` | line count (0 when the file is gone) | `scripts/ratchet_directory_forwarder.tsv` | 710 in 1 file |
-| `service_directory_calls` | `Sources/RaftHTTP/Services` | `directory.` call sites | `scripts/ratchet_service_directory_calls.tsv` | 369 in 16 files |
-
-Every ratchet is bidirectional: a file above its baseline fails, and so does a
-file below it, because **the baseline may only decrease**. A slice that shrinks a
-metric runs `python3 scripts/check_architecture.py --update-baselines` in the
-same commit to rewrite all six TSVs from the tree; no slice hand-raises a
-baseline. The update command never touches `scripts/for_testing_baseline.tsv`.
-
-The repeatable slice recipe — inventory, store, error contract, service, `respond`,
-ratchet update — lives in `docs/PHASE6_RECIPE.md`.
-
-The services layer also carries a hard zero, not a baseline: no file under
-`Sources/RaftHTTP/Services/**` may contain `import Vapor` (currently 0 in 45
-service files), because services are called from Vapor-free domain code.
+The next boundaries are removal of the remaining directory extensions/forwarders and global lock, checked store isolation, then the repository-wide `ServiceContainer` rename and remaining server concurrency cleanup. The detailed phase order belongs in `docs/PLAN.md`. None of these steps changes the pinned Vapor revision, replaces the SwiftNIO listeners, or changes the no-database `/health` 503 contract.

@@ -183,14 +183,14 @@ private func successes<T: Sendable>(
         AuthRequestIssue(path: "password", message: "Expected string, received number"),
     ])) == #"{"error":"Invalid email registration body","code":"email_register_body_invalid","issues":[{"path":"email","message":"Required"},{"path":"password","message":"Expected string, received number"}]}"#)
 
-    func request(acceptTerms: Bool = true, terms: String? = EmailLoginDirectory.termsVersion) -> RegisterRequest {
+    func request(acceptTerms: Bool = true, terms: String? = AuthLegalPolicy.termsVersion) -> RegisterRequest {
         RegisterRequest(
             email: .string("New@Slock.test"),
             password: .string("password123"),
             name: .string("Newbie"),
             acceptTerms: acceptTerms,
             termsVersion: terms,
-            privacyVersion: EmailLoginDirectory.privacyVersion
+            privacyVersion: AuthLegalPolicy.privacyVersion
         )
     }
     #expect(thrown { try service.register(request(acceptTerms: false), userAgent: nil, acceptLanguage: nil) }
@@ -198,7 +198,7 @@ private func successes<T: Sendable>(
     #expect(thrown { try service.register(request(terms: "old"), userAgent: nil, acceptLanguage: nil) }
         == .termsChanged)
     #expect(!directory.hasAccount(email: "new@slock.test"))
-    let legal = "{\"termsVersion\":\"\(EmailLoginDirectory.termsVersion)\",\"privacyVersion\":\"\(EmailLoginDirectory.privacyVersion)\",\"termsUrl\":\"\(EmailLoginDirectory.termsURL)\",\"privacyUrl\":\"\(EmailLoginDirectory.privacyURL)\"}"
+    let legal = "{\"termsVersion\":\"\(AuthLegalPolicy.termsVersion)\",\"privacyVersion\":\"\(AuthLegalPolicy.privacyVersion)\",\"termsUrl\":\"\(AuthLegalPolicy.termsURL)\",\"privacyUrl\":\"\(AuthLegalPolicy.privacyURL)\"}"
     #expect(body(AuthCoreError.legalAcceptanceRequired) == "{\"error\":\"LEGAL_ACCEPTANCE_REQUIRED\",\"legal\":\(legal)}")
     #expect(body(AuthCoreError.termsChanged) == "{\"error\":\"TERMS_CHANGED\",\"legal\":\(legal)}")
 
@@ -219,8 +219,8 @@ private func successes<T: Sendable>(
     let request = SocialCompleteRequest(
         code: "c1",
         acceptTerms: true,
-        termsVersion: EmailLoginDirectory.termsVersion,
-        privacyVersion: EmailLoginDirectory.privacyVersion
+        termsVersion: AuthLegalPolicy.termsVersion,
+        privacyVersion: AuthLegalPolicy.privacyVersion
     )
     #expect(thrown { try service.completeSocial(provider: "nope", body: request, userAgent: nil, acceptLanguage: nil, authorization: nil) }
         == .notFound)
@@ -314,8 +314,8 @@ private func successes<T: Sendable>(
         email: .string("race@slock.test"),
         password: .string("password123"),
         acceptTerms: true,
-        termsVersion: EmailLoginDirectory.termsVersion,
-        privacyVersion: EmailLoginDirectory.privacyVersion
+        termsVersion: AuthLegalPolicy.termsVersion,
+        privacyVersion: AuthLegalPolicy.privacyVersion
     )
     let created = await successes(24) { _ in
         try? service.register(request, userAgent: nil, acceptLanguage: nil)
@@ -331,8 +331,8 @@ private func successes<T: Sendable>(
     let request = SocialCompleteRequest(
         code: "race",
         acceptTerms: true,
-        termsVersion: EmailLoginDirectory.termsVersion,
-        privacyVersion: EmailLoginDirectory.privacyVersion
+        termsVersion: AuthLegalPolicy.termsVersion,
+        privacyVersion: AuthLegalPolicy.privacyVersion
     )
     let done = await successes(24) { _ in
         try? service.completeSocial(
@@ -348,11 +348,11 @@ private func successes<T: Sendable>(
     directory.releaseBranch = "staging"
     let capability = String(repeating: "c", count: 40)
     var state = directory.authProfileStore.accountState
-    let key = EmailLoginDirectory.normalize("core@slock.test")
+    let key = AccountNaming.normalize("core@slock.test")
     state.accounts[key]?.emailVerified = true
     state.accounts[key]?.email = "core@mail.build"
     state.accounts["core@mail.build"] = state.accounts.removeValue(forKey: key)
-    state.accounts["core@mail.build"]?.stagingSelfAccountCapabilityHash = EmailLoginDirectory.sha256(capability)
+    state.accounts["core@mail.build"]?.stagingSelfAccountCapabilityHash = AuthTokenCodec.sha256(capability)
     directory.authProfileStore.accountState = state
     _ = directory.authProfileStore.openSession(userId: userId)
     let outcomes = await withTaskGroup(of: Bool.self) { group in
@@ -361,7 +361,7 @@ private func successes<T: Sendable>(
                 if case .retired = directory.authProfileStore.retireStagingAccount(
                     userId: userId,
                     actorUserId: userId,
-                    capabilityHash: EmailLoginDirectory.sha256(capability),
+                    capabilityHash: AuthTokenCodec.sha256(capability),
                     now: Date()
                 ) { return true }
                 return false

@@ -252,7 +252,7 @@ extension EmailLoginDirectory {
             if matches {
                 return StoredHumanMessageWrite(
                     status: 200,
-                    body: Self.humanMessageJSON(snapshot).body,
+                    body: HumanMessagePayload(snapshot).jsonBody.render(),
                     created: false
                 )
             }
@@ -318,16 +318,10 @@ extension EmailLoginDirectory {
         if sequence > ownCursor {
             oauth.setChannelReadCursor(channelId: channelId, userId: senderId, seq: sequence)
         }
-        recordedChannelMessageEvents.append(ChannelMessageEvent(
-            room: "channel:\(channelId)",
-            name: "message:new",
-            messageId: stored.id,
-            attachmentIds: attachmentIds
-        ))
         lock.unlock()
-        let reply = Self.humanMessageJSON(stored)
-        emitRealtime("channel:\(channelId)", "message:new", reply.body)
-        return StoredHumanMessageWrite(status: 200, body: reply.body, created: true)
+        let body = HumanMessagePayload(stored).jsonBody.render()
+        emitRealtime("channel:\(channelId)", "message:new", body)
+        return StoredHumanMessageWrite(status: 200, body: body, created: true)
     }
 
     /// Replay accepts only the stored ids, positions, and uploader. It does not write.
@@ -342,12 +336,6 @@ extension EmailLoginDirectory {
             else { return false }
         }
         return true
-    }
-
-    public func channelMessageEvents() -> [ChannelMessageEvent] {
-        lock.lock()
-        defer { lock.unlock() }
-        return recordedChannelMessageEvents
     }
 
     func emitRealtime(_ room: String, _ event: String, _ payload: String?) {

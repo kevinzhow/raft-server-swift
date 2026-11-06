@@ -13,11 +13,5 @@ func jsonRequestBody<T: Decodable>(
     _ request: Request,
     emptyDefault: String
 ) async -> T? {
-    if let decoded = try? await request.content.decode(type) {
-        return decoded
-    }
-    guard let text = try? await request.bodyText(default: emptyDefault) else {
-        return nil
-    }
-    return try? JSONDecoder().decode(type, from: Data(text.utf8))
+    try? await decodeJSONRequestBody(type, request, emptyDefault: emptyDefault)
 }

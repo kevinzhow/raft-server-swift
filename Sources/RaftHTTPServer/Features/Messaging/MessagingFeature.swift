@@ -102,7 +102,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
         }
         attachments.get(":id", "url") { request async throws -> Response in
             if desktopQuery(request.url.query, "previewToken") != nil {
-                return routeResponse(HTTPReply(status: 401, headers: [:], body: "{\"error\":\"Unauthorized\"}"))
+                return respond(status: 401, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Unauthorized")]).render())
             }
             let queryToken = desktopQuery(request.url.query, "token")
             let authorization = request.headers[.authorization] ?? queryToken.map { "Bearer \($0)" }
@@ -224,7 +224,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
             routeResponse(HTTPReply(
                 status: 410,
                 headers: ["Content-Type": "application/json", "Content-Length": "76"],
-                body: "{\"error\":\"Migration action cards are no longer supported\",\"code\":\"migration_action_card_not_supported\"}"
+                body: OrderedJSON.object([OrderedJSONField("error", "Migration action cards are no longer supported"), OrderedJSONField("code", "migration_action_card_not_supported")]).render()
             ))
         }
         actions.post(":messageId", "execute") { request async throws -> Response in
@@ -239,7 +239,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
             }
         }
         actions.post(":messageId", "mark-executed") { request async throws -> Response in
-            let body = (try? await request.content.decode(MarkActionCardExecutedRequest.self))
+            let body = (try? await decodeJSONRequestBody(MarkActionCardExecutedRequest.self, request, decoding: .contentOnly))
                 ?? MarkActionCardExecutedRequest()
             return try await respond {
                 try services.emailAccounts.actionCards.markActionCardExecuted(
@@ -307,11 +307,11 @@ public struct MessagingFeature: RouteCollection, Sendable {
                     .trimmingCharacters(in: CharacterSet(charactersIn: "\"")),
                   !boundary.isEmpty
             else {
-                return respond(status: 400, headers: .exact([:]), rawJSON: "{\"error\":\"Invalid multipart upload\"}")
+                return respond(status: 400, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Invalid multipart upload")]).render())
             }
             let buffer = try await request.body.collect(max: .specified(ByteCount(value: 300 * 1024 * 1024)))
             guard let buffer, let parsed = parseAttachmentMultipart(data: buffer, boundary: boundary) else {
-                return respond(status: 400, headers: .exact([:]), rawJSON: "{\"error\":\"Invalid multipart upload\"}")
+                return respond(status: 400, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Invalid multipart upload")]).render())
             }
             return try await respond {
                 try services.emailAccounts.agentsLifecycle.uploadAttachments(
@@ -366,7 +366,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
         }
         attachments.get(":id") { request async throws -> Response in
             if desktopQuery(request.url.query, "previewToken") != nil {
-                return respond(status: 401, headers: .exact([:]), rawJSON: "{\"error\":\"Unauthorized\"}")
+                return respond(status: 401, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Unauthorized")]).render())
             }
             if request.headers[.authorization] == nil, desktopQuery(request.url.query, "token") != nil {
                 return try await respond(headers: { (stream: AttachmentStreamBody) in stream.headers }) {
@@ -405,7 +405,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
         }
         attachments.get(":id", "html-preview-url") { request async throws -> Response in
             if desktopQuery(request.url.query, "previewToken") != nil {
-                return respond(status: 401, headers: .exact([:]), rawJSON: "{\"error\":\"Unauthorized\"}")
+                return respond(status: 401, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Unauthorized")]).render())
             }
             return try await respond {
                 try services.emailAccounts.agentsLifecycle.readAttachment(

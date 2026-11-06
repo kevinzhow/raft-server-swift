@@ -126,7 +126,7 @@ private func render(_ error: AuthIdentitiesError) -> String {
     directory.accounts["identity-03@slock.test"] = Account(
         id: userId,
         email: "identity-03@slock.test",
-        passwordHash: EmailLoginDirectory.sha256("password123"),
+        passwordHash: AuthTokenCodec.sha256("password123"),
         displayLanguage: "en",
         name: "identity-03",
         profileSetupSuggestedHandle: "ident",
@@ -136,14 +136,14 @@ private func render(_ error: AuthIdentitiesError) -> String {
         shareUsageData: true,
         emailVerified: true
     )
-    let gravatar = EmailLoginDirectory.sha256("identity-03@slock.test")
+    let gravatar = AuthTokenCodec.sha256("identity-03@slock.test")
     let user = #"{"id":"\#(userId)","email":"identity-03@slock.test","name":"identity-03","emailVerified":true,"displayName":"identity-03","gravatarHash":"\#(gravatar)","displayLanguage":"en","profileSetupCompletedAt":"2023-11-14T22:13:20.000Z","profileSetupSuggestedHandle":"ident","profileSetupProvider":"google","avatarUrl":"/api/avatars/users/x.webp","shareUsageData":true,"preferredLanguage":null,"preferredTimezone":null,"preferredTranslationMode":"off","autoTranslationEnabled":false,"preferredTranslationDisplay":"translated","preferredTimeFormat":null,"preferredMessageBodyFontSize":null,"referralSource":null,"referralSourceOther":null,"referralSourceSkippedAt":null"#
 
     #expect(try service.me(authorization: "Bearer \(bearer)").jsonBody.render() == user + "}")
-    // The legacy helper other domains embed renders the same bytes.
-    #expect(EmailLoginDirectory.userJSON(directory.authProfileStore.account(userId: userId)!) == user + "}")
+    // The standalone user payload other domains embed renders the same bytes.
+    #expect(AuthUserDTO(account: directory.authProfileStore.account(userId: userId)!).jsonBody.render() == user + "}")
 
-    directory.timezoneObservations[userId] = EmailLoginDirectory.TimezoneObservation(
+    directory.timezoneObservations[userId] = TimezoneObservation(
         firstTimezone: "Asia/Tokyo", firstAt: fixedDate, lastTimezone: "UTC", lastAt: fixedDate
     )
     #expect(try service.me(authorization: "Bearer \(bearer)").jsonBody.render()

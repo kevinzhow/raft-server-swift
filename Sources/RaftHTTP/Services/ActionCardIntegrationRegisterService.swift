@@ -689,7 +689,7 @@ public struct ActionCardIntegrationRegisterService: Sendable {
         scopes: [String],
         target: (local: String, storage: String)
     ) -> String? {
-        let binding = EmailLoginDirectory.marketplaceAppNameBinding(client.name)
+        let binding = ThirdPartyText.marketplaceAppNameBinding(client.name)
         let declaration = oauth.clientSetupDeclaration(clientRecordId: client.recordId)
         let agentName = agent.displayName.isEmpty ? agent.name : agent.displayName
         let messageId = makeId()
@@ -757,7 +757,7 @@ public struct ActionCardIntegrationRegisterService: Sendable {
         else {
             throw ActionCardIntegrationRegisterError.marketplaceAppChanged
         }
-        let binding = EmailLoginDirectory.marketplaceAppNameBinding(client.name)
+        let binding = ThirdPartyText.marketplaceAppNameBinding(client.name)
         guard binding.sha256 == card.clientNameSha256, binding.name == card.clientName else {
             throw ActionCardIntegrationRegisterError.marketplaceAppIdentityChanged
         }
@@ -838,7 +838,7 @@ public struct ActionCardIntegrationRegisterService: Sendable {
             throw ActionCardIntegrationRegisterError.registerAgentBindingChanged
         }
         let clientKey = card.clientKey
-            ?? EmailLoginDirectory.generatedIntegrationClientKey(card.name)
+            ?? ThirdPartyText.generatedIntegrationClientKey(card.name)
         let created: CreatedOAuthClient
         do {
             created = try oauth.createClient(

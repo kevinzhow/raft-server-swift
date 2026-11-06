@@ -240,7 +240,7 @@ public struct ManagedMCPLifecycleService: Sendable {
             throw ManagedMCPLifecycleError.profileSetupInvalid
         }
         let lowered = name.lowercased()
-        if lowered.hasPrefix("pending_") || EmailLoginDirectory.reservedAgentNames.contains(lowered) {
+        if lowered.hasPrefix("pending_") || AccountNaming.reservedAgentNames.contains(lowered) {
             throw ManagedMCPLifecycleError.profileSetupNameReserved
         }
         let completedAt = now()

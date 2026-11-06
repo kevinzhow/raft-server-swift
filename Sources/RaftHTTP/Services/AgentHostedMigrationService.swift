@@ -289,7 +289,7 @@ public struct AgentHostedMigrationService: Sendable {
             } catch {
                 agents.recordSourceArchiveFailure(
                     ref: context.supportRef,
-                    rawCode: EmailLoginDirectory.migrationArchiveFailureCode(error),
+                    rawCode: MachineMigrationPolicy.migrationArchiveFailureCode(error),
                     now: now()
                 )
             }
@@ -360,7 +360,7 @@ public struct AgentHostedMigrationService: Sendable {
     ) throws -> MigrationTargetViewResponse {
         let machineId = try requireComputerMachine(authorization)
         let code = request.code.flatMap {
-            EmailLoginDirectory.migrationTerminalFailureCodes.contains($0) ? $0 : nil
+            MachineMigrationPolicy.migrationTerminalFailureCodes.contains($0) ? $0 : nil
         } ?? "MIGRATION_TRANSPORT_LOST"
         let message = request.message.flatMap { $0.isEmpty ? nil : String($0.prefix(500)) }
         let detailCode = request.detailCode.flatMap { value in

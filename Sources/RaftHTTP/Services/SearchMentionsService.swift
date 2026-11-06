@@ -169,7 +169,7 @@ struct SearchMentionsDependencies: Sendable {
             sessionUserId: { source.sessionUserId(authorization: $0) },
             machineIdForCredential: { source.machineIdForCredential(authorization: $0) },
             agentCredential: { authorization in
-                source.agentCredentialAgent(authorization).map {
+                AgentCredentialLookup(directory: source).agentCredentialAgent(authorization).map {
                     SearchMentionsAgentCredential(agentId: $0.agentId, scopes: $0.scopes)
                 }
             },
@@ -361,7 +361,7 @@ public struct SearchMentionsService: Sendable {
         } else {
             mentionSelf = false
         }
-        let queryTokens = EmailLoginDirectory.searchTokens(needle)
+        let queryTokens = MessageSearchText.searchTokens(needle)
         let scopedChannel = (channelId?.isEmpty == false) ? channelId : nil
         let scopedSender = (senderId?.isEmpty == false) ? senderId : nil
         if queryTokens.isEmpty && scopedChannel == nil && scopedSender == nil && scopedSenderType == nil && !mentionSelf {
@@ -411,10 +411,10 @@ public struct SearchMentionsService: Sendable {
                 browse.append((message, 0))
                 continue
             }
-            let counts = EmailLoginDirectory.tokenCounts(message.content)
-            if let score = EmailLoginDirectory.matchScore(counts, queryTokens, requireAll: true) {
+            let counts = MessageSearchText.tokenCounts(message.content)
+            if let score = MessageSearchText.matchScore(counts, queryTokens, requireAll: true) {
                 strict.append((message, score))
-            } else if queryTokens.count > 1, let score = EmailLoginDirectory.matchScore(counts, queryTokens, requireAll: false) {
+            } else if queryTokens.count > 1, let score = MessageSearchText.matchScore(counts, queryTokens, requireAll: false) {
                 relaxed.append((message, score))
             }
         }
@@ -436,7 +436,7 @@ public struct SearchMentionsService: Sendable {
             let message = pair.0
             let channel = channelState.postableChannels[message.channelId]
             let parentId = (channel?.kind == "thread" ? channel?.parentChannelId : nil) ?? message.channelId
-            let snippet = EmailLoginDirectory.searchSnippet(message.content)
+            let snippet = MessageSearchText.searchSnippet(message.content)
             let archivedAt = oauth.channelArchivedAt(id: parentId).map { formatter.string(from: $0) }
             return HumanMessageSearchRowDTO(
                 id: message.id,
@@ -477,7 +477,7 @@ public struct SearchMentionsService: Sendable {
         } else {
             pageLimit = 20
         }
-        let queryTokens = EmailLoginDirectory.searchTokens((query ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+        let queryTokens = MessageSearchText.searchTokens((query ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
         if queryTokens.isEmpty {
             return AgentMessageSearchResponse(results: [], hasMore: false)
         }
@@ -540,10 +540,10 @@ public struct SearchMentionsService: Sendable {
             if let senderScope, message.senderId != senderScope { continue }
             if let afterBoundary, message.createdAt <= afterBoundary { continue }
             if let beforeBoundary, message.createdAt >= beforeBoundary { continue }
-            let counts = EmailLoginDirectory.tokenCounts(message.content)
-            if let score = EmailLoginDirectory.matchScore(counts, queryTokens, requireAll: true) {
+            let counts = MessageSearchText.tokenCounts(message.content)
+            if let score = MessageSearchText.matchScore(counts, queryTokens, requireAll: true) {
                 strict.append((message, score))
-            } else if queryTokens.count > 1, let score = EmailLoginDirectory.matchScore(counts, queryTokens, requireAll: false) {
+            } else if queryTokens.count > 1, let score = MessageSearchText.matchScore(counts, queryTokens, requireAll: false) {
                 relaxed.append((message, score))
             }
         }
@@ -576,7 +576,7 @@ public struct SearchMentionsService: Sendable {
                 ?? (message.senderId == "system" ? "system" : message.senderId)
             let senderType = message.senderType == "agent" ? "agent" : "human"
             let channelType = isThread ? "thread" : (channel?.kind ?? "channel")
-            let snippet = EmailLoginDirectory.searchSnippet(message.content)
+            let snippet = MessageSearchText.searchSnippet(message.content)
             let archivedAt = oauth.channelArchivedAt(id: parentId).map { formatter.string(from: $0) }
             let task = taskRows.first { $0.messageId == message.id }
             return AgentMessageSearchRowDTO(
@@ -660,7 +660,7 @@ public struct SearchMentionsService: Sendable {
             if label == "after" { afterDate = parsed } else { beforeDate = parsed }
         }
         let pageLimit = min(max(Int(limit ?? "") ?? 20, 1), 100)
-        let tokens = EmailLoginDirectory.searchTokens((query ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+        let tokens = MessageSearchText.searchTokens((query ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
         let sortMode = sort == "recent" ? "recent" : "relevance"
         let channelState = channels.state
         let messageState = messages.state
@@ -717,12 +717,12 @@ public struct SearchMentionsService: Sendable {
             if let senderScope, message.senderId != senderScope { continue }
             if let afterDate, message.createdAt <= afterDate { continue }
             if let beforeDate, message.createdAt >= beforeDate { continue }
-            let counts = EmailLoginDirectory.tokenCounts(message.content)
+            let counts = MessageSearchText.tokenCounts(message.content)
             if tokens.isEmpty {
                 hits.append((message, 0))
-            } else if let score = EmailLoginDirectory.matchScore(counts, tokens, requireAll: true) {
+            } else if let score = MessageSearchText.matchScore(counts, tokens, requireAll: true) {
                 hits.append((message, score))
-            } else if tokens.count > 1, let score = EmailLoginDirectory.matchScore(counts, tokens, requireAll: false) {
+            } else if tokens.count > 1, let score = MessageSearchText.matchScore(counts, tokens, requireAll: false) {
                 hits.append((message, score))
             }
         }
@@ -748,7 +748,7 @@ public struct SearchMentionsService: Sendable {
             }
             let senderType = message.senderType == "agent" ? "agent" : "human"
             let channelName = channel?.name ?? ""
-            let snippet = EmailLoginDirectory.searchSnippet(message.content)
+            let snippet = MessageSearchText.searchSnippet(message.content)
             let isThread = channel?.kind == "thread"
             let threadId = isThread ? message.channelId : nil
             let parentMessageId = (isThread ? channel?.parentMessageId : nil).flatMap {
@@ -812,12 +812,12 @@ public struct SearchMentionsService: Sendable {
             $0.localChannelId == channelId
         }?.canonicalChannelId ?? channelId
         let scopedRows = rows.filter { $0.channelId == storageChannelId || $0.channelId == channelId }
-        let matches = scopedRows.filter { EmailLoginDirectory.messageIdMatches($0.id, messageId) }
+        let matches = scopedRows.filter { MessageSearchText.messageIdMatches($0.id, messageId) }
         if matches.count == 1,
            let message = matches.first,
            let index = scopedRows.firstIndex(where: { $0.id == message.id }) {
-            let beforeCount = EmailLoginDirectory.contextWindowSide(before)
-            let afterCount = EmailLoginDirectory.contextWindowSide(after)
+            let beforeCount = MessageSearchText.contextWindowSide(before)
+            let afterCount = MessageSearchText.contextWindowSide(after)
             let start = max(0, index - beforeCount)
             let end = min(scopedRows.count, index + 1 + afterCount)
             let parts = scopedRows[start..<end].map { row in
@@ -857,7 +857,7 @@ public struct SearchMentionsService: Sendable {
                   localThread.memberIds.contains(userId)
             else { continue }
             guard let reply = rows.first(where: {
-                $0.channelId == link.canonicalChannelId && EmailLoginDirectory.messageIdMatches($0.id, messageId)
+                $0.channelId == link.canonicalChannelId && MessageSearchText.messageIdMatches($0.id, messageId)
             }) else { continue }
             let canonicalThreadId = link.localChannelId
             return StoredMessageContextResponse(
@@ -878,7 +878,7 @@ public struct SearchMentionsService: Sendable {
             )
         }
         let replies = rows.filter { row in
-            guard EmailLoginDirectory.messageIdMatches(row.id, messageId),
+            guard MessageSearchText.messageIdMatches(row.id, messageId),
                   let thread = channelState.postableChannels[row.channelId],
                   thread.kind == "thread",
                   thread.serverId == serverId,
@@ -915,7 +915,7 @@ public struct SearchMentionsService: Sendable {
             thread.kind == "thread"
                 && thread.serverId == serverId
                 && thread.deletedAt == nil
-                && EmailLoginDirectory.messageIdMatches(id, messageId)
+                && MessageSearchText.messageIdMatches(id, messageId)
                 && thread.parentMessageId.flatMap { parentId in
                     rows.first { $0.id == parentId && $0.channelId == channelId }
                 } != nil
@@ -979,7 +979,7 @@ public struct SearchMentionsService: Sendable {
             description: task.description,
             revision: task.revision,
             superseded: task.superseded,
-            amendedAt: task.amendedAt.map { EmailLoginDirectory.isoString($0) },
+            amendedAt: task.amendedAt.map { DateText.isoString($0) },
             amendedByType: task.amendedByType,
             amendedByName: task.amendedByName
         )

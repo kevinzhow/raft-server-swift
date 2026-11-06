@@ -165,7 +165,7 @@ public struct FeedbackLocatorService: Sendable {
         self.oauth = source.oauth
         self.now = { Date() }
         self.makeReceiptId = { UUID().uuidString.lowercased() }
-        self.hashPayload = { EmailLoginDirectory.sha256($0) }
+        self.hashPayload = { AuthTokenCodec.sha256($0) }
     }
 
     init(
@@ -176,7 +176,7 @@ public struct FeedbackLocatorService: Sendable {
         oauth: OAuthLedger,
         now: @escaping @Sendable () -> Date = { Date() },
         makeReceiptId: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() },
-        hashPayload: @escaping @Sendable (String) -> String = { EmailLoginDirectory.sha256($0) }
+        hashPayload: @escaping @Sendable (String) -> String = { AuthTokenCodec.sha256($0) }
     ) {
         self.feedback = feedback
         self.agents = agents
@@ -288,7 +288,7 @@ public struct FeedbackLocatorService: Sendable {
         guard case let .string(reportId)? = payload["report_id"],
               ServerScope.isUUID(reportId),
               case let .string(capturedRaw)? = payload["captured_at"],
-              let capturedAt = EmailLoginDirectory.isoDate(capturedRaw),
+              let capturedAt = DateText.isoDate(capturedRaw),
               let producer = Self.objectValue(payload["producer"]),
               producer["server_id"] == .string(identity.serverId),
               producer["agent_id"] == .string(identity.agentId),
@@ -406,7 +406,7 @@ public struct FeedbackLocatorService: Sendable {
             FeedbackLocatorRow(
                 reportId: row.reportId,
                 receiptId: row.receiptId,
-                capturedAt: EmailLoginDirectory.isoString(row.capturedAt),
+                capturedAt: DateText.isoString(row.capturedAt),
                 runtime: row.runtime,
                 nativeStatus: row.nativeStatus,
                 nativeLookupMethod: row.nativeLookupMethod,

@@ -346,7 +346,7 @@ public struct AgentMachineMigrationControlService: Sendable {
     ) throws -> AgentSurfaceBodyResponse {
         _ = try managedAgent(authorization, serverId: serverId, agentId: agentId)
         guard let provider = agents.agentActivityLogProvider else { return AgentSurfaceBodyResponse(body: "[]") }
-        let result = provider(agentId, EmailLoginDirectory.agentSurfaceQueryInt(query, "limit"))
+        let result = provider(agentId, AgentSurfaceQuery.agentSurfaceQueryInt(query, "limit"))
         if let failure = surfaceFailure(result, action: "Activity log") { throw failure }
         guard case .ok(let body) = result else { return AgentSurfaceBodyResponse(body: "[]") }
         return AgentSurfaceBodyResponse(body: body)
@@ -362,10 +362,10 @@ public struct AgentMachineMigrationControlService: Sendable {
         let (userId, _) = try managedAgent(authorization, serverId: serverId, agentId: agentId)
         let empty = AgentSurfaceBodyResponse(body: "{\"summaries\":[],\"next\":null}")
         guard let provider = agents.agentActivitySummariesProvider else { return empty }
-        let limit = min(max(EmailLoginDirectory.agentSurfaceQueryInt(query, "limit") ?? 30, 1), 50)
+        let limit = min(max(AgentSurfaceQuery.agentSurfaceQueryInt(query, "limit") ?? 30, 1), 50)
         var beforeEndedAt: Int?
         var beforeId: String?
-        if let before = EmailLoginDirectory.agentSurfaceQueryString(query, "before") {
+        if let before = AgentSurfaceQuery.agentSurfaceQueryString(query, "before") {
             let parts = before.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
             beforeEndedAt = Int(parts.count > 0 ? String(parts[0]) : "")
             beforeId = parts.count > 1 ? String(parts[1]) : nil
@@ -515,9 +515,9 @@ public struct AgentMachineMigrationControlService: Sendable {
     ) throws -> AgentWorkspaceFilesResponse {
         try workspaceAuthority(authorization, serverId: serverId, agentId: agentId)
         guard let provider = agents.agentWorkspaceTreeProvider else { throw AgentMigrationControlError.daemonOffline }
-        let dirPath = EmailLoginDirectory.agentSurfaceQueryString(query, "dirPath")
+        let dirPath = AgentSurfaceQuery.agentSurfaceQueryString(query, "dirPath")
         let includeHidden = ["1", "true"].contains(
-            (EmailLoginDirectory.agentSurfaceQueryString(query, "includeHidden") ?? "").lowercased()
+            (AgentSurfaceQuery.agentSurfaceQueryString(query, "includeHidden") ?? "").lowercased()
         )
         switch provider(agentId, dirPath, includeHidden) {
         case .ok(let files): return AgentWorkspaceFilesResponse(files: files)
@@ -535,7 +535,7 @@ public struct AgentMachineMigrationControlService: Sendable {
         query: String?
     ) throws -> AgentSurfaceBodyResponse {
         try workspaceAuthority(authorization, serverId: serverId, agentId: agentId)
-        let path = EmailLoginDirectory.agentSurfaceQueryString(query, "path")
+        let path = AgentSurfaceQuery.agentSurfaceQueryString(query, "path")
         guard let provider = agents.agentWorkspaceReadProvider else { throw AgentMigrationControlError.daemonOffline }
         switch provider(agentId, path) {
         case .ok(let body): return AgentSurfaceBodyResponse(body: body)
@@ -776,7 +776,7 @@ public struct AgentMachineMigrationControlService: Sendable {
         if let active = facts.activeMigration, active.state != "canceled" {
             throw AgentMigrationControlError.migrationAlreadyInProgress
         }
-        if let hostedModel, hostedModel != EmailLoginDirectory.hostedDefaultModel, !facts.modelPickerEnabled {
+        if let hostedModel, hostedModel != HostedModelPolicy.hostedDefaultModel, !facts.modelPickerEnabled {
             throw AgentMigrationControlError.hostedModelPickerDisabled
         }
         let supportRef = Self.supportRef()

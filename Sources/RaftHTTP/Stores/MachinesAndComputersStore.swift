@@ -424,7 +424,7 @@ final class MachinesAndComputersStore: @unchecked Sendable {
             userId: userId,
             name: name,
             description: nil,
-            apiKey: EmailLoginDirectory.machineAPIKeyMaterial()
+            apiKey: MachineCredentialMaterial.machineAPIKeyMaterial()
         ))
         lock.unlock()
         return id
@@ -665,7 +665,7 @@ extension MachinesAndComputersStore {
     func computerCredential(apiKey: String) -> ComputerCredentialLookup {
         lock.lock()
         defer { lock.unlock() }
-        let length = EmailLoginDirectory.computerAPIKeyPrefixLength
+        let length = MachineCredentialMaterial.computerAPIKeyPrefixLength
         let prefix = String(apiKey.prefix(length))
         let candidates = storage.computers.filter { String($0.apiKey.prefix(length)) == prefix }
         if let computer = candidates.first(where: { $0.apiKey == apiKey }) {

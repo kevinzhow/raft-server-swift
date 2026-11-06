@@ -328,8 +328,8 @@ private func registerJSON(
 
 @Test func registerRejectsAnObjectFieldBeforeAnyAccount() async throws {
     let accounts = EmailLoginDirectory()
-    let terms = EmailLoginDirectory.termsVersion
-    let privacy = EmailLoginDirectory.privacyVersion
+    let terms = AuthLegalPolicy.termsVersion
+    let privacy = AuthLegalPolicy.privacyVersion
     let bodies = [
         "{\"email\":{\"address\":\"register-object-email@slock.test\"},\"password\":\"password123\",\"name\":\"register-object-email\",\"acceptTerms\":true,\"termsVersion\":\"\(terms)\",\"privacyVersion\":\"\(privacy)\"}",
         "{\"email\":\"register-object-password@slock.test\",\"password\":{\"raw\":\"password123\"},\"name\":\"register-object-password\",\"acceptTerms\":true,\"termsVersion\":\"\(terms)\",\"privacyVersion\":\"\(privacy)\"}",
@@ -368,8 +368,8 @@ private func registerJSON(
     accounts.addAccount(id: otherId, email: "retire-other@mail.build", password: "password123")
     accounts.markEmailVerified(userId: otherId)
     let capability = "retirement-capability-owner-1234567890"
-    let terms = EmailLoginDirectory.termsVersion
-    let privacy = EmailLoginDirectory.privacyVersion
+    let terms = AuthLegalPolicy.termsVersion
+    let privacy = AuthLegalPolicy.privacyVersion
     let registerBody = "{\"email\":\"retire-owner@mail.build\",\"password\":\"password123\",\"name\":\"retire-owner\",\"acceptTerms\":true,\"termsVersion\":\"\(terms)\",\"privacyVersion\":\"\(privacy)\",\"stagingSelfAccountCapability\":\"\(capability)\"}"
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -386,7 +386,7 @@ private func registerJSON(
             let ownerId = owner?["id"] as? String ?? ""
             let ownerEmail = owner?["email"] as? String ?? ""
             #expect(ownerEmail == "retire-owner@mail.build")
-            #expect(accounts.stagingSelfAccountCapabilityHash(userId: ownerId) == EmailLoginDirectory.sha256Hex(capability))
+            #expect(accounts.stagingSelfAccountCapabilityHash(userId: ownerId) == AuthTokenCodec.sha256Hex(capability))
             accounts.markEmailVerified(userId: ownerId)
 
             let ownerLogin = try await postJSON(
@@ -494,8 +494,8 @@ private func registerJSON(
 
 @Test func stagingSelfAccountRegistrationFailsClosedOutsideStaging() async throws {
     let accounts = EmailLoginDirectory()
-    let terms = EmailLoginDirectory.termsVersion
-    let privacy = EmailLoginDirectory.privacyVersion
+    let terms = AuthLegalPolicy.termsVersion
+    let privacy = AuthLegalPolicy.privacyVersion
     let email = "production-opt-in@mail.build"
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -1085,9 +1085,9 @@ private func refreshBound(
             let authorizationUrl = startBody?["authorizationUrl"] as? String ?? ""
             #expect(requestId.isEmpty == false)
             let state = URLComponents(string: authorizationUrl)?.queryItems?.first { $0.name == "state" }?.value ?? ""
-            let original = EmailLoginDirectory.verifySocialAuthState(state)
+            let original = AuthTokenCodec.verifySocialAuthState(state)
             #expect(original?.desktopNonce == "desktop_nonce_0123456789abcdef")
-            let tampered = EmailLoginDirectory.signSocialAuthState(SocialAuthState(
+            let tampered = AuthTokenCodec.signSocialAuthState(SocialAuthState(
                 provider: original?.provider ?? "",
                 mode: original?.mode ?? "",
                 nonce: original?.nonce ?? "",
@@ -1137,7 +1137,7 @@ private func refreshBound(
             let authorizationUrl = startBody?["authorizationUrl"] as? String ?? ""
             #expect(URL(string: authorizationUrl)?.host == "accounts.google.com")
             let state = URLComponents(string: authorizationUrl)?.queryItems?.first { $0.name == "state" }?.value ?? ""
-            #expect(EmailLoginDirectory.verifySocialAuthState(state)?.desktopNonce == desktopState)
+            #expect(AuthTokenCodec.verifySocialAuthState(state)?.desktopNonce == desktopState)
 
             let encoded = state.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? state
             let callback = try await client.get(URI(string: "/api/auth/google/callback?code=provider-code&state=\(encoded)"))
@@ -1489,7 +1489,7 @@ private func refreshBound(
 
 @Test func mobileOAuthInvalidMobileStateFailsClosedWithoutWebCallbackRedirect() async throws {
     let accounts = EmailLoginDirectory()
-    let state = EmailLoginDirectory.signSocialAuthState(SocialAuthState(
+    let state = AuthTokenCodec.signSocialAuthState(SocialAuthState(
         provider: "google",
         mode: "login",
         nonce: "nonce",
@@ -2309,7 +2309,7 @@ private final class ExchangeCounter: @unchecked Sendable {
             #expect(accounts.oauthRequestStatus(id: requestId) == "pending_provider")
             #expect(accounts.oauthRequestCodeChallenge(id: requestId) == loginChallenge)
 
-            let expiredToken = EmailLoginDirectory.signNativeAppleRequestToken(
+            let expiredToken = AuthTokenCodec.signNativeAppleRequestToken(
                 secret: secret,
                 requestId: requestId,
                 mode: "login",
@@ -2604,7 +2604,7 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
             #expect(handoff.isEmpty == false)
             #expect(barrier.exchangeCount == 1)
             #expect(accounts.oauthRequestStatus(id: requestId) == "provider_completed")
-            #expect(accounts.oauthRequestCodeHash(id: requestId) == EmailLoginDirectory.sha256Hex(handoff))
+            #expect(accounts.oauthRequestCodeHash(id: requestId) == AuthTokenCodec.sha256Hex(handoff))
             #expect(accounts.oauthRequestProviderUserId(id: requestId) == subject)
         }
     }

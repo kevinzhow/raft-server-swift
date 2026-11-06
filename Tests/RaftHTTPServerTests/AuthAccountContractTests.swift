@@ -67,7 +67,7 @@ private func authPatchMe(
         try await app.testing { client in
             let reserved = try await authRegister(
                 client,
-                body: #"{"email":"register-reminders@slock.test","password":"password123","name":"Reminders","acceptTerms":true,"termsVersion":"\#(EmailLoginDirectory.termsVersion)","privacyVersion":"\#(EmailLoginDirectory.privacyVersion)"}"#
+                body: #"{"email":"register-reminders@slock.test","password":"password123","name":"Reminders","acceptTerms":true,"termsVersion":"\#(AuthLegalPolicy.termsVersion)","privacyVersion":"\#(AuthLegalPolicy.privacyVersion)"}"#
             )
             #expect(reserved.status == .badRequest)
             #expect((reserved.body["error"] as? String)?.lowercased().contains("reserved") == true)
@@ -80,13 +80,13 @@ private func authPatchMe(
             #expect(missingLegal.status == .unprocessableContent)
             #expect(missingLegal.body["error"] as? String == "LEGAL_ACCEPTANCE_REQUIRED")
             let legal = try #require(missingLegal.body["legal"] as? [String: Any])
-            #expect(legal["termsVersion"] as? String == EmailLoginDirectory.termsVersion)
-            #expect(legal["privacyVersion"] as? String == EmailLoginDirectory.privacyVersion)
+            #expect(legal["termsVersion"] as? String == AuthLegalPolicy.termsVersion)
+            #expect(legal["privacyVersion"] as? String == AuthLegalPolicy.privacyVersion)
             #expect(!accounts.hasAccount(email: "legal-missing@slock.test"))
 
             let staleLegal = try await authRegister(
                 client,
-                body: #"{"email":"legal-stale@slock.test","password":"password123","name":"legal-stale","acceptTerms":true,"termsVersion":"old-terms","privacyVersion":"\#(EmailLoginDirectory.privacyVersion)"}"#
+                body: #"{"email":"legal-stale@slock.test","password":"password123","name":"legal-stale","acceptTerms":true,"termsVersion":"old-terms","privacyVersion":"\#(AuthLegalPolicy.privacyVersion)"}"#
             )
             #expect(staleLegal.status == .conflict)
             #expect(staleLegal.body["error"] as? String == "TERMS_CHANGED")
@@ -94,14 +94,14 @@ private func authPatchMe(
 
             let accepted = try await authRegister(
                 client,
-                body: #"{"email":"legal-accepted@slock.test","password":"password123","name":"legal-accepted","acceptTerms":true,"termsVersion":"\#(EmailLoginDirectory.termsVersion)","privacyVersion":"\#(EmailLoginDirectory.privacyVersion)"}"#
+                body: #"{"email":"legal-accepted@slock.test","password":"password123","name":"legal-accepted","acceptTerms":true,"termsVersion":"\#(AuthLegalPolicy.termsVersion)","privacyVersion":"\#(AuthLegalPolicy.privacyVersion)"}"#
             )
             #expect(accepted.status == .ok)
             #expect(accounts.hasAccount(email: "legal-accepted@slock.test"))
             let acceptedUserId = try #require(accounts.userId(forEmail: "legal-accepted@slock.test"))
             let acceptance = try #require(accounts.legalAcceptance(userId: acceptedUserId))
-            #expect(acceptance.termsVersion == EmailLoginDirectory.termsVersion)
-            #expect(acceptance.privacyVersion == EmailLoginDirectory.privacyVersion)
+            #expect(acceptance.termsVersion == AuthLegalPolicy.termsVersion)
+            #expect(acceptance.privacyVersion == AuthLegalPolicy.privacyVersion)
             #expect(acceptance.source == "signup")
         }
     }

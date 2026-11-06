@@ -1101,7 +1101,7 @@ public struct RuntimeFormsAndProbesService: Sendable {
             let staleAfter = (try? JSONDecoder().decode(
                 RuntimeUsageSnapshotFreshness.self,
                 from: Data(json.utf8)
-            ))?.staleAfter.flatMap(EmailLoginDirectory.isoDate) ?? now.addingTimeInterval(1800)
+            ))?.staleAfter.flatMap(DateText.isoDate) ?? now.addingTimeInterval(1800)
             dependencies.machines.recordRuntimeAccountUsage(
                 key: key,
                 json: json,

@@ -76,7 +76,7 @@ public struct NativeNotificationsService: Sendable {
             createdAt: issuedAt,
             consumedAt: nil
         ))
-        return NativeEnrollmentGrantIssued(grant: minted.opaque, expiresAt: EmailLoginDirectory.iso8601(expiresAt))
+        return NativeEnrollmentGrantIssued(grant: minted.opaque, expiresAt: DateText.iso8601(expiresAt))
     }
 
     /// `POST /api/notifications/enrollment-exchanges`. One grant mints one
@@ -93,7 +93,7 @@ public struct NativeNotificationsService: Sendable {
         let clock = now
         guard let expiresAt = rows.exchangeGrant(
             id: parsed.id,
-            secretHash: EmailLoginDirectory.sha256(parsed.secret),
+            secretHash: AuthTokenCodec.sha256(parsed.secret),
             families: families(),
             clock: { clock() },
             deviceId: deviceId,
@@ -122,7 +122,7 @@ public struct NativeNotificationsService: Sendable {
             credentialId: credentialId,
             deviceId: deviceId,
             scope: NativeNotificationStore.streamScope,
-            expiresAt: EmailLoginDirectory.iso8601(expiresAt)
+            expiresAt: DateText.iso8601(expiresAt)
         )
     }
 
@@ -174,7 +174,7 @@ public struct NativeNotificationsService: Sendable {
         let clock = now
         switch rows.rotateCredential(
             credentialId: parsed.id,
-            secretHash: EmailLoginDirectory.sha256(parsed.secret),
+            secretHash: AuthTokenCodec.sha256(parsed.secret),
             families: families(),
             clock: { clock() },
             newCredentialId: credentialId,
@@ -201,7 +201,7 @@ public struct NativeNotificationsService: Sendable {
                 credentialId: credentialId,
                 deviceId: deviceId,
                 scope: NativeNotificationStore.streamScope,
-                expiresAt: EmailLoginDirectory.iso8601(expiresAt)
+                expiresAt: DateText.iso8601(expiresAt)
             )
         }
     }
@@ -222,7 +222,7 @@ public struct NativeNotificationsService: Sendable {
         guard let parsed = NativeNotificationCredentials.parseOpaque(opaque, prefix: "rnc1") else { return false }
         return rows.revokeCredential(
             id: parsed.id,
-            secretHash: EmailLoginDirectory.sha256(parsed.secret),
+            secretHash: AuthTokenCodec.sha256(parsed.secret),
             now: now()
         )
     }
@@ -238,7 +238,7 @@ public struct NativeNotificationsService: Sendable {
         else { throw NativeNotificationsError.credentialInvalid }
         switch rows.openStream(
             credentialId: parsed.id,
-            secretHash: EmailLoginDirectory.sha256(parsed.secret),
+            secretHash: AuthTokenCodec.sha256(parsed.secret),
             families: families(),
             lastEventId: lastEventId,
             lastEventIdIsWellFormed: lastEventId.map { $0.wholeMatch(of: NativeNotificationCredentials.uuidPattern) != nil } ?? false,
@@ -267,7 +267,7 @@ public struct NativeNotificationsService: Sendable {
         else { return false }
         return rows.principal(
             credentialId: parsed.id,
-            secretHash: EmailLoginDirectory.sha256(parsed.secret),
+            secretHash: AuthTokenCodec.sha256(parsed.secret),
             families: families(),
             now: now()
         ) != nil
@@ -349,7 +349,7 @@ public struct NativeNotificationsService: Sendable {
     static func frame(_ event: StoredNativeNotificationEvent) -> String {
         let data = OrderedJSON.object([
             OrderedJSONField("body", event.body),
-            OrderedJSONField("createdAt", EmailLoginDirectory.iso8601(event.createdAt)),
+            OrderedJSONField("createdAt", DateText.iso8601(event.createdAt)),
             OrderedJSONField("eventId", event.eventId),
             OrderedJSONField("serverId", event.serverId),
             OrderedJSONField("targetUri", event.targetUri),

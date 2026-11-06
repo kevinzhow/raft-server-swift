@@ -50,7 +50,7 @@ public struct FeedbackMultiAppService: Sendable {
         }
         var path = "/api/apps/\(environment.appId)/reporter-feedback?limit=50"
         if let handsCursor {
-            path += "&cursor=" + EmailLoginDirectory.feedbackPercentEncoded(handsCursor)
+            path += "&cursor=" + FeedbackRouting.feedbackPercentEncoded(handsCursor)
         }
         let upstream = await dependencies.handsRequest(
             environment, "GET", path, bearer, reporterId, [:], nil
@@ -80,7 +80,7 @@ public struct FeedbackMultiAppService: Sendable {
         clientKindHeader: String = ""
     ) async throws -> FeedbackHandsReply {
         let userId = try authenticate(authorization)
-        guard EmailLoginDirectory.feedbackCanonicalUUID(ticketId) else {
+        guard FeedbackRouting.feedbackCanonicalUUID(ticketId) else {
             throw FeedbackMultiAppError.ticketNotFound
         }
         guard let request, request.reason == "completed" || request.reason == "no_longer_needed" else {
@@ -111,7 +111,7 @@ public struct FeedbackMultiAppService: Sendable {
         clientKindHeader: String = ""
     ) async throws -> FeedbackHandsReply {
         let userId = try authenticate(authorization)
-        guard EmailLoginDirectory.feedbackCanonicalUUID(ticketId) else {
+        guard FeedbackRouting.feedbackCanonicalUUID(ticketId) else {
             throw FeedbackMultiAppError.ticketNotFound
         }
         for part in request.body.components(separatedBy: "Content-Disposition: form-data") {
@@ -148,7 +148,7 @@ public struct FeedbackMultiAppService: Sendable {
     ) async throws -> FeedbackHandsReply {
         let startedAt = dependencies.now()
         let userId = try authenticate(authorization)
-        guard EmailLoginDirectory.feedbackCanonicalUUID(ticketId) else {
+        guard FeedbackRouting.feedbackCanonicalUUID(ticketId) else {
             throw FeedbackMultiAppError.ticketNotFound
         }
         guard commentLimit >= 1, commentLimit <= 100 else {
@@ -170,7 +170,7 @@ public struct FeedbackMultiAppService: Sendable {
         }
         var path = "/api/apps/\(environment.appId)/reporter-feedback/\(ticketId)?comment_limit=\(commentLimit)"
         if let handsCursor {
-            path += "&comment_cursor=" + EmailLoginDirectory.feedbackPercentEncoded(handsCursor)
+            path += "&comment_cursor=" + FeedbackRouting.feedbackPercentEncoded(handsCursor)
         }
         let upstream = await dependencies.handsRequest(
             environment, "GET", path, bearer, reporterId, [:], nil
@@ -198,8 +198,8 @@ public struct FeedbackMultiAppService: Sendable {
         clientKindHeader: String = ""
     ) async throws -> FeedbackHandsReply {
         let userId = try authenticate(authorization)
-        guard EmailLoginDirectory.feedbackCanonicalUUID(ticketId),
-              EmailLoginDirectory.feedbackCanonicalUUID(attachmentId) else {
+        guard FeedbackRouting.feedbackCanonicalUUID(ticketId),
+              FeedbackRouting.feedbackCanonicalUUID(attachmentId) else {
             throw FeedbackMultiAppError.ticketNotFound
         }
         let source = try resolveSource(clientKindHeader)
@@ -237,7 +237,7 @@ public struct FeedbackMultiAppService: Sendable {
 
     private func resolveSource(_ clientKindHeader: String) throws -> String {
         do {
-            return try EmailLoginDirectory.feedbackSource(clientKindHeader)
+            return try FeedbackRouting.feedbackSource(clientKindHeader)
         } catch {
             throw FeedbackMultiAppError.invalidRequest
         }
@@ -286,7 +286,7 @@ public struct FeedbackMultiAppService: Sendable {
     ) throws -> String {
         guard !environment.cursorSecret.isEmpty else { throw FeedbackMultiAppError.invalidRequest }
         do {
-            return try EmailLoginDirectory.feedbackDecodeCursor(
+            return try FeedbackRouting.feedbackDecodeCursor(
                 cursor,
                 route: route,
                 userId: userId,
@@ -353,7 +353,7 @@ public struct FeedbackMultiAppService: Sendable {
         var body = String(decoding: upstream.body, as: UTF8.self)
         if !environment.cursorSecret.isEmpty,
            let rewritten = FeedbackCursorRewrite.rewrite(body: upstream.body, member: member, wrap: { next in
-               EmailLoginDirectory.feedbackEncodeCursor(
+               FeedbackRouting.feedbackEncodeCursor(
                    route: route,
                    userId: userId,
                    ticketId: ticketId,
@@ -366,7 +366,7 @@ public struct FeedbackMultiAppService: Sendable {
         let elapsedMs = dependencies.now().timeIntervalSince(startedAt) * 1000
         return FeedbackHandsReply.timed(
             body: body,
-            serverTiming: EmailLoginDirectory.feedbackTimingHeader(
+            serverTiming: FeedbackRouting.feedbackTimingHeader(
                 elapsedMs: elapsedMs,
                 upstreamHeaders: upstream.headers
             )

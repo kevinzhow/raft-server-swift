@@ -3,102 +3,75 @@
 **目标**：等价复刻 `raft-source` tag `v1.21.23-source.1` 的 server 与 daemon。
 **规格**：上游 Node 测试中对外可见的 HTTP 状态码、JSON、响应头与套接字帧。
 
-## 1. 当前状态与已完成阶段（Phases 0–4，已完成）
+## 1. 行为覆盖与已完成阶段
 
-### 1.1 覆盖率
-
-`make parity` / `make parity-check`：**406 / 406 模块全部 locked（100.0%）**
+`make parity` / `make parity-check`：**406 / 406 模块全部 locked**。
 
 | 区域 | 模块 | 用例 |
 | --- | --- | --- |
 | Route | `219 / 219` | `2000 / 2000`（100.0%） |
 | Socket | `7 / 7` | `16 / 16`（100.0%） |
-| Daemon | `180 / 180` | `2616 / 2616` |
+| Daemon | `180 / 180` | `2616 / 2616`（含账本中注明的排除项） |
 
-Daemon 的 2616 条用例中，约 1130 条属于 Node 运行时 / 进程管理 / 外部集成轨道，已在 `docs/PARITY.tsv` 逐条注明排除；便携可执行口径约 616 条。报告覆盖率时须同时给出该口径，避免把排除项读成真实移植量。
+Daemon 的 2616 条账本用例包含 Node 运行时、进程管理和外部集成轨道；约 1130 条已在 `docs/PARITY.tsv` 注明排除，便携可执行口径约 616 条。报告进度须保留这些资格说明，不能把账本总量当作实际执行量。
 
-### 1.2 端到端真机闭环
+Phases 0–4 的真实进程闭环已建立：`make test-e2e` 启动两个隔离的 `RaftServer` 和一个 `RaftDaemon`；`scripts/smoke-server.sh` 检查真实端口上的注册、验证邮件、建服建频道、人类与 Agent 消息、Socket.IO 和 `/daemon/connect`。24 项 smoke 是接线检查，不单独证明全部 parity 模块。
 
-- `make test-e2e`：双 `RaftServer` + `RaftDaemon` 进程隔离启动。
-- `./scripts/smoke-server.sh`：24 项真实端口检查——HTTP `/livez`、`/health`、`/api/version`，人类注册 + Email Verification 闭环，建服、建频道，外部 Agent 与真实已验证人类发送消息，Socket.IO `message:new` 实时推送，`/daemon/connect` 握手。
+Phase 5 已完成旧 `EmailLogin/` 文件提取、Feature 路由拆分、同步 body 读取退役和生产 `ForTesting` 入口迁移。`EmailLogin.swift` 从 34,306 行降到 48 行，原目录中不再有 Swift 文件。测试 seam 位于不被生产 target 依赖的 `Tests/TestSupport`。
 
-### 1.3 分层基础（R1–R4）
+这些结果不代表深度架构重构已经完成：旧类型在其他目录仍有扩展和调用，目录全局锁与 forwarding 文件仍在，多个 Store 和 OAuth ledger 仍有 unchecked Sendable。当前工作是 Phase 6；精确分层、检测范围和数值快照只在 `docs/ARCHITECTURE.md` 维护。
 
-- **路由**：16 个 `RouteCollection` 模块（5,892 行），位于 `Sources/RaftHTTPServer/Features/`（含 `AgentsFeature`、`ComputersFeature`、`RemindersFeature`，最大 748 行）。
-- **存储**：12 个独立锁领域 `Store` + `DirectoryStoreForwarders.swift`，位于 `Sources/RaftHTTP/Stores/`。
-- **服务**：45 个无 Vapor 依赖的 `Service`（32,996 行，最大 1,085 行，上限 1,200），位于 `Sources/RaftHTTP/Services/`。
-- **DTO**：8 个 `Codable` 模块（1,362 行），位于 `Sources/RaftHTTP/DTO/`。
-- **收敛结果**：`Sources/RaftHTTP/EmailLogin.swift` 从 34,306 行压降至 **48 行**（**-99.86%**）；`Sources/RaftHTTP/EmailLogin/` 目录下 `.swift` 文件 **0 个**（原 34 个已全部删除）；`EmailLogin.swift` 内 `ForTesting` 基线为 **0**（`scripts/check_architecture.py` 门禁口径）。`Features/**` 中同步 `request.body.string` 读取为 **0**，`BufferedRequestBodyMiddleware` 已退役。
-- **测试后门**：`grep -r ForTesting Sources` 全树 **0 处**（原 305 处 / 43 个文件）。所有测试 seam 已迁入测试专用 SwiftPM target `Tests/TestSupport`（`@testable import RaftHTTP`，不是产品、不被生产 target 依赖）；`scripts/for_testing_baseline.tsv` 为空，守卫对全树硬零。
+## 2. Phase 6：消除剩余耦合
 
-## 2. 下一阶段目标：Phase 5 按域深度架构重构
+### 已建立的基础
 
-采用 Strangler-Fig 模式，逐域把调用链收敛为 `Route -> Service -> Store`，并对齐 Vapor 5 最佳实践。四个子目标可以并行排序，但每个切片都必须独立通过第 3 节门禁。
+- Service 的旧回复类型文本已归零；成功响应采用具名 DTO / `JSONBodyConvertible`，失败采用 typed DomainError。JSON 字节顺序和省略规则由 `OrderedJSON` 保留。
+- 已迁移域使用 `respond`；其他 JSON 路径仍有旧 adapter，不能称整个路由层已迁完。请求体 helper 统一实现机制，仍显式保留各路由的空体、空白体、Content-Type 和错误处理策略。
+- Store 按领域拥有状态；大文件按职责拆成同类型扩展，并增加每文件 1,000 行上限。文件拆分与锁模型改造分开验收。
+- 棘轮覆盖完整服务端依赖闭包，目录类型引用与 unchecked conformance 还有全 Sources 口径；daemon-only 与生成代码例外明确单列。字符串 JSON 候选采用独立检测，不把 JSON-any 计数当作所有手工 JSON。
 
-重构原则：
+### 第八批：扩大清理范围（已通过完整门禁）
 
-- 结构变更与行为变更分离；一个切片只做一件事。
-- 以域为单位推进，一个域抽完再进下一个，不以文件行数作为切片边界。
-- 路由路径、方法、状态码与 JSON 形状保持不变，验收测试只做回归，不做重写。
-- 每完成一个域就删除旧实现，不保留双写、兼容分支或中间适配层。
+| 范围 | 实现 |
+| --- | --- |
+| 顶层公共路由 | 公共页面、消息、附件、搜索、翻译、访问、发布说明和 integration endpoint 改为具名 payload / DomainError / 语义 outcome；保留 HEAD 和缓存头 |
+| OAuth ledger | 按职责拆文件，响应与签名声明使用有序 DTO；签名 secret 使用 Mutex，记录表的原事务锁及整体 unchecked conformance仍在 |
+| Support | 移除目录扩展和旧回复工厂，helper 各有明确职责；原嵌套值模型独立出来 |
+| Features / Fallback | 去除手工 JSON 回复，统一请求体解码 helper，保持原输入和鉴权策略 |
+| 超大 Store | 按职责纯搬移拆分；恢复不需要跨文件可见的私有字段；加入 1,000 行门禁 |
+| 全服务端棘轮 | 扩展为七个 server targets，补充拒升更新器、只读迁移导出与字符串 JSON 候选检测 |
 
-### 5.1 消除 `EmailLogin+*.swift` 大泥球扩展碎片
+兼容性优先于清零数字。Foundation 的重复键 last-wins、numeric Bool 桥接、异构数组过滤和既有数字表示及排序序列化字节在原兼容边界保留。把这些路径换成普通 Codable / Int64 / Double 转换会产生可观测差异；本批补了相应 published-path 和差分回归。
 
-按上游 `packages/server/src/services/*.ts` 的域边界，逐域将 `Sources/RaftHTTP/EmailLogin/EmailLogin+*.swift` 中的业务逻辑抽离为独立的 `<Domain>Service`：
+触及的频道消息 recorded 旁路已删除：测试检查实际 `message:new` payload 和重放不重复发事件。其他尚存的 recorded/audit 集合不能因此视为已经清理。
 
-- 直接操作 `Sources/RaftHTTP/Stores/<Domain>Store.swift`，不再跨域读写内存字典。
-- 返回强类型 Swift `Codable` Struct，或抛出强类型 Domain Error。
-- 不再拼装 `HTTPReply` 字符串，HTTP 映射留在 `Features/` 层。
-- 每抽完一个域，即删除对应的 `EmailLogin+*.swift` 文件，避免新旧两套逻辑并存。
+### 第九批：目录收缩与 Store 并发边界
 
-### 5.2 Vapor 5 `Content` 解码与中间件现代化
+1. 把剩余目录扩展中的领域逻辑和跨域 helper 移到真正的 Service / Store；删除旧实现和 forwarding 文件，不保留另一层兼容外壳。
+2. 将可变 Store 状态迁到编译器检查的 Mutex 或 actor 隔离。保留 read-modify-write 原子性，不能把一次事务拆成分别锁住的 getter/setter。
+3. 把目录全局锁下的操作逐项迁入拥有状态的领域事务，再删除全局锁。核查跨域调用与锁顺序，保持会话刷新、消息序号、幂等、mention、task 与权限决策。
+4. 每个切片用并发断言或 published-path 回归证明其边界，再跑完整门禁。
 
-- `Sources/RaftHTTPServer/Features/**` 中已无同步 `request.body.string ?? ""` 读取，请求体统一走 `try await req.content.decode(<RequestDTO>.self)`。
-- 全局缓冲的 `BufferedRequestBodyMiddleware` 已删除。
-- **已放弃**：`AsyncBearerAuthenticator` 与统一 Server Scope 中间件。钉住的 Vapor 快照没有该类型（对应的 `BearerAuthenticator` 会追加 `WWW-Authenticate` 头并改变 token 解析），鉴权与 401→403→404 顺序编码在各 Service 内且已被 parity 锁定，无法在不改行为的前提下上移。改为可选切片：抽出共享的 `bearerToken(_:)`（语义与现有 `hasPrefix("Bearer ")` 完全一致），替换约 53 处重复解析。
+### 第十批：纯装配容器与剩余服务端 Sendable
 
-### 5.3 拆分 `NotificationsFeature.swift` 杂糅路由
+1. 目录只负责依赖装配后，全仓将 `EmailLoginDirectory` 重命名为 `ServiceContainer`，包括测试；删除过渡类型、旧别名和 forwarding 路径。
+2. 清理 daemon-only targets 之外的显式 unchecked conformance，包含目前被棘轮排除的生成 telemetry helper；修生成入口，避免下次生成恢复旧实现。
+3. 对 daemon-only 的 NIO handler、Process 句柄等逐项评估。不预先承诺其 41 处全部清零；保留项必须有具体并发约束、原因和测试证据。
+4. 如实同步文档，再跑最终完整门禁。只在所有目标确实完成后宣布 Phase 6 结束。
 
-`NotificationsFeature.swift` 原为 928 行，混装 `Agents`、`Computers`、`Reminders` 等路由（现已拆分，剩 507 行）。按上游 `routes/*.ts` 拆分为独立的：
+## 3. 切片门禁与工作契约
 
-- `AgentsFeature.swift`
-- `ComputersFeature.swift`
-- `RemindersFeature.swift`
+结构变更与行为变更分开。以领域或明确同步边界为单位；原路径、方法、状态、JSON 字节、头与帧保持不变。优先使用已有验收测试锁住行为，新增风险先补失败回归。
 
-拆分保持路由路径、方法、状态码与 JSON 不变，仅移动注册点与 handler 归属。（已完成：`AgentsFeature` 505 行、`ComputersFeature` 57 行、`RemindersFeature` 30 行。）
+每个接受的切片必须同时通过：
 
-### 5.4 清理生产类型中的测试后门（`TestSupport`）
+1. 直接覆盖改动用例的针对测试。
+2. `make test`。
+3. `make test-e2e`。
+4. `scripts/smoke-server.sh`。
+5. `make architecture` 与 `make parity-check`。
 
-- 将残留的 `*ForTesting` 方法迁入测试专用 `Tests/TestSupport` target（已完成）：seam 以 `extension EmailLoginDirectory` / `OAuthLedger` 形式保留原名与签名，测试只需 `import TestSupport`；生产代码调用的符号改为生产命名，无人使用的 seam 与 failpoint 直接删除。
-- 生产 target 不再暴露测试专用入口；`scripts/check_architecture.py` 的全树 `ForTesting` 守卫基线为 0。
-
-### Phase 5 完成标准
-
-状态：5.1–5.4 全部完成。
-
-- `Sources/RaftHTTP/EmailLogin/` 下的 `EmailLogin+*.swift` 全部删除，业务逻辑按域收敛到 `<Domain>Service`。（已完成：目录 0 个 `.swift` 文件，`EmailLogin.swift` 48 行。）
-- `Features/**` 中不再有同步 `request.body.string ?? ""` 读取，`BufferedRequestBodyMiddleware` 已移除。（已完成）
-- `NotificationsFeature.swift` 拆分完毕，`Agents`、`Computers`、`Reminders` 路由归属与上游 `routes/*.ts` 一一对应。（已完成）
-- 架构门禁 `ForTesting` 基线归零。（已完成：`EmailLogin.swift` 0 个标记，`scripts/check_architecture.py` 基线 0。）
-- 全树生产代码不再暴露 `*ForTesting`（5.4）。（已完成：0 处；seam 在 `Tests/TestSupport/`。）
-- 遗留可选项：`recordAttestedSendEvent` / `recordAgentSendActivity` / `recordServerMemberEvent` / `lastTaskServerWarning` 等仅由 TestSupport 读取的 `recorded*` 侧通道仍在 Sources；待对应测试改为断言真实输出后删除。
-- 四项门禁全绿，`make parity` 仍为 406 / 406。（已验证。）
-
-## 3. 切片门禁与工作契约（4 大必过门禁）
-
-每个重构切片提交前必须**同时**通过以下四项；任一项失败即不得提交，也不得把未验证改动留给下一轮：
-
-1. `make test`
-2. `make test-e2e`
-3. `./scripts/smoke-server.sh`
-4. `make architecture` 与 `make parity-check`
-
-补充约束：
-
-- 一个切片一个 commit，标题用祈使句，正文列出该切片锁住的行为。
-- 先写失败验收测试，再实现；重构切片只改结构，不改变已锁定的可观测行为。
-- 触到的 `recorded*` / spy 侧通道当切片删除，换成真实出口。
-- 进度只按 `make parity` 输出汇报，不用测试数或轮数。
+遵守 `AGENTS.md` 的固定 Swift / Vapor 版本、提交和 checkpoint 规则。完整门禁通过后及时提交并 push，不把已验证的切片积压到整个阶段结束。进度按 `make parity` 输出及其资格说明汇报，不用 Swift 测试数代替上游覆盖率。
 
 ## 4. 文档职责
 
@@ -106,7 +79,8 @@ Daemon 的 2616 条用例中，约 1130 条属于 Node 运行时 / 进程管理 
 | --- | --- |
 | `README.md` | 项目概览、模块结构、构建测试与运行指南 |
 | `AGENTS.md` | 工作契约与硬约束 |
-| `docs/ARCHITECTURE.md` | 目标分层架构与 `scripts/check_architecture.py` 门禁说明 |
-| `docs/PARITY.tsv` & `docs/BEHAVIOR.md` | 上游模块锁定账本与只追加行为日志 |
+| `docs/ARCHITECTURE.md` | 当前边界、目标分层、检测口径与遗留债务 |
+| `docs/PLAN.md` | 阶段状态、剩余目标与完成顺序 |
+| `docs/PARITY.tsv` / `docs/BEHAVIOR.md` | 上游锁定账本与只追加行为日志 |
 
-同一内容只写在一处：README 不复述计划，`docs/PLAN.md` 不记录逐轮开发日记，行为日志只追加不重写。
+README 不复述计划，行为日志只追加已验证的可观测合同，不记逐轮开发日记。

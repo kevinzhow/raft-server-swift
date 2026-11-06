@@ -149,9 +149,9 @@ public struct FeedbackService: Sendable {
             conversationSessionEnabled: dependencies.conversationSessionEnabled()
         )
         guard dependencies.multiAppEnabled(userId) else {
-            return EmailLoginDirectory.feedbackLegacyRouteEnvironment(snapshot.environment)
+            return FeedbackRouting.feedbackLegacyRouteEnvironment(snapshot.environment)
         }
-        return try EmailLoginDirectory.feedbackMultiRouteEnvironment(
+        return try FeedbackRouting.feedbackMultiRouteEnvironment(
             source: source,
             appsJSON: snapshot.appsJSON,
             environment: snapshot.environment
@@ -165,7 +165,7 @@ public struct FeedbackService: Sendable {
             ?? dependencies.processEnvironment()["HANDS_FEEDBACK_REPORTER_ID_SECRET"]
             ?? "reporter-id-secret"
         let digest = SHA256.hash(data: Data("\(userId):\(secret)".utf8))
-        return EmailLoginDirectory.feedbackBase64URL(Data(digest))
+        return FeedbackRouting.feedbackBase64URL(Data(digest))
     }
 
     // MARK: - Route binding
@@ -178,10 +178,10 @@ public struct FeedbackService: Sendable {
     ) async throws -> String {
         let fallbackReporterId = environment.reporterIdSecret.isEmpty
             ? reporterId(userId: userId)
-            : EmailLoginDirectory.feedbackReporterId(userId: userId, secret: environment.reporterIdSecret)
-        guard let config = try EmailLoginDirectory.feedbackRouteConfig(environment) else { return fallbackReporterId }
-        let reporterId = EmailLoginDirectory.feedbackReporterId(userId: userId, secret: config.reporterIdSecret)
-        let rootBytes = EmailLoginDirectory.feedbackRouteRootBytes(config.root) ?? Data()
+            : FeedbackRouting.feedbackReporterId(userId: userId, secret: environment.reporterIdSecret)
+        guard let config = try FeedbackRouting.feedbackRouteConfig(environment) else { return fallbackReporterId }
+        let reporterId = FeedbackRouting.feedbackReporterId(userId: userId, secret: config.reporterIdSecret)
+        let rootBytes = FeedbackRouting.feedbackRouteRootBytes(config.root) ?? Data()
         let commitment = Data(SHA256.hash(data: Data(config.commitmentLabel.utf8) + Data([0]) + rootBytes))
         let now = dependencies.now()
         let cacheKey = "\(config.appId)|\(config.credentialRevision)|\(config.commitmentLabel)|\(reporterId)"
@@ -202,7 +202,7 @@ public struct FeedbackService: Sendable {
             cachedBinding = false
         }
         if cachedBinding { return reporterId }
-        guard let subject = EmailLoginDirectory.feedbackRouteSubject(config: config, userId: userId, reporterId: reporterId) else {
+        guard let subject = FeedbackRouting.feedbackRouteSubject(config: config, userId: userId, reporterId: reporterId) else {
             throw FeedbackRouteFailure.routeBinding(reason: "route_subject_invalid")
         }
         var request = URLRequest(url: URL(string: "\(config.baseURL)/api/apps/\(config.appId)/reporter-feedback/route-subject")!)

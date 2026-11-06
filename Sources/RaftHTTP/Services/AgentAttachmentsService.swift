@@ -58,7 +58,7 @@ public struct AgentAttachmentsService: Sendable {
             bytes: agents.agentAttachmentBytes[attachmentId] ?? Data(),
             mimeType: attachment.mimeType ?? "application/octet-stream",
             filename: attachment.filename,
-            encodedFilename: EmailLoginDirectory.rfc5987Encode(attachment.filename)
+            encodedFilename: ChannelFileRules.rfc5987Encode(attachment.filename)
         )
     }
 
@@ -75,7 +75,7 @@ public struct AgentAttachmentsService: Sendable {
         let storageKey = attachment.storageKey ?? (ext.isEmpty ? "\(identity.serverId)/\(attachmentId)" : "\(identity.serverId)/\(attachmentId).\(ext)")
         let filename = attachment.filename
         let mimeType = attachment.mimeType ?? "application/octet-stream"
-        let disposition = "attachment; filename=\"\(filename)\"; filename*=UTF-8''\(EmailLoginDirectory.rfc5987Encode(filename))"
+        let disposition = "attachment; filename=\"\(filename)\"; filename*=UTF-8''\(ChannelFileRules.rfc5987Encode(filename))"
         let url: String
         do {
             url = try presign(storageKey, 300, disposition, mimeType)

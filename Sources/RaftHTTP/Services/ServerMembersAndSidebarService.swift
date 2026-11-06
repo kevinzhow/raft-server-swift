@@ -807,7 +807,7 @@ public struct ServerMembersAndSidebarService: Sendable {
         guard role == "owner" || role == "admin" else {
             throw ServerMembersAndSidebarError.forbidden
         }
-        guard let definition = EmailLoginDirectory.labDefinitions.first(where: { $0.key == labKey }),
+        guard let definition = TaskCatalogPolicy.labDefinitions.first(where: { $0.key == labKey }),
               definition.state == "open" || definition.state == "paused"
         else {
             throw ServerMembersAndSidebarError.labNotFound
@@ -1171,7 +1171,7 @@ public struct ServerMembersAndSidebarService: Sendable {
     private func labDTOs(state: ServerLabsState) -> [ServerLabDTO] {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return EmailLoginDirectory.labDefinitions
+        return TaskCatalogPolicy.labDefinitions
             .filter { $0.state == "open" || $0.state == "paused" }
             .map { lab in
                 let enrolled = state.enrolled.contains(lab.key)

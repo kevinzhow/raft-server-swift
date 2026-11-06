@@ -18,25 +18,6 @@ public struct AuthFeature: RouteCollection, Sendable {
         self.services = services
     }
 
-    /// Decodes one typed JSON body even when the client omitted a JSON
-    /// `Content-Type`. The published handlers accepted a raw JSON body before
-    /// the typed migration, so the fallback keeps that behavior without a
-    /// second raw parser in the service.
-    private func jsonBody<T: Decodable>(_ type: T.Type, _ request: Request) async throws -> T? {
-        if let decoded = try? await request.content.decode(type) { return decoded }
-        guard let data = try await request.body.collect() else { return nil }
-        return try? JSONDecoder().decode(type, from: data)
-    }
-
-    /// Decodes one lenient JSON body the way the retired raw parser read it:
-    /// as JSON whatever the `Content-Type` claims. A body that does not decode
-    /// (empty, not an object) is `nil`; the service publishes the same reply
-    /// the old non-object cast did.
-    private func rawJSON<T: Decodable>(_ type: T.Type, _ request: Request) async throws -> T? {
-        if let decoded = try? await request.content.decode(type, using: JSONDecoder()) { return decoded }
-        guard let data = try await request.body.collect() else { return nil }
-        return try? JSONDecoder().decode(type, from: data)
-    }
 
     public func boot(routes: any RoutesBuilder) async throws {
         register(routes: routes)
@@ -65,7 +46,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         auth.post("verify-email") { request async throws -> Response in
             // An empty or malformed body falls back to a nil token so the
             // missing-token branch still answers the upstream 400.
-            let body = (try? await request.content.decode(VerifyEmailRequest.self)) ?? VerifyEmailRequest()
+            let body = (try? await decodeJSONRequestBody(VerifyEmailRequest.self, request, decoding: .contentOnly)) ?? VerifyEmailRequest()
             return try await respond { try services.emailAccounts.authVerification.verifyEmail(token: body.token) }
         }
         auth.post("resend-verification") { request async throws -> Response in
@@ -85,23 +66,23 @@ public struct AuthFeature: RouteCollection, Sendable {
         }
 
         mobileAppleNative.post("start") { request async throws -> Response in
-            let body = (try await rawJSON(NativeAppleStartRequest.self, request)) ?? NativeAppleStartRequest()
+            let body = (try await decodeJSONRequestBody(NativeAppleStartRequest.self, request, decoding: .json)) ?? NativeAppleStartRequest()
             return try await respond(status: 201) {
                 try oauthFlows.startNativeApple(body, authorization: request.headers[.authorization])
             }
         }
         mobileAppleNative.post("authorize") { request async throws -> Response in
-            let body = (try await rawJSON(NativeAppleAuthorizeRequest.self, request)) ?? NativeAppleAuthorizeRequest()
+            let body = (try await decodeJSONRequestBody(NativeAppleAuthorizeRequest.self, request, decoding: .json)) ?? NativeAppleAuthorizeRequest()
             return try await respond {
                 try await oauthFlows.authorizeNativeApple(body, authorization: request.headers[.authorization])
             }
         }
         mobileOAuth.post("start") { request async throws -> Response in
-            let body = (try await rawJSON(MobileOAuthStartRequest.self, request)) ?? MobileOAuthStartRequest()
+            let body = (try await decodeJSONRequestBody(MobileOAuthStartRequest.self, request, decoding: .json)) ?? MobileOAuthStartRequest()
             return try await respond(status: 201) { try oauthFlows.startMobileOAuth(body) }
         }
         mobileProvider.post("link", "start") { request async throws -> Response in
-            let body = (try await rawJSON(MobileOAuthStartRequest.self, request)) ?? MobileOAuthStartRequest()
+            let body = (try await decodeJSONRequestBody(MobileOAuthStartRequest.self, request, decoding: .json)) ?? MobileOAuthStartRequest()
             return try await respond(status: 201) {
                 try oauthFlows.startMobileOAuthLink(
                     provider: request.parameters.get("provider") ?? "",
@@ -111,7 +92,7 @@ public struct AuthFeature: RouteCollection, Sendable {
             }
         }
         mobileProvider.post("link", "complete") { request async throws -> Response in
-            let body = (try await rawJSON(MobileOAuthCompleteRequest.self, request)) ?? MobileOAuthCompleteRequest()
+            let body = (try await decodeJSONRequestBody(MobileOAuthCompleteRequest.self, request, decoding: .json)) ?? MobileOAuthCompleteRequest()
             return try await respond {
                 try oauthFlows.completeMobileOAuthLink(
                     provider: request.parameters.get("provider") ?? "",
@@ -130,7 +111,7 @@ public struct AuthFeature: RouteCollection, Sendable {
             }
         }
         provider.post("link", "start") { request async throws -> Response in
-            let body = (try await rawJSON(WebOAuthLinkStartRequest.self, request)) ?? WebOAuthLinkStartRequest()
+            let body = (try await decodeJSONRequestBody(WebOAuthLinkStartRequest.self, request, decoding: .json)) ?? WebOAuthLinkStartRequest()
             return try await respond(headers: { $0.headers }) {
                 try oauthFlows.startWebOAuthLink(
                     provider: request.parameters.get("provider") ?? "",
@@ -162,13 +143,13 @@ public struct AuthFeature: RouteCollection, Sendable {
             }
         }
         mobileOAuth.post("complete") { request async throws -> Response in
-            let body = (try await rawJSON(MobileOAuthCompleteRequest.self, request)) ?? MobileOAuthCompleteRequest()
+            let body = (try await decodeJSONRequestBody(MobileOAuthCompleteRequest.self, request, decoding: .json)) ?? MobileOAuthCompleteRequest()
             return try await respond { try oauthFlows.completeMobileOAuth(body) }
         }
         provider.post("complete") { request async throws -> Response in
             // A body that is not a JSON object reads as an empty request, so the
             // service answers the published "code is required" 400.
-            let body = (try await rawJSON(SocialCompleteRequest.self, request)) ?? SocialCompleteRequest()
+            let body = (try await decodeJSONRequestBody(SocialCompleteRequest.self, request, decoding: .json)) ?? SocialCompleteRequest()
             return try await respond {
                 try authCore.completeSocial(
                     provider: request.parameters.get("provider") ?? "",
@@ -180,21 +161,21 @@ public struct AuthFeature: RouteCollection, Sendable {
             }
         }
         device.post("authorize") { request async throws -> Response in
-            let body = (try await rawJSON(DeviceAuthorizeRequest.self, request)) ?? DeviceAuthorizeRequest()
+            let body = (try await decodeJSONRequestBody(DeviceAuthorizeRequest.self, request, decoding: .json)) ?? DeviceAuthorizeRequest()
             return try await respond(status: 201) { try authCore.authorizeDevice(body) }
         }
         device.post("approve") { request async throws -> Response in
-            let body = (try await rawJSON(DeviceApproveRequest.self, request)) ?? DeviceApproveRequest()
+            let body = (try await decodeJSONRequestBody(DeviceApproveRequest.self, request, decoding: .json)) ?? DeviceApproveRequest()
             return try await respond {
                 try authCore.approveDevice(body, authorization: request.headers[.authorization])
             }
         }
         device.post("token") { request async throws -> Response in
-            let body = (try await rawJSON(DeviceTokenRequest.self, request)) ?? DeviceTokenRequest()
+            let body = (try await decodeJSONRequestBody(DeviceTokenRequest.self, request, decoding: .json)) ?? DeviceTokenRequest()
             return try await respond { try authCore.pollDeviceToken(body) }
         }
         auth.post("staging-self-account", "retire") { request async throws -> Response in
-            let body = (try await rawJSON(RetireStagingRequest.self, request)) ?? RetireStagingRequest()
+            let body = (try await decodeJSONRequestBody(RetireStagingRequest.self, request, decoding: .json)) ?? RetireStagingRequest()
             return try await respond {
                 try authCore.retireStagingSelfAccount(body, authorization: request.headers[.authorization])
             }
@@ -202,7 +183,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         auth.post("register") { request async throws -> Response in
             // A body that is not a JSON object stays `nil`: the service answers
             // the published `Expected object` issue list.
-            let body = try await rawJSON(RegisterRequest.self, request)
+            let body = try await decodeJSONRequestBody(RegisterRequest.self, request, decoding: .json)
             return try await respond {
                 try authCore.register(
                     body,
@@ -214,13 +195,13 @@ public struct AuthFeature: RouteCollection, Sendable {
         auth.post("refresh") { request async throws -> Response in
             let attempt = request.headers[HTTPField.Name("X-Slock-Auth-Refresh-Attempt-Id")!]
             let installation = request.headers[HTTPField.Name("X-Slock-Auth-Installation-Id")!]
-            let body = (try await rawJSON(RefreshTokenRequest.self, request)) ?? RefreshTokenRequest()
+            let body = (try await decodeJSONRequestBody(RefreshTokenRequest.self, request, decoding: .json)) ?? RefreshTokenRequest()
             return try await respond {
                 try authCore.refresh(body, attemptHeader: attempt, installationHeader: installation)
             }
         }
         auth.post("logout") { request async throws -> Response in
-            let body = (try await rawJSON(RefreshTokenRequest.self, request)) ?? RefreshTokenRequest()
+            let body = (try await decodeJSONRequestBody(RefreshTokenRequest.self, request, decoding: .json)) ?? RefreshTokenRequest()
             return try await respond { authCore.logout(body) }
         }
         identities.get { request async throws -> Response in
@@ -238,24 +219,24 @@ public struct AuthFeature: RouteCollection, Sendable {
             // The typed body covers the published shape; a body sent without a
             // JSON Content-Type goes through the same byte decode so the
             // published validation replies do not depend on the header.
-            let body = (try await jsonBody(ResetPasswordRequest.self, request)) ?? ResetPasswordRequest()
+            let body = (try await decodeJSONRequestBody(ResetPasswordRequest.self, request)) ?? ResetPasswordRequest()
             return try await respond { try services.emailAccounts.authProfile.resetPassword(body) }
         }
         auth.post("pending-link", "cancel") { request async throws -> Response in
             // An empty or malformed body still answers 204, so cancel stays
             // idempotent for every client shape.
-            let body = (try? await request.content.decode(CancelPendingLinkRequest.self))
+            let body = (try? await decodeJSONRequestBody(CancelPendingLinkRequest.self, request, decoding: .contentOnly))
                 ?? CancelPendingLinkRequest()
             return try await respond { services.emailAccounts.authProfile.cancelPendingLink(body) }
         }
         auth.post("login") { request async throws -> Response in
             // The lenient decoder keeps every wrong-typed field so the service
             // can publish the upstream `issues` list; a non-object body is nil.
-            let body = try await rawJSON(LoginRequest.self, request)
+            let body = try await decodeJSONRequestBody(LoginRequest.self, request, decoding: .json)
             return try await respond { try identityService.login(body) }
         }
         appLogin.post("start") { request async throws -> Response in
-            let body = (try await rawJSON(AppLoginStartRequest.self, request)) ?? AppLoginStartRequest()
+            let body = (try await decodeJSONRequestBody(AppLoginStartRequest.self, request, decoding: .json)) ?? AppLoginStartRequest()
             return try await respond(status: 201) { try identityService.appLoginStart(body) }
         }
         appLoginRequest.get { request async throws -> Response in
@@ -283,7 +264,7 @@ public struct AuthFeature: RouteCollection, Sendable {
             }
         }
         appLogin.post("complete") { request async throws -> Response in
-            let body = (try await rawJSON(AppLoginCompleteRequest.self, request)) ?? AppLoginCompleteRequest()
+            let body = (try await decodeJSONRequestBody(AppLoginCompleteRequest.self, request, decoding: .json)) ?? AppLoginCompleteRequest()
             return try await respond { try identityService.appLoginComplete(body) }
         }
         auth.get("providers") { request async throws -> Response in
@@ -305,7 +286,7 @@ public struct AuthFeature: RouteCollection, Sendable {
             }
         }
         me.post("complete-profile") { request async throws -> Response in
-            let body = try await rawJSON(LenientJSONObjectRequest.self, request)
+            let body = try await decodeJSONRequestBody(LenientJSONObjectRequest.self, request, decoding: .json)
             return try await respond {
                 try services.emailAccounts.managedMCPLifecycle.completeProfile(
                     authorization: request.headers[.authorization],
@@ -314,7 +295,7 @@ public struct AuthFeature: RouteCollection, Sendable {
             }
         }
         me.post("timezone-observation") { request async throws -> Response in
-            let body = (try await jsonBody(TimezoneObservationRequest.self, request))
+            let body = (try await decodeJSONRequestBody(TimezoneObservationRequest.self, request))
                 ?? TimezoneObservationRequest()
             return try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
                 try services.emailAccounts.authProfile.observeTimezone(
@@ -326,7 +307,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         me.patch { request async throws -> Response in
             // A body that is not a JSON object is nil; the service answers the
             // published 400 after the session check, as before.
-            let body = try await rawJSON(UpdateProfileRequest.self, request)
+            let body = try await decodeJSONRequestBody(UpdateProfileRequest.self, request, decoding: .json)
             return try await respond {
                 try identityService.updateProfile(authorization: request.headers[.authorization], body)
             }
@@ -335,15 +316,20 @@ public struct AuthFeature: RouteCollection, Sendable {
             // The typed body keeps the raw parser's tolerance for a missing
             // Content-Type; the public server directory reads the same buffered
             // bytes first and a 404 still falls through to this handler.
-            let body = (try await jsonBody(JoinLinkAcceptRequest.self, request))
+            let body = (try await decodeJSONRequestBody(JoinLinkAcceptRequest.self, request))
                 ?? JoinLinkAcceptRequest()
             if let directory = services.publicServerDirectory {
-                let reply = directory.acceptInvite(
-                    authorization: request.headers[.authorization],
-                    body: try await request.bodyText()
-                )
-                if reply.status != 404 {
-                    return routeResponse(reply)
+                do {
+                    let accepted = try directory.acceptInvite(
+                        authorization: request.headers[.authorization],
+                        body: try await request.bodyText()
+                    )
+                    return try await respond { accepted }
+                } catch let error as any DomainError where error.status == 404 {
+                    // The public directory does not own this invite; retain the
+                    // original fallthrough to the account invite service.
+                } catch {
+                    return try await respond { () throws -> NoContentResponse in throw error }
                 }
             }
             return try await respond {

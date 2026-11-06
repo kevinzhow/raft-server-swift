@@ -28,7 +28,7 @@ extension EmailLoginDirectory {
     }
 
     public func setServerInviteTokenForTesting(inviteId: String, token: String) {
-        serversAndChannelsStore.setInviteTokenHash(id: inviteId, tokenHash: Self.sha256(token))
+        serversAndChannelsStore.setInviteTokenHash(id: inviteId, tokenHash: AuthTokenCodec.sha256(token))
     }
 
     /// Test-only seat cap. The production route set never writes the Pro seat

@@ -193,7 +193,7 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
     let fresh = try handoffCode(service)
     let completed = try service.completeMobileOAuth(MobileOAuthCompleteRequest(
         code: fresh, codeVerifier: verifier, acceptTerms: true,
-        termsVersion: EmailLoginDirectory.termsVersion, privacyVersion: EmailLoginDirectory.privacyVersion
+        termsVersion: AuthLegalPolicy.termsVersion, privacyVersion: AuthLegalPolicy.privacyVersion
     ))
     let rendered = completed.jsonBody.render()
     #expect(rendered.hasPrefix(#"{"user":{"id":""#))
@@ -338,8 +338,8 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
             group.addTask {
                 if case .signedIn = store.completeMobile(
                     code: "code-1", verifier: verifier, pendingLinkToken: nil, acceptTerms: true,
-                    termsVersion: EmailLoginDirectory.termsVersion,
-                    privacyVersion: EmailLoginDirectory.privacyVersion, now: Date()
+                    termsVersion: AuthLegalPolicy.termsVersion,
+                    privacyVersion: AuthLegalPolicy.privacyVersion, now: Date()
                 ) { return true }
                 return false
             }
@@ -435,7 +435,7 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
     // each one is a whole write: the stored code and its hash always agree.
     let request = directory.authProfileStore.mobileRequests["cb-1"]
     #expect(directory.providerExchangeCount == 24)
-    #expect(request?.codeHash == request?.handoffCode.map { EmailLoginDirectory.sha256($0) })
+    #expect(request?.codeHash == request?.handoffCode.map { AuthTokenCodec.sha256($0) })
 }
 
 /// Recording a web login is one decision: simultaneous callbacks for a free

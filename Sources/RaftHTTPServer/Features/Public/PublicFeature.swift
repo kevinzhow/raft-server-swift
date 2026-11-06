@@ -3,11 +3,8 @@ import HTTPTypes
 import RaftHTTP
 import Vapor
 
-/// Anonymous public server read routes from `routes/publicServer.ts`:
-/// the public card, one channel's messages, one attachment, and one thread's
-/// messages. Every handler is byte-for-byte the registration that used to live
-/// in `configure`; the two query helpers were file-private there and are kept
-/// file-private here so this feature is self-contained.
+/// Anonymous public server reads. Typed outcomes retain the published cache
+/// policy; attachments carry their own file or redirect headers.
 struct PublicFeature: RouteCollection {
     let services: FallbackServices
 
@@ -16,70 +13,80 @@ struct PublicFeature: RouteCollection {
     }
 
     func boot(routes: any RoutesBuilder) async throws {
-    register(routes: routes)
+        register(routes: routes)
     }
 
-func register(routes: any RoutesBuilder) {
+    func register(routes: any RoutesBuilder) {
         let server = routes.grouped("api", "public", "servers", ":slug")
-        server.get { request -> Response in
-            let slug = request.parameters.get("slug") ?? ""
-            let country = request.headers[HTTPField.Name("CloudFront-Viewer-Country")!]
-            let region = request.headers[HTTPField.Name("CloudFront-Viewer-Country-Region")!]
-            let gpc = request.headers[HTTPField.Name("Sec-GPC")!]
-            if let directory = services.publicVisits {
-                return routeResponse(directory.page(slug: slug, country: country, region: region, gpc: gpc))
+        server.get { request async throws -> Response in
+            try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) { () throws -> any JSONBodyConvertible in
+                let slug = request.parameters.get("slug") ?? ""
+                if let directory = services.publicVisits {
+                    return try directory.page(
+                        slug: slug,
+                        country: request.headers[HTTPField.Name("CloudFront-Viewer-Country")!],
+                        region: request.headers[HTTPField.Name("CloudFront-Viewer-Country-Region")!],
+                        gpc: request.headers[HTTPField.Name("Sec-GPC")!]
+                    )
+                }
+                if let directory = services.publicServerDirectory {
+                    return try directory.publicCard(slug: slug)
+                }
+                return try PublicVisits.pageReply(found: false, mode: nil)
             }
-            if let directory = services.publicServerDirectory {
-                return routeResponse(directory.publicCard(slug: slug))
-            }
-            return routeResponse(PublicVisits.pageReply(found: false, mode: nil))
         }
-        server.get("channels", ":channelId", "messages") { request -> Response in
-            let channelId = request.parameters.get("channelId") ?? ""
-            guard let window = publicMessageWindow(request.url.query) else {
-                return routeResponse(PublicVisits.pageReply(found: false, mode: nil))
+        server.get("channels", ":channelId", "messages") { request async throws -> Response in
+            try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) { () throws -> any JSONBodyConvertible in
+                let channelId = request.parameters.get("channelId") ?? ""
+                guard let window = publicMessageWindow(request.url.query) else {
+                    return try PublicVisits.pageReply(found: false, mode: nil)
+                }
+                if let directory = services.publicVisits, ServerScope.isUUID(channelId) {
+                    return try directory.channelMessages(
+                        slug: request.parameters.get("slug") ?? "",
+                        channelId: channelId,
+                        limit: window.limit,
+                        beforeMessageId: window.before
+                    )
+                }
+                throw PublicServerMessages.channel(channelId: channelId)
             }
-            if let directory = services.publicVisits, ServerScope.isUUID(channelId) {
-                return routeResponse(directory.channelMessages(
+        }
+        server.get("attachments", ":attachmentId") { request async throws -> Response in
+            try await respond(status: { $0.status }, headers: { $0.headers }) {
+                let attachmentId = request.parameters.get("attachmentId") ?? ""
+                let client = request.remoteAddress?.host ?? "unknown"
+                if !services.publicAttachmentBudget.allow(ip: client) {
+                    throw PublicAttachments.tooMany()
+                }
+                guard let directory = services.publicVisits else {
+                    throw PublicAttachments.missing(attachmentId: attachmentId)
+                }
+                return try directory.publicAttachment(
                     slug: request.parameters.get("slug") ?? "",
-                    channelId: channelId,
-                    limit: window.limit,
-                    beforeMessageId: window.before
-                ))
+                    attachmentId: attachmentId,
+                    forceDownload: desktopQuery(request.url.query, "download") == "1",
+                    inlineDisposition: desktopQuery(request.url.query, "disposition") == "inline",
+                    frameAncestors: services.corsOrigins
+                )
             }
-            return routeResponse(PublicServerMessages.channel(channelId: channelId))
         }
-        server.get("attachments", ":attachmentId") { request -> Response in
-            let attachmentId = request.parameters.get("attachmentId") ?? ""
-            let client = request.remoteAddress?.host ?? "unknown"
-            if !services.publicAttachmentBudget.allow(ip: client) {
-                return routeResponse(PublicAttachments.tooMany())
+        server.get("threads", ":threadChannelId", "messages") { request async throws -> Response in
+            try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) { () throws -> any JSONBodyConvertible in
+                let threadId = request.parameters.get("threadChannelId") ?? ""
+                guard let window = publicMessageWindow(request.url.query) else {
+                    return try PublicVisits.pageReply(found: false, mode: nil)
+                }
+                if let directory = services.publicVisits, ServerScope.isUUID(threadId) {
+                    return try directory.threadMessages(
+                        slug: request.parameters.get("slug") ?? "",
+                        threadId: threadId,
+                        limit: window.limit,
+                        beforeMessageId: window.before
+                    )
+                }
+                throw PublicServerMessages.thread(threadChannelId: threadId)
             }
-            guard let directory = services.publicVisits else {
-                return routeResponse(PublicAttachments.missing(attachmentId: attachmentId))
-            }
-            return routeResponse(directory.publicAttachment(
-                slug: request.parameters.get("slug") ?? "",
-                attachmentId: attachmentId,
-                forceDownload: desktopQuery(request.url.query, "download") == "1",
-                inlineDisposition: desktopQuery(request.url.query, "disposition") == "inline",
-                frameAncestors: services.corsOrigins
-            ))
-        }
-        server.get("threads", ":threadChannelId", "messages") { request -> Response in
-            let threadId = request.parameters.get("threadChannelId") ?? ""
-            guard let window = publicMessageWindow(request.url.query) else {
-                return routeResponse(PublicVisits.pageReply(found: false, mode: nil))
-            }
-            if let directory = services.publicVisits, ServerScope.isUUID(threadId) {
-                return routeResponse(directory.threadMessages(
-                    slug: request.parameters.get("slug") ?? "",
-                    threadId: threadId,
-                    limit: window.limit,
-                    beforeMessageId: window.before
-                ))
-            }
-            return routeResponse(PublicServerMessages.thread(threadChannelId: threadId))
         }
     }
 }

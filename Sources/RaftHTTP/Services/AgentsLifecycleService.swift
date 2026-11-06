@@ -428,12 +428,12 @@ public struct AgentsLifecycleService: Sendable {
         guard channel.kind == "channel" || channel.memberIds.contains(userId) else {
             throw AgentsLifecycleError.channelNotFound
         }
-        let limit = EmailLoginDirectory.channelFilesLimit(rawLimit)
+        let limit = ChannelFileRules.channelFilesLimit(rawLimit)
         let cursor: (createdAt: Date, id: String)?
         if let rawCursor, !rawCursor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            guard let decoded = EmailLoginDirectory.channelFilesBase64URLDecode(rawCursor),
+            guard let decoded = ChannelFileRules.channelFilesBase64URLDecode(rawCursor),
                   let object = try? JSONDecoder().decode(ChannelFilesCursor.self, from: Data(decoded.utf8)),
-                  let createdAt = EmailLoginDirectory.isoDate(object.createdAt)
+                  let createdAt = DateText.isoDate(object.createdAt)
             else {
                 throw AgentsLifecycleError.invalidCursor
             }
@@ -471,10 +471,10 @@ public struct AgentsLifecycleService: Sendable {
         let nextCursor: String?
         if files.count > limit, let last = page.last {
             let encoded = OrderedJSON.object([
-                OrderedJSONField("createdAt", EmailLoginDirectory.isoString(last.createdAt)),
+                OrderedJSONField("createdAt", DateText.isoString(last.createdAt)),
                 OrderedJSONField("id", last.id),
             ]).render()
-            nextCursor = EmailLoginDirectory.channelFilesBase64URLEncode(encoded)
+            nextCursor = ChannelFileRules.channelFilesBase64URLEncode(encoded)
         } else {
             nextCursor = nil
         }
@@ -501,12 +501,12 @@ public struct AgentsLifecycleService: Sendable {
                 messageId: attachment.messageId ?? "",
                 channelId: attachment.channelId,
                 filename: attachment.filename,
-                mimeType: EmailLoginDirectory.channelFileMimeType(filename: attachment.filename, stored: attachment.mimeType),
+                mimeType: ChannelFileRules.channelFileMimeType(filename: attachment.filename, stored: attachment.mimeType),
                 sizeBytes: attachment.sizeBytes,
                 width: attachment.width,
                 height: attachment.height,
                 thumbnailUrl: attachment.thumbnailKey.map { _ in "/api/attachments/\(attachment.id)/thumbnail" },
-                createdAt: EmailLoginDirectory.isoString(attachment.createdAt),
+                createdAt: DateText.isoString(attachment.createdAt),
                 uploader: ChannelFilesResponse.Uploader(
                     type: attachment.uploaderType == "agent" ? "agent" : "user",
                     id: attachment.uploaderId,
@@ -644,7 +644,7 @@ public struct AgentsLifecycleService: Sendable {
                 actorId: userId
             )
             let url = "/api/attachments/\(attachmentId)/html-preview?serverId=\(serverId)&previewToken=\(previewToken)"
-            let expiresAt = EmailLoginDirectory.isoString(dependencies.now().addingTimeInterval(300))
+            let expiresAt = DateText.isoString(dependencies.now().addingTimeInterval(300))
             return .htmlPreviewURL(AttachmentHTMLPreviewURLResponse(url: url, expiresAt: expiresAt))
         case .metadata:
             return .metadata(metadata(of: attachment))
@@ -705,7 +705,7 @@ public struct AgentsLifecycleService: Sendable {
             guard let uuid = event["uuid"]?.castString, Self.isEventUUID(uuid),
                   let name = event["event"]?.castString,
                   let timestamp = event["timestamp"]?.castString,
-                  let parsed = EmailLoginDirectory.isoDate(timestamp),
+                  let parsed = DateText.isoDate(timestamp),
                   let session = event["client_session_id"]?.castString,
                   Self.isEventUUID(session),
                   let properties = event["properties"]?.castObject

@@ -192,7 +192,7 @@ extension AuthProfileStore {
         }
         if completion.userId == nil, completion.intendedAction == "link",
            completion.linkOnConflict, let existing = accountSurface.accounts[completion.email] {
-            let token = EmailLoginDirectory.randomHex(32)
+            let token = AuthTokenCodec.randomHex(32)
             accountSurface.pendingSocialLinks[token] = PendingSocialLink(
                 token: token, provider: attempt.provider,
                 providerUserId: completion.providerUserId ?? "",
@@ -212,16 +212,16 @@ extension AuthProfileStore {
         }
         if completion.mode == "login", completion.userId == nil {
             if !attempt.acceptTerms { return .legalRequired }
-            if attempt.termsVersion != EmailLoginDirectory.termsVersion
-                || attempt.privacyVersion != EmailLoginDirectory.privacyVersion {
+            if attempt.termsVersion != AuthLegalPolicy.termsVersion
+                || attempt.privacyVersion != AuthLegalPolicy.privacyVersion {
                 return .termsChanged
             }
         }
         accountSurface.socialCompletions.remove(at: index)
         let id = completion.userId ?? UUID().uuidString.lowercased()
         let taken = Set(accountSurface.accounts.values.map(\.name))
-        let pendingName = EmailLoginDirectory.pendingHandle(taken: taken)
-        let suggested = EmailLoginDirectory.availableUserName(
+        let pendingName = AccountNaming.pendingHandle(taken: taken)
+        let suggested = AccountNaming.availableUserName(
             seed: String(completion.email.split(separator: "@").first ?? "user"),
             taken: taken
         )
@@ -232,16 +232,16 @@ extension AuthProfileStore {
             accountSurface.accounts[completion.email] = Account(
                 id: id,
                 email: completion.email,
-                passwordHash: EmailLoginDirectory.sha256(EmailLoginDirectory.token()),
+                passwordHash: AuthTokenCodec.sha256(AuthTokenCodec.token()),
                 displayLanguage: nil,
                 name: pendingName,
                 profileSetupSuggestedHandle: suggested
             )
             legalAcceptances[id] = EmailLegalAcceptance(
-                termsVersion: EmailLoginDirectory.termsVersion,
-                privacyVersion: EmailLoginDirectory.privacyVersion,
-                termsUrl: EmailLoginDirectory.termsURL,
-                privacyUrl: EmailLoginDirectory.privacyURL,
+                termsVersion: AuthLegalPolicy.termsVersion,
+                privacyVersion: AuthLegalPolicy.privacyVersion,
+                termsUrl: AuthLegalPolicy.termsURL,
+                privacyUrl: AuthLegalPolicy.privacyURL,
                 source: attempt.legalAcceptanceSource == "invite" ? "invite" : "oauth",
                 userAgentHash: attempt.userAgentHash,
                 locale: attempt.locale
@@ -257,8 +257,8 @@ extension AuthProfileStore {
     /// A session without a family row: the social-completion login published
     /// no `sessionFamilies` entry, and that stays the observable shape.
     private func bareSessionLocked(userId: String) -> IssuedSessionTokens {
-        let accessToken = EmailLoginDirectory.token()
-        let refreshToken = EmailLoginDirectory.token()
+        let accessToken = AuthTokenCodec.token()
+        let refreshToken = AuthTokenCodec.token()
         accountSurface.sessions[refreshToken] = LiveSession(userId: userId, familyId: UUID().uuidString.lowercased())
         accountSurface.accessTokens[accessToken] = userId
         return IssuedSessionTokens(accessToken: accessToken, refreshToken: refreshToken)
@@ -275,8 +275,8 @@ extension AuthProfileStore {
         let normalized = attempt.normalizedEmail
         if accountSurface.accounts[normalized] != nil { return .emailTaken }
         let taken = Set(accountSurface.accounts.values.map(\.name))
-        let pendingName = EmailLoginDirectory.pendingHandle(taken: taken)
-        let suggested = EmailLoginDirectory.availableUserName(
+        let pendingName = AccountNaming.pendingHandle(taken: taken)
+        let suggested = AccountNaming.availableUserName(
             seed: (attempt.requestedName?.isEmpty == false
                 ? attempt.requestedName!
                 : String(normalized.split(separator: "@").first ?? "user")),
@@ -293,20 +293,20 @@ extension AuthProfileStore {
             stagingSelfAccountCapabilityHash: attempt.capabilityHash
         )
         legalAcceptances[id] = EmailLegalAcceptance(
-            termsVersion: EmailLoginDirectory.termsVersion,
-            privacyVersion: EmailLoginDirectory.privacyVersion,
-            termsUrl: EmailLoginDirectory.termsURL,
-            privacyUrl: EmailLoginDirectory.privacyURL,
+            termsVersion: AuthLegalPolicy.termsVersion,
+            privacyVersion: AuthLegalPolicy.privacyVersion,
+            termsUrl: AuthLegalPolicy.termsURL,
+            privacyUrl: AuthLegalPolicy.privacyURL,
             source: attempt.legalAcceptanceSource,
             userAgentHash: attempt.userAgentHash,
             locale: attempt.locale
         )
         // Upstream inserts a 24h `email_verifications` row during createUser.
-        let verificationToken = EmailLoginDirectory.randomHex(32)
+        let verificationToken = AuthTokenCodec.randomHex(32)
         issueVerificationTokenLocked(
             userId: id,
             token: verificationToken,
-            tokenHash: EmailLoginDirectory.sha256(verificationToken),
+            tokenHash: AuthTokenCodec.sha256(verificationToken),
             now: attempt.now,
             ttl: 24 * 60 * 60
         )
@@ -465,10 +465,10 @@ extension AuthProfileStore {
               !accountSurface.revokedFamilies.contains(live.familyId)
         else { return nil }
         accountSurface.sessions.removeValue(forKey: refreshToken)
-        accountSurface.predecessorFamilies[EmailLoginDirectory.sha256(refreshToken)] = live.familyId
-        let successor = EmailLoginDirectory.token()
+        accountSurface.predecessorFamilies[AuthTokenCodec.sha256(refreshToken)] = live.familyId
+        let successor = AuthTokenCodec.token()
         accountSurface.sessions[successor] = live
-        let accessToken = EmailLoginDirectory.token()
+        let accessToken = AuthTokenCodec.token()
         accountSurface.accessTokens[accessToken] = live.userId
         accountSurface.accessTokenFamilies[accessToken] = live.familyId
         return RefreshRotation(accessToken: accessToken, refreshToken: successor)
@@ -480,10 +480,10 @@ extension AuthProfileStore {
         installationId: String,
         now: Date
     ) -> RefreshRotation? {
-        let hash = EmailLoginDirectory.sha256(refreshToken)
+        let hash = AuthTokenCodec.sha256(refreshToken)
         if let live = accountSurface.sessions.removeValue(forKey: refreshToken) {
             if accountSurface.revokedFamilies.contains(live.familyId) { return nil }
-            let successor = EmailLoginDirectory.token()
+            let successor = AuthTokenCodec.token()
             accountSurface.sessions[successor] = live
             accountSurface.rotationReceipts[hash] = RotationReceipt(
                 attemptId: attemptId,
@@ -491,10 +491,10 @@ extension AuthProfileStore {
                 userId: live.userId,
                 familyId: live.familyId,
                 successor: successor,
-                ciphertext: EmailLoginDirectory.sealSuccessor(successor),
+                ciphertext: AuthTokenCodec.sealSuccessor(successor),
                 expiresAt: now.addingTimeInterval(15 * 60)
             )
-            let accessToken = EmailLoginDirectory.token()
+            let accessToken = AuthTokenCodec.token()
             accountSurface.accessTokens[accessToken] = live.userId
             accountSurface.accessTokenFamilies[accessToken] = live.familyId
             return RefreshRotation(accessToken: accessToken, refreshToken: successor)
@@ -502,7 +502,7 @@ extension AuthProfileStore {
         guard let receipt = accountSurface.rotationReceipts[hash] else { return nil }
         if receipt.attemptId != attemptId || receipt.installationId != installationId { return nil }
         if receipt.expiresAt <= now || accountSurface.revokedFamilies.contains(receipt.familyId) { return nil }
-        let accessToken = EmailLoginDirectory.token()
+        let accessToken = AuthTokenCodec.token()
         accountSurface.accessTokens[accessToken] = receipt.userId
         accountSurface.accessTokenFamilies[accessToken] = receipt.familyId
         return RefreshRotation(accessToken: accessToken, refreshToken: receipt.successor)
@@ -516,9 +516,9 @@ extension AuthProfileStore {
         let retainUntil = now.addingTimeInterval(30 * 24 * 60 * 60)
         if let live = accountSurface.sessions.removeValue(forKey: refreshToken) {
             revokeFamilyLocked(live.familyId, now: now, retainUntil: retainUntil, dropSessions: true)
-        } else if let predecessorFamily = accountSurface.predecessorFamilies[EmailLoginDirectory.sha256(refreshToken)] {
+        } else if let predecessorFamily = accountSurface.predecessorFamilies[AuthTokenCodec.sha256(refreshToken)] {
             revokeFamilyLocked(predecessorFamily, now: now, retainUntil: retainUntil, dropSessions: true)
-        } else if let receipt = accountSurface.rotationReceipts[EmailLoginDirectory.sha256(refreshToken)] {
+        } else if let receipt = accountSurface.rotationReceipts[AuthTokenCodec.sha256(refreshToken)] {
             revokeFamilyLocked(receipt.familyId, now: now, retainUntil: retainUntil, dropSessions: false)
         }
     }

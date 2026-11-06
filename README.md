@@ -8,9 +8,9 @@ The specification is observable behavior: HTTP status codes, JSON bodies, respon
 
 This is an active reimplementation, not a production deployment. Behavioral parity with the upstream tag is complete; active work is internal architecture refactoring.
 
-- **406/406 upstream parity modules locked (100%)** in [docs/PARITY.tsv](docs/PARITY.tsv): `219/219` route modules (`2000/2000` cases), `7/7` socket modules (`16/16` cases), and `180/180` daemon modules (`2616/2616` cases).
-- **1,897+ Swift tests pass** across eight targets (`RaftHTTPServerTests`, `RaftDaemonClientTests`, `RaftHTTPTests`, `RaftRealtimeTests`, `RaftConnectAuthTests`, `RaftMachineSocketTests`, `RaftServerStartupTests`, plus `RaftShared`), alongside a **24-check real-process end-to-end smoke suite** (`./scripts/smoke-server.sh`).
-- The HTTP router mounts **519+ route registrations** across **16 `RouteCollection` feature modules** (`Sources/RaftHTTPServer/Features/`), backed by **12 per-domain in-memory stores** (`Sources/RaftHTTP/Stores/`), **7 domain service modules** (`Sources/RaftHTTP/Services/`), and **Codable DTOs** (`Sources/RaftHTTP/DTO/`). `Sources/RaftHTTP/EmailLogin.swift` is ratcheted to **48 lines** (from 34,306, `-99.86%`) with **0 `ForTesting` markers**; `Features/**` has **0 synchronous `request.body.string` reads**, and `BufferedRequestBodyMiddleware` is retired.
+- **406/406 upstream parity modules locked** in [docs/PARITY.tsv](docs/PARITY.tsv): `219/219` route modules (`2000/2000` cases), `7/7` socket modules (`16/16` cases), and `180/180` daemon modules (`2616/2616` ledger cases). The daemon ledger includes explicitly excluded Node/runtime cases; [docs/PLAN.md](docs/PLAN.md) states the executable coverage qualifications.
+- The Swift regression suite runs alongside a **24-check real-process smoke suite** (`./scripts/smoke-server.sh`) and a separate two-server/daemon startup gate (`make test-e2e`). Smoke proves those specific live flows; the locked assertions and parity ledger provide broader coverage.
+- The HTTP surface uses **16 `RouteCollection` modules**, Vapor-free services, domain stores, and typed request/response contracts. The old directory file is **48 lines**, and its retired extension directory is empty; remaining extensions, forwarding accessors, global-lock transactions, and unchecked concurrency declarations are still being removed. Current counts and scanner limits live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **The database is optional.** Without `DATABASE_URL` the process keeps the in-memory store and `/health` stays at `503 {"status":"error","detail":"database unreachable"}`; with `DATABASE_URL` (B2, PostgresNIO) `/health` runs `SELECT 1` and returns `200 {"status":"ok"}`.
 - The executable starts the Vapor HTTP app, the SwiftNIO `/daemon/connect` listener on `DAEMON_CONNECT_PORT` (default `8081`; `0` disables it), and the socket.io listener on `SOCKET_PORT` (default `8082`; `0` disables it). `RaftDaemon` performs the daemon-side handshake against that listener.
 - The locked behavioral reference lives in [docs/BEHAVIOR.md](docs/BEHAVIOR.md). It is the historical behavior log, not the project introduction.
@@ -18,13 +18,13 @@ This is an active reimplementation, not a production deployment. Behavioral pari
 
 ## Architecture & Current Focus
 
-100% of the portable route, socket, and daemon parity modules are locked and verified end to end by `./scripts/smoke-server.sh` over real ports and processes. That suite covers real human registration, email verification (`/api/auth/verify-email`, `/api/auth/resend-verification`, `SLOCK_E2E_AUTO_VERIFY_EMAIL`), channel messaging, live Socket.IO `message:new` / `sync:resume` / membership revocation, and `/daemon/connect`.
+The real-process smoke suite covers human registration, email verification (`/api/auth/verify-email`, `/api/auth/resend-verification`, `SLOCK_E2E_AUTO_VERIFY_EMAIL`), channel messaging, live Socket.IO delivery, and `/daemon/connect`. Focused HTTP/socket tests verify the detailed authorization, serialization, and protocol contracts.
 
-Current work is **Phase 5 Strangler-Fig domain architecture refactoring** ([docs/PLAN.md](docs/PLAN.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)):
+Current work is **Phase 6 architecture cleanup** ([docs/PLAN.md](docs/PLAN.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)):
 
-- Migrating the remaining `EmailLogin+*.swift` extension methods into standalone Vapor-free `Services` + `Stores` + `Codable` DTOs.
-- Request bodies decode through Vapor 5 `req.content.decode`; the global `BufferedRequestBodyMiddleware` is retired and no synchronous `request.body.string` reads remain in `Features/**`.
-- Isolating the remaining test seams so production targets no longer expose test-only entry points.
+- Typed domain payloads and errors now cover the public/OAuth surfaces; response mapping stays in Features.
+- Request-body helpers preserve each route's established decoding and authentication order; compatibility input parsers retain duplicate-key and numeric behavior.
+- The remaining directory extensions, global lock, store isolation, and non-daemon unchecked concurrency declarations still require migration. The final container rename follows those changes.
 
 Domain state is currently in-memory and resets on restart. With `DATABASE_URL` set, `/health` runs a Postgres `SELECT 1` liveness check; without it the process keeps the 503 body.
 
@@ -164,9 +164,11 @@ The upstream Node tests are the specification for scope validation, error codes,
 Sources/
   RaftHTTP/              shared behavior, domain stores/services, and route handlers
     Stores/              per-domain in-memory stores (12)
-    Services/            Vapor-free domain services (7)
-    DTO/                 Codable request/response models
-    OAuthLedger.swift    OAuth/agent ledger
+    Services/            Vapor-free domain services and remaining directory accessors
+    DTO/                 Codable inputs, ordered payloads, and semantic outcomes
+    Support/             token, naming, cursor, projection, and policy helpers
+    OAuth/               OAuth transactions, discovery, signing, and input compatibility
+    OAuthLedger.swift    OAuth/agent ledger composition and record tables
   RaftHTTPServer/        Vapor mount and middleware
     Features/            RouteCollection feature modules (16)
   RaftShared/            shared value types (JSONValue)

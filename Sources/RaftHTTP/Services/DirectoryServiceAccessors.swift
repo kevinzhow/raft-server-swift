@@ -162,7 +162,7 @@ extension EmailLoginDirectory {
         message.messageType == "system"
             && message.causalActorType == "agent"
             && message.causalActorId == agentId
-            && message.systemSubtype.map { Self.selfCausedFreshnessExemptSubtypes.contains($0) } == true
+            && message.systemSubtype.map { AgentFreshnessIdentity.selfCausedFreshnessExemptSubtypes.contains($0) } == true
     }
 
     /// A real server-role change on an agent posts a system notice into the
@@ -285,19 +285,6 @@ extension EmailLoginDirectory {
         AuthCoreService(store: authProfileStore)
     }
 
-    /// The bearer access-token check the domain services that have not migrated
-    /// yet still share. The decision is `AuthCoreService.authenticate`; this
-    /// forwarder only maps it to the `Auth` value those callers consume.
-    func authorize(_ authorization: String?) -> Auth {
-        do {
-            return .user(try authCore.authenticate(authorization))
-        } catch AuthCoreError.missingAuthorization {
-            return .rejected(Self.missingAuthorization)
-        } catch {
-            return .rejected(Self.invalidToken)
-        }
-    }
-
     /// `requireVerified` reads this from the profile store; the unmigrated
     /// OAuth flows and the inbox closure call it by this name.
     public func isEmailVerified(userId: String) -> Bool {
@@ -380,7 +367,7 @@ extension EmailLoginDirectory {
                 sessionUserId(authorization: authorization)
             },
             channelAccess: { [self] serverId, channelId, userId in
-                switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
+                switch DirectoryTaskCatalog(directory: self).taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
                 case .missing: false
                 case .readOnly, .write: true
                 }
@@ -644,14 +631,14 @@ extension EmailLoginDirectory {
                     )
                 },
                 multiRouteEnvironment: { source, appsJSON, environment in
-                    try EmailLoginDirectory.feedbackMultiRouteEnvironment(
+                    try FeedbackRouting.feedbackMultiRouteEnvironment(
                         source: source,
                         appsJSON: appsJSON,
                         environment: environment
                     )
                 },
                 legacyRouteEnvironment: { environment in
-                    EmailLoginDirectory.feedbackLegacyRouteEnvironment(environment)
+                    FeedbackRouting.feedbackLegacyRouteEnvironment(environment)
                 },
                 ensureRouteBinding: { userId, environment in
                     try await feedback.ensureRouteBindingAsync(userId: userId, environment: environment)

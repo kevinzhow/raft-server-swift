@@ -266,7 +266,7 @@ public struct MachinesAndHostedRuntimeService: Sendable {
         let now = Date()
         func parse(_ name: String) -> Date? {
             guard let raw = params[name], !raw.isEmpty else { return nil }
-            return EmailLoginDirectory.isoDate(raw)
+            return DateText.isoDate(raw)
         }
         if params["from"] != nil, parse("from") == nil { throw MachinesAndHostedRuntimeError.usageInvalidQuery }
         if params["to"] != nil, parse("to") == nil { throw MachinesAndHostedRuntimeError.usageInvalidQuery }
@@ -290,7 +290,7 @@ public struct MachinesAndHostedRuntimeService: Sendable {
             model: row.model,
             state: row.state,
             retryNeedsModel: row.retryNeedsModel,
-            createdAt: EmailLoginDirectory.isoString(row.createdAt),
+            createdAt: DateText.isoString(row.createdAt),
             includesOnboardingSetup: includesOnboardingSetup
         )
     }
@@ -358,7 +358,7 @@ public struct MachinesAndHostedRuntimeService: Sendable {
             serverId: serverId,
             modelProvided: modelProvided,
             providedModel: providedModel,
-            defaultModel: EmailLoginDirectory.hostedDefaultModel
+            defaultModel: HostedModelPolicy.hostedDefaultModel
         )
         switch outcome {
         case .missing:
@@ -442,7 +442,7 @@ public struct MachinesAndHostedRuntimeService: Sendable {
             agentId: agentId,
             serverId: serverId,
             requested: requested,
-            defaultModel: EmailLoginDirectory.hostedDefaultModel
+            defaultModel: HostedModelPolicy.hostedDefaultModel
         )
         switch outcome {
         case .notReady:

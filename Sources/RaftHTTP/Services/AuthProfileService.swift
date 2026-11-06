@@ -62,9 +62,9 @@ public struct AuthProfileService: Sendable {
     init(
         store: AuthProfileStore,
         now: @escaping @Sendable () -> Date = { Date() },
-        makeToken: @escaping @Sendable () -> String = { EmailLoginDirectory.randomHex(32) },
-        hashToken: @escaping @Sendable (String) -> String = { EmailLoginDirectory.sha256($0) },
-        hashPassword: @escaping @Sendable (String) -> String = { EmailLoginDirectory.sha256($0) }
+        makeToken: @escaping @Sendable () -> String = { AuthTokenCodec.randomHex(32) },
+        hashToken: @escaping @Sendable (String) -> String = { AuthTokenCodec.sha256($0) },
+        hashPassword: @escaping @Sendable (String) -> String = { AuthTokenCodec.sha256($0) }
     ) {
         self.store = store
         self.now = now
@@ -138,7 +138,7 @@ public struct AuthProfileService: Sendable {
         else {
             throw AuthProfileError.invalidTimezoneObservation
         }
-        let canonicalTimezone = EmailLoginDirectory.timezoneAliases[timezone] ?? zone.identifier
+        let canonicalTimezone = AccountNaming.timezoneAliases[timezone] ?? zone.identifier
         let observation = store.recordTimezoneObservation(
             userId: userId,
             timezone: canonicalTimezone,

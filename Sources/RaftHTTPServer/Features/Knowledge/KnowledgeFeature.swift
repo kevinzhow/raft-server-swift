@@ -56,14 +56,14 @@ struct KnowledgeFeature: RouteCollection, Sendable {
         } catch let error as any DomainError {
             return .denial(KnowledgeDirectory.reply(Int(error.status), error.publishedErrorBody.render()))
         } catch {
-            return .denial(KnowledgeDirectory.reply(500, "{\"error\":\"Internal error\"}"))
+            return .denial(KnowledgeDirectory.reply(500, OrderedJSON.object([OrderedJSONField("error", "Internal error")]).render()))
         }
         guard identity.scopes.contains("knowledge") else {
-            let body = KnowledgeDirectory.jsonObject([
-                "error": "Agent credential is not authorized for this capability",
-                "code": "capability_not_authorized",
-                "requiredCapability": "knowledge",
-            ])
+            let body = OrderedJSON.object([
+                OrderedJSONField("code", "capability_not_authorized"),
+                OrderedJSONField("error", "Agent credential is not authorized for this capability"),
+                OrderedJSONField("requiredCapability", "knowledge"),
+            ]).render()
             return .denial(KnowledgeDirectory.reply(403, body))
         }
         return .identity(KnowledgeIdentity(agentId: identity.agentId, serverId: identity.serverId))

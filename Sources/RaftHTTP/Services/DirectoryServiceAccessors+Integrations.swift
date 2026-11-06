@@ -46,7 +46,7 @@ extension EmailLoginDirectory {
                     visibleAttachmentUnlocked(userId: userId, serverId: serverId, attachment: attachment)
                 },
                 agentCredential: { [self] authorization in
-                    agentCredentialAgent(authorization)
+                    AgentCredentialLookup(directory: self).agentCredentialAgent(authorization)
                 },
                 agentVisibleAttachment: { [agentAttachments] agentId, serverId, attachmentId in
                     agentAttachments.visibleAttachment(agentId: agentId, serverId: serverId, attachmentId: attachmentId)
@@ -70,7 +70,7 @@ extension EmailLoginDirectory {
             logins: managedMCPAndCardsStore,
             dependencies: AgentIntegrationAppsDependencies(
                 agentCredential: { [self] authorization in
-                    agentCredentialAgent(authorization)
+                    AgentCredentialLookup(directory: self).agentCredentialAgent(authorization)
                 },
                 prepareMarketplaceInstallCard: { [self] agent, client, scopes, target in
                     let register = actionCardIntegrationRegister
@@ -101,7 +101,7 @@ extension EmailLoginDirectory {
             oauth: oauth,
             dependencies: AgentMessageLookupDependencies(
                 agentCredential: { [self] authorization in
-                    agentCredentialAgent(authorization)
+                    AgentCredentialLookup(directory: self).agentCredentialAgent(authorization)
                 },
                 messageVisible: { channelId, serverId, agentId in
                     search.messageVisible(messageChannelId: channelId, serverId: serverId, viewer: .agent(agentId))

@@ -140,13 +140,13 @@ public struct IntegrationServiceRow: Sendable, Equatable {
         AgentIntegrationServiceSnapshot(
             id: id,
             clientId: clientId,
-            name: EmailLoginDirectory.inertThirdPartyText(name),
+            name: ThirdPartyText.inertThirdPartyText(name),
             description: description,
             homepageUrl: homepageUrl,
             agentManifestUrl: agentManifestUrl,
             agentManifestUrlSource: agentManifestUrlSource,
             allowedScopes: allowedScopes,
-            whenToUse: whenToUse.map(EmailLoginDirectory.inertThirdPartyText),
+            whenToUse: whenToUse.map(ThirdPartyText.inertThirdPartyText),
             appType: appType
         )
     }

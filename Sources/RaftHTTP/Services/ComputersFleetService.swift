@@ -203,7 +203,7 @@ public struct ComputersFleetService: Sendable {
             machineId: machineId,
             userId: userId,
             role: role,
-            apiKey: EmailLoginDirectory.machineAPIKeyMaterial()
+            apiKey: MachineCredentialMaterial.machineAPIKeyMaterial()
         ) {
         case .missing:
             throw ComputersFleetError.machineNotFound
@@ -320,13 +320,13 @@ public struct ComputersFleetService: Sendable {
         guard role == "owner" || role == "admin" else { throw ComputersFleetError.attachRequiresAdmin }
         let requestedName = request.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let name = requestedName.isEmpty ? "raft-computer" : requestedName
-        let apiKey = EmailLoginDirectory.computerAPIKeyMaterial()
+        let apiKey = MachineCredentialMaterial.computerAPIKeyMaterial()
         switch machines.attachComputer(
             serverId: serverId,
             userId: userId,
             name: name,
             machineId: Self.newId(),
-            machineApiKey: EmailLoginDirectory.machineAPIKeyMaterial(),
+            machineApiKey: MachineCredentialMaterial.machineAPIKeyMaterial(),
             computerId: Self.newId(),
             computerApiKey: apiKey
         ) {
@@ -494,7 +494,7 @@ public struct ComputersFleetService: Sendable {
             throw ComputersFleetError.adoptRequiresAdmin
         }
         let name = Self.adoptedComputerName(requestedName, fallback: snapshot.name)
-        let apiKey = EmailLoginDirectory.computerAPIKeyMaterial()
+        let apiKey = MachineCredentialMaterial.computerAPIKeyMaterial()
         switch machines.adoptLegacyMachine(
             machineId: machineId,
             userId: userId,

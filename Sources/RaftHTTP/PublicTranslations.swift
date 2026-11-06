@@ -7,10 +7,7 @@ import Foundation
 /// is spent.
 
 public enum PublicTranslations {
-    public static func tooMany() -> HTTPReply {
-        let body = "{\"error\":\"Too many public translation requests, please slow down\"}"
-        return json(429, body)
-    }
+    public static func tooMany() -> PublicTranslationError { .tooMany }
 
     public struct Gate: Sendable {
         public var publiclyVisible: Bool
@@ -38,9 +35,9 @@ public enum PublicTranslations {
         body: String,
         gate: Gate?,
         translator: (([String], String) -> [[String: String]])? = nil
-    ) -> HTTPReply {
+    ) throws -> PublicTranslationResponse {
         guard let request = parse(body) else {
-            return json(400, "{\"error\":\"Invalid public translation request\"}")
+            throw PublicTranslationError.invalidRequest
         }
         guard let gate,
               gate.publiclyVisible,
@@ -48,26 +45,15 @@ public enum PublicTranslations {
               gate.translationEnabled,
               gate.providerConfigured
         else {
-            return PublicVisits.pageReply(found: false, mode: nil)
+            throw PublicTranslationError.notFound
         }
         if gate.llmUnavailable {
-            return json(403, "{\"error\":\"LLM translation is not available for this server\"}")
+            throw PublicTranslationError.unavailable
         }
         let rows = translator?(request.messageIds, request.targetLanguage) ?? request.messageIds.map { id in
             ["messageId": id, "status": "not_found", "targetLanguage": request.targetLanguage]
         }
-        let leadingKeys = ["messageId", "status", "targetLanguage"]
-        let results = rows.map { row -> String in
-            var parts: [String] = []
-            for key in leadingKeys {
-                if let value = row[key] { parts.append("\(jsonString(key)):\(jsonString(value))") }
-            }
-            for key in row.keys.sorted() where !leadingKeys.contains(key) {
-                if let value = row[key] { parts.append("\(jsonString(key)):\(jsonString(value))") }
-            }
-            return "{\(parts.joined(separator: ","))}"
-        }.joined(separator: ",")
-        return json(200, "{\"results\":[\(results)]}")
+        return PublicTranslationResponse(results: rows)
     }
 
     private struct Request {
@@ -113,16 +99,4 @@ public enum PublicTranslations {
         return nil
     }
 
-    private static func json(_ status: Int, _ body: String) -> HTTPReply {
-        HTTPReply(
-            status: status,
-            headers: [
-                "X-Robots-Tag": AppFallback.robotsTag,
-                "Content-Type": AppFallback.jsonContentType,
-                "Cache-Control": "no-store",
-                "Content-Length": String(Data(body.utf8).count),
-            ],
-            body: body
-        )
-    }
 }

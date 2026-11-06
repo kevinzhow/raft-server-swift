@@ -49,35 +49,10 @@ public enum PublicAttachments {
     public static let presignedURLTTLSeconds = 60
     private static let previewableImages: Set<String> = ["image/jpeg", "image/png", "image/gif", "image/webp"]
 
-    public static func tooMany() -> HTTPReply {
-        let body = "{\"error\":\"Too many public attachment requests, please slow down\"}"
-        return HTTPReply(
-            status: 429,
-            headers: [
-                "X-Robots-Tag": AppFallback.robotsTag,
-                "Content-Type": AppFallback.jsonContentType,
-                "Cache-Control": "no-store",
-                "Content-Length": String(Data(body.utf8).count),
-            ],
-            body: body
-        )
-    }
+    public static func tooMany() -> PublicAttachmentError { .tooMany }
 
-    public static func missing(attachmentId: String) -> HTTPReply {
-        if ServerScope.isUUID(attachmentId) {
-            return PublicVisits.pageReply(found: false, mode: nil)
-        }
-        let body = "{\"error\":\"Attachment not found\"}"
-        return HTTPReply(
-            status: 404,
-            headers: [
-                "X-Robots-Tag": AppFallback.robotsTag,
-                "Content-Type": AppFallback.jsonContentType,
-                "Cache-Control": "no-store",
-                "Content-Length": String(Data(body.utf8).count),
-            ],
-            body: body
-        )
+    public static func missing(attachmentId: String) -> PublicAttachmentError {
+        ServerScope.isUUID(attachmentId) ? .notFound : .invalidId
     }
 
     public static func file(
@@ -87,30 +62,22 @@ public enum PublicAttachments {
         forceDownload: Bool,
         inlineDisposition: Bool = false,
         frameAncestors: [String] = []
-    ) -> HTTPReply {
+    ) -> PublicAttachmentResponse {
         let fields = presentation(
             filename: filename,
             mimeType: mimeType,
             forceDownload: forceDownload,
             inlineDisposition: inlineDisposition
         )
-        let length = Data(bytes.utf8).count
-        var headers = [
-            "X-Robots-Tag": AppFallback.robotsTag,
-            "Content-Type": fields.contentType,
-            "Content-Length": String(length),
-            "Content-Disposition": fields.disposition,
-            "Cache-Control": "no-store",
-            "X-Content-Type-Options": "nosniff",
-            "Cross-Origin-Resource-Policy": "cross-origin",
-            "Content-Security-Policy": fields.inlinePdf
+        return .file(
+            bytes: bytes,
+            contentType: fields.contentType,
+            disposition: fields.disposition,
+            contentSecurityPolicy: fields.inlinePdf
                 ? inlinePreviewPolicy(frameAncestors)
                 : "default-src 'none'; sandbox",
-        ]
-        if fields.inlinePdf {
-            headers["Referrer-Policy"] = "no-referrer"
-        }
-        return HTTPReply(status: 200, headers: headers, body: bytes)
+            inlinePDF: fields.inlinePdf
+        )
     }
 
     public static func presignRequest(
@@ -134,18 +101,8 @@ public enum PublicAttachments {
         )
     }
 
-    public static func redirect(location: String) -> HTTPReply {
-        HTTPReply(
-            status: 302,
-            headers: [
-                "X-Robots-Tag": AppFallback.robotsTag,
-                "Location": location,
-                "Cache-Control": "no-store",
-                "Cross-Origin-Resource-Policy": "cross-origin",
-                "Content-Length": "0",
-            ],
-            body: ""
-        )
+    public static func redirect(location: String) -> PublicAttachmentResponse {
+        .redirect(location: location)
     }
 
     private static func presentation(

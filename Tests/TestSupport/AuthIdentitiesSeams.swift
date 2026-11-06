@@ -14,7 +14,7 @@ extension EmailLoginDirectory {
 
     public func addPasswordResetTokenForTesting(userId: String, token: String, expiresAt: Date) {
         lock.lock()
-        authProfileStore.setResetToken(hash: Self.sha256(token), userId: userId, expiresAt: expiresAt)
+        authProfileStore.setResetToken(hash: AuthTokenCodec.sha256(token), userId: userId, expiresAt: expiresAt)
         lock.unlock()
     }
 

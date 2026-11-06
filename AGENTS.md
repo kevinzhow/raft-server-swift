@@ -1,6 +1,6 @@
 # Raft source parity port
 
-Equivalent reimplementation of the `raft-source` server and daemon at tag `v1.21.23-source.1`. The specification is observable behavior asserted by the upstream Node suite: HTTP status codes, JSON bodies, response headers, and socket frames. All 406 upstream parity modules (219/219 route, 7/7 socket, 180/180 daemon) are locked and verified end-to-end. Active work is Phase 5 Strangler-Fig architecture refactoring (docs/PLAN.md, docs/ARCHITECTURE.md): migrating remaining EmailLoginDirectory extensions into standalone Route -> Service -> Store layers with Codable DTOs and Vapor 5 best practices while keeping all parity, E2E, smoke, and architecture guardrails green.
+Equivalent reimplementation of the `raft-source` server and daemon at tag `v1.21.23-source.1`. The specification is observable behavior asserted by the upstream Node suite: HTTP status codes, JSON bodies, response headers, and socket frames. All 406 upstream parity modules (219/219 route, 7/7 socket, 180/180 daemon) are locked, with the daemon execution/exclusion qualifications recorded in docs/PARITY.tsv and docs/PLAN.md. Active work is Phase 6 architecture cleanup (docs/PLAN.md, docs/ARCHITECTURE.md): typed Route -> Service -> Store boundaries, removal of remaining directory extensions/global-lock transactions, checked store isolation, and eventual ServiceContainer composition while keeping all parity, E2E, smoke, and architecture guardrails green.
 
 ## Work unit
 
@@ -43,7 +43,7 @@ README is the project introduction. `docs/BEHAVIOR.md` is the append-only locked
 
 ## Identifiers
 
-Next new user starts at `11111111-1111-4111-8111-111111111622`; next server starts at `33333333-3333-4333-8333-333333333666`.
+Next new user starts at `11111111-1111-4111-8111-111111111642`; next server starts at `33333333-3333-4333-8333-333333333667`.
 
 ## Source
 

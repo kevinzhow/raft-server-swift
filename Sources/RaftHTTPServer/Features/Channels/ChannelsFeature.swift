@@ -180,9 +180,8 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         channels.post("threads", ":threadId", "followers", "agents", ":agentId", "restore") { request async throws -> Response in
             // The legacy handler parsed the raw body, so a missing or non-JSON
             // body is the empty token, not a 400.
-            let restore = (try? JSONDecoder().decode(
-                RestoreThreadFollowerRequest.self,
-                from: Data(try await request.bodyText(default: "{}").utf8)
+            let restore = (try? await decodeJSONRequestBody(
+                RestoreThreadFollowerRequest.self, request, decoding: .json, emptyDefault: "{}"
             )) ?? RestoreThreadFollowerRequest()
             return try await respond {
                 try services.emailAccounts.messageSend.restoreThreadFollower(
@@ -362,14 +361,9 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         channels.post(":channelId", "resume-all-agents") { request async throws -> Response in
             // A blank body is an empty request; a body that is not a JSON object
             // stays `nil` for the published `Invalid resume request`.
-            var body = try? await request.content.decode(ResumeAllAgentsRequest.self)
-            if body == nil {
-                let text = try await request.bodyText(default: "{}")
-                body = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? ResumeAllAgentsRequest()
-                    : try? JSONDecoder().decode(ResumeAllAgentsRequest.self, from: Data(text.utf8))
-            }
-            let resolved = body
+            let resolved = try await decodeJSONRequestBody(
+                ResumeAllAgentsRequest.self, request, emptyDefault: "{}", blankDefault: "{}"
+            )
             return try await respond {
                 try await readState.resumeAllAgents(
                     authorization: request.headers[.authorization],
@@ -676,18 +670,11 @@ public struct ChannelsFeature: RouteCollection, Sendable {
 /// whole mutation, and a body that is not a JSON object stays `nil` for the
 /// published `Thread not found`.
 private func threadFollowMutation(_ request: Request) async -> ThreadFollowMutationDTO? {
-    if let typed = try? await request.content.decode(ThreadFollowMutationDTO.self) {
-        return typed
-    }
-    guard let raw = try? await request.bodyText(),
-          let data = raw.data(using: .utf8),
-          let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-    else {
-        return nil
-    }
+    if let typed = await jsonRequestBody(ThreadFollowMutationDTO.self, request) { return typed }
+    guard let object = try? await decodeJSONRequestBody(LegacyJSONObjectBody.self, request, decoding: .json, emptyDefault: "") else { return nil }
     return ThreadFollowMutationDTO(
-        threadChannelId: object["threadChannelId"] as? String,
-        parentMessageId: object["parentMessageId"] as? String
+        threadChannelId: object.string("threadChannelId"),
+        parentMessageId: object.string("parentMessageId")
     )
 }
 
@@ -703,5 +690,5 @@ private let activityContractRejection = HTTPReply(
         "Access-Control-Expose-Headers": "X-Raft-Contract",
         "Content-Length": "26",
     ],
-    body: "{\"error\":\"invalid contract\"}"
+    body: OrderedJSON.object([OrderedJSONField("error", "invalid contract")]).render()
 )

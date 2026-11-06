@@ -18,15 +18,6 @@ public struct AgentsFeature: RouteCollection, Sendable {
         self.services = services
     }
 
-    /// Decodes one typed JSON body even when the client omitted a JSON
-    /// `Content-Type`. The retired raw parser accepted the body regardless of
-    /// the header, so the fallback keeps that behavior for the typed route.
-    private func jsonBody<T: Decodable>(_ type: T.Type, _ request: Request) async throws -> T? {
-        if let decoded = try? await request.content.decode(type) { return decoded }
-        guard let data = try await request.body.collect() else { return nil }
-        return try? JSONDecoder().decode(type, from: data)
-    }
-
     public func boot(routes: any RoutesBuilder) async throws {
         register(routes: routes)
     }
@@ -58,7 +49,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
             }
         }
         agents.delete(":id") { request async throws -> Response in
-            let body = (try await jsonBody(AgentDeleteRequest.self, request)) ?? AgentDeleteRequest()
+            let body = (try await decodeJSONRequestBody(AgentDeleteRequest.self, request)) ?? AgentDeleteRequest()
             return try await respond {
                 try services.emailAccounts.agentMachineMigrationControl.deleteAgent(
                     authorization: request.headers[.authorization],
@@ -135,7 +126,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
             }
         }
         agents.post(":id", "archive", "workspace") { request async throws -> Response in
-            let body = (try await jsonBody(AgentArchiveWorkspaceRequest.self, request)) ?? AgentArchiveWorkspaceRequest()
+            let body = (try await decodeJSONRequestBody(AgentArchiveWorkspaceRequest.self, request)) ?? AgentArchiveWorkspaceRequest()
             return try await respond {
                 try services.emailAccounts.agentMachineMigrationControl.agentArchiveWorkspaceAction(
                     authorization: request.headers[.authorization],
@@ -146,7 +137,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
             }
         }
         agents.post(":id", "assign-machine") { request async throws -> Response in
-            let body = (try await jsonBody(AgentAssignMachineRequest.self, request)) ?? AgentAssignMachineRequest()
+            let body = (try await decodeJSONRequestBody(AgentAssignMachineRequest.self, request)) ?? AgentAssignMachineRequest()
             return try await respond {
                 try services.emailAccounts.agentHostedMigration.assignAgentMachine(
                     authorization: request.headers[.authorization],
@@ -286,7 +277,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
             }
         }
         agents.post(":id", "credentials") { request async throws -> Response in
-            let body = (try await jsonBody(AgentCredentialIssueRequest.self, request)) ?? AgentCredentialIssueRequest()
+            let body = (try await decodeJSONRequestBody(AgentCredentialIssueRequest.self, request)) ?? AgentCredentialIssueRequest()
             return try await respond(status: 201, headers: .standard(extra: ["Cache-Control": "no-store"])) {
                 try services.emailAccounts.agentHostedMigration.issueAgentCredential(
                     authorization: request.headers[.authorization],
@@ -378,7 +369,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
             return response
         }
         agents.post(":id", "migrate") { request async throws -> Response in
-            let body = (try await jsonBody(AgentMigrateRequest.self, request)) ?? AgentMigrateRequest()
+            let body = (try await decodeJSONRequestBody(AgentMigrateRequest.self, request)) ?? AgentMigrateRequest()
             return try await respond(status: { $0.status }, headers: { _ in .standard() }) {
                 try services.emailAccounts.agentMachineMigrationControl.migrateAgent(
                     authorization: request.headers[.authorization],
@@ -401,7 +392,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
             // The retired handler read the JSON object regardless of
             // `Content-Type`, so a body without a JSON header still decodes
             // here instead of falling back to an empty request.
-            let body = (try await jsonBody(AgentMigrationCancelRequest.self, request))
+            let body = (try await decodeJSONRequestBody(AgentMigrationCancelRequest.self, request))
                 ?? AgentMigrationCancelRequest()
             return try await respond {
                 try services.emailAccounts.agentMigrationStatus.cancelMigration(
@@ -413,7 +404,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
             }
         }
         agents.post(":id", "migration", "confirm-hosted") { request async throws -> Response in
-            let body = (try await jsonBody(AgentMigrationCancelRequest.self, request)) ?? AgentMigrationCancelRequest()
+            let body = (try await decodeJSONRequestBody(AgentMigrationCancelRequest.self, request)) ?? AgentMigrationCancelRequest()
             return try await respond {
                 try services.emailAccounts.agentMachineMigrationControl.confirmHostedMigration(
                     authorization: request.headers[.authorization],
@@ -442,7 +433,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
             }
         }
         agents.post(":id", "reset") { request async throws -> Response in
-            let body = (try await jsonBody(AgentResetRequest.self, request)) ?? AgentResetRequest()
+            let body = (try await decodeJSONRequestBody(AgentResetRequest.self, request)) ?? AgentResetRequest()
             return try await respond(status: 202) {
                 try services.emailAccounts.agentMachineMigrationControl.resetAgent(
                     authorization: request.headers[.authorization],
@@ -483,7 +474,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
             }
         }
         agents.put(":id", "scopes") { request async throws -> Response in
-            let body = (try await jsonBody(AgentScopesUpdateRequest.self, request)) ?? AgentScopesUpdateRequest()
+            let body = (try await decodeJSONRequestBody(AgentScopesUpdateRequest.self, request)) ?? AgentScopesUpdateRequest()
             return try await respond {
                 try services.emailAccounts.agentMachineMigrationControl.putAgentScopes(
                     authorization: request.headers[.authorization],

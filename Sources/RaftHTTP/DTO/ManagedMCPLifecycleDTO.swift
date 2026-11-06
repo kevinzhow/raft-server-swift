@@ -189,7 +189,7 @@ public struct ProfileCompletionResponse: JSONBodyConvertible {
         .object([
             OrderedJSONField("name", name),
             OrderedJSONField("displayName", displayName),
-            OrderedJSONField("profileSetupCompletedAt", EmailLoginDirectory.isoString(completedAt)),
+            OrderedJSONField("profileSetupCompletedAt", DateText.isoString(completedAt)),
             OrderedJSONField("user", user.jsonBody),
         ])
     }

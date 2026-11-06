@@ -151,10 +151,10 @@ public enum AuthCoreError: DomainError, Equatable {
     /// The current legal document versions and URLs a refusal publishes.
     private static var legalObject: OrderedJSON {
         .object([
-            OrderedJSONField("termsVersion", EmailLoginDirectory.termsVersion),
-            OrderedJSONField("privacyVersion", EmailLoginDirectory.privacyVersion),
-            OrderedJSONField("termsUrl", EmailLoginDirectory.termsURL),
-            OrderedJSONField("privacyUrl", EmailLoginDirectory.privacyURL),
+            OrderedJSONField("termsVersion", AuthLegalPolicy.termsVersion),
+            OrderedJSONField("privacyVersion", AuthLegalPolicy.privacyVersion),
+            OrderedJSONField("termsUrl", AuthLegalPolicy.termsURL),
+            OrderedJSONField("privacyUrl", AuthLegalPolicy.privacyURL),
         ])
     }
 }

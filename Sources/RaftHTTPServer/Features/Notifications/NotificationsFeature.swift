@@ -100,12 +100,12 @@ public struct NotificationsFeature: RouteCollection, Sendable {
             routeResponse(await DesktopDownload.platformsReply(services.desktop))
         }
         email.get("mobile-app", "unsubscribe") { request -> Response in
-            routeResponse(services.emailAccounts.mobileAppEmailUnsubscribePage(
+            mobileAppEmailUnsubscribeResponse(MobileAppEmailUnsubscribe(directory: services.emailAccounts).mobileAppEmailUnsubscribePage(
                 token: desktopQuery(request.url.query, "token")
             ))
         }
         email.post("mobile-app", "unsubscribe") { request async throws -> Response in
-            routeResponse(services.emailAccounts.mobileAppEmailUnsubscribeSubmit(
+            mobileAppEmailUnsubscribeResponse(MobileAppEmailUnsubscribe(directory: services.emailAccounts).mobileAppEmailUnsubscribeSubmit(
                 token: desktopQuery(request.url.query, "token"),
                 source: desktopQuery(request.url.query, "source"),
                 body: try await request.bodyText()
@@ -245,20 +245,8 @@ public struct NotificationsFeature: RouteCollection, Sendable {
             }
         }
         productEvents.post("onboarding-wizard") { request async throws -> Response in
-            // The legacy handler read the raw JSON body regardless of the
-            // request content type. Decode through `content` when the client
-            // sent a JSON content type and fall back to the raw body bytes so a
-            // body without one still parses.
-            let body: ProductEventOnboardingWizardRequest
-            if let typed = try? await request.content.decode(ProductEventOnboardingWizardRequest.self) {
-                body = typed
-            } else {
-                let raw = try await request.bodyText()
-                body = (try? JSONDecoder().decode(
-                    ProductEventOnboardingWizardRequest.self,
-                    from: Data(raw.utf8)
-                )) ?? ProductEventOnboardingWizardRequest()
-            }
+            let body = try await decodeJSONRequestBody(ProductEventOnboardingWizardRequest.self, request, emptyDefault: "")
+                ?? ProductEventOnboardingWizardRequest()
             return try await respond(
                 status: 204,
                 headers: .exact([
@@ -282,24 +270,28 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                 userAgent: request.headers[.userAgent],
                 country: request.headers[HTTPField.Name("CloudFront-Viewer-Country")!]
             )
-            return routeResponse(PublicVisits.reply())
+            return try await respond(status: 204, headers: .exact([
+                "X-Robots-Tag": AppFallback.robotsTag, "Cache-Control": "no-store",
+            ])) { PublicVisits.reply() }
         }
-        publicSurface.get("feature-flags") { request in
-            routeResponse(PublicFeatureFlags.reply(
-                keysQuery: desktopQuery(request.url.query, "keys"),
-                platformQuery: desktopQuery(request.url.query, "platform"),
-                flags: services.featureFlags
-            ))
+        publicSurface.get("feature-flags") { request async throws -> Response in
+            try await respond(headers: .standard(extra: ["Cache-Control": "public, max-age=60"])) {
+                try PublicFeatureFlags.reply(
+                    keysQuery: desktopQuery(request.url.query, "keys"),
+                    platformQuery: desktopQuery(request.url.query, "platform"),
+                    flags: services.featureFlags
+                )
+            }
         }
         publicSurface.post("servers", ":slug", "join-as-guest") { request async throws -> Response in
-            guard let directory = services.publicVisits else {
-                return routeResponse(PublicVisits.pageReply(found: false, mode: nil))
+            try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
+                guard let directory = services.publicVisits else { throw PublicVisitError.notFound }
+                return try directory.join(
+                    slug: request.parameters.get("slug") ?? "",
+                    authorization: request.headers[.authorization],
+                    body: try await request.bodyText()
+                )
             }
-            return routeResponse(directory.join(
-                slug: request.parameters.get("slug") ?? "",
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
         }
         push.get("delivery-status") { request async throws -> Response in
             try await respond {
@@ -347,20 +339,24 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                 )
             }
         }
-        releaseNotes.get { request in
-            routeResponse(ReleaseNotes.list(
-                limit: desktopQuery(request.url.query, "limit"),
-                cursor: desktopQuery(request.url.query, "cursor"),
-                ifNoneMatch: request.headers[HTTPField.Name("If-None-Match")!],
-                notes: services.releaseNotes
-            ))
+        releaseNotes.get { request async throws -> Response in
+            try await respond(status: { $0.status }, headers: { $0.headers }) {
+                try ReleaseNotes.list(
+                    limit: desktopQuery(request.url.query, "limit"),
+                    cursor: desktopQuery(request.url.query, "cursor"),
+                    ifNoneMatch: request.headers[HTTPField.Name("If-None-Match")!],
+                    notes: services.releaseNotes
+                )
+            }
         }
-        releaseNotes.get(":releaseId") { request in
-            routeResponse(ReleaseNotes.detail(
-                id: request.parameters.get("releaseId") ?? "",
-                ifNoneMatch: request.headers[HTTPField.Name("If-None-Match")!],
-                notes: services.releaseNotes
-            ))
+        releaseNotes.get(":releaseId") { request async throws -> Response in
+            try await respond(status: { $0.status }, headers: { $0.headers }) {
+                try ReleaseNotes.detail(
+                    id: request.parameters.get("releaseId") ?? "",
+                    ifNoneMatch: request.headers[HTTPField.Name("If-None-Match")!],
+                    notes: services.releaseNotes
+                )
+            }
         }
         shareArtifacts.post("message-selection") { request async throws -> Response in
             let bases = shareArtifactBases(services, request)
@@ -546,14 +542,28 @@ private func publishFamilyRevoke(capability: String?, services: FallbackServices
 }
 
 private func pixelAvatarError(_ status: Int, _ error: String) -> Response {
-    let body = "{\"error\":\"\(error)\"}"
-    return routeResponse(HTTPReply(
-        status: status,
-        headers: [
-            "X-Robots-Tag": AppFallback.robotsTag,
-            "Content-Type": AppFallback.jsonContentType,
-            "Content-Length": String(Data(body.utf8).count),
-        ],
-        body: body
-    ))
+    respond(status: UInt(status), rawJSON: OrderedJSON.object([OrderedJSONField("error", error)]).render())
+}
+
+/// HTML and one-click text outcomes keep their original non-JSON headers.
+private func mobileAppEmailUnsubscribeResponse(_ outcome: MobileAppEmailUnsubscribeOutcome) -> Response {
+    var headers = HTTPFields()
+    headers[HTTPField.Name("X-Robots-Tag")!] = AppFallback.robotsTag
+    let status: HTTPResponse.Status
+    let html: String
+    switch outcome {
+    case .oneClick:
+        headers[.contentType] = "text/plain; charset=utf-8"
+        return Response(status: .ok, headers: headers, body: .init(string: ""))
+    case .invalidLink(let body):
+        status = .badRequest
+        html = body
+    case .confirmation(let body), .unsubscribed(let body):
+        status = .ok
+        html = body
+    }
+    headers[.contentType] = "text/html; charset=utf-8"
+    headers[.cacheControl] = "no-store"
+    headers[HTTPField.Name("Referrer-Policy")!] = "no-referrer"
+    return Response(status: status, headers: headers, body: .init(string: html))
 }

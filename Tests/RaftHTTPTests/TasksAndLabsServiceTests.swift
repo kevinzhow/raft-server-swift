@@ -25,7 +25,7 @@ private func tasksFixture(slug: String, suffix: String) -> (
 @Test func assigneeWriteAcceptsExactlyOneConcurrentExpectedRevision() async {
     let fixture = tasksFixture(slug: "tl-occ", suffix: "0001")
     let store = fixture.directory.tasksAndRemindersStore
-    let taskId = fixture.directory.addTasks(channelId: fixture.channelId, titles: ["occ"]).first ?? ""
+    let taskId = DirectoryTaskCatalog(directory: fixture.directory).addTasks(channelId: fixture.channelId, titles: ["occ"]).first ?? ""
 
     let outcomes = await withTaskGroup(of: TasksAndRemindersStore.ReassignOutcome.self) { group in
         for writer in 0..<8 {
@@ -57,7 +57,7 @@ private func tasksFixture(slug: String, suffix: String) -> (
 @Test func assigneeWriteDecidesDoneUnchangedAndMissingInOneSection() {
     let fixture = tasksFixture(slug: "tl-outcomes", suffix: "0002")
     let store = fixture.directory.tasksAndRemindersStore
-    let ids = fixture.directory.addTasks(channelId: fixture.channelId, titles: ["a", "b"])
+    let ids = DirectoryTaskCatalog(directory: fixture.directory).addTasks(channelId: fixture.channelId, titles: ["a", "b"])
 
     // Clearing an unassigned task is the unchanged short circuit: no revision bump, no event.
     if case .unchanged(let task) = store.reassign(
@@ -89,7 +89,7 @@ private func tasksFixture(slug: String, suffix: String) -> (
 @Test func amendWriteIsOneCriticalSectionPerRow() async {
     let fixture = tasksFixture(slug: "tl-amend", suffix: "0003")
     let store = fixture.directory.tasksAndRemindersStore
-    _ = fixture.directory.addTasks(channelId: fixture.channelId, titles: ["first"])
+    _ = DirectoryTaskCatalog(directory: fixture.directory).addTasks(channelId: fixture.channelId, titles: ["first"])
 
     await withTaskGroup(of: Void.self) { group in
         for writer in 0..<16 {

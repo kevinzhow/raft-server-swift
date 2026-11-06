@@ -14,7 +14,7 @@ import FoundationNetworking
 private let appId = "a48a84f8-04ed-4db3-9297-189a14a36afc"
 
 private func root(_ byte: UInt8) -> String {
-    EmailLoginDirectory.feedbackBase64URL(Data(repeating: byte, count: 32))
+    FeedbackRouting.feedbackBase64URL(Data(repeating: byte, count: 32))
 }
 
 private func environment(
@@ -116,8 +116,8 @@ private func bindingReason(_ error: any Error) -> String? {
     #expect(call.contentType == "application/json")
     #expect(call.reporter == reporter)
     #expect(call.timeout == 4)
-    let subject = try #require(EmailLoginDirectory.feedbackRouteConfig(env).flatMap {
-        EmailLoginDirectory.feedbackRouteSubject(config: $0, userId: "user-1", reporterId: reporter)
+    let subject = try #require(FeedbackRouting.feedbackRouteConfig(env).flatMap {
+        FeedbackRouting.feedbackRouteSubject(config: $0, userId: "user-1", reporterId: reporter)
     })
     #expect(call.body == "{\"route_subject\":\"\(subject)\"}")
     #expect(subject.hasPrefix("rfr_v1_"))

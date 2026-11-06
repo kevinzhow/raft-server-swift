@@ -1,19 +1,53 @@
 import Foundation
 import Vapor
 
-/// Decode one JSON request body with the published fallback behavior.
-///
-/// A body sent without a JSON `Content-Type` was accepted by the legacy
-/// `bodyText` + `JSONSerialization` handlers, so a typed `req.content.decode`
-/// fallback alone would turn it into a 415. This helper tries the content-type
-/// decoder first and then a plain JSON decode of the collected bytes; a missing
-/// or malformed body returns `nil` so the service keeps its legacy 400.
-func jsonRequestBody<T: Decodable>(_ type: T.Type, _ request: Request) async -> T? {
-    if let decoded = try? await request.content.decode(type) {
-        return decoded
+/// The body parser is a route policy: some legacy handlers used the registered
+/// content decoder, some always read JSON, and some never tried raw bytes.
+enum JSONRequestBodyDecoding {
+    case contentThenJSON
+    case json
+    case contentOnly
+}
+
+/// Shared typed decode without changing a route's empty-body or media-type
+/// policy. Collection errors propagate for callers that previously threw;
+/// `jsonRequestBody` retains the lenient, nonthrowing API used by other routes.
+func decodeJSONRequestBody<T: Decodable>(
+    _ type: T.Type,
+    _ request: Request,
+    decoding: JSONRequestBodyDecoding = .contentThenJSON,
+    emptyDefault: String? = nil,
+    blankDefault: String? = nil,
+    rawFallback: String? = nil
+) async throws -> T? {
+    let decoded: T?
+    switch decoding {
+    case .json:
+        decoded = try? await request.content.decode(type, using: JSONDecoder())
+    case .contentThenJSON, .contentOnly:
+        decoded = try? await request.content.decode(type)
     }
-    guard let data = try? await request.body.collect() else {
-        return nil
+    if let decoded { return decoded }
+    if case .contentOnly = decoding { return nil }
+
+    let data: Data
+    if let rawFallback {
+        data = Data(rawFallback.utf8)
+    } else if emptyDefault != nil || blankDefault != nil {
+        var text = try await request.bodyText(default: emptyDefault ?? "")
+        if let blankDefault, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            text = blankDefault
+        }
+        data = Data(text.utf8)
+    } else {
+        guard let collected = try await request.body.collect() else { return nil }
+        data = collected
     }
     return try? JSONDecoder().decode(type, from: data)
+}
+
+/// Raw JSON remains accepted when the client omits a JSON content type. A
+/// missing or malformed body returns nil for the service's published refusal.
+func jsonRequestBody<T: Decodable>(_ type: T.Type, _ request: Request) async -> T? {
+    try? await decodeJSONRequestBody(type, request)
 }

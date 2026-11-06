@@ -258,7 +258,7 @@ struct OAuthFlowsStore: Sendable {
             else { return nil }
             request.status = "provider_completed"
             request.handoffCode = handoff
-            request.codeHash = EmailLoginDirectory.sha256(handoff)
+            request.codeHash = AuthTokenCodec.sha256(handoff)
             request.profileEmail = email
             request.profileUserId = subject
             if request.mode == "login" {
@@ -291,7 +291,7 @@ struct OAuthFlowsStore: Sendable {
                   request.mode == mode,
                   !request.codeChallenge.isEmpty
             else { return .invalidRequest }
-            guard EmailLoginDirectory.desktopNonce(from: request.returnUri) == stateDesktopNonce else {
+            guard AuthRedirects.desktopNonce(from: request.returnUri) == stateDesktopNonce else {
                 return .invalidRequest
             }
             func fail(_ error: String) -> MobileCallbackOutcome {
@@ -305,7 +305,7 @@ struct OAuthFlowsStore: Sendable {
             guard let profile, profile.emailVerified else {
                 return fail("provider_exchange_failed")
             }
-            let email = EmailLoginDirectory.normalize(profile.email)
+            let email = AccountNaming.normalize(profile.email)
             var intendedAction = "login"
             if request.mode == "login",
                let existing = accounts.accounts[email],
@@ -319,7 +319,7 @@ struct OAuthFlowsStore: Sendable {
             request.status = "provider_completed"
             request.intendedAction = intendedAction
             request.handoffCode = handoff
-            request.codeHash = EmailLoginDirectory.sha256(handoff)
+            request.codeHash = AuthTokenCodec.sha256(handoff)
             request.profileEmail = email
             request.profileUserId = profile.providerUserId
             request.profileName = profile.displayName
@@ -355,7 +355,7 @@ struct OAuthFlowsStore: Sendable {
                 return .refused(.expired)
             }
             if verifier.isEmpty { return .refused(.invalid) }
-            if EmailLoginDirectory.pkceS256(verifier) != request.codeChallenge {
+            if AuthTokenCodec.pkceS256(verifier) != request.codeChallenge {
                 request.status = "failed"
                 accounts.mobileRequests[requestId] = request
                 return .refused(.pkceMismatch)
@@ -392,7 +392,7 @@ struct OAuthFlowsStore: Sendable {
             }
             if request.intendedAction == "link", let email = request.profileEmail,
                let existing = accounts.accounts[email] {
-                let token = EmailLoginDirectory.randomHex(32)
+                let token = AuthTokenCodec.randomHex(32)
                 let expiresAt = now.addingTimeInterval(600)
                 accounts.pendingSocialLinks[token] = PendingSocialLink(
                     token: token, provider: request.provider, providerUserId: request.profileUserId ?? "",
@@ -429,30 +429,30 @@ struct OAuthFlowsStore: Sendable {
                 ))
             }
             if !acceptTerms { return .refused(.legalRequired) }
-            if termsVersion != EmailLoginDirectory.termsVersion || privacyVersion != EmailLoginDirectory.privacyVersion {
+            if termsVersion != AuthLegalPolicy.termsVersion || privacyVersion != AuthLegalPolicy.privacyVersion {
                 return .refused(.termsChanged)
             }
             let email = request.profileEmail ?? ""
             guard !email.isEmpty else { return .refused(.invalid) }
             let taken = Set(accounts.accounts.values.map(\.name))
-            let pendingName = EmailLoginDirectory.pendingHandle(taken: taken)
+            let pendingName = AccountNaming.pendingHandle(taken: taken)
             let id = UUID().uuidString.lowercased()
             accounts.accounts[email] = Account(
                 id: id,
                 email: email,
-                passwordHash: EmailLoginDirectory.sha256(EmailLoginDirectory.token()),
+                passwordHash: AuthTokenCodec.sha256(AuthTokenCodec.token()),
                 displayLanguage: nil,
                 name: pendingName,
-                profileSetupSuggestedHandle: EmailLoginDirectory.availableUserName(
+                profileSetupSuggestedHandle: AccountNaming.availableUserName(
                     seed: request.profileName ?? email, taken: taken
                 ),
                 profileSetupProvider: request.provider
             )
             legalAcceptances[id] = EmailLegalAcceptance(
-                termsVersion: EmailLoginDirectory.termsVersion,
-                privacyVersion: EmailLoginDirectory.privacyVersion,
-                termsUrl: EmailLoginDirectory.termsURL,
-                privacyUrl: EmailLoginDirectory.privacyURL,
+                termsVersion: AuthLegalPolicy.termsVersion,
+                privacyVersion: AuthLegalPolicy.privacyVersion,
+                termsUrl: AuthLegalPolicy.termsURL,
+                privacyUrl: AuthLegalPolicy.privacyURL,
                 source: "oauth",
                 userAgentHash: nil,
                 locale: nil
@@ -502,7 +502,7 @@ struct OAuthFlowsStore: Sendable {
                 return .refused(.expired)
             }
             if verifier.isEmpty { return .refused(.invalid) }
-            if EmailLoginDirectory.pkceS256(verifier) != request.codeChallenge {
+            if AuthTokenCodec.pkceS256(verifier) != request.codeChallenge {
                 request.status = "failed"
                 accounts.mobileRequests[requestId] = request
                 return .refused(.pkceMismatch)
@@ -539,8 +539,8 @@ struct OAuthFlowsStore: Sendable {
         _ accounts: inout AuthProfileStore.AccountState,
         userId: String
     ) -> IssuedSessionTokens {
-        let accessToken = EmailLoginDirectory.token()
-        let refreshToken = EmailLoginDirectory.token()
+        let accessToken = AuthTokenCodec.token()
+        let refreshToken = AuthTokenCodec.token()
         accounts.sessions[refreshToken] = LiveSession(userId: userId, familyId: UUID().uuidString.lowercased())
         accounts.accessTokens[accessToken] = userId
         return IssuedSessionTokens(accessToken: accessToken, refreshToken: refreshToken)

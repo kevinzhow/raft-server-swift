@@ -288,8 +288,8 @@ public final class PublicVisitDirectory: @unchecked Sendable {
         forceDownload: Bool,
         inlineDisposition: Bool = false,
         frameAncestors: [String] = []
-    ) -> HTTPReply {
-        guard ServerScope.isUUID(attachmentId) else { return PublicAttachments.missing(attachmentId: attachmentId) }
+    ) throws -> PublicAttachmentResponse {
+        guard ServerScope.isUUID(attachmentId) else { throw PublicAttachments.missing(attachmentId: attachmentId) }
         lock.lock()
         let attachment = attachments[attachmentId.lowercased()]
         let server = servers[slug]
@@ -298,7 +298,7 @@ public final class PublicVisitDirectory: @unchecked Sendable {
         let presignTarget = self.presignTarget
         lock.unlock()
         guard readable, let attachment else {
-            return PublicAttachments.missing(attachmentId: attachmentId)
+            throw PublicAttachments.missing(attachmentId: attachmentId)
         }
         if let presignTarget {
             let request = PublicAttachments.presignRequest(
@@ -314,7 +314,7 @@ public final class PublicVisitDirectory: @unchecked Sendable {
             return PublicAttachments.redirect(location: presignTarget)
         }
         guard let bytes else {
-            return PublicAttachments.missing(attachmentId: attachmentId)
+            throw PublicAttachments.missing(attachmentId: attachmentId)
         }
         return PublicAttachments.file(
             bytes: bytes,
@@ -575,11 +575,11 @@ public final class PublicVisitDirectory: @unchecked Sendable {
         } ?? []
     }
 
-    public func join(slug: String, authorization: String?, body: String) -> HTTPReply {
+    public func join(slug: String, authorization: String?, body: String) throws -> PublicJoinResponse {
         lock.lock()
         defer { lock.unlock() }
         guard let userId = bearerUserId(authorization), users[userId] != nil else {
-            return PublicVisits.authRequired(authorization: authorization)
+            throw PublicVisits.authRequired(authorization: authorization)
         }
         guard var server = servers[slug],
               server.publiclyVisible,
@@ -587,17 +587,17 @@ public final class PublicVisitDirectory: @unchecked Sendable {
               server.guestRolloutEnabled,
               server.guestJoinEnabled
         else {
-            return PublicVisits.pageReply(found: false, mode: nil)
+            throw PublicVisitError.notFound
         }
         let already = server.memberIds.contains(userId)
         if !already {
             if let agreement = server.agreement, agreement.enabled {
                 let sent = Self.agreementId(body)
                 if sent == nil {
-                    return Self.agreementRequired(agreement)
+                    throw Self.agreementRequired(agreement)
                 }
                 if sent != agreement.id {
-                    return Self.agreementChanged(agreement)
+                    throw Self.agreementChanged(agreement)
                 }
             }
             server.memberIds.insert(userId)
@@ -609,17 +609,18 @@ public final class PublicVisitDirectory: @unchecked Sendable {
             recordJoin(server: server, userId: userId, body: body)
         }
         let role = server.memberRoles[userId] ?? "guest"
-        let payload = "{\"serverId\":\(jsonString(server.id)),\"serverName\":\(jsonString(server.name)),\"serverSlug\":\(jsonString(slug)),\"role\":\(jsonString(role)),\"joined\":\(already ? "false" : "true")}"
-        return PublicVisits.jsonReply(200, payload)
+        return PublicJoinResponse(
+            serverId: server.id, serverName: server.name, serverSlug: slug, role: role, joined: !already
+        )
     }
 
-    public func page(slug: String, country: String?, region: String?, gpc: String?) -> HTTPReply {
+    public func page(slug: String, country: String?, region: String?, gpc: String?) throws -> PublicPageResponse {
         lock.lock()
         let server = servers[slug]
         let translationAvailable = translationProviderConfigured
         lock.unlock()
         guard let server, server.publiclyVisible, server.publicEnabled else {
-            return PublicVisits.pageReply(found: false, mode: nil)
+            throw PublicVisitError.notFound
         }
         let offered = server.countsEnabled && server.productAnalyticsEnabled && server.visitorIdEnabled
         let mode = offered ? PublicVisitorRegion.visitorIdMode(country: country, region: region, gpc: gpc) : nil
@@ -628,7 +629,7 @@ public final class PublicVisitDirectory: @unchecked Sendable {
             let right = server.guestChannelNames[$1] ?? $1
             return left == right ? $0 < $1 : left < right
         }
-        return PublicVisits.pageReply(
+        return try PublicVisits.pageReply(
             found: true,
             mode: mode,
             channelIds: channelIds,
@@ -645,42 +646,40 @@ public final class PublicVisitDirectory: @unchecked Sendable {
 
     /// Member server list. `publicPageLive` is the anonymous page gate
     /// (`publiclyVisible` and the rollout flag). The stored switch itself is omitted.
-    public func serverList(authorization: String?) -> HTTPReply {
+    public func serverList(authorization: String?) throws -> PublicServerListResponse {
         lock.lock()
         defer { lock.unlock() }
         guard let userId = bearerUserId(authorization), users[userId] != nil else {
-            return PublicVisits.authRequired(authorization: authorization)
+            throw PublicVisits.authRequired(authorization: authorization)
         }
         let rows = servers
             .filter { $0.value.memberIds.contains(userId) }
             .sorted { $0.value.id < $1.value.id }
-        let listed = rows.map { slug, server in
-            let live = server.publiclyVisible && server.publicEnabled
-            let role = server.memberRoles[userId] ?? "member"
-            return "{\"id\":\(jsonString(server.id)),\"slug\":\(jsonString(slug)),\"role\":\(jsonString(role)),\"publicPageLive\":\(live ? "true" : "false")}"
-        }.joined(separator: ",")
-        return PublicVisits.jsonReply(200, "[\(listed)]")
+        return PublicServerListResponse(servers: rows.map { slug, server in
+            .init(id: server.id, slug: slug, role: server.memberRoles[userId] ?? "member",
+                  publicPageLive: server.publiclyVisible && server.publicEnabled)
+        })
     }
 
-    public func joinCommunity(userId: String, slug rawSlug: String?) -> HTTPReply {
+    public func joinCommunity(userId: String, slug rawSlug: String?) throws -> PublicServerJoinedResponse {
         let slug = rawSlug ?? "community"
         guard slug == "community" || slug == "community-cn" else {
-            return PublicVisits.jsonReply(400, "{\"error\":\"Unsupported community\"}")
+            throw PublicVisitError.unsupportedCommunity
         }
         lock.lock()
         guard var server = servers[slug] else {
             lock.unlock()
-            return PublicVisits.jsonReply(404, "{\"error\":\"Community server is not available\"}")
+            throw PublicVisitError.communityUnavailable
         }
         guard !server.memberIds.contains(userId) else {
             lock.unlock()
-            return PublicVisits.jsonReply(400, "{\"error\":\"Already a member of this community\"}")
+            throw PublicVisitError.alreadyMember
         }
         server.memberIds.insert(userId)
         server.memberRoles[userId] = "member"
         servers[slug] = server
         lock.unlock()
-        return PublicVisits.jsonReply(200, "{\"serverId\":\(jsonString(server.id)),\"serverName\":\(jsonString(server.name))}")
+        return PublicServerJoinedResponse(serverId: server.id, serverName: server.name)
     }
 
     public func addPublicMessage(slug: String, message: PublicHistoryMessage) {
@@ -701,27 +700,27 @@ public final class PublicVisitDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    public func channelMessages(slug: String, channelId: String, limit: Int = 50, beforeMessageId: String? = nil) -> HTTPReply {
+    public func channelMessages(slug: String, channelId: String, limit: Int = 50, beforeMessageId: String? = nil) throws -> PublicHistoryResponse {
         let id = channelId.lowercased()
         lock.lock()
         let server = servers[slug]
         let messages = history[slug] ?? []
         lock.unlock()
         guard let server, server.publiclyVisible, server.publicEnabled, Self.isOrdinaryGuestChannel(server, id) else {
-            return PublicServerMessages.channel(channelId: channelId)
+            throw PublicServerMessages.channel(channelId: channelId)
         }
         let rows = messages.filter { $0.channelId.lowercased() == id }
         guard let page = PublicHistoryProjection.page(rows, limit: limit, beforeId: beforeMessageId) else {
-            return PublicServerMessages.channel(channelId: channelId)
+            throw PublicServerMessages.channel(channelId: channelId)
         }
-        return PublicVisits.jsonReply(200, PublicHistoryProjection.messagesJSON(
-            page,
+        return PublicHistoryResponse(
+            messages: page,
             serverId: server.id,
             mentions: mentionDirectory(for: server)
-        ))
+        )
     }
 
-    public func threadMessages(slug: String, threadId: String, limit: Int = 50, beforeMessageId: String? = nil) -> HTTPReply {
+    public func threadMessages(slug: String, threadId: String, limit: Int = 50, beforeMessageId: String? = nil) throws -> PublicHistoryResponse {
         let id = threadId.lowercased()
         lock.lock()
         let server = servers[slug]
@@ -731,11 +730,11 @@ public final class PublicVisitDirectory: @unchecked Sendable {
               let thread = server.threads[id],
               Self.isOrdinaryGuestChannel(server, thread.parentChannelId)
         else {
-            return PublicServerMessages.thread(threadChannelId: threadId)
+            throw PublicServerMessages.thread(threadChannelId: threadId)
         }
         let replies = messages.first { $0.threadId?.lowercased() == id }?.replies ?? []
         guard let page = PublicHistoryProjection.page(replies, limit: limit, beforeId: beforeMessageId) else {
-            return PublicServerMessages.thread(threadChannelId: threadId)
+            throw PublicServerMessages.thread(threadChannelId: threadId)
         }
         let projected = page.map { reply in
             PublicHistoryMessage(
@@ -748,11 +747,11 @@ public final class PublicVisitDirectory: @unchecked Sendable {
                 sender: reply.sender
             )
         }
-        return PublicVisits.jsonReply(200, PublicHistoryProjection.messagesJSON(
-            projected,
+        return PublicHistoryResponse(
+            messages: projected,
             serverId: server.id,
             mentions: mentionDirectory(for: server)
-        ))
+        )
     }
 
     /// Agents first, then members, so a human wins a shared name. Outsiders and deleted agents are absent.
@@ -863,14 +862,17 @@ public final class PublicVisitDirectory: @unchecked Sendable {
         return id
     }
 
-    private static func agreementRequired(_ agreement: StoredAgreement) -> HTTPReply {
-        let card = "{\"id\":\(jsonString(agreement.id)),\"version\":\(agreement.version),\"title\":\(jsonString(agreement.title)),\"bodyMarkdown\":\(jsonString(agreement.bodyMarkdown)),\"enabled\":true}"
-        return PublicVisits.jsonReply(409, "{\"error\":\"agreement_required\",\"agreement\":\(card)}")
+    private static func agreementCard(_ agreement: StoredAgreement) -> PublicAgreementDTO {
+        PublicAgreementDTO(id: agreement.id, version: agreement.version, title: agreement.title,
+                           bodyMarkdown: agreement.bodyMarkdown)
     }
 
-    private static func agreementChanged(_ agreement: StoredAgreement) -> HTTPReply {
-        let card = "{\"id\":\(jsonString(agreement.id)),\"version\":\(agreement.version),\"title\":\(jsonString(agreement.title)),\"bodyMarkdown\":\(jsonString(agreement.bodyMarkdown)),\"enabled\":true}"
-        return PublicVisits.jsonReply(409, "{\"error\":\"agreement_changed\",\"agreement\":\(card)}")
+    private static func agreementRequired(_ agreement: StoredAgreement) -> PublicVisitError {
+        .agreementRequired(agreementCard(agreement))
+    }
+
+    private static func agreementChanged(_ agreement: StoredAgreement) -> PublicVisitError {
+        .agreementChanged(agreementCard(agreement))
     }
 
     private struct StoredAttachment {
@@ -985,37 +987,11 @@ public enum PublicVisits {
         return id
     }
 
-    public static func authRequired(authorization: String?) -> HTTPReply {
-        let message = authorization?.hasPrefix("Bearer ") == true
-            ? "Invalid or expired token"
-            : "Missing or invalid Authorization header"
-        return jsonReply(401, "{\"error\":\(jsonString(message)),\"code\":\"auth_required\"}")
+    public static func authRequired(authorization: String?) -> PublicVisitError {
+        .authentication(invalidToken: authorization?.hasPrefix("Bearer ") == true)
     }
 
-    static func jsonReply(_ status: Int, _ body: String) -> HTTPReply {
-        HTTPReply(
-            status: status,
-            headers: [
-                "X-Robots-Tag": AppFallback.robotsTag,
-                "Content-Type": AppFallback.jsonContentType,
-                "Cache-Control": "no-store",
-                "Content-Length": String(Data(body.utf8).count),
-            ],
-            body: body
-        )
-    }
-
-    public static func reply() -> HTTPReply {
-        HTTPReply(
-            status: 204,
-            headers: [
-                "X-Robots-Tag": AppFallback.robotsTag,
-                "Cache-Control": "no-store",
-                "Content-Length": "0",
-            ],
-            body: ""
-        )
-    }
+    public static func reply() -> NoContentResponse { NoContentResponse() }
 
     public static func pageReply(
         found: Bool,
@@ -1029,37 +1005,13 @@ public enum PublicVisits {
         translationEnabled: Bool = false,
         canJoinAsGuest: Bool = false,
         translationAvailable: Bool = false
-    ) -> HTTPReply {
-        if !found {
-            let body = "{\"error\":\"Not found\"}"
-            return HTTPReply(
-                status: 404,
-                headers: [
-                    "X-Robots-Tag": AppFallback.robotsTag,
-                    "Content-Type": AppFallback.jsonContentType,
-                    "Cache-Control": "no-store",
-                    "Content-Length": String(Data(body.utf8).count),
-                ],
-                body: body
-            )
-        }
-        let channels = channelIds.map { id in
-            let name = channelNames[id] ?? id
-            return "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"description\":null}"
-        }.joined(separator: ",")
-        let avatar = publicAvatar(avatarUrl, serverId: serverId).map { jsonString($0) } ?? "null"
-        let modeField = mode.map { ",\"visitorIdMode\":\(jsonString($0))" } ?? ""
-        let server = "{\"id\":\(jsonString(serverId)),\"name\":\(jsonString(serverName)),\"slug\":\(jsonString(slug)),\"avatarUrl\":\(avatar),\"translationEnabled\":\(translationEnabled)}"
-        let body = "{\"server\":\(server),\"channels\":[\(channels)],\"canJoinAsGuest\":\(canJoinAsGuest),\"translationAvailable\":\(translationAvailable)\(modeField)}"
-        return HTTPReply(
-            status: 200,
-            headers: [
-                "X-Robots-Tag": AppFallback.robotsTag,
-                "Content-Type": AppFallback.jsonContentType,
-                "Cache-Control": "no-store",
-                "Content-Length": String(Data(body.utf8).count),
-            ],
-            body: body
+    ) throws -> PublicPageResponse {
+        guard found else { throw PublicVisitError.notFound }
+        return PublicPageResponse(
+            serverId: serverId, serverName: serverName, slug: slug,
+            avatarUrl: publicAvatar(avatarUrl, serverId: serverId), translationEnabled: translationEnabled,
+            channels: channelIds.map { .init(id: $0, name: channelNames[$0] ?? $0) },
+            canJoinAsGuest: canJoinAsGuest, translationAvailable: translationAvailable, visitorIdMode: mode
         )
     }
 
@@ -1215,5 +1167,3 @@ public enum PublicVisits {
         return text.utf8.count <= max
     }
 }
-
-

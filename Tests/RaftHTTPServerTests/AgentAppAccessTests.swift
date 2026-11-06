@@ -7,6 +7,19 @@ import TestSupport
 import Vapor
 import VaporTesting
 
+private func appAccessRequest(_ accounts: EmailLoginDirectory, _ data: Data) -> (Int, [String: Any]) {
+    do {
+        let response = try accounts.oauth.requestAgentAccess(authorization: nil, body: String(decoding: data, as: UTF8.self))
+        let body = (try? JSONSerialization.jsonObject(with: Data(response.jsonBody.render().utf8))) as? [String: Any] ?? [:]
+        return (200, body)
+    } catch let error as OAuthLedgerError {
+        return (Int(error.status), ["error": error.errorMessage])
+    } catch {
+        Issue.record(error)
+        return (500, [:])
+    }
+}
+
 private struct AppAccessFixture {
     let accounts = EmailLoginDirectory()
     let serverId = "33333333-3333-4333-8333-000001081001"
@@ -56,9 +69,7 @@ private struct AppAccessFixture {
         if let agentId { payload["agentId"] = agentId }
         if initiatedByAgent { payload["initiatedByAgent"] = true }
         let data = try! JSONSerialization.data(withJSONObject: payload)
-        let reply = accounts.oauth.requestAgentAccess(authorization: nil, body: String(decoding: data, as: UTF8.self))
-        let body = (try? JSONSerialization.jsonObject(with: Data(reply.body.utf8))) as? [String: Any] ?? [:]
-        return (reply.status, body)
+        return appAccessRequest(accounts, data)
     }
 
     let foreign = await request(memberApp, agentName: "CreatorBot")
@@ -110,9 +121,7 @@ private struct AppAccessFixture {
             "serverSlug": "agent-app-access", "scopes": ["agent:notification:write"], "agentName": "CreatorBot",
         ]
         let data = try! JSONSerialization.data(withJSONObject: payload)
-        let reply = accounts.oauth.requestAgentAccess(authorization: nil, body: String(decoding: data, as: UTF8.self))
-        let body = (try? JSONSerialization.jsonObject(with: Data(reply.body.utf8))) as? [String: Any] ?? [:]
-        return (reply.status, body)
+        return appAccessRequest(accounts, data)
     }
 
     let pending = await request(memberApp)
@@ -150,9 +159,7 @@ private struct AppAccessFixture {
             "agentName": "CreatorBot", "initiatedByAgent": initiatedByAgent,
         ]
         let data = try! JSONSerialization.data(withJSONObject: payload)
-        let reply = accounts.oauth.requestAgentAccess(authorization: nil, body: String(decoding: data, as: UTF8.self))
-        let body = (try? JSONSerialization.jsonObject(with: Data(reply.body.utf8))) as? [String: Any] ?? [:]
-        return (reply.status, body)
+        return appAccessRequest(accounts, data)
     }
 
     let login = await request(initiatedByAgent: true)
@@ -176,9 +183,7 @@ private struct AppAccessFixture {
         ]
         payload.merge(extra) { _, new in new }
         let data = try! JSONSerialization.data(withJSONObject: payload)
-        let reply = accounts.oauth.requestAgentAccess(authorization: nil, body: String(decoding: data, as: UTF8.self))
-        let body = (try? JSONSerialization.jsonObject(with: Data(reply.body.utf8))) as? [String: Any] ?? [:]
-        return (reply.status, body)
+        return appAccessRequest(accounts, data)
     }
 
     let byId = await post(["agentId": fixture.creatorAgent])

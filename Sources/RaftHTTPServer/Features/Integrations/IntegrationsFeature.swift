@@ -265,7 +265,7 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             // A body that does not decode stays `nil`: the service authorizes
             // first and only then answers the legacy 400, so the status order is
             // unchanged.
-            let body = try await typedJSONBody(
+            let body = await jsonRequestBody(
                 ReviewAppNotificationPermissionsRequest.self,
                 request
             )
@@ -279,8 +279,10 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             }
         }
 
-        integrations.get("agents", ":agentId") { request -> Response in
-            routeResponse(IntegrationRoutes.integrationAgent(agentId: request.parameters.get("agentId") ?? ""))
+        integrations.get("agents", ":agentId") { request async throws -> Response in
+            try await respond {
+                try IntegrationRoutes.integrationAgent(agentId: request.parameters.get("agentId") ?? "")
+            }
         }
 
         integrations.get("clients", ":clientId", "agent-jwt") { request async throws -> Response in
@@ -299,16 +301,22 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             }
         }
 
-        integrations.get("clients", ":clientId", "app-notifications") { request -> Response in
-            routeResponse(IntegrationRoutes.appNotifications(clientId: request.parameters.get("clientId") ?? ""))
+        integrations.get("clients", ":clientId", "app-notifications") { request async throws -> Response in
+            try await respond {
+                try IntegrationRoutes.appNotifications(clientId: request.parameters.get("clientId") ?? "")
+            }
         }
 
-        integrations.get("clients", ":clientId", "share-link") { request -> Response in
-            routeResponse(IntegrationRoutes.shareLink(clientId: request.parameters.get("clientId") ?? ""))
+        integrations.get("clients", ":clientId", "share-link") { request async throws -> Response in
+            try await respond {
+                try IntegrationRoutes.shareLink(clientId: request.parameters.get("clientId") ?? "")
+            }
         }
 
-        integrations.get("marketplace", ":clientId", "install", "app-notifications") { request -> Response in
-            routeResponse(IntegrationRoutes.marketplaceAppNotifications(clientId: request.parameters.get("clientId") ?? ""))
+        integrations.get("marketplace", ":clientId", "install", "app-notifications") { request async throws -> Response in
+            try await respond {
+                try IntegrationRoutes.marketplaceAppNotifications(clientId: request.parameters.get("clientId") ?? "")
+            }
         }
 
         runtimeProviders.get(":kind") { request async throws -> Response in
@@ -414,21 +422,16 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             }
         }
 
-        appInstallation.get("server") { request -> Response in
-            routeResponse(services.emailAccounts.oauth.appInstallationServer(authorization: request.headers[.authorization]))
+        appInstallation.get("server") { request async throws -> Response in
+            try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
+                try services.emailAccounts.oauth.appInstallationServer(authorization: request.headers[.authorization])
+            }
         }
 
-        appInstallation.get("channels") { request -> Response in
-            routeResponse(services.emailAccounts.oauth.appInstallationChannels(authorization: request.headers[.authorization]))
+        appInstallation.get("channels") { request async throws -> Response in
+            try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
+                try services.emailAccounts.oauth.appInstallationChannels(authorization: request.headers[.authorization])
+            }
         }
     }
-}
-
-/// Decodes one typed JSON body even when the client omitted a JSON
-/// `Content-Type`. The published handlers accepted a raw JSON body before the
-/// typed migration, so the fallback keeps that behavior.
-private func typedJSONBody<T: Decodable>(_ type: T.Type, _ request: Request) async throws -> T? {
-    if let decoded = try? await request.content.decode(type) { return decoded }
-    guard let data = try? await request.body.collect() else { return nil }
-    return try? JSONDecoder().decode(type, from: data)
 }

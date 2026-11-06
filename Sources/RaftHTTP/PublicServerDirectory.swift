@@ -138,62 +138,65 @@ public final class PublicServerDirectory: @unchecked Sendable {
         )
     }
 
-    public func patchVisibility(serverId: String, authorization: String?, body: String) -> HTTPReply {
-        guard let userId = userId(authorization) else { return forbiddenVisibility }
+    public func patchVisibility(serverId: String, authorization: String?, body: String) throws -> PublicVisibilityUpdateResponse {
+        guard let userId = userId(authorization) else { throw PublicSettingsError.forbiddenVisibility }
         lock.lock()
         defer { lock.unlock() }
-        guard servers.first(where: { $0.id == serverId })?.members[userId] == "owner" else { return forbiddenVisibility }
-        guard rolloutEnabled else { return notFound }
+        guard servers.first(where: { $0.id == serverId })?.members[userId] == "owner" else { throw PublicSettingsError.forbiddenVisibility }
+        guard rolloutEnabled else { throw PublicSettingsError.notFound }
         guard let publiclyVisible = jsonBool(body, key: "publiclyVisible") else {
-            return error(400, "publiclyVisible must be a boolean")
+            throw PublicSettingsError.invalidVisibility
         }
         guard let index = servers.firstIndex(where: { $0.id == serverId }) else {
-            return error(404, "Server not found")
+            throw PublicSettingsError.serverNotFound
         }
         servers[index].publiclyVisible = publiclyVisible
         if !publiclyVisible { servers[index].publicGuestJoinEnabled = false }
         servers[index].publicChangedAtMs = bumpLocked()
         if publiclyVisible { backfillLocked(index) }
         let server = servers[index]
-        let payload = "{\"publiclyVisible\":\(server.publiclyVisible),\"publicGuestJoinEnabled\":\(server.publicGuestJoinEnabled),\"publicSearchEnabled\":\(server.publicSearchEnabled)}"
-        return json(200, payload)
+        return PublicVisibilityUpdateResponse(
+            publiclyVisible: server.publiclyVisible,
+            publicGuestJoinEnabled: server.publicGuestJoinEnabled,
+            publicSearchEnabled: server.publicSearchEnabled
+        )
     }
 
-    public func patchSearch(serverId: String, authorization: String?, body: String) -> HTTPReply {
-        guard let userId = userId(authorization) else { return forbiddenSearch }
+    public func patchSearch(serverId: String, authorization: String?, body: String) throws -> PublicSearchSettingResponse {
+        guard let userId = userId(authorization) else { throw PublicSettingsError.forbiddenSearch }
         lock.lock()
         defer { lock.unlock() }
-        guard servers.first(where: { $0.id == serverId })?.members[userId] == "owner" else { return forbiddenSearch }
-        guard rolloutEnabled else { return notFound }
+        guard servers.first(where: { $0.id == serverId })?.members[userId] == "owner" else { throw PublicSettingsError.forbiddenSearch }
+        guard rolloutEnabled else { throw PublicSettingsError.notFound }
         guard let enabled = jsonBool(body, key: "publicSearchEnabled") else {
-            return error(400, "publicSearchEnabled must be a boolean")
+            throw PublicSettingsError.invalidSearch
         }
         guard let index = servers.firstIndex(where: { $0.id == serverId }) else {
-            return error(404, "Server not found")
+            throw PublicSettingsError.serverNotFound
         }
         servers[index].publicSearchEnabled = enabled
         servers[index].publicChangedAtMs = bumpLocked()
-        return json(200, "{\"publicSearchEnabled\":\(enabled)}")
+        return PublicSearchSettingResponse(publicSearchEnabled: enabled)
     }
 
     /// Owner-only Guest admission. It cannot open before Public, and an admin cannot touch it.
-    public func patchGuestJoin(serverId: String, authorization: String?, body: String) -> HTTPReply {
-        guard let userId = userId(authorization) else { return forbiddenGuestJoin }
+    public func patchGuestJoin(serverId: String, authorization: String?, body: String) throws -> PublicGuestJoinSettingResponse {
+        guard let userId = userId(authorization) else { throw PublicSettingsError.forbiddenGuestJoin }
         lock.lock()
         defer { lock.unlock() }
-        guard servers.first(where: { $0.id == serverId })?.members[userId] == "owner" else { return forbiddenGuestJoin }
-        guard rolloutEnabled, guestRolloutEnabled else { return notFound }
+        guard servers.first(where: { $0.id == serverId })?.members[userId] == "owner" else { throw PublicSettingsError.forbiddenGuestJoin }
+        guard rolloutEnabled, guestRolloutEnabled else { throw PublicSettingsError.notFound }
         guard let enabled = jsonBool(body, key: "publicGuestJoinEnabled") else {
-            return error(400, "publicGuestJoinEnabled must be a boolean")
+            throw PublicSettingsError.invalidGuestJoin
         }
         guard let index = servers.firstIndex(where: { $0.id == serverId }) else {
-            return error(404, "Server not found")
+            throw PublicSettingsError.serverNotFound
         }
         if enabled, !servers[index].publiclyVisible {
-            return error(409, "Public access must be enabled before visitors can join as Guest")
+            throw PublicSettingsError.publicRequired
         }
         servers[index].publicGuestJoinEnabled = enabled
-        return json(200, "{\"publicGuestJoinEnabled\":\(enabled)}")
+        return PublicGuestJoinSettingResponse(publicGuestJoinEnabled: enabled)
     }
 
     public func addAccount(id: String, email: String, token: String) {
@@ -222,37 +225,34 @@ public final class PublicServerDirectory: @unchecked Sendable {
     }
 
     /// Email invites keep the role stored on the invite. Public admission is not consulted.
-    public func acceptInvite(authorization: String?, body: String, now: Date = Date()) -> HTTPReply {
+    public func acceptInvite(authorization: String?, body: String, now: Date = Date()) throws -> PublicServerJoinedResponse {
         guard let userId = userId(authorization) else {
-            let message = authorization?.hasPrefix("Bearer ") == true
-                ? "Invalid or expired token"
-                : "Missing or invalid Authorization header"
-            return error(401, message, code: "auth_required")
+            throw PublicSettingsError.authentication(invalidToken: authorization?.hasPrefix("Bearer ") == true)
         }
         guard let token = jsonStringValue(body, key: "token"), !token.isEmpty else {
-            return error(400, "Invite token is required")
+            throw PublicSettingsError.inviteTokenRequired
         }
         lock.lock()
         defer { lock.unlock() }
-        guard let email = emails[userId] else { return error(401, "Invalid or expired token", code: "auth_required") }
+        guard let email = emails[userId] else { throw PublicSettingsError.authentication(invalidToken: true) }
         let hash = Self.sha256Hex(token)
         guard var invite = invites[hash], invite.status == "pending", invite.expiresAt > now else {
-            return error(400, "Invalid invite token")
+            throw PublicSettingsError.invalidInvite
         }
         guard invite.email == email else {
-            return error(400, "This invite was sent to a different email address")
+            throw PublicSettingsError.wrongEmail
         }
         guard let index = servers.firstIndex(where: { $0.id == invite.serverId }) else {
-            return error(404, "Server not found")
+            throw PublicSettingsError.serverNotFound
         }
         guard servers[index].members[userId] == nil else {
-            return error(400, "You are already a member of this server")
+            throw PublicSettingsError.alreadyMember
         }
         servers[index].members[userId] = invite.role
         invite.status = "accepted"
         invites[hash] = invite
         let server = servers[index]
-        return json(200, "{\"serverId\":\(jsonString(server.id)),\"serverName\":\(jsonString(server.name))}")
+        return PublicServerJoinedResponse(serverId: server.id, serverName: server.name)
     }
 
     public func setTranslationEnabled(serverId: String, enabled: Bool) {
@@ -263,43 +263,38 @@ public final class PublicServerDirectory: @unchecked Sendable {
         lock.unlock()
     }
 
-    public func readVisibility(serverId: String, authorization: String?) -> HTTPReply {
-        guard let userId = userId(authorization) else { return forbiddenVisibility }
+    public func readVisibility(serverId: String, authorization: String?) throws -> PublicVisibilityResponse {
+        guard let userId = userId(authorization) else { throw PublicSettingsError.forbiddenVisibility }
         lock.lock()
         defer { lock.unlock() }
-        guard servers.first(where: { $0.id == serverId })?.members[userId] == "owner" else { return forbiddenVisibility }
-        guard rolloutEnabled else { return notFound }
-        guard let server = servers.first(where: { $0.id == serverId }) else { return error(404, "Server not found") }
+        guard servers.first(where: { $0.id == serverId })?.members[userId] == "owner" else { throw PublicSettingsError.forbiddenVisibility }
+        guard rolloutEnabled else { throw PublicSettingsError.notFound }
+        guard let server = servers.first(where: { $0.id == serverId }) else { throw PublicSettingsError.serverNotFound }
         let exposed = server.channels.filter(\.guestVisible).sorted { $0.name < $1.name }
-        let listed = exposed.map { channel in
-            let description = channel.description.map { jsonString($0) } ?? "null"
-            return "{\"id\":\(jsonString(channel.id)),\"name\":\(jsonString(channel.name)),\"description\":\(description)}"
-        }.joined(separator: ",")
-        return json(200, "{\"publiclyVisible\":\(server.publiclyVisible),\"publicGuestJoinEnabled\":\(server.publicGuestJoinEnabled),\"publicSearchEnabled\":\(server.publicSearchEnabled),\"slug\":\(jsonString(server.slug)),\"exposedChannels\":[\(listed)]}")
+        return PublicVisibilityResponse(
+            settings: PublicVisibilityUpdateResponse(
+                publiclyVisible: server.publiclyVisible,
+                publicGuestJoinEnabled: server.publicGuestJoinEnabled,
+                publicSearchEnabled: server.publicSearchEnabled
+            ),
+            slug: server.slug,
+            exposedChannels: exposed.map { .init(id: $0.id, name: $0.name, description: $0.description) }
+        )
     }
 
-    /// Anonymous card for this directory. Unknown slugs and servers that are
-    /// not public are the same 404, so a probe cannot tell them apart.
-    public func publicCard(slug: String) -> HTTPReply {
+    /// Unknown and non-public slugs share one refusal.
+    public func publicCard(slug: String) throws -> PublicDirectoryCardResponse {
         lock.lock()
         defer { lock.unlock() }
         guard let server = servers.first(where: { $0.slug == slug }), rolloutEnabled, server.publiclyVisible else {
-            return notFound
+            throw PublicSettingsError.notFound
         }
         let channels = server.channels.filter(\.guestVisible).sorted { $0.name < $1.name }
-        let listed = channels.map { "{\"id\":\(jsonString($0.id))}" }.joined(separator: ",")
-        let canJoin = server.publicGuestJoinEnabled && guestRolloutEnabled
-        let serverJSON = "{\"id\":\(jsonString(server.id)),\"name\":\(jsonString(server.name)),\"slug\":\(jsonString(server.slug)),\"avatarUrl\":null,\"translationEnabled\":\(server.translationEnabled)}"
-        let body = "{\"server\":\(serverJSON),\"channels\":[\(listed)],\"canJoinAsGuest\":\(canJoin),\"translationAvailable\":\(translationAvailable)}"
-        return HTTPReply(
-            status: 200,
-            headers: [
-                "X-Robots-Tag": AppFallback.robotsTag,
-                "Content-Type": AppFallback.jsonContentType,
-                "Cache-Control": "no-store",
-                "Content-Length": String(Data(body.utf8).count),
-            ],
-            body: body
+        return PublicDirectoryCardResponse(
+            serverId: server.id, serverName: server.name, slug: server.slug,
+            translationEnabled: server.translationEnabled, channelIds: channels.map(\.id),
+            canJoinAsGuest: server.publicGuestJoinEnabled && guestRolloutEnabled,
+            translationAvailable: translationAvailable
         )
     }
 
@@ -541,25 +536,6 @@ public final class PublicServerDirectory: @unchecked Sendable {
         return nil
     }
 
-    private func json(_ status: Int, _ body: String) -> HTTPReply {
-        HTTPReply(
-            status: status,
-            headers: [
-                "X-Robots-Tag": AppFallback.robotsTag,
-                "Content-Type": AppFallback.jsonContentType,
-                "Content-Length": String(Data(body.utf8).count),
-            ],
-            body: body
-        )
-    }
-
-    private func error(_ status: Int, _ message: String, code: String? = nil) -> HTTPReply {
-        if let code {
-            return json(status, "{\"error\":\(jsonString(message)),\"code\":\(jsonString(code))}")
-        }
-        return json(status, "{\"error\":\(jsonString(message))}")
-    }
-
     private func jsonStringValue(_ body: String, key: String) -> String? {
         guard let data = body.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -578,11 +554,6 @@ public final class PublicServerDirectory: @unchecked Sendable {
         var expiresAt: Date
         var status: String
     }
-
-    private var forbiddenVisibility: HTTPReply { error(403, "Only the server owner can manage public visibility") }
-    private var forbiddenGuestJoin: HTTPReply { error(403, "Only the server owner can manage public Guest admission") }
-    private var forbiddenSearch: HTTPReply { error(403, "Only the server owner can manage public search") }
-    private var notFound: HTTPReply { error(404, "Not found") }
 
     private func iso(_ ms: Int) -> String {
         var calendar = Calendar(identifier: .gregorian)

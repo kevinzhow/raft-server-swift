@@ -10,7 +10,7 @@ import Testing
 /// projection.
 
 private func base64url(_ data: Data) -> String {
-    EmailLoginDirectory.base64url(data)
+    AuthTokenCodec.base64url(data)
 }
 
 private func lenient(_ json: String) throws -> LenientJSONObjectRequest {

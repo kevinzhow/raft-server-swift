@@ -678,7 +678,7 @@ public struct ActionCardMarketplaceService: Sendable {
                 lastReadSeq: cursor,
                 activitySeq: latest.seq,
                 latestSenderName: senderName(latest.message) ?? "",
-                latestAt: latest.message.map { EmailLoginDirectory.isoMillis($0.createdAt) }
+                latestAt: latest.message.map { DateText.isoMillis($0.createdAt) }
             ))
         }
 
@@ -725,7 +725,7 @@ public struct ActionCardMarketplaceService: Sendable {
                 lastReadSeq: cursor,
                 activitySeq: latest.seq,
                 latestSenderName: senderName(latest.message) ?? "",
-                latestAt: latest.message.map { EmailLoginDirectory.isoMillis($0.createdAt) }
+                latestAt: latest.message.map { DateText.isoMillis($0.createdAt) }
             ))
         }
 

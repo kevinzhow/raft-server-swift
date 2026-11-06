@@ -143,7 +143,7 @@ public struct AgentActivityEvent: Decodable, Sendable, Equatable {
     /// `occurredAt` is only read when it is a string the ISO parser accepts.
     public var occurredAt: Date? {
         guard case .string(let value)? = fields["occurredAt"] else { return nil }
-        return EmailLoginDirectory.isoDate(value)
+        return DateText.isoDate(value)
     }
 
     /// A non-string status is ignored, exactly like the legacy `as? String`.

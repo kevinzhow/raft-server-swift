@@ -398,7 +398,7 @@ public struct ThreadsService: Sendable {
         guard dependencies.memberRole(serverId, userId) != nil else {
             throw ThreadsError.notServerMember
         }
-        let limit = EmailLoginDirectory.messagePageLimit(rawLimit)
+        let limit = MessagePageCursor.messagePageLimit(rawLimit)
         let needle = (query ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         var records = store.threadUnfollowRecords(serverId: serverId, userId: userId)
         if !needle.isEmpty {

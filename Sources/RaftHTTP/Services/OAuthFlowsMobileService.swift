@@ -14,7 +14,7 @@ extension OAuthFlowsService {
             throw OAuthFlowsError.returnURINotAllowed
         }
         guard let provider = body.provider,
-              EmailLoginDirectory.socialProviders.contains(provider),
+              AuthRedirects.socialProviders.contains(provider),
               let mode = body.mode, mode == "login" || mode == "link",
               let challenge = body.codeChallenge,
               Self.isPKCEChallenge(challenge)
@@ -36,7 +36,7 @@ extension OAuthFlowsService {
         body: MobileOAuthStartRequest,
         authorization: String?
     ) throws -> MobileOAuthStarted {
-        guard EmailLoginDirectory.socialProviders.contains(provider) else {
+        guard AuthRedirects.socialProviders.contains(provider) else {
             throw OAuthFlowsError.notFound
         }
         let userId = try authorizedUser(authorization)
@@ -62,8 +62,8 @@ extension OAuthFlowsService {
         linkOnConflict: Bool = false
     ) -> MobileOAuthStarted {
         let id = UUID().uuidString.lowercased()
-        let nonce = EmailLoginDirectory.randomHex(16)
-        let desktopNonce = EmailLoginDirectory.desktopNonce(from: returnUri)
+        let nonce = AuthTokenCodec.randomHex(16)
+        let desktopNonce = AuthRedirects.desktopNonce(from: returnUri)
         let expiresAt = now().addingTimeInterval(600)
         store.insertMobileRequest(MobileOAuthRequest(
             id: id,
@@ -77,7 +77,7 @@ extension OAuthFlowsService {
             userId: userId,
             linkOnConflict: linkOnConflict
         ))
-        let state = EmailLoginDirectory.signSocialAuthState(SocialAuthState(
+        let state = AuthTokenCodec.signSocialAuthState(SocialAuthState(
             provider: provider,
             mode: mode,
             nonce: nonce,
@@ -87,7 +87,7 @@ extension OAuthFlowsService {
         ))
         return MobileOAuthStarted(
             requestId: id,
-            authorizationUrl: EmailLoginDirectory.authorizationURL(provider: provider, state: state),
+            authorizationUrl: AuthRedirects.authorizationURL(provider: provider, state: state),
             returnUri: returnUri,
             expiresAt: ISO8601DateFormatter().string(from: expiresAt)
         )
@@ -100,13 +100,13 @@ extension OAuthFlowsService {
         state: String?,
         providerError: String? = nil
     ) throws -> OAuthRedirect {
-        guard let state, let parsed = EmailLoginDirectory.verifySocialAuthState(state),
+        guard let state, let parsed = AuthTokenCodec.verifySocialAuthState(state),
               parsed.kind == "mobile", parsed.provider == provider
         else {
             throw OAuthFlowsError.invalidMobileRequest
         }
         let config = store.config()
-        let handoff = EmailLoginDirectory.randomHex(32)
+        let handoff = AuthTokenCodec.randomHex(32)
         switch store.mobileCallback(
             requestId: parsed.mobileRequestId,
             provider: provider,
@@ -120,11 +120,11 @@ extension OAuthFlowsService {
         case .invalidRequest:
             throw OAuthFlowsError.invalidMobileRequest
         case .failed(let returnUri, let mode, let error):
-            return OAuthRedirect(location: EmailLoginDirectory.failureLocation(
+            return OAuthRedirect(location: AuthRedirects.failureLocation(
                 returnUri: returnUri, provider: provider, mode: mode, error: error
             ))
         case .completed(let returnUri, let mode):
-            return OAuthRedirect(location: EmailLoginDirectory.loopbackLocation(
+            return OAuthRedirect(location: AuthRedirects.loopbackLocation(
                 returnUri: returnUri, provider: provider, mode: mode, code: handoff
             ))
         }
@@ -184,7 +184,7 @@ extension OAuthFlowsService {
         body: MobileOAuthCompleteRequest,
         authorization: String?
     ) throws -> MobileOAuthLinkCompleted {
-        guard EmailLoginDirectory.socialProviders.contains(provider) else {
+        guard AuthRedirects.socialProviders.contains(provider) else {
             throw OAuthFlowsError.notFound
         }
         let caller = try authorizedUser(authorization)

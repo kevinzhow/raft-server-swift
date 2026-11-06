@@ -5,8 +5,7 @@ import Foundation
 /// Most routes answer with the standard JSON header set and add a cache or
 /// timing header on top; a few legacy routes publish a header set of their own
 /// (for example the feedback `201`, which has no `X-Robots-Tag`). Making that
-/// choice explicit here is what keeps every domain from hand-building a
-/// `HTTPReply`.
+/// choice explicit here keeps transport construction at the route boundary.
 public struct ResponseHeaders: Sendable, Equatable {
     public enum Base: Sendable, Equatable {
         /// `X-Robots-Tag`, `Content-Type` and `Content-Length`, plus `values`.

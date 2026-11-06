@@ -74,6 +74,15 @@ struct AgentRuntimeConfigDocument {
         }
     }
 
+    /// Stored client JSON keeps Foundation's numeric representation, including
+    /// unsigned integers beyond Int64.max and decimal NSNumber values.
+    private static func serializedStoredObject(_ object: [String: Any]) -> String? {
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
+            return nil
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
     // MARK: Reads
 
     /// `config["runtime"] as? String`.
@@ -215,19 +224,20 @@ struct AgentRuntimeConfigDocument {
 
     /// The stored text: sorted keys, `JSONSerialization` escaping.
     func serialized() -> String {
-        EmailLoginDirectory.serializeJSON(storage)
+        Self.serializedStoredObject(storage) ?? "{}"
     }
 
     /// The text of an env map in the same stored form.
     static func serializedEnv(_ env: [String: String]) -> String {
-        EmailLoginDirectory.serializeJSON(env)
+        Self.serializedStoredObject(env) ?? "{}"
     }
 
     /// The `envVars` request member: `nil` env and `nil` error for an absent or
     /// `null` value, an error for a non-object, a key outside
     /// `[A-Za-z_][A-Za-z0-9_]*`, a non-string value or a NUL byte.
     static func validatedEnvVars(_ value: JSONValue?) -> (env: [String: String]?, error: String?) {
-        guard let present = value, !present.isNull else { return (nil, nil) }
+        guard let present = value else { return (nil, nil) }
+        if case .null = present { return (nil, nil) }
         guard case .object(let object) = present else {
             return (nil, "envVars must be an object")
         }
@@ -257,10 +267,7 @@ struct AgentRuntimeConfigDocument {
             provider["apiKey"] = ""
             object["provider"] = provider
         }
-        guard let redacted = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
-            return raw
-        }
-        return String(decoding: redacted, as: UTF8.self)
+        return Self.serializedStoredObject(object) ?? raw
     }
 
     /// The model name or id a stored config selects; `external` for an external
