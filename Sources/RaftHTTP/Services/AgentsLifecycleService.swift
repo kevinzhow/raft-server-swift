@@ -613,7 +613,11 @@ extension EmailLoginDirectory {
             return Self.json(403, "{\"error\":\"Forbidden\"}")
         }
         guard let previewToken,
-              validateAttachmentPreviewToken(previewToken, attachmentId: attachmentId, serverId: serverId) != nil
+              AttachmentPreviewTokens().verify(
+                  previewToken,
+                  attachmentId: attachmentId,
+                  serverId: serverId
+              ) != nil
         else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }
@@ -702,7 +706,11 @@ extension EmailLoginDirectory {
         case "url":
             return Self.json(200, "{\"url\":\"\(jsonString("/api/attachments/\(attachmentId)"))\"}")
         case "html-preview-url":
-            let previewToken = mintAttachmentPreviewToken(attachmentId: attachmentId, serverId: serverId, actorId: userId)
+            let previewToken = AttachmentPreviewTokens().mint(
+                attachmentId: attachmentId,
+                serverId: serverId,
+                actorId: userId
+            )
             let url = "/api/attachments/\(attachmentId)/html-preview?serverId=\(serverId)&previewToken=\(previewToken)"
             let formatter = ISO8601DateFormatter()
             formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

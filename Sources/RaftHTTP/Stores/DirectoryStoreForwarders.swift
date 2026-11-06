@@ -165,8 +165,6 @@ extension EmailLoginDirectory {
     var threadFollows: [String: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String)] { get { messagesAndThreadsStore.threadFollows } set { messagesAndThreadsStore.threadFollows = newValue } }
     var threadUnfollows: [String: ThreadUnfollowRecord] { get { messagesAndThreadsStore.threadUnfollows } set { messagesAndThreadsStore.threadUnfollows = newValue } }
     var threadFollowStarts: [String: Date] { get { messagesAndThreadsStore.threadFollowStarts } set { messagesAndThreadsStore.threadFollowStarts = newValue } }
-    var threadFollowerRemovals: [String: (serverId: String, threadChannelId: String, agentId: String)] { get { messagesAndThreadsStore.threadFollowerRemovals } set { messagesAndThreadsStore.threadFollowerRemovals = newValue } }
-    var staleThreadFollowerUndoTokens: Set<String> { get { messagesAndThreadsStore.staleThreadFollowerUndoTokens } set { messagesAndThreadsStore.staleThreadFollowerUndoTokens = newValue } }
     var channelReadVersions: [String: Int] { get { messagesAndThreadsStore.channelReadVersions } set { messagesAndThreadsStore.channelReadVersions = newValue } }
     var agentChannelReadCursors: [String: (seq: Int, version: Int)] { get { messagesAndThreadsStore.agentChannelReadCursors } set { messagesAndThreadsStore.agentChannelReadCursors = newValue } }
     var attestedSendEventRecords: [AttestedSendEventRecord] { get { messagesAndThreadsStore.attestedSendEventRecords } set { messagesAndThreadsStore.attestedSendEventRecords = newValue } }
