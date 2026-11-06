@@ -2218,3 +2218,9 @@ RFC 074 personal assistant：
 - Files 使用原 read projections，MCP catalog 复用宽 capability refusal；MCP OAuth 的 optional identity 保原 success tuple 与四种失败 nil，不以宽 predicate 代替严格 resolver。System append 仍用原 true metadata mirror 和同一 Messages allocator/ledger 事务。
 - Marketplace reference 仍先 resolve local/storage pair，失败直接 nil，成功后才 prepare。Receipt renderer 仍只接受 object，按同 LegacySortedJSON 排序，非 object/渲染失败均为 {}；生产仍用同 Cards 幂等 port，fixture 默认 disabled/custom port/clock/IDs/append 不变。两个旧 {} literal 的逐文件预算由 Root 迁到 renderer，总候选数保持169，未放宽扫描规则。
 - JWT_SECRET 的 nonEmpty 分支、执行顺序和 owner setter 相同，只经 OAuthFlows 的命名配置入口。公开 install/card/legacy-scope、reaction/delivery 字节及幂等 replay/conflict/并发验收保持；显式启用真实两进程 startup 是补充接线证据，未声称新增 secret rotation E2E。
+
+### Feedback 的 live 配置与 attribution
+
+- Transport 的 multi-app direct flags 保原 key、nil client facts 和 kill/conversation 判定；未 verified session 不新增 OAuthFlows HTTP flag gate。Submission attribution 保 UUID→profile→member→nonemptySlug→account fallback 的原序。
+- Config 仍按 env→conversation→同一 FeedbackStore snapshot 取值，configured OR URL-key-exists 公式不变；warning 每次复制当前 sink、锁外 invoke，缺席才返回 false，调用后 true，保持原 fallback print。默认 now/UUID 继续延迟执行，不在构造时读配置或生成值。
+- 真实 HTTP multipart/provider、动态 attribution/敏感信息 scrub、同一预构造 submission 后配 provider/sink、warning 自清重入再安装影响后续 provider 的公开输出通过。首轮 web→android 更正属于旧 legacy-web 契约下的验收场景纠正，未作为业务 bug 修复或伪造网络红→绿。

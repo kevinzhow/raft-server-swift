@@ -16,25 +16,7 @@ extension EmailLoginDirectory {
     var feedbackTransport: FeedbackService {
         FeedbackService(
             store: feedbackStore,
-            dependencies: FeedbackService.Dependencies(
-                conversationSessionEnabled: { [authProfileStore] in
-                    authProfileStore.handsConversationSessionEnabled
-                },
-                multiAppEnabled: { [self] userId in
-                    evaluateFeatureFlagKey(
-                        key: FeedbackService.productFeedbackMultiAppFlag,
-                        userId: userId,
-                        serverId: nil,
-                        platform: nil,
-                        client: FeatureFlagClientFacts(os: nil, buildNumber: nil, buildType: nil)
-                    ).enabled
-                },
-                deliverWarning: { [authProfileStore] message in
-                    guard let sink = authProfileStore.handsFeedbackWarningSink else { return false }
-                    sink(message)
-                    return true
-                }
-            )
+            dependencies: FeedbackService.Dependencies(profiles: authProfileStore, flags: agentsRuntimeStore)
         )
     }
 

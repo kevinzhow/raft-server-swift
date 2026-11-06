@@ -385,3 +385,52 @@ private final class DataTaskBox: Sendable {
         set { storage.withLock { $0 = newValue } }
     }
 }
+
+// MARK: - Explicit domain assembly
+
+extension FeedbackService.Dependencies {
+    init(
+        profiles: AuthProfileStore,
+        flags: AgentsRuntimeStore,
+        processEnvironment: @escaping @Sendable () -> [String: String] = { ProcessInfo.processInfo.environment },
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
+        self.init(
+            conversationSessionEnabled: { profiles.handsConversationSessionEnabled },
+            multiAppEnabled: { FeedbackService.multiAppEnabled(userId: $0, flags: flags) },
+            deliverWarning: { message in
+                guard let sink = profiles.handsFeedbackWarningSink else { return false }
+                sink(message)
+                return true
+            },
+            processEnvironment: processEnvironment,
+            now: now
+        )
+    }
+}
+
+extension FeedbackService {
+    /// Feedback uses the direct flag decision, including for an unverified account.
+    static func multiAppEnabled(userId: String, flags: AgentsRuntimeStore) -> Bool {
+        flags.evaluateFeatureFlag(
+            key: productFeedbackMultiAppFlag,
+            userId: userId,
+            serverId: nil,
+            platform: nil,
+            client: FeatureFlagClientFacts(os: nil, buildNumber: nil, buildType: nil)
+        ).enabled
+    }
+
+    /// Resolve environment, conversation setting, then the atomic feedback rows.
+    func submissionRelayConfiguration() -> ProductFeedbackRelayConfiguration {
+        let snapshot = store.handsFeedbackSubmissionConfiguration(
+            base: dependencies.processEnvironment(),
+            conversationSessionEnabled: dependencies.conversationSessionEnabled()
+        )
+        return ProductFeedbackRelayConfiguration(
+            environment: snapshot.environment,
+            appsJSON: snapshot.appsJSON,
+            configured: snapshot.configured || snapshot.environment["HANDS_FEEDBACK_BASE_URL"] != nil
+        )
+    }
+}

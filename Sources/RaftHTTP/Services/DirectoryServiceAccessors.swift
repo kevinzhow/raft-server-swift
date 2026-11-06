@@ -517,72 +517,14 @@ extension EmailLoginDirectory {
     /// `FeedbackService`, so they enter as closures; the account row, the
     /// feature-flag decision and product-event rows come from their stores.
     public var productFeedbackSubmissions: ProductFeedbackSubmissionService {
-        let feedback = feedbackTransport
-        return ProductFeedbackSubmissionService(
+        ProductFeedbackSubmissionService(
             dependencies: ProductFeedbackSubmissionDependencies(
-                account: { [authProfileStore] userId in
-                    authProfileStore.account(userId: userId)
-                },
-                userId: { [self] authorization in
-                    sessionUserId(authorization: authorization)
-                },
-                resolveAttribution: { [self] serverId, userId in
-                    guard ServerScope.isUUID(serverId),
-                          let profile = oauth.serverProfile(id: serverId),
-                          oauth.memberRole(serverId: serverId, userId: userId) != nil,
-                          !profile.slug.isEmpty
-                    else { return nil }
-                    return ProductFeedbackReporterAttribution(
-                        serverSlug: profile.slug,
-                        handle: authProfileStore.account(userId: userId)?.name ?? ""
-                    )
-                },
-                multiAppEnabled: { [self] userId in
-                    evaluateFeatureFlagKey(
-                        key: FeedbackService.productFeedbackMultiAppFlag,
-                        userId: userId,
-                        serverId: nil,
-                        platform: nil,
-                        client: FeatureFlagClientFacts(os: nil, buildNumber: nil, buildType: nil)
-                    ).enabled
-                },
-                configuration: { [self, feedbackStore] in
-                    let snapshot = feedbackStore.handsFeedbackSubmissionConfiguration(
-                        base: ProcessInfo.processInfo.environment,
-                        conversationSessionEnabled: authProfileStore.handsConversationSessionEnabled
-                    )
-                    return ProductFeedbackRelayConfiguration(
-                        environment: snapshot.environment,
-                        appsJSON: snapshot.appsJSON,
-                        configured: snapshot.configured
-                            || snapshot.environment["HANDS_FEEDBACK_BASE_URL"] != nil
-                    )
-                },
-                multiRouteEnvironment: { source, appsJSON, environment in
-                    try FeedbackRouting.feedbackMultiRouteEnvironment(
-                        source: source,
-                        appsJSON: appsJSON,
-                        environment: environment
-                    )
-                },
-                legacyRouteEnvironment: { environment in
-                    FeedbackRouting.feedbackLegacyRouteEnvironment(environment)
-                },
-                ensureRouteBinding: { userId, environment in
-                    try await feedback.ensureRouteBindingAsync(userId: userId, environment: environment)
-                },
-                send: { request in
-                    await feedback.sendAsync(request)
-                },
-                warn: { message in
-                    feedback.warn(message)
-                },
-                appendProductEvent: { [productEventStore] event in
-                    productEventStore.append(event)
-                },
-                serverAnalyticsAllowed: { [self] serverId in
-                    oauth.serverAnalyticsAllowed(id: serverId)
-                }
+                auth: authCore,
+                profiles: authProfileStore,
+                flags: agentsRuntimeStore,
+                oauth: oauth,
+                transport: feedbackTransport,
+                events: productEventStore
             )
         )
     }

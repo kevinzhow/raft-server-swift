@@ -530,3 +530,47 @@ struct ProductFeedbackSubmissionDependencies: Sendable {
         self.makeUUID = makeUUID
     }
 }
+
+extension ProductFeedbackSubmissionDependencies {
+    init(
+        auth: AuthCoreService,
+        profiles: AuthProfileStore,
+        flags: AgentsRuntimeStore,
+        oauth: OAuthLedger,
+        transport: FeedbackService,
+        events: ProductEventStore,
+        now: @escaping @Sendable () -> Date = { Date() },
+        makeUUID: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
+    ) {
+        self.init(
+            account: { profiles.account(userId: $0) },
+            userId: { try? auth.authenticate($0) },
+            resolveAttribution: { serverId, userId in
+                guard ServerScope.isUUID(serverId),
+                      let profile = oauth.serverProfile(id: serverId),
+                      oauth.memberRole(serverId: serverId, userId: userId) != nil,
+                      !profile.slug.isEmpty
+                else { return nil }
+                return ProductFeedbackReporterAttribution(
+                    serverSlug: profile.slug,
+                    handle: profiles.account(userId: userId)?.name ?? ""
+                )
+            },
+            multiAppEnabled: { FeedbackService.multiAppEnabled(userId: $0, flags: flags) },
+            configuration: { transport.submissionRelayConfiguration() },
+            multiRouteEnvironment: { source, appsJSON, environment in
+                try FeedbackRouting.feedbackMultiRouteEnvironment(
+                    source: source, appsJSON: appsJSON, environment: environment
+                )
+            },
+            legacyRouteEnvironment: { FeedbackRouting.feedbackLegacyRouteEnvironment($0) },
+            ensureRouteBinding: { try await transport.ensureRouteBindingAsync(userId: $0, environment: $1) },
+            send: { await transport.sendAsync($0) },
+            warn: { transport.warn($0) },
+            appendProductEvent: { events.append($0) },
+            serverAnalyticsAllowed: { oauth.serverAnalyticsAllowed(id: $0) },
+            now: now,
+            makeUUID: makeUUID
+        )
+    }
+}
