@@ -25,8 +25,8 @@ import VaporTesting
     accounts.oauth.addMember(serverId: serverId, userId: bystanderId, role: "member")
     let agentX = accounts.oauth.createAgent(serverId: serverId, name: "r-agent-x", creatorUserId: ownerId)
     let agentY = accounts.oauth.createAgent(serverId: serverId, name: "r-agent-y", creatorUserId: creatorId)
-    accounts.addReminder(serverId: serverId, ownerAgentId: agentX, title: "x-standup", fireAt: Date().addingTimeInterval(60))
-    accounts.addReminder(serverId: serverId, ownerAgentId: agentY, title: "y-review", fireAt: Date().addingTimeInterval(120))
+    accounts.addReminderForTesting(serverId: serverId, ownerAgentId: agentX, title: "x-standup", fireAt: Date().addingTimeInterval(60))
+    accounts.addReminderForTesting(serverId: serverId, ownerAgentId: agentY, title: "y-review", fireAt: Date().addingTimeInterval(120))
 
     try await withApp { app in
         configure(app, services: FallbackServices(

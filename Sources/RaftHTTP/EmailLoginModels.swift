@@ -180,11 +180,6 @@ struct TaskRecord {
         var resourceReceiptJSON: String? = nil
     }
 
-enum ManagedMCPControlAuth {
-        case ok(userId: String, role: String)
-        case refused(HTTPReply)
-    }
-
 struct AgentInboxRow {
         var target: String
         var kind: String

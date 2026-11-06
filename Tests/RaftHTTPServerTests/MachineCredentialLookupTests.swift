@@ -19,9 +19,9 @@ import VaporTesting
     #expect(machineKey.hasPrefix("sk_machine_"))
     #expect(machineKey.count == "sk_machine_".count + 64)
 
-    #expect(accounts.machineCredential(apiKey: machineKey)?.machineId == machineId)
-    #expect(accounts.machineCredential(apiKey: machineKey)?.serverId == serverId)
-    #expect(accounts.machineCredential(apiKey: "sk_machine_unknown") == nil)
+    #expect(accounts.runtimeFormsAndProbes.machineCredential(apiKey: machineKey)?.machineId == machineId)
+    #expect(accounts.runtimeFormsAndProbes.machineCredential(apiKey: machineKey)?.serverId == serverId)
+    #expect(accounts.runtimeFormsAndProbes.machineCredential(apiKey: "sk_machine_unknown") == nil)
     #expect(accounts.runtimeFormsAndProbes.machineCredential(id: machineId)?.serverId == serverId)
     #expect(accounts.runtimeFormsAndProbes.machineCredential(id: "missing-machine") == nil)
     #expect(accounts.runtimeFormsAndProbes.serverExists(id: serverId))

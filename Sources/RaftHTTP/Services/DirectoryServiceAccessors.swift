@@ -323,4 +323,76 @@ extension EmailLoginDirectory {
             )
         )
     }
+
+    /// App reminders (owner list, internal machine routes, agent-api routes)
+    /// and the saved-message write. The reminder ledger, machine keys and
+    /// agent credentials come from their stores; the session lookup and the
+    /// agent capability decision belong to other domains and enter as closures.
+    public var managedMCPAgentCatalog: ManagedMCPAgentCatalogService {
+        ManagedMCPAgentCatalogService(
+            reminders: tasksAndRemindersStore,
+            machines: machinesAndComputersStore,
+            agents: agentsRuntimeStore,
+            oauth: oauth,
+            dependencies: ManagedMCPAgentCatalogDependencies(
+                sessionUserId: { [self] authorization in
+                    sessionUserId(authorization: authorization)
+                },
+                deniedCapability: { [feedbackLocators] authorization, capability in
+                    switch feedbackLocators.capabilityDecision(authorization: authorization, capability: capability) {
+                    case .allowed: nil
+                    case .denied(let denied): denied
+                    }
+                }
+            )
+        )
+    }
+
+    /// The managed MCP control plane (`/api/mcp/*`). The server rows live in
+    /// `ManagedMCPAndCardsStore`; the session lookup and the public origin come
+    /// from the profile domain as closures.
+    public var managedMCPControlPlane: ManagedMCPControlPlaneService {
+        ManagedMCPControlPlaneService(
+            servers: managedMCPAndCardsStore,
+            oauth: oauth,
+            dependencies: ManagedMCPControlPlaneDependencies(
+                sessionUserId: { [self] authorization in
+                    sessionUserId(authorization: authorization)
+                },
+                serverURL: { [authProfileStore] in authProfileStore.serverURL }
+            )
+        )
+    }
+
+    /// The agent history read and the machine channel join/leave. The read
+    /// cursors live in the message store; the thread lookups belong to the
+    /// action-card helpers and the read-update hook is the notifications
+    /// store's, so they enter as closures.
+    public var agentHistory: AgentHistoryService {
+        AgentHistoryService(
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            machines: machinesAndComputersStore,
+            agents: agentsRuntimeStore,
+            accounts: authProfileStore,
+            feedback: feedbackStore,
+            oauth: oauth,
+            actionCardPrepare: actionCardPrepare,
+            channelMembership: channelMembership,
+            dependencies: AgentHistoryDependencies(
+                threadByAnchor: { [self] parentId, anchorMessageId in
+                    agentHistoryThread(parentId: parentId, anchorMessageId: anchorMessageId)
+                },
+                threadById: { [self] parentId, suffix in
+                    agentHistoryThreadById(parentId: parentId, suffix: suffix)
+                },
+                threadByAnchorPrefix: { [self] parentId, suffix in
+                    agentHistoryThreadByAnchorPrefix(parentId: parentId, suffix: suffix)
+                },
+                agentReadUpdated: { [notificationsStore] serverId, channelId, agentId, seq in
+                    notificationsStore.onAgentReadUpdated?(serverId, channelId, agentId, seq)
+                }
+            )
+        )
+    }
 }

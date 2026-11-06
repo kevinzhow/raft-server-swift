@@ -19,12 +19,14 @@ public struct RemindersFeature: RouteCollection, Sendable {
     public func register(routes: any RoutesBuilder) {
         let reminders = routes.grouped("api", "reminders")
 
-        reminders.get { request -> Response in
-            routeResponse(services.emailAccounts.listReminders(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                ownerAgentId: desktopQuery(request.url.query, "ownerAgentId")
-            ))
+        reminders.get { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.listReminders(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    ownerAgentId: desktopQuery(request.url.query, "ownerAgentId")
+                )
+            }
         }
     }
 }

@@ -300,7 +300,7 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         defer { lock.unlock() }
         guard let existing = storage.agentApiIdempotencyKeys.first(where: {
             $0.agentId == agentId && $0.route == route && $0.key == key
-        }), now.timeIntervalSince(existing.createdAt) < EmailLoginDirectory.agentApiIdempotencyTTL
+        }), now.timeIntervalSince(existing.createdAt) < Self.agentApiIdempotencyTTL
         else {
             return .none
         }
@@ -490,5 +490,90 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         sendCommitLock.lock()
         defer { sendCommitLock.unlock() }
         return try body()
+    }
+}
+
+// MARK: - Managed MCP control plane (ManagedMCPControlPlaneService)
+
+extension ManagedMCPAndCardsStore {
+    /// How long an agent-api idempotency key keeps replaying its first reply.
+    static let agentApiIdempotencyTTL: TimeInterval = 24 * 60 * 60
+
+    func appendManagedMCPServer(_ record: ManagedMCPServerRecord) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.managedMCPServers.append(record)
+    }
+
+    /// Applies `mutate` to one server row inside the critical section and
+    /// returns the stored row, or nil when the row is absent. A throw from
+    /// `mutate` keeps the edits it already made (the legacy handler wrote each
+    /// member in place and refused part-way) and then propagates.
+    func updateManagedMCPServer(
+        serverId: String,
+        id: String,
+        _ mutate: (inout ManagedMCPServerRecord) throws -> Void
+    ) rethrows -> ManagedMCPServerRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = storage.managedMCPServers.firstIndex(where: { $0.id == id && $0.serverId == serverId }) else {
+            return nil
+        }
+        var record = storage.managedMCPServers[index]
+        defer { storage.managedMCPServers[index] = record }
+        try mutate(&record)
+        return record
+    }
+
+    /// Removes one server row; false when no row matched.
+    func removeManagedMCPServer(serverId: String, id: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let before = storage.managedMCPServers.count
+        storage.managedMCPServers.removeAll { $0.id == id && $0.serverId == serverId }
+        return storage.managedMCPServers.count != before
+    }
+
+    /// Result of replacing an agent's assignment set.
+    enum ManagedMCPAssignmentWrite: Sendable, Equatable {
+        case stored
+        case unknownServer
+    }
+
+    /// Replaces the whole assignment set of one agent. Every entry must name a
+    /// server of `serverId`; the first unknown entry refuses the write and
+    /// leaves the stored set untouched.
+    func replaceManagedMCPAssignments(
+        serverId: String,
+        agentId: String,
+        entries: [(mcpServerId: String?, enabled: Bool, allowedTools: [String]?)]
+    ) -> ManagedMCPAssignmentWrite {
+        lock.lock()
+        defer { lock.unlock() }
+        let serverIds = Set(storage.managedMCPServers.filter { $0.serverId == serverId }.map(\.id))
+        var stored: [String: (enabled: Bool, allowedTools: [String]?)] = [:]
+        for entry in entries {
+            guard let id = entry.mcpServerId, serverIds.contains(id) else { return .unknownServer }
+            stored[id] = (entry.enabled, entry.allowedTools)
+        }
+        storage.managedMCPAssignments[agentId] = stored
+        return .stored
+    }
+
+    /// Sets one assignment of one agent; unknown when the server row is absent.
+    func setManagedMCPAssignment(
+        serverId: String,
+        agentId: String,
+        mcpServerId: String,
+        enabled: Bool,
+        allowedTools: [String]?
+    ) -> ManagedMCPAssignmentWrite {
+        lock.lock()
+        defer { lock.unlock() }
+        guard storage.managedMCPServers.contains(where: { $0.id == mcpServerId && $0.serverId == serverId }) else {
+            return .unknownServer
+        }
+        storage.managedMCPAssignments[agentId, default: [:]][mcpServerId] = (enabled, allowedTools)
+        return .stored
     }
 }

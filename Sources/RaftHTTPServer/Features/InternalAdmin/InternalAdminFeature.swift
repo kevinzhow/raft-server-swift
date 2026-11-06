@@ -50,55 +50,72 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
         let computer = app.grouped("internal", "computer")
         let machine = app.grouped("internal", "machine")
 
-        agent.get("reminders") { request -> Response in
-            routeResponse(services.emailAccounts.legacyReminderList(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                status: desktopQuery(request.url.query, "status")
-            ))
+        agent.get("reminders") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.legacyReminderList(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    status: desktopQuery(request.url.query, "status")
+                )
+            }
         }
         agent.post("reminders") { request async throws -> Response in
             let agentId = request.parameters.get("agentId") ?? ""
-            let reply = services.emailAccounts.legacyReminderCreate(
-                authorization: request.headers[.authorization],
-                agentId: agentId,
-                body: try await request.bodyText(default: "{}")
-            )
-            if let reminderId = reminderIdFromReply(reply) {
-                publishReminderEvent(reply, event: "reminder:scheduled", reminderId: reminderId, agentId: agentId, services: services)
+            let body = await jsonRequestBody(ReminderCreateRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                let created = try services.emailAccounts.managedMCPAgentCatalog.legacyReminderCreate(
+                    authorization: request.headers[.authorization],
+                    agentId: agentId,
+                    body: body
+                )
+                publishReminderEvent(
+                    event: "reminder:scheduled", reminderId: created.reminder.id, agentId: agentId,
+                    services: services
+                )
+                return created
             }
-            return routeResponse(reply)
         }
         agent.delete("reminders", ":reminderId") { request async throws -> Response in
-            routeResponse(services.emailAccounts.legacyReminderCancel(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                reminderId: request.parameters.get("reminderId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(ReminderCancelRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.legacyReminderCancel(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    reminderId: request.parameters.get("reminderId") ?? "",
+                    body: body
+                )
+            }
         }
         agent.post("reminders", ":reminderId", "snooze") { request async throws -> Response in
-            routeResponse(services.emailAccounts.legacyReminderSnooze(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                reminderId: request.parameters.get("reminderId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(ReminderSnoozeRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.legacyReminderSnooze(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    reminderId: request.parameters.get("reminderId") ?? "",
+                    body: body
+                )
+            }
         }
         agent.patch("reminders", ":reminderId") { request async throws -> Response in
-            routeResponse(services.emailAccounts.legacyReminderUpdate(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                reminderId: request.parameters.get("reminderId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(ReminderUpdateRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.legacyReminderUpdate(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    reminderId: request.parameters.get("reminderId") ?? "",
+                    body: body
+                )
+            }
         }
-        agent.get("reminders", ":reminderId", "log") { request -> Response in
-            routeResponse(services.emailAccounts.legacyReminderLog(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                reminderId: request.parameters.get("reminderId") ?? ""
-            ))
+        agent.get("reminders", ":reminderId", "log") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.legacyReminderLog(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    reminderId: request.parameters.get("reminderId") ?? ""
+                )
+            }
         }
         agent.post("send") { request async throws -> Response in
             let body = await jsonRequestBody(AgentSendRequest.self, request)
@@ -193,21 +210,25 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.post("channels", ":channelId", "join") { request -> Response in
-            routeResponse(services.emailAccounts.agentChannelMembershipFromMachine(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                channelId: request.parameters.get("channelId") ?? "",
-                join: true
-            ))
+        agent.post("channels", ":channelId", "join") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentHistory.agentChannelMembershipFromMachine(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    channelId: request.parameters.get("channelId") ?? "",
+                    join: true
+                )
+            }
         }
-        agent.post("channels", ":channelId", "leave") { request -> Response in
-            routeResponse(services.emailAccounts.agentChannelMembershipFromMachine(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                channelId: request.parameters.get("channelId") ?? "",
-                join: false
-            ))
+        agent.post("channels", ":channelId", "leave") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentHistory.agentChannelMembershipFromMachine(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    channelId: request.parameters.get("channelId") ?? "",
+                    join: false
+                )
+            }
         }
         agent.get("channel-members") { request async throws -> Response in
             try await respond {
@@ -219,17 +240,19 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.get("history") { request -> Response in
-            routeResponse(services.emailAccounts.agentHistory(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId"),
-                channelRef: desktopQuery(request.url.query, "channel"),
-                before: desktopQuery(request.url.query, "before"),
-                after: desktopQuery(request.url.query, "after"),
-                around: desktopQuery(request.url.query, "around"),
-                limit: desktopQuery(request.url.query, "limit"),
-                consume: desktopQuery(request.url.query, "consume")
-            ))
+        agent.get("history") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentHistory.history(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId"),
+                    channelRef: desktopQuery(request.url.query, "channel"),
+                    before: desktopQuery(request.url.query, "before"),
+                    after: desktopQuery(request.url.query, "after"),
+                    around: desktopQuery(request.url.query, "around"),
+                    limit: desktopQuery(request.url.query, "limit"),
+                    consume: desktopQuery(request.url.query, "consume")
+                )
+            }
         }
         agent.post("tasks") { request async throws -> Response in
             // The published handler accepted a raw JSON body, so the typed
@@ -583,23 +606,15 @@ private func jsonString(_ value: String) -> String {
     return String(text.dropFirst().dropLast())
 }
 
-private func reminderIdFromReply(_ reply: HTTPReply) -> String? {
-    guard reply.status == 200, let data = reply.body.data(using: .utf8),
-          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let reminder = object["reminder"] as? [String: Any]
-    else { return nil }
-    return reminder["reminderId"] as? String ?? reminder["id"] as? String
-}
-
 private func publishReminderEvent(
-    _ reply: HTTPReply, event: String, reminderId: String, agentId: String, services: FallbackServices
+    event: String, reminderId: String, agentId: String, services: FallbackServices
 ) {
-    guard reply.status == 200, let hub = services.realtime,
+    guard let hub = services.realtime,
           let agent = services.emailAccounts.oauth.agentRuntimeInfo(id: agentId)
     else { return }
     var recipients: Set<String> = []
     if let creator = agent.creatorUserId { recipients.insert(creator) }
-    for member in services.emailAccounts.serverMemberRoles(serverId: agent.serverId)
+    for member in services.emailAccounts.oauth.memberRoles(serverId: agent.serverId)
     where member.role == "owner" || member.role == "admin" {
         recipients.insert(member.userId)
     }

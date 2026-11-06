@@ -545,12 +545,6 @@ extension EmailLoginDirectory {
         return Self.json(409, ChannelMembershipError.channelArchived.publishedErrorBody.render())
     }
 
-    func joinPublicChannelForAgent(agentId: String, serverId: String, channelId: String) -> HTTPReply {
-        legacyMembershipReply {
-            try channelMembership.joinPublicChannel(agentId: agentId, serverId: serverId, channelId: channelId)
-        }
-    }
-
     func leaveChannelForAgent(agentId: String, serverId: String, channelId: String) -> HTTPReply {
         legacyMembershipReply {
             try channelMembership.leaveChannel(agentId: agentId, serverId: serverId, channelId: channelId)
@@ -581,6 +575,89 @@ extension EmailLoginDirectory {
         scopes: [String]
     ) -> (agent: OAuthLedger.AgentRuntimeInfo, role: String?)? {
         agentChannels.writerAndRole(authorization: authorization, legacyAgentId: legacyAgentId, scopes: scopes)
+    }
+
+    // MARK: - Task list projections (legacy)
+
+    // Shared with the unmigrated task listing; moved here unchanged from the
+    // managed-MCP catalog service file.
+
+    func orderedTasks(
+        serverId: String,
+        userId: String,
+        status: String?
+    ) -> [(task: TaskRecord, channelName: String, channelType: String)] {
+        let visible = oauth.channelsForServer(serverId: serverId, userId: userId).filter {
+            $0.joined && ($0.type == "channel" || $0.type == "joint")
+                && oauth.channelArchivedAt(id: $0.id) == nil
+        }
+        let names = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, $0.name) })
+        let types = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, $0.type) })
+        lock.lock()
+        let rows = taskRecords.filter {
+            names[$0.channelId] != nil && (status == nil || $0.status == status)
+        }
+        lock.unlock()
+        return rows
+            .map { (task: $0, channelName: names[$0.channelId] ?? "", channelType: types[$0.channelId] ?? "channel") }
+            .sorted {
+                if $0.channelName != $1.channelName { return $0.channelName < $1.channelName }
+                if $0.task.taskNumber != $1.task.taskNumber { return $0.task.taskNumber < $1.task.taskNumber }
+                return $0.task.id < $1.task.id
+            }
+    }
+
+    func legacyTasksBody(serverId: String, userId: String, status: String?) -> String {
+        let ordered = orderedTasks(serverId: serverId, userId: userId, status: status)
+        let items = ordered.map { entry in
+            fullTaskJSON(entry.task, channelName: entry.channelName, channelType: entry.channelType)
+        }.joined(separator: ",")
+        return "{\"tasks\":[\("\(items)")]}"
+    }
+
+    func fullTaskJSON(_ task: TaskRecord, channelName: String, channelType: String) -> String {
+        let description = task.description.map { jsonString($0) } ?? "null"
+        return "{\"id\":\(jsonString(task.id)),\"channelId\":\(jsonString(task.channelId)),\"channelName\":\(jsonString(channelName)),\"channelType\":\(jsonString(channelType)),\"title\":\(jsonString(task.title)),\"description\":\(description),\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber),\"messageId\":\(jsonString(task.messageId)),\"revision\":\(task.revision)}"
+    }
+
+    func summaryTaskJSON(_ task: TaskRecord, channelName: String, channelType: String) -> String {
+        let descriptionBytes = task.description.map { Data($0.utf8).count } ?? 0
+        let hasDescription = task.description != nil && !(task.description ?? "").isEmpty
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let claimed = task.claimedAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+        let completed = task.completedAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+        let updated = task.updatedAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
+        let createdAt = jsonString(formatter.string(from: task.createdAt))
+        let assignee = task.assigneeId.map { jsonString($0) } ?? "null"
+        let assigneeType = task.assigneeType.map { jsonString($0) } ?? "null"
+        var claimedByName = "null"
+        if let assigneeId = task.assigneeId {
+            lock.lock()
+            if task.assigneeType == "agent", let agent = oauth.agentRuntimeInfo(id: assigneeId) {
+                claimedByName = jsonString(agent.name)
+            } else if let name = accounts.values.first(where: { $0.id == assigneeId })?.name {
+                claimedByName = jsonString(name)
+            }
+            lock.unlock()
+        }
+        var createdById = "null"
+        var createdByName = "null"
+        var createdByType = "null"
+        if let creatorId = task.creatorId {
+            lock.lock()
+            if let agent = oauth.agentRuntimeInfo(id: creatorId) {
+                createdById = jsonString(creatorId)
+                createdByName = jsonString(agent.name)
+                createdByType = jsonString("agent")
+            } else if let name = accounts.values.first(where: { $0.id == creatorId })?.name {
+                createdById = jsonString(creatorId)
+                createdByName = jsonString(name)
+                createdByType = jsonString("user")
+            }
+            lock.unlock()
+        }
+        return "{\"channelId\":\(jsonString(task.channelId)),\"channelName\":\(jsonString(channelName)),\"channelType\":\(jsonString(channelType)),\"claimedAt\":\(claimed),\"claimedById\":\(assignee),\"claimedByName\":\(claimedByName),\"claimedByType\":\(assigneeType),\"completedAt\":\(completed),\"createdAt\":\(createdAt),\"createdById\":\(createdById),\"createdByName\":\(createdByName),\"createdByType\":\(createdByType),\"descriptionBytes\":\(descriptionBytes),\"hasDescription\":\(hasDescription),\"id\":\(jsonString(task.id)),\"isLegacy\":false,\"messageId\":\(jsonString(task.messageId)),\"readOnlyReason\":null,\"revision\":\(task.revision),\"source\":\"tasks\",\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber),\"title\":\(jsonString(task.title)),\"updatedAt\":\(updated)}"
     }
 }
 

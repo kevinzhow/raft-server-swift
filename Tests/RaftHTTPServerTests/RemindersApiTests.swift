@@ -54,8 +54,8 @@ private func makeReminderFixture(suffix: String) -> ReminderFixture {
     }
     let agentX = accounts.oauth.createAgent(serverId: serverId, name: "r-agent-x-\(suffix)")
     let agentY = accounts.oauth.createAgent(serverId: serverId, name: "r-agent-y-\(suffix)", creatorUserId: creatorId)
-    accounts.addReminder(serverId: serverId, ownerAgentId: agentX, title: "x-standup", fireAt: Date().addingTimeInterval(60_000))
-    accounts.addReminder(serverId: serverId, ownerAgentId: agentY, title: "y-review", fireAt: Date().addingTimeInterval(60_000))
+    accounts.addReminderForTesting(serverId: serverId, ownerAgentId: agentX, title: "x-standup", fireAt: Date().addingTimeInterval(60_000))
+    accounts.addReminderForTesting(serverId: serverId, ownerAgentId: agentY, title: "y-review", fireAt: Date().addingTimeInterval(60_000))
     return ReminderFixture(
         accounts: accounts,
         serverId: serverId,

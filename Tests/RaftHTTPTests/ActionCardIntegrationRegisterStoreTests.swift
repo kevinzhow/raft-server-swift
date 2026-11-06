@@ -94,14 +94,14 @@ private final class LockedCounter: @unchecked Sendable {
         route: "actionPrepare",
         key: "k1",
         fingerprint: "fp-1",
-        now: now.addingTimeInterval(EmailLoginDirectory.agentApiIdempotencyTTL - 1)
+        now: now.addingTimeInterval(ManagedMCPAndCardsStore.agentApiIdempotencyTTL - 1)
     ) == .replay(status: 201, body: "{}"))
     #expect(store.agentApiIdempotencyLookup(
         agentId: "agent-a",
         route: "actionPrepare",
         key: "k1",
         fingerprint: "fp-1",
-        now: now.addingTimeInterval(EmailLoginDirectory.agentApiIdempotencyTTL + 1)
+        now: now.addingTimeInterval(ManagedMCPAndCardsStore.agentApiIdempotencyTTL + 1)
     ) == .none)
 }
 
