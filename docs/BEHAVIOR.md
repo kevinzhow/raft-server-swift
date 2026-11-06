@@ -2241,3 +2241,9 @@ RFC 074 personal assistant：
 
 - ExperimentalSurfaceGate 只持 DirectoryRuntimePolicy，与旧 Root.authCore 指向同一 AuthProfile owner；构造不读 State/env。每请求仍先读当前 override，nil 才读 environment、trim/lowercase 后与 true 比较，注册后开关 true→false 生效。
 - 两个 internal path prefix、gate 相对 body/auth 的执行位置、next await、503 code/error/retry_after 的成员顺序及 Content-Type/Sec-Slock-Api-Version 完全保持。公开路径仍不受该开关影响，完整 middleware 字节与动态开关验收继续通过。
+
+### Auth Feature 的七个领域能力
+
+- AuthFeature 单一构造器只持 Core、Identities、OAuthFlows、Verification、Profile、JoinLinksAndInvites、ManagedMCPLifecycle 和原可选 PublicServerDirectory，删除 FallbackServices 构造入口。原 configure 传同一 Root 的实际七服务，不混入第二套 owners。
+- 38 条注册的顺序、路径、方法和 handler 的 decode/校验/auth/error/header 时序保持，除 receiver 外操作正文不变。提前构造只保实际 owner 与延迟 provider/clock/token 函数，不冻结账户状态或配置；非 verified 会话的原可接受面保持。
+- accept-invite 仍优先 PublicDirectory，只有 DomainError 404 回原 join-link Service；成功与非404拒绝直接返回。真实 HTTP 同时覆盖三支；Root fallback 的完整成功体仍仅 ok/serverId，不添加 serverName。complete-profile 仍由 ManagedMCPLifecycle 处理，路由表与原 CAS 完成流程继续验收。

@@ -12,10 +12,33 @@ import Vapor
 ///
 /// The prefix is grouped once so every handler reads as the route it serves.
 public struct AuthFeature: RouteCollection, Sendable {
-    public let services: FallbackServices
+    private let core: AuthCoreService
+    private let identities: AuthIdentitiesService
+    private let oauthFlows: OAuthFlowsService
+    private let verification: AuthVerificationService
+    private let profile: AuthProfileService
+    private let invites: JoinLinksAndInvitesService
+    private let managedLifecycle: ManagedMCPLifecycleService
+    private let publicServerDirectory: PublicServerDirectory?
 
-    public init(services: FallbackServices) {
-        self.services = services
+    public init(
+        core: AuthCoreService,
+        identities: AuthIdentitiesService,
+        oauthFlows: OAuthFlowsService,
+        verification: AuthVerificationService,
+        profile: AuthProfileService,
+        invites: JoinLinksAndInvitesService,
+        managedLifecycle: ManagedMCPLifecycleService,
+        publicServerDirectory: PublicServerDirectory? = nil
+    ) {
+        self.core = core
+        self.identities = identities
+        self.oauthFlows = oauthFlows
+        self.verification = verification
+        self.profile = profile
+        self.invites = invites
+        self.managedLifecycle = managedLifecycle
+        self.publicServerDirectory = publicServerDirectory
     }
 
 
@@ -37,9 +60,6 @@ public struct AuthFeature: RouteCollection, Sendable {
         let appLogin = auth.grouped("app-login")
         let appLoginRequest = appLogin.grouped("requests", ":requestId")
         let me = auth.grouped("me")
-        let authCore = services.emailAccounts.authCore
-        let identityService = services.emailAccounts.authIdentities
-        let oauthFlows = services.emailAccounts.oauthFlows
 
         // `verify-email` and `resend-verification` are literal siblings of the
         // `:provider` auth routes, so they mount from the same `api/auth` group.
@@ -47,11 +67,11 @@ public struct AuthFeature: RouteCollection, Sendable {
             // An empty or malformed body falls back to a nil token so the
             // missing-token branch still answers the upstream 400.
             let body = (try? await decodeJSONRequestBody(VerifyEmailRequest.self, request, decoding: .contentOnly)) ?? VerifyEmailRequest()
-            return try await respond { try services.emailAccounts.authVerification.verifyEmail(token: body.token) }
+            return try await respond { try self.verification.verifyEmail(token: body.token) }
         }
         auth.post("resend-verification") { request async throws -> Response in
             return try await respond {
-                try services.emailAccounts.authVerification.resendVerificationEmail(
+                try self.verification.resendVerificationEmail(
                     authorization: request.headers[.authorization]
                 )
             }
@@ -59,7 +79,7 @@ public struct AuthFeature: RouteCollection, Sendable {
 
         auth.get("invite-info") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.joinLinksAndInvites.inviteInfo(
+                try self.invites.inviteInfo(
                     token: desktopQuery(request.url.query, "token")
                 )
             }
@@ -68,23 +88,23 @@ public struct AuthFeature: RouteCollection, Sendable {
         mobileAppleNative.post("start") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(NativeAppleStartRequest.self, request, decoding: .json)) ?? NativeAppleStartRequest()
             return try await respond(status: 201) {
-                try oauthFlows.startNativeApple(body, authorization: request.headers[.authorization])
+                try self.oauthFlows.startNativeApple(body, authorization: request.headers[.authorization])
             }
         }
         mobileAppleNative.post("authorize") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(NativeAppleAuthorizeRequest.self, request, decoding: .json)) ?? NativeAppleAuthorizeRequest()
             return try await respond {
-                try await oauthFlows.authorizeNativeApple(body, authorization: request.headers[.authorization])
+                try await self.oauthFlows.authorizeNativeApple(body, authorization: request.headers[.authorization])
             }
         }
         mobileOAuth.post("start") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(MobileOAuthStartRequest.self, request, decoding: .json)) ?? MobileOAuthStartRequest()
-            return try await respond(status: 201) { try oauthFlows.startMobileOAuth(body) }
+            return try await respond(status: 201) { try self.oauthFlows.startMobileOAuth(body) }
         }
         mobileProvider.post("link", "start") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(MobileOAuthStartRequest.self, request, decoding: .json)) ?? MobileOAuthStartRequest()
             return try await respond(status: 201) {
-                try oauthFlows.startMobileOAuthLink(
+                try self.oauthFlows.startMobileOAuthLink(
                     provider: request.parameters.get("provider") ?? "",
                     body: body,
                     authorization: request.headers[.authorization]
@@ -94,7 +114,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         mobileProvider.post("link", "complete") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(MobileOAuthCompleteRequest.self, request, decoding: .json)) ?? MobileOAuthCompleteRequest()
             return try await respond {
-                try oauthFlows.completeMobileOAuthLink(
+                try self.oauthFlows.completeMobileOAuthLink(
                     provider: request.parameters.get("provider") ?? "",
                     body: body,
                     authorization: request.headers[.authorization]
@@ -103,7 +123,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         }
         provider.get("start") { request async throws -> Response in
             try await respond(status: { $0.status }, headers: { $0.headers }) {
-                try oauthFlows.startWebOAuth(
+                try self.oauthFlows.startWebOAuth(
                     provider: request.parameters.get("provider") ?? "",
                     returnTo: desktopQuery(request.url.query, "returnTo"),
                     linkOnConflict: desktopQuery(request.url.query, "linkOnConflict") == "1"
@@ -113,7 +133,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         provider.post("link", "start") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(WebOAuthLinkStartRequest.self, request, decoding: .json)) ?? WebOAuthLinkStartRequest()
             return try await respond(headers: { $0.headers }) {
-                try oauthFlows.startWebOAuthLink(
+                try self.oauthFlows.startWebOAuthLink(
                     provider: request.parameters.get("provider") ?? "",
                     body: body,
                     authorization: request.headers[.authorization]
@@ -125,7 +145,7 @@ public struct AuthFeature: RouteCollection, Sendable {
             // service parses the raw text with the legacy field parser.
             let body = try await request.bodyText()
             return try await respond(status: { $0.status }, headers: { $0.headers }) {
-                try oauthFlows.webOAuthCallback(
+                try self.oauthFlows.webOAuthCallback(
                     provider: request.parameters.get("provider") ?? "",
                     body: body,
                     cookie: request.headers[.cookie]
@@ -134,7 +154,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         }
         provider.get("callback") { request async throws -> Response in
             try await respond(status: { $0.status }, headers: { $0.headers }) {
-                try oauthFlows.mobileOAuthCallback(
+                try self.oauthFlows.mobileOAuthCallback(
                     provider: request.parameters.get("provider") ?? "",
                     code: desktopQuery(request.url.query, "code"),
                     state: desktopQuery(request.url.query, "state"),
@@ -144,14 +164,14 @@ public struct AuthFeature: RouteCollection, Sendable {
         }
         mobileOAuth.post("complete") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(MobileOAuthCompleteRequest.self, request, decoding: .json)) ?? MobileOAuthCompleteRequest()
-            return try await respond { try oauthFlows.completeMobileOAuth(body) }
+            return try await respond { try self.oauthFlows.completeMobileOAuth(body) }
         }
         provider.post("complete") { request async throws -> Response in
             // A body that is not a JSON object reads as an empty request, so the
             // service answers the published "code is required" 400.
             let body = (try await decodeJSONRequestBody(SocialCompleteRequest.self, request, decoding: .json)) ?? SocialCompleteRequest()
             return try await respond {
-                try authCore.completeSocial(
+                try self.core.completeSocial(
                     provider: request.parameters.get("provider") ?? "",
                     body: body,
                     userAgent: request.headers[.userAgent],
@@ -162,22 +182,22 @@ public struct AuthFeature: RouteCollection, Sendable {
         }
         device.post("authorize") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(DeviceAuthorizeRequest.self, request, decoding: .json)) ?? DeviceAuthorizeRequest()
-            return try await respond(status: 201) { try authCore.authorizeDevice(body) }
+            return try await respond(status: 201) { try self.core.authorizeDevice(body) }
         }
         device.post("approve") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(DeviceApproveRequest.self, request, decoding: .json)) ?? DeviceApproveRequest()
             return try await respond {
-                try authCore.approveDevice(body, authorization: request.headers[.authorization])
+                try self.core.approveDevice(body, authorization: request.headers[.authorization])
             }
         }
         device.post("token") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(DeviceTokenRequest.self, request, decoding: .json)) ?? DeviceTokenRequest()
-            return try await respond { try authCore.pollDeviceToken(body) }
+            return try await respond { try self.core.pollDeviceToken(body) }
         }
         auth.post("staging-self-account", "retire") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(RetireStagingRequest.self, request, decoding: .json)) ?? RetireStagingRequest()
             return try await respond {
-                try authCore.retireStagingSelfAccount(body, authorization: request.headers[.authorization])
+                try self.core.retireStagingSelfAccount(body, authorization: request.headers[.authorization])
             }
         }
         auth.post("register") { request async throws -> Response in
@@ -185,7 +205,7 @@ public struct AuthFeature: RouteCollection, Sendable {
             // the published `Expected object` issue list.
             let body = try await decodeJSONRequestBody(RegisterRequest.self, request, decoding: .json)
             return try await respond {
-                try authCore.register(
+                try self.core.register(
                     body,
                     userAgent: request.headers[.userAgent],
                     acceptLanguage: request.headers[.acceptLanguage]
@@ -197,19 +217,19 @@ public struct AuthFeature: RouteCollection, Sendable {
             let installation = request.headers[HTTPField.Name("X-Slock-Auth-Installation-Id")!]
             let body = (try await decodeJSONRequestBody(RefreshTokenRequest.self, request, decoding: .json)) ?? RefreshTokenRequest()
             return try await respond {
-                try authCore.refresh(body, attemptHeader: attempt, installationHeader: installation)
+                try self.core.refresh(body, attemptHeader: attempt, installationHeader: installation)
             }
         }
         auth.post("logout") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(RefreshTokenRequest.self, request, decoding: .json)) ?? RefreshTokenRequest()
-            return try await respond { authCore.logout(body) }
+            return try await respond { self.core.logout(body) }
         }
         identities.get { request async throws -> Response in
-            try await respond { try identityService.identities(authorization: request.headers[.authorization]) }
+            try await respond { try self.identities.identities(authorization: request.headers[.authorization]) }
         }
         identities.delete(":provider") { request async throws -> Response in
             try await respond {
-                try identityService.unlink(
+                try self.identities.unlink(
                     authorization: request.headers[.authorization],
                     provider: request.parameters.get("provider") ?? ""
                 )
@@ -220,28 +240,28 @@ public struct AuthFeature: RouteCollection, Sendable {
             // JSON Content-Type goes through the same byte decode so the
             // published validation replies do not depend on the header.
             let body = (try await decodeJSONRequestBody(ResetPasswordRequest.self, request)) ?? ResetPasswordRequest()
-            return try await respond { try services.emailAccounts.authProfile.resetPassword(body) }
+            return try await respond { try self.profile.resetPassword(body) }
         }
         auth.post("pending-link", "cancel") { request async throws -> Response in
             // An empty or malformed body still answers 204, so cancel stays
             // idempotent for every client shape.
             let body = (try? await decodeJSONRequestBody(CancelPendingLinkRequest.self, request, decoding: .contentOnly))
                 ?? CancelPendingLinkRequest()
-            return try await respond { services.emailAccounts.authProfile.cancelPendingLink(body) }
+            return try await respond { self.profile.cancelPendingLink(body) }
         }
         auth.post("login") { request async throws -> Response in
             // The lenient decoder keeps every wrong-typed field so the service
             // can publish the upstream `issues` list; a non-object body is nil.
             let body = try await decodeJSONRequestBody(LoginRequest.self, request, decoding: .json)
-            return try await respond { try identityService.login(body) }
+            return try await respond { try self.identities.login(body) }
         }
         appLogin.post("start") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(AppLoginStartRequest.self, request, decoding: .json)) ?? AppLoginStartRequest()
-            return try await respond(status: 201) { try identityService.appLoginStart(body) }
+            return try await respond(status: 201) { try self.identities.appLoginStart(body) }
         }
         appLoginRequest.get { request async throws -> Response in
             try await respond {
-                try identityService.appLoginDescribe(
+                try self.identities.appLoginDescribe(
                     authorization: request.headers[.authorization],
                     requestId: request.parameters.get("requestId") ?? ""
                 )
@@ -249,7 +269,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         }
         appLoginRequest.post("approve") { request async throws -> Response in
             try await respond {
-                try identityService.appLoginApprove(
+                try self.identities.appLoginApprove(
                     authorization: request.headers[.authorization],
                     requestId: request.parameters.get("requestId") ?? ""
                 )
@@ -257,7 +277,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         }
         appLoginRequest.post("deny") { request async throws -> Response in
             try await respond {
-                try identityService.appLoginDeny(
+                try self.identities.appLoginDeny(
                     authorization: request.headers[.authorization],
                     requestId: request.parameters.get("requestId") ?? ""
                 )
@@ -265,20 +285,20 @@ public struct AuthFeature: RouteCollection, Sendable {
         }
         appLogin.post("complete") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(AppLoginCompleteRequest.self, request, decoding: .json)) ?? AppLoginCompleteRequest()
-            return try await respond { try identityService.appLoginComplete(body) }
+            return try await respond { try self.identities.appLoginComplete(body) }
         }
         auth.get("providers") { request async throws -> Response in
             try await respond {
-                try oauthFlows.authProviders(platform: desktopQuery(request.url.query, "platform"))
+                try self.oauthFlows.authProviders(platform: desktopQuery(request.url.query, "platform"))
             }
         }
         me.get { request async throws -> Response in
-            try await respond { try identityService.me(authorization: request.headers[.authorization]) }
+            try await respond { try self.identities.me(authorization: request.headers[.authorization]) }
         }
         me.on(.post, "avatar", maxBodySize: "6mb") { request async throws -> Response in
             let data = try await request.body.collect() ?? Data()
             return try await respond {
-                try identityService.uploadAvatar(
+                try self.identities.uploadAvatar(
                     authorization: request.headers[.authorization],
                     contentType: request.headers[.contentType],
                     body: data
@@ -288,7 +308,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         me.post("complete-profile") { request async throws -> Response in
             let body = try await decodeJSONRequestBody(LenientJSONObjectRequest.self, request, decoding: .json)
             return try await respond {
-                try services.emailAccounts.managedMCPLifecycle.completeProfile(
+                try self.managedLifecycle.completeProfile(
                     authorization: request.headers[.authorization],
                     body: body
                 )
@@ -298,7 +318,7 @@ public struct AuthFeature: RouteCollection, Sendable {
             let body = (try await decodeJSONRequestBody(TimezoneObservationRequest.self, request))
                 ?? TimezoneObservationRequest()
             return try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
-                try services.emailAccounts.authProfile.observeTimezone(
+                try self.profile.observeTimezone(
                     authorization: request.headers[.authorization],
                     body
                 )
@@ -309,7 +329,7 @@ public struct AuthFeature: RouteCollection, Sendable {
             // published 400 after the session check, as before.
             let body = try await decodeJSONRequestBody(UpdateProfileRequest.self, request, decoding: .json)
             return try await respond {
-                try identityService.updateProfile(authorization: request.headers[.authorization], body)
+                try self.identities.updateProfile(authorization: request.headers[.authorization], body)
             }
         }
         auth.post("accept-invite") { request async throws -> Response in
@@ -318,7 +338,7 @@ public struct AuthFeature: RouteCollection, Sendable {
             // bytes first and a 404 still falls through to this handler.
             let body = (try await decodeJSONRequestBody(JoinLinkAcceptRequest.self, request))
                 ?? JoinLinkAcceptRequest()
-            if let directory = services.publicServerDirectory {
+            if let directory = self.publicServerDirectory {
                 do {
                     let accepted = try directory.acceptInvite(
                         authorization: request.headers[.authorization],
@@ -333,7 +353,7 @@ public struct AuthFeature: RouteCollection, Sendable {
                 }
             }
             return try await respond {
-                try services.emailAccounts.joinLinksAndInvites.acceptInvite(
+                try self.invites.acceptInvite(
                     authorization: request.headers[.authorization],
                     body: body
                 )

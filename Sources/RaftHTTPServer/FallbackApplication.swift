@@ -253,7 +253,16 @@ public func configure(_ app: Application, services: FallbackServices) {
     FeedbackFeature(services: services).register(routes: app)
     TranslationFeature(services: services).register(routes: app)
     PublicFeature(services: services).register(routes: app)
-    AuthFeature(services: services).register(routes: app)
+    AuthFeature(
+        core: services.emailAccounts.authCore,
+        identities: services.emailAccounts.authIdentities,
+        oauthFlows: services.emailAccounts.oauthFlows,
+        verification: services.emailAccounts.authVerification,
+        profile: services.emailAccounts.authProfile,
+        invites: services.emailAccounts.joinLinksAndInvites,
+        managedLifecycle: services.emailAccounts.managedMCPLifecycle,
+        publicServerDirectory: services.publicServerDirectory
+    ).register(routes: app)
     KnowledgeFeature(services: services).register(routes: app)
     let readReceipts = services.emailAccounts.managedMCPToolExecution
     readReceipts.installReadUpdateObserver { serverId, channelId, agentId, maxReadSeq in
