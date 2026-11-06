@@ -126,7 +126,7 @@ import TestSupport
 
     let response = try directory.joinLinksAndInvites.inviteInfo(token: "exact-token")
     let expected = "{\"serverId\":\"\(serverId)\",\"serverName\":\"Exact Body\",\"serverSlug\":\"exact-body\",\"humanSeatLimitReached\":false,\"humanSeatLimitMessage\":null,\"memberCount\":1,\"agentCount\":0,\"insideCountsHidden\":false,\"agreement\":null}"
-    #expect(response.jsonBody() == expected)
+    #expect(response.jsonBody.render() == expected)
 }
 
 @Test func joinLinkCreateDecodesTheLegacyFieldTolerance() throws {

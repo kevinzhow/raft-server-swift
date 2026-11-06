@@ -209,7 +209,7 @@ public struct AgentProfileUpdateRequest: Codable, Sendable, Equatable {
 
 /// One pre-join agreement record. The published member order is the upstream
 /// `agreementJSON` order, not alphabetical.
-public struct ServerAgreementDTO: Codable, Sendable, Equatable {
+public struct ServerAgreementDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var id: String
     public var version: Int
     public var title: String
@@ -234,26 +234,32 @@ public struct ServerAgreementDTO: Codable, Sendable, Equatable {
         )
     }
 
-    /// Exact upstream `agreementJSON` bytes: id, version, title, bodyMarkdown,
+    /// Exact upstream `agreementJSON` order: id, version, title, bodyMarkdown,
     /// enabled.
-    public func jsonBody() -> String {
-        "{\"id\":\(jsonString(id)),\"version\":\(version),\"title\":\(jsonString(title)),\"bodyMarkdown\":\(jsonString(bodyMarkdown)),\"enabled\":\(enabled)}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("id", id)
+        body.append("version", version)
+        body.append("title", title)
+        body.append("bodyMarkdown", bodyMarkdown)
+        body.append("enabled", enabled)
+        return body.json
     }
 }
 
-extension ServerAgreementDTO: ExactJSONResponse {}
-
 /// The `{"ok":true}` body for the revoke/leave operations.
-public struct JoinLinksOkResponseDTO: Codable, Sendable, Equatable, ExactJSONResponse {
+public struct JoinLinksOkResponseDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public init() {}
 
-    public func jsonBody() -> String { "{\"ok\":true}" }
+    public var jsonBody: OrderedJSON {
+        .object([OrderedJSONField("ok", true)])
+    }
 }
 
 // MARK: - Join links
 
 /// One stored join link as the list/create responses publish it.
-public struct JoinLinkPayloadDTO: Codable, Sendable, Equatable {
+public struct JoinLinkPayloadDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var id: String
     public var token: String
     public var createdAt: String
@@ -292,19 +298,22 @@ public struct JoinLinkPayloadDTO: Codable, Sendable, Equatable {
         )
     }
 
-    /// Exact upstream `joinLinkJSON` bytes.
-    public func jsonBody() -> String {
-        let expires = expiresAt.map(jsonString) ?? "null"
-        let revoked = revokedAt.map(jsonString) ?? "null"
-        let max = maxUses.map(String.init) ?? "null"
-        return "{\"id\":\(jsonString(id)),\"token\":\(jsonString(token)),\"createdAt\":\(jsonString(createdAt)),\"expiresAt\":\(expires),\"maxUses\":\(max),\"useCount\":\(useCount),\"revokedAt\":\(revoked)}"
+    /// Exact upstream `joinLinkJSON` order.
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("id", id)
+        body.append("token", token)
+        body.append("createdAt", createdAt)
+        body.append("expiresAt", optional: expiresAt)
+        body.append("maxUses", optional: maxUses)
+        body.append("useCount", useCount)
+        body.append("revokedAt", optional: revokedAt)
+        return body.json
     }
 }
 
-extension JoinLinkPayloadDTO: ExactJSONResponse {}
-
 /// `POST /api/servers/:id/join-links` response.
-public struct JoinLinkCreateResponseDTO: Codable, Sendable, Equatable, ExactJSONResponse {
+public struct JoinLinkCreateResponseDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var token: String
     public var link: JoinLinkPayloadDTO
     public var maxUses: Int?
@@ -317,29 +326,32 @@ public struct JoinLinkCreateResponseDTO: Codable, Sendable, Equatable, ExactJSON
         self.expiresAt = expiresAt
     }
 
-    /// Exact upstream create bytes: token, link, maxUses, expiresAt.
-    public func jsonBody() -> String {
-        let max = maxUses.map(String.init) ?? "null"
-        let expires = expiresAt.map(jsonString) ?? "null"
-        return "{\"token\":\(jsonString(token)),\"link\":\(link.jsonBody()),\"maxUses\":\(max),\"expiresAt\":\(expires)}"
+    /// Exact upstream create order: token, link, maxUses, expiresAt.
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("token", token)
+        body.append("link", link)
+        body.append("maxUses", optional: maxUses)
+        body.append("expiresAt", optional: expiresAt)
+        return body.json
     }
 }
 
 /// `GET /api/servers/:id/join-links` response: a bare array.
-public struct JoinLinkListResponseDTO: Codable, Sendable, Equatable, ExactJSONResponse {
+public struct JoinLinkListResponseDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var links: [JoinLinkPayloadDTO]
 
     public init(links: [JoinLinkPayloadDTO]) {
         self.links = links
     }
 
-    public func jsonBody() -> String {
-        "[\(links.map { $0.jsonBody() }.joined(separator: ","))]"
+    public var jsonBody: OrderedJSON {
+        .array(links.map(\.jsonBody))
     }
 }
 
 /// `GET /api/auth/invite-info` response.
-public struct InviteInfoResponseDTO: Codable, Sendable, Equatable, ExactJSONResponse {
+public struct InviteInfoResponseDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var serverId: String
     public var serverName: String
     public var serverSlug: String
@@ -372,31 +384,42 @@ public struct InviteInfoResponseDTO: Codable, Sendable, Equatable, ExactJSONResp
         self.agreement = agreement
     }
 
-    /// Exact upstream invite-info bytes.
-    public func jsonBody() -> String {
-        let message = humanSeatLimitMessage.map(jsonString) ?? "null"
-        let agreementJSON = agreement?.jsonBody() ?? "null"
-        return "{\"serverId\":\(jsonString(serverId)),\"serverName\":\(jsonString(serverName)),\"serverSlug\":\(jsonString(serverSlug)),\"humanSeatLimitReached\":\(humanSeatLimitReached),\"humanSeatLimitMessage\":\(message),\"memberCount\":\(memberCount),\"agentCount\":\(agentCount),\"insideCountsHidden\":\(insideCountsHidden),\"agreement\":\(agreementJSON)}"
+    /// Exact upstream invite-info order; a nil agreement publishes `null`.
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("serverId", serverId)
+        body.append("serverName", serverName)
+        body.append("serverSlug", serverSlug)
+        body.append("humanSeatLimitReached", humanSeatLimitReached)
+        body.append("humanSeatLimitMessage", optional: humanSeatLimitMessage)
+        body.append("memberCount", memberCount)
+        body.append("agentCount", agentCount)
+        body.append("insideCountsHidden", insideCountsHidden)
+        body.append("agreement", OrderedJSON.bodyOrNull(agreement))
+        return body.json
     }
 }
 
 /// `POST /api/auth/accept-invite` success body.
-public struct JoinLinkAcceptResponseDTO: Codable, Sendable, Equatable, ExactJSONResponse {
+public struct JoinLinkAcceptResponseDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var serverId: String
 
     public init(serverId: String) {
         self.serverId = serverId
     }
 
-    public func jsonBody() -> String {
-        "{\"ok\":true,\"serverId\":\(jsonString(serverId))}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("ok", true)
+        body.append("serverId", serverId)
+        return body.json
     }
 }
 
 // MARK: - Email invites
 
 /// One pending email invite row.
-public struct ServerInviteRowDTO: Codable, Sendable, Equatable {
+public struct ServerInviteRowDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var id: String
     public var invitedEmail: String
     public var email: String
@@ -411,30 +434,34 @@ public struct ServerInviteRowDTO: Codable, Sendable, Equatable {
         self.status = status
     }
 
-    /// Exact upstream invite-row bytes (the id/email/role/status projection).
-    public func jsonBody() -> String {
-        "{\"id\":\(jsonString(id)),\"invitedEmail\":\(jsonString(invitedEmail)),\"email\":\(jsonString(email)),\"role\":\(jsonString(role)),\"status\":\(jsonString(status))}"
+    /// Exact upstream invite-row order (the id/email/role/status projection).
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("id", id)
+        body.append("invitedEmail", invitedEmail)
+        body.append("email", email)
+        body.append("role", role)
+        body.append("status", status)
+        return body.json
     }
 }
 
-extension ServerInviteRowDTO: ExactJSONResponse {}
-
 /// `GET /api/servers/:id/invites` response: a bare array.
-public struct ServerInviteListResponseDTO: Codable, Sendable, Equatable, ExactJSONResponse {
+public struct ServerInviteListResponseDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var invites: [ServerInviteRowDTO]
 
     public init(invites: [ServerInviteRowDTO]) {
         self.invites = invites
     }
 
-    public func jsonBody() -> String {
-        "[\(invites.map { $0.jsonBody() }.joined(separator: ","))]"
+    public var jsonBody: OrderedJSON {
+        .array(invites.map(\.jsonBody))
     }
 }
 
 /// `POST /api/servers/:id/invites` response. The outer row and the nested
 /// `invite` carry the same four fields in the upstream order.
-public struct ServerInviteCreateResponseDTO: Codable, Sendable, Equatable, ExactJSONResponse {
+public struct ServerInviteCreateResponseDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var id: String
     public var invitedEmail: String
     public var email: String
@@ -447,12 +474,20 @@ public struct ServerInviteCreateResponseDTO: Codable, Sendable, Equatable, Exact
         self.role = role
     }
 
-    public func jsonBody() -> String {
-        let idJSON = jsonString(id)
-        let emailJSON = jsonString(email)
-        let roleJSON = jsonString(role)
-        let invite = "{\"id\":\(idJSON),\"email\":\(emailJSON),\"role\":\(roleJSON),\"status\":\"pending\"}"
-        return "{\"id\":\(idJSON),\"invitedEmail\":\(emailJSON),\"email\":\(emailJSON),\"role\":\(roleJSON),\"invite\":\(invite)}"
+    public var jsonBody: OrderedJSON {
+        var invite = OrderedJSONObject()
+        invite.append("id", id)
+        invite.append("email", email)
+        invite.append("role", role)
+        invite.append("status", "pending")
+
+        var body = OrderedJSONObject()
+        body.append("id", id)
+        body.append("invitedEmail", invitedEmail)
+        body.append("email", email)
+        body.append("role", role)
+        body.append("invite", invite.json)
+        return body.json
     }
 }
 
@@ -460,7 +495,7 @@ public struct ServerInviteCreateResponseDTO: Codable, Sendable, Equatable, Exact
 
 /// The server setup projection. `revokedComputers` is present only on the
 /// reset reply, which appends it after the shared projection.
-public struct SetupProjectionResponseDTO: Codable, Sendable, Equatable, ExactJSONResponse {
+public struct SetupProjectionResponseDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var phase: String
     public var isOwnerOrAdmin: Bool
     public var revokedComputers: Int?
@@ -471,22 +506,62 @@ public struct SetupProjectionResponseDTO: Codable, Sendable, Equatable, ExactJSO
         self.revokedComputers = revokedComputers
     }
 
-    public func jsonBody() -> String {
-        let body: String
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
         if isOwnerOrAdmin {
-            body = "{\"surface\":\"computer_runtime\",\"phase\":\(jsonString(phase)),\"currentStep\":\"computer_runtime\",\"blocksChat\":true,\"allowedExits\":[\"reset\",\"return_to_server\"],\"sideEffectState\":{\"transitions\":\"enabled\",\"completion\":\"disabled\"},\"gateReason\":\"computer_offline\",\"computerStatus\":\"offline\",\"runtimeStatus\":\"unknown\",\"runtimeOptions\":[],\"hasConnectedComputer\":false,\"offlineComputers\":[],\"postSetup\":{\"surveyPending\":false,\"handoffPending\":false}}"
+            body.append("surface", "computer_runtime")
+            body.append("phase", phase)
+            body.append("currentStep", "computer_runtime")
+            body.append("blocksChat", true)
+            body.append("allowedExits", .array([.string("reset"), .string("return_to_server")]))
+            body.append("sideEffectState", Self.enabledTransitions)
+            body.append("gateReason", "computer_offline")
+            body.append("computerStatus", "offline")
         } else {
-            body = "{\"surface\":\"none\",\"phase\":null,\"currentStep\":null,\"blocksChat\":false,\"allowedExits\":[\"return_to_server\"],\"sideEffectState\":{\"transitions\":\"disabled\",\"completion\":\"disabled\"},\"gateReason\":\"insufficient_permission\",\"computerStatus\":\"unknown\",\"runtimeStatus\":\"unknown\",\"runtimeOptions\":[],\"hasConnectedComputer\":false,\"offlineComputers\":[],\"postSetup\":{\"surveyPending\":false,\"handoffPending\":false}}"
+            body.append("surface", "none")
+            body.append("phase", .null)
+            body.append("currentStep", .null)
+            body.append("blocksChat", false)
+            body.append("allowedExits", .array([.string("return_to_server")]))
+            body.append("sideEffectState", Self.disabledTransitions)
+            body.append("gateReason", "insufficient_permission")
+            body.append("computerStatus", "unknown")
         }
-        guard let revokedComputers else { return body }
-        return String(body.dropLast()) + ",\"revokedComputers\":\(revokedComputers)}"
+        body.append("runtimeStatus", "unknown")
+        body.append("runtimeOptions", .array([]))
+        body.append("hasConnectedComputer", false)
+        body.append("offlineComputers", .array([]))
+        body.append("postSetup", Self.pendingNothing)
+        body.append("revokedComputers", ifPresent: revokedComputers)
+        return body.json
+    }
+
+    private static var enabledTransitions: OrderedJSON {
+        .object([
+            OrderedJSONField("transitions", "enabled"),
+            OrderedJSONField("completion", "disabled"),
+        ])
+    }
+
+    private static var disabledTransitions: OrderedJSON {
+        .object([
+            OrderedJSONField("transitions", "disabled"),
+            OrderedJSONField("completion", "disabled"),
+        ])
+    }
+
+    private static var pendingNothing: OrderedJSON {
+        .object([
+            OrderedJSONField("surveyPending", false),
+            OrderedJSONField("handoffPending", false),
+        ])
     }
 }
 
 // MARK: - Agent profile
 
 /// `GET /internal/agent-api/profile` agent projection.
-public struct AgentProfileResponseDTO: Codable, Sendable, Equatable {
+public struct AgentProfileResponseDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var agentId: String
     public var name: String
     public var displayName: String
@@ -511,16 +586,20 @@ public struct AgentProfileResponseDTO: Codable, Sendable, Equatable {
         )
     }
 
-    /// Exact upstream agent-profile bytes.
-    public func jsonBody() -> String {
-        "{\"agentId\":\(jsonString(agentId)),\"name\":\(jsonString(name)),\"displayName\":\(jsonString(displayName)),\"description\":\(jsonString(description)),\"avatarUrl\":\(avatarUrl.map(jsonString) ?? "null")}"
+    /// Exact upstream agent-profile order.
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("agentId", agentId)
+        body.append("name", name)
+        body.append("displayName", displayName)
+        body.append("description", description)
+        body.append("avatarUrl", optional: avatarUrl)
+        return body.json
     }
 }
 
-extension AgentProfileResponseDTO: ExactJSONResponse {}
-
 /// `GET /internal/agent-api/profile?target=@handle` human projection.
-public struct AgentHumanProfileResponseDTO: Codable, Sendable, Equatable {
+public struct AgentHumanProfileResponseDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var userId: String
     public var name: String
     public var displayName: String
@@ -542,31 +621,34 @@ public struct AgentHumanProfileResponseDTO: Codable, Sendable, Equatable {
         )
     }
 
-    /// Exact upstream human-profile bytes.
-    public func jsonBody() -> String {
-        "{\"userId\":\(jsonString(userId)),\"name\":\(jsonString(name)),\"displayName\":\(jsonString(displayName)),\"avatarUrl\":\(avatarUrl.map(jsonString) ?? "null")}"
+    /// Exact upstream human-profile order.
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("userId", userId)
+        body.append("name", name)
+        body.append("displayName", displayName)
+        body.append("avatarUrl", optional: avatarUrl)
+        return body.json
     }
 }
 
-extension AgentHumanProfileResponseDTO: ExactJSONResponse {}
-
 /// The profile-show reply is one of two published shapes.
-public enum AgentProfileShowResponse: Codable, Sendable, Equatable, ExactJSONResponse {
+public enum AgentProfileShowResponse: Codable, Sendable, Equatable, JSONBodyConvertible {
     case agent(AgentProfileResponseDTO)
     case human(AgentHumanProfileResponseDTO)
 
-    public func jsonBody() -> String {
+    public var jsonBody: OrderedJSON {
         switch self {
         case .agent(let profile):
-            profile.jsonBody()
+            profile.jsonBody
         case .human(let profile):
-            profile.jsonBody()
+            profile.jsonBody
         }
     }
 }
 
 /// `POST /internal/agent-api/profile` success body.
-public struct AgentProfileUpdateResponseDTO: Codable, Sendable, Equatable, ExactJSONResponse {
+public struct AgentProfileUpdateResponseDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var agentId: String
     public var displayName: String?
     public var description: String?
@@ -577,19 +659,25 @@ public struct AgentProfileUpdateResponseDTO: Codable, Sendable, Equatable, Exact
         self.description = description
     }
 
-    public func jsonBody() -> String {
-        let display = displayName.map(jsonString) ?? "null"
-        let description = description.map(jsonString) ?? "null"
-        return "{\"ok\":true,\"agentId\":\(jsonString(agentId)),\"displayName\":\(display),\"description\":\(description)}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("ok", true)
+        body.append("agentId", agentId)
+        body.append("displayName", optional: displayName)
+        body.append("description", optional: description)
+        return body.json
     }
 }
 
 /// The Slack bridge is not part of this build; the four routes keep the
 /// published 503 body.
-public struct SlackBridgeUnavailableResponseDTO: Codable, Sendable, Equatable, ExactJSONResponse {
+public struct SlackBridgeUnavailableResponseDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public init() {}
 
-    public func jsonBody() -> String {
-        "{\"ok\":false,\"code\":\"slack_bridge_provider_unavailable\"}"
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("ok", false)
+        body.append("code", "slack_bridge_provider_unavailable")
+        return body.json
     }
 }

@@ -122,8 +122,8 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 authorization: request.headers[.authorization]
             ))
         }
-        agentApi.get("profile") { request throws -> Response in
-            try respond {
+        agentApi.get("profile") { request async throws -> Response in
+            try await respond {
                 try services.emailAccounts.joinLinksAndInvites.agentProfileShow(
                     authorization: request.headers[.authorization],
                     target: desktopQuery(request.url.query, "target")
@@ -132,7 +132,7 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
         }
         agentApi.post("profile") { request async throws -> Response in
             let body = try await typedJSONBody(AgentProfileUpdateRequest.self, request)
-            return try respond {
+            return try await respond {
                 try services.emailAccounts.joinLinksAndInvites.updateAgentProfile(
                     authorization: request.headers[.authorization],
                     body: body
@@ -534,7 +534,7 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             ))
         }
         agentApi.get("mcp", "tools") { request async throws -> Response in
-            try respond(errors: ActionCardServiceError.self) {
+            try await respond {
                 try services.emailAccounts.actionCards.managedMCPToolSnapshot(
                     authorization: request.headers[.authorization]
                 )
@@ -543,7 +543,7 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
         agentApi.post("mcp", "call") { request async throws -> Response in
             let body = (try? await request.content.decode(ManagedMCPToolCallRequest.self))
                 ?? ManagedMCPToolCallRequest()
-            return try respond(errors: ActionCardServiceError.self) {
+            return try await respond {
                 try services.emailAccounts.actionCards.callManagedMCPTool(
                     authorization: request.headers[.authorization],
                     body: body
@@ -551,22 +551,27 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
         }
         agentApi.post("feedback-locators") { request async throws -> Response in
-            routeResponse(services.emailAccounts.ingestFeedbackLocator(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
+            let body = await feedbackLocatorEnvelope(request)
+            return try await respond {
+                try services.emailAccounts.feedbackLocators.ingest(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
-        agentApi.get("feedback-locators") { request -> Response in
-            routeResponse(services.emailAccounts.listFeedbackLocators(
-                authorization: request.headers[.authorization],
-                reportId: desktopQuery(request.url.query, "report_id"),
-                runtime: desktopQuery(request.url.query, "runtime"),
-                nativeStatus: desktopQuery(request.url.query, "native_status"),
-                nativeLookupMethod: desktopQuery(request.url.query, "native_lookup_method"),
-                servedExactSha256: desktopQuery(request.url.query, "served_exact_sha256"),
-                routeBasis: desktopQuery(request.url.query, "route_basis"),
-                limit: desktopQuery(request.url.query, "limit")
-            ))
+        agentApi.get("feedback-locators") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.feedbackLocators.list(
+                    authorization: request.headers[.authorization],
+                    reportId: desktopQuery(request.url.query, "report_id"),
+                    runtime: desktopQuery(request.url.query, "runtime"),
+                    nativeStatus: desktopQuery(request.url.query, "native_status"),
+                    nativeLookupMethod: desktopQuery(request.url.query, "native_lookup_method"),
+                    servedExactSha256: desktopQuery(request.url.query, "served_exact_sha256"),
+                    routeBasis: desktopQuery(request.url.query, "route_basis"),
+                    limit: desktopQuery(request.url.query, "limit")
+                )
+            }
         }
         agentApi.get("wake-hints") { request -> Response in
             routeResponse(services.emailAccounts.agentWakeHints(
@@ -765,4 +770,17 @@ private func publishReminderEvent(
     for userId in recipients {
         hub.emit(room: "user:\(userId)", event: event, payloadJSON: payload)
     }
+}
+
+/// `POST /internal/agent-api/feedback-locators` accepted a JSON body with or
+/// without a `Content-Type` header, so the typed decode runs first and a
+/// header-less body falls back to the raw bytes. A body that is not a JSON
+/// object stays `nil`, which the service answers with the published
+/// `invalid_payload`.
+private func feedbackLocatorEnvelope(_ request: Request) async -> FeedbackLocatorIngestRequest? {
+    if let typed = try? await request.content.decode(FeedbackLocatorIngestRequest.self) {
+        return typed
+    }
+    guard let raw = try? await request.bodyText() else { return nil }
+    return try? JSONDecoder().decode(FeedbackLocatorIngestRequest.self, from: Data(raw.utf8))
 }

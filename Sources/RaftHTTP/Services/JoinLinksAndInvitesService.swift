@@ -21,9 +21,12 @@ public struct JoinLinksAndInvitesDependencies: Sendable {
 /// Domain failure for the join-link, invite, server-setup and agent-profile
 /// operations.
 ///
-/// Every case publishes the exact bytes the retired handler built, so the
-/// feature layer only copies `status`, `exactBodyJSON` and `responseHeaders`.
-public enum JoinLinksAndInvitesError: ExactBodyDomainError, Equatable {
+/// Every case publishes the bytes the retired handler built: the canonical
+/// `{"error": …}` body, the same object plus `code` when the domain has one, or
+/// an explicit `errorBody` where the upstream object carries more keys or a
+/// different member order. The feature layer only copies `status`, the body and
+/// `errorHeaders`.
+public enum JoinLinksAndInvitesError: DomainError, Equatable {
     case authRequired(bearerPresent: Bool)
     case unauthorized
     case forbiddenCreateJoinLinks
@@ -82,72 +85,119 @@ public enum JoinLinksAndInvitesError: ExactBodyDomainError, Equatable {
         }
     }
 
-    /// Exact published body, in the retired handler's member order.
-    public var exactBodyJSON: String {
+    public var errorMessage: String {
         switch self {
         case .authRequired(let bearerPresent):
-            let message = bearerPresent
+            bearerPresent
                 ? "Invalid or expired token"
                 : "Missing or invalid Authorization header"
-            return "{\"error\":\(jsonString(message)),\"code\":\"auth_required\"}"
         case .unauthorized:
-            return "{\"error\":\"Unauthorized\"}"
+            "Unauthorized"
         case .forbiddenCreateJoinLinks:
-            return "{\"error\":\"Only server owners and admins can create join links\"}"
+            "Only server owners and admins can create join links"
         case .forbiddenViewJoinLinks:
-            return "{\"error\":\"Only server owners and admins can view join links\"}"
+            "Only server owners and admins can view join links"
         case .forbiddenRevokeJoinLinks:
-            return "{\"error\":\"Only server owners and admins can revoke join links\"}"
+            "Only server owners and admins can revoke join links"
         case .forbiddenRevokeInvites:
-            return "{\"error\":\"Only server owners and admins can revoke invites\"}"
+            "Only server owners and admins can revoke invites"
         case .notAMember:
-            return "{\"error\":\"Not a member of this server\"}"
+            "Not a member of this server"
         case .forbidden:
-            return "{\"error\":\"Forbidden\"}"
+            "Forbidden"
         case .inviteNotFound:
-            return "{\"error\":\"Invite not found\"}"
+            "Invite not found"
         case .invalidInvite:
-            return "{\"error\":\"Invalid invite\"}"
+            "Invalid invite"
         case .invalidExpiresAt:
-            return "{\"error\":\"expiresAt must be a valid date\"}"
+            "expiresAt must be a valid date"
         case .invalidMaxUses:
-            return "{\"error\":\"maxUses must be a positive integer\"}"
+            "maxUses must be a positive integer"
         case .seatLimit(let message):
-            return "{\"error\":\(jsonString(message))}"
+            message
         case .invalidEmail:
-            return "{\"error\":\"Enter a valid email address\"}"
+            "Enter a valid email address"
         case .invalidInviteRole:
-            return "{\"error\":\"role must be one of: member, guest\"}"
+            "role must be one of: member, guest"
         case .guestAccessDisabled:
-            return "{\"error\":\"Guest access is not enabled for this server\"}"
+            "Guest access is not enabled for this server"
         case .ownerCannotLeave:
-            return "{\"error\":\"The owner cannot leave the server\"}"
+            "The owner cannot leave the server"
         case .insufficientPermission:
-            return "{\"error\":\"INSUFFICIENT_PERMISSION\"}"
+            "INSUFFICIENT_PERMISSION"
         case .serverNotFound:
-            return "{\"error\":\"Server not found\"}"
+            "Server not found"
         case .invalidSetupAction:
-            return "{\"error\":\"INVALID_SETUP_ACTION\"}"
+            "INVALID_SETUP_ACTION"
         case .serverAlreadySetUp:
-            return "{\"error\":\"SERVER_ALREADY_SET_UP\"}"
+            "SERVER_ALREADY_SET_UP"
         case .invalidProfileUpdate:
-            return "{\"error\":\"Invalid profile update\"}"
+            "Invalid profile update"
         case .profileNotFound:
-            return "{\"error\":\"Profile not found\"}"
+            "Profile not found"
         case .agentAuthRequired:
-            return "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"
+            "Invalid or expired token"
         case .missingAuthorizationHeader:
-            return "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}"
-        case .capabilityNotAuthorized(let required):
-            let requiredJSON = required.map { ",\"requiredCapability\":\(jsonString($0))" } ?? ""
-            return "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"\(requiredJSON)}"
+            "Missing or invalid Authorization header"
+        case .capabilityNotAuthorized:
+            "Agent credential is not authorized for this capability"
         case .hostedAgentDescriptionHumanOnly:
-            return "{\"error\":\"Hosted agents cannot change their own description\",\"code\":\"hosted_agent_description_human_only\",\"suggestedNextAction\":\"Ask a human owner or admin to edit it in your Profile tab in Raft. Nothing was changed.\"}"
-        case .agreementRequired(let agreement):
-            return "{\"error\":\"agreement_required\",\"agreement\":\(agreement.jsonBody())}"
-        case .agreementChanged(let agreement):
-            return "{\"error\":\"agreement_changed\",\"agreement\":\(agreement.jsonBody())}"
+            "Hosted agents cannot change their own description"
+        case .agreementRequired:
+            "agreement_required"
+        case .agreementChanged:
+            "agreement_changed"
         }
+    }
+
+    /// The machine-readable `code` the published object appends after `error`.
+    /// A case published through `errorBody` contributes its `code` there.
+    public var errorCode: String? {
+        switch self {
+        case .authRequired, .agentAuthRequired, .missingAuthorizationHeader:
+            "auth_required"
+        case .capabilityNotAuthorized:
+            "capability_not_authorized"
+        case .hostedAgentDescriptionHumanOnly:
+            "hosted_agent_description_human_only"
+        default:
+            nil
+        }
+    }
+
+    /// Published bodies the canonical `error`/`code` pair cannot express: the
+    /// capability scope, the hosted-agent hint and the two agreement objects.
+    public var errorBody: OrderedJSON? {
+        switch self {
+        case .capabilityNotAuthorized(let required):
+            var body = OrderedJSONObject()
+            body.append("error", errorMessage)
+            body.append("code", "capability_not_authorized")
+            body.append("requiredCapability", ifPresent: required)
+            return body.json
+        case .hostedAgentDescriptionHumanOnly:
+            var body = OrderedJSONObject()
+            body.append("error", errorMessage)
+            body.append("code", "hosted_agent_description_human_only")
+            body.append(
+                "suggestedNextAction",
+                "Ask a human owner or admin to edit it in your Profile tab in Raft. Nothing was changed."
+            )
+            return body.json
+        case .agreementRequired(let agreement):
+            return Self.agreementBody(error: "agreement_required", agreement: agreement)
+        case .agreementChanged(let agreement):
+            return Self.agreementBody(error: "agreement_changed", agreement: agreement)
+        default:
+            return nil
+        }
+    }
+
+    private static func agreementBody(error: String, agreement: ServerAgreementDTO) -> OrderedJSON {
+        .object([
+            OrderedJSONField("error", error),
+            OrderedJSONField("agreement", agreement),
+        ])
     }
 }
 
@@ -157,8 +207,9 @@ public enum JoinLinksAndInvitesError: ExactBodyDomainError, Equatable {
 /// The row state lives in `ServersAndChannelsStore`, `AgentsRuntimeStore`,
 /// `MachinesAndComputersStore` and `AuthProfileStore`; every read-modify-write
 /// that used to run under the directory lock is one store critical section.
-/// This type returns `Codable` DTOs whose `jsonBody()` keeps the upstream member
-/// order, and throws `JoinLinksAndInvitesError` instead of building a reply.
+/// This type returns `Codable` DTOs whose `jsonBody: OrderedJSON` keeps the
+/// upstream member order, and throws `JoinLinksAndInvitesError` instead of
+/// building a reply.
 public struct JoinLinksAndInvitesService: Sendable {
     private let store: ServersAndChannelsStore
     private let accounts: AuthProfileStore

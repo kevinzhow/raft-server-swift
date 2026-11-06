@@ -208,7 +208,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             // keeps the raw parser's tolerance: a wrong-typed field reads as
             // absent and an invalid cap still answers the published 400.
             let body = (try await typedJSONBody(CreateJoinLinkRequest.self, request)) ?? CreateJoinLinkRequest()
-            return try respond {
+            return try await respond {
                 try services.emailAccounts.joinLinksAndInvites.createJoinLink(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",
@@ -216,16 +216,16 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "join-links") { request throws -> Response in
-            try respond {
+        servers.get(":id", "join-links") { request async throws -> Response in
+            try await respond {
                 try services.emailAccounts.joinLinksAndInvites.listJoinLinks(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? ""
                 )
             }
         }
-        servers.delete(":id", "join-links", ":linkId") { request throws -> Response in
-            try respond {
+        servers.delete(":id", "join-links", ":linkId") { request async throws -> Response in
+            try await respond {
                 try services.emailAccounts.joinLinksAndInvites.revokeJoinLink(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",
@@ -233,8 +233,8 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "invites") { request throws -> Response in
-            try respond {
+        servers.get(":id", "invites") { request async throws -> Response in
+            try await respond {
                 try services.emailAccounts.joinLinksAndInvites.listServerInvites(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? ""
@@ -246,7 +246,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             // is not a JSON object falls back to the empty request, which is
             // the published invite error for a missing address.
             let body = try await typedJSONBody(CreateServerInviteRequest.self, request)
-            return try respond {
+            return try await respond {
                 try services.emailAccounts.joinLinksAndInvites.createServerInvite(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",
@@ -259,23 +259,23 @@ public struct ServersFeature: RouteCollection, Sendable {
             // Decoding states that empty contract; a malformed body still
             // resolves through the same path-only authorization.
             _ = try? await request.content.decode(ServerSetupResetDTO.self)
-            return try respond {
+            return try await respond {
                 try services.emailAccounts.joinLinksAndInvites.serverSetupReset(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? ""
                 )
             }
         }
-        servers.post(":id", "setup-handoff") { request throws -> Response in
-            try respond {
+        servers.post(":id", "setup-handoff") { request async throws -> Response in
+            try await respond {
                 try services.emailAccounts.joinLinksAndInvites.serverSetupHandoff(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? ""
                 )
             }
         }
-        servers.delete(":id", "invites", ":inviteId") { request throws -> Response in
-            try respond {
+        servers.delete(":id", "invites", ":inviteId") { request async throws -> Response in
+            try await respond {
                 try services.emailAccounts.joinLinksAndInvites.revokeServerInvite(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",
@@ -283,11 +283,11 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.post(":id", "leave") { request throws -> Response in
+        servers.post(":id", "leave") { request async throws -> Response in
             let serverId = request.parameters.get("id") ?? ""
             let authorization = request.headers[.authorization]
             let userId = services.emailAccounts.sessionUserId(authorization: authorization)
-            return try respond {
+            return try await respond {
                 let result = try services.emailAccounts.joinLinksAndInvites.leaveServer(
                     authorization: authorization,
                     serverId: serverId
@@ -302,8 +302,8 @@ public struct ServersFeature: RouteCollection, Sendable {
                 return result
             }
         }
-        servers.get(":id", "setup-projection") { request throws -> Response in
-            try respond {
+        servers.get(":id", "setup-projection") { request async throws -> Response in
+            try await respond {
                 try services.emailAccounts.joinLinksAndInvites.serverSetupProjection(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? ""
@@ -312,7 +312,7 @@ public struct ServersFeature: RouteCollection, Sendable {
         }
         servers.post(":id", "setup-transition") { request async throws -> Response in
             let body = try await typedJSONBody(ServerSetupTransitionRequest.self, request)
-            return try respond {
+            return try await respond {
                 try services.emailAccounts.joinLinksAndInvites.serverSetupTransition(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",

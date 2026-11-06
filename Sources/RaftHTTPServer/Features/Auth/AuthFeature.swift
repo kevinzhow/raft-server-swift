@@ -55,18 +55,18 @@ public struct AuthFeature: RouteCollection, Sendable {
             // An empty or malformed body falls back to a nil token so the
             // missing-token branch still answers the upstream 400.
             let body = (try? await request.content.decode(VerifyEmailRequest.self)) ?? VerifyEmailRequest()
-            return try respond { try services.emailAccounts.authVerification.verifyEmail(token: body.token) }
+            return try await respond { try services.emailAccounts.authVerification.verifyEmail(token: body.token) }
         }
         auth.post("resend-verification") { request async throws -> Response in
-            return try respond {
+            return try await respond {
                 try services.emailAccounts.authVerification.resendVerificationEmail(
                     authorization: request.headers[.authorization]
                 )
             }
         }
 
-        auth.get("invite-info") { request throws -> Response in
-            try respond {
+        auth.get("invite-info") { request async throws -> Response in
+            try await respond {
                 try services.emailAccounts.joinLinksAndInvites.inviteInfo(
                     token: desktopQuery(request.url.query, "token")
                 )
@@ -218,14 +218,14 @@ public struct AuthFeature: RouteCollection, Sendable {
             // JSON Content-Type goes through the same byte decode so the
             // published validation replies do not depend on the header.
             let body = (try await jsonBody(ResetPasswordRequest.self, request)) ?? ResetPasswordRequest()
-            return try respond { try services.emailAccounts.authProfile.resetPassword(body) }
+            return try await respond { try services.emailAccounts.authProfile.resetPassword(body) }
         }
         auth.post("pending-link", "cancel") { request async throws -> Response in
             // An empty or malformed body still answers 204, so cancel stays
             // idempotent for every client shape.
             let body = (try? await request.content.decode(CancelPendingLinkRequest.self))
                 ?? CancelPendingLinkRequest()
-            return try respond { services.emailAccounts.authProfile.cancelPendingLink(body) }
+            return try await respond { services.emailAccounts.authProfile.cancelPendingLink(body) }
         }
         auth.post("login") { request async throws -> Response in
             // A typed body needs both required strings; anything else (missing
@@ -289,7 +289,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         me.post("timezone-observation") { request async throws -> Response in
             let body = (try await jsonBody(TimezoneObservationRequest.self, request))
                 ?? TimezoneObservationRequest()
-            return try respond(extraHeaders: ["Cache-Control": "private, no-store"]) {
+            return try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
                 try services.emailAccounts.authProfile.observeTimezone(
                     authorization: request.headers[.authorization],
                     body
@@ -317,7 +317,7 @@ public struct AuthFeature: RouteCollection, Sendable {
                     return routeResponse(reply)
                 }
             }
-            return try respond {
+            return try await respond {
                 try services.emailAccounts.joinLinksAndInvites.acceptInvite(
                     authorization: request.headers[.authorization],
                     body: body

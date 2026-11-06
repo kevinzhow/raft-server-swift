@@ -89,6 +89,39 @@ final class FeedbackStore: @unchecked Sendable {
         set { state.feedbackLocatorRecords = newValue }
     }
 
+    /// The outcome of one locator insert. The receipt belongs to the stored row
+    /// so a replay answers the original id.
+    enum FeedbackLocatorInsertOutcome: Equatable {
+        case inserted
+        case duplicate(receiptId: String)
+        case conflict
+    }
+
+    /// The `(server, report)` identity lookup, the digest comparison and the
+    /// append are one critical section: two concurrent first reports for the
+    /// same identity cannot both be inserted.
+    func insertFeedbackLocator(_ record: FeedbackLocatorRecord) -> FeedbackLocatorInsertOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        if let existing = storage.feedbackLocatorRecords.first(where: {
+            $0.serverId == record.serverId && $0.reportId == record.reportId
+        }) {
+            return existing.payloadSha256 == record.payloadSha256
+                ? .duplicate(receiptId: existing.receiptId)
+                : .conflict
+        }
+        storage.feedbackLocatorRecords.append(record)
+        return .inserted
+    }
+
+    /// One locked snapshot of a server's rows; filtering and paging stay in the
+    /// service and cannot interleave with an insert.
+    func feedbackLocatorSnapshot(serverId: String) -> [FeedbackLocatorRecord] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.feedbackLocatorRecords.filter { $0.serverId == serverId }
+    }
+
     var handsFeedbackAppsJSON: String? {
         get { state.handsFeedbackAppsJSON }
         set { state.handsFeedbackAppsJSON = newValue }
