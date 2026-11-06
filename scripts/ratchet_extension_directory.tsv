@@ -8,7 +8,6 @@ Sources/RaftHTTP/Services/DirectoryServiceAccessors.swift	1
 Sources/RaftHTTP/Services/FeedbackService.swift	1
 Sources/RaftHTTP/Services/HumanMessageCreateService.swift	1
 Sources/RaftHTTP/Services/InboxAndWakeService.swift	1
-Sources/RaftHTTP/Services/IntegrationsAndAppAccessService.swift	1
 Sources/RaftHTTP/Services/JoinLinksAndInvitesService.swift	1
 Sources/RaftHTTP/Services/MachinesAndHostedRuntimeService.swift	1
 Sources/RaftHTTP/Services/ManagedMCPAssignmentsService.swift	1

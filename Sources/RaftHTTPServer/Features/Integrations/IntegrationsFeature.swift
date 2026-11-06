@@ -141,104 +141,115 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         }
 
         integrations.post("requests", ":requestId", "approve") { request async throws -> Response in
-            if let body = try? await request.content.decode(AgentAccessRequestApproveDTO.self) {
-                return routeResponse(services.emailAccounts.approveAgentAccessRequest(
+            let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.integrationsAndAppAccess.approveAgentAccessRequest(
                     authorization: request.headers[.authorization],
                     requestId: request.parameters.get("requestId") ?? "",
-                    body: body.encodedBody()
-                ))
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.approveAgentAccessRequest(
-                authorization: request.headers[.authorization],
-                requestId: request.parameters.get("requestId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
         }
 
         integrations.post("agents", ":agentId", "grants") { request async throws -> Response in
-            if let body = try? await request.content.decode(AgentGrantCreateDTO.self) {
-                return routeResponse(services.emailAccounts.createAgentGrant(
+            let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
+            return try await respond(status: { $0.status }, headers: { _ in .standard() }) {
+                try services.emailAccounts.integrationsAndAppAccess.createAgentGrant(
                     authorization: request.headers[.authorization],
                     agentId: request.parameters.get("agentId") ?? "",
-                    body: body.encodedBody()
-                ))
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.createAgentGrant(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
         }
 
-        integrations.get("agents", ":agentId", "grants") { request -> Response in
-            routeResponse(services.emailAccounts.agentGrantList(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? ""
-            ))
+        integrations.get("agents", ":agentId", "grants") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.integrationsAndAppAccess.agentGrantList(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
 
-        integrations.get("agents", ":agentId", "grantable-apps") { request -> Response in
-            routeResponse(services.emailAccounts.agentGrantableApps(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? ""
-            ))
+        integrations.get("agents", ":agentId", "grantable-apps") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.integrationsAndAppAccess.agentGrantableApps(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
 
-        integrations.get("agents", ":agentId", "events") { request -> Response in
-            routeResponse(services.emailAccounts.agentAppEvents(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                limit: desktopQuery(request.url.query, "limit"),
-                before: desktopQuery(request.url.query, "before")
-            ))
+        integrations.get("agents", ":agentId", "events") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.integrationsAndAppAccess.agentAppEvents(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    limit: desktopQuery(request.url.query, "limit"),
+                    before: desktopQuery(request.url.query, "before")
+                )
+            }
         }
 
-        integrations.get("agents", ":agentId", "events", ":eventId") { request -> Response in
-            routeResponse(services.emailAccounts.agentAppEventDetail(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                eventId: request.parameters.get("eventId") ?? ""
-            ))
+        integrations.get("agents", ":agentId", "events", ":eventId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.integrationsAndAppAccess.agentAppEventDetail(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    eventId: request.parameters.get("eventId") ?? ""
+                )
+            }
         }
 
-        integrations.post("grants", ":grantId", "revoke") { request -> Response in
-            routeResponse(services.emailAccounts.revokeAgentGrant(
-                authorization: request.headers[.authorization],
-                grantId: request.parameters.get("grantId") ?? ""
-            ))
+        integrations.post("grants", ":grantId", "revoke") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.integrationsAndAppAccess.revokeAgentGrant(
+                    authorization: request.headers[.authorization],
+                    grantId: request.parameters.get("grantId") ?? ""
+                )
+            }
         }
 
-        integrations.get("clients", ":clientId", "setup") { request -> Response in
-            routeResponse(services.emailAccounts.integrationClientSetup(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                clientId: request.parameters.get("clientId") ?? ""
-            ))
+        integrations.get("clients", ":clientId", "setup") { request async throws -> Response in
+            try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
+                try services.emailAccounts.integrationsAndAppAccess.integrationClientSetup(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? ""
+                )
+            }
         }
 
         integrations.patch("clients", ":clientId") { request async throws -> Response in
-            routeResponse(services.emailAccounts.updateIntegrationClientSetup(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                clientId: request.parameters.get("clientId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.integrationsAndAppAccess.updateIntegrationClientSetup(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? "",
+                    body: body
+                )
+            }
         }
 
-        integrations.post("marketplace", ":clientId", "install") { request -> Response in
-            routeResponse(services.emailAccounts.installMarketplaceClient(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                clientId: request.parameters.get("clientId") ?? ""
-            ))
+        integrations.post("marketplace", ":clientId", "install") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.integrationsAndAppAccess.installMarketplaceClient(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? ""
+                )
+            }
         }
 
-        integrations.delete("marketplace", ":clientId", "install") { request -> Response in
-            routeResponse(services.emailAccounts.uninstallMarketplaceClient(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                clientId: request.parameters.get("clientId") ?? ""
-            ))
+        integrations.delete("marketplace", ":clientId", "install") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.integrationsAndAppAccess.uninstallMarketplaceClient(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? ""
+                )
+            }
         }
 
         integrations.get("marketplace") { request async throws -> Response in

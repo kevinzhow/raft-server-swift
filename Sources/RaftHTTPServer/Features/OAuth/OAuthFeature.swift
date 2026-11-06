@@ -30,11 +30,14 @@ public struct OAuthFeature: RouteCollection, Sendable {
         let oauthFlows = OAuthFlowsService(directory: services.emailAccounts)
 
         oauth.put("installations", ":installationId", "setup") { request async throws -> Response in
-            routeResponse(services.emailAccounts.reportInstallationSetup(
-                authorization: request.headers[.authorization],
-                installationId: request.parameters.get("installationId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
+            return try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
+                try services.emailAccounts.integrationsAndAppAccess.reportInstallationSetup(
+                    authorization: request.headers[.authorization],
+                    installationId: request.parameters.get("installationId") ?? "",
+                    body: body
+                )
+            }
         }
         oauth.post("authorize", "human") { request async throws -> Response in
             routeResponse(services.emailAccounts.oauth.issueHumanAuthorization(

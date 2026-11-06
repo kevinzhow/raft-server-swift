@@ -602,6 +602,21 @@ final class MessagesAndThreadsStore: @unchecked Sendable {
         return nil
     }
 
+    /// One critical section for an attachment comment: the comment row and the
+    /// host-thread message row it posts as. The sequence is the server-wide
+    /// `rows.count + 1` the shared append stamps, so a concurrent comment can
+    /// never take the same sequence or land between the two writes. Returns the
+    /// stamped sequence.
+    func appendAttachmentComment(_ record: AttachmentCommentRecord, message: StoredHumanMessage) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.attachmentCommentRecords[record.attachmentId, default: []].append(record)
+        var stored = message
+        stored.seq = storage.humanMessageRows.count + 1
+        storage.humanMessageRows.append(stored)
+        return stored.seq
+    }
+
     // MARK: - Agent delivery ack
 
     /// Message rows plus the legacy thread-follow rows the delivery ack reads,

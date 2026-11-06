@@ -370,22 +370,6 @@ extension EmailLoginDirectory {
         return Data(base64Encoded: base64)
     }
 
-    static func mentionDeliveryFields(handle: String, terminalCode: String?) -> String {
-        guard let terminalCode, terminalCode != "INSTRUMENT_FAILED" else {
-            return "\"targetHandle\":\(jsonString(handle)),\"outcome\":\"unknown\""
-        }
-        let category: String
-        switch terminalCode {
-        case "QUOTA_LIMITED":
-            category = "quota"
-        case "DELIVERY_REJECTED":
-            category = "runtime_error"
-        default:
-            category = "unclassified"
-        }
-        return "\"targetHandle\":\(jsonString(handle)),\"outcome\":\"lost\",\"reasonCategory\":\(jsonString(category))"
-    }
-
     static func parsePageCursor(_ raw: String?) -> PageCursor {
         guard let raw else { return .absent }
         if raw == "0" { return .value(0) }
