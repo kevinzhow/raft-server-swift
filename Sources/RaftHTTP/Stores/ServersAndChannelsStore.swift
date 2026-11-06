@@ -28,6 +28,10 @@ final class ServersAndChannelsStore: @unchecked Sendable {
         var serverInvites: [(id: String, serverId: String, email: String, role: String, tokenHash: String?)] = []
         var serverSwitcherOrders: [String: (ids: [String], version: Int)] = [:]
         var serverOnboardingSettings: [String: (agentId: String?, greeting: Bool)] = [:]
+        /// Per-member onboarding progress, keyed `serverId\nuserId`. It lives
+        /// beside the per-server rows so one patch updates both in a single
+        /// critical section.
+        var userOnboardingSettings: [String: UserOnboarding] = [:]
         var setupPhases: [String: String] = [:]
         var setupHandoffs: Set<String> = []
         var guestRoleServers: Set<String> = []
@@ -1230,6 +1234,108 @@ final class ServersAndChannelsStore: @unchecked Sendable {
         }?.key
     }
 
+    // MARK: - Server switcher order
+
+    /// The caller's stored switcher order intersected with their live
+    /// memberships, plus the version. `memberIds` runs inside the critical
+    /// section so the order and the membership it is sanitized against are one
+    /// read.
+    func serverOrder(userId: String, memberIds: () -> [String]) -> (ids: [String], version: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        let members = Set(memberIds())
+        let ordered = Self.sanitizedServerOrder(
+            stored: storage.serverSwitcherOrders[userId]?.ids ?? [],
+            requested: nil,
+            memberIds: members
+        )
+        return (ordered, storage.serverSwitcherOrders[userId]?.version ?? 0)
+    }
+
+    /// Replaces the caller's switcher order. The version moves only when the
+    /// sanitized list differs from the stored one; comparing, bumping and
+    /// storing are one critical section, so two concurrent patches cannot both
+    /// read the same version.
+    func updateServerOrder(
+        userId: String,
+        requested: [String],
+        memberIds: () -> [String]
+    ) -> (ids: [String], version: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        let members = Set(memberIds())
+        let stored = storage.serverSwitcherOrders[userId]
+        let current = stored?.ids ?? Self.sanitizedServerOrder(stored: [], requested: nil, memberIds: members)
+        let ordered = Self.sanitizedServerOrder(stored: stored?.ids ?? [], requested: requested, memberIds: members)
+        var version = stored?.version ?? 0
+        if ordered != current {
+            version += 1
+        }
+        storage.serverSwitcherOrders[userId] = (ordered, version)
+        return (ordered, version)
+    }
+
+    /// Requested (or stored) ids the caller still belongs to, de-duplicated in
+    /// order, then every remaining membership in sorted order.
+    private static func sanitizedServerOrder(
+        stored: [String],
+        requested: [String]?,
+        memberIds: Set<String>
+    ) -> [String] {
+        let base = requested ?? stored
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for id in base where memberIds.contains(id) && !seen.contains(id) {
+            seen.insert(id)
+            ordered.append(id)
+        }
+        for id in memberIds.sorted() where !seen.contains(id) {
+            seen.insert(id)
+            ordered.append(id)
+        }
+        return ordered
+    }
+
+    // MARK: - Server profile reads and writes
+
+    /// Whether the composer resource references (and therefore the apps list)
+    /// are enabled for the server.
+    func isComposerResourceEnabled(serverId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.composerResourceServers.contains(serverId)
+    }
+
+    /// Applies the optional human-directory flag and returns the value the
+    /// server now has, in one critical section.
+    func updateHideHumans(serverId: String, hidden: Bool?) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if let hidden {
+            storage.hideHumansFromMembers[serverId] = hidden
+        }
+        return storage.hideHumansFromMembers[serverId] == true
+    }
+
+    /// Whether the member was removed from the server (and not re-added).
+    func isMemberRemoved(serverId: String, userId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.removedServerMembers.contains("\(serverId)\n\(userId)")
+    }
+
+    /// The local channel an active joint projection of `canonicalChannelId`
+    /// publishes inside `serverId`.
+    func activeJointLocalChannelId(canonicalChannelId: String, serverId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.jointProjections.first {
+            $0.canonicalChannelId == canonicalChannelId
+                && $0.serverId == serverId
+                && $0.status == "active"
+        }?.localChannelId
+    }
+
     private static func joinLinkExpired(_ link: JoinLinkRecord, now: Date) -> Bool {
         if let expiresAt = link.expiresAt, expiresAt <= now { return true }
         return false
@@ -1238,6 +1344,82 @@ final class ServersAndChannelsStore: @unchecked Sendable {
     private static func joinLinkExhausted(_ link: JoinLinkRecord) -> Bool {
         if let maxUses = link.maxUses, link.useCount >= maxUses { return true }
         return false
+    }
+
+    // MARK: - Onboarding settings
+
+    /// One server row plus one member row, read together.
+    struct OnboardingSnapshot {
+        let agentId: String?
+        let greeting: Bool
+        let user: UserOnboarding
+    }
+
+    /// What `PATCH .../onboarding-settings` writes. `serverChange` is applied
+    /// only for an owner or admin; the member row is always written.
+    struct OnboardingPatch {
+        enum Change<Value: Sendable>: Sendable {
+            case keep
+            case set(Value)
+            case clear
+        }
+
+        var isAdmin: Bool
+        var agentId: Change<String> = .keep
+        var greeting: Bool? = nil
+        var reminderOptOut: Bool? = nil
+        var currentStep: Change<String> = .keep
+        /// Wizard step names whose dismissal timestamp is stamped when unset.
+        var dismissedSteps: [String] = []
+    }
+
+    /// The server and member onboarding rows read in one critical section.
+    func onboardingSnapshot(serverId: String, userId: String) -> OnboardingSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        let server = storage.serverOnboardingSettings[serverId] ?? (agentId: nil, greeting: true)
+        let user = storage.userOnboardingSettings["\(serverId)\n\(userId)"] ?? UserOnboarding()
+        return OnboardingSnapshot(agentId: server.agentId, greeting: server.greeting, user: user)
+    }
+
+    /// The whole onboarding patch as one critical section: the server row (for
+    /// an admin) and the member row are read, updated and written together,
+    /// and the stored result is returned so the reply reflects exactly it.
+    func applyOnboardingPatch(
+        serverId: String,
+        userId: String,
+        patch: OnboardingPatch,
+        now: Date
+    ) -> OnboardingSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        var server = storage.serverOnboardingSettings[serverId] ?? (agentId: nil, greeting: true)
+        if patch.isAdmin {
+            switch patch.agentId {
+            case .keep: break
+            case .clear: server.agentId = nil
+            case .set(let agentId): server.agentId = agentId
+            }
+            if let greeting = patch.greeting {
+                server.greeting = greeting
+            }
+            storage.serverOnboardingSettings[serverId] = server
+        }
+        let key = "\(serverId)\n\(userId)"
+        var user = storage.userOnboardingSettings[key] ?? UserOnboarding()
+        if let optOut = patch.reminderOptOut {
+            user.reminderOptOut = optOut
+        }
+        switch patch.currentStep {
+        case .keep: break
+        case .clear: user.currentStep = nil
+        case .set(let step): user.currentStep = step
+        }
+        for step in patch.dismissedSteps where user.dismissed[step] == nil {
+            user.dismissed[step] = now
+        }
+        storage.userOnboardingSettings[key] = user
+        return OnboardingSnapshot(agentId: server.agentId, greeting: server.greeting, user: user)
     }
 }
 
@@ -1248,4 +1430,108 @@ enum SoftDeleteChannelOutcome: Sendable, Equatable {
     case deleted
     case notFound
     case forbidden
+}
+
+// MARK: - Channel archive, membership and agent channel management
+
+extension ServersAndChannelsStore {
+    /// The two facts the archive route reads before it decides: whether the
+    /// caller is a channel admin and whether the channel is a joint projection.
+    func archivePolicy(channelId: String, userId: String) -> (channelAdmin: Bool, jointArchive: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (
+            storage.channelHumanRoles["\(channelId)\n\(userId)"] == "admin",
+            storage.jointProjections.contains { $0.localChannelId == channelId }
+        )
+    }
+
+    /// Marks one channel and every thread under it archived (or not) in one
+    /// critical section.
+    func setArchived(channelId: String, archived: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId]?.archived = archived
+        for (id, var postable) in storage.postableChannels where postable.parentChannelId == channelId {
+            postable.archived = archived
+            storage.postableChannels[id] = postable
+        }
+    }
+
+    /// The archive flag of exactly one projection (no thread cascade).
+    func setArchivedFlag(channelId: String, archived: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId]?.archived = archived
+    }
+
+    func setPostableName(channelId: String, name: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId]?.name = name
+    }
+
+    /// The final name/kind write of a channel update.
+    func updatePostable(channelId: String, name: String, kind: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId]?.name = name
+        storage.postableChannels[channelId]?.kind = kind
+    }
+
+    func isGuestJoinable(channelId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.guestJoinableChannels[channelId] ?? false
+    }
+
+    /// The local channel ids that share the joint canonical channel of
+    /// `channelId` (empty for a non-joint channel), from one snapshot.
+    func jointLinkIds(channelId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let canonical = storage.jointProjections
+            .first(where: { $0.localChannelId == channelId })?.canonicalChannelId
+        else { return [] }
+        return storage.jointProjections.filter { $0.canonicalChannelId == canonical }.map(\.localChannelId)
+    }
+
+    /// Removes one agent from the posting set and answers the channel kind, in
+    /// one critical section.
+    func removeAgentMember(channelId: String, agentId: String) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId]?.memberIds.remove(agentId)
+        return storage.postableChannels[channelId]?.kind ?? "channel"
+    }
+
+    func markChannelDeleted(channelId: String, now: Date) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId]?.deletedAt = now
+    }
+
+    func removeMember(channelId: String, memberId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId]?.memberIds.remove(memberId)
+    }
+
+    /// Adds one human to the posting set, creating the row when the channel has
+    /// none.
+    func insertMember(channelId: String, serverId: String, userId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId, default: PostableChannel(serverId: serverId, memberIds: [])]
+            .memberIds.insert(userId)
+    }
+
+    /// Replaces the posting row of a freshly created channel.
+    func insertCreatedChannel(channelId: String, serverId: String, kind: String, name: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId] = PostableChannel(
+            serverId: serverId, memberIds: [], kind: kind, name: name
+        )
+    }
 }

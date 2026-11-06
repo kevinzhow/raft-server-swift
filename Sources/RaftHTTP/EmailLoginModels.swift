@@ -22,11 +22,6 @@ struct NativeAppleRequestClaims {
         var userId: String?
     }
 
-enum DisplayLanguage {
-        case value(String?)
-        case invalid(String)
-    }
-
 enum FeedbackRouteFailure: Error {
         case invalidSource
         case sourceUnavailable(source: String, reason: String)
@@ -308,11 +303,6 @@ struct MachineRecord {
         var runtimes: [String] = []
     }
 
-enum RuntimeProbeResolution {
-        case live(models: [RuntimeModelProbeModel], default: String?)
-        case notLive(reason: String)
-    }
-
 struct UserOnboarding {
         var reminderOptOut = false
         var dismissed: [String: Date] = [:]
@@ -563,20 +553,9 @@ struct JointChannelLink {
         var status: String = "active"
     }
 
-enum Parsed {
-        case request(Request)
-        case invalid([Issue])
-    }
-
 struct Issue {
         var path: String
         var message: String
-    }
-
-struct Request {
-        var email: String
-        var password: String
-        var pendingLinkToken: String? = nil
     }
 
 struct Account {

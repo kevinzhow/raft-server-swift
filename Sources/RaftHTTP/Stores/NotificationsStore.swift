@@ -195,4 +195,60 @@ final class NotificationsStore: @unchecked Sendable {
         get { state.nativeNotificationAttestationVerifier }
         set { state.nativeNotificationAttestationVerifier = newValue }
     }
+
+    // MARK: - Server notification preferences
+
+    /// The preference row of one `serverId\nuserId` key; a member who never
+    /// patched reads the default row at version 0.
+    func serverNotificationPref(key: String) -> ServerNotificationPref {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.serverNotificationPrefs[key] ?? Self.defaultServerNotificationPref
+    }
+
+    /// One locked patch of a member's server notification row.
+    ///
+    /// `mode` sets the mode and derives `muted`/`mentionsOnly` from it; `muted`
+    /// is applied afterwards and wins (muting forces mode `none`, unmuting from
+    /// `none` returns to `all`). The version advances only when the stored row
+    /// actually changed, and the read, the decision and the write share the
+    /// lock so two concurrent patches cannot both read the same version.
+    func patchServerNotificationPref(
+        key: String,
+        mode: String?,
+        muted: Bool?
+    ) -> (prefs: ServerNotificationPref, changed: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        var prefs = storage.serverNotificationPrefs[key] ?? Self.defaultServerNotificationPref
+        if let mode {
+            prefs.mode = mode
+            prefs.muted = mode == "none"
+            prefs.mentionsOnly = mode == "mentions"
+        }
+        if let muted {
+            prefs.muted = muted
+            if muted {
+                prefs.mode = "none"
+                prefs.mentionsOnly = false
+            } else if prefs.mode == "none" {
+                prefs.mode = "all"
+                prefs.mentionsOnly = false
+            }
+        }
+        let previous = storage.serverNotificationPrefs[key]
+        let changed = previous == nil
+            || previous!.muted != prefs.muted
+            || previous!.mentionsOnly != prefs.mentionsOnly
+            || previous!.mode != prefs.mode
+        if changed {
+            prefs.version = (previous?.version ?? 0) + 1
+        }
+        storage.serverNotificationPrefs[key] = prefs
+        return (prefs, changed)
+    }
+
+    private static let defaultServerNotificationPref: ServerNotificationPref = (
+        muted: false, mentionsOnly: false, mode: "all", version: 0
+    )
 }

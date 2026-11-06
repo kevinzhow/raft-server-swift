@@ -112,6 +112,32 @@ func respond<DTO: JSONBodyConvertible>(
     }
 }
 
+/// An ordered success whose status and headers both depend on the value just
+/// produced.
+///
+/// The product-feedback ticket routes relay a Hands reply: the upstream decides
+/// `200` versus `201`, and the header policy differs per relay (JSON with
+/// `Server-Timing`, or an attachment with its own `Content-Type`). The DTO
+/// conforms to `JSONBodyConvertible` only, so the body is its published text.
+func respond<DTO: JSONBodyConvertible>(
+    status: @escaping (DTO) -> UInt,
+    headers: @escaping (DTO) -> ResponseHeaders,
+    _ call: () async throws -> DTO
+) async throws -> Response {
+    do {
+        let payload = try await call()
+        return response(orderedReply(
+            status: status(payload),
+            body: payload.jsonBody.render(),
+            headers: headers(payload)
+        ))
+    } catch let error as any DomainError {
+        return domainErrorResponse(error)
+    } catch let error as any DomainErrorWithBody {
+        return try richBodyErrorResponse(error)
+    }
+}
+
 /// A route whose published success carries no body (204) and the bare
 /// `Content-Length: 0` header set.
 func respond(_ call: () async throws -> NoContentResponse) async throws -> Response {

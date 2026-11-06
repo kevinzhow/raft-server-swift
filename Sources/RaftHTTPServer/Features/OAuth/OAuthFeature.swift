@@ -38,7 +38,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
         }
         oauth.post("authorize", "human") { request async throws -> Response in
             routeResponse(services.emailAccounts.oauth.issueHumanAuthorization(
-                session: services.emailAccounts.oauthSession(authorization: request.headers[.authorization]),
+                session: services.emailAccounts.authIdentities.oauthSession(authorization: request.headers[.authorization]),
                 body: try await request.bodyText()
             ))
         }
@@ -99,7 +99,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
         }
         oauth.get("clients", "lookup") { request -> Response in
             routeResponse(services.emailAccounts.oauth.clientLookup(
-                session: services.emailAccounts.oauthSession(authorization: request.headers[.authorization]),
+                session: services.emailAccounts.authIdentities.oauthSession(authorization: request.headers[.authorization]),
                 clientId: desktopQuery(request.url.query, "client_id") ?? desktopQuery(request.url.query, "clientId") ?? "",
                 serverId: desktopQuery(request.url.query, "server_id") ?? desktopQuery(request.url.query, "serverId") ?? "",
                 scope: desktopQuery(request.url.query, "scope") ?? ""

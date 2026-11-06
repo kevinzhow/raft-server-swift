@@ -24,12 +24,11 @@ private func makePreflightFixture() -> PreflightFixture {
     accounts.addAccount(id: ownerId, email: "preflight-owner@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
     accounts.oauth.addOwnedServer(id: serverId, slug: serverSlug, name: "Preflight Co", ownerId: ownerId)
-    let computer = accounts.attachComputer(
+    let computer = try? accounts.computersFleet.attachComputer(
         authorization: "Bearer \(accounts.mintAccessTokenForTesting(userId: ownerId))",
-        body: "{\"serverSlug\":\"\(serverSlug)\",\"name\":\"preflight-computer\"}"
+        request: ComputerAttachRequest(serverSlug: serverSlug, name: "preflight-computer")
     )
-    let computerBody = (try? JSONSerialization.jsonObject(with: Data(computer.body.utf8))) as? [String: Any] ?? [:]
-    let computerKey = computerBody["apiKey"] as? String ?? ""
+    let computerKey = computer?.apiKey ?? ""
     let agentKey = accounts.mintAgentCredential(
         agentId: "11111111-1111-4111-8111-111111111627",
         scopes: ["read"],

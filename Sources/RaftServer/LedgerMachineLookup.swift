@@ -21,13 +21,13 @@ struct LedgerMachineLookup: MachineCredentialLooking {
     }
 
     func machine(id: String) async throws -> MatchedMachine? {
-        accounts.machineCredential(id: id).map {
+        accounts.runtimeFormsAndProbes.machineCredential(id: id).map {
             MatchedMachine(id: $0.machineId, serverId: $0.serverId)
         }
     }
 
     func serverExists(id: String) async throws -> Bool {
-        accounts.serverExists(id: id)
+        accounts.runtimeFormsAndProbes.serverExists(id: id)
     }
 
     func machine(apiKey: String) async throws -> MatchedMachine? {

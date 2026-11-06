@@ -130,58 +130,68 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.get("server") { request -> Response in
-            routeResponse(services.emailAccounts.agentServerInfo(
-                authorization: request.headers[.authorization],
-                legacyAgentId: request.parameters.get("agentId") ?? ""
-            ))
+        agent.get("server") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentChannels.serverInfo(
+                    authorization: request.headers[.authorization],
+                    legacyAgentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
         agent.patch("server") { request async throws -> Response in
-            if let body = try? await request.content.decode(LegacyAgentServerPatchDTO.self) {
-                return routeResponse(services.emailAccounts.agentUpdateServer(
+            let body = await jsonRequestBody(AgentServerUpdateRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentChannels.updateServer(
                     authorization: request.headers[.authorization],
-                    body: body.encodedBody(),
+                    body: body,
                     legacyAgentId: request.parameters.get("agentId") ?? ""
-                ))
+                )
             }
-            return routeResponse(services.emailAccounts.agentUpdateServer(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}"),
-                legacyAgentId: request.parameters.get("agentId") ?? ""
-            ))
         }
         agent.post("channels") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentCreateChannel(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}"),
-                legacyAgentId: request.parameters.get("agentId") ?? ""
-            ))
+            let body = await jsonRequestBody(AgentCreateChannelRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentChannels.createChannel(
+                    authorization: request.headers[.authorization],
+                    body: body,
+                    legacyAgentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
         agent.patch("channels", ":channelId") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentUpdateChannel(
-                authorization: request.headers[.authorization],
-                channelId: request.parameters.get("channelId") ?? "",
-                body: try await request.bodyText(default: "{}"),
-                legacyAgentId: request.parameters.get("agentId") ?? ""
-            ))
+            let body = await jsonRequestBody(AgentChannelUpdateRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentChannels.updateChannel(
+                    authorization: request.headers[.authorization],
+                    channelId: request.parameters.get("channelId") ?? "",
+                    body: body,
+                    legacyAgentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
         agent.post("channels", ":channelId", "members") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentChannelMemberWrite(
-                authorization: request.headers[.authorization],
-                channelId: request.parameters.get("channelId") ?? "",
-                body: try await request.bodyText(default: "{}"),
-                remove: false,
-                legacyAgentId: request.parameters.get("agentId") ?? ""
-            ))
+            let body = await jsonRequestBody(AgentChannelMemberRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentChannels.writeChannelMember(
+                    authorization: request.headers[.authorization],
+                    channelId: request.parameters.get("channelId") ?? "",
+                    body: body,
+                    remove: false,
+                    legacyAgentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
         agent.delete("channels", ":channelId", "members") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentChannelMemberWrite(
-                authorization: request.headers[.authorization],
-                channelId: request.parameters.get("channelId") ?? "",
-                body: try await request.bodyText(default: "{}"),
-                remove: true,
-                legacyAgentId: request.parameters.get("agentId") ?? ""
-            ))
+            let body = await jsonRequestBody(AgentChannelMemberRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentChannels.writeChannelMember(
+                    authorization: request.headers[.authorization],
+                    channelId: request.parameters.get("channelId") ?? "",
+                    body: body,
+                    remove: true,
+                    legacyAgentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
         agent.post("channels", ":channelId", "join") { request -> Response in
             routeResponse(services.emailAccounts.agentChannelMembershipFromMachine(
@@ -199,13 +209,15 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 join: false
             ))
         }
-        agent.get("channel-members") { request -> Response in
-            routeResponse(services.emailAccounts.agentChannelMembers(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId"),
-                channelRef: desktopQuery(request.url.query, "channel"),
-                legacyAgentId: request.parameters.get("agentId") ?? ""
-            ))
+        agent.get("channel-members") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentChannels.channelMembers(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId"),
+                    channelRef: desktopQuery(request.url.query, "channel"),
+                    legacyAgentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
         agent.get("history") { request -> Response in
             routeResponse(services.emailAccounts.agentHistory(
@@ -354,10 +366,13 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             ))
         }
         machine.post("scope-attestation") { request async throws -> Response in
-            routeResponse(services.emailAccounts.machineScopeAttestation(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(MachineScopeAttestationRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.serverProfileAndOrder.machineScopeAttestation(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         computer.post("attachment", "revoke") { _ -> Response in
             var headers = HTTPFields()
@@ -365,30 +380,40 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             return Response(status: .unauthorized, headers: headers, body: .init(string: "{\"error\":\"Authentication policy not registered for this path\",\"code\":\"auth_policy_unregistered_path\"}"))
         }
         computer.post("runners", ":agentId", "credentials") { request async throws -> Response in
-            routeResponse(services.emailAccounts.computerMintRunnerCredential(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ComputerRunnerCredentialRequest.self, request)
+                ?? ComputerRunnerCredentialRequest()
+            return try await respond(status: 201) {
+                try services.emailAccounts.computersFleet.computerMintRunnerCredential(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    request: body
+                )
+            }
         }
-        computer.delete("runners", ":agentId", "credentials", ":credentialId") { request -> Response in
-            routeResponse(services.emailAccounts.computerRevokeRunnerCredential(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                credentialId: request.parameters.get("credentialId") ?? ""
-            ))
+        computer.delete("runners", ":agentId", "credentials", ":credentialId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.computersFleet.computerRevokeRunnerCredential(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    credentialId: request.parameters.get("credentialId") ?? ""
+                )
+            }
         }
-        computer.post("runners", ":agentId", "stop") { request -> Response in
-            routeResponse(services.emailAccounts.computerStopRunner(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? ""
-            ))
+        computer.post("runners", ":agentId", "stop") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.computersFleet.computerStopRunner(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
-        computer.get("runners") { request -> Response in
-            routeResponse(services.emailAccounts.computerRunners(
-                authorization: request.headers[.authorization],
-                scope: desktopQuery(request.url.query, "scope")
-            ))
+        computer.get("runners") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.computersFleet.computerRunners(
+                    authorization: request.headers[.authorization],
+                    scope: desktopQuery(request.url.query, "scope")
+                )
+            }
         }
         // The resumable control manifest is the one JSON surface allowed past the
         // 100 KB global parser: 512 KB manifest plus envelope headroom.

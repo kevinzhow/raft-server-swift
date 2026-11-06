@@ -43,50 +43,65 @@ public struct FeedbackFeature: RouteCollection, Sendable {
             ))
         }
         tickets.post(":ticketId", "close") { request async throws -> Response in
-            let body: String
-            if let typed = try? await request.content.decode(FeedbackTicketCloseRequest.self) {
-                body = FeedbackJSONCoding.string(typed)
-            } else {
-                body = try await request.bodyText(default: "{}")
+            let body = await jsonRequestBody(FeedbackTicketCloseRequest.self, request)
+            let clientKind = request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? ""
+            return try await respond(status: { $0.status }, headers: { $0.headers }) {
+                try await services.emailAccounts.feedbackMultiApp.closeTicket(
+                    authorization: request.headers[.authorization],
+                    ticketId: request.parameters.get("ticketId") ?? "",
+                    request: body,
+                    clientKindHeader: clientKind
+                )
             }
-            return routeResponse(await services.emailAccounts.closeProductFeedbackTicketAsync(
-                authorization: request.headers[.authorization],
-                ticketId: request.parameters.get("ticketId") ?? "",
-                body: body,
-                clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? ""
-            ))
         }
         tickets.post(":ticketId", "comments") { request async throws -> Response in
-            routeResponse(await services.emailAccounts.replyProductFeedbackTicketAsync(
-                authorization: request.headers[.authorization],
-                ticketId: request.parameters.get("ticketId") ?? "",
+            let reply = FeedbackTicketReplyRequest(
                 contentType: request.headers[.contentType] ?? "",
-                body: try await request.bodyText(),
-                clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? ""
-            ))
+                body: try await request.bodyText()
+            )
+            let clientKind = request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? ""
+            return try await respond(status: { $0.status }, headers: { $0.headers }) {
+                try await services.emailAccounts.feedbackMultiApp.replyTicket(
+                    authorization: request.headers[.authorization],
+                    ticketId: request.parameters.get("ticketId") ?? "",
+                    request: reply,
+                    clientKindHeader: clientKind
+                )
+            }
         }
         tickets.get { request async throws -> Response in
-            routeResponse(await services.emailAccounts.productFeedbackTicketsAsync(
-                authorization: request.headers[.authorization],
-                clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? "",
-                cursor: try? request.query.get(String.self, at: "cursor")
-            ))
+            let clientKind = request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? ""
+            let cursor = try? request.query.get(String.self, at: "cursor")
+            return try await respond(status: { $0.status }, headers: { $0.headers }) {
+                try await services.emailAccounts.feedbackMultiApp.tickets(
+                    authorization: request.headers[.authorization],
+                    clientKindHeader: clientKind,
+                    cursor: cursor
+                )
+            }
         }
         tickets.get(":ticketId") { request async throws -> Response in
-            routeResponse(await services.emailAccounts.productFeedbackTicketAsync(
-                authorization: request.headers[.authorization],
-                ticketId: request.parameters.get("ticketId") ?? "",
-                clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? "",
-                commentCursor: try? request.query.get(String.self, at: "comment_cursor")
-            ))
+            let clientKind = request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? ""
+            let commentCursor = try? request.query.get(String.self, at: "comment_cursor")
+            return try await respond(status: { $0.status }, headers: { $0.headers }) {
+                try await services.emailAccounts.feedbackMultiApp.ticket(
+                    authorization: request.headers[.authorization],
+                    ticketId: request.parameters.get("ticketId") ?? "",
+                    clientKindHeader: clientKind,
+                    commentCursor: commentCursor
+                )
+            }
         }
         tickets.get(":ticketId", "attachments", ":attachmentId") { request async throws -> Response in
-            routeResponse(await services.emailAccounts.productFeedbackAttachmentAsync(
-                authorization: request.headers[.authorization],
-                ticketId: request.parameters.get("ticketId") ?? "",
-                attachmentId: request.parameters.get("attachmentId") ?? "",
-                clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? ""
-            ))
+            let clientKind = request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? ""
+            return try await respond(status: { $0.status }, headers: { $0.headers }) {
+                try await services.emailAccounts.feedbackMultiApp.attachment(
+                    authorization: request.headers[.authorization],
+                    ticketId: request.parameters.get("ticketId") ?? "",
+                    attachmentId: request.parameters.get("attachmentId") ?? "",
+                    clientKindHeader: clientKind
+                )
+            }
         }
         feedback.post { request async throws -> Response in
             let submission = ProductFeedbackSubmissionRequest(

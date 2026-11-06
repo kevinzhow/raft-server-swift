@@ -1,919 +1,534 @@
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 
 /// Product-feedback ticket surface (`/api/product-feedback/tickets…`).
 ///
-/// The synchronous entry points stay for the extracted route tests that mount
-/// synchronous closures; the `…Async` twins are what `FeedbackFeature` calls.
-/// Both share the same validation, routing and reply mapping through
-/// `FeedbackService`, which owns the transport and the route-binding plumbing.
-struct FeedbackMultiAppService {
-    let directory: EmailLoginDirectory
+/// The service owns the whole handler body the directory extension carried:
+/// authorization order, request validation, Hands app selection, route binding,
+/// the reporter bearer, the upstream relay and the cursor re-wrapping. It returns
+/// a `FeedbackHandsReply` (the relayed body with its status and header policy)
+/// or throws a typed `FeedbackMultiAppError`; it never builds a wire response.
+///
+/// The Hands transport, route binding and reporter session still live in the
+/// not-yet-migrated `FeedbackService` (shared with the submission service), so
+/// they enter through closures in `FeedbackMultiAppDependencies`, wired in the
+/// directory accessor. The service holds no state of its own.
+public struct FeedbackMultiAppService: Sendable {
+    let dependencies: FeedbackMultiAppDependencies
 
-    init(directory: EmailLoginDirectory) {
-        self.directory = directory
+    init(dependencies: FeedbackMultiAppDependencies) {
+        self.dependencies = dependencies
     }
 
-    private var feedback: FeedbackService { FeedbackService(directory: directory) }
+    // MARK: - GET /api/product-feedback/tickets
 
-    // MARK: - Ticket list
-
-    /// `GET /api/product-feedback/tickets`.
-    func tickets(
+    public func tickets(
         authorization: String?,
         clientKindHeader: String = "",
         cursor: String? = nil
-    ) -> HTTPReply {
-        let service = feedback
-        let listStartedAt = Date()
-        guard let userId = directory.sessionUserId(authorization: authorization) else {
-            return EmailLoginDirectory.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        let verified = service.locked { directory.accounts.values.first { $0.id == userId }?.emailVerified == true }
-        guard verified else {
-            return EmailLoginDirectory.json(403, "{\"error\":\"Email verification required\",\"code\":\"account_unverified\"}")
-        }
-        let source: String
-        do {
-            source = try EmailLoginDirectory.feedbackSource(clientKindHeader)
-        } catch {
-            return service.sourceInvalidReply()
-        }
-        let environment: FeedbackRouteEnvironment
-        do {
-            environment = try service.routeEnvironment(source: source, userId: userId)
-        } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_integration_unavailable\"}")
-        }
+    ) async throws -> FeedbackHandsReply {
+        let startedAt = dependencies.now()
+        let userId = try authenticate(authorization)
+        let source = try resolveSource(clientKindHeader)
+        let environment = try routeEnvironment(source: source, userId: userId)
         let conversationToken = environment.conversationToken.isEmpty
             ? environment.appToken
             : environment.conversationToken
         guard !environment.baseURL.isEmpty, !conversationToken.isEmpty else {
-            return EmailLoginDirectory.json(404, "{\"error\":\"Not found\"}")
+            throw FeedbackMultiAppError.routeNotFound
         }
-        let reporterId: String
-        do {
-            reporterId = try service.ensureRouteBinding(userId: userId, environment: environment)
-        } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let bearer: String
-        do {
-            bearer = try service.bearer(userId: userId, reporterId: reporterId, environment: environment)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
+        let reporterId = try await bind(userId: userId, environment: environment)
+        let bearer = try await mintBearer(userId: userId, reporterId: reporterId, environment: environment)
         var handsCursor: String?
         if let cursor, !cursor.isEmpty {
-            guard !environment.cursorSecret.isEmpty else { return service.sourceInvalidReply() }
-            do {
-                handsCursor = try EmailLoginDirectory.feedbackDecodeCursor(
-                    cursor,
-                    route: "ticket_list",
-                    userId: userId,
-                    ticketId: nil,
-                    cursorKey: environment.cursorSecret
-                )
-            } catch {
-                return service.sourceInvalidReply()
-            }
+            handsCursor = try decodeCursor(
+                cursor,
+                route: "ticket_list",
+                userId: userId,
+                ticketId: nil,
+                environment: environment
+            )
         }
         var path = "/api/apps/\(environment.appId)/reporter-feedback?limit=50"
         if let handsCursor {
             path += "&cursor=" + EmailLoginDirectory.feedbackPercentEncoded(handsCursor)
         }
-        let (status, headers, body) = service.handsRequest(
-            environment: environment,
-            method: "GET",
-            path: path,
-            bearer: bearer,
-            reporterId: reporterId
+        let upstream = await dependencies.handsRequest(
+            environment, "GET", path, bearer, reporterId, [:], nil
         )
-        guard status == 200 else {
-            return service.conversationReply(status: status, upstreamHeaders: headers, body: body)
+        guard upstream.status == 200 else {
+            return try outcome(upstream)
         }
-        var replyBody = String(decoding: body, as: UTF8.self)
-        if !environment.cursorSecret.isEmpty,
-           let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
-           let next = object["next_cursor"] as? String, !next.isEmpty,
-           let encoded = EmailLoginDirectory.feedbackEncodeCursor(
-               route: "ticket_list",
-               userId: userId,
-               ticketId: nil,
-               handsCursor: next,
-               cursorKey: environment.cursorSecret
-           ) {
-            var rewritten = object
-            rewritten["next_cursor"] = encoded
-            if let data = try? JSONSerialization.data(withJSONObject: rewritten, options: [.sortedKeys]) {
-                replyBody = String(decoding: data, as: UTF8.self)
-            }
-        }
-        return service.jsonReply(
-            status: 200,
-            body: replyBody,
-            elapsed: listStartedAt,
-            upstreamHeaders: headers
+        return pageReply(
+            upstream,
+            member: "next_cursor",
+            route: "ticket_list",
+            userId: userId,
+            ticketId: nil,
+            environment: environment,
+            startedAt: startedAt
         )
     }
 
-    /// `GET /api/product-feedback/tickets` for the Vapor route closure.
-    func ticketsAsync(
-        authorization: String?,
-        clientKindHeader: String = "",
-        cursor: String? = nil
-    ) async -> HTTPReply {
-        let service = feedback
-        let listStartedAt = Date()
-        guard let userId = directory.sessionUserId(authorization: authorization) else {
-            return EmailLoginDirectory.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        let verified = service.locked { directory.accounts.values.first { $0.id == userId }?.emailVerified == true }
-        guard verified else {
-            return EmailLoginDirectory.json(403, "{\"error\":\"Email verification required\",\"code\":\"account_unverified\"}")
-        }
-        let source: String
-        do {
-            source = try EmailLoginDirectory.feedbackSource(clientKindHeader)
-        } catch {
-            return service.sourceInvalidReply()
-        }
-        let environment: FeedbackRouteEnvironment
-        do {
-            environment = try service.routeEnvironment(source: source, userId: userId)
-        } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_integration_unavailable\"}")
-        }
-        let conversationToken = environment.conversationToken.isEmpty
-            ? environment.appToken
-            : environment.conversationToken
-        guard !environment.baseURL.isEmpty, !conversationToken.isEmpty else {
-            return EmailLoginDirectory.json(404, "{\"error\":\"Not found\"}")
-        }
-        let reporterId: String
-        do {
-            reporterId = try await service.ensureRouteBindingAsync(userId: userId, environment: environment)
-        } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let bearer: String
-        do {
-            bearer = try await service.bearerAsync(userId: userId, reporterId: reporterId, environment: environment)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        var handsCursor: String?
-        if let cursor, !cursor.isEmpty {
-            guard !environment.cursorSecret.isEmpty else { return service.sourceInvalidReply() }
-            do {
-                handsCursor = try EmailLoginDirectory.feedbackDecodeCursor(
-                    cursor,
-                    route: "ticket_list",
-                    userId: userId,
-                    ticketId: nil,
-                    cursorKey: environment.cursorSecret
-                )
-            } catch {
-                return service.sourceInvalidReply()
-            }
-        }
-        var path = "/api/apps/\(environment.appId)/reporter-feedback?limit=50"
-        if let handsCursor {
-            path += "&cursor=" + EmailLoginDirectory.feedbackPercentEncoded(handsCursor)
-        }
-        let (status, headers, body) = await service.handsRequestAsync(
-            environment: environment,
-            method: "GET",
-            path: path,
-            bearer: bearer,
-            reporterId: reporterId
-        )
-        guard status == 200 else {
-            return service.conversationReply(status: status, upstreamHeaders: headers, body: body)
-        }
-        var replyBody = String(decoding: body, as: UTF8.self)
-        if !environment.cursorSecret.isEmpty,
-           let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
-           let next = object["next_cursor"] as? String, !next.isEmpty,
-           let encoded = EmailLoginDirectory.feedbackEncodeCursor(
-               route: "ticket_list",
-               userId: userId,
-               ticketId: nil,
-               handsCursor: next,
-               cursorKey: environment.cursorSecret
-           ) {
-            var rewritten = object
-            rewritten["next_cursor"] = encoded
-            if let data = try? JSONSerialization.data(withJSONObject: rewritten, options: [.sortedKeys]) {
-                replyBody = String(decoding: data, as: UTF8.self)
-            }
-        }
-        return service.jsonReply(
-            status: 200,
-            body: replyBody,
-            elapsed: listStartedAt,
-            upstreamHeaders: headers
-        )
-    }
+    // MARK: - POST /api/product-feedback/tickets/:ticketId/close
 
-    // MARK: - Close
-
-    /// `POST /api/product-feedback/tickets/:ticketId/close`.
-    func closeTicket(
+    /// `request` is nil when the body did not decode; the reason check then
+    /// answers the published `400`.
+    public func closeTicket(
         authorization: String?,
         ticketId: String,
-        body: String,
+        request: FeedbackTicketCloseRequest?,
         clientKindHeader: String = ""
-    ) -> HTTPReply {
-        let service = feedback
-        if let rejected = service.conversationRejectedReply(authorization: authorization) { return rejected }
-        let userId = directory.sessionUserId(authorization: authorization)!
+    ) async throws -> FeedbackHandsReply {
+        let userId = try authenticate(authorization)
         guard EmailLoginDirectory.feedbackCanonicalUUID(ticketId) else {
-            return EmailLoginDirectory.json(404, "{\"error\":\"Feedback ticket not found\",\"code\":\"feedback_not_found\"}")
+            throw FeedbackMultiAppError.ticketNotFound
         }
-        let reason = ((try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any])?["reason"] as? String
-        guard reason == "completed" || reason == "no_longer_needed" else {
-            return EmailLoginDirectory.json(400, "{\"error\":\"Feedback close reason is invalid\",\"code\":\"feedback_invalid\"}")
+        guard let request, request.reason == "completed" || request.reason == "no_longer_needed" else {
+            throw FeedbackMultiAppError.closeReasonInvalid
         }
-        let source: String
-        do { source = try EmailLoginDirectory.feedbackSource(clientKindHeader) } catch { return service.sourceInvalidReply() }
-        let environment: FeedbackRouteEnvironment
-        do {
-            environment = try service.routeEnvironment(source: source, userId: userId)
-        } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let reporterId: String
-        do {
-            reporterId = try service.ensureRouteBinding(userId: userId, environment: environment)
-        } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let bearer: String
-        do {
-            bearer = try service.bearer(userId: userId, reporterId: reporterId, environment: environment)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let (status, headers, upstreamBody) = service.handsRequest(
-            environment: environment,
-            method: "POST",
-            path: "/api/apps/\(environment.appId)/reporter-feedback/\(ticketId)/close",
-            bearer: bearer,
-            reporterId: reporterId,
-            headers: ["Content-Type": "application/json"],
-            body: Data(body.utf8)
+        let source = try resolveSource(clientKindHeader)
+        let environment = try routeEnvironment(source: source, userId: userId)
+        let reporterId = try await bind(userId: userId, environment: environment)
+        let bearer = try await mintBearer(userId: userId, reporterId: reporterId, environment: environment)
+        let upstream = await dependencies.handsRequest(
+            environment,
+            "POST",
+            "/api/apps/\(environment.appId)/reporter-feedback/\(ticketId)/close",
+            bearer,
+            reporterId,
+            ["Content-Type": "application/json"],
+            Data(FeedbackJSONCoding.string(request).utf8)
         )
-        return service.conversationReply(status: status, upstreamHeaders: headers, body: upstreamBody)
+        return try outcome(upstream)
     }
 
-    /// `POST /api/product-feedback/tickets/:ticketId/close` for Vapor.
-    func closeTicketAsync(
+    // MARK: - POST /api/product-feedback/tickets/:ticketId/comments
+
+    public func replyTicket(
         authorization: String?,
         ticketId: String,
-        body: String,
+        request: FeedbackTicketReplyRequest,
         clientKindHeader: String = ""
-    ) async -> HTTPReply {
-        let service = feedback
-        if let rejected = service.conversationRejectedReply(authorization: authorization) { return rejected }
-        let userId = directory.sessionUserId(authorization: authorization)!
+    ) async throws -> FeedbackHandsReply {
+        let userId = try authenticate(authorization)
         guard EmailLoginDirectory.feedbackCanonicalUUID(ticketId) else {
-            return EmailLoginDirectory.json(404, "{\"error\":\"Feedback ticket not found\",\"code\":\"feedback_not_found\"}")
+            throw FeedbackMultiAppError.ticketNotFound
         }
-        let reason = ((try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any])?["reason"] as? String
-        guard reason == "completed" || reason == "no_longer_needed" else {
-            return EmailLoginDirectory.json(400, "{\"error\":\"Feedback close reason is invalid\",\"code\":\"feedback_invalid\"}")
-        }
-        let source: String
-        do { source = try EmailLoginDirectory.feedbackSource(clientKindHeader) } catch { return service.sourceInvalidReply() }
-        let environment: FeedbackRouteEnvironment
-        do {
-            environment = try service.routeEnvironment(source: source, userId: userId)
-        } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let reporterId: String
-        do {
-            reporterId = try await service.ensureRouteBindingAsync(userId: userId, environment: environment)
-        } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let bearer: String
-        do {
-            bearer = try await service.bearerAsync(userId: userId, reporterId: reporterId, environment: environment)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let (status, headers, upstreamBody) = await service.handsRequestAsync(
-            environment: environment,
-            method: "POST",
-            path: "/api/apps/\(environment.appId)/reporter-feedback/\(ticketId)/close",
-            bearer: bearer,
-            reporterId: reporterId,
-            headers: ["Content-Type": "application/json"],
-            body: Data(body.utf8)
-        )
-        return service.conversationReply(status: status, upstreamHeaders: headers, body: upstreamBody)
-    }
-
-    // MARK: - Reply
-
-    /// `POST /api/product-feedback/tickets/:ticketId/comments`.
-    func replyTicket(
-        authorization: String?,
-        ticketId: String,
-        contentType: String,
-        body: String,
-        clientKindHeader: String = ""
-    ) -> HTTPReply {
-        let service = feedback
-        if let rejected = service.conversationRejectedReply(authorization: authorization) { return rejected }
-        let userId = directory.sessionUserId(authorization: authorization)!
-        guard EmailLoginDirectory.feedbackCanonicalUUID(ticketId) else {
-            return EmailLoginDirectory.json(404, "{\"error\":\"Feedback ticket not found\",\"code\":\"feedback_not_found\"}")
-        }
-        for part in body.components(separatedBy: "Content-Disposition: form-data") {
+        for part in request.body.components(separatedBy: "Content-Disposition: form-data") {
             guard part.contains("filename=\"") else { continue }
             let lower = part.lowercased()
             let allowed = lower.contains("content-type: image/png") || lower.contains("content-type: image/jpeg")
                 || lower.contains("content-type: image/webp") || lower.contains("content-type: image/gif")
-            if !allowed {
-                return EmailLoginDirectory.json(400, "{\"error\":\"Only image attachments are supported\",\"code\":\"feedback_attachment_type_invalid\"}")
-            }
+            if !allowed { throw FeedbackMultiAppError.attachmentTypeInvalid }
         }
-        let source: String
-        do { source = try EmailLoginDirectory.feedbackSource(clientKindHeader) } catch { return service.sourceInvalidReply() }
-        let environment: FeedbackRouteEnvironment
-        do {
-            environment = try service.routeEnvironment(source: source, userId: userId)
-        } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let reporterId: String
-        do {
-            reporterId = try service.ensureRouteBinding(userId: userId, environment: environment)
-        } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let bearer: String
-        do {
-            bearer = try service.bearer(userId: userId, reporterId: reporterId, environment: environment)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let (status, headers, upstreamBody) = service.handsRequest(
-            environment: environment,
-            method: "POST",
-            path: "/api/apps/\(environment.appId)/reporter-feedback/\(ticketId)/comments",
-            bearer: bearer,
-            reporterId: reporterId,
-            headers: ["Content-Type": contentType],
-            body: Data(body.utf8)
+        let source = try resolveSource(clientKindHeader)
+        let environment = try routeEnvironment(source: source, userId: userId)
+        let reporterId = try await bind(userId: userId, environment: environment)
+        let bearer = try await mintBearer(userId: userId, reporterId: reporterId, environment: environment)
+        let upstream = await dependencies.handsRequest(
+            environment,
+            "POST",
+            "/api/apps/\(environment.appId)/reporter-feedback/\(ticketId)/comments",
+            bearer,
+            reporterId,
+            ["Content-Type": request.contentType],
+            Data(request.body.utf8)
         )
-        return service.conversationReply(status: status, upstreamHeaders: headers, body: upstreamBody)
+        return try outcome(upstream)
     }
 
-    /// `POST /api/product-feedback/tickets/:ticketId/comments` for Vapor.
-    func replyTicketAsync(
-        authorization: String?,
-        ticketId: String,
-        contentType: String,
-        body: String,
-        clientKindHeader: String = ""
-    ) async -> HTTPReply {
-        let service = feedback
-        if let rejected = service.conversationRejectedReply(authorization: authorization) { return rejected }
-        let userId = directory.sessionUserId(authorization: authorization)!
-        guard EmailLoginDirectory.feedbackCanonicalUUID(ticketId) else {
-            return EmailLoginDirectory.json(404, "{\"error\":\"Feedback ticket not found\",\"code\":\"feedback_not_found\"}")
-        }
-        for part in body.components(separatedBy: "Content-Disposition: form-data") {
-            guard part.contains("filename=\"") else { continue }
-            let lower = part.lowercased()
-            let allowed = lower.contains("content-type: image/png") || lower.contains("content-type: image/jpeg")
-                || lower.contains("content-type: image/webp") || lower.contains("content-type: image/gif")
-            if !allowed {
-                return EmailLoginDirectory.json(400, "{\"error\":\"Only image attachments are supported\",\"code\":\"feedback_attachment_type_invalid\"}")
-            }
-        }
-        let source: String
-        do { source = try EmailLoginDirectory.feedbackSource(clientKindHeader) } catch { return service.sourceInvalidReply() }
-        let environment: FeedbackRouteEnvironment
-        do {
-            environment = try service.routeEnvironment(source: source, userId: userId)
-        } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let reporterId: String
-        do {
-            reporterId = try await service.ensureRouteBindingAsync(userId: userId, environment: environment)
-        } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let bearer: String
-        do {
-            bearer = try await service.bearerAsync(userId: userId, reporterId: reporterId, environment: environment)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let (status, headers, upstreamBody) = await service.handsRequestAsync(
-            environment: environment,
-            method: "POST",
-            path: "/api/apps/\(environment.appId)/reporter-feedback/\(ticketId)/comments",
-            bearer: bearer,
-            reporterId: reporterId,
-            headers: ["Content-Type": contentType],
-            body: Data(body.utf8)
-        )
-        return service.conversationReply(status: status, upstreamHeaders: headers, body: upstreamBody)
-    }
+    // MARK: - GET /api/product-feedback/tickets/:ticketId
 
-    // MARK: - Ticket detail
-
-    /// `GET /api/product-feedback/tickets/:ticketId`.
-    func ticket(
+    public func ticket(
         authorization: String?,
         ticketId: String,
         clientKindHeader: String = "",
         commentLimit: Int = 50,
         commentCursor: String? = nil
-    ) -> HTTPReply {
-        let service = feedback
-        let startedAt = Date()
-        if let rejected = service.conversationRejectedReply(authorization: authorization) { return rejected }
-        let userId = directory.sessionUserId(authorization: authorization)!
+    ) async throws -> FeedbackHandsReply {
+        let startedAt = dependencies.now()
+        let userId = try authenticate(authorization)
         guard EmailLoginDirectory.feedbackCanonicalUUID(ticketId) else {
-            return EmailLoginDirectory.json(404, "{\"error\":\"Feedback ticket not found\",\"code\":\"feedback_not_found\"}")
+            throw FeedbackMultiAppError.ticketNotFound
         }
         guard commentLimit >= 1, commentLimit <= 100 else {
-            return EmailLoginDirectory.json(400, "{\"error\":\"Invalid feedback request\",\"code\":\"feedback_invalid\"}")
+            throw FeedbackMultiAppError.invalidRequest
         }
-        let source: String
-        do { source = try EmailLoginDirectory.feedbackSource(clientKindHeader) } catch { return service.sourceInvalidReply() }
-        let environment: FeedbackRouteEnvironment
-        do {
-            environment = try service.routeEnvironment(source: source, userId: userId)
-        } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let reporterId: String
-        do {
-            reporterId = try service.ensureRouteBinding(userId: userId, environment: environment)
-        } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let bearer: String
-        do {
-            bearer = try service.bearer(userId: userId, reporterId: reporterId, environment: environment)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
+        let source = try resolveSource(clientKindHeader)
+        let environment = try routeEnvironment(source: source, userId: userId)
+        let reporterId = try await bind(userId: userId, environment: environment)
+        let bearer = try await mintBearer(userId: userId, reporterId: reporterId, environment: environment)
         var handsCursor: String?
         if let commentCursor, !commentCursor.isEmpty {
-            guard !environment.cursorSecret.isEmpty else { return service.sourceInvalidReply() }
-            do {
-                handsCursor = try EmailLoginDirectory.feedbackDecodeCursor(
-                    commentCursor,
-                    route: "ticket_comments",
-                    userId: userId,
-                    ticketId: ticketId,
-                    cursorKey: environment.cursorSecret
-                )
-            } catch {
-                return service.sourceInvalidReply()
-            }
+            handsCursor = try decodeCursor(
+                commentCursor,
+                route: "ticket_comments",
+                userId: userId,
+                ticketId: ticketId,
+                environment: environment
+            )
         }
         var path = "/api/apps/\(environment.appId)/reporter-feedback/\(ticketId)?comment_limit=\(commentLimit)"
         if let handsCursor {
             path += "&comment_cursor=" + EmailLoginDirectory.feedbackPercentEncoded(handsCursor)
         }
-        let (status, headers, body) = service.handsRequest(
-            environment: environment,
-            method: "GET",
-            path: path,
-            bearer: bearer,
-            reporterId: reporterId
+        let upstream = await dependencies.handsRequest(
+            environment, "GET", path, bearer, reporterId, [:], nil
         )
-        guard status == 200 else {
-            return service.conversationReply(status: status, upstreamHeaders: headers, body: body)
+        guard upstream.status == 200 else {
+            return try outcome(upstream)
         }
-        var replyBody = String(decoding: body, as: UTF8.self)
-        if !environment.cursorSecret.isEmpty,
-           let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
-           let next = object["next_comment_cursor"] as? String, !next.isEmpty,
-           let encoded = EmailLoginDirectory.feedbackEncodeCursor(
-               route: "ticket_comments",
-               userId: userId,
-               ticketId: ticketId,
-               handsCursor: next,
-               cursorKey: environment.cursorSecret
-           ) {
-            var rewritten = object
-            rewritten["next_comment_cursor"] = encoded
-            if let data = try? JSONSerialization.data(withJSONObject: rewritten, options: [.sortedKeys]) {
-                replyBody = String(decoding: data, as: UTF8.self)
-            }
-        }
-        return service.jsonReply(status: 200, body: replyBody, elapsed: startedAt, upstreamHeaders: headers)
+        return pageReply(
+            upstream,
+            member: "next_comment_cursor",
+            route: "ticket_comments",
+            userId: userId,
+            ticketId: ticketId,
+            environment: environment,
+            startedAt: startedAt
+        )
     }
 
-    /// `GET /api/product-feedback/tickets/:ticketId` for Vapor.
-    func ticketAsync(
-        authorization: String?,
-        ticketId: String,
-        clientKindHeader: String = "",
-        commentLimit: Int = 50,
-        commentCursor: String? = nil
-    ) async -> HTTPReply {
-        let service = feedback
-        let startedAt = Date()
-        if let rejected = service.conversationRejectedReply(authorization: authorization) { return rejected }
-        let userId = directory.sessionUserId(authorization: authorization)!
-        guard EmailLoginDirectory.feedbackCanonicalUUID(ticketId) else {
-            return EmailLoginDirectory.json(404, "{\"error\":\"Feedback ticket not found\",\"code\":\"feedback_not_found\"}")
-        }
-        guard commentLimit >= 1, commentLimit <= 100 else {
-            return EmailLoginDirectory.json(400, "{\"error\":\"Invalid feedback request\",\"code\":\"feedback_invalid\"}")
-        }
-        let source: String
-        do { source = try EmailLoginDirectory.feedbackSource(clientKindHeader) } catch { return service.sourceInvalidReply() }
-        let environment: FeedbackRouteEnvironment
-        do {
-            environment = try service.routeEnvironment(source: source, userId: userId)
-        } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let reporterId: String
-        do {
-            reporterId = try await service.ensureRouteBindingAsync(userId: userId, environment: environment)
-        } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let bearer: String
-        do {
-            bearer = try await service.bearerAsync(userId: userId, reporterId: reporterId, environment: environment)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        var handsCursor: String?
-        if let commentCursor, !commentCursor.isEmpty {
-            guard !environment.cursorSecret.isEmpty else { return service.sourceInvalidReply() }
-            do {
-                handsCursor = try EmailLoginDirectory.feedbackDecodeCursor(
-                    commentCursor,
-                    route: "ticket_comments",
-                    userId: userId,
-                    ticketId: ticketId,
-                    cursorKey: environment.cursorSecret
-                )
-            } catch {
-                return service.sourceInvalidReply()
-            }
-        }
-        var path = "/api/apps/\(environment.appId)/reporter-feedback/\(ticketId)?comment_limit=\(commentLimit)"
-        if let handsCursor {
-            path += "&comment_cursor=" + EmailLoginDirectory.feedbackPercentEncoded(handsCursor)
-        }
-        let (status, headers, body) = await service.handsRequestAsync(
-            environment: environment,
-            method: "GET",
-            path: path,
-            bearer: bearer,
-            reporterId: reporterId
-        )
-        guard status == 200 else {
-            return service.conversationReply(status: status, upstreamHeaders: headers, body: body)
-        }
-        var replyBody = String(decoding: body, as: UTF8.self)
-        if !environment.cursorSecret.isEmpty,
-           let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
-           let next = object["next_comment_cursor"] as? String, !next.isEmpty,
-           let encoded = EmailLoginDirectory.feedbackEncodeCursor(
-               route: "ticket_comments",
-               userId: userId,
-               ticketId: ticketId,
-               handsCursor: next,
-               cursorKey: environment.cursorSecret
-           ) {
-            var rewritten = object
-            rewritten["next_comment_cursor"] = encoded
-            if let data = try? JSONSerialization.data(withJSONObject: rewritten, options: [.sortedKeys]) {
-                replyBody = String(decoding: data, as: UTF8.self)
-            }
-        }
-        return service.jsonReply(status: 200, body: replyBody, elapsed: startedAt, upstreamHeaders: headers)
-    }
+    // MARK: - GET /api/product-feedback/tickets/:ticketId/attachments/:attachmentId
 
-    // MARK: - Attachment
-
-    /// `GET /api/product-feedback/tickets/:ticketId/attachments/:attachmentId`.
-    func attachment(
+    public func attachment(
         authorization: String?,
         ticketId: String,
         attachmentId: String,
         clientKindHeader: String = ""
-    ) -> HTTPReply {
-        let service = feedback
-        if let rejected = service.conversationRejectedReply(authorization: authorization) { return rejected }
-        let userId = directory.sessionUserId(authorization: authorization)!
+    ) async throws -> FeedbackHandsReply {
+        let userId = try authenticate(authorization)
         guard EmailLoginDirectory.feedbackCanonicalUUID(ticketId),
               EmailLoginDirectory.feedbackCanonicalUUID(attachmentId) else {
-            return EmailLoginDirectory.json(404, "{\"error\":\"Feedback ticket not found\",\"code\":\"feedback_not_found\"}")
+            throw FeedbackMultiAppError.ticketNotFound
         }
-        let source: String
-        do { source = try EmailLoginDirectory.feedbackSource(clientKindHeader) } catch { return service.sourceInvalidReply() }
-        let environment: FeedbackRouteEnvironment
-        do {
-            environment = try service.routeEnvironment(source: source, userId: userId)
-        } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let reporterId: String
-        do {
-            reporterId = try service.ensureRouteBinding(userId: userId, environment: environment)
-        } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let bearer: String
-        do {
-            bearer = try service.bearer(userId: userId, reporterId: reporterId, environment: environment)
-        } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
-        }
-        let (status, headers, body) = service.handsRequest(
-            environment: environment,
-            method: "GET",
-            path: "/api/apps/\(environment.appId)/reporter-feedback/\(ticketId)/attachments/\(attachmentId)",
-            bearer: bearer,
-            reporterId: reporterId
+        let source = try resolveSource(clientKindHeader)
+        let environment = try routeEnvironment(source: source, userId: userId)
+        let reporterId = try await bind(userId: userId, environment: environment)
+        let bearer = try await mintBearer(userId: userId, reporterId: reporterId, environment: environment)
+        let upstream = await dependencies.handsRequest(
+            environment,
+            "GET",
+            "/api/apps/\(environment.appId)/reporter-feedback/\(ticketId)/attachments/\(attachmentId)",
+            bearer,
+            reporterId,
+            [:],
+            nil
         )
-        guard status == 200 else {
-            return service.conversationReply(status: status, upstreamHeaders: headers, body: body)
+        guard upstream.status == 200 else {
+            return try outcome(upstream)
         }
-        let contentType = headers.first { $0.key.lowercased() == "content-type" }?.value ?? "application/octet-stream"
-        let disposition = headers.first { $0.key.lowercased() == "content-disposition" }?.value
-        var responseHeaders: [String: String] = [
-            "Content-Type": contentType,
-            "Content-Length": String(body.count),
-            "X-Content-Type-Options": "nosniff",
-            "Cache-Control": "private, no-store",
-        ]
-        if let disposition { responseHeaders["Content-Disposition"] = disposition }
-        return HTTPReply(status: 200, headers: responseHeaders, body: String(decoding: body, as: UTF8.self))
+        return FeedbackHandsReply.attachment(body: upstream.body, upstreamHeaders: upstream.headers)
     }
 
-    /// `GET /api/product-feedback/tickets/:ticketId/attachments/:attachmentId`
-    /// for Vapor.
-    func attachmentAsync(
-        authorization: String?,
-        ticketId: String,
-        attachmentId: String,
-        clientKindHeader: String = ""
-    ) async -> HTTPReply {
-        let service = feedback
-        if let rejected = service.conversationRejectedReply(authorization: authorization) { return rejected }
-        let userId = directory.sessionUserId(authorization: authorization)!
-        guard EmailLoginDirectory.feedbackCanonicalUUID(ticketId),
-              EmailLoginDirectory.feedbackCanonicalUUID(attachmentId) else {
-            return EmailLoginDirectory.json(404, "{\"error\":\"Feedback ticket not found\",\"code\":\"feedback_not_found\"}")
+    // MARK: - Shared steps
+
+    /// A verified session: `401` without a live token, `403` until the email is
+    /// verified.
+    private func authenticate(_ authorization: String?) throws -> String {
+        guard let userId = dependencies.userId(authorization) else {
+            throw FeedbackMultiAppError.unauthorized
         }
-        let source: String
-        do { source = try EmailLoginDirectory.feedbackSource(clientKindHeader) } catch { return service.sourceInvalidReply() }
-        let environment: FeedbackRouteEnvironment
+        guard dependencies.emailVerified(userId) else {
+            throw FeedbackMultiAppError.accountUnverified
+        }
+        return userId
+    }
+
+    private func resolveSource(_ clientKindHeader: String) throws -> String {
         do {
-            environment = try service.routeEnvironment(source: source, userId: userId)
+            return try EmailLoginDirectory.feedbackSource(clientKindHeader)
+        } catch {
+            throw FeedbackMultiAppError.invalidRequest
+        }
+    }
+
+    private func routeEnvironment(source: String, userId: String) throws -> FeedbackRouteEnvironment {
+        do {
+            return try dependencies.routeEnvironment(source, userId)
         } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
+            throw availabilityError(failure)
         } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
+            throw FeedbackMultiAppError.integrationUnavailable
         }
-        let reporterId: String
+    }
+
+    private func bind(userId: String, environment: FeedbackRouteEnvironment) async throws -> String {
         do {
-            reporterId = try await service.ensureRouteBindingAsync(userId: userId, environment: environment)
+            return try await dependencies.ensureRouteBinding(userId, environment)
         } catch let failure as FeedbackRouteFailure {
-            return service.availabilityReply(failure)
+            throw availabilityError(failure)
         } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
+            throw FeedbackMultiAppError.serviceUnavailable
         }
-        let bearer: String
+    }
+
+    /// Any failure minting the reporter bearer, including a configuration
+    /// failure, answers the generic availability error.
+    private func mintBearer(
+        userId: String,
+        reporterId: String,
+        environment: FeedbackRouteEnvironment
+    ) async throws -> String {
         do {
-            bearer = try await service.bearerAsync(userId: userId, reporterId: reporterId, environment: environment)
+            return try await dependencies.bearer(userId, reporterId, environment)
         } catch {
-            return EmailLoginDirectory.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_service_unavailable\"}")
+            throw FeedbackMultiAppError.serviceUnavailable
         }
-        let (status, headers, body) = await service.handsRequestAsync(
-            environment: environment,
-            method: "GET",
-            path: "/api/apps/\(environment.appId)/reporter-feedback/\(ticketId)/attachments/\(attachmentId)",
-            bearer: bearer,
-            reporterId: reporterId
+    }
+
+    private func decodeCursor(
+        _ cursor: String,
+        route: String,
+        userId: String,
+        ticketId: String?,
+        environment: FeedbackRouteEnvironment
+    ) throws -> String {
+        guard !environment.cursorSecret.isEmpty else { throw FeedbackMultiAppError.invalidRequest }
+        do {
+            return try EmailLoginDirectory.feedbackDecodeCursor(
+                cursor,
+                route: route,
+                userId: userId,
+                ticketId: ticketId,
+                cursorKey: environment.cursorSecret
+            )
+        } catch {
+            throw FeedbackMultiAppError.invalidRequest
+        }
+    }
+
+    /// Typed projection of a Hands route failure, including the warning the
+    /// legacy availability reply wrote before choosing the status.
+    private func availabilityError(_ failure: FeedbackRouteFailure) -> FeedbackMultiAppError {
+        switch failure {
+        case .invalidSource:
+            return .invalidRequest
+        case .sourceUnavailable(let source, let reason):
+            dependencies.warn("[product-feedback] source unavailable (\(source): \(reason))")
+            return .integrationUnavailable
+        case .routeBinding(let reason):
+            dependencies.warn("[product-feedback] route binding failed (\(reason))")
+            return .integrationUnavailableRetryable(retryAfter: "5")
+        case .configuration:
+            return .integrationUnavailable
+        }
+    }
+
+    /// The upstream outcome of a conversation call: `200`/`201` are relayed, the
+    /// rest map to the published feedback errors.
+    private func outcome(
+        _ upstream: (status: Int, headers: [String: String], body: Data)
+    ) throws -> FeedbackHandsReply {
+        switch upstream.status {
+        case 200, 201:
+            return FeedbackHandsReply.relayed(status: UInt(upstream.status), body: upstream.body)
+        case 400:
+            throw FeedbackMultiAppError.invalidRequest
+        case 404:
+            throw FeedbackMultiAppError.ticketNotFound
+        case 409:
+            throw FeedbackMultiAppError.commentConflict
+        case 429:
+            let retryAfter = upstream.headers.first { $0.key.lowercased() == "retry-after" }?.value ?? "60"
+            throw FeedbackMultiAppError.rateLimited(retryAfter: retryAfter)
+        case 401, 403:
+            throw FeedbackMultiAppError.integrationUnavailable
+        default:
+            throw FeedbackMultiAppError.serviceUnavailable
+        }
+    }
+
+    /// A `200` list/detail page: the cursor member is re-wrapped for the caller
+    /// when the app has a cursor secret, and `Server-Timing` is added.
+    private func pageReply(
+        _ upstream: (status: Int, headers: [String: String], body: Data),
+        member: String,
+        route: String,
+        userId: String,
+        ticketId: String?,
+        environment: FeedbackRouteEnvironment,
+        startedAt: Date
+    ) -> FeedbackHandsReply {
+        var body = String(decoding: upstream.body, as: UTF8.self)
+        if !environment.cursorSecret.isEmpty,
+           let rewritten = FeedbackCursorRewrite.rewrite(body: upstream.body, member: member, wrap: { next in
+               EmailLoginDirectory.feedbackEncodeCursor(
+                   route: route,
+                   userId: userId,
+                   ticketId: ticketId,
+                   handsCursor: next,
+                   cursorKey: environment.cursorSecret
+               )
+           }) {
+            body = rewritten
+        }
+        let elapsedMs = dependencies.now().timeIntervalSince(startedAt) * 1000
+        return FeedbackHandsReply.timed(
+            body: body,
+            serverTiming: EmailLoginDirectory.feedbackTimingHeader(
+                elapsedMs: elapsedMs,
+                upstreamHeaders: upstream.headers
+            )
         )
-        guard status == 200 else {
-            return service.conversationReply(status: status, upstreamHeaders: headers, body: body)
-        }
-        let contentType = headers.first { $0.key.lowercased() == "content-type" }?.value ?? "application/octet-stream"
-        let disposition = headers.first { $0.key.lowercased() == "content-disposition" }?.value
-        var responseHeaders: [String: String] = [
-            "Content-Type": contentType,
-            "Content-Length": String(body.count),
-            "X-Content-Type-Options": "nosniff",
-            "Cache-Control": "private, no-store",
-        ]
-        if let disposition { responseHeaders["Content-Disposition"] = disposition }
-        return HTTPReply(status: 200, headers: responseHeaders, body: String(decoding: body, as: UTF8.self))
     }
 }
 
-// MARK: - Directory entry points
+// MARK: - Errors
 
-extension EmailLoginDirectory {
-    public func productFeedbackTickets(
-        authorization: String?,
-        clientKindHeader: String = "",
-        cursor: String? = nil
-    ) -> HTTPReply {
-        FeedbackMultiAppService(directory: self).tickets(
-            authorization: authorization,
-            clientKindHeader: clientKindHeader,
-            cursor: cursor
-        )
+/// One domain failure for the ticket routes. Every case names the published
+/// status, body and header set; the feature layer only projects it.
+public enum FeedbackMultiAppError: DomainError, Equatable {
+    case unauthorized
+    case accountUnverified
+    case invalidRequest
+    case closeReasonInvalid
+    case attachmentTypeInvalid
+    case ticketNotFound
+    /// `{"error":"Not found"}`: the list route when the app has no credentials.
+    case routeNotFound
+    case commentConflict
+    case rateLimited(retryAfter: String)
+    case integrationUnavailable
+    case integrationUnavailableRetryable(retryAfter: String)
+    case serviceUnavailable
+
+    public var status: UInt {
+        switch self {
+        case .unauthorized:
+            401
+        case .accountUnverified:
+            403
+        case .invalidRequest, .closeReasonInvalid, .attachmentTypeInvalid:
+            400
+        case .ticketNotFound, .routeNotFound:
+            404
+        case .commentConflict:
+            409
+        case .rateLimited:
+            429
+        case .integrationUnavailable, .integrationUnavailableRetryable, .serviceUnavailable:
+            503
+        }
     }
 
-    public func closeProductFeedbackTicket(
-        authorization: String?,
-        ticketId: String,
-        body: String,
-        clientKindHeader: String = ""
-    ) -> HTTPReply {
-        FeedbackMultiAppService(directory: self).closeTicket(
-            authorization: authorization,
-            ticketId: ticketId,
-            body: body,
-            clientKindHeader: clientKindHeader
-        )
+    public var errorMessage: String {
+        switch self {
+        case .unauthorized:
+            "Unauthorized"
+        case .accountUnverified:
+            "Email verification required"
+        case .invalidRequest:
+            "Invalid feedback request"
+        case .closeReasonInvalid:
+            "Feedback close reason is invalid"
+        case .attachmentTypeInvalid:
+            "Only image attachments are supported"
+        case .ticketNotFound:
+            "Feedback ticket not found"
+        case .routeNotFound:
+            "Not found"
+        case .commentConflict:
+            "This comment retry does not match the original submission"
+        case .rateLimited:
+            "Too many feedback requests. Please try again later."
+        case .integrationUnavailable, .integrationUnavailableRetryable, .serviceUnavailable:
+            "Feedback service is temporarily unavailable"
+        }
     }
 
-    public func replyProductFeedbackTicket(
-        authorization: String?,
-        ticketId: String,
-        contentType: String,
-        body: String,
-        clientKindHeader: String = ""
-    ) -> HTTPReply {
-        FeedbackMultiAppService(directory: self).replyTicket(
-            authorization: authorization,
-            ticketId: ticketId,
-            contentType: contentType,
-            body: body,
-            clientKindHeader: clientKindHeader
-        )
+    public var errorCode: String? {
+        switch self {
+        case .unauthorized, .routeNotFound:
+            nil
+        case .accountUnverified:
+            "account_unverified"
+        case .invalidRequest, .closeReasonInvalid:
+            "feedback_invalid"
+        case .attachmentTypeInvalid:
+            "feedback_attachment_type_invalid"
+        case .ticketNotFound:
+            "feedback_not_found"
+        case .commentConflict:
+            "feedback_comment_conflict"
+        case .rateLimited:
+            "feedback_rate_limited"
+        case .integrationUnavailable, .integrationUnavailableRetryable:
+            "feedback_integration_unavailable"
+        case .serviceUnavailable:
+            "feedback_service_unavailable"
+        }
     }
 
-    /// `GET /api/product-feedback/tickets/:ticketId`.
-    public func productFeedbackTicket(
-        authorization: String?,
-        ticketId: String,
-        clientKindHeader: String = "",
-        commentLimit: Int = 50,
-        commentCursor: String? = nil
-    ) -> HTTPReply {
-        FeedbackMultiAppService(directory: self).ticket(
-            authorization: authorization,
-            ticketId: ticketId,
-            clientKindHeader: clientKindHeader,
-            commentLimit: commentLimit,
-            commentCursor: commentCursor
-        )
+    /// The retryable failures publish `Retry-After` and no robots tag; every
+    /// other failure keeps the standard JSON header set.
+    public var errorHeaders: ResponseHeaders {
+        switch self {
+        case .rateLimited(let retryAfter), .integrationUnavailableRetryable(let retryAfter):
+            .exact([
+                "Content-Type": AppFallback.jsonContentType,
+                "Cache-Control": "no-store",
+                "Retry-After": retryAfter,
+            ])
+        default:
+            .standard()
+        }
     }
+}
 
-    /// `GET /api/product-feedback/tickets/:ticketId/attachments/:attachmentId`.
-    public func productFeedbackAttachment(
-        authorization: String?,
-        ticketId: String,
-        attachmentId: String,
-        clientKindHeader: String = ""
-    ) -> HTTPReply {
-        FeedbackMultiAppService(directory: self).attachment(
-            authorization: authorization,
-            ticketId: ticketId,
-            attachmentId: attachmentId,
-            clientKindHeader: clientKindHeader
-        )
-    }
+// MARK: - Dependencies
 
-    /// `GET /api/product-feedback/tickets` for the Vapor route closure.
-    public func productFeedbackTicketsAsync(
-        authorization: String?,
-        clientKindHeader: String = "",
-        cursor: String? = nil
-    ) async -> HTTPReply {
-        await FeedbackMultiAppService(directory: self).ticketsAsync(
-            authorization: authorization,
-            clientKindHeader: clientKindHeader,
-            cursor: cursor
-        )
-    }
+/// Everything the ticket service reads from domains that have not migrated yet.
+///
+/// The session lookup, the account row, the Hands app selection, the route
+/// binding, the reporter bearer and the transport enter as closures at the
+/// composition root, so a unit test can drive the service with fakes.
+struct FeedbackMultiAppDependencies: Sendable {
+    typealias Upstream = (status: Int, headers: [String: String], body: Data)
 
-    /// `POST /api/product-feedback/tickets/:ticketId/close` for the Vapor route closure.
-    public func closeProductFeedbackTicketAsync(
-        authorization: String?,
-        ticketId: String,
-        body: String,
-        clientKindHeader: String = ""
-    ) async -> HTTPReply {
-        await FeedbackMultiAppService(directory: self).closeTicketAsync(
-            authorization: authorization,
-            ticketId: ticketId,
-            body: body,
-            clientKindHeader: clientKindHeader
-        )
-    }
+    var userId: @Sendable (_ authorization: String?) -> String?
+    var emailVerified: @Sendable (_ userId: String) -> Bool
+    var routeEnvironment: @Sendable (_ source: String, _ userId: String) throws -> FeedbackRouteEnvironment
+    var ensureRouteBinding: @Sendable (
+        _ userId: String,
+        _ environment: FeedbackRouteEnvironment
+    ) async throws -> String
+    var bearer: @Sendable (
+        _ userId: String,
+        _ reporterId: String,
+        _ environment: FeedbackRouteEnvironment
+    ) async throws -> String
+    var handsRequest: @Sendable (
+        _ environment: FeedbackRouteEnvironment,
+        _ method: String,
+        _ path: String,
+        _ bearer: String,
+        _ reporterId: String,
+        _ headers: [String: String],
+        _ body: Data?
+    ) async -> Upstream
+    var warn: @Sendable (_ message: String) -> Void
+    var now: @Sendable () -> Date
 
-    /// `POST /api/product-feedback/tickets/:ticketId/comments` for the Vapor route closure.
-    public func replyProductFeedbackTicketAsync(
-        authorization: String?,
-        ticketId: String,
-        contentType: String,
-        body: String,
-        clientKindHeader: String = ""
-    ) async -> HTTPReply {
-        await FeedbackMultiAppService(directory: self).replyTicketAsync(
-            authorization: authorization,
-            ticketId: ticketId,
-            contentType: contentType,
-            body: body,
-            clientKindHeader: clientKindHeader
-        )
-    }
-
-    /// `GET /api/product-feedback/tickets/:ticketId` for the Vapor route closure.
-    public func productFeedbackTicketAsync(
-        authorization: String?,
-        ticketId: String,
-        clientKindHeader: String = "",
-        commentLimit: Int = 50,
-        commentCursor: String? = nil
-    ) async -> HTTPReply {
-        await FeedbackMultiAppService(directory: self).ticketAsync(
-            authorization: authorization,
-            ticketId: ticketId,
-            clientKindHeader: clientKindHeader,
-            commentLimit: commentLimit,
-            commentCursor: commentCursor
-        )
-    }
-
-    /// `GET /api/product-feedback/tickets/:ticketId/attachments/:attachmentId`
-    /// for the Vapor route closure.
-    public func productFeedbackAttachmentAsync(
-        authorization: String?,
-        ticketId: String,
-        attachmentId: String,
-        clientKindHeader: String = ""
-    ) async -> HTTPReply {
-        await FeedbackMultiAppService(directory: self).attachmentAsync(
-            authorization: authorization,
-            ticketId: ticketId,
-            attachmentId: attachmentId,
-            clientKindHeader: clientKindHeader
-        )
+    init(
+        userId: @escaping @Sendable (String?) -> String?,
+        emailVerified: @escaping @Sendable (String) -> Bool,
+        routeEnvironment: @escaping @Sendable (String, String) throws -> FeedbackRouteEnvironment,
+        ensureRouteBinding: @escaping @Sendable (String, FeedbackRouteEnvironment) async throws -> String,
+        bearer: @escaping @Sendable (String, String, FeedbackRouteEnvironment) async throws -> String,
+        handsRequest: @escaping @Sendable (
+            FeedbackRouteEnvironment, String, String, String, String, [String: String], Data?
+        ) async -> Upstream,
+        warn: @escaping @Sendable (String) -> Void,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
+        self.userId = userId
+        self.emailVerified = emailVerified
+        self.routeEnvironment = routeEnvironment
+        self.ensureRouteBinding = ensureRouteBinding
+        self.bearer = bearer
+        self.handsRequest = handsRequest
+        self.warn = warn
+        self.now = now
     }
 }

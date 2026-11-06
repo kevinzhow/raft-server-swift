@@ -140,3 +140,31 @@ overload explicitly; `ActionCardTaskCreateResponse` conforms only to
 `JSONBodyConvertible`, so its member order cannot fall back to sorted keys.
 `ActionCardPrepareResponse` follows the same rule (it dropped its `Encodable`
 conformance when the two slices' overloads were unified into this one).
+
+## Extension: a status and header policy that depend on the payload
+
+The product-feedback ticket routes relay a Hands reply. Upstream decides `200`
+versus `201`, and the header policy differs per relay (JSON with
+`Server-Timing`, a plain JSON relay, or an attachment with its own
+`Content-Type`). `respond(status:headers:_:)` fixed the status before the call,
+so `Respond.swift` gained one overload that derives both from the DTO:
+
+```swift
+return try await respond(status: { $0.status }, headers: { $0.headers }) {
+    try await services.emailAccounts.feedbackMultiApp.tickets(…)
+}
+```
+
+The DTO (`FeedbackHandsReply`) conforms to `JSONBodyConvertible` only and
+publishes the upstream text through `OrderedJSON.raw`; it carries its status and
+`ResponseHeaders`. The `UInt`-status overloads are unchanged.
+
+## Fix: `DomainError.errorHeaders` is a protocol requirement
+
+`errorHeaders` was declared only in the `DomainError` extension, so a conforming
+type's override (`.exact([… "Retry-After" …])`) was ignored when `Respond.swift`
+projected the error through `any DomainError`: the standard header set (with
+`X-Robots-Tag`, without `Retry-After`) was published. It is now a requirement
+with the extension supplying the default, so the override is dispatched
+dynamically. This restores the legacy headers of the retryable feedback errors
+(`429`, route-binding `503`).

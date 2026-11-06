@@ -221,7 +221,7 @@ private func activeRuntimeProfileBody() -> NSDictionary {
             )
             #expect(response.status == .conflict)
             #expect(try machineDeleteObject(response) as NSDictionary == activeRuntimeProfileBody())
-            #expect(fixture.accounts.agentRuntimeProfileMachineId(agentId: fixture.agentId) == fixture.sourceMachineId)
+            #expect(fixture.accounts.agentRuntimeProfileForTesting(agentId: fixture.agentId)?.machineId == fixture.sourceMachineId)
         }
     }
 }
@@ -258,7 +258,7 @@ private func activeRuntimeProfileBody() -> NSDictionary {
             )
             #expect(response.status == .conflict)
             #expect(try machineDeleteObject(response) as NSDictionary == activeRuntimeProfileBody())
-            #expect(fixture.accounts.agentRuntimeProfileMachineId(agentId: fixture.agentId) == fixture.sourceMachineId)
+            #expect(fixture.accounts.agentRuntimeProfileForTesting(agentId: fixture.agentId)?.machineId == fixture.sourceMachineId)
         }
     }
 }

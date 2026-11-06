@@ -753,6 +753,34 @@ final class MessagesAndThreadsStore: @unchecked Sendable {
         lock.unlock()
     }
 
+    // MARK: - Share artifacts and message translations
+
+    /// One uploaded share artifact, or nil when no row carries the id.
+    func shareArtifact(id: String) -> ShareArtifactRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.shareArtifacts[id]
+    }
+
+    /// Records the translation outcome for one message in a single critical
+    /// section, so a concurrent batch cannot interleave a half-written row.
+    func recordMessageTranslation(
+        messageId: String,
+        status: String,
+        providerBilledChars: Int,
+        targetLanguage: String,
+        translatedContent: String
+    ) {
+        lock.lock()
+        storage.messageTranslationLedger[messageId] = (
+            status: status,
+            providerBilledChars: providerBilledChars,
+            targetLanguage: targetLanguage,
+            translatedContent: translatedContent
+        )
+        lock.unlock()
+    }
+
     // MARK: - Agent send commit
 
     /// The message's channel id for the idempotency replay response.
@@ -946,5 +974,17 @@ final class MessagesAndThreadsStore: @unchecked Sendable {
         storage.threadFollowerRemovals.removeValue(forKey: undoToken)
         storage.staleThreadFollowerUndoTokens.insert(undoToken)
         return .restored
+    }
+}
+
+extension MessagesAndThreadsStore {
+    /// A system notice the acting agent caused is born read for that agent: the
+    /// cursor passes `seq` and its version bumps, in one critical section.
+    func markBornRead(channelId: String, agentId: String, seq: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = "\(channelId)\n\(agentId)"
+        let previous = storage.agentChannelReadCursors[key] ?? (seq: 0, version: 0)
+        storage.agentChannelReadCursors[key] = (max(previous.seq, seq), previous.version + 1)
     }
 }

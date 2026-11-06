@@ -49,10 +49,12 @@ public struct ServersFeature: RouteCollection, Sendable {
                 slug: slug?["slug"] as? String
             ))
         }
-        servers.get("unread-summary") { request -> Response in
-            routeResponse(services.emailAccounts.serversUnreadSummary(
-                authorization: request.headers[.authorization]
-            ))
+        servers.get("unread-summary") { request async throws -> Response in
+            try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
+                try services.emailAccounts.serverProfileAndOrder.serversUnreadSummary(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         servers.post() { request async throws -> Response in
             // `name` and `slug` are the only body fields. A body that does not
@@ -69,32 +71,30 @@ public struct ServersFeature: RouteCollection, Sendable {
                 body: try await request.bodyText()
             ))
         }
-        servers.get() { request -> Response in
-            if let ordered = services.emailAccounts.orderedServerList(authorization: request.headers[.authorization]) {
-                return routeResponse(ordered)
+        servers.get() { request async throws -> Response in
+            if let ordered = services.emailAccounts.serverProfileAndOrder.orderedServerList(authorization: request.headers[.authorization]) {
+                return try await respond { ordered }
             }
             guard let directory = services.publicVisits else {
                 return routeResponse(PublicVisits.authRequired(authorization: request.headers[.authorization]))
             }
             return routeResponse(directory.serverList(authorization: request.headers[.authorization]))
         }
-        servers.get("order") { request -> Response in
-            routeResponse(services.emailAccounts.serverOrder(authorization: request.headers[.authorization]))
+        servers.get("order") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.serverProfileAndOrder.serverOrder(authorization: request.headers[.authorization])
+            }
         }
         servers.patch("order") { request async throws -> Response in
             // `serverOrder` is the only field. A body that does not decode
-            // keeps the directory's raw parser, which owns the sanitizing and
-            // the `Invalid server order` 400.
-            if let body = try? await request.content.decode(ServerOrderPatchDTO.self) {
-                return routeResponse(services.emailAccounts.patchServerOrder(
+            // reaches the service as nil and keeps the `Invalid server order` 400.
+            let body = await jsonRequestBody(ServerOrderPatchDTO.self, request)
+            return try await respond {
+                try services.emailAccounts.serverProfileAndOrder.patchServerOrder(
                     authorization: request.headers[.authorization],
-                    body: body.encodedBody()
-                ))
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.patchServerOrder(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
         }
         servers.post(":id", "machines", ":machineId", "agents", ":agentId", "feedback", ":reportId", "transcript") { request async throws -> Response in
             // A typed body is the common case; a body without a JSON
@@ -123,12 +123,15 @@ public struct ServersFeature: RouteCollection, Sendable {
             }
         }
         servers.post(":id", "machines", ":machineId", "computer-lifecycle-operations") { request async throws -> Response in
-            routeResponse(services.emailAccounts.computerLifecycleOperation(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ComputerLifecycleRequest.self, request) ?? ComputerLifecycleRequest()
+            return try await respond(status: 201) {
+                try services.emailAccounts.computersFleet.computerLifecycleOperation(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? "",
+                    request: body
+                )
+            }
         }
         servers.get(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "mention-delivery", ":messageId") { request async throws -> Response in
             try await respond(status: 404) {
@@ -180,24 +183,32 @@ public struct ServersFeature: RouteCollection, Sendable {
             }
         }
         servers.post(":id", "scope-attestation") { request async throws -> Response in
-            routeResponse(services.emailAccounts.serverScopeAttestation(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ServerScopeAttestationRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.serverProfileAndOrder.serverScopeAttestation(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    body: body
+                )
+            }
         }
-        servers.get(":id", "translation-settings") { request -> Response in
-            routeResponse(services.emailAccounts.serverTranslationSettings(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "translation-settings") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.serverProfileAndOrder.serverTranslationSettings(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         servers.patch(":id", "translation-settings") { request async throws -> Response in
-            routeResponse(services.emailAccounts.patchServerTranslationSettings(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ServerTranslationSettingsPatchRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.serverProfileAndOrder.patchServerTranslationSettings(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    body: body
+                )
+            }
         }
         servers.get(":id", "labs") { request async throws -> Response in
             try await respond {
@@ -231,24 +242,31 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "agreement") { request -> Response in
-            routeResponse(services.emailAccounts.getServerAgreement(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "agreement") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.serverProfileAndOrder.getServerAgreement(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         servers.put(":id", "agreement") { request async throws -> Response in
-            routeResponse(services.emailAccounts.putServerAgreement(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ServerAgreementPutRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.serverProfileAndOrder.putServerAgreement(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    body: body
+                )
+            }
         }
-        servers.post(":id", "avatar") { request -> Response in
-            routeResponse(services.emailAccounts.uploadServerAvatar(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.post(":id", "avatar") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.serverProfileAndOrder.uploadServerAvatar(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         servers.post(":id", "join-links") { request async throws -> Response in
             // `expiresAt` and `maxUses` are the only fields. The typed decoder
@@ -443,11 +461,13 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "model-label-catalog") { request -> Response in
-            routeResponse(services.emailAccounts.modelLabelCatalog(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "model-label-catalog") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.computersFleet.modelLabelCatalog(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         servers.get(":id", "product-analytics-settings") { request -> Response in
             routeResponse(services.emailAccounts.serverProductAnalyticsSettings(
@@ -462,46 +482,61 @@ public struct ServersFeature: RouteCollection, Sendable {
                 body: try await request.bodyText()
             ))
         }
-        servers.get(":id", "settings") { request -> Response in
-            routeResponse(services.emailAccounts.serverSettings(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "settings") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.runtimeFormsAndProbes.serverSettings(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
-        servers.get(":id", "notification-settings") { request -> Response in
-            routeResponse(services.emailAccounts.memberNotificationSettings(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "notification-settings") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.runtimeFormsAndProbes.memberNotificationSettings(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         servers.patch(":id", "notification-settings") { request async throws -> Response in
-            routeResponse(services.emailAccounts.patchServerNotificationSettings(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = try await typedJSONBody(ServerNotificationPatchRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.runtimeFormsAndProbes.patchServerNotificationSettings(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    body: body
+                )
+            }
         }
-        servers.get(":id", "onboarding-settings") { request -> Response in
-            routeResponse(services.emailAccounts.serverOnboardingSettings(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "onboarding-settings") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.runtimeFormsAndProbes.serverOnboardingSettings(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         servers.patch(":id", "onboarding-settings") { request async throws -> Response in
-            routeResponse(services.emailAccounts.patchServerOnboardingSettings(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = try await typedJSONBody(ServerOnboardingPatchRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.runtimeFormsAndProbes.patchServerOnboardingSettings(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    body: body
+                )
+            }
         }
         servers.post(":id", "machines", ":machineId", "computer", ":action") { request async throws -> Response in
-            routeResponse(services.emailAccounts.computerAction(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? "",
-                action: request.parameters.get("action") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ComputerActionRequest.self, request) ?? ComputerActionRequest()
+            return try await respond {
+                try services.emailAccounts.computersFleet.computerAction(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? "",
+                    action: request.parameters.get("action") ?? "",
+                    request: body
+                )
+            }
         }
         registerServerMachineDelete(on: servers)
         servers.get(":id", "usage") { request async throws -> Response in
@@ -512,116 +547,140 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "machines", ":machineId", "workspaces") { request -> Response in
-            routeResponse(services.emailAccounts.machineWorkspaces(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? ""
-            ))
+        servers.get(":id", "machines", ":machineId", "workspaces") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.runtimeFormsAndProbes.machineWorkspaces(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? ""
+                )
+            }
         }
-        servers.post(":id", "machines", ":machineId", "runtimes", "rescan") { request -> Response in
-            routeResponse(services.emailAccounts.machineRuntimeRescan(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? ""
-            ))
+        servers.post(":id", "machines", ":machineId", "runtimes", "rescan") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.computersFleet.machineRuntimeRescan(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? ""
+                )
+            }
         }
-        servers.get(":id", "machines", ":machineId", "runtime-options") { request -> Response in        routeResponse(services.emailAccounts.machineRuntimeOptions(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? "",
-                includeRuntimeFormV2: request.headers[HTTPField.Name("X-Raft-Runtime-Form-V2")!] == "1"
-            ))
+        servers.get(":id", "machines", ":machineId", "runtime-options") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.runtimeFormsAndProbes.machineRuntimeOptions(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? "",
+                    includeRuntimeFormV2: request.headers[HTTPField.Name("X-Raft-Runtime-Form-V2")!] == "1"
+                )
+            }
         }
-        servers.get(":id", "machines", ":machineId", "runtime-models", ":runtime") { request -> Response in
-            routeResponse(services.emailAccounts.machineRuntimeModels(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? "",
-                runtime: request.parameters.get("runtime") ?? ""
-            ))
+        servers.get(":id", "machines", ":machineId", "runtime-models", ":runtime") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.runtimeFormsAndProbes.machineRuntimeModels(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? "",
+                    runtime: request.parameters.get("runtime") ?? ""
+                )
+            }
         }
-        servers.get(":id", "machines", ":machineId", "runtime-form-definitions", ":runtimeId") { request -> Response in
-            var response = routeResponse(services.emailAccounts.runtimeFormDefinition(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? "",
-                runtimeId: request.parameters.get("runtimeId") ?? "",
-                protocolVersion: 1,
-                schemaVersion: desktopQuery(request.url.query, "schemaVersion"),
-                language: request.headers[HTTPField.Name("Accept-Language")!]
-            ))
+        servers.get(":id", "machines", ":machineId", "runtime-form-definitions", ":runtimeId") { request async throws -> Response in
+            var response = try await respond {
+                try services.emailAccounts.runtimeFormsAndProbes.runtimeFormDefinition(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? "",
+                    runtimeId: request.parameters.get("runtimeId") ?? "",
+                    protocolVersion: 1,
+                    schemaVersion: desktopQuery(request.url.query, "schemaVersion"),
+                    language: request.headers[HTTPField.Name("Accept-Language")!]
+                )
+            }
             applyRuntimeFormLanguage(&response, language: request.headers[HTTPField.Name("Accept-Language")!])
             return response
         }
-        servers.get(":id", "machines", ":machineId", "runtime-forms", "v2", ":runtimeId") { request -> Response in
-            var response = routeResponse(services.emailAccounts.runtimeFormDefinition(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? "",
-                runtimeId: request.parameters.get("runtimeId") ?? "",
-                protocolVersion: 2,
-                schemaVersion: nil,
-                language: request.headers[HTTPField.Name("Accept-Language")!]
-            ))
+        servers.get(":id", "machines", ":machineId", "runtime-forms", "v2", ":runtimeId") { request async throws -> Response in
+            var response = try await respond {
+                try services.emailAccounts.runtimeFormsAndProbes.runtimeFormDefinition(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? "",
+                    runtimeId: request.parameters.get("runtimeId") ?? "",
+                    protocolVersion: 2,
+                    schemaVersion: nil,
+                    language: request.headers[HTTPField.Name("Accept-Language")!]
+                )
+            }
             applyRuntimeFormLanguage(&response, language: request.headers[HTTPField.Name("Accept-Language")!])
             return response
         }
-        servers.get(":id", "machines", ":machineId", "runtime-form-definitions", ":runtimeId", "option-sources", ":sourceId") { request -> Response in
-            var response = routeResponse(services.emailAccounts.runtimeFormOptionSource(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? "",
-                runtimeId: request.parameters.get("runtimeId") ?? "",
-                sourceId: request.parameters.get("sourceId") ?? "",
-                protocolVersion: 1,
-                schemaVersion: desktopQuery(request.url.query, "schemaVersion"),
-                language: request.headers[HTTPField.Name("Accept-Language")!]
-            ))
+        servers.get(":id", "machines", ":machineId", "runtime-form-definitions", ":runtimeId", "option-sources", ":sourceId") { request async throws -> Response in
+            var response = try await respond {
+                try services.emailAccounts.runtimeFormsAndProbes.runtimeFormOptionSource(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? "",
+                    runtimeId: request.parameters.get("runtimeId") ?? "",
+                    sourceId: request.parameters.get("sourceId") ?? "",
+                    protocolVersion: 1,
+                    schemaVersion: desktopQuery(request.url.query, "schemaVersion"),
+                    language: request.headers[HTTPField.Name("Accept-Language")!]
+                )
+            }
             applyRuntimeFormLanguage(&response, language: request.headers[HTTPField.Name("Accept-Language")!])
             return response
         }
-        servers.get(":id", "machines", ":machineId", "runtime-forms", "v2", ":runtimeId", "option-sources", ":sourceId") { request -> Response in
-            var response = routeResponse(services.emailAccounts.runtimeFormOptionSource(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? "",
-                runtimeId: request.parameters.get("runtimeId") ?? "",
-                sourceId: request.parameters.get("sourceId") ?? "",
-                protocolVersion: 2,
-                schemaVersion: nil,
-                language: request.headers[HTTPField.Name("Accept-Language")!],
-                refresh: desktopQuery(request.url.query, "refresh") == "1"
-            ))
+        servers.get(":id", "machines", ":machineId", "runtime-forms", "v2", ":runtimeId", "option-sources", ":sourceId") { request async throws -> Response in
+            var response = try await respond {
+                try services.emailAccounts.runtimeFormsAndProbes.runtimeFormOptionSource(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? "",
+                    runtimeId: request.parameters.get("runtimeId") ?? "",
+                    sourceId: request.parameters.get("sourceId") ?? "",
+                    protocolVersion: 2,
+                    schemaVersion: nil,
+                    language: request.headers[HTTPField.Name("Accept-Language")!],
+                    refresh: desktopQuery(request.url.query, "refresh") == "1"
+                )
+            }
             applyRuntimeFormLanguage(&response, language: request.headers[HTTPField.Name("Accept-Language")!])
             return response
         }
-        servers.get(":id", "machines", ":machineId", "runtime-account-usage", ":provider") { request -> Response in
-            var response = routeResponse(services.emailAccounts.machineRuntimeAccountUsage(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? "",
-                provider: request.parameters.get("provider") ?? ""
-            ))
+        servers.get(":id", "machines", ":machineId", "runtime-account-usage", ":provider") { request async throws -> Response in
+            var response = try await respond {
+                try services.emailAccounts.runtimeFormsAndProbes.machineRuntimeAccountUsage(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? "",
+                    provider: request.parameters.get("provider") ?? ""
+                )
+            }
             response.headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
             return response
         }
         servers.post(":id", "machines", ":machineId", "runtime-account-usage", ":provider", "refresh") { request async throws -> Response in
-            routeResponse(services.emailAccounts.refreshMachineRuntimeAccountUsage(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? "",
-                provider: request.parameters.get("provider") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = try await typedJSONBody(RuntimeAccountUsageRefreshRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.runtimeFormsAndProbes.refreshMachineRuntimeAccountUsage(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? "",
+                    provider: request.parameters.get("provider") ?? "",
+                    body: body
+                )
+            }
         }
-        servers.delete(":id", "machines", ":machineId", "workspaces", ":directoryName") { request -> Response in
-            routeResponse(services.emailAccounts.deleteMachineWorkspace(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? "",
-                directoryName: request.parameters.get("directoryName") ?? ""
-            ))
+        servers.delete(":id", "machines", ":machineId", "workspaces", ":directoryName") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.computersFleet.deleteMachineWorkspace(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? "",
+                    directoryName: request.parameters.get("directoryName") ?? ""
+                )
+            }
         }
         servers.get(":id", "system-notifications") { request async throws -> Response in
             var response = try await respond {
@@ -662,40 +721,53 @@ public struct ServersFeature: RouteCollection, Sendable {
             }
         }
         servers.post(":id", "machines") { request async throws -> Response in
-            routeResponse(services.emailAccounts.registerServerMachine(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = try await typedJSONBody(ServerMachineRegistrationRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.runtimeFormsAndProbes.registerServerMachine(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    body: body
+                )
+            }
         }
-        servers.get(":id", "machines") { request -> Response in
-            routeResponse(services.emailAccounts.listServerMachines(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "machines") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.computersFleet.listServerMachines(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
-        servers.post(":id", "machines", ":machineId", "rotate-key") { request -> Response in
-            routeResponse(services.emailAccounts.rotateServerMachineKey(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? ""
-            ))
+        servers.post(":id", "machines", ":machineId", "rotate-key") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.computersFleet.rotateServerMachineKey(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? ""
+                )
+            }
         }
         registerServerMachineDelete(on: servers)
         servers.patch(":id", "machines", ":machineId") { request async throws -> Response in
-            routeResponse(services.emailAccounts.patchServerMachine(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(MachineDescriptionRequest.self, request) ?? MachineDescriptionRequest()
+            return try await respond {
+                try services.emailAccounts.computersFleet.patchServerMachine(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? "",
+                    request: body
+                )
+            }
         }
         servers.patch(":id") { request async throws -> Response in
-            routeResponse(services.emailAccounts.patchServerProfile(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ServerProfilePatchRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.serverProfileAndOrder.patchServerProfile(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    body: body
+                )
+            }
         }
         servers.get(":id") { request -> Response in
             routeResponse(services.emailAccounts.serverDetails(
@@ -703,7 +775,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 serverId: request.parameters.get("id") ?? ""
             ))
         }
-        servers.get(":id", "members", ":memberId", "profile") { request -> Response in
+        servers.get(":id", "members", ":memberId", "profile") { request async throws -> Response in
             let id = request.parameters.get("id") ?? ""
             let memberId = request.parameters.get("memberId") ?? ""
             if let reply = ServerScope.membersGuard(
@@ -719,19 +791,23 @@ public struct ServersFeature: RouteCollection, Sendable {
                     memberId: memberId
                 ))
             }
-            return routeResponse(services.emailAccounts.memberProfile(
-                authorization: request.headers[.authorization],
-                serverId: id,
-                memberId: memberId
-            ))
+            return try await respond {
+                try services.emailAccounts.serverProfileAndOrder.memberProfile(
+                    authorization: request.headers[.authorization],
+                    serverId: id,
+                    memberId: memberId
+                )
+            }
         }
-        servers.get(":id", "apps") { request -> Response in
-            routeResponse(services.emailAccounts.serverApps(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "apps") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.serverProfileAndOrder.serverApps(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
-        servers.get(":id", "member-graph") { request -> Response in
+        servers.get(":id", "member-graph") { request async throws -> Response in
             let id = request.parameters.get("id") ?? ""
             if let reply = ServerScope.membersGuard(
                 serverId: id,
@@ -739,12 +815,14 @@ public struct ServersFeature: RouteCollection, Sendable {
             ) {
                 return routeResponse(reply)
             }
-            return routeResponse(services.emailAccounts.serverMemberGraph(
-                authorization: request.headers[.authorization],
-                serverId: id
-            ))
+            return try await respond {
+                try services.emailAccounts.serverProfileAndOrder.serverMemberGraph(
+                    authorization: request.headers[.authorization],
+                    serverId: id
+                )
+            }
         }
-        servers.get(":id", "members") { request -> Response in
+        servers.get(":id", "members") { request async throws -> Response in
             let id = request.parameters.get("id") ?? ""
             if let reply = ServerScope.membersGuard(
                 serverId: id,
@@ -752,10 +830,12 @@ public struct ServersFeature: RouteCollection, Sendable {
             ) {
                 return routeResponse(reply)
             }
-            return routeResponse(services.emailAccounts.serverMembersList(
-                authorization: request.headers[.authorization],
-                serverId: id
-            ))
+            return try await respond {
+                try services.emailAccounts.serverProfileAndOrder.serverMembersList(
+                    authorization: request.headers[.authorization],
+                    serverId: id
+                )
+            }
         }
         servers.get(":id", "public-visibility") { request -> Response in
             guard let directory = services.publicServerDirectory, let id = request.parameters.get("id") else {
@@ -803,12 +883,14 @@ public struct ServersFeature: RouteCollection, Sendable {
     /// override warning and keeps the second leaf; this helper only makes the
     /// intentional duplicate explicit instead of copy-pasting the handler.
     private func registerServerMachineDelete(on servers: any RoutesBuilder) {
-        servers.delete(":id", "machines", ":machineId") { request -> Response in
-            routeResponse(services.emailAccounts.deleteServerMachine(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? ""
-            ))
+        servers.delete(":id", "machines", ":machineId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.computersFleet.deleteServerMachine(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? ""
+                )
+            }
         }
     }
 }

@@ -50,8 +50,7 @@ private func makeServiceFixture(suffix: String) -> ReactionServiceFixture {
         content: "reactable service message",
         senderId: ownerId
     )
-    let login = accounts.login(body: "{\"email\":\"\(email)\",\"password\":\"password123\"}")
-    let token = (try? JSONSerialization.jsonObject(with: Data(login.body.utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
+    let token = (try? accounts.authIdentities.login(LoginRequest(email: email, password: "password123")).accessToken) ?? ""
     return ReactionServiceFixture(
         accounts: accounts,
         serverId: serverId,

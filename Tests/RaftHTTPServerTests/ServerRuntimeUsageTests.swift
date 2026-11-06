@@ -215,12 +215,12 @@ private func runtimeObject(_ response: ClientResponse) throws -> [String: Any] {
             let blocked = try await client.send(.delete, headers: runtimeHeaders(owner, fixture.serverId), to: URI(string: path))
             #expect(blocked.status == .conflict)
             #expect(((try runtimeObject(blocked)["error"] as? String) ?? "").contains("runtime profiles still reference active agents"))
-            #expect(fixture.accounts.agentRuntimeProfileMachineId(agentId: agentId) == fixture.machineId)
+            #expect(fixture.accounts.agentRuntimeProfileForTesting(agentId: agentId)?.machineId == fixture.machineId)
 
             fixture.accounts.oauth.deleteAgent(id: agentId)
             let cleaned = try await client.send(.delete, headers: runtimeHeaders(owner, fixture.serverId), to: URI(string: path))
             #expect(cleaned.status == .ok)
-            #expect(fixture.accounts.agentRuntimeProfileMachineId(agentId: agentId) == nil)
+            #expect(fixture.accounts.agentRuntimeProfileForTesting(agentId: agentId)?.machineId == nil)
 
             let staleMachine = fixture.accounts.registerMachine(serverId: fixture.serverId, userId: fixture.ownerId, name: "stale-profile-machine-998")
             let staleTarget = fixture.accounts.registerMachine(serverId: fixture.serverId, userId: fixture.ownerId, name: "stale-profile-target-998")
@@ -240,7 +240,7 @@ private func runtimeObject(_ response: ClientResponse) throws -> [String: Any] {
                 to: URI(string: "/api/servers/\(fixture.serverId)/machines/\(staleMachine)")
             )
             #expect(staleDelete.status == .ok)
-            #expect(fixture.accounts.agentRuntimeProfileMachineId(agentId: staleAgent) == nil)
+            #expect(fixture.accounts.agentRuntimeProfileForTesting(agentId: staleAgent)?.machineId == nil)
         }
     }
 }
@@ -323,7 +323,7 @@ private func runtimeObject(_ response: ClientResponse) throws -> [String: Any] {
             fixture.accounts.setAgentMigrationStateForTesting(id: migrationId, state: "completed")
             let cleaned = try await client.send(.delete, headers: runtimeHeaders(owner, fixture.serverId), to: URI(string: path))
             #expect(cleaned.status == .ok)
-            #expect(fixture.accounts.agentRuntimeProfileMachineId(agentId: agentId) == nil)
+            #expect(fixture.accounts.agentRuntimeProfileForTesting(agentId: agentId)?.machineId == nil)
         }
     }
 }

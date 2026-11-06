@@ -22,8 +22,16 @@ extension EmailLoginDirectory {
     }
 
     public func expireAppLoginRequestForTesting(requestId: String) {
-        lock.lock()
-        appLoginRequests[requestId]?.expiresAt = Date().addingTimeInterval(-1)
-        lock.unlock()
+        var state = authProfileStore.accountState
+        state.appLoginRequests[requestId]?.expiresAt = Date().addingTimeInterval(-1)
+        authProfileStore.accountState = state
+    }
+
+    public func authIdentityCount(userId: String) -> Int {
+        authProfileStore.identityCount(userId: userId)
+    }
+
+    public func passwordCredentialEstablished(userId: String) -> Bool {
+        authProfileStore.identitySnapshot(userId: userId).passwordConfigured
     }
 }

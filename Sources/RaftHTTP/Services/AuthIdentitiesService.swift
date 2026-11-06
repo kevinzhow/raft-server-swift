@@ -1,65 +1,206 @@
-import Crypto
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 
-
-/// Typed facade over the session, identity and app-login surface: the
-/// authenticated profile readbacks, identity listing and unlink, and the
-/// HarmonyOS handoff whose code is bound to an S256 challenge.
+/// Domain failure for the session, identity, app-login and profile surface.
 ///
-/// The state transitions stay on `EmailLoginDirectory` with unchanged
-/// signatures; this type is the `Service` boundary the routes call.
-public struct AuthIdentitiesService: Sendable {
-    public let directory: EmailLoginDirectory
+/// Every case publishes the bytes the retired handler built: the canonical
+/// `{"error": …}` body, the same object plus `code`, or an explicit
+/// `errorBody` where the legacy object put `code` first or carried more keys.
+public enum AuthIdentitiesError: DomainError, Equatable {
+    case unauthorized
+    case missingAuthorization
+    case invalidToken
+    case passwordCredentialRequired
+    case notAServerMember
+    case invalidLoginBody([AuthRequestIssue])
+    case invalidCredentials
+    case pendingLinkExpired
+    case pendingLinkAccountMismatch
+    case invalidAppLoginRequest
+    case returnUriNotAllowed
+    case challengeMethodInvalid
+    case challengeInvalid
+    case requestNotFound
+    case requestExpired(redirectUrl: String)
+    case requestNotPending
+    case invalidAppLoginCompletion
+    case codeNotFound
+    case codeConsumed
+    case codeExpired
+    case pkceMismatch
+    case requestNotApproved
+    case profileUpdateFailed
+    case invalidProfile(String)
+    case wrongCurrentPassword
+    case noAvatarProvided
+    case avatarTooLarge(maxBytes: Int)
 
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
+    public var status: UInt {
+        switch self {
+        case .unauthorized, .missingAuthorization, .invalidToken, .invalidCredentials,
+             .wrongCurrentPassword:
+            401
+        case .notAServerMember, .pendingLinkAccountMismatch:
+            403
+        case .requestNotFound, .codeNotFound:
+            404
+        case .passwordCredentialRequired, .requestNotPending, .requestNotApproved:
+            409
+        case .pendingLinkExpired, .requestExpired, .codeConsumed, .codeExpired:
+            410
+        case .invalidLoginBody, .invalidAppLoginRequest, .returnUriNotAllowed,
+             .challengeMethodInvalid, .challengeInvalid, .invalidAppLoginCompletion, .pkceMismatch,
+             .profileUpdateFailed, .invalidProfile, .noAvatarProvided, .avatarTooLarge:
+            400
+        }
     }
 
-    /// `GET /api/auth/identities`.
-    public func identities(authorization: String?) -> HTTPReply {
-        directory.authIdentities(authorization: authorization)
+    public var errorMessage: String {
+        switch self {
+        case .unauthorized: "Unauthorized"
+        case .missingAuthorization: "Missing or invalid Authorization header"
+        case .invalidToken: "Invalid or expired token"
+        case .passwordCredentialRequired: "Set a password before disconnecting your final sign-in account."
+        case .notAServerMember: "Not a member of this server"
+        case .invalidLoginBody: "Invalid email login body"
+        case .invalidCredentials: "Invalid email or password"
+        case .pendingLinkExpired: "This sign-in link expired. Sign in again to connect the account."
+        case .pendingLinkAccountMismatch: "The pending link belongs to a different account"
+        case .invalidAppLoginRequest: "Invalid app login request"
+        case .returnUriNotAllowed: "Return URI is not allowed"
+        case .challengeMethodInvalid: "PKCE challenge method must be S256"
+        case .challengeInvalid: "PKCE challenge is invalid"
+        case .requestNotFound: "App login request not found"
+        case .requestExpired: "App login request expired"
+        case .requestNotPending: "App login request is not pending"
+        case .invalidAppLoginCompletion: "Invalid app login completion"
+        case .codeNotFound: "App login code not found"
+        case .codeConsumed: "App login code was already used"
+        case .codeExpired: "App login code expired"
+        case .pkceMismatch: "PKCE verifier does not match"
+        case .requestNotApproved: "App login request is not approved"
+        case .profileUpdateFailed: "Failed to update profile"
+        case .invalidProfile(let message): message
+        case .wrongCurrentPassword: "Current password is incorrect"
+        case .noAvatarProvided: "No avatar file provided"
+        case .avatarTooLarge: "Avatar image must be 5 MB or smaller"
+        }
     }
 
-    /// `DELETE /api/auth/identities/:provider`.
-    public func unlink(authorization: String?, provider: String) -> HTTPReply {
-        directory.unlinkAuthIdentity(authorization: authorization, provider: provider)
+    public var errorCode: String? {
+        switch self {
+        case .missingAuthorization, .invalidToken: "auth_required"
+        case .pendingLinkExpired: "pending_link_expired"
+        case .pendingLinkAccountMismatch: "pending_link_account_mismatch"
+        case .invalidAppLoginRequest, .invalidAppLoginCompletion: "invalid_request"
+        case .returnUriNotAllowed: "return_uri_not_allowed"
+        case .challengeMethodInvalid: "code_challenge_method_invalid"
+        case .challengeInvalid: "code_challenge_invalid"
+        case .requestNotFound: "request_not_found"
+        case .requestExpired: "request_expired"
+        case .requestNotPending: "request_not_pending"
+        case .codeNotFound: "code_not_found"
+        case .codeConsumed: "code_consumed"
+        case .codeExpired: "code_expired"
+        case .pkceMismatch: "pkce_mismatch"
+        case .requestNotApproved: "request_not_approved"
+        default: nil
+        }
     }
 
-    /// `GET /api/auth/me`.
-    public func me(authorization: String?) -> HTTPReply {
-        directory.me(authorization: authorization)
-    }
-
-    /// `PATCH /api/auth/me`.
-    public func patch(authorization: String?, body: String) -> HTTPReply {
-        directory.patch(authorization: authorization, body: body)
-    }
-
-    /// `POST /api/auth/app-login/start`.
-    public func appLoginStart(_ body: AppLoginStartRequestDTO) -> HTTPReply {
-        directory.appLoginStart(body: body.encodedBody())
-    }
-
-    /// `POST /api/auth/app-login/complete`.
-    public func appLoginComplete(_ body: AppLoginCompleteRequestDTO) -> HTTPReply {
-        directory.appLoginComplete(body: body.encodedBody())
+    public var errorBody: OrderedJSON? {
+        switch self {
+        case .passwordCredentialRequired:
+            .object([
+                OrderedJSONField("code", "PASSWORD_CREDENTIAL_REQUIRED"),
+                OrderedJSONField("error", errorMessage),
+            ])
+        case .invalidCredentials:
+            .object([
+                OrderedJSONField("code", "AUTH_INVALID_CREDENTIALS"),
+                OrderedJSONField("error", errorMessage),
+            ])
+        case .wrongCurrentPassword:
+            .object([
+                OrderedJSONField("code", "AUTH_CURRENT_PASSWORD_INCORRECT"),
+                OrderedJSONField("error", errorMessage),
+            ])
+        case .invalidLoginBody(let issues):
+            .object([
+                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("code", "email_login_body_invalid"),
+                OrderedJSONField("issues", .array(issues.map {
+                    .object([
+                        OrderedJSONField("path", $0.path),
+                        OrderedJSONField("message", $0.message),
+                    ])
+                })),
+            ])
+        case .requestExpired(let redirectUrl):
+            .object([
+                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("code", "request_expired"),
+                OrderedJSONField("redirectUrl", redirectUrl),
+            ])
+        case .avatarTooLarge(let maxBytes):
+            .object([
+                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("errorCode", "PROFILE_AVATAR_TOO_LARGE"),
+                OrderedJSONField("maxBytes", maxBytes),
+            ])
+        default:
+            nil
+        }
     }
 }
 
-extension EmailLoginDirectory {
+/// Session, identity, app-login and profile operations.
+///
+/// Every state change is one `AuthProfileStore` critical section; this type
+/// validates the request, asks the store to decide and write, and maps the
+/// outcome to its DTO or to `AuthIdentitiesError`. The OAuth ledger only
+/// supplies the server membership check and the settings App rows.
+public struct AuthIdentitiesService: Sendable {
+    private let store: AuthProfileStore
+    private let oauth: OAuthLedger
+    private let now: @Sendable () -> Date
 
-    /// The user behind a normal access token. `requireAuth` does not demand a verified email.
+    init(
+        store: AuthProfileStore,
+        oauth: OAuthLedger,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
+        self.store = store
+        self.oauth = oauth
+        self.now = now
+    }
+
+    // MARK: Session lookups
+
+    /// The user behind a live access token, or nil.
+    private func sessionUserId(_ authorization: String?) -> String? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        return store.userId(forAccessToken: String(authorization.dropFirst("Bearer ".count)))
+    }
+
+    /// The bearer check the profile routes share: a missing header and an
+    /// unknown token publish different bodies.
+    private func authorizedUser(_ authorization: String?) throws -> String {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            throw AuthIdentitiesError.missingAuthorization
+        }
+        guard let userId = store.userId(forAccessToken: String(authorization.dropFirst("Bearer ".count))) else {
+            throw AuthIdentitiesError.invalidToken
+        }
+        return userId
+    }
+
+    /// The user behind a normal access token for the OAuth authorize routes.
+    /// `requireAuth` there does not demand a verified email and ignores a
+    /// revoked session family, exactly like the retired directory lookup.
     public func oauthSession(authorization: String?) -> OAuthSession {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return .missing }
         let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        defer { lock.unlock() }
-        guard let userId = accessTokens[token],
-              let account = accounts.values.first(where: { $0.id == userId })
-        else { return .invalid }
+        guard let account = store.account(forAnyAccessToken: token) else { return .invalid }
         return .user(OAuthHuman(
             id: account.id,
             email: account.email,
@@ -69,104 +210,137 @@ extension EmailLoginDirectory {
         ))
     }
 
-    func identitiesJSONLocked(userId: String) -> (identities: String, passwordConfigured: Bool) {
-        let rows = authProfileStore.identities(userId: userId).map { row in
-            "{\"provider\":\(jsonString(row.provider)),\"providerEmail\":\(jsonString(row.providerEmail))}"
-        }.joined(separator: ",")
-        let account = accounts.values.first { $0.id == userId }
-        return (rows, account?.passwordCredentialEstablishedAt != nil)
+    // MARK: Identities
+
+    /// `GET /api/auth/identities`.
+    public func identities(authorization: String?) throws -> AuthIdentitiesResponse {
+        guard let userId = sessionUserId(authorization) else { throw AuthIdentitiesError.unauthorized }
+        let snapshot = store.identitySnapshot(userId: userId)
+        return AuthIdentitiesResponse(
+            identities: Self.rows(snapshot),
+            passwordConfigured: snapshot.passwordConfigured
+        )
     }
 
-    public func authIdentities(authorization: String?) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    /// `DELETE /api/auth/identities/:provider`. The final sign-in identity of a
+    /// passwordless user cannot be unlinked.
+    public func unlink(authorization: String?, provider: String) throws -> UnlinkIdentityResponse {
+        guard let userId = sessionUserId(authorization) else { throw AuthIdentitiesError.unauthorized }
+        switch store.unlinkIdentity(userId: userId, provider: provider) {
+        case .notLinked(let snapshot):
+            return UnlinkIdentityResponse(
+                unlinked: false,
+                identities: Self.rows(snapshot),
+                passwordConfigured: snapshot.passwordConfigured
+            )
+        case .passwordCredentialRequired:
+            throw AuthIdentitiesError.passwordCredentialRequired
+        case .unlinked(let snapshot):
+            return UnlinkIdentityResponse(
+                unlinked: true,
+                identities: Self.rows(snapshot),
+                passwordConfigured: snapshot.passwordConfigured
+            )
         }
-        lock.lock()
-        let state = identitiesJSONLocked(userId: userId)
-        lock.unlock()
-        return Self.json(200, "{\"identities\":[\(state.identities)],\"passwordConfigured\":\(state.passwordConfigured)}")
     }
 
-    public func unlinkAuthIdentity(authorization: String?, provider: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        lock.lock()
-        var rows = authProfileStore.identities(userId: userId)
-        guard let index = rows.firstIndex(where: { $0.provider == provider }) else {
-            let state = identitiesJSONLocked(userId: userId)
-            lock.unlock()
-            return Self.json(200, "{\"unlinked\":false,\"identities\":[\(state.identities)],\"passwordConfigured\":\(state.passwordConfigured)}")
-        }
-        let passwordConfigured = identitiesJSONLocked(userId: userId).passwordConfigured
-        if rows.count == 1, !passwordConfigured {
-            lock.unlock()
-            return Self.json(409, "{\"code\":\"PASSWORD_CREDENTIAL_REQUIRED\",\"error\":\"Set a password before disconnecting your final sign-in account.\"}")
-        }
-        rows.remove(at: index)
-        authProfileStore.replaceIdentities(userId: userId, rows: rows)
-        let state = identitiesJSONLocked(userId: userId)
-        lock.unlock()
-        return Self.json(200, "{\"unlinked\":true,\"identities\":[\(state.identities)],\"passwordConfigured\":\(state.passwordConfigured)}")
+    private static func rows(_ snapshot: AuthIdentitySnapshot) -> [AuthIdentityRow] {
+        snapshot.rows.map { AuthIdentityRow(provider: $0.provider, providerEmail: $0.providerEmail) }
     }
 
-    public func authIdentityCount(userId: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return authProfileStore.identityCount(userId: userId)
-    }
+    // MARK: Integration settings
 
-    public func passwordCredentialEstablished(userId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return accounts.values.first { $0.id == userId }?.passwordCredentialEstablishedAt != nil
-    }
-
-    public func integrationSettingsClients(authorization: String?, serverId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
+    /// `GET /api/integrations/clients`: every App this Server owns or has
+    /// installed, for a Server member.
+    public func integrationSettingsClients(
+        authorization: String?,
+        serverId: String
+    ) throws -> IntegrationSettingsClientsResponse {
+        guard let userId = sessionUserId(authorization) else { throw AuthIdentitiesError.unauthorized }
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw AuthIdentitiesError.notAServerMember
         }
-        let data = try? JSONSerialization.data(withJSONObject: oauth.integrationSettingsClients(serverId: serverId))
-        return Self.json(200, String(decoding: data ?? Data("[]".utf8), as: UTF8.self))
+        return IntegrationSettingsClientsResponse(clients: oauth.integrationSettingsClientRows(serverId: serverId))
     }
 
-    public func login(body: String) -> HTTPReply {
-        switch Self.parse(body) {
-        case .invalid(let issues):
-            return Self.invalid(issues)
-        case .request(let request):
-            return authenticate(request)
+    // MARK: Password login
+
+    /// `POST /api/auth/login`. A non-string or empty email or password is
+    /// refused before any account lookup; a missing account and a wrong
+    /// password share one 401.
+    public func login(_ request: LoginRequest?) throws -> LoginResponse {
+        guard let request else {
+            throw AuthIdentitiesError.invalidLoginBody([
+                AuthRequestIssue(path: "", message: "Expected object, received string"),
+            ])
+        }
+        var issues: [AuthRequestIssue] = []
+        let email = Self.requiredString(request.email, path: "email", into: &issues)
+        let password = Self.requiredString(request.password, path: "password", into: &issues)
+        if !issues.isEmpty { throw AuthIdentitiesError.invalidLoginBody(issues) }
+        switch store.authenticate(
+            email: EmailLoginDirectory.normalize(email ?? ""),
+            passwordHash: EmailLoginDirectory.sha256(password ?? ""),
+            pendingLinkToken: request.pendingLinkToken,
+            now: now()
+        ) {
+        case .authenticated(let userId, let accountEmail, let tokens, let linkedProvider):
+            return LoginResponse(
+                userId: userId,
+                email: accountEmail,
+                accessToken: tokens.accessToken,
+                refreshToken: tokens.refreshToken,
+                linkedProvider: linkedProvider
+            )
+        case .pendingLinkExpired:
+            throw AuthIdentitiesError.pendingLinkExpired
+        case .pendingLinkAccountMismatch:
+            throw AuthIdentitiesError.pendingLinkAccountMismatch
+        case .rejected:
+            throw AuthIdentitiesError.invalidCredentials
         }
     }
 
+    private static func requiredString(
+        _ field: LoginBodyField,
+        path: String,
+        into issues: inout [AuthRequestIssue]
+    ) -> String? {
+        switch field {
+        case .absent:
+            issues.append(AuthRequestIssue(path: path, message: "Required"))
+            return nil
+        case .string(let value) where value.isEmpty:
+            issues.append(AuthRequestIssue(path: path, message: "String must contain at least 1 character(s)"))
+            return nil
+        case .string(let value):
+            return value
+        case .wrongType(let name):
+            issues.append(AuthRequestIssue(path: path, message: "Expected string, received \(name)"))
+            return nil
+        }
+    }
 
-
+    // MARK: App login
 
     /// `POST /api/auth/app-login/start`. The handoff accepts only the shipped
     /// HarmonyOS return URIs and an S256 PKCE challenge.
-    public func appLoginStart(body: String) -> HTTPReply {
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let returnUri = object["returnUri"] as? String, !returnUri.isEmpty,
-              let codeChallenge = object["codeChallenge"] as? String, !codeChallenge.isEmpty
-        else {
-            return Self.json(400, "{\"error\":\"Invalid app login request\",\"code\":\"invalid_request\"}")
+    public func appLoginStart(_ request: AppLoginStartRequest) throws -> AppLoginStartResponse {
+        guard let returnUri = request.returnUri, !returnUri.isEmpty,
+              let codeChallenge = request.codeChallenge, !codeChallenge.isEmpty
+        else { throw AuthIdentitiesError.invalidAppLoginRequest }
+        guard EmailLoginDirectory.appLoginReturnUris.contains(returnUri) else {
+            throw AuthIdentitiesError.returnUriNotAllowed
         }
-        guard Self.appLoginReturnUris.contains(returnUri) else {
-            return Self.json(400, "{\"error\":\"Return URI is not allowed\",\"code\":\"return_uri_not_allowed\"}")
-        }
-        if let method = object["codeChallengeMethod"] as? String, method != "S256" {
-            return Self.json(400, "{\"error\":\"PKCE challenge method must be S256\",\"code\":\"code_challenge_method_invalid\"}")
+        if let method = request.codeChallengeMethod, method != "S256" {
+            throw AuthIdentitiesError.challengeMethodInvalid
         }
         guard codeChallenge.wholeMatch(of: /^[A-Za-z0-9_-]{43}$/) != nil else {
-            return Self.json(400, "{\"error\":\"PKCE challenge is invalid\",\"code\":\"code_challenge_invalid\"}")
+            throw AuthIdentitiesError.challengeInvalid
         }
         let requestId = UUID().uuidString.lowercased()
-        let expiresAt = Self.appLoginExpiresAt()
-        lock.lock()
-        appLoginRequests[requestId] = AppLoginRequest(
+        let expiresAt = EmailLoginDirectory.appLoginExpiresAt(now())
+        store.insertAppLoginRequest(AppLoginRequest(
             id: requestId,
             returnUri: returnUri,
             codeChallenge: codeChallenge,
@@ -175,425 +349,305 @@ extension EmailLoginDirectory {
             userId: nil,
             expiresAt: expiresAt,
             consumedAt: nil
+        ))
+        return AppLoginStartResponse(
+            requestId: requestId,
+            loginUrl: "\(store.appURL)/login/app?request=\(requestId)",
+            expiresAt: EmailLoginDirectory.iso8601(expiresAt)
         )
-        lock.unlock()
-        let loginUrl = "\(appURL)/login/app?request=\(requestId)"
-        return Self.json(201, "{\"requestId\":\(jsonString(requestId)),\"loginUrl\":\(jsonString(loginUrl)),\"expiresAt\":\(jsonString(Self.iso8601(expiresAt)))}")
     }
 
-    func appLoginActor(_ authorization: String?) -> String? {
-        if case .user(let id) = authorize(authorization) { return id }
-        return nil
-    }
-
-    func appLoginRequestLocked(_ requestId: String) -> AppLoginRequest? {
-        appLoginRequests[requestId]
+    /// The signed-in user for the request routes. A missing and an unknown
+    /// bearer publish the same invalid-token body.
+    private func appLoginActor(_ authorization: String?) throws -> String {
+        guard let userId = sessionUserId(authorization) else { throw AuthIdentitiesError.invalidToken }
+        return userId
     }
 
     /// `GET /api/auth/app-login/requests/:requestId`. Only a signed-in user may read the request.
-    public func appLoginDescribe(authorization: String?, requestId: String) -> HTTPReply {
-        guard appLoginActor(authorization) != nil else { return Self.invalidToken }
-        lock.lock()
-        let request = appLoginRequestLocked(requestId)
-        lock.unlock()
-        guard let request else { return Self.json(404, "{\"error\":\"App login request not found\",\"code\":\"request_not_found\"}") }
-        return Self.json(200, "{\"requestId\":\(jsonString(request.id)),\"status\":\(jsonString(request.status)),\"returnUri\":\(jsonString(request.returnUri)),\"expiresAt\":\(jsonString(Self.iso8601(request.expiresAt)))}")
+    public func appLoginDescribe(authorization: String?, requestId: String) throws -> AppLoginRequestResponse {
+        _ = try appLoginActor(authorization)
+        guard let request = store.appLoginRequest(id: requestId) else {
+            throw AuthIdentitiesError.requestNotFound
+        }
+        return AppLoginRequestResponse(
+            requestId: request.id,
+            status: request.status,
+            returnUri: request.returnUri,
+            expiresAt: EmailLoginDirectory.iso8601(request.expiresAt)
+        )
     }
 
     /// `POST /api/auth/app-login/requests/:requestId/approve`.
-    public func appLoginApprove(authorization: String?, requestId: String) -> HTTPReply {
-        guard let userId = appLoginActor(authorization) else { return Self.invalidToken }
-        let now = Date()
-        lock.lock()
-        guard var request = appLoginRequestLocked(requestId) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"App login request not found\",\"code\":\"request_not_found\"}")
-        }
-        if request.expiresAt <= now {
-            lock.unlock()
-            return Self.json(410, "{\"error\":\"App login request expired\",\"code\":\"request_expired\",\"redirectUrl\":\(jsonString(Self.appLoginRedirect(request.returnUri, requestId: request.id, query: "error=expired")))}")
-        }
-        guard request.status == "pending" else {
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"App login request is not pending\",\"code\":\"request_not_pending\"}")
-        }
-        let code = Self.token()
-        request.status = "approved"
-        request.code = code
-        request.userId = userId
-        appLoginRequests[requestId] = request
-        lock.unlock()
-        let redirectUrl = Self.appLoginRedirect(request.returnUri, requestId: request.id, query: "code=\(code)")
-        return Self.json(200, "{\"redirectUrl\":\(jsonString(redirectUrl))}")
+    public func appLoginApprove(authorization: String?, requestId: String) throws -> AppLoginRedirectResponse {
+        let userId = try appLoginActor(authorization)
+        let request = try decide(requestId: requestId, .approve(userId: userId, code: EmailLoginDirectory.token()))
+        return AppLoginRedirectResponse(redirectUrl: EmailLoginDirectory.appLoginRedirect(
+            request.returnUri,
+            requestId: request.id,
+            query: "code=\(request.code ?? "")"
+        ))
     }
 
     /// `POST /api/auth/app-login/requests/:requestId/deny`.
-    public func appLoginDeny(authorization: String?, requestId: String) -> HTTPReply {
-        guard appLoginActor(authorization) != nil else { return Self.invalidToken }
-        let now = Date()
-        lock.lock()
-        guard var request = appLoginRequestLocked(requestId) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"App login request not found\",\"code\":\"request_not_found\"}")
+    public func appLoginDeny(authorization: String?, requestId: String) throws -> AppLoginRedirectResponse {
+        _ = try appLoginActor(authorization)
+        let request = try decide(requestId: requestId, .deny)
+        return AppLoginRedirectResponse(redirectUrl: EmailLoginDirectory.appLoginRedirect(
+            request.returnUri,
+            requestId: request.id,
+            query: "error=access_denied"
+        ))
+    }
+
+    private func decide(requestId: String, _ decision: AppLoginDecision) throws -> AppLoginRequest {
+        switch store.decideAppLogin(requestId: requestId, decision: decision, now: now()) {
+        case .decided(let request):
+            return request
+        case .notFound:
+            throw AuthIdentitiesError.requestNotFound
+        case .expired(let request):
+            throw AuthIdentitiesError.requestExpired(redirectUrl: EmailLoginDirectory.appLoginRedirect(
+                request.returnUri,
+                requestId: request.id,
+                query: "error=expired"
+            ))
+        case .notPending:
+            throw AuthIdentitiesError.requestNotPending
         }
-        if request.expiresAt <= now {
-            lock.unlock()
-            return Self.json(410, "{\"error\":\"App login request expired\",\"code\":\"request_expired\",\"redirectUrl\":\(jsonString(Self.appLoginRedirect(request.returnUri, requestId: request.id, query: "error=expired")))}")
-        }
-        guard request.status == "pending" else {
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"App login request is not pending\",\"code\":\"request_not_pending\"}")
-        }
-        request.status = "denied"
-        appLoginRequests[requestId] = request
-        lock.unlock()
-        let redirectUrl = Self.appLoginRedirect(request.returnUri, requestId: request.id, query: "error=access_denied")
-        return Self.json(200, "{\"redirectUrl\":\(jsonString(redirectUrl))}")
     }
 
     /// `POST /api/auth/app-login/complete`. The one-time code is bound to the
     /// request's S256 challenge and request expiry; a wrong verifier does not burn it.
-    public func appLoginComplete(body: String) -> HTTPReply {
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let code = object["code"] as? String, !code.isEmpty,
-              let verifier = object["codeVerifier"] as? String, !verifier.isEmpty
-        else {
-            return Self.json(400, "{\"error\":\"Invalid app login completion\",\"code\":\"invalid_request\"}")
+    public func appLoginComplete(_ request: AppLoginCompleteRequest) throws -> AppLoginCompleteResponse {
+        guard let code = request.code, !code.isEmpty,
+              let verifier = request.codeVerifier, !verifier.isEmpty
+        else { throw AuthIdentitiesError.invalidAppLoginCompletion }
+        switch store.completeAppLogin(
+            code: code,
+            verifierChallenge: EmailLoginDirectory.pkceS256(verifier),
+            now: now()
+        ) {
+        case .completed(let account, let tokens):
+            return AppLoginCompleteResponse(
+                user: AuthUserDTO(account: account),
+                accessToken: tokens.accessToken,
+                refreshToken: tokens.refreshToken
+            )
+        case .codeNotFound:
+            throw AuthIdentitiesError.codeNotFound
+        case .codeConsumed:
+            throw AuthIdentitiesError.codeConsumed
+        case .codeExpired:
+            throw AuthIdentitiesError.codeExpired
+        case .pkceMismatch:
+            throw AuthIdentitiesError.pkceMismatch
+        case .notApproved:
+            throw AuthIdentitiesError.requestNotApproved
+        case .accountMissing:
+            throw AuthIdentitiesError.invalidToken
         }
-        let now = Date()
-        lock.lock()
-        guard let request = appLoginRequests.values.first(where: { $0.code == code }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"App login code not found\",\"code\":\"code_not_found\"}")
-        }
-        if request.consumedAt != nil {
-            lock.unlock()
-            return Self.json(410, "{\"error\":\"App login code was already used\",\"code\":\"code_consumed\"}")
-        }
-        if request.expiresAt <= now {
-            lock.unlock()
-            return Self.json(410, "{\"error\":\"App login code expired\",\"code\":\"code_expired\"}")
-        }
-        guard Self.pkceS256(verifier) == request.codeChallenge else {
-            lock.unlock()
-            return Self.json(400, "{\"error\":\"PKCE verifier does not match\",\"code\":\"pkce_mismatch\"}")
-        }
-        guard let userId = request.userId else {
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"App login request is not approved\",\"code\":\"request_not_approved\"}")
-        }
-        var approved = request
-        approved.consumedAt = now
-        appLoginRequests[approved.id] = approved
-        guard let account = accounts.values.first(where: { $0.id == userId }) else {
-            lock.unlock()
-            return Self.invalidToken
-        }
-        let issued = openSessionLocked(userId: userId)
-        let user = Self.userJSON(account)
-        lock.unlock()
-        return Self.json(200, "{\"user\":\(user),\"accessToken\":\(jsonString(issued.accessToken)),\"refreshToken\":\(jsonString(issued.refreshToken))}")
     }
 
-    func authenticate(_ request: Request) -> HTTPReply {
-        let email = Self.normalize(request.email)
-        lock.lock()
-        var pendingLink: PendingSocialLink?
-        if let token = request.pendingLinkToken, !token.isEmpty {
-            guard var pending = pendingSocialLinks[token], !pending.consumed, !pending.cancelled,
-                  pending.expiresAt > Date()
-            else {
-                lock.unlock()
-                return Self.json(410, "{\"error\":\"This sign-in link expired. Sign in again to connect the account.\",\"code\":\"pending_link_expired\"}")
-            }
-            guard pending.email == email else {
-                lock.unlock()
-                return Self.json(403, "{\"error\":\"The pending link belongs to a different account\",\"code\":\"pending_link_account_mismatch\"}")
-            }
-            pendingLink = pending
+    // MARK: Profile
+
+    /// `GET /api/auth/me`. The gravatar hash is SHA-256 of the stored email,
+    /// trimmed and lowercased.
+    public func me(authorization: String?) throws -> AuthMeResponse {
+        let userId = try authorizedUser(authorization)
+        guard let account = store.account(userId: userId), account.retiredAt == nil else {
+            throw AuthIdentitiesError.invalidToken
         }
-        let account = accounts[email]
-        let matches = account.map { $0.passwordHash == Self.sha256(request.password) } ?? false
-        guard var accountSnapshot = account, matches, accountSnapshot.retiredAt == nil else {
-            lock.unlock()
-            return Self.rejected
+        let observed = store.timezoneObservation(userId: userId).map {
+            TimezoneObservationResponse(
+                firstObservedTimezone: $0.firstTimezone,
+                firstObservedTimezoneAt: EmailLoginDirectory.iso8601($0.firstAt),
+                lastObservedTimezone: $0.lastTimezone,
+                lastObservedTimezoneAt: EmailLoginDirectory.iso8601($0.lastAt)
+            )
         }
-        if accountSnapshot.passwordCredentialEstablishedAt == nil {
-            accountSnapshot.passwordCredentialEstablishedAt = Date()
-            accounts[email] = accountSnapshot
-        }
-        let issued = openSessionLocked(userId: accountSnapshot.id)
-        var linkedProviderJSON = "null"
-        if var pending = pendingLink {
-            pending.consumed = true
-            pendingSocialLinks[pending.token] = pending
-            if !linkedIdentities.contains(where: {
-                $0.userId == accountSnapshot.id && $0.provider == pending.provider && $0.providerUserId == pending.providerUserId
-            }) {
-                linkedIdentities.append(LinkedIdentity(
-                    userId: accountSnapshot.id, provider: pending.provider,
-                    providerUserId: pending.providerUserId, providerEmail: pending.email
-                ))
-            }
-            linkedProviderJSON = jsonString(pending.provider)
-        }
-        let body = "{\"user\":{\"id\":\(jsonString(accountSnapshot.id)),\"email\":\(jsonString(accountSnapshot.email))},\"accessToken\":\(jsonString(issued.accessToken)),\"refreshToken\":\(jsonString(issued.refreshToken)),\"linkedProvider\":\(linkedProviderJSON)}"
-        lock.unlock()
-        return Self.json(200, body)
+        return AuthMeResponse(user: AuthUserDTO(account: account), observedTimezone: observed)
     }
 
     /// `POST /api/auth/me/avatar`. A file over 5 MB is refused before the stored path changes.
-    public func uploadAvatar(authorization: String?, contentType: String?, body: Data) -> HTTPReply {
-        let userId: String
-        switch authorize(authorization) {
-        case .rejected(let reply):
-            return reply
-        case .user(let id):
-            userId = id
+    public func uploadAvatar(
+        authorization: String?,
+        contentType: String?,
+        body: Data
+    ) throws -> AuthProfileUserResponse {
+        let userId = try authorizedUser(authorization)
+        guard let file = EmailLoginDirectory.multipartFile(named: "avatar", contentType: contentType, body: body) else {
+            throw AuthIdentitiesError.noAvatarProvided
         }
-        guard let file = Self.multipartFile(named: "avatar", contentType: contentType, body: body) else {
-            return Self.json(400, "{\"error\":\"No avatar file provided\"}")
+        if file.count > EmailLoginDirectory.maxProfileAvatarBytes {
+            throw AuthIdentitiesError.avatarTooLarge(maxBytes: EmailLoginDirectory.maxProfileAvatarBytes)
         }
-        if file.count > Self.maxProfileAvatarBytes {
-            return Self.json(400, "{\"error\":\"Avatar image must be 5 MB or smaller\",\"errorCode\":\"PROFILE_AVATAR_TOO_LARGE\",\"maxBytes\":\(Self.maxProfileAvatarBytes)}")
+        let hash = String(EmailLoginDirectory.sha256(file).prefix(32))
+        guard let account = store.setAvatarURL(userId: userId, url: "/api/avatars/users/\(hash).webp") else {
+            throw AuthIdentitiesError.invalidToken
         }
-        let hash = String(Self.sha256(file).prefix(32))
-        let avatarURL = "/api/avatars/users/\(hash).webp"
-        lock.lock()
-        guard var account = accounts.values.first(where: { $0.id == userId }) else {
-            lock.unlock()
-            return Self.invalidToken
-        }
-        account.avatarUrl = avatarURL
-        accounts[account.email] = account
-        let snapshot = account
-        lock.unlock()
-        return Self.json(200, Self.userJSON(snapshot))
+        return AuthProfileUserResponse(user: AuthUserDTO(account: account))
     }
 
-    /// `GET /api/auth/me`. The hash is SHA-256 of the stored email, trimmed and lowercased.
-    public func me(authorization: String?) -> HTTPReply {
-        let userId: String
-        switch authorize(authorization) {
-        case .rejected(let reply):
-            return reply
-        case .user(let id):
-            userId = id
-        }
-        lock.lock()
-        let account = accounts.values.first { $0.id == userId }
-        lock.unlock()
-        guard let account, account.retiredAt == nil else { return Self.invalidToken }
-        var json = Self.userJSON(account)
-        lock.lock()
-        let observation = timezoneObservations[userId]
-        lock.unlock()
-        if let observation {
-            let extra = String(Self.timezoneJSON(observation).dropFirst())
-            if let closing = json.lastIndex(of: "}") {
-                json = String(json[..<closing]) + "," + extra
-            }
-        }
-        return Self.json(200, json)
-    }
+    /// `PATCH /api/auth/me`. A wrong current password is refused before any
+    /// profile write; the password change itself is written before the other
+    /// fields are validated, as the retired handler did. Display language
+    /// accepts only the shipped UI catalogs. A body that is not a JSON object
+    /// reaches here as `nil`.
+    public func updateProfile(
+        authorization: String?,
+        _ request: UpdateProfileRequest?
+    ) throws -> AuthProfileUserResponse {
+        let userId = try authorizedUser(authorization)
+        guard let request else { throw AuthIdentitiesError.profileUpdateFailed }
 
-    /// `PATCH /api/auth/me`. A wrong current password is refused before any profile write.
-    /// Display language accepts only the shipped UI catalogs, `en` and `zh-cn`.
-    public func patch(authorization: String?, body: String) -> HTTPReply {
-        let userId: String
-        switch authorize(authorization) {
-        case .rejected(let reply):
-            return reply
-        case .user(let id):
-            userId = id
-        }
-        guard let data = body.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
-            return Self.json(400, "{\"error\":\"Failed to update profile\"}")
-        }
-
-        if let current = object["currentPassword"] as? String, !current.isEmpty,
-           let newPassword = object["newPassword"] as? String, !newPassword.isEmpty {
+        if case .value(let current) = request.currentPassword, !current.isEmpty,
+           case .value(let newPassword) = request.newPassword, !newPassword.isEmpty {
             if newPassword.count < 8 {
-                return Self.json(400, "{\"error\":\"New password must be at least 8 characters\"}")
+                throw AuthIdentitiesError.invalidProfile("New password must be at least 8 characters")
             }
-            lock.lock()
-            guard var account = accounts.values.first(where: { $0.id == userId }) else {
-                lock.unlock()
-                return Self.invalidToken
-            }
-            guard account.passwordHash == Self.sha256(current) else {
-                lock.unlock()
-                return Self.wrongPassword
-            }
-            account.passwordHash = Self.sha256(newPassword)
-            accounts[account.email] = account
-            lock.unlock()
-        }
-
-        var languageUpdate: String??
-        if object["displayLanguage"] != nil {
-            switch Self.parseDisplayLanguage(object["displayLanguage"]!) {
-            case .invalid(let message):
-                return Self.json(400, "{\"error\":\(jsonString(message))}")
-            case .value(let language):
-                languageUpdate = language
-            }
-        } else {
-            languageUpdate = nil
-        }
-
-        var shareUpdate: Bool?? = nil
-        if let raw = object["shareUsageData"] {
-            if raw is NSNull {
-                shareUpdate = .some(nil)
-            } else if let bool = raw as? Bool {
-                shareUpdate = .some(bool)
-            } else {
-                return Self.json(400, "{\"error\":\"shareUsageData must be a boolean or null\"}")
+            switch store.changePassword(
+                userId: userId,
+                currentHash: EmailLoginDirectory.sha256(current),
+                newHash: EmailLoginDirectory.sha256(newPassword)
+            ) {
+            case .changed: break
+            case .accountMissing: throw AuthIdentitiesError.invalidToken
+            case .wrongPassword: throw AuthIdentitiesError.wrongCurrentPassword
             }
         }
 
-        var languagePreference: String?? = nil
-        if let raw = object["preferredLanguage"] {
-            if raw is NSNull {
-                languagePreference = .some(nil)
-            } else if let value = raw as? String,
-                      value.wholeMatch(of: /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/) != nil {
-                languagePreference = .some(value.lowercased())
-            } else {
-                return Self.json(400, "{\"error\":\"Unsupported preferredLanguage\"}")
-            }
-        }
-        var timezonePreference: String?? = nil
-        if let raw = object["preferredTimezone"] {
-            if raw is NSNull {
-                timezonePreference = .some(nil)
-            } else if let value = raw as? String, TimeZone(identifier: value) != nil {
-                timezonePreference = .some(value)
-            } else {
-                return Self.json(400, "{\"error\":\"Invalid preferredTimezone\"}")
-            }
-        }
-        var modePreference: String? = nil
-        if let raw = object["preferredTranslationMode"] {
-            guard let value = raw as? String, ["off", "manual", "auto"].contains(value) else {
-                return Self.json(400, "{\"error\":\"Invalid preferredTranslationMode\"}")
-            }
-            modePreference = value
-        }
-        var autoPreference: Bool? = nil
-        if let raw = object["autoTranslationEnabled"] {
-            guard let value = raw as? Bool else {
-                return Self.json(400, "{\"error\":\"Invalid autoTranslationEnabled\"}")
-            }
-            autoPreference = value
-        }
-        var displayPreference: String? = nil
-        if let raw = object["preferredTranslationDisplay"] {
-            guard let value = raw as? String, ["translated", "bilingual", "original"].contains(value) else {
-                return Self.json(400, "{\"error\":\"Invalid preferredTranslationDisplay\"}")
-            }
-            displayPreference = value
-        }
-        var timeFormatPreference: String?? = nil
-        if let raw = object["preferredTimeFormat"] {
-            if raw is NSNull {
-                timeFormatPreference = .some(nil)
-            } else if let value = raw as? String, ["12h", "24h"].contains(value.lowercased()) {
-                timeFormatPreference = .some(value.lowercased())
-            } else {
-                return Self.json(400, "{\"error\":\"Invalid preferredTimeFormat\"}")
-            }
-        }
-        var fontSizePreference: String?? = nil
-        if let raw = object["preferredMessageBodyFontSize"] {
-            if raw is NSNull {
-                fontSizePreference = .some(nil)
-            } else if let value = raw as? String, ["sm", "md", "lg", "xl"].contains(value.lowercased()) {
-                fontSizePreference = .some(value.lowercased())
-            } else {
-                return Self.json(400, "{\"error\":\"Invalid preferredMessageBodyFontSize\"}")
-            }
-        }
-
-        var referralSourceUpdate: String?? = nil
-        var referralOtherUpdate: String?? = nil
-        var referralSkipped = false
-        if let raw = object["referralSource"] {
-            if raw is NSNull {
-                referralSourceUpdate = .some(nil)
-                referralOtherUpdate = .some(nil)
-            } else if let value = raw as? String,
-                      ["twitter_x", "linkedin", "friend_colleague", "search", "hn_reddit", "podcast_blog_newsletter", "other"].contains(value) {
-                referralSourceUpdate = .some(value)
-                if value == "other", let other = object["referralSourceOther"] as? String {
-                    let trimmed = String(other.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))
-                    referralOtherUpdate = .some(trimmed.isEmpty ? nil : trimmed)
-                } else {
-                    referralOtherUpdate = .some(nil)
-                }
-            } else {
-                return Self.json(400, "{\"error\":\"Invalid referralSource\"}")
-            }
-        } else if object["referralSourceOther"] != nil {
-            return Self.json(400, "{\"error\":\"referralSource is required when referralSourceOther is provided\"}")
-        }
-        if let raw = object["referralSourceSkipped"] {
-            guard let value = raw as? Bool else {
-                return Self.json(400, "{\"error\":\"referralSourceSkipped must be a boolean\"}")
-            }
-            referralSkipped = value
-        }
-
-        lock.lock()
-        guard var account = accounts.values.first(where: { $0.id == userId }) else {
-            lock.unlock()
-            return Self.invalidToken
-        }
-        var changed = false
-        if let value = referralSourceUpdate {
-            account.referralSource = value
-            account.referralSourceSkippedAt = nil
-            changed = true
-        }
-        if let value = referralOtherUpdate {
-            account.referralSourceOther = value
-            changed = true
-        }
-        if referralSkipped {
-            account.referralSourceSkippedAt = Date()
-            changed = true
-        }
-        if let value = languagePreference { account.preferredLanguage = value; changed = true }
-        if let value = timezonePreference { account.preferredTimezone = value; changed = true }
-        if let value = modePreference { account.preferredTranslationMode = value; changed = true }
-        if let value = autoPreference { account.autoTranslationEnabled = value; changed = true }
-        if let value = displayPreference { account.preferredTranslationDisplay = value; changed = true }
-        if let value = timeFormatPreference { account.preferredTimeFormat = value; changed = true }
-        if let value = fontSizePreference { account.preferredMessageBodyFontSize = value; changed = true }
-        if let language = languageUpdate {
-            account.displayLanguage = language
-            changed = true
-        }
-        if let share = shareUpdate {
-            account.shareUsageData = share
-            if share == true {
-                if analyticsIds[account.id] == nil {
-                    analyticsIds[account.id] = UUID().uuidString.lowercased()
-                }
-            } else if share == false {
-                analyticsIds.removeValue(forKey: account.id)
-            }
-            changed = true
-        }
-        if changed {
-            accounts[account.email] = account
-        }
-        let snapshot = account
-        lock.unlock()
-        return Self.json(200, Self.userJSON(snapshot))
+        let update = try Self.validatedUpdate(request)
+        guard let account = store.applyProfileUpdate(
+            userId: userId,
+            update: update,
+            now: now(),
+            newAnalyticsId: UUID().uuidString.lowercased()
+        ) else { throw AuthIdentitiesError.invalidToken }
+        return AuthProfileUserResponse(user: AuthUserDTO(account: account))
     }
 
+    /// The per-field checks in the order the retired handler ran them: the
+    /// first failing field decides the 400.
+    private static func validatedUpdate(_ request: UpdateProfileRequest) throws -> AccountProfileUpdate {
+        var update = AccountProfileUpdate()
+
+        switch request.displayLanguage {
+        case .absent:
+            break
+        case .null:
+            update.displayLanguage = .some(nil)
+        case .invalid:
+            throw AuthIdentitiesError.invalidProfile("displayLanguage must be a string or null")
+        case .value(let raw):
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                update.displayLanguage = .some(nil)
+            } else if let normalized = EmailLoginDirectory.normalizeDisplayLocale(trimmed) {
+                update.displayLanguage = .some(normalized)
+            } else {
+                throw AuthIdentitiesError.invalidProfile("displayLanguage must be a supported UI display locale")
+            }
+        }
+
+        switch request.shareUsageData {
+        case .absent: break
+        case .null: update.shareUsageData = .some(nil)
+        case .value(let share): update.shareUsageData = .some(share)
+        case .invalid:
+            throw AuthIdentitiesError.invalidProfile("shareUsageData must be a boolean or null")
+        }
+
+        switch request.preferredLanguage {
+        case .absent: break
+        case .null: update.preferredLanguage = .some(nil)
+        case .value(let value) where value.wholeMatch(of: /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/) != nil:
+            update.preferredLanguage = .some(value.lowercased())
+        default:
+            throw AuthIdentitiesError.invalidProfile("Unsupported preferredLanguage")
+        }
+
+        switch request.preferredTimezone {
+        case .absent: break
+        case .null: update.preferredTimezone = .some(nil)
+        case .value(let value) where TimeZone(identifier: value) != nil:
+            update.preferredTimezone = .some(value)
+        default:
+            throw AuthIdentitiesError.invalidProfile("Invalid preferredTimezone")
+        }
+
+        switch request.preferredTranslationMode {
+        case .absent: break
+        case .value(let value) where ["off", "manual", "auto"].contains(value):
+            update.preferredTranslationMode = value
+        default:
+            throw AuthIdentitiesError.invalidProfile("Invalid preferredTranslationMode")
+        }
+
+        switch request.autoTranslationEnabled {
+        case .absent: break
+        case .value(let value): update.autoTranslationEnabled = value
+        default:
+            throw AuthIdentitiesError.invalidProfile("Invalid autoTranslationEnabled")
+        }
+
+        switch request.preferredTranslationDisplay {
+        case .absent: break
+        case .value(let value) where ["translated", "bilingual", "original"].contains(value):
+            update.preferredTranslationDisplay = value
+        default:
+            throw AuthIdentitiesError.invalidProfile("Invalid preferredTranslationDisplay")
+        }
+
+        switch request.preferredTimeFormat {
+        case .absent: break
+        case .null: update.preferredTimeFormat = .some(nil)
+        case .value(let value) where ["12h", "24h"].contains(value.lowercased()):
+            update.preferredTimeFormat = .some(value.lowercased())
+        default:
+            throw AuthIdentitiesError.invalidProfile("Invalid preferredTimeFormat")
+        }
+
+        switch request.preferredMessageBodyFontSize {
+        case .absent: break
+        case .null: update.preferredMessageBodyFontSize = .some(nil)
+        case .value(let value) where ["sm", "md", "lg", "xl"].contains(value.lowercased()):
+            update.preferredMessageBodyFontSize = .some(value.lowercased())
+        default:
+            throw AuthIdentitiesError.invalidProfile("Invalid preferredMessageBodyFontSize")
+        }
+
+        let referralSources = [
+            "twitter_x", "linkedin", "friend_colleague", "search", "hn_reddit",
+            "podcast_blog_newsletter", "other",
+        ]
+        switch request.referralSource {
+        case .null:
+            update.referralSource = .some(nil)
+            update.referralSourceOther = .some(nil)
+        case .value(let value) where referralSources.contains(value):
+            update.referralSource = .some(value)
+            if value == "other", case .value(let other) = request.referralSourceOther {
+                let trimmed = String(other.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))
+                update.referralSourceOther = .some(trimmed.isEmpty ? nil : trimmed)
+            } else {
+                update.referralSourceOther = .some(nil)
+            }
+        case .absent:
+            if request.referralSourceOther != .absent {
+                throw AuthIdentitiesError.invalidProfile(
+                    "referralSource is required when referralSourceOther is provided"
+                )
+            }
+        default:
+            throw AuthIdentitiesError.invalidProfile("Invalid referralSource")
+        }
+        switch request.referralSourceSkipped {
+        case .absent: break
+        case .value(let skipped): update.referralSourceSkipped = skipped
+        default:
+            throw AuthIdentitiesError.invalidProfile("referralSourceSkipped must be a boolean")
+        }
+        return update
+    }
 }

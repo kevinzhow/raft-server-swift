@@ -37,30 +37,36 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         )
         let inbox = ReactionsRealtimeService(directory: services.emailAccounts)
         let servedInbox = services.emailAccounts.inboxAndWake
-        channels.post(":channelId", "archive") { request -> Response in
-            routeResponse(services.emailAccounts.setChannelArchivedRoute(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: request.parameters.get("channelId") ?? "",
-                archived: true
-            ))
+        channels.post(":channelId", "archive") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.channelMembership.setChannelArchived(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: request.parameters.get("channelId") ?? "",
+                    archived: true
+                )
+            }
         }
 
-        channels.post(":channelId", "unarchive") { request -> Response in
-            routeResponse(services.emailAccounts.setChannelArchivedRoute(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: request.parameters.get("channelId") ?? "",
-                archived: false
-            ))
+        channels.post(":channelId", "unarchive") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.channelMembership.setChannelArchived(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: request.parameters.get("channelId") ?? "",
+                    archived: false
+                )
+            }
         }
 
-        channels.post(":channelId", "join") { request -> Response in
-            routeResponse(services.emailAccounts.joinChannel(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: request.parameters.get("channelId") ?? ""
-            ))
+        channels.post(":channelId", "join") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.channelMembership.joinChannel(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: request.parameters.get("channelId") ?? ""
+                )
+            }
         }
 
         channels.post("inbox", "done") { request async throws -> Response in
@@ -242,11 +248,11 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         channels.get("activity", "snapshot") { _ -> Response in
-            routeResponse(services.emailAccounts.activityContractRejection())
+            routeResponse(activityContractRejection)
         }
 
         channels.get("activity", "difference") { _ -> Response in
-            routeResponse(services.emailAccounts.activityContractRejection())
+            routeResponse(activityContractRejection)
         }
 
         channels.post("saved", "check") { request async throws -> Response in
@@ -586,3 +592,18 @@ private func threadFollowMutation(_ request: Request) async -> ThreadFollowMutat
         parentMessageId: object["parentMessageId"] as? String
     )
 }
+
+/// The refusal both activity-sync routes answer with. The legacy reply
+/// published `Content-Length: 26` for this body, so it stays a fixed reply
+/// instead of passing through `respond`, which would derive the length from the
+/// body and change the published header.
+private let activityContractRejection = HTTPReply(
+    status: 400,
+    headers: [
+        "Content-Type": AppFallback.jsonContentType,
+        "X-Raft-Contract": "raft.activity-sync;revision=2",
+        "Access-Control-Expose-Headers": "X-Raft-Contract",
+        "Content-Length": "26",
+    ],
+    body: "{\"error\":\"invalid contract\"}"
+)

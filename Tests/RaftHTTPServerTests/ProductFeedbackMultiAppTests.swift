@@ -15,11 +15,8 @@ import VaporTesting
 /// flag, shared reporter/route-root/cursor secrets, route-subject binding and
 /// per-source ticket/cursor isolation.
 ///
-/// The feedback feature itself does not pass `X-Raft-Client-Kind` to the list /
-/// close / reply handlers and does not mount the ticket detail or attachment
-/// routes yet, so this suite registers the header-aware handlers over the
-/// production mount (Vapor keeps the last registration) and wires the two
-/// missing routes. The handlers under test are the production implementations.
+/// Every request goes through the production `FeedbackFeature` routes and
+/// `FeedbackMultiAppService`; nothing is mounted over them.
 @Suite
 struct ProductFeedbackMultiAppTests {
     private static let androidAppId = "a48a84f8-04ed-4db3-9297-189a14a36afc"
@@ -166,66 +163,6 @@ struct ProductFeedbackMultiAppTests {
 
     // MARK: - HTTP wiring
 
-    private func header(_ request: Request, _ name: String) -> String {
-        request.headers[HTTPField.Name(name)!] ?? ""
-    }
-
-    private func query(_ request: Request, _ name: String) -> String? {
-        guard let query = request.url.query, !query.isEmpty else { return nil }
-        for pair in query.split(separator: "&") {
-            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-            guard parts.first.map(String.init) == name else { continue }
-            let raw = parts.count > 1 ? String(parts[1]) : ""
-            return raw.removingPercentEncoding ?? raw
-        }
-        return nil
-    }
-
-    private func mountHeaderAwareFeedbackRoutes(_ app: Application, accounts: EmailLoginDirectory) {
-        app.get("api", "product-feedback", "tickets") { request -> Response in
-            routeResponse(accounts.productFeedbackTickets(
-                authorization: request.headers[.authorization],
-                clientKindHeader: header(request, "X-Raft-Client-Kind"),
-                cursor: query(request, "cursor")
-            ))
-        }
-        app.get("api", "product-feedback", "tickets", ":ticketId") { request -> Response in
-            let limit = Int(query(request, "comment_limit") ?? "50") ?? 50
-            return routeResponse(accounts.productFeedbackTicket(
-                authorization: request.headers[.authorization],
-                ticketId: request.parameters.get("ticketId") ?? "",
-                clientKindHeader: header(request, "X-Raft-Client-Kind"),
-                commentLimit: limit,
-                commentCursor: query(request, "comment_cursor")
-            ))
-        }
-        app.post("api", "product-feedback", "tickets", ":ticketId", "comments") { request -> Response in
-            routeResponse(accounts.replyProductFeedbackTicket(
-                authorization: request.headers[.authorization],
-                ticketId: request.parameters.get("ticketId") ?? "",
-                contentType: request.headers[.contentType] ?? "",
-                body: request.body.string ?? "",
-                clientKindHeader: header(request, "X-Raft-Client-Kind")
-            ))
-        }
-        app.post("api", "product-feedback", "tickets", ":ticketId", "close") { request -> Response in
-            routeResponse(accounts.closeProductFeedbackTicket(
-                authorization: request.headers[.authorization],
-                ticketId: request.parameters.get("ticketId") ?? "",
-                body: request.body.string ?? "{}",
-                clientKindHeader: header(request, "X-Raft-Client-Kind")
-            ))
-        }
-        app.get("api", "product-feedback", "tickets", ":ticketId", "attachments", ":attachmentId") { request -> Response in
-            routeResponse(accounts.productFeedbackAttachment(
-                authorization: request.headers[.authorization],
-                ticketId: request.parameters.get("ticketId") ?? "",
-                attachmentId: request.parameters.get("attachmentId") ?? "",
-                clientKindHeader: header(request, "X-Raft-Client-Kind")
-            ))
-        }
-    }
-
     private func withFeedbackApp(
         accounts: EmailLoginDirectory,
         _ run: (any Client) async throws -> Void
@@ -237,7 +174,6 @@ struct ProductFeedbackMultiAppTests {
                 pingDatabase: {},
                 emailAccounts: accounts
             ))
-            mountHeaderAwareFeedbackRoutes(app, accounts: accounts)
             try await app.testing { client in
                 try await run(client)
             }

@@ -1,0 +1,172 @@
+import Foundation
+import HTTPTypes
+import RaftHTTP
+import RaftHTTPServer
+import Testing
+import TestSupport
+import Vapor
+import VaporTesting
+
+/// Locks the bytes and header set of the identity/login/app-login/profile
+/// routes after they moved behind `AuthIdentitiesService` and `respond`.
+
+private let standardHeaders = ["X-Robots-Tag", "Content-Type"]
+
+private func byteFixture() -> (accounts: EmailLoginDirectory, userId: String, bearer: String) {
+    let accounts = EmailLoginDirectory()
+    accounts.appURL = "https://app.raft.test"
+    let userId = "11111111-1111-4111-8111-000002100001"
+    accounts.addAccount(id: userId, email: "bytes@slock.test", password: "password123", passwordCredentialEstablished: false)
+    accounts.addAuthIdentityForTesting(userId: userId, provider: "github", providerEmail: "gh@example.com")
+    return (accounts, userId, accounts.mintAccessTokenForTesting(userId: userId))
+}
+
+private func send(
+    _ client: any Client,
+    _ method: HTTPRequest.Method,
+    _ path: String,
+    bearer: String? = nil,
+    contentType: String? = "application/json",
+    body: String? = nil
+) async throws -> ClientResponse {
+    var headers = HTTPFields()
+    if let contentType { headers[.contentType] = contentType }
+    if let bearer { headers[.authorization] = "Bearer \(bearer)" }
+    return try await client.send(method, headers: headers, to: URI(string: path)) { request in
+        if let body { request.body = .init(string: body) }
+    }
+}
+
+private func expectStandard(_ response: ClientResponse, length: Int) {
+    #expect(response.headers[HTTPField.Name("Content-Type")!] == "application/json; charset=utf-8")
+    #expect(response.headers[HTTPField.Name("X-Robots-Tag")!] != nil)
+    #expect(response.headers[HTTPField.Name("Content-Length")!] == String(length))
+    #expect(response.headers[HTTPField.Name("Cache-Control")!] == nil)
+}
+
+@Test func authIdentityRoutesPublishTheLegacyBytesAndHeaders() async throws {
+    let fixture = byteFixture()
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: fixture.accounts
+        ))
+        try await app.testing { client in
+            let unauthorized = try await send(client, .get, "/api/auth/identities")
+            #expect(unauthorized.status == .unauthorized)
+            #expect(unauthorized.body.string == #"{"error":"Unauthorized"}"#)
+            expectStandard(unauthorized, length: 24)
+
+            let listed = try await send(client, .get, "/api/auth/identities", bearer: fixture.bearer)
+            let expected = #"{"identities":[{"provider":"github","providerEmail":"gh@example.com"}],"passwordConfigured":false}"#
+            #expect(listed.status == .ok)
+            #expect(listed.body.string == expected)
+            expectStandard(listed, length: expected.utf8.count)
+
+            let blocked = try await send(client, .delete, "/api/auth/identities/github", bearer: fixture.bearer)
+            #expect(blocked.status == .conflict)
+            #expect(blocked.body.string == #"{"code":"PASSWORD_CREDENTIAL_REQUIRED","error":"Set a password before disconnecting your final sign-in account."}"#)
+
+            let missing = try await send(client, .delete, "/api/auth/identities/apple", bearer: fixture.bearer)
+            #expect(missing.body.string == #"{"unlinked":false,"identities":[{"provider":"github","providerEmail":"gh@example.com"}],"passwordConfigured":false}"#)
+        }
+    }
+}
+
+@Test func authLoginRouteReadsRawJSONAndPublishesTheIssueList() async throws {
+    let fixture = byteFixture()
+    fixture.accounts.markPasswordCredentialEstablished(userId: fixture.userId)
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: fixture.accounts
+        ))
+        try await app.testing { client in
+            let missing = try await send(client, .post, "/api/auth/login", body: #"{"password":1}"#)
+            #expect(missing.status == .badRequest)
+            #expect(missing.body.string == #"{"error":"Invalid email login body","code":"email_login_body_invalid","issues":[{"path":"email","message":"Required"},{"path":"password","message":"Expected string, received boolean"}]}"#)
+
+            let notObject = try await send(client, .post, "/api/auth/login", body: "[]")
+            #expect(notObject.body.string == #"{"error":"Invalid email login body","code":"email_login_body_invalid","issues":[{"path":"","message":"Expected object, received string"}]}"#)
+            let empty = try await send(client, .post, "/api/auth/login")
+            #expect(empty.status == .badRequest)
+
+            let rejected = try await send(client, .post, "/api/auth/login", body: #"{"email":"bytes@slock.test","password":"nope"}"#)
+            #expect(rejected.status == .unauthorized)
+            #expect(rejected.body.string == #"{"code":"AUTH_INVALID_CREDENTIALS","error":"Invalid email or password"}"#)
+
+            // A client that omitted the JSON content type is still read as JSON.
+            let plain = try await send(client, .post, "/api/auth/login", contentType: nil, body: #"{"email":"bytes@slock.test","password":"password123"}"#)
+            #expect(plain.status == .ok)
+            let text = plain.body.string ?? ""
+            #expect(text.hasPrefix(#"{"user":{"id":"\#(fixture.userId)","email":"bytes@slock.test"},"accessToken":""#))
+            #expect(text.hasSuffix(#","linkedProvider":null}"#))
+            expectStandard(plain, length: text.utf8.count)
+
+            let formTyped = try await send(client, .post, "/api/auth/login", contentType: "text/plain", body: #"{"email":"bytes@slock.test","password":"password123"}"#)
+            #expect(formTyped.status == .ok)
+        }
+    }
+}
+
+@Test func appLoginAndProfileRoutesPublishTheLegacyBytes() async throws {
+    let fixture = byteFixture()
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: fixture.accounts
+        ))
+        try await app.testing { client in
+            let invalid = try await send(client, .post, "/api/auth/app-login/start", body: "[]")
+            #expect(invalid.status == .badRequest)
+            #expect(invalid.body.string == #"{"error":"Invalid app login request","code":"invalid_request"}"#)
+            let notAllowed = try await send(client, .post, "/api/auth/app-login/start", body: #"{"returnUri":"https://x.test","codeChallenge":"a"}"#)
+            #expect(notAllowed.body.string == #"{"error":"Return URI is not allowed","code":"return_uri_not_allowed"}"#)
+            let challenge = String(repeating: "A", count: 43)
+            let started = try await send(client, .post, "/api/auth/app-login/start", contentType: nil, body: #"{"returnUri":"raft://login/callback","codeChallenge":"\#(challenge)"}"#)
+            #expect(started.status == .created)
+            let startedText = started.body.string ?? ""
+            #expect(startedText.hasPrefix(#"{"requestId":""#))
+            #expect(startedText.contains(#","loginUrl":"https://app.raft.test/login/app?request="#))
+            #expect(startedText.contains(#"","expiresAt":""#))
+            let completeInvalid = try await send(client, .post, "/api/auth/app-login/complete", body: "")
+            #expect(completeInvalid.body.string == #"{"error":"Invalid app login completion","code":"invalid_request"}"#)
+            let notFound = try await send(client, .get, "/api/auth/app-login/requests/missing", bearer: fixture.bearer)
+            #expect(notFound.status == .notFound)
+            #expect(notFound.body.string == #"{"error":"App login request not found","code":"request_not_found"}"#)
+            let noToken = try await send(client, .post, "/api/auth/app-login/requests/missing/deny")
+            #expect(noToken.body.string == #"{"error":"Invalid or expired token","code":"auth_required"}"#)
+
+            let meMissing = try await send(client, .get, "/api/auth/me")
+            #expect(meMissing.body.string == #"{"error":"Missing or invalid Authorization header","code":"auth_required"}"#)
+            let me = try await send(client, .get, "/api/auth/me", bearer: fixture.bearer)
+            #expect(me.status == .ok)
+            let meText = me.body.string ?? ""
+            #expect(meText.hasPrefix(#"{"id":"\#(fixture.userId)","email":"bytes@slock.test","name":"bytes","emailVerified":false,"displayName":"bytes","gravatarHash":""#))
+            #expect(meText.hasSuffix(#""preferredTranslationMode":"off","autoTranslationEnabled":false,"preferredTranslationDisplay":"translated","preferredTimeFormat":null,"preferredMessageBodyFontSize":null,"referralSource":null,"referralSourceOther":null,"referralSourceSkippedAt":null}"#))
+
+            let notObject = try await send(client, .patch, "/api/auth/me", bearer: fixture.bearer, body: "[1]")
+            #expect(notObject.status == .badRequest)
+            #expect(notObject.body.string == #"{"error":"Failed to update profile"}"#)
+            let unauthenticated = try await send(client, .patch, "/api/auth/me", body: "[1]")
+            #expect(unauthenticated.status == .unauthorized)
+            let badZone = try await send(client, .patch, "/api/auth/me", bearer: fixture.bearer, body: #"{"preferredTimezone":"Nope/Zone"}"#)
+            #expect(badZone.body.string == #"{"error":"Invalid preferredTimezone"}"#)
+            let wrongPassword = try await send(client, .patch, "/api/auth/me", bearer: fixture.bearer, body: #"{"currentPassword":"bad","newPassword":"longenough1"}"#)
+            #expect(wrongPassword.body.string == #"{"code":"AUTH_CURRENT_PASSWORD_INCORRECT","error":"Current password is incorrect"}"#)
+            let patched = try await send(client, .patch, "/api/auth/me", bearer: fixture.bearer, contentType: "text/plain", body: #"{"preferredTranslationMode":"auto","shareUsageData":0}"#)
+            #expect(patched.status == .ok)
+            #expect((patched.body.string ?? "").contains(#""shareUsageData":false,"#))
+            #expect((patched.body.string ?? "").contains(#""preferredTranslationMode":"auto""#))
+
+            let noAvatar = try await send(client, .post, "/api/auth/me/avatar", bearer: fixture.bearer, contentType: "text/plain", body: "x")
+            #expect(noAvatar.body.string == #"{"error":"No avatar file provided"}"#)
+        }
+    }
+}

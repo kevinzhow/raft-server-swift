@@ -6,7 +6,7 @@ import Vapor
 ///
 /// Two registrations:
 /// - `POST /api/message-translations:batch` — member batch translation, read
-///   from `X-Server-Id` and `EmailLoginDirectory.batchTranslateMessages`.
+///   from `X-Server-Id` and `ServerProfileAndOrderService.batchTranslateMessages`.
 /// - `POST /api/public/servers/:slug/message-translations:batch` — anonymous
 ///   public batch. The per-IP `publicTranslationBudget` is spent before any
 ///   gate or lookup, so a malformed body is a 400 until the budget runs out.
@@ -29,11 +29,14 @@ struct TranslationFeature: RouteCollection {
         let api = routes.grouped("api")
         let publicServer = routes.grouped("api", "public", "servers", ":slug")
         api.post("message-translations:batch") { request async throws -> Response in
-            routeResponse(services.emailAccounts.batchTranslateMessages(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(MessageTranslationBatchRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.serverProfileAndOrder.batchTranslateMessages(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    body: body
+                )
+            }
         }
         publicServer.post("message-translations:batch") { request async throws -> Response in
             let client = request.remoteAddress?.host ?? "unknown"

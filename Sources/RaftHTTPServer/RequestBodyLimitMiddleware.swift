@@ -37,13 +37,13 @@ struct RequestBodyLimitMiddleware: Middleware {
         guard declared > limit else {
             return try await next.respond(to: request)
         }
-        if isScopeAttestation, !accounts.machineCredentialIsLive(authorization: request.headers[.authorization]) {
+        if isScopeAttestation, !accounts.runtimeFormsAndProbes.machineCredentialIsLive(authorization: request.headers[.authorization]) {
             return Self.jsonReply(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
         }
         if isScopeAttestation {
             return Self.jsonReply(413, "{\"error\":\"Scope attestation body is too large\",\"code\":\"scope_attestation_body_too_large\",\"limitBytes\":\(limit)}")
         }
-        if isMigrationControl, !accounts.computerCredentialIsLive(authorization: request.headers[.authorization]) {
+        if isMigrationControl, !accounts.runtimeFormsAndProbes.computerCredentialIsLive(authorization: request.headers[.authorization]) {
             return Self.jsonReply(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
         }
         if isMigrationControl {

@@ -6,9 +6,7 @@ Sources/RaftHTTP/Services/AgentPrivateSurfaceService.swift	1
 Sources/RaftHTTP/Services/AgentsLifecycleService.swift	1
 Sources/RaftHTTP/Services/AttachmentsAndNotificationsService.swift	1
 Sources/RaftHTTP/Services/AuthCoreService.swift	2
-Sources/RaftHTTP/Services/AuthIdentitiesService.swift	1
-Sources/RaftHTTP/Services/ComputersFleetService.swift	1
-Sources/RaftHTTP/Services/FeedbackMultiAppService.swift	1
+Sources/RaftHTTP/Services/DirectoryServiceAccessors.swift	1
 Sources/RaftHTTP/Services/FeedbackService.swift	1
 Sources/RaftHTTP/Services/HumanMessageCreateService.swift	1
 Sources/RaftHTTP/Services/InboxAndWakeService.swift	1
@@ -25,10 +23,7 @@ Sources/RaftHTTP/Services/MessageSendService.swift	1
 Sources/RaftHTTP/Services/OAuthFlowsService.swift	1
 Sources/RaftHTTP/Services/ProfileAndChannelFilesSupport.swift	1
 Sources/RaftHTTP/Services/ReactionsRealtimeService.swift	1
-Sources/RaftHTTP/Services/RuntimeFormsAndProbesService.swift	1
 Sources/RaftHTTP/Services/SearchMentionsService.swift	1
-Sources/RaftHTTP/Services/ServerProfileAndOrderService.swift	1
-Sources/RaftHTTP/Services/TasksAndLabsService.swift	1
 Sources/RaftHTTP/Stores/DirectoryStoreForwarders.swift	2
 Sources/RaftHTTP/Support/DirectoryHelpers.swift	1
 Sources/RaftHTTP/Support/DirectoryModelsAndConstants.swift	2

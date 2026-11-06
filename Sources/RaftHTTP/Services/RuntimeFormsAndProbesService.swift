@@ -1,235 +1,276 @@
-import Crypto
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 
-/// Runtime form definitions, option sources and probes, machine runtime
-/// account usage, and the server settings/notification projections the
-/// runtime routes read.
+// MARK: - Injected dependencies
+
+/// Every dependency the runtime-form surface reads.
 ///
-/// These handlers were lifted from `EmailLogin+MachinesAndRuntime2.swift`.
+/// The machine, notification, onboarding and agent rows belong to their stores.
+/// The human session lookup, the realtime emitter and the machine registration
+/// (which the Computer lifecycle and the hosted-migration domains also use)
+/// belong to domains that have not migrated, so they enter as closures wired by
+/// `live(directory:)`.
+struct RuntimeFormsAndProbesDependencies: Sendable {
+    var sessionUserId: @Sendable (String?) -> String?
+    var emitRealtime: @Sendable (String, String, String?) -> Void
+    /// `registerMachine` of the unmigrated hosted-migration domain.
+    var registerMachine: @Sendable (_ serverId: String, _ userId: String, _ name: String) -> String
+    /// `machineAPIKey` of the unmigrated hosted-runtime domain.
+    var machineAPIKey: @Sendable (_ machineId: String) -> String?
+    var oauth: OAuthLedger
+    var machines: MachinesAndComputersStore
+    var servers: ServersAndChannelsStore
+    var notifications: NotificationsStore
+    var agents: AgentsRuntimeStore
+    var now: @Sendable () -> Date
 
-public struct RuntimeFormsAndProbesService: Sendable {
-    public let directory: EmailLoginDirectory
-
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
+    static func live(directory source: EmailLoginDirectory) -> RuntimeFormsAndProbesDependencies {
+        RuntimeFormsAndProbesDependencies(
+            sessionUserId: { source.sessionUserId(authorization: $0) },
+            emitRealtime: { room, event, payload in
+                source.emitRealtime(room, event, payload)
+            },
+            registerMachine: { serverId, userId, name in
+                source.registerMachine(serverId: serverId, userId: userId, name: name)
+            },
+            machineAPIKey: { source.machineAPIKey(machineId: $0) },
+            oauth: source.oauth,
+            machines: source.machinesAndComputersStore,
+            servers: source.serversAndChannelsStore,
+            notifications: source.notificationsStore,
+            agents: source.agentsRuntimeStore,
+            now: { Date() }
+        )
     }
 }
 
-extension EmailLoginDirectory {
+// MARK: - Service
 
+/// Runtime form definitions, option sources and probes, machine runtime account
+/// usage, and the server settings/notification projections the runtime routes
+/// read.
+///
+/// The service owns the orchestration and returns the published
+/// `JSONBodyConvertible` DTOs; every refusal is a `RuntimeFormsAndProbesError`.
+/// It builds no HTTP reply, header set or body text. The usage-refresh claim,
+/// the notification patch and the onboarding patch are each one store critical
+/// section.
+public struct RuntimeFormsAndProbesService: Sendable {
+    let dependencies: RuntimeFormsAndProbesDependencies
+
+    /// Production wiring.
+    public init(directory: EmailLoginDirectory) {
+        self.init(dependencies: .live(directory: directory))
+    }
+
+    init(dependencies: RuntimeFormsAndProbesDependencies) {
+        self.dependencies = dependencies
+    }
+
+    // MARK: Constants
+
+    static let onboardingSteps: Set<String> = [
+        "add-computer", "create-agent", "invite-teammates", "join-community", "notifications",
+    ]
+
+    static let runtimeFormSchemas: [String: String] = [
+        "builtin": "builtin-pi.create.v3",
+        "claude": "claude.create.v1",
+        "codex": "codex.create.v1",
+        "kimi-sdk": "kimi-sdk.create.v1",
+        "cursor": "cursor.create.v1",
+        "opencode": "opencode.create.v1",
+        "pi": "pi.create.v1",
+        "gemini": "gemini.create.v1",
+        "kimi": "kimi.create.v1",
+        "antigravity": "antigravity.create.v1",
+        "grok": "grok.create.v1",
+    ]
+
+    /// Runtimes that still publish a v1 form definition.
+    static let runtimeFormV1Runtimes: Set<String> = ["builtin", "claude", "cursor", "kimi-sdk"]
+
+    /// Runtimes whose released form only exists at protocol v2; v1 clients must
+    /// see them as having no form at all.
+    static let runtimeFormV2Only: Set<String> = [
+        "pi", "opencode", "gemini", "codex", "grok", "antigravity", "kimi",
+    ]
+
+    static let grokBundledModels: [RuntimeModelProbeModel] = [
+        RuntimeModelProbeModel(
+            id: "grok-4.5",
+            label: "Grok 4.5",
+            supportedReasoningEfforts: ["high", "medium", "low"],
+            defaultReasoningEffort: "high"
+        ),
+        RuntimeModelProbeModel(id: "grok-4.6", label: "Grok 4.6"),
+        RuntimeModelProbeModel(id: "grok-composer-2.5-fast", label: "Composer 2.5"),
+    ]
+
+    static let runtimeAccountUsageProviders: Set<String> = ["claude", "codex", "kimi", "grok"]
+
+    /// A usage refresh within this many seconds of the last one is refused.
+    static let usageRefreshCooldown: TimeInterval = 60
+
+    // MARK: - GET /api/agents/:id/runtime-form
+
+    /// The stored runtime values of one agent, without any secret.
     public func agentRuntimeForm(
         authorization: String?,
         serverId: String,
         agentId: String,
         language: String?
-    ) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    ) throws -> AgentRuntimeFormResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw RuntimeFormsAndProbesError.unauthorized
         }
-        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
-            return Self.json(404, "{\"error\":\"Agent not found\"}")
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner"
-                || oauth.memberRole(serverId: serverId, userId: userId) == "admin"
-                || agent.creatorUserId == userId
+        guard let agent = dependencies.oauth.agentRuntimeInfo(id: agentId),
+              agent.serverId == serverId, !agent.deleted
         else {
-            return Self.json(403, "{\"error\":\"The `editAgents` capability or human creator authority is required to edit agents\"}")
+            throw RuntimeFormsAndProbesError.agentNotFound
         }
-        guard agent.runtime != "external", let schemaVersion = Self.runtimeFormSchemas[agent.runtime] else {
-            return Self.json(404, "{\"error\":\"This agent's runtime configuration has no editable runtime form\",\"issues\":[{\"code\":\"no_runtime_form\",\"pointer\":\"/runtimeConfig\"}]}")
+        let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId)
+        guard role == "owner" || role == "admin" || agent.creatorUserId == userId else {
+            throw RuntimeFormsAndProbesError.editAgentsRequired
         }
-        let config = (agent.runtimeConfigJSON.flatMap { $0.data(using: .utf8) })
-            .flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any] ?? [:]
-        var values: [String: Any] = [:]
-        if agent.runtime != "antigravity",
-           let model = config["model"] as? [String: Any],
-           let id = (model["id"] as? String) ?? (model["name"] as? String) {
-            values["model"] = id
+        guard agent.runtime != "external",
+              let schemaVersion = Self.runtimeFormSchemas[agent.runtime]
+        else {
+            throw RuntimeFormsAndProbesError.noRuntimeForm
         }
-        values["envVars"] = (config["envVars"] as? [String: String]) ?? [:]
+        let config = AgentRuntimeConfigProjection.parse(agent.runtimeConfigJSON)
+        var values = AgentRuntimeFormValues(envVars: config.envVars ?? [:])
+        if agent.runtime != "antigravity", let model = config.model {
+            values.model = model.id ?? model.name
+        }
         var writeOnly: [String] = []
         if agent.runtime == "claude" {
-            let provider = config["provider"] as? [String: Any]
-            values["provider"] = (provider?["kind"] as? String) ?? "default"
-            if let apiUrl = provider?["apiUrl"] as? String { values["apiUrl"] = apiUrl }
-            if let effort = config["reasoningEffort"] as? String { values["reasoningEffort"] = effort }
-            values["fastMode"] = (config["fastMode"] as? Bool) ?? false
-            if let command = config["command"] as? String { values["command"] = command }
+            values.provider = config.provider?.kind ?? "default"
+            values.apiUrl = config.provider?.apiUrl
+            values.reasoningEffort = config.reasoningEffort
+            values.fastMode = config.fastMode ?? false
+            values.command = config.command
             writeOnly = ["/apiKey"]
         }
-        let zh = Self.prefersChinese(language)
-        let label = zh ? "模型" : "Model"
-        let valueJSON = (try? JSONSerialization.data(withJSONObject: values))
-            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-        let fields = "[{\"key\":\"model\",\"kind\":\"select\",\"label\":\(jsonString(label)),\"required\":true}]"
-        let capabilities = "{\"providerKinds\":[\"preset\"],\"writeOnlyPointers\":[\(writeOnly.map(jsonString).joined(separator: ","))],\"forbiddenPointers\":[\"/hostUserState\"]}"
-        return Self.json(200, "{\"protocolVersion\":2,\"runtimeId\":\(jsonString(agent.runtime)),\"schemaVersion\":\(jsonString(schemaVersion)),\"fields\":\(fields),\"values\":\(valueJSON),\"capabilities\":\(capabilities)}")
+        return AgentRuntimeFormResponse(
+            runtimeId: agent.runtime,
+            schemaVersion: schemaVersion,
+            modelLabel: Self.prefersChinese(language) ? "模型" : "Model",
+            values: values,
+            writeOnlyPointers: writeOnly
+        )
     }
 
-    public func agentRuntimeProfileMachineId(agentId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return agentRuntimeProfiles[agentId]?.machineId
-    }
+    // MARK: - Credential lookups
 
     /// Whether the presented bearer is a live Computer credential (used before
     /// parsing an oversized control-manifest body so secrets never reach a parser).
     public func machineCredentialIsLive(authorization: String?) -> Bool {
-        guard let authorization, authorization.hasPrefix("Bearer ") else { return false }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        guard !token.isEmpty else { return false }
-        lock.lock()
-        defer { lock.unlock() }
-        return machines.contains { $0.apiKey == token }
-            || computers.contains { $0.apiKey == token && $0.revokedAt == nil }
+        guard let token = Self.bearerToken(authorization) else { return false }
+        return dependencies.machines.machineCredentialIsLive(token: token)
     }
 
     public func computerCredentialIsLive(authorization: String?) -> Bool {
-        guard let authorization, authorization.hasPrefix("Bearer ") else { return false }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        defer { lock.unlock() }
-        return computers.contains { $0.apiKey == token && $0.revokedAt == nil }
+        guard let token = Self.bearerToken(authorization) else { return false }
+        return dependencies.machines.computerCredentialIsLive(token: token)
     }
 
-    /// Keyed lookup shared by `/daemon/connect` and the legacy machine surface.
-    /// A row that was adopted into a Computer attachment carries its migration
-    /// stamp so the connect handshake refuses the legacy key immediately, with
-    /// no TTL window.
-    public func machineCredential(apiKey: String) -> MachineCredentialIdentity? {        lock.lock()
-        defer { lock.unlock() }
-        guard let machine = machines.first(where: { $0.apiKey == apiKey }) else { return nil }
-        return MachineCredentialIdentity(
-            machineId: machine.id,
-            serverId: machine.serverId,
-            legacyKeyMigratedAt: machine.legacyKeyMigratedAt
-        )
-    }
-
+    /// Keyed lookup the `/daemon/connect` handshake uses by machine id.
     public func machineCredential(id: String) -> MachineCredentialIdentity? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let machine = machines.first(where: { $0.id == id }) else { return nil }
-        return MachineCredentialIdentity(machineId: machine.id, serverId: machine.serverId)
+        dependencies.machines.machineCredentialIdentity(id: id)
     }
 
     public func serverExists(id: String) -> Bool {
-        oauth.serverDetailsValue(id: id) != nil
+        dependencies.oauth.serverDetailsValue(id: id) != nil
     }
 
-    /// Exact key match wins, then a revoked row with the same 16-character
-    /// prefix, then a live row whose key does not verify, then absence.
-    public func computerCredential(apiKey: String) -> ComputerCredentialLookup {
-        lock.lock()
-        defer { lock.unlock() }
-        let prefix = String(apiKey.prefix(Self.computerAPIKeyPrefixLength))
-        let candidates = computers.filter {
-            String($0.apiKey.prefix(Self.computerAPIKeyPrefixLength)) == prefix
-        }
-        if let computer = candidates.first(where: { $0.apiKey == apiKey }) {
-            if computer.revokedAt != nil { return .revoked }
-            guard let machineId = computer.machineId,
-                  machines.contains(where: { $0.id == machineId })
-            else { return .machineUnlinked }
-            return .linked(computerId: computer.id, machineId: machineId)
-        }
-        if candidates.contains(where: { $0.revokedAt != nil }) { return .revoked }
-        if !candidates.isEmpty { return .keyMismatch }
-        return .notFound
+    private static func bearerToken(_ authorization: String?) -> String? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        return token.isEmpty ? nil : token
     }
 
-    func onboardingJSON(serverId: String, userId: String) -> String {
-        lock.lock()
-        let server = serverOnboardingSettings[serverId] ?? (agentId: nil, greeting: true)
-        let user = userOnboardingSettings["\(serverId)\n\(userId)"] ?? UserOnboarding()
-        let slug = oauth.serverDetailsValue(id: serverId)?.slug ?? ""
-        lock.unlock()
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        func dismissed(_ key: String) -> String {
-            user.dismissed[key].map { jsonString(formatter.string(from: $0)) } ?? "null"
-        }
-        let agent = server.agentId.map { jsonString($0) } ?? "null"
-        let step = user.currentStep.map { jsonString($0) } ?? "null"
-        let wizardEnabled = !(slug == "community" || slug == "community-cn")
-        return "{\"onboardingAgentId\":\(agent),\"agentAllChannelGreetingEnabled\":\(server.greeting),\"onboardingWizardEnabled\":\(wizardEnabled),\"setupModalReminderOptOut\":\(user.reminderOptOut),\"dismissedAddComputerStepAt\":\(dismissed("add-computer")),\"dismissedCreateAgentStepAt\":\(dismissed("create-agent")),\"dismissedInviteStepAt\":\(dismissed("invite-teammates")),\"dismissedCommunityStepAt\":\(dismissed("join-community")),\"dismissedNotificationStepAt\":\(dismissed("notifications")),\"onboardingWizardCurrentStep\":\(step)}"
-    }
+    // MARK: - Server settings
 
-    public func serverSettings(authorization: String?, serverId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    /// `GET /api/servers/:id/settings`: an owner or admin reads the onboarding
+    /// block under `settings`.
+    public func serverSettings(authorization: String?, serverId: String) throws -> ServerSettingsResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw RuntimeFormsAndProbesError.unauthorized
         }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
+        guard let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw RuntimeFormsAndProbesError.serverNotFound
         }
         guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            throw RuntimeFormsAndProbesError.forbidden
         }
-        let onboarding = onboardingJSON(serverId: serverId, userId: userId)
-        return Self.json(200, "{\"settings\":{\"onboardSettings\":\(onboarding),\"feedbackSettings\":{\"enabled\":true}}}")
+        return ServerSettingsResponse(onboarding: onboardingResponse(serverId: serverId, userId: userId))
     }
 
-    public func serverOnboardingSettings(authorization: String?, serverId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    /// `GET /api/servers/:id/onboarding-settings`.
+    public func serverOnboardingSettings(
+        authorization: String?,
+        serverId: String
+    ) throws -> OnboardingSettingsResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw RuntimeFormsAndProbesError.unauthorized
         }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
+        guard dependencies.oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            throw RuntimeFormsAndProbesError.serverNotFound
         }
-        return Self.json(200, onboardingJSON(serverId: serverId, userId: userId))
+        return onboardingResponse(serverId: serverId, userId: userId)
     }
 
-    public func patchServerOnboardingSettings(authorization: String?, serverId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    /// `PATCH /api/servers/:id/onboarding-settings`.
+    ///
+    /// Only an owner or admin may name the onboarding agent or toggle the
+    /// greeting; every member writes their own wizard progress. The server and
+    /// member rows are patched in one store critical section.
+    public func patchServerOnboardingSettings(
+        authorization: String?,
+        serverId: String,
+        body: ServerOnboardingPatchRequest?
+    ) throws -> OnboardingSettingsResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw RuntimeFormsAndProbesError.unauthorized
         }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        guard let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw RuntimeFormsAndProbesError.notAMember
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
-            return Self.json(400, "{\"error\":\"Invalid onboarding settings\"}")
+        guard let body else {
+            throw RuntimeFormsAndProbesError.invalidOnboardingSettings
         }
         let isAdmin = role == "owner" || role == "admin"
-        if object["onboardingAgentId"] != nil || object["agentAllChannelGreetingEnabled"] != nil {
+        if body["onboardingAgentId"] != nil || body["agentAllChannelGreetingEnabled"] != nil {
             guard isAdmin else {
-                return Self.json(403, "{\"error\":\"Only server owners and admins can update onboarding settings\"}")
+                throw RuntimeFormsAndProbesError.onboardingAdminOnly
             }
         }
-        if let greeting = object["agentAllChannelGreetingEnabled"] {
-            guard greeting is Bool else {
-                return Self.json(400, "{\"error\":\"agentAllChannelGreetingEnabled must be a boolean\"}")
+        if let greeting = body["agentAllChannelGreetingEnabled"] {
+            guard greeting.legacyBool != nil else {
+                throw RuntimeFormsAndProbesError.greetingNotBoolean
             }
         }
-        if let rawStep = object["onboardingWizardCurrentStep"], !(rawStep is NSNull) {
-            guard let step = rawStep as? String, Self.onboardingSteps.contains(step) else {
-                return Self.json(400, "{\"error\":\"Invalid onboarding step\"}")
+        if let rawStep = body["onboardingWizardCurrentStep"], !rawStep.isJSONNull {
+            guard let step = rawStep.legacyString, Self.onboardingSteps.contains(step) else {
+                throw RuntimeFormsAndProbesError.invalidOnboardingStep
             }
         }
-        lock.lock()
-        var server = serverOnboardingSettings[serverId] ?? (agentId: nil, greeting: true)
-        if isAdmin {
-            if let rawAgent = object["onboardingAgentId"] {
-                if rawAgent is NSNull {
-                    server.agentId = nil
-                } else if let agentId = rawAgent as? String {
-                    server.agentId = agentId
-                }
+        var patch = ServersAndChannelsStore.OnboardingPatch(isAdmin: isAdmin)
+        if let rawAgent = body["onboardingAgentId"] {
+            if rawAgent.isJSONNull {
+                patch.agentId = .clear
+            } else if let agentId = rawAgent.legacyString {
+                patch.agentId = .set(agentId)
             }
-            if let greeting = object["agentAllChannelGreetingEnabled"] as? Bool {
-                server.greeting = greeting
+        }
+        patch.greeting = body["agentAllChannelGreetingEnabled"]?.legacyBool
+        patch.reminderOptOut = body["setupModalReminderOptOut"]?.legacyBool
+        if let rawStep = body["onboardingWizardCurrentStep"] {
+            if rawStep.isJSONNull {
+                patch.currentStep = .clear
+            } else if let step = rawStep.legacyString {
+                patch.currentStep = .set(step)
             }
-            serverOnboardingSettings[serverId] = server
-        }
-        let key = "\(serverId)\n\(userId)"
-        var user = userOnboardingSettings[key] ?? UserOnboarding()
-        if let value = object["setupModalReminderOptOut"] as? Bool {
-            user.reminderOptOut = value
-        }
-        if let rawStep = object["onboardingWizardCurrentStep"] {
-            user.currentStep = rawStep is NSNull ? nil : rawStep as? String
         }
         let dismissKeys: [(String, String)] = [
             ("dismissedAddComputerStep", "add-computer"),
@@ -238,109 +279,157 @@ extension EmailLoginDirectory {
             ("dismissedCommunityStep", "join-community"),
             ("dismissedNotificationStep", "notifications"),
         ]
-        for (field, step) in dismissKeys {
-            if object[field] as? Bool == true, user.dismissed[step] == nil {
-                user.dismissed[step] = Date()
+        patch.dismissedSteps = dismissKeys.compactMap { field, step in
+            body[field]?.legacyBool == true ? step : nil
+        }
+        let snapshot = dependencies.servers.applyOnboardingPatch(
+            serverId: serverId,
+            userId: userId,
+            patch: patch,
+            now: dependencies.now()
+        )
+        return onboardingResponse(serverId: serverId, snapshot: snapshot)
+    }
+
+    private func onboardingResponse(serverId: String, userId: String) -> OnboardingSettingsResponse {
+        onboardingResponse(
+            serverId: serverId,
+            snapshot: dependencies.servers.onboardingSnapshot(serverId: serverId, userId: userId)
+        )
+    }
+
+    private func onboardingResponse(
+        serverId: String,
+        snapshot: ServersAndChannelsStore.OnboardingSnapshot
+    ) -> OnboardingSettingsResponse {
+        let slug = dependencies.oauth.serverDetailsValue(id: serverId)?.slug ?? ""
+        func dismissed(_ key: String) -> String? {
+            snapshot.user.dismissed[key].map(RuntimeUsageISO.string)
+        }
+        return OnboardingSettingsResponse(
+            onboardingAgentId: snapshot.agentId,
+            agentAllChannelGreetingEnabled: snapshot.greeting,
+            onboardingWizardEnabled: !(slug == "community" || slug == "community-cn"),
+            setupModalReminderOptOut: snapshot.user.reminderOptOut,
+            dismissedAddComputerStepAt: dismissed("add-computer"),
+            dismissedCreateAgentStepAt: dismissed("create-agent"),
+            dismissedInviteStepAt: dismissed("invite-teammates"),
+            dismissedCommunityStepAt: dismissed("join-community"),
+            dismissedNotificationStepAt: dismissed("notifications"),
+            onboardingWizardCurrentStep: snapshot.user.currentStep
+        )
+    }
+
+    // MARK: - Server notification settings
+
+    /// `GET /api/servers/:id/notification-settings`.
+    public func memberNotificationSettings(
+        authorization: String?,
+        serverId: String
+    ) throws -> ServerNotificationSettingsResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw RuntimeFormsAndProbesError.unauthorized
+        }
+        guard dependencies.oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            throw RuntimeFormsAndProbesError.serverNotFound
+        }
+        return Self.notificationResponse(
+            dependencies.notifications.serverNotificationPref(key: "\(serverId)\n\(userId)")
+        )
+    }
+
+    /// `PATCH /api/servers/:id/notification-settings`.
+    ///
+    /// A changed row bumps `prefsVersion` and publishes
+    /// `notification_prefs:updated` to the member's own room; the read, the
+    /// decision and the write are one store critical section.
+    public func patchServerNotificationSettings(
+        authorization: String?,
+        serverId: String,
+        body: ServerNotificationPatchRequest?
+    ) throws -> ServerNotificationSettingsResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw RuntimeFormsAndProbesError.unauthorized
+        }
+        guard dependencies.oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            throw RuntimeFormsAndProbesError.serverNotFound
+        }
+        guard let body else {
+            throw RuntimeFormsAndProbesError.invalidNotificationSettings
+        }
+        if let muted = body["serverPushMuted"], muted.legacyBool == nil {
+            throw RuntimeFormsAndProbesError.pushMutedNotBoolean
+        }
+        if let rawMode = body["serverPushMode"] {
+            guard let mode = rawMode.legacyString, ["all", "mentions", "none"].contains(mode) else {
+                throw RuntimeFormsAndProbesError.invalidPushMode
             }
         }
-        userOnboardingSettings[key] = user
-        lock.unlock()
-        return Self.json(200, onboardingJSON(serverId: serverId, userId: userId))
+        let result = dependencies.notifications.patchServerNotificationPref(
+            key: "\(serverId)\n\(userId)",
+            mode: body["serverPushMode"]?.legacyString,
+            muted: body["serverPushMuted"]?.legacyBool
+        )
+        let response = Self.notificationResponse(result.prefs)
+        if result.changed {
+            dependencies.emitRealtime(
+                "user:\(userId)",
+                "notification_prefs:updated",
+                response.updatedEventPayload(serverId: serverId)
+            )
+        }
+        return response
     }
 
-    func serverNotificationJSON(_ prefs: (muted: Bool, mentionsOnly: Bool, mode: String, version: Int)) -> String {
-        "{\"serverPushMuted\":\(prefs.muted),\"serverPushMentionsOnly\":\(prefs.mentionsOnly),\"serverPushMode\":\(jsonString(prefs.mode)),\"prefsVersion\":\(prefs.version)}"
+    private static func notificationResponse(
+        _ prefs: NotificationsStore.ServerNotificationPref
+    ) -> ServerNotificationSettingsResponse {
+        ServerNotificationSettingsResponse(
+            serverPushMuted: prefs.muted,
+            serverPushMentionsOnly: prefs.mentionsOnly,
+            serverPushMode: prefs.mode,
+            prefsVersion: prefs.version
+        )
     }
 
-    public func memberNotificationSettings(authorization: String?, serverId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
-        }
-        lock.lock()
-        let prefs = serverNotificationPrefs["\(serverId)\n\(userId)"] ?? (muted: false, mentionsOnly: false, mode: "all", version: 0)
-        lock.unlock()
-        return Self.json(200, serverNotificationJSON(prefs))
-    }
+    // MARK: - POST /api/servers/:id/machines
 
-    public func patchServerNotificationSettings(authorization: String?, serverId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    /// Registers a machine (owner or admin) and publishes `machine:updated`.
+    public func registerServerMachine(
+        authorization: String?,
+        serverId: String,
+        body: ServerMachineRegistrationRequest?
+    ) throws -> ServerMachineRegistrationResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw RuntimeFormsAndProbesError.unauthorized
         }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
-        }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
-            return Self.json(400, "{\"error\":\"Invalid notification settings\"}")
-        }
-        if let muted = object["serverPushMuted"], !(muted is Bool) {
-            return Self.json(400, "{\"error\":\"serverPushMuted must be a boolean\"}")
-        }
-        if let rawMode = object["serverPushMode"] {
-            guard let mode = rawMode as? String, ["all", "mentions", "none"].contains(mode) else {
-                return Self.json(400, "{\"error\":\"serverPushMode must be one of all, mentions, none\"}")
-            }
-        }
-        lock.lock()
-        let key = "\(serverId)\n\(userId)"
-        var prefs = serverNotificationPrefs[key] ?? (muted: false, mentionsOnly: false, mode: "all", version: 0)
-        if let mode = object["serverPushMode"] as? String {
-            prefs.mode = mode
-            prefs.muted = mode == "none"
-            prefs.mentionsOnly = mode == "mentions"
-        }
-        if let muted = object["serverPushMuted"] as? Bool {
-            prefs.muted = muted
-            if muted {
-                prefs.mode = "none"
-                prefs.mentionsOnly = false
-            } else if prefs.mode == "none" {
-                prefs.mode = "all"
-                prefs.mentionsOnly = false
-            }
-        }
-        let previous = serverNotificationPrefs[key]
-        let changed = previous == nil
-            || previous!.muted != prefs.muted
-            || previous!.mentionsOnly != prefs.mentionsOnly
-            || previous!.mode != prefs.mode
-        if changed {
-            prefs.version = (previous?.version ?? 0) + 1
-        }
-        serverNotificationPrefs[key] = prefs
-        lock.unlock()
-        if changed {
-            let payload = "{\"serverId\":\(jsonString(serverId)),\"scopeId\":\(jsonString(serverId)),\"prefs\":{\"serverPushMuted\":\(prefs.muted),\"serverPushMentionsOnly\":\(prefs.mentionsOnly),\"serverPushMode\":\(jsonString(prefs.mode))},\"prefsVersion\":\(prefs.version)}"
-            emitRealtime("user:\(userId)", "notification_prefs:updated", payload)
-        }
-        return Self.json(200, serverNotificationJSON(prefs))
-    }
-
-    public func registerServerMachine(authorization: String?, serverId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
+        guard let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw RuntimeFormsAndProbesError.serverNotFound
         }
         guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"The `registerMachines` capability is required to register machines\"}")
+            throw RuntimeFormsAndProbesError.registerMachinesRequired
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let name = object["name"] as? String,
+        guard let name = body?["name"]?.legacyString,
               !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
-            return Self.json(400, "{\"error\":\"Name is required\"}")
+            throw RuntimeFormsAndProbesError.nameRequired
         }
-        let machineId = registerMachine(serverId: serverId, userId: userId, name: name)
-        let apiKey = machineAPIKey(machineId: machineId) ?? ""
-        let machine = "{\"id\":\(jsonString(machineId)),\"serverId\":\(jsonString(serverId)),\"name\":\(jsonString(name)),\"userId\":\(jsonString(userId)),\"description\":null}"
-        emitRealtime("server:\(serverId)", "machine:updated", "{\"serverId\":\(jsonString(serverId)),\"machineId\":\(jsonString(machineId))}")
-        return Self.json(200, "{\"machine\":\(machine),\"apiKey\":\(jsonString(apiKey))}")
+        let machineId = dependencies.registerMachine(serverId, userId, name)
+        let response = ServerMachineRegistrationResponse(
+            id: machineId,
+            serverId: serverId,
+            name: name,
+            userId: userId,
+            apiKey: dependencies.machineAPIKey(machineId) ?? ""
+        )
+        dependencies.emitRealtime("server:\(serverId)", "machine:updated", response.updatedEventPayload())
+        return response
     }
 
+    // MARK: - Runtime form definitions
+
+    /// `GET .../runtime-form-definitions/:runtimeId` (v1) and
+    /// `GET .../runtime-forms/v2/:runtimeId` (v2).
     public func runtimeFormDefinition(
         authorization: String?,
         serverId: String,
@@ -349,67 +438,44 @@ extension EmailLoginDirectory {
         protocolVersion: Int,
         schemaVersion: String?,
         language: String?
-    ) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
-        }
-        lock.lock()
-        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Computer not found\"}")
-        }
-        lock.unlock()
-        guard role == "owner" || role == "admin" || machine.userId == userId else {
-            return Self.json(403, "{\"error\":\"The `editMachines` capability or machine creator authority is required to inspect runtime forms\"}")
-        }
-        guard let expected = Self.runtimeFormSchemas[runtimeId] else {
-            return Self.json(404, "{\"error\":\"Runtime form not found\",\"issues\":[{\"code\":\"unknown_form_runtime\",\"pointer\":\"/runtimeId\"}]}")
-        }
-        if protocolVersion == 1, Self.runtimeFormV2Only.contains(runtimeId) {
-            return Self.json(404, "{\"error\":\"Runtime form not found\",\"issues\":[{\"code\":\"unknown_form_runtime\",\"pointer\":\"/runtimeId\"}]}")
-        }
-        if protocolVersion == 1, let schemaVersion, schemaVersion != expected {
-            return Self.json(409, "{\"error\":\"Runtime form schema is stale or unknown\",\"issues\":[{\"code\":\"stale_form_schema\",\"pointer\":\"/schemaVersion\"}]}")
-        }
-        let zh = Self.prefersChinese(language)
+    ) throws -> RuntimeFormDefinitionResponse {
+        _ = try authorizedMachine(
+            authorization: authorization,
+            serverId: serverId,
+            machineId: machineId,
+            purpose: "inspect runtime forms"
+        )
+        let expected = try expectedSchema(
+            runtimeId: runtimeId,
+            protocolVersion: protocolVersion,
+            schemaVersion: schemaVersion,
+            unknown: .runtimeFormNotFound
+        )
+        let chinese = Self.prefersChinese(language)
         if protocolVersion == 2 {
             if runtimeId == "builtin" {
-                let providerLabel = zh ? "提供方" : "Provider"
-                let modelLabel = zh ? "模型" : "Model"
-                let apiKeyLabel = zh ? "API 密钥" : "API Key"
-                let imageLabel = zh ? "图片输入" : "Image input"
-                return Self.json(200, "{\"protocolVersion\":2,\"runtimeId\":\"builtin\",\"schemaVersion\":\(jsonString(expected)),\"requiredClientCapabilities\":[\"option_source.status\"],\"fields\":[{\"key\":\"providerId\",\"kind\":\"select\",\"label\":\(jsonString(providerLabel)),\"required\":true},{\"key\":\"apiKey\",\"kind\":\"password\",\"label\":\(jsonString(apiKeyLabel)),\"required\":true,\"writeOnly\":true},{\"key\":\"model\",\"kind\":\"dependent_select\",\"label\":\(jsonString(modelLabel)),\"required\":true,\"dependsOn\":\"providerId\"},{\"key\":\"supportsImageInput\",\"kind\":\"boolean\",\"label\":\(jsonString(imageLabel)),\"required\":false}],\"capabilities\":{\"providerKinds\":[\"preset\"],\"writeOnlyPointers\":[\"/apiKey\"],\"forbiddenPointers\":[\"/hostUserState\"]},\"optionSources\":{\"provider\":{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"provider\"},\"model\":{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\"}}}")
+                return .builtinV2(schemaVersion: expected, chinese: chinese)
             }
             if let form = RuntimeFormCatalog.v2Forms[runtimeId] {
-                return Self.json(200, form)
+                return .catalog(form)
             }
-            let label = zh ? "模型" : "Model"
-            return Self.json(200, "{\"protocolVersion\":2,\"runtimeId\":\(jsonString(runtimeId)),\"schemaVersion\":\(jsonString(expected)),\"requiredClientCapabilities\":[\"option_source.status\"],\"fields\":[{\"key\":\"model\",\"kind\":\"select\",\"label\":\(jsonString(label)),\"required\":true}],\"capabilities\":{\"providerKinds\":[\"preset\"],\"writeOnlyPointers\":[\"/apiKey\"],\"forbiddenPointers\":[\"/hostUserState\"]}}")
+            return .selectV2(runtimeId: runtimeId, schemaVersion: expected, chinese: chinese)
         }
         if runtimeId == "builtin" {
-            return Self.json(200, RuntimeFormCatalog.builtinV1Definition)
+            return .catalog(RuntimeFormCatalog.builtinV1Definition)
         }
         if runtimeId == "kimi-sdk", let definition = RuntimeFormCatalog.optionSources["kimi-sdk/edit"] {
-            return Self.json(200, definition)
+            return .catalog(definition)
         }
-        let properties: String
-        let required: String
-        let sources: String
-        if runtimeId == "builtin" {
-            properties = "{\"apiKey\":{\"type\":\"string\",\"writeOnly\":true},\"supportsImageInput\":{\"type\":\"boolean\"},\"providerId\":{\"type\":\"string\"},\"model\":{\"type\":\"string\"}}"
-            required = "[\"providerId\",\"model\"]"
-            sources = "{\"provider\":{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"provider\"},\"model\":{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\"}}"
-        } else {
-            properties = "{\"model\":{\"type\":\"string\"}}"
-            required = "[\"model\"]"
-            sources = "{\"model\":{\"protocolVersion\":1,\"runtimeId\":\(jsonString(runtimeId)),\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\"}}"
-        }
-        return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\(jsonString(runtimeId)),\"schemaVersion\":\(jsonString(expected)),\"dataSchema\":{\"type\":\"object\",\"properties\":\(properties),\"required\":\(required)},\"uiSchema\":{},\"capabilities\":{\"providerKinds\":[\"preset\"],\"writeOnlyPointers\":[\"/apiKey\"],\"forbiddenPointers\":[\"/hostUserState\"]},\"optionSources\":\(sources)}")
+        return .selectV1(runtimeId: runtimeId, schemaVersion: expected)
     }
 
+    // MARK: - Runtime form option sources
+
+    /// `GET .../runtime-form-definitions/:runtimeId/option-sources/:sourceId`
+    /// (v1) and `GET .../runtime-forms/v2/:runtimeId/option-sources/:sourceId`
+    /// (v2). Static sources never probe the Computer; the model sources of
+    /// probed runtimes do.
     public func runtimeFormOptionSource(
         authorization: String?,
         serverId: String,
@@ -420,335 +486,393 @@ extension EmailLoginDirectory {
         schemaVersion: String?,
         language: String?,
         refresh: Bool = false
-    ) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
-        }
-        lock.lock()
-        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Computer not found\"}")
-        }
-        lock.unlock()
-        guard role == "owner" || role == "admin" || machine.userId == userId else {
-            return Self.json(403, "{\"error\":\"The `editMachines` capability or machine creator authority is required to inspect runtime form option sources\"}")
-        }
-        guard let expected = Self.runtimeFormSchemas[runtimeId] else {
-            return Self.json(404, "{\"error\":\"Runtime form option source not found\",\"issues\":[{\"code\":\"unknown_form_runtime\",\"pointer\":\"/runtimeId\"}]}")
-        }
-        if protocolVersion == 1, Self.runtimeFormV2Only.contains(runtimeId) {
-            return Self.json(404, "{\"error\":\"Runtime form option source not found\",\"issues\":[{\"code\":\"unknown_form_runtime\",\"pointer\":\"/runtimeId\"}]}")
-        }
-        if protocolVersion == 1, let schemaVersion, schemaVersion != expected {
-            return Self.json(409, "{\"error\":\"Runtime form schema is stale or unknown\",\"issues\":[{\"code\":\"stale_form_schema\",\"pointer\":\"/schemaVersion\"}]}")
-        }
-        let zh = Self.prefersChinese(language)
+    ) throws -> RuntimeOptionSourceResponse {
+        _ = try authorizedMachine(
+            authorization: authorization,
+            serverId: serverId,
+            machineId: machineId,
+            purpose: "inspect runtime form option sources"
+        )
+        let expected = try expectedSchema(
+            runtimeId: runtimeId,
+            protocolVersion: protocolVersion,
+            schemaVersion: schemaVersion,
+            unknown: .runtimeFormOptionSourceNotFound
+        )
+        let chinese = Self.prefersChinese(language)
 
         if protocolVersion == 2 {
-            // Static sources never probe the Computer.
-            if runtimeId == "antigravity" {
-                return Self.json(404, "{\"error\":\"Runtime form option source not found\",\"issues\":[{\"code\":\"unknown_option_source\",\"pointer\":\"/sourceId\"}]}")
-            }
-            if sourceId == "provider", runtimeId == "pi" {
-                return Self.json(200, RuntimeFormCatalog.optionSources["pi/provider"] ?? "")
-            }
-            if sourceId == "providerModel", runtimeId == "pi" {
-                return Self.json(200, RuntimeFormCatalog.optionSources["pi/providerModel"] ?? "")
-            }
-            if sourceId == "model", runtimeId == "kimi" || runtimeId == "gemini" {
-                return Self.json(200, RuntimeFormCatalog.optionSources["\(runtimeId)/model"] ?? "")
-            }
-            if sourceId == "model", runtimeId == "kimi-sdk" {
-                return Self.kimiSDKSource(
-                    resolution: runtimeProbeResolution(machineId: machineId, runtimeId: runtimeId, refresh: refresh),
-                    protocolVersion: 2,
-                    expected: expected
-                )
-            }
-            if sourceId == "model", runtimeId == "builtin" {
-                return builtinModelSource(protocolVersion: 2, expected: expected)
-            }
-            if sourceId == "provider", runtimeId == "claude" {
-                return Self.json(200, RuntimeFormCatalog.optionSources["claude/provider"] ?? "")
-            }
-            if sourceId == "model", runtimeId == "claude" || runtimeId == "cursor" {
-                let resolution = runtimeProbeResolution(machineId: machineId, runtimeId: runtimeId, refresh: refresh)
-                switch resolution {
-                case .live(let models, let defaultModel):
-                    let defaultValue = defaultModel ?? models.first?.id ?? ""
-                    let options = models.map { Self.runtimeProbeOptionJSON($0, reasoning: runtimeId == "claude") }.joined(separator: ",")
-                    return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\(jsonString(runtimeId)),\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\",\"kind\":\"select\",\"pointer\":\"/model\",\"options\":[\(options)],\"defaultValue\":\(jsonString(defaultValue)),\"customValueAllowed\":true,\"status\":\"live\"}")
-                case .notLive(let reason):
-                    let raw = RuntimeFormCatalog.optionSources["\(runtimeId)/model"] ?? ""
-                    let adjusted = raw
-                        .replacingOccurrences(of: "\"reason\": \"missing_config\"", with: "\"reason\": \"\(reason)\"")
-                        .replacingOccurrences(of: "\"retryable\": false", with: "\"retryable\": \(Self.runtimeReasonRetryable(reason))")
-                    return Self.json(200, adjusted)
-                }
-            }
-            if sourceId == "model", ["opencode", "codex", "grok", "pi"].contains(runtimeId) {
-                switch Self.resolveRuntimeModelProbe(
-                    machineId: machineId,
-                    runtimeId: runtimeId,
-                    refresh: refresh,
-                    routedLocally: machineRoutedLocally,
-                    probe: machineRuntimeModelProbe,
-                    cached: { [weak self] in
-                        guard let self else { return [] }
-                        self.lock.lock()
-                        defer { self.lock.unlock() }
-                        return self.machineRuntimeModels[machineId]?[runtimeId]?.models ?? []
-                    }
-                ) {
-                case .live(let models, let defaultModel):
-                    let defaultValue = defaultModel ?? models.first?.id ?? ""
-                    let defaultJSON = jsonString(defaultValue)
-                    let options: String
-                    switch runtimeId {
-                    case "codex", "grok", "pi":
-                        options = models.map { Self.runtimeProbeOptionJSON($0, reasoning: true) }.joined(separator: ",")
-                    default:
-                        options = models.map { Self.runtimeProbeOptionJSON($0, reasoning: false) }.joined(separator: ",")
-                    }
-                    let custom = runtimeId == "codex" || runtimeId == "pi" ? ",\"customValueAllowed\":true" : ""
-                    let status = runtimeId == "opencode" ? "" : ",\"status\":\"live\""
-                    return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\(jsonString(runtimeId)),\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\",\"kind\":\"select\",\"pointer\":\"/model\",\"options\":[\(options)],\"defaultValue\":\(defaultJSON)\(custom)\(status)}")
-                case .notLive(let reason):
-                    let retryable = Self.runtimeReasonRetryable(reason)
-                    switch runtimeId {
-                    case "opencode":
-                        return Self.json(200, RuntimeFormCatalog.optionSources["opencode/model"] ?? "")
-                    case "codex":
-                        let raw = RuntimeFormCatalog.optionSources["codex/model"] ?? ""
-                        if reason == "missing_config" { return Self.json(200, raw) }
-                        let adjusted = raw
-                            .replacingOccurrences(of: "\"reason\": \"missing_config\"", with: "\"reason\": \"\(reason)\"")
-                            .replacingOccurrences(of: "\"retryable\": false", with: "\"retryable\": \(retryable)")
-                        return Self.json(200, adjusted)
-                    case "grok":
-                        let options = Self.grokBundledModels
-                            .map { Self.runtimeProbeOptionJSON($0, reasoning: true) }
-                            .joined(separator: ",")
-                        return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\"grok\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\",\"kind\":\"select\",\"pointer\":\"/model\",\"options\":[\(options)],\"defaultValue\":\"grok-4.5\",\"status\":\"fallback\",\"reason\":\(jsonString(reason)),\"retryable\":\(retryable)}")
-                    default:
-                        let raw = RuntimeFormCatalog.optionSources["pi/model"] ?? ""
-                        if reason == "missing_config" { return Self.json(200, raw) }
-                        let adjusted = raw
-                            .replacingOccurrences(of: "\"reason\": \"missing_config\"", with: "\"reason\": \"\(reason)\"")
-                            .replacingOccurrences(of: "\"retryable\": false", with: "\"retryable\": \(retryable)")
-                        return Self.json(200, adjusted)
-                    }
-                }
+            if let source = try v2OptionSource(
+                machineId: machineId,
+                runtimeId: runtimeId,
+                sourceId: sourceId,
+                expected: expected,
+                refresh: refresh
+            ) {
+                return source
             }
         }
 
         if sourceId == "model", runtimeId == "kimi-sdk" {
-            return Self.kimiSDKSource(
-                resolution: runtimeProbeResolution(machineId: machineId, runtimeId: runtimeId, refresh: refresh),
+            return try kimiSDKSource(
+                resolution: probeResolution(machineId: machineId, runtimeId: runtimeId, refresh: refresh),
                 protocolVersion: 1,
                 expected: expected
             )
         }
         if sourceId == "model", runtimeId == "builtin" {
-            return builtinModelSource(protocolVersion: 1, expected: expected)
+            return try builtinModelSource(protocolVersion: 1, expected: expected)
         }
-        lock.lock()
-        let cachedModels = machineRuntimeModels[machineId]?[runtimeId]?.models ?? []
-        lock.unlock()
         switch sourceId {
         case "provider" where runtimeId == "builtin":
-            let options = "{\"value\":\"deepseek\",\"label\":\(jsonString(zh ? "DeepSeek" : "DeepSeek")),\"providerKind\":\"preset\"},{\"value\":\"moonshotai\",\"label\":\(jsonString(zh ? "月之暗面" : "Moonshot AI")),\"providerKind\":\"preset\"}"
-            return Self.json(200, "{\"sourceId\":\"provider\",\"schemaVersion\":\(jsonString(expected)),\"kind\":\"select\",\"options\":[\(options)]}")
+            return .builtinProvider(schemaVersion: expected, chinese: chinese)
         case "model":
-            if runtimeId == "builtin" {
-                let deepseek = "{\"value\":\"deepseek-chat\",\"label\":\"DeepSeek Chat\"}"
-                let moonshot = "{\"value\":\"kimi-k2\",\"label\":\"Kimi K2\"}"
-                return Self.json(200, "{\"sourceId\":\"model\",\"schemaVersion\":\(jsonString(expected)),\"kind\":\"dependent_select\",\"optionsByValue\":{\"deepseek\":[\(deepseek)],\"moonshotai\":[\(moonshot)]}}")
-            }
-            let options = cachedModels.map { "{\"value\":\(jsonString($0.id)),\"label\":\(jsonString($0.label))}" }.joined(separator: ",")
-            return Self.json(200, "{\"sourceId\":\"model\",\"schemaVersion\":\(jsonString(expected)),\"kind\":\"select\",\"options\":[\(options)]}")
+            let cached = dependencies.machines.runtimeModels(machineId: machineId, runtime: runtimeId)
+            return .cachedModels(
+                schemaVersion: expected,
+                models: cached.map { RuntimeModelChoice(value: $0.id, label: $0.label) }
+            )
         default:
-            return Self.json(404, "{\"error\":\"Runtime form option source not found\",\"issues\":[{\"code\":\"unknown_option_source\",\"pointer\":\"/sourceId\"}]}")
+            throw RuntimeFormsAndProbesError.unknownOptionSource
         }
     }
 
-    func runtimeProbeResolution(machineId: String, runtimeId: String, refresh: Bool) -> RuntimeProbeResolution {
-        Self.resolveRuntimeModelProbe(
-            machineId: machineId,
-            runtimeId: runtimeId,
-            refresh: refresh,
-            routedLocally: machineRoutedLocally,
-            probe: machineRuntimeModelProbe,
-            cached: { [weak self] in
-                guard let self else { return [] }
-                self.lock.lock()
-                defer { self.lock.unlock() }
-                return self.machineRuntimeModels[machineId]?[runtimeId]?.models ?? []
+    /// The v2 sources that answer without falling through to the shared
+    /// legacy tail; `nil` leaves the request to that tail.
+    private func v2OptionSource(
+        machineId: String,
+        runtimeId: String,
+        sourceId: String,
+        expected: String,
+        refresh: Bool
+    ) throws -> RuntimeOptionSourceResponse? {
+        if runtimeId == "antigravity" {
+            throw RuntimeFormsAndProbesError.unknownOptionSource
+        }
+        if sourceId == "provider", runtimeId == "pi" {
+            return .catalog(RuntimeFormCatalog.optionSources["pi/provider"] ?? "")
+        }
+        if sourceId == "providerModel", runtimeId == "pi" {
+            return .catalog(RuntimeFormCatalog.optionSources["pi/providerModel"] ?? "")
+        }
+        if sourceId == "model", runtimeId == "kimi" || runtimeId == "gemini" {
+            return .catalog(RuntimeFormCatalog.optionSources["\(runtimeId)/model"] ?? "")
+        }
+        if sourceId == "model", runtimeId == "kimi-sdk" {
+            return try kimiSDKSource(
+                resolution: probeResolution(machineId: machineId, runtimeId: runtimeId, refresh: refresh),
+                protocolVersion: 2,
+                expected: expected
+            )
+        }
+        if sourceId == "model", runtimeId == "builtin" {
+            return try builtinModelSource(protocolVersion: 2, expected: expected)
+        }
+        if sourceId == "provider", runtimeId == "claude" {
+            return .catalog(RuntimeFormCatalog.optionSources["claude/provider"] ?? "")
+        }
+        if sourceId == "model", runtimeId == "claude" || runtimeId == "cursor" {
+            switch probeResolution(machineId: machineId, runtimeId: runtimeId, refresh: refresh) {
+            case .live(let models, let defaultModel):
+                return .model(RuntimeModelSourceBody(
+                    runtimeId: runtimeId,
+                    schemaVersion: expected,
+                    options: models.map { RuntimeProbeOption($0, reasoning: runtimeId == "claude") },
+                    defaultValue: defaultModel ?? models.first?.id ?? "",
+                    customValueAllowed: true,
+                    status: "live"
+                ))
+            case .notLive(let reason):
+                return .catalog(Self.catalogWithReason(
+                    RuntimeFormCatalog.optionSources["\(runtimeId)/model"] ?? "",
+                    reason: reason
+                ))
             }
-        )
+        }
+        if sourceId == "model", ["opencode", "codex", "grok", "pi"].contains(runtimeId) {
+            switch probeResolution(machineId: machineId, runtimeId: runtimeId, refresh: refresh) {
+            case .live(let models, let defaultModel):
+                let reasoning = runtimeId == "codex" || runtimeId == "grok" || runtimeId == "pi"
+                return .model(RuntimeModelSourceBody(
+                    runtimeId: runtimeId,
+                    schemaVersion: expected,
+                    options: models.map { RuntimeProbeOption($0, reasoning: reasoning) },
+                    defaultValue: defaultModel ?? models.first?.id ?? "",
+                    customValueAllowed: runtimeId == "codex" || runtimeId == "pi" ? true : nil,
+                    status: runtimeId == "opencode" ? nil : "live"
+                ))
+            case .notLive(let reason):
+                switch runtimeId {
+                case "opencode":
+                    return .catalog(RuntimeFormCatalog.optionSources["opencode/model"] ?? "")
+                case "grok":
+                    return .model(RuntimeModelSourceBody(
+                        runtimeId: "grok",
+                        schemaVersion: expected,
+                        options: Self.grokBundledModels.map { RuntimeProbeOption($0, reasoning: true) },
+                        defaultValue: "grok-4.5",
+                        status: "fallback",
+                        reason: reason,
+                        retryable: Self.runtimeReasonRetryable(reason)
+                    ))
+                default:
+                    let raw = RuntimeFormCatalog.optionSources["\(runtimeId)/model"] ?? ""
+                    if reason == "missing_config" { return .catalog(raw) }
+                    return .catalog(Self.catalogWithReason(raw, reason: reason))
+                }
+            }
+        }
+        return nil
     }
 
-    func builtinModelSource(protocolVersion: Int, expected: String) -> HTTPReply {
-        let mode = builtinCatalogMode
-        if mode == "legacy" {
-            return Self.json(409, "{\"error\":\"This Computer is too old to prove which Built-in models it supports. Upgrade the Computer before selecting or starting this model.\",\"code\":\"builtin_catalog_capability_required\",\"daemonVersion\":\"1.0.17\",\"computerVersion\":\"1.0.17\",\"recovery\":\"upgrade_required\"}")
+    /// The shipped `missing_config` source with the probe's reason and
+    /// retryability substituted into the rendered catalog text.
+    private static func catalogWithReason(_ raw: String, reason: String) -> String {
+        raw
+            .replacingOccurrences(of: "\"reason\": \"missing_config\"", with: "\"reason\": \"\(reason)\"")
+            .replacingOccurrences(of: "\"retryable\": false", with: "\"retryable\": \(runtimeReasonRetryable(reason))")
+    }
+
+    // MARK: - Probe resolution
+
+    /// How a machine's model probe resolved for one runtime.
+    enum ProbeResolution {
+        case live(models: [RuntimeModelProbeModel], default: String?)
+        case notLive(reason: String)
+    }
+
+    private func probeResolution(machineId: String, runtimeId: String, refresh: Bool) -> ProbeResolution {
+        guard dependencies.machines.machineRoutedLocally?(machineId) ?? true else {
+            return .notLive(reason: "machine_offline")
         }
-        let bundled = "{\"deepseek\":[{\"value\":\"deepseek-chat\",\"label\":\"DeepSeek Chat\"}],\"moonshotai\":[{\"value\":\"kimi-k2\",\"label\":\"Kimi K2\"}]}"
+        let outcome: RuntimeModelProbeOutcome
+        if let probe = dependencies.machines.machineRuntimeModelProbe {
+            outcome = probe(machineId, runtimeId, refresh)
+        } else {
+            let models = dependencies.machines.runtimeModels(machineId: machineId, runtime: runtimeId)
+            outcome = models.isEmpty
+                ? .missingConfig
+                : .live(
+                    models: models.map { RuntimeModelProbeModel(id: $0.id, label: $0.label) },
+                    default: models.first?.id
+                )
+        }
+        switch outcome {
+        case .live(let models, let defaultModel), .models(let models, let defaultModel):
+            return models.isEmpty ? .notLive(reason: "no_models") : .live(models: models, default: defaultModel)
+        case .missingConfig:
+            return .notLive(reason: "missing_config")
+        case .noModels:
+            return .notLive(reason: "no_models")
+        case .unsupported:
+            return .notLive(reason: "unsupported")
+        case .error(let code, _):
+            if code == "detect_timeout" { return .notLive(reason: "probe_timeout") }
+            if code == "computer_offline" { return .notLive(reason: "machine_offline") }
+            return .notLive(reason: "probe_failed")
+        case .failed:
+            return .notLive(reason: "probe_failed")
+        }
+    }
+
+    private static func runtimeReasonRetryable(_ reason: String) -> Bool {
+        ["probe_timeout", "probe_failed", "machine_offline", "no_models"].contains(reason)
+    }
+
+    private func kimiSDKSource(
+        resolution: ProbeResolution,
+        protocolVersion: Int,
+        expected: String
+    ) throws -> RuntimeOptionSourceResponse {
+        let managed = RuntimeModelProbeModel(id: "kimi-code/kimi-for-coding", label: "Kimi for Coding (default)")
+        func body(
+            options: [RuntimeProbeOption],
+            defaultValue: String,
+            status: String? = nil,
+            reason: String? = nil,
+            retryable: Bool? = nil
+        ) -> RuntimeOptionSourceResponse {
+            .model(RuntimeModelSourceBody(
+                runtimeId: "kimi-sdk",
+                schemaVersion: expected,
+                options: options,
+                defaultValue: defaultValue,
+                status: status,
+                reason: reason,
+                retryable: retryable
+            ))
+        }
+        switch resolution {
+        case .live(let models, let defaultModel):
+            return body(
+                options: models.map { RuntimeProbeOption($0, reasoning: true) },
+                defaultValue: defaultModel ?? models.first?.id ?? "",
+                status: protocolVersion == 2 ? "live" : nil
+            )
+        case .notLive(let reason):
+            let retryable = Self.runtimeReasonRetryable(reason)
+            let fallbackReason = reason == "missing_config" || reason == "machine_offline"
+            if protocolVersion == 2 {
+                if fallbackReason {
+                    return body(
+                        options: [RuntimeProbeOption(managed, reasoning: true)],
+                        defaultValue: "kimi-code/kimi-for-coding",
+                        status: "fallback",
+                        reason: reason,
+                        retryable: retryable
+                    )
+                }
+                return body(
+                    options: [],
+                    defaultValue: "",
+                    status: "unavailable",
+                    reason: reason,
+                    retryable: retryable
+                )
+            }
+            if fallbackReason {
+                return body(
+                    options: [RuntimeProbeOption(managed, reasoning: true)],
+                    defaultValue: "kimi-code/kimi-for-coding"
+                )
+            }
+            switch reason {
+            case "no_models":
+                throw RuntimeFormsAndProbesError.kimiSDKSource(code: "runtime_model_source_no_models")
+            case "unsupported":
+                throw RuntimeFormsAndProbesError.kimiSDKSource(code: "runtime_model_source_unsupported")
+            default:
+                throw RuntimeFormsAndProbesError.kimiSDKSource(code: "runtime_model_source_error")
+            }
+        }
+    }
+
+    private func builtinModelSource(
+        protocolVersion: Int,
+        expected: String
+    ) throws -> RuntimeOptionSourceResponse {
+        let mode = dependencies.machines.builtinCatalogMode
+        if mode == "legacy" {
+            throw RuntimeFormsAndProbesError.builtinCatalogCapabilityRequired
+        }
+        let bundled = BuiltinModelSourceBody.bundledGroups()
         if protocolVersion == 1 {
             if mode == "timeout" {
-                return Self.json(409, "{\"issues\":[{\"code\":\"builtin_catalog_unavailable\",\"pointer\":\"/optionSources/model\"}]}")
+                throw RuntimeFormsAndProbesError.builtinCatalogUnavailable
             }
             let groups = mode == "offline" ? bundled : liveBuiltinGroups(bundled: bundled)
-            return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\",\"kind\":\"dependent_select\",\"pointer\":\"/model\",\"optionsByValue\":\(groups)}")
+            return .builtinModel(BuiltinModelSourceBody(schemaVersion: expected, groups: groups))
         }
         switch mode {
         case "timeout":
-            return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\",\"kind\":\"dependent_select\",\"pointer\":\"/model\",\"optionsByValue\":{},\"status\":\"unavailable\",\"reason\":\"probe_timeout\",\"retryable\":true}")
+            return .builtinModel(BuiltinModelSourceBody(
+                schemaVersion: expected,
+                groups: [],
+                status: "unavailable",
+                reason: "probe_timeout",
+                retryable: true
+            ))
         case "offline":
-            return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\",\"kind\":\"dependent_select\",\"pointer\":\"/model\",\"optionsByValue\":\(bundled),\"status\":\"fallback\",\"reason\":\"machine_offline\",\"retryable\":true}")
+            return .builtinModel(BuiltinModelSourceBody(
+                schemaVersion: expected,
+                groups: bundled,
+                status: "fallback",
+                reason: "machine_offline",
+                retryable: true
+            ))
         default:
-            let groups = liveBuiltinGroups(bundled: bundled)
-            return Self.json(200, "{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\(jsonString(expected)),\"sourceId\":\"model\",\"kind\":\"dependent_select\",\"pointer\":\"/model\",\"optionsByValue\":\(groups),\"status\":\"live\"}")
+            return .builtinModel(BuiltinModelSourceBody(
+                schemaVersion: expected,
+                groups: liveBuiltinGroups(bundled: bundled),
+                status: "live"
+            ))
         }
     }
 
-    func liveBuiltinGroups(bundled: String) -> String {
-        lock.lock()
-        let models = machines.isEmpty ? [] : Array(machineRuntimeModels.values.flatMap { $0["builtin"]?.models ?? [] })
-        lock.unlock()
+    private func liveBuiltinGroups(
+        bundled: [BuiltinModelSourceBody.Group]
+    ) -> [BuiltinModelSourceBody.Group] {
+        let models = dependencies.machines.builtinRuntimeModels()
         guard !models.isEmpty else { return bundled }
-        let options = models.map { "{\"value\":\(jsonString($0.id)),\"label\":\(jsonString($0.label))}" }.joined(separator: ",")
-        return "{\"deepseek\":[\(options)]}"
+        return [BuiltinModelSourceBody.Group(
+            provider: "deepseek",
+            models: models.map { RuntimeModelChoice(value: $0.id, label: $0.label) }
+        )]
     }
 
-    public func machineRuntimeAccountUsage(
+    // MARK: - Shared guards
+
+    /// The session, membership and machine-authority checks every runtime-form
+    /// route runs in the same order: `401`, server `404`, Computer `404`, `403`.
+    private func authorizedMachine(
         authorization: String?,
         serverId: String,
         machineId: String,
-        provider: String
-    ) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        purpose: String
+    ) throws -> MachineRecord {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw RuntimeFormsAndProbesError.unauthorized
         }
-        guard Self.runtimeAccountUsageProviders.contains(provider) else {
-            return Self.json(404, "{\"error\":\"Runtime account usage provider not found\"}")
+        guard let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw RuntimeFormsAndProbesError.serverNotFound
         }
-        lock.lock()
-        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Computer not found\"}")
+        guard let machine = dependencies.machines.machine(id: machineId, serverId: serverId) else {
+            throw RuntimeFormsAndProbesError.computerNotFound
         }
-        let attacher = computerAttachers[machineId]
-        let record = runtimeAccountUsage["\(machineId)\n\(provider)"]
-        lock.unlock()
-        guard canInspectRuntimeAccountUsage(serverId: serverId, userId: userId, attacher: attacher) else {
-            return Self.json(403, "{\"error\":\"The `editMachines` capability or attaching-human authority is required to inspect runtime account usage\"}")
+        guard role == "owner" || role == "admin" || machine.userId == userId else {
+            throw RuntimeFormsAndProbesError.editMachinesRequired(purpose: purpose)
         }
-        _ = machine
-        guard let record else {
-            var reply = Self.json(200, "{\"state\":\"missing\",\"snapshot\":null}")
-            reply.headers["Cache-Control"] = "private, no-store"
-            return reply
-        }
-        let state = record.staleAfter <= Date() ? "stale" : "fresh"
-        var reply = Self.json(200, "{\"state\":\(jsonString(state)),\"snapshot\":\(record.json)}")
-        reply.headers["Cache-Control"] = "private, no-store"
-        return reply
+        return machine
     }
 
-    public func refreshMachineRuntimeAccountUsage(
+    /// The schema version a runtime form publishes, refusing an unknown runtime,
+    /// a v2-only runtime asked at v1 and a stale v1 schema version.
+    private func expectedSchema(
+        runtimeId: String,
+        protocolVersion: Int,
+        schemaVersion: String?,
+        unknown: RuntimeFormsAndProbesError
+    ) throws -> String {
+        guard let expected = Self.runtimeFormSchemas[runtimeId] else {
+            throw unknown
+        }
+        if protocolVersion == 1, Self.runtimeFormV2Only.contains(runtimeId) {
+            throw unknown
+        }
+        if protocolVersion == 1, let schemaVersion, schemaVersion != expected {
+            throw RuntimeFormsAndProbesError.staleFormSchema
+        }
+        return expected
+    }
+
+    static func prefersChinese(_ language: String?) -> Bool {
+        guard let language else { return false }
+        return language.lowercased().hasPrefix("zh")
+    }
+
+    // MARK: - GET .../runtime-options
+
+    /// The runtimes a Computer can offer a new agent and whether each is
+    /// installed.
+    public func machineRuntimeOptions(
         authorization: String?,
         serverId: String,
         machineId: String,
-        provider: String,
-        body: String
-    ) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        includeRuntimeFormV2: Bool = false
+    ) throws -> MachineRuntimeOptionsResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw RuntimeFormsAndProbesError.unauthorized
         }
-        guard Self.runtimeAccountUsageProviders.contains(provider) else {
-            return Self.json(404, "{\"error\":\"Runtime account usage provider not found\"}")
+        guard let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw RuntimeFormsAndProbesError.serverNotFound
         }
-        lock.lock()
-        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Computer not found\"}")
-        }
-        let attacher = computerAttachers[machineId]
-        let online = machineOnline[machineId] == true
-        lock.unlock()
-        _ = machine
-        guard canInspectRuntimeAccountUsage(serverId: serverId, userId: userId, attacher: attacher) else {
-            return Self.json(403, "{\"error\":\"The `editMachines` capability or attaching-human authority is required to refresh runtime account usage\"}")
-        }
-        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
-        let manual = (object["reason"] as? String) == "manual"
-        let key = "\(machineId)\n\(provider)"
-        lock.lock()
-        let now = Date()
-        if let last = runtimeAccountUsageRefreshAt[key], now.timeIntervalSince(last) < 60 {
-            lock.unlock()
-            return Self.json(202, "{\"accepted\":false,\"state\":\"cooldown\"}")
-        }
-        lock.unlock()
-
-        guard manual else {
-            lock.lock()
-            runtimeAccountUsageRefreshAt[key] = now
-            lock.unlock()
-            return Self.json(202, "{\"accepted\":true,\"state\":\"requested\"}")
-        }
-
-        guard online else {
-            return Self.json(202, "{\"accepted\":false,\"state\":\"computer_offline\"}")
-        }
-
-        let result = runtimeAccountUsageManualRefresh?(machineId, provider) ?? .timeout
-        switch result {
-        case .snapshot(let json):
-            let parsed = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
-            let staleAfter = (parsed?["staleAfter"] as? String).flatMap(Self.isoDate) ?? now.addingTimeInterval(1800)
-            lock.lock()
-            runtimeAccountUsage[key] = (json, staleAfter)
-            runtimeAccountUsageRefreshAt[key] = now
-            lock.unlock()
-            return Self.json(200, "{\"accepted\":true,\"state\":\"fresh\",\"snapshot\":\(json)}")
-        case .timeout:
-            lock.lock()
-            runtimeAccountUsageRefreshAt[key] = now
-            lock.unlock()
-            return Self.json(200, "{\"accepted\":true,\"state\":\"timeout\"}")
-        case .offline:
-            return Self.json(202, "{\"accepted\":false,\"state\":\"computer_offline\"}")
-        }
-    }
-
-    func canInspectRuntimeAccountUsage(serverId: String, userId: String, attacher: String?) -> Bool {
-        if attacher == userId { return true }
-        let role = oauth.memberRole(serverId: serverId, userId: userId)
-        return role == "owner" || role == "admin"
-    }
-
-    public func machineRuntimeOptions(authorization: String?, serverId: String, machineId: String, includeRuntimeFormV2: Bool = false) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
-        }
-        lock.lock()
-        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Computer not found\"}")
+        guard let machine = dependencies.machines.machine(id: machineId, serverId: serverId) else {
+            throw RuntimeFormsAndProbesError.computerNotFound
         }
         let installed = Set(machine.runtimes)
-        let grokEnabled = grokRuntimeServers.contains(serverId)
-        lock.unlock()
+        let grokEnabled = dependencies.agents.isGrokRuntimeEnabled(serverId: serverId)
         guard role == "owner" || role == "admin" || machine.userId == userId else {
-            return Self.json(403, "{\"error\":\"The `editMachines` capability or machine creator authority is required to inspect runtime options\"}")
+            throw RuntimeFormsAndProbesError.editMachinesRequired(purpose: "inspect runtime options")
         }
         let catalog: [(id: String, binary: String)] = [
             ("claude", "claude"),
@@ -760,115 +884,230 @@ extension EmailLoginDirectory {
             ("pi", "pi"),
             ("grok", "grok"),
         ]
-        let options = catalog.filter { entry in
-            entry.id != "grok" || grokEnabled
-        }.map { runtime -> String in
+        let options = catalog.filter { $0.id != "grok" || grokEnabled }.map { runtime in
             let capability = installed.contains(runtime.id)
                 ? "available"
                 : (runtime.binary.isEmpty ? "update_required" : "not_installed")
-            let canSelect = capability == "available"
-            let v2Marker = includeRuntimeFormV2 && RuntimeFormCatalog.v2Forms[runtime.id] != nil
-                ? ",\"runtimeFormV2\":{\"protocolVersion\":2}"
-                : ""
-            let v1Ref = !includeRuntimeFormV2 && Self.runtimeFormV1Runtimes.contains(runtime.id)
-                ? ",\"formDefinitionRef\":{\"protocolVersion\":1,\"runtimeId\":\(jsonString(runtime.id)),\"schemaVersion\":\(jsonString(Self.runtimeFormSchemas[runtime.id] ?? ""))}"
-                : ""
-            return "{\"runtimeId\":\(jsonString(runtime.id)),\"capabilityStatus\":\(jsonString(capability)),\"admissionStatus\":\"available_for_new\",\"admissionReason\":null,\"current\":false,\"availableForNew\":true,\"manageableForCurrentAgent\":false,\"canSelectInThisContext\":\(canSelect)\(v2Marker)\(v1Ref)}"
-        }.joined(separator: ",")
-        return Self.json(200, "{\"context\":\"new_agent\",\"machineId\":\(jsonString(machine.id)),\"options\":[\(options)]}")
+            return MachineRuntimeOptionsResponse.Option(
+                runtimeId: runtime.id,
+                capabilityStatus: capability,
+                canSelectInThisContext: capability == "available",
+                runtimeFormV2: includeRuntimeFormV2 && RuntimeFormCatalog.v2Forms[runtime.id] != nil,
+                formDefinitionSchemaVersion: !includeRuntimeFormV2 && Self.runtimeFormV1Runtimes.contains(runtime.id)
+                    ? (Self.runtimeFormSchemas[runtime.id] ?? "")
+                    : nil
+            )
+        }
+        return MachineRuntimeOptionsResponse(machineId: machine.id, options: options)
     }
 
-    public func machineRuntimeModels(authorization: String?, serverId: String, machineId: String, runtime: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    // MARK: - GET .../runtime-models/:runtime
+
+    /// The models one runtime offers on a Computer, probed on request.
+    public func machineRuntimeModels(
+        authorization: String?,
+        serverId: String,
+        machineId: String,
+        runtime: String
+    ) throws -> MachineRuntimeModelsResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw RuntimeFormsAndProbesError.unauthorized
         }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
+        guard let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw RuntimeFormsAndProbesError.serverNotFound
         }
-        lock.lock()
-        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Machine not found in this server\"}")
+        guard let machine = dependencies.machines.machine(id: machineId, serverId: serverId) else {
+            throw RuntimeFormsAndProbesError.machineNotFound
         }
-        let cached = machineRuntimeModels[machineId]?[runtime]?.models ?? []
-        let probe = machineRuntimeModelProbe
-        let routed = machineRoutedLocally?(machineId) ?? true
-        lock.unlock()
+        let cached = dependencies.machines.runtimeModels(machineId: machineId, runtime: runtime)
+        let probe = dependencies.machines.machineRuntimeModelProbe
+        let routed = dependencies.machines.machineRoutedLocally?(machineId) ?? true
         guard role == "owner" || role == "admin" || machine.userId == userId else {
-            return Self.json(403, "{\"error\":\"The `editMachines` capability or machine creator authority is required to inspect runtime models\"}")
+            throw RuntimeFormsAndProbesError.editMachinesRequired(purpose: "inspect runtime models")
         }
-        func modelList(_ models: [RuntimeModelProbeModel]) -> String {
-            models.map {
-                "{\"id\":\(jsonString($0.id)),\"label\":\(jsonString($0.label))}"
-            }.joined(separator: ",")
+        func choices(_ models: [RuntimeModelProbeModel]) -> [RuntimeModelChoice] {
+            models.map { RuntimeModelChoice(value: $0.id, label: $0.label) }
         }
         guard routed else {
-            return Self.json(200, "{\"kind\":\"error\",\"retryable\":true,\"code\":\"computer_offline\"}")
+            return .computerOffline
         }
-        if let probe {
-            switch probe(machineId, runtime, true) {
-            case .live(let models, let defaultModel):
-                let list = modelList(models)
-                let defaultJSON = defaultModel.map(jsonString) ?? "null"
-                return Self.json(200, "{\"kind\":\"live\",\"value\":{\"models\":[\(list)],\"default\":\(defaultJSON)},\"models\":[\(list)],\"default\":\(defaultJSON)}")
-            case .models(let models, let defaultModel):
-                let list = modelList(models)
-                let defaultJSON = defaultModel.map(jsonString) ?? "null"
-                return Self.json(200, "{\"models\":[\(list)],\"default\":\(defaultJSON)}")
-            case .missingConfig:
-                return Self.json(200, "{\"kind\":\"missing_config\",\"recovery\":\"kimi_login\"}")
-            case .noModels:
-                return Self.json(200, "{\"kind\":\"no_models\"}")
-            case .unsupported:
-                return Self.json(200, "{\"kind\":\"unsupported\"}")
-            case .error(let code, _):
-                if code.isEmpty {
-                    return Self.json(200, "{\"kind\":\"error\",\"retryable\":true}")
-                }
-                return Self.json(200, "{\"kind\":\"error\",\"retryable\":true,\"code\":\(jsonString(code))}")
-            case .failed:
-                return Self.json(200, "{\"kind\":\"error\",\"retryable\":true}")
-            }
+        guard let probe else {
+            return .live(
+                models: cached.map { RuntimeModelChoice(value: $0.id, label: $0.label) },
+                defaultModel: cached.first?.id
+            )
         }
-        let list = modelList(cached.map { RuntimeModelProbeModel(id: $0.id, label: $0.label) })
-        let defaultJSON = cached.first.map { jsonString($0.id) } ?? "null"
-        return Self.json(200, "{\"kind\":\"live\",\"value\":{\"models\":[\(list)],\"default\":\(defaultJSON)},\"models\":[\(list)],\"default\":\(defaultJSON)}")
+        switch probe(machineId, runtime, true) {
+        case .live(let models, let defaultModel):
+            return .live(models: choices(models), defaultModel: defaultModel)
+        case .models(let models, let defaultModel):
+            return .plainModels(models: choices(models), defaultModel: defaultModel)
+        case .missingConfig:
+            return .missingConfig
+        case .noModels:
+            return .noModels
+        case .unsupported:
+            return .unsupported
+        case .error(let code, _):
+            return .error(code: code)
+        case .failed:
+            return .error(code: "")
+        }
     }
 
-    public func machineWorkspaces(authorization: String?, serverId: String, machineId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    // MARK: - GET .../workspaces
+
+    /// The agent workspaces one Computer hosts for one Server.
+    public func machineWorkspaces(
+        authorization: String?,
+        serverId: String,
+        machineId: String
+    ) throws -> MachineWorkspacesResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw RuntimeFormsAndProbesError.unauthorized
         }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        guard let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw RuntimeFormsAndProbesError.notAMember
         }
-        lock.lock()
-        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Machine not found in this server\"}")
+        guard let machine = dependencies.machines.machine(id: machineId, serverId: serverId) else {
+            throw RuntimeFormsAndProbesError.machineNotFound
         }
         let canManage = role == "owner" || role == "admin" || machine.userId == userId
-        let keys = agentMachineIds.filter { $0.value == machineId }.map(\.key)
-        let deleted = deletedMachineWorkspaces
-        lock.unlock()
+        let agentIds = dependencies.agents.agentIds(boundToMachine: machineId)
+        let deleted = dependencies.machines.deletedWorkspaceKeys()
         guard canManage else {
-            return Self.json(403, "{\"error\":\"You do not have permission to view machine workspaces\"}")
+            throw RuntimeFormsAndProbesError.workspacesForbidden
         }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let epoch = formatter.string(from: Date(timeIntervalSince1970: 0))
-        let rows = keys.compactMap { agentId -> String? in
-            guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId else { return nil }
+        let epoch = RuntimeUsageISO.string(Date(timeIntervalSince1970: 0))
+        let rows = agentIds.compactMap { agentId -> MachineWorkspacesResponse.Row? in
+            guard let agent = dependencies.oauth.agentRuntimeInfo(id: agentId),
+                  agent.serverId == serverId
+            else { return nil }
             if deleted.contains("\(machineId)\n\(agentId)") { return nil }
-            let agentStatus: String
-            lock.lock()
-            agentStatus = serverAgents[agentId]?.status ?? "inactive"
-            lock.unlock()
+            let agentStatus = dependencies.agents.agentStatus(agentId: agentId) ?? "inactive"
             let status = agent.deleted ? "deleted" : (agentStatus == "inactive" ? "stopped" : "active")
-            let name = agent.displayName.isEmpty ? agent.name : agent.displayName
-            return "{\"directoryName\":\(jsonString(agent.id)),\"totalSizeBytes\":0,\"lastModified\":\(jsonString(epoch)),\"fileCount\":0,\"status\":\(jsonString(status)),\"agentName\":\(jsonString(name)),\"agentStatus\":\(jsonString(agentStatus))}"
+            return MachineWorkspacesResponse.Row(
+                directoryName: agent.id,
+                lastModified: epoch,
+                status: status,
+                agentName: agent.displayName.isEmpty ? agent.name : agent.displayName,
+                agentStatus: agentStatus
+            )
         }
-        return Self.json(200, "[\(rows.joined(separator: ","))]")
+        return MachineWorkspacesResponse(rows: rows)
     }
 
+    // MARK: - Runtime account usage
+
+    /// `GET .../runtime-account-usage/:provider`.
+    public func machineRuntimeAccountUsage(
+        authorization: String?,
+        serverId: String,
+        machineId: String,
+        provider: String
+    ) throws -> RuntimeAccountUsageResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw RuntimeFormsAndProbesError.unauthorized
+        }
+        guard Self.runtimeAccountUsageProviders.contains(provider) else {
+            throw RuntimeFormsAndProbesError.usageProviderNotFound
+        }
+        guard let context = dependencies.machines.runtimeAccountUsageContext(
+            machineId: machineId,
+            serverId: serverId,
+            provider: provider
+        ) else {
+            throw RuntimeFormsAndProbesError.computerNotFound
+        }
+        guard canInspectUsage(serverId: serverId, userId: userId, attacher: context.attacher) else {
+            throw RuntimeFormsAndProbesError.attachingHumanRequired(purpose: "inspect runtime account usage")
+        }
+        guard let snapshot = context.snapshot else {
+            return RuntimeAccountUsageResponse(state: "missing", snapshotJSON: nil)
+        }
+        return RuntimeAccountUsageResponse(
+            state: snapshot.staleAfter <= dependencies.now() ? "stale" : "fresh",
+            snapshotJSON: snapshot.json
+        )
+    }
+
+    /// `POST .../runtime-account-usage/:provider/refresh`.
+    ///
+    /// A requested (non-manual) refresh claims the cooldown slot in one store
+    /// decision and answers `202`. A manual refresh asks the Computer for a
+    /// snapshot and answers `200` with it (or `timeout`); every refresh that
+    /// did not complete synchronously throws `RuntimeAccountUsageRefreshDeferral`.
+    public func refreshMachineRuntimeAccountUsage(
+        authorization: String?,
+        serverId: String,
+        machineId: String,
+        provider: String,
+        body: RuntimeAccountUsageRefreshRequest?
+    ) throws -> RuntimeAccountUsageRefreshResponse {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw RuntimeFormsAndProbesError.unauthorized
+        }
+        guard Self.runtimeAccountUsageProviders.contains(provider) else {
+            throw RuntimeFormsAndProbesError.usageProviderNotFound
+        }
+        guard let context = dependencies.machines.runtimeAccountUsageContext(
+            machineId: machineId,
+            serverId: serverId,
+            provider: provider
+        ) else {
+            throw RuntimeFormsAndProbesError.computerNotFound
+        }
+        guard canInspectUsage(serverId: serverId, userId: userId, attacher: context.attacher) else {
+            throw RuntimeFormsAndProbesError.attachingHumanRequired(purpose: "refresh runtime account usage")
+        }
+        let manual = body?["reason"]?.legacyString == "manual"
+        let key = "\(machineId)\n\(provider)"
+        let now = dependencies.now()
+        guard manual else {
+            guard dependencies.machines.claimRuntimeAccountUsageRefresh(
+                key: key,
+                now: now,
+                cooldown: Self.usageRefreshCooldown
+            ) else {
+                throw RuntimeAccountUsageRefreshDeferral.cooldown
+            }
+            throw RuntimeAccountUsageRefreshDeferral.requested
+        }
+        if dependencies.machines.runtimeAccountUsageRefreshInCooldown(
+            key: key,
+            now: now,
+            cooldown: Self.usageRefreshCooldown
+        ) {
+            throw RuntimeAccountUsageRefreshDeferral.cooldown
+        }
+        guard context.online else {
+            throw RuntimeAccountUsageRefreshDeferral.computerOffline
+        }
+        let result = dependencies.machines.runtimeAccountUsageManualRefresh?(machineId, provider) ?? .timeout
+        switch result {
+        case .snapshot(let json):
+            let staleAfter = (try? JSONDecoder().decode(
+                RuntimeUsageSnapshotFreshness.self,
+                from: Data(json.utf8)
+            ))?.staleAfter.flatMap(EmailLoginDirectory.isoDate) ?? now.addingTimeInterval(1800)
+            dependencies.machines.recordRuntimeAccountUsage(
+                key: key,
+                json: json,
+                staleAfter: staleAfter,
+                refreshedAt: now
+            )
+            return RuntimeAccountUsageRefreshResponse(state: "fresh", snapshotJSON: json)
+        case .timeout:
+            dependencies.machines.recordRuntimeAccountUsageRefreshAttempt(key: key, at: now)
+            return RuntimeAccountUsageRefreshResponse(state: "timeout")
+        case .offline:
+            throw RuntimeAccountUsageRefreshDeferral.computerOffline
+        }
+    }
+
+    private func canInspectUsage(serverId: String, userId: String, attacher: String?) -> Bool {
+        if attacher == userId { return true }
+        let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId)
+        return role == "owner" || role == "admin"
+    }
 }

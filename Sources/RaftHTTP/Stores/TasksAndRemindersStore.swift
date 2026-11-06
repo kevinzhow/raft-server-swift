@@ -566,3 +566,103 @@ final class TasksAndRemindersStore: @unchecked Sendable {
         ))
     }
 }
+
+// MARK: - Server task reads, amend and reassignment
+
+extension TasksAndRemindersStore {
+    /// The rows of one channel, optionally narrowed to one status, in insertion
+    /// order. One locked snapshot.
+    func tasks(channelId: String, status: String?) -> [TaskRecord] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.taskRecords.filter {
+            $0.channelId == channelId && (status == nil || $0.status == status)
+        }
+    }
+
+    func task(channelId: String, taskNumber: Int) -> TaskRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.taskRecords.first { $0.channelId == channelId && $0.taskNumber == taskNumber }
+    }
+
+    func task(id: String) -> TaskRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.taskRecords.first { $0.id == id }
+    }
+
+    /// `POST /internal/agent-api/tasks/amend`: the row lookup, the title and
+    /// description write, the revision bump and the amend markers are one
+    /// critical section. `nil` means the task does not exist.
+    func amendTask(
+        channelId: String,
+        taskNumber: Int,
+        title: String,
+        description: String?,
+        amendedByName: String,
+        now: Date
+    ) -> TaskRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = storage.taskRecords.firstIndex(where: {
+            $0.channelId == channelId && $0.taskNumber == taskNumber
+        }) else { return nil }
+        storage.taskRecords[index].title = title
+        if let description { storage.taskRecords[index].description = description }
+        storage.taskRecords[index].revision += 1
+        storage.taskRecords[index].updatedAt = now
+        storage.taskRecords[index].amendedAt = now
+        storage.taskRecords[index].amendedByType = "agent"
+        storage.taskRecords[index].amendedByName = amendedByName
+        storage.taskRecords[index].superseded = true
+        return storage.taskRecords[index]
+    }
+
+    enum ReassignOutcome {
+        case notFound
+        case done
+        case conflict(currentRevision: Int)
+        case unchanged(TaskRecord)
+        case reassigned(TaskRecord)
+    }
+
+    /// `PATCH /api/tasks/:taskId/assignee`: the done check, the expected
+    /// revision check, the same-assignee short circuit, the assignee write, the
+    /// revision bump and the assignee-change event are one critical section, so
+    /// two concurrent requests cannot both accept the same expected revision.
+    func reassign(
+        taskId: String,
+        assigneeId: String?,
+        assigneeType: String?,
+        expectedRevision: Int?,
+        actorId: String
+    ) -> ReassignOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = storage.taskRecords.firstIndex(where: { $0.id == taskId }) else {
+            return .notFound
+        }
+        guard storage.taskRecords[index].status != "done" else { return .done }
+        let currentRevision = storage.taskRecords[index].revision
+        if let expectedRevision, expectedRevision != currentRevision {
+            return .conflict(currentRevision: currentRevision)
+        }
+        if storage.taskRecords[index].assigneeId == assigneeId
+            && storage.taskRecords[index].assigneeType == assigneeType {
+            return .unchanged(storage.taskRecords[index])
+        }
+        let previousAssigneeId = storage.taskRecords[index].assigneeId
+        let previousAssigneeType = storage.taskRecords[index].assigneeType
+        storage.taskRecords[index].assigneeId = assigneeId
+        storage.taskRecords[index].assigneeType = assigneeType
+        storage.taskRecords[index].claimedAt = nil
+        storage.taskRecords[index].revision += 1
+        storage.assigneeChangeEvents.append((
+            taskId: taskId, assigneeId: assigneeId, assigneeType: assigneeType,
+            previousAssigneeId: previousAssigneeId, previousAssigneeType: previousAssigneeType,
+            actorType: "user", actorId: actorId
+        ))
+        return .reassigned(storage.taskRecords[index])
+    }
+}
