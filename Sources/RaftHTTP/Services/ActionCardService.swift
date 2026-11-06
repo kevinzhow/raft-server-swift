@@ -119,36 +119,6 @@ struct ActionCardService {
 
     // MARK: - Managed MCP agent tools
 
-    func addManagedMCPServer(
-        serverId: String,
-        name: String,
-        provider: String? = nil,
-        authMode: String? = nil,
-        oauthStatus: String? = nil,
-        endpointUrl: String = "https://example.com/mcp",
-        tools: [(name: String, inputSchemaJSON: String)] = [],
-        catalogVersion: Int = 1
-    ) -> String {
-        let id = UUID().uuidString.lowercased()
-        let catalog = tools.map { tool in
-            "{\"name\":\(jsonString(tool.name)),\"inputSchema\":\(tool.inputSchemaJSON)}"
-        }.joined(separator: ",")
-        directory.lock.lock()
-        directory.managedMCPServers.append(ManagedMCPServerRecord(
-            id: id,
-            serverId: serverId,
-            name: name,
-            provider: provider,
-            authMode: authMode,
-            oauthStatus: oauthStatus,
-            endpointUrl: endpointUrl,
-            toolCatalogJSON: "[\(catalog)]",
-            catalogVersion: catalogVersion
-        ))
-        directory.lock.unlock()
-        return id
-    }
-
     private func managedMCPUnavailable(_ record: ManagedMCPServerRecord) -> Bool {
         record.authMode == "oauth" && record.oauthStatus != "connected"
     }
@@ -256,28 +226,6 @@ extension EmailLoginDirectory {
             authorization: authorization,
             serverId: serverId,
             connectionId: connectionId
-        )
-    }
-
-    public func addManagedMCPServerForTesting(
-        serverId: String,
-        name: String,
-        provider: String? = nil,
-        authMode: String? = nil,
-        oauthStatus: String? = nil,
-        endpointUrl: String = "https://example.com/mcp",
-        tools: [(name: String, inputSchemaJSON: String)] = [],
-        catalogVersion: Int = 1
-    ) -> String {
-        ActionCardService(directory: self).addManagedMCPServer(
-            serverId: serverId,
-            name: name,
-            provider: provider,
-            authMode: authMode,
-            oauthStatus: oauthStatus,
-            endpointUrl: endpointUrl,
-            tools: tools,
-            catalogVersion: catalogVersion
         )
     }
 

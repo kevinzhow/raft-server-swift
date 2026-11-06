@@ -1,9 +1,5 @@
 Sources/RaftHTTP/OAuthLedger.swift	19
 Sources/RaftHTTP/PublicServerDirectory.swift	1
-Sources/RaftHTTP/Services/ActionCardIntegrationRegisterService.swift	2
-Sources/RaftHTTP/Services/ActionCardMarketplaceService.swift	1
-Sources/RaftHTTP/Services/ActionCardPrepareService.swift	2
-Sources/RaftHTTP/Services/ActionCardService.swift	1
 Sources/RaftHTTP/Services/AgentHostedMigrationService.swift	3
 Sources/RaftHTTP/Services/AgentMachineMigrationControlService.swift	12
 Sources/RaftHTTP/Services/AgentMigrationStatusService.swift	3
@@ -20,11 +16,6 @@ Sources/RaftHTTP/Services/HumanMessageCreateService.swift	1
 Sources/RaftHTTP/Services/InboxAndWakeService.swift	17
 Sources/RaftHTTP/Services/JoinLinksAndInvitesService.swift	4
 Sources/RaftHTTP/Services/MachinesAndHostedRuntimeService.swift	9
-Sources/RaftHTTP/Services/ManagedMCPAgentCatalogService.swift	17
-Sources/RaftHTTP/Services/ManagedMCPAssignmentsService.swift	2
-Sources/RaftHTTP/Services/ManagedMCPControlPlaneService.swift	2
-Sources/RaftHTTP/Services/ManagedMCPOAuthService.swift	9
-Sources/RaftHTTP/Services/ManagedMCPToolExecutionService.swift	9
 Sources/RaftHTTP/Services/MessageSendService.swift	6
 Sources/RaftHTTP/Services/OAuthFlowsService.swift	4
 Sources/RaftHTTP/Services/ProfileAndChannelFilesService.swift	10

@@ -633,29 +633,6 @@ extension EmailLoginDirectory {
         emitRealtime("channel:\(threadId)", "message:new", "{\"id\":\(jsonString(replyId)),\"channelId\":\(jsonString(threadId)),\"content\":\(jsonString(content))}")
     }
 
-    @discardableResult
-    public func addActionCardForTesting(
-        serverId: String, agentId: String, carrierChannelId: String,
-        actionType: String = "channel:create", state: String = "prepared"
-    ) -> String {
-        let id = UUID().uuidString.lowercased()
-        lock.lock()
-        actionCardRecords[id] = ActionCardRecord(
-            messageId: id, serverId: serverId, requesterAgentId: agentId,
-            storageChannelId: carrierChannelId, localCarrierChannelId: carrierChannelId,
-            actionType: actionType, channelName: "test-card-channel", visibility: "public",
-            state: state, executedByUserId: nil
-        )
-        lock.unlock()
-        return id
-    }
-
-    public func actionCardStateForTesting(messageId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return actionCardRecords[messageId]?.state
-    }
-
     func actionCardWriteAuthorization(userId: String, card: ActionCardRecord) -> HTTPReply? {
         guard oauth.memberRole(serverId: card.serverId, userId: userId) != nil else {
             return Self.json(403, "{\"error\":\"Not a member of this server\"}")

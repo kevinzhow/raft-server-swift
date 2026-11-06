@@ -22,7 +22,6 @@ extension EmailLoginDirectory {
 
     // MARK: - Managed MCP control plane (`/api/mcp/*`)
 
-
     func managedMCPControlAuth(authorization: String?, serverId: String) -> ManagedMCPControlAuth {
         guard let userId = sessionUserId(authorization: authorization) else {
             return .refused(Self.json(401, "{\"error\":\"Unauthorized\"}"))
@@ -32,8 +31,6 @@ extension EmailLoginDirectory {
         }
         return .ok(userId: userId, role: role)
     }
-
-
 
     func managedMCPServerJSON(_ record: ManagedMCPServerRecord) -> String {
         let names = record.credentialHeaderNames.sorted().map(jsonString).joined(separator: ",")
@@ -307,14 +304,6 @@ extension EmailLoginDirectory {
         return reply
     }
 
-    public func setManagedMCPServerEndpointForTesting(id: String, endpointUrl: String) {
-        lock.lock()
-        if let index = managedMCPServers.firstIndex(where: { $0.id == id }) {
-            managedMCPServers[index].endpointUrl = endpointUrl
-        }
-        lock.unlock()
-    }
-
     /// History anchors accept a sequence number, a full message UUID, or the
     /// 8-character short id. `pagination` keeps decimal values as seqs even at
     /// short-id width; `around` is a locator and prefers the short id first.
@@ -363,13 +352,6 @@ extension EmailLoginDirectory {
             return (0, Self.json(400, body))
         }
         return notFound()
-    }
-
-
-
-
-    public func setReadPositionSettleForTesting(_ milliseconds: Int) {
-        lock.lock(); readPositionSettleMs = milliseconds; lock.unlock()
     }
 
     public func agentHistory(authorization: String?, agentId: String? = nil, channelRef: String?, before: String?, after: String?, around: String? = nil, limit: String?, consume: String? = nil, unread: Bool = false) -> HTTPReply {

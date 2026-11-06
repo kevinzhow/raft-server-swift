@@ -49,7 +49,6 @@ extension EmailLoginDirectory {
         return Self.json(200, body)
     }
 
-
     func appConfigError(_ status: Int, error: String, code: String) -> HTTPReply {
         Self.json(status, "{\"error\":\(jsonString(error)),\"errorCode\":\(jsonString(code))}")
     }
@@ -65,14 +64,6 @@ extension EmailLoginDirectory {
             return rule.decision == "allow"
         }
         return flag.defaultEnabled
-    }
-
-
-
-    public func setMarketplaceReviewerIdsForTesting(_ ids: Set<String>?) {
-        lock.lock()
-        marketplaceReviewerOverride = ids
-        lock.unlock()
     }
 
     func marketplaceReviewerIds() -> Set<String> {
@@ -301,7 +292,6 @@ extension EmailLoginDirectory {
         return appConfigReply(agentId: agent.id, appId: appId) ?? appConfigError(404, error: "Unknown app", code: "RAP_APP_CONFIG_APP_UNKNOWN")
     }
 
-
     /// Callers hold the directory lock.
     func resolveDMPeerLocked(serverId: String, agentId: String, name rawName: String, kind rawKind: String?) -> DMPeerResolution {
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -418,12 +408,6 @@ extension EmailLoginDirectory {
             description: info.description,
             archived: archived
         )
-    }
-
-    public func setSendFreshnessModeForTesting(_ mode: String?) {
-        lock.lock()
-        sendFreshnessModeOverride = mode
-        lock.unlock()
     }
 
     func sendFreshnessModeValue() -> String {
