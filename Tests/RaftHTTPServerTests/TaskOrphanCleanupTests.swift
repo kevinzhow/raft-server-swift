@@ -54,11 +54,11 @@ private func orphanObject(_ response: ClientResponse) throws -> [String: Any] {
     let inReview = accounts.addTask(channelId: f.channelId, title: "in review task", description: nil)
     let done = accounts.addTask(channelId: f.channelId, title: "done task", description: nil)
     for (task, status) in [(inProgress, "in_progress"), (inReview, "in_review"), (done, "done")] {
-        _ = accounts.updateTaskStatus(
+        _ = try accounts.channelAssignments().updateTaskStatus(
             authorization: "Bearer \(f.ownerToken)",
             serverId: f.serverId,
             taskId: task,
-            body: "{\"status\":\"\(status)\"}"
+            body: TaskStatusRequest(status: status)
         )
     }
 
@@ -97,11 +97,11 @@ private func orphanObject(_ response: ClientResponse) throws -> [String: Any] {
     let f = makeOrphanFixture("003")
     let accounts = f.accounts
     let task = accounts.addTask(channelId: f.channelId, title: "orphan to close", description: nil)
-    _ = accounts.updateTaskStatus(
+    _ = try accounts.channelAssignments().updateTaskStatus(
         authorization: "Bearer \(f.ownerToken)",
         serverId: f.serverId,
         taskId: task,
-        body: "{\"status\":\"in_review\"}"
+        body: TaskStatusRequest(status: "in_review")
     )
     _ = try accounts.searchMentions.deleteChannel(channelId: f.channelId, authorization: "Bearer \(f.ownerToken)", serverId: f.serverId)
     accounts.reopenTaskForTesting(taskId: task, status: "in_review")

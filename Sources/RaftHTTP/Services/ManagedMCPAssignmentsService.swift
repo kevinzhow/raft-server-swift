@@ -1,727 +1,753 @@
-import Crypto
 import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
 
-/// Channel membership, thread creation and server task routes.
-/// Migrated verbatim from the second half of `EmailLogin+ManagedMCP1.swift`.
-///
-/// The handlers stay on `EmailLoginDirectory`, which owns the lock and the
-/// domain ledgers. This type is the named, `Sendable` handle a route can hold
-/// instead of reaching for the composition root; it carries no state of its own.
-public struct ManagedMCPAssignmentsService: Sendable {
-    public let directory: EmailLoginDirectory
+// MARK: - Injected dependencies
 
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
+/// Every cross-domain decision the assignment service needs, as injected
+/// closures. The channel rows, read state and task rows are the stores the
+/// service owns; the session lookup, the assistant-owner lookup, the channel
+/// probe, the serialized system-notice append, the agent leave and the task
+/// catalog projections belong to domains that have not migrated (or whose
+/// service another slice owns) and stay behind these closures. `live(directory:)`
+/// wires them to the existing directory entry points at the composition root.
+struct ManagedMCPAssignmentsDependencies: Sendable {
+    var sessionUserId: @Sendable (String?) -> String?
+    var assistantOwner: @Sendable (_ agentId: String) -> String?
+    var channelProbeAccess: @Sendable (_ channelId: String, _ serverId: String, _ userId: String) -> ChannelProbeAccess
+    /// Appends one human-message row (and its ledger mirror) under the
+    /// directory lock, returning its server-wide sequence.
+    var appendSystemNotice: @Sendable (_ message: StoredHumanMessage, _ bornReadAgentId: String?) -> Int
+    var leaveChannelAsAgent: @Sendable (_ agentId: String, _ serverId: String, _ channelId: String) throws -> OkResponse
+    var orderedTasks: @Sendable (_ serverId: String, _ userId: String, _ status: String?) -> [(task: TaskRecord, channelName: String, channelType: String)]
+    var taskFragment: @Sendable (_ task: TaskRecord, _ channelName: String, _ channelType: String, _ summary: Bool) -> String
+    var now: @Sendable () -> Date
+
+    static func live(
+        directory source: EmailLoginDirectory,
+        appendSystemNotice: @escaping @Sendable (StoredHumanMessage, String?) -> Int
+    ) -> ManagedMCPAssignmentsDependencies {
+        ManagedMCPAssignmentsDependencies(
+            sessionUserId: { source.sessionUserId(authorization: $0) },
+            assistantOwner: { source.assistantOwnerRaw($0) },
+            channelProbeAccess: { channelId, serverId, userId in
+                source.channelProbeAccessLocked(channelId: channelId, serverId: serverId, userId: userId)
+            },
+            appendSystemNotice: appendSystemNotice,
+            leaveChannelAsAgent: { agentId, serverId, channelId in
+                try source.channelMembership.leaveChannel(agentId: agentId, serverId: serverId, channelId: channelId)
+            },
+            orderedTasks: { serverId, userId, status in
+                source.orderedTasks(serverId: serverId, userId: userId, status: status)
+            },
+            taskFragment: { task, channelName, channelType, summary in
+                summary
+                    ? source.summaryTaskJSON(task, channelName: channelName, channelType: channelType)
+                    : source.fullTaskJSON(task, channelName: channelName, channelType: channelType)
+            },
+            now: { Date() }
+        )
     }
 }
 
-extension EmailLoginDirectory {
-    public func leaveChannel(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return PublicVisits.authRequired(authorization: authorization)
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
-        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
-        }
-        if let reply = archivedChannelReply(channelId) { return reply }
-        if let reply = threadMemberMutationReply(channelId) { return reply }
-        lock.lock()
-        postableChannels[channelId]?.memberIds.remove(userId)
-        lock.unlock()
-        _ = oauth.removeChannelHuman(channelId: channelId, userId: userId)
-        return Self.json(200, "{\"ok\":true}")
+// MARK: - Service
+
+/// Channel membership, thread creation and the human task routes.
+///
+/// The service owns the orchestration and returns the published `Codable` /
+/// `JSONBodyConvertible` DTOs; every refusal is a `ChannelMembershipError` (the
+/// shared channel refusals) or a `ManagedMCPAssignmentsError`. It builds no
+/// HTTP reply. Each state change that used to run under the directory lock is
+/// one store critical section: the member-set writes and the role/authority
+/// bump (`ServersAndChannelsStore`), the find-or-create of a thread, the task
+/// claim/unclaim/status writes and the converted-task append
+/// (`TasksAndRemindersStore`), and the follow rows of a created thread
+/// (`MessagesAndThreadsStore`).
+public struct ManagedMCPAssignmentsService: Sendable {
+    private let channels: ServersAndChannelsStore
+    private let messages: MessagesAndThreadsStore
+    private let tasks: TasksAndRemindersStore
+    private let agents: AgentsRuntimeStore
+    private let profiles: AuthProfileStore
+    private let oauth: OAuthLedger
+    private let dependencies: ManagedMCPAssignmentsDependencies
+    private let publishTaskUpdated: @Sendable (String) -> Void
+
+    /// Production wiring. The `task:updated` realtime frame is published by the
+    /// channel-messaging domain, so its sink enters as a closure that takes the
+    /// claimed task's published JSON.
+    init(
+        directory source: EmailLoginDirectory,
+        appendSystemNotice: @escaping @Sendable (StoredHumanMessage, String?) -> Int,
+        publishTaskUpdated: @escaping @Sendable (String) -> Void
+    ) {
+        self.init(
+            channels: source.serversAndChannelsStore,
+            messages: source.messagesAndThreadsStore,
+            tasks: source.tasksAndRemindersStore,
+            agents: source.agentsRuntimeStore,
+            profiles: source.authProfileStore,
+            oauth: source.oauth,
+            dependencies: .live(directory: source, appendSystemNotice: appendSystemNotice),
+            publishTaskUpdated: publishTaskUpdated
+        )
     }
 
-    public func agentLeaveChannel(authorization: String?, channelId: String) -> HTTPReply {
+    init(
+        channels: ServersAndChannelsStore,
+        messages: MessagesAndThreadsStore,
+        tasks: TasksAndRemindersStore,
+        agents: AgentsRuntimeStore,
+        profiles: AuthProfileStore,
+        oauth: OAuthLedger,
+        dependencies: ManagedMCPAssignmentsDependencies,
+        publishTaskUpdated: @escaping @Sendable (String) -> Void = { _ in }
+    ) {
+        self.channels = channels
+        self.messages = messages
+        self.tasks = tasks
+        self.agents = agents
+        self.profiles = profiles
+        self.oauth = oauth
+        self.dependencies = dependencies
+        self.publishTaskUpdated = publishTaskUpdated
+    }
+
+    private var visibility: ManagedMCPChannelVisibility {
+        ManagedMCPChannelVisibility(oauth: oauth, channels: channels)
+    }
+
+    // MARK: - Shared checks
+
+    /// The human routes' `PublicVisits.authRequired` refusal.
+    private func requireUser(_ authorization: String?) throws -> String {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ChannelMembershipError.authRequired(bearerPresent: authorization?.hasPrefix("Bearer ") == true)
+        }
+        return userId
+    }
+
+    /// The roster and task routes' plain missing-session refusal.
+    private func requireSession(_ authorization: String?) throws -> String {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ManagedMCPAssignmentsError.unauthorized
+        }
+        return userId
+    }
+
+    private func requireNotArchived(_ channelId: String) throws {
+        guard oauth.channelArchivedAt(id: channelId) == nil else {
+            throw ChannelMembershipError.channelArchived
+        }
+    }
+
+    /// A thread's members are managed with follow/unfollow, never directly.
+    private func requireNotThread(_ channelId: String) throws {
+        let kind = channels.postableChannel(id: channelId)?.kind ?? oauth.channelType(id: channelId)
+        guard kind != "thread" else { throw ChannelMembershipError.threadMembersManagedByFollow }
+    }
+
+    private func requireChannel(serverId: String, channelId: String) throws {
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            throw ChannelMembershipError.channelNotFound
+        }
+    }
+
+    private func announceMembership(channelId: String, name: String) {
+        _ = dependencies.appendSystemNotice(
+            StoredHumanMessage(
+                id: UUID().uuidString.lowercased(),
+                channelId: channelId,
+                senderId: "system",
+                content: "@\(name) was added to this channel.",
+                randomId: nil,
+                messageType: "system",
+                senderType: "system"
+            ),
+            nil
+        )
+    }
+
+    private func inviteHuman(userId: String, serverId: String, channelId: String) {
+        channels.insertPostableMember(serverId: serverId, channelId: channelId, memberId: userId)
+        oauth.addChannelHuman(channelId: channelId, userId: userId)
+    }
+
+    private func accountName(_ userId: String) -> String? {
+        profiles.accounts.values.first { $0.id == userId }?.name
+    }
+
+    private func agentRows(channelId: String) -> [ChannelAgentRowDTO] {
+        let activities = agents.agentActivities
+        return oauth.channelAgentIds(channelId: channelId).map { agentId in
+            let activity = activities[agentId] ?? (activity: "offline", detail: "")
+            return ChannelAgentRowDTO(
+                id: agentId,
+                name: oauth.agentRuntimeInfo(id: agentId)?.name ?? "",
+                activity: activity.activity,
+                activityDetail: activity.detail
+            )
+        }
+    }
+
+    // MARK: - POST /api/channels/:channelId/leave
+
+    public func leaveChannel(authorization: String?, serverId: String, channelId: String) throws -> OkResponse {
+        let userId = try requireUser(authorization)
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            throw ChannelMembershipError.notAMember
+        }
+        try requireChannel(serverId: serverId, channelId: channelId)
+        try requireNotArchived(channelId)
+        try requireNotThread(channelId)
+        channels.removePostableMember(channelId: channelId, memberId: userId)
+        oauth.removeChannelHuman(channelId: channelId, userId: userId)
+        return OkResponse()
+    }
+
+    // MARK: - POST /internal/agent-api/channels/:channelId/leave
+
+    public func agentLeaveChannel(authorization: String?, channelId: String) throws -> OkResponse {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+            throw ChannelMembershipError.agentAuthorizationMissing
         }
         let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        let credential = agentCredentials[token]
-        lock.unlock()
-        guard let credential, let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+        guard let credential = agents.agentCredentials[token],
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            throw ChannelMembershipError.agentTokenInvalid
         }
-        return leaveChannelForAgent(agentId: agent.id, serverId: agent.serverId, channelId: channelId)
+        return try dependencies.leaveChannelAsAgent(agent.id, agent.serverId, channelId)
     }
 
-    public func addChannelMembersBatch(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return PublicVisits.authRequired(authorization: authorization)
-        }
+    // MARK: - POST /api/channels/:channelId/members/batch
+
+    public func addChannelMembersBatch(
+        authorization: String?,
+        serverId: String,
+        channelId: String,
+        body: ChannelMembersBatchRequest?
+    ) throws -> ChannelMembersBatchResponse {
+        let userId = try requireUser(authorization)
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw ChannelMembershipError.notAMember
         }
-        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
-        }
-        if let reply = archivedChannelReply(channelId) { return reply }
-        if let reply = threadMemberMutationReply(channelId) { return reply }
-        guard channelActorCanSee(channelId: channelId, userId: userId) else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        try requireChannel(serverId: serverId, channelId: channelId)
+        try requireNotArchived(channelId)
+        try requireNotThread(channelId)
+        guard visibility.actorCanSee(channelId: channelId, userId: userId) else {
+            throw ChannelMembershipError.channelNotFound
         }
         guard role == "owner" || role == "admin" || oauth.isChannelParticipant(channelId: channelId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            throw ChannelMembershipError.forbidden
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
-            return Self.json(400, "{\"error\":\"Invalid channel members\"}")
-        }
-        let rawUserIds = (object["userIds"] as? [Any])?.compactMap { $0 as? String } ?? []
-        let rawAgentIds = (object["agentIds"] as? [Any])?.compactMap { $0 as? String } ?? []
+        guard let body else { throw ManagedMCPAssignmentsError.invalidChannelMembers }
         var seenUsers = Set<String>()
         var seenAgents = Set<String>()
-        let uniqueUserIds = rawUserIds.filter { seenUsers.insert($0).inserted }
+        let uniqueUserIds = body.userIds.filter { seenUsers.insert($0).inserted }
         let invalidUserIds = uniqueUserIds.filter { oauth.memberRole(serverId: serverId, userId: $0) == nil }
         if !invalidUserIds.isEmpty {
-            let invalid = invalidUserIds.map { jsonString($0) }.joined(separator: ",")
-            return Self.json(400, "{\"error\":\"One or more users are not members of this server\",\"code\":\"users_not_in_server\",\"invalidUserIds\":[\(invalid)]}")
+            throw ManagedMCPAssignmentsError.usersNotInServer(invalidUserIds: invalidUserIds)
+        }
+        for agentId in body.agentIds where dependencies.assistantOwner(agentId) != nil {
+            throw ManagedMCPAssignmentsError.assistantChannelForbidden
         }
         var addedUsers: [String] = []
         var addedAgents: [String] = []
         var alreadyUsers: [String] = []
         var alreadyAgents: [String] = []
-        for agentId in rawAgentIds where assistantOwnerRaw(agentId) != nil {
-            return Self.json(403, "{\"code\":\"assistant_channel_forbidden\",\"error\":\"An assistant can only be in its DM with its owner\"}")
-        }
         for target in uniqueUserIds {
             guard oauth.memberRole(serverId: serverId, userId: target) != nil else { continue }
             if oauth.channelHumanIds(channelId: channelId).contains(target) {
                 alreadyUsers.append(target)
             } else {
-                accountsForInvite(userId: target, serverId: serverId, channelId: channelId)
-                let name = accounts.values.first { $0.id == target }?.name ?? target
-                recordBatchMembershipNotice(channelId: channelId, name: name)
+                inviteHuman(userId: target, serverId: serverId, channelId: channelId)
+                announceMembership(channelId: channelId, name: accountName(target) ?? target)
                 addedUsers.append(target)
             }
         }
-        for agentId in rawAgentIds where seenAgents.insert(agentId).inserted {
+        for agentId in body.agentIds where seenAgents.insert(agentId).inserted {
             guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else { continue }
             if oauth.channelAgentIds(channelId: channelId).contains(agentId) {
                 alreadyAgents.append(agentId)
             } else {
                 oauth.addChannelAgent(channelId: channelId, agentId: agentId)
-                addPostableChannel(serverId: serverId, channelId: channelId, memberId: agentId, kind: "channel")
-                let name = oauth.agentRuntimeInfo(id: agentId)?.name ?? agentId
-                recordBatchMembershipNotice(channelId: channelId, name: name)
+                channels.addPostableChannel(serverId: serverId, channelId: channelId, memberId: agentId, kind: "channel")
+                announceMembership(channelId: channelId, name: oauth.agentRuntimeInfo(id: agentId)?.name ?? agentId)
                 addedAgents.append(agentId)
             }
         }
-        func array(_ values: [String]) -> String {
-            values.map { jsonString($0) }.joined(separator: ",")
-        }
-        return Self.json(200, "{\"ok\":true,\"added\":{\"userIds\":[\("\(array(addedUsers))")],\"agentIds\":[\("\(array(addedAgents))")]},\"alreadyMembers\":{\"userIds\":[\("\(array(alreadyUsers))")],\"agentIds\":[\("\(array(alreadyAgents))")]}}")
+        return ChannelMembersBatchResponse(
+            addedUserIds: addedUsers,
+            addedAgentIds: addedAgents,
+            alreadyUserIds: alreadyUsers,
+            alreadyAgentIds: alreadyAgents
+        )
     }
 
-    func recordBatchMembershipNotice(channelId: String, name: String) {
-        lock.lock()
-        appendHumanMessageLocked(StoredHumanMessage(
-            id: UUID().uuidString.lowercased(),
-            channelId: channelId,
-            senderId: "system",
-            content: "@\(name) was added to this channel.",
-            randomId: nil,
-            messageType: "system",
-            senderType: "system"
-        ))
-        lock.unlock()
-    }
+    // MARK: - POST /api/channels/:channelId/threads
 
-    func accountsForInvite(userId: String, serverId: String, channelId: String) {
-        lock.lock()
-        postableChannels[channelId, default: PostableChannel(serverId: serverId, memberIds: [])].memberIds.insert(userId)
-        lock.unlock()
-        oauth.addChannelHuman(channelId: channelId, userId: userId)
-    }
-
-    public func createThreadFromChannel(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return PublicVisits.authRequired(authorization: authorization)
-        }
+    public func createThreadFromChannel(
+        authorization: String?,
+        serverId: String,
+        channelId: String,
+        body: ChannelThreadRequest?
+    ) throws -> ChannelThreadResponse {
+        let userId = try requireUser(authorization)
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw ChannelMembershipError.notAMember
         }
-        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        try requireChannel(serverId: serverId, channelId: channelId)
+        let probeAccess = dependencies.channelProbeAccess(channelId, serverId, userId)
+        if probeAccess == .residue { throw ChannelMembershipError.forbidden }
+        guard probeAccess == .allowed else { throw ChannelMembershipError.channelNotFound }
+        try requireNotArchived(channelId)
+        guard let parentMessageId = body?.parentMessageId else {
+            throw ManagedMCPAssignmentsError.parentMessageIdRequired
         }
-        lock.lock()
-        let probeAccess = channelProbeAccessLocked(channelId: channelId, serverId: serverId, userId: userId)
-        lock.unlock()
-        if probeAccess == .residue {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        let rows = messages.humanMessageRows
+        guard rows.contains(where: { $0.id == parentMessageId && $0.channelId == channelId }) else {
+            throw ManagedMCPAssignmentsError.parentMessageNotFound
         }
-        guard probeAccess == .allowed else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
-        }
-        if let reply = archivedChannelReply(channelId) { return reply }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let parentMessageId = object["parentMessageId"] as? String
-        else {
-            return Self.json(400, "{\"error\":\"parentMessageId is required\"}")
-        }
-        lock.lock()
-        guard humanMessageRows.contains(where: { $0.id == parentMessageId && $0.channelId == channelId }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Parent message not found\"}")
-        }
-        if let existing = postableChannels.first(where: { _, candidate in
-            candidate.serverId == serverId && candidate.kind == "thread"
-                && candidate.parentChannelId == channelId && candidate.parentMessageId == parentMessageId
-                && candidate.deletedAt == nil
-        }) {
-            let replies = humanMessageRows.filter { $0.channelId == existing.key }
-            let participants = Array(Set(replies.map(\.senderId))).sorted()
-            lock.unlock()
-            let participantJSON = participants.map { jsonString($0) }.joined(separator: ",")
-            return Self.json(200, "{\"threadChannelId\":\(jsonString(existing.key)),\"replyCount\":\(replies.count),\"lastReplyAt\":\(replies.last.map { jsonString(ISO8601DateFormatter().string(from: $0.createdAt)) } ?? "null"),\"participantIds\":[\(participantJSON)]}")
-        }
-        let threadId = oauth.createThreadChannel(parentChannelId: channelId, parentMessageId: parentMessageId)
-        postableChannels[threadId] = PostableChannel(
+        let outcome = channels.findOrCreateThread(
             serverId: serverId,
-            memberIds: [userId],
-            kind: "thread",
             parentChannelId: channelId,
             parentMessageId: parentMessageId,
-            name: "thread"
-        )
-        threadOrder.append(threadId)
-        var messageId: String?
-        if let content = object["content"] as? String, !content.isEmpty {
-            let id = UUID().uuidString.lowercased()
-            appendHumanMessageLocked(StoredHumanMessage(
-                id: id,
-                channelId: threadId,
-                senderId: userId,
-                content: content,
-                randomId: nil
-            ))
-            messageId = id
-        }
-        let parentAuthorId = humanMessageRows.first(where: { $0.id == parentMessageId })?.senderId
-        lock.unlock()
-        if messageId != nil {
-            threadFollows["\(serverId)\n\(userId)\n\(threadId)"] = (serverId, userId, threadId, parentMessageId)
-            if let parentAuthorId, parentAuthorId != userId,
-               parentAuthorId != "system",
-               accounts.values.contains(where: { $0.id == parentAuthorId }),
-               oauth.memberRole(serverId: serverId, userId: parentAuthorId) != nil {
-                threadFollows["\(serverId)\n\(parentAuthorId)\n\(threadId)"] = (serverId, parentAuthorId, threadId, parentMessageId)
+            creatorId: userId,
+            createChannel: {
+                oauth.createThreadChannel(parentChannelId: channelId, parentMessageId: parentMessageId)
             }
+        )
+        switch outcome {
+        case .existing(let threadId):
+            let replies = messages.humanMessageRows.filter { $0.channelId == threadId }
+            return .existing(
+                threadChannelId: threadId,
+                replyCount: replies.count,
+                lastReplyAt: replies.last.map { ISO8601DateFormatter().string(from: $0.createdAt) },
+                participantIds: Array(Set(replies.map(\.senderId))).sorted()
+            )
+        case .created(let threadId):
+            var messageId: String?
+            if let content = body?.content, !content.isEmpty {
+                let id = UUID().uuidString.lowercased()
+                _ = dependencies.appendSystemNotice(
+                    StoredHumanMessage(id: id, channelId: threadId, senderId: userId, content: content, randomId: nil),
+                    nil
+                )
+                messageId = id
+            }
+            if messageId != nil {
+                let parentAuthorId = rows.first(where: { $0.id == parentMessageId })?.senderId
+                var followedParentAuthor: String?
+                if let parentAuthorId, parentAuthorId != userId, parentAuthorId != "system",
+                   accountName(parentAuthorId) != nil,
+                   oauth.memberRole(serverId: serverId, userId: parentAuthorId) != nil {
+                    followedParentAuthor = parentAuthorId
+                }
+                messages.followCreatedThread(
+                    serverId: serverId,
+                    userId: userId,
+                    threadChannelId: threadId,
+                    parentMessageId: parentMessageId,
+                    parentAuthorId: followedParentAuthor
+                )
+            }
+            return .created(threadChannelId: threadId, messageId: messageId)
         }
-        let messageJSON = messageId.map { jsonString($0) } ?? "null"
-        return Self.json(200, "{\"threadChannelId\":\(jsonString(threadId)),\"messageId\":\(messageJSON),\"replyCount\":0,\"lastReplyAt\":null,\"participantIds\":[]}")
     }
 
-    public func addChannelMember(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return PublicVisits.authRequired(authorization: authorization)
-        }
+    // MARK: - POST /api/channels/:channelId/members
+
+    public func addChannelMember(
+        authorization: String?,
+        serverId: String,
+        channelId: String,
+        body: ChannelMemberRequest?
+    ) throws -> OkResponse {
+        let userId = try requireUser(authorization)
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw ChannelMembershipError.notAMember
         }
-        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
-        }
-        if let reply = threadMemberMutationReply(channelId) { return reply }
-        if let reply = archivedChannelReply(channelId) { return reply }
-        lock.lock()
-        let actorChannelAdmin = channelHumanRoles["\(channelId)\n\(userId)"] == "admin"
-        lock.unlock()
+        try requireChannel(serverId: serverId, channelId: channelId)
+        try requireNotThread(channelId)
+        try requireNotArchived(channelId)
+        let actorChannelAdmin = channels.channelHumanRole(channelId: channelId, userId: userId) == "admin"
         if role != "owner" && role != "admin" && !actorChannelAdmin {
             if !oauth.isChannelParticipant(channelId: channelId, userId: userId) {
-                return Self.json(404, "{\"error\":\"Channel not found\"}")
+                throw ChannelMembershipError.channelNotFound
             }
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            throw ChannelMembershipError.forbidden
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
-            return Self.json(400, "{\"error\":\"Invalid channel member\"}")
-        }
-        if let agentId = object["agentId"] as? String {
+        guard let body else { throw ManagedMCPAssignmentsError.invalidChannelMember }
+        if let agentId = body.agentId {
             guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
-                return Self.json(400, "{\"error\":\"Invalid agent\"}")
+                throw ManagedMCPAssignmentsError.invalidAgent
             }
-            if assistantOwnerRaw(agentId) != nil {
-                return Self.json(403, "{\"code\":\"assistant_channel_forbidden\",\"error\":\"An assistant can only be in its DM with its owner\"}")
+            if dependencies.assistantOwner(agentId) != nil {
+                throw ManagedMCPAssignmentsError.assistantChannelForbidden
             }
             oauth.addChannelAgent(channelId: channelId, agentId: agentId)
             // A human adding an agent is shared channel activity: announce it,
             // and keep it born-read for the acting human only. The added agent
-            // stays unread on every transport (its own actions are the only
-            // ones born-read for it).
-            lock.lock()
-            let noticeSeq = appendHumanMessageLocked(StoredHumanMessage(
-                id: UUID().uuidString.lowercased(),
-                channelId: channelId,
-                senderId: "system",
-                content: "@\(agent.name) was added to this channel.",
-                randomId: nil,
-                messageType: "system",
-                senderType: "system"
-            ))
+            // stays unread on every transport.
+            let noticeSeq = dependencies.appendSystemNotice(
+                StoredHumanMessage(
+                    id: UUID().uuidString.lowercased(),
+                    channelId: channelId,
+                    senderId: "system",
+                    content: "@\(agent.name) was added to this channel.",
+                    randomId: nil,
+                    messageType: "system",
+                    senderType: "system"
+                ),
+                nil
+            )
             oauth.setChannelReadCursor(channelId: channelId, userId: userId, seq: noticeSeq)
-            lock.unlock()
-            return Self.json(200, "{\"ok\":true}")
+            return OkResponse()
         }
-        if let targetUserId = object["userId"] as? String {
+        if let targetUserId = body.userId {
             guard oauth.memberRole(serverId: serverId, userId: targetUserId) != nil else {
-                return Self.json(400, "{\"error\":\"Invalid member\"}")
+                throw ManagedMCPAssignmentsError.invalidMember
             }
-            accountsForInvite(userId: targetUserId, serverId: serverId, channelId: channelId)
-            return Self.json(200, "{\"ok\":true}")
+            inviteHuman(userId: targetUserId, serverId: serverId, channelId: channelId)
+            return OkResponse()
         }
-        return Self.json(400, "{\"error\":\"Invalid channel member\"}")
+        throw ManagedMCPAssignmentsError.invalidChannelMember
     }
 
-    public func removeChannelHuman(authorization: String?, serverId: String, channelId: String, memberId: String) -> HTTPReply {
-        if let authorization, let userId = sessionUserId(authorization: authorization) {
-            lock.lock()
-            let jointRemove = jointProjections.contains { $0.localChannelId == channelId }
-            lock.unlock()
-            let actorServerRole = oauth.memberRole(serverId: serverId, userId: userId) ?? "member"
-            if jointRemove, actorServerRole != "owner", actorServerRole != "admin" {
-                return Self.json(403, "{\"error\":\"Only a server admin can remove joint channel members\",\"code\":\"joint_channel_admin_limited\"}")
-            }
-        }
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return PublicVisits.authRequired(authorization: authorization)
+    // MARK: - DELETE /api/channels/:channelId/members/user/:memberId
+
+    public func removeChannelHuman(
+        authorization: String?,
+        serverId: String,
+        channelId: String,
+        memberId: String
+    ) throws -> OkResponse {
+        let userId = try requireUser(authorization)
+        let actorServerRole = oauth.memberRole(serverId: serverId, userId: userId) ?? "member"
+        let jointRemove = channels.jointProjections.contains { $0.localChannelId == channelId }
+        if jointRemove, actorServerRole != "owner", actorServerRole != "admin" {
+            throw ManagedMCPAssignmentsError.jointChannelAdminLimited
         }
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw ChannelMembershipError.notAMember
         }
-        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        try requireChannel(serverId: serverId, channelId: channelId)
+        try requireNotArchived(channelId)
+        try requireNotThread(channelId)
+        guard visibility.actorCanSee(channelId: channelId, userId: userId) else {
+            throw ChannelMembershipError.channelNotFound
         }
-        if let reply = archivedChannelReply(channelId) { return reply }
-        if let reply = threadMemberMutationReply(channelId) { return reply }
-        guard channelActorCanSee(channelId: channelId, userId: userId) else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
-        }
-        lock.lock()
-        let actorChannelAdmin = channelHumanRoles["\(channelId)\n\(userId)"] == "admin"
-        lock.unlock()
+        let actorChannelAdmin = channels.channelHumanRole(channelId: channelId, userId: userId) == "admin"
         guard role == "owner" || role == "admin" || actorChannelAdmin || userId == memberId else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            throw ChannelMembershipError.forbidden
         }
-        lock.lock()
-        postableChannels[channelId]?.memberIds.remove(memberId)
-        lock.unlock()
-        _ = oauth.removeChannelHuman(channelId: channelId, userId: memberId)
-        return Self.json(200, "{\"ok\":true}")
+        channels.removePostableMember(channelId: channelId, memberId: memberId)
+        oauth.removeChannelHuman(channelId: channelId, userId: memberId)
+        return OkResponse()
     }
 
-    public func removeChannelMember(authorization: String?, serverId: String, channelId: String, agentId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return PublicVisits.authRequired(authorization: authorization)
-        }
+    // MARK: - DELETE /api/channels/:channelId/members/agent/:agentId
+
+    public func removeChannelMember(
+        authorization: String?,
+        serverId: String,
+        channelId: String,
+        agentId: String
+    ) throws -> OkResponse {
+        let userId = try requireUser(authorization)
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw ChannelMembershipError.notAMember
         }
-        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
-        }
-        if let reply = archivedChannelReply(channelId) { return reply }
-        if let reply = threadMemberMutationReply(channelId) { return reply }
-        guard channelActorCanSee(channelId: channelId, userId: userId) else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        try requireChannel(serverId: serverId, channelId: channelId)
+        try requireNotArchived(channelId)
+        try requireNotThread(channelId)
+        guard visibility.actorCanSee(channelId: channelId, userId: userId) else {
+            throw ChannelMembershipError.channelNotFound
         }
         guard role == "owner" || role == "admin" || oauth.isChannelParticipant(channelId: channelId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            throw ChannelMembershipError.forbidden
         }
         oauth.removeChannelAgent(channelId: channelId, agentId: agentId)
-        return Self.json(200, "{\"ok\":true}")
+        return OkResponse()
     }
 
-    func threadMemberMutationReply(_ channelId: String) -> HTTPReply? {
-        lock.lock()
-        let kind = postableChannels[channelId]?.kind ?? oauth.channelType(id: channelId)
-        lock.unlock()
-        guard kind == "thread" else { return nil }
-        return Self.json(400, "{\"error\":\"Thread members are managed with follow/unfollow\"}")
-    }
+    // MARK: - GET /api/channels/:channelId/agents
 
-    func channelActorCanSee(channelId: String, userId: String) -> Bool {
-        lock.lock()
-        let postable = postableChannels[channelId]
-        lock.unlock()
-        if let postable {
-            return postable.kind == "channel" || postable.memberIds.contains(userId)
-        }
-        return oauth.channelType(id: channelId) == "channel" || oauth.isChannelParticipant(channelId: channelId, userId: userId)
-    }
-
-    /// Guests may only see channels they explicitly joined; a hidden public
-    /// channel must stay cloaked for the guest role.
-    func guestDeniedHiddenChannel(channelId: String, serverId: String, userId: String) -> Bool {
-        guard oauth.memberRole(serverId: serverId, userId: userId) == "guest" else { return false }
-        return !oauth.channelHumanIds(channelId: channelId).contains(userId)
-    }
-
-    public func channelAgentsRoute(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
+    public func channelAgents(
+        authorization: String?,
+        serverId: String,
+        channelId: String
+    ) throws -> ChannelAgentsResponse {
+        let userId = try requireSession(authorization)
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw ChannelMembershipError.notAMember
         }
-        if guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        if visibility.guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
+            throw ChannelMembershipError.channelNotFound
         }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId,
-              channelActorCanSee(channelId: channelId, userId: userId)
+              visibility.actorCanSee(channelId: channelId, userId: userId)
         else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+            throw ChannelMembershipError.channelNotFound
         }
-        let agents = oauth.channelAgentIds(channelId: channelId).map { agentId -> String in
-            let info = oauth.agentRuntimeInfo(id: agentId)
-            let activity = agentActivities[agentId] ?? (activity: "offline", detail: "")
-            return "{\"id\":\(jsonString(agentId)),\"name\":\(jsonString(info?.name ?? "")),\"activity\":\(jsonString(activity.activity)),\"activityDetail\":\(jsonString(activity.detail))}"
-        }.joined(separator: ",")
-        return Self.json(200, "{\"agents\":[\("\(agents)")]}")
+        return ChannelAgentsResponse(agents: agentRows(channelId: channelId))
     }
 
-    public func updateChannelHumanRole(authorization: String?, serverId: String, channelId: String, memberId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
+    // MARK: - PATCH /api/channels/:channelId/members/user/:memberId/role
+
+    public func updateChannelHumanRole(
+        authorization: String?,
+        serverId: String,
+        channelId: String,
+        memberId: String,
+        body: ChannelRoleRequest?
+    ) throws -> ChannelRoleUpdateResponse {
+        let userId = try requireSession(authorization)
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw ChannelMembershipError.notAMember
         }
-        if let reply = threadMemberMutationReply(channelId) { return reply }
+        try requireNotThread(channelId)
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId,
               oauth.isChannelParticipant(channelId: channelId, userId: userId)
                   || oauth.channelType(id: channelId) == "channel"
         else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+            throw ChannelMembershipError.channelNotFound
         }
-        if let reply = archivedChannelReply(channelId) { return reply }
-        if let reply = threadMemberMutationReply(channelId) { return reply }
-        lock.lock()
-        let actorRole = channelHumanRoles["\(channelId)\n\(userId)"]
-        lock.unlock()
+        try requireNotArchived(channelId)
+        let actorRole = channels.channelHumanRole(channelId: channelId, userId: userId)
         let actorServerRole = oauth.memberRole(serverId: serverId, userId: userId) ?? "member"
         guard actorRole == "admin" || actorServerRole == "owner" || actorServerRole == "admin" else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            throw ChannelMembershipError.forbidden
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let role = object["role"] as? String, role == "admin" || role == "member"
-        else {
-            return Self.json(400, "{\"error\":\"Invalid channel role\"}")
+        guard let role = body?.role, role == "admin" || role == "member" else {
+            throw ManagedMCPAssignmentsError.invalidChannelRole
         }
-        guard let targetRoleValue = oauth.memberRole(serverId: serverId, userId: memberId) else {
-            return Self.json(404, "{\"error\":\"Member not found\"}")
+        guard let targetServerRole = oauth.memberRole(serverId: serverId, userId: memberId) else {
+            throw ManagedMCPAssignmentsError.memberNotFound
         }
-        let targetServerRole = targetRoleValue
         if targetServerRole == "owner" || targetServerRole == "admin" {
-            return Self.json(403, "{\"error\":\"Server role is managed separately\",\"code\":\"protected_server_role\"}")
+            throw ManagedMCPAssignmentsError.protectedServerRole
         }
         if userId == memberId, role == "member" {
-            return Self.json(409, "{\"error\":\"A channel admin cannot demote themselves\",\"code\":\"channel_admin_self_demote_forbidden\"}")
+            throw ManagedMCPAssignmentsError.channelAdminSelfDemote
         }
-        lock.lock()
-        channelHumanRoles["\(channelId)\n\(memberId)"] = role
-        let revision = (channelAuthorityRevisions[channelId] ?? 1) + 1
-        channelAuthorityRevisions[channelId] = revision
-        lock.unlock()
-        return Self.json(200, "{\"ok\":true,\"authorityRevision\":\(revision)}")
+        let revision = channels.setChannelHumanRole(channelId: channelId, memberId: memberId, role: role)
+        return ChannelRoleUpdateResponse(authorityRevision: revision)
     }
 
-    public func channelMembers(authorization: String?, serverId: String, channelId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
+    // MARK: - GET /api/channels/:channelId/members
+
+    public func channelMembers(
+        authorization: String?,
+        serverId: String,
+        channelId: String
+    ) throws -> ChannelMembersResponse {
+        let userId = try requireSession(authorization)
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw ChannelMembershipError.notAMember
         }
-        if guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        if visibility.guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
+            throw ChannelMembershipError.channelNotFound
         }
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId,
               oauth.isChannelParticipant(channelId: channelId, userId: userId)
                   || oauth.channelType(id: channelId) == "channel"
         else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+            throw ChannelMembershipError.channelNotFound
         }
-        lock.lock()
+        let snapshot = channels.state
         let scopeChannelId: String = {
-            if let channel = postableChannels[channelId], channel.kind == "thread", let parentId = channel.parentChannelId {
+            if let channel = snapshot.postableChannels[channelId], channel.kind == "thread",
+               let parentId = channel.parentChannelId {
                 return parentId
             }
             return channelId
         }()
-        lock.unlock()
-        let agents = oauth.channelAgentIds(channelId: scopeChannelId).map { agentId -> String in
-            let info = oauth.agentRuntimeInfo(id: agentId)
-            let name = info?.name ?? ""
-            let activity = agentActivities[agentId] ?? (activity: "offline", detail: "")
-            return "{\"id\":\(jsonString(agentId)),\"name\":\(jsonString(name)),\"activity\":\(jsonString(activity.activity)),\"activityDetail\":\(jsonString(activity.detail))}"
-        }.joined(separator: ",")
+        let agentRows = agentRows(channelId: scopeChannelId)
         let viewerServerRole = oauth.memberRole(serverId: serverId, userId: userId) ?? "member"
-        lock.lock()
-        let viewerLocalRole = channelHumanRoles["\(channelId)\n\(userId)"]
-        lock.unlock()
+        let viewerLocalRole = snapshot.channelHumanRoles["\(channelId)\n\(userId)"]
         let viewerIsChannelAdmin = viewerLocalRole == "admin" || viewerServerRole == "owner" || viewerServerRole == "admin"
-        lock.lock()
         var rosterHumanIds = oauth.channelHumanIds(channelId: scopeChannelId)
-        if let canonical = jointProjections.first(where: { $0.localChannelId == scopeChannelId })?.canonicalChannelId {
+        if let canonical = snapshot.jointProjections.first(where: { $0.localChannelId == scopeChannelId })?.canonicalChannelId {
             var seen = Set(rosterHumanIds)
-            for link in jointProjections where link.canonicalChannelId == canonical {
+            for link in snapshot.jointProjections where link.canonicalChannelId == canonical {
                 for humanId in oauth.channelHumanIds(channelId: link.localChannelId) where seen.insert(humanId).inserted {
                     rosterHumanIds.append(humanId)
                 }
             }
         }
-        let rosterIds = rosterHumanIds
-        lock.unlock()
-        let humans = rosterIds.map { humanId -> String in
+        let accounts = profiles.accounts
+        let humans = rosterHumanIds.map { humanId -> ChannelHumanRowDTO in
             let targetServerRole = oauth.memberRole(serverId: serverId, userId: humanId) ?? "member"
             let isLocalMember = oauth.memberRole(serverId: serverId, userId: humanId) != nil
-            lock.lock()
-            let targetLocalRole = channelHumanRoles["\(channelId)\n\(humanId)"]
+            let targetLocalRole = snapshot.channelHumanRoles["\(channelId)\n\(humanId)"]
             let displayName = accounts.values.first { $0.id == humanId }?.name ?? humanId
-            lock.unlock()
             let basis: String? = targetLocalRole == "admin" ? "channel_role"
                 : ((targetServerRole == "owner" || targetServerRole == "admin") ? "server_role" : nil)
-            let effectiveRole = basis == nil ? "member" : "admin"
-            let canChange = viewerIsChannelAdmin && isLocalMember && targetServerRole != "owner" && targetServerRole != "admin" && humanId != userId
-            return "{\"id\":\(jsonString(humanId)),\"name\":\(jsonString(displayName)),\"serverRole\":\(jsonString(targetServerRole)),\"effectiveChannelRole\":\(jsonString(effectiveRole)),\"channelAdminBasis\":\(basis.map { jsonString($0) } ?? "null"),\"canChangeChannelRole\":\(canChange)}"
-        }.joined(separator: ",")
-        return Self.json(200, "{\"agents\":[\("\(agents)")],\"humans\":[\("\(humans)")]}")
+            let canChange = viewerIsChannelAdmin && isLocalMember && targetServerRole != "owner"
+                && targetServerRole != "admin" && humanId != userId
+            return ChannelHumanRowDTO(
+                id: humanId,
+                name: displayName,
+                serverRole: targetServerRole,
+                effectiveChannelRole: basis == nil ? "member" : "admin",
+                channelAdminBasis: basis,
+                canChangeChannelRole: canChange
+            )
+        }
+        return ChannelMembersResponse(agents: agentRows, humans: humans)
     }
 
-    public func deleteTask(authorization: String?, serverId: String, taskId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    // MARK: - Human task routes
+
+    /// The caller's write access to the task's channel: a missing task and an
+    /// invisible channel answer `Task not found`, a read-only one asks the
+    /// caller to join.
+    private func requireTaskWriteAccess(serverId: String, task: TaskRecord, userId: String, missing: ManagedMCPAssignmentsError = .taskNotFound) throws {
+        switch TasksAndLabsService.channelAccess(oauth: oauth, serverId: serverId, channelId: task.channelId, userId: userId) {
+        case .missing: throw missing
+        case .readOnly: throw ManagedMCPAssignmentsError.joinChannelToChangeTasks
+        case .write: break
         }
+    }
+
+    // DELETE /api/tasks/:taskId
+    public func deleteTask(authorization: String?, serverId: String, taskId: String) throws -> OkResponse {
+        let userId = try requireSession(authorization)
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw ChannelMembershipError.notAMember
         }
-        lock.lock()
-        guard let index = taskRecords.firstIndex(where: { $0.id == taskId }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Task not found\"}")
+        guard let task = tasks.task(id: taskId) else { throw ManagedMCPAssignmentsError.taskNotFound }
+        try requireTaskWriteAccess(serverId: serverId, task: task, userId: userId)
+        if role != "owner" && role != "admin" && task.creatorId != userId {
+            throw ManagedMCPAssignmentsError.onlyCreatorCanDeleteTask
         }
-        let channelId = taskRecords[index].channelId
-        let creatorId = taskRecords[index].creatorId
-        lock.unlock()
-        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
-        case .missing: return Self.json(404, "{\"error\":\"Task not found\"}")
-        case .readOnly: return Self.json(403, "{\"error\":\"Join the channel to change tasks\"}")
-        case .write: break
+        if let removed = tasks.removeTask(id: taskId), removed.hasHostMessage {
+            messages.clearTaskShadow(messageId: removed.messageId)
         }
-        if role != "owner" && role != "admin" && creatorId != userId {
-            return Self.json(403, "{\"error\":\"Only the task creator can delete it\"}")
-        }
-        lock.lock()
-        let removed = taskRecords.remove(at: index)
-        if removed.hasHostMessage,
-           let shadow = humanMessageRows.firstIndex(where: { $0.id == removed.messageId }) {
-            humanMessageRows[shadow].taskStatus = nil
-            humanMessageRows[shadow].taskNumber = nil
-            humanMessageRows[shadow].taskAssigneeType = nil
-            humanMessageRows[shadow].taskAssigneeId = nil
-            humanMessageRows[shadow].taskClaimedAt = nil
-            humanMessageRows[shadow].taskCompletedAt = nil
-        }
-        lock.unlock()
-        return Self.json(200, "{\"ok\":true}")
+        return OkResponse()
     }
 
-    public func claimTask(authorization: String?, serverId: String, taskId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    // PATCH /api/tasks/:taskId/claim
+    public func claimTask(authorization: String?, serverId: String, taskId: String) throws -> ActionCardTaskPayload {
+        let userId = try requireSession(authorization)
+        guard let task = tasks.task(id: taskId) else { throw ManagedMCPAssignmentsError.taskNotFound }
+        try requireTaskWriteAccess(serverId: serverId, task: task, userId: userId)
+        switch tasks.claimForUser(
+            taskId: taskId,
+            userId: userId,
+            channelDeleted: { channels.postableChannel(id: $0)?.deletedAt != nil },
+            now: dependencies.now()
+        ) {
+        case .notFound:
+            throw ManagedMCPAssignmentsError.taskNotFound
+        case .channelDeleted:
+            throw ManagedMCPAssignmentsError.channelDeletedClaimForbidden
+        case .claimed(let claimed):
+            let payload = ActionCardTaskPayload(claimed)
+            publishTaskUpdated(payload.jsonBody.render())
+            return payload
         }
-        lock.lock()
-        guard let index = taskRecords.firstIndex(where: { $0.id == taskId }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Task not found\"}")
-        }
-        let channelId = taskRecords[index].channelId
-        lock.unlock()
-        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
-        case .missing: return Self.json(404, "{\"error\":\"Task not found\"}")
-        case .readOnly: return Self.json(403, "{\"error\":\"Join the channel to change tasks\"}")
-        case .write: break
-        }
-        lock.lock()
-        guard postableChannels[channelId]?.deletedAt == nil else {
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"This channel was deleted; the task can only be closed\",\"code\":\"channel_deleted_terminal_only\"}")
-        }
-        taskRecords[index].assigneeId = userId
-        taskRecords[index].assigneeType = "user"
-        taskRecords[index].claimedAt = Date()
-        taskRecords[index].revision += 1
-        if taskRecords[index].status == "todo" { taskRecords[index].status = "in_progress" }
-        let task = taskRecords[index]
-        lock.unlock()
-        return Self.json(200, taskJSON(task))
     }
 
-    public func unclaimTask(authorization: String?, serverId: String, taskId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    // PATCH /api/tasks/:taskId/unclaim
+    public func unclaimTask(authorization: String?, serverId: String, taskId: String) throws -> ActionCardTaskPayload {
+        let userId = try requireSession(authorization)
+        guard let task = tasks.task(id: taskId) else { throw ManagedMCPAssignmentsError.taskNotFound }
+        try requireTaskWriteAccess(serverId: serverId, task: task, userId: userId)
+        guard let unclaimed = tasks.unclaimForUser(taskId: taskId, userId: userId) else {
+            throw ManagedMCPAssignmentsError.taskNotFound
         }
-        lock.lock()
-        guard let index = taskRecords.firstIndex(where: { $0.id == taskId }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Task not found\"}")
-        }
-        let channelId = taskRecords[index].channelId
-        lock.unlock()
-        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
-        case .missing: return Self.json(404, "{\"error\":\"Task not found\"}")
-        case .readOnly: return Self.json(403, "{\"error\":\"Join the channel to change tasks\"}")
-        case .write: break
-        }
-        lock.lock()
-        let previousAssigneeId = taskRecords[index].assigneeId
-        let previousAssigneeType = taskRecords[index].assigneeType
-        taskRecords[index].assigneeId = nil
-        taskRecords[index].assigneeType = nil
-        taskRecords[index].claimedAt = nil
-        taskRecords[index].revision += 1
-        assigneeChangeEvents.append((
-            taskId: taskId, assigneeId: nil, assigneeType: nil,
-            previousAssigneeId: previousAssigneeId, previousAssigneeType: previousAssigneeType,
-            actorType: "user", actorId: userId
-        ))
-        let task = taskRecords[index]
-        lock.unlock()
-        return Self.json(200, taskJSON(task))
+        return ActionCardTaskPayload(unclaimed)
     }
 
-    public func updateTaskStatus(authorization: String?, serverId: String, taskId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    // PATCH /api/tasks/:taskId/status
+    public func updateTaskStatus(
+        authorization: String?,
+        serverId: String,
+        taskId: String,
+        body: TaskStatusRequest?
+    ) throws -> ActionCardTaskPayload {
+        let userId = try requireSession(authorization)
+        guard let status = body?.status, EmailLoginDirectory.validTaskStatuses.contains(status) else {
+            throw ManagedMCPAssignmentsError.invalidTaskStatus
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let status = object["status"] as? String, Self.validTaskStatuses.contains(status)
-        else {
-            return Self.json(400, "{\"error\":\"Invalid task status\"}")
+        guard let task = tasks.task(id: taskId) else { throw ManagedMCPAssignmentsError.taskNotFound }
+        try requireTaskWriteAccess(serverId: serverId, task: task, userId: userId)
+        switch tasks.applyHumanStatus(
+            taskId: taskId,
+            status: status,
+            userId: userId,
+            channelDeleted: { channels.postableChannel(id: $0)?.deletedAt != nil },
+            now: dependencies.now()
+        ) {
+        case .notFound:
+            throw ManagedMCPAssignmentsError.taskNotFound
+        case .channelDeletedTerminalOnly:
+            throw ManagedMCPAssignmentsError.channelDeletedTerminalOnly
+        case .onlyAssigneeCanReturnToTodo:
+            throw ManagedMCPAssignmentsError.onlyAssigneeCanReturnToTodo
+        case .updated(let updated):
+            return ActionCardTaskPayload(updated)
         }
-        lock.lock()
-        guard let index = taskRecords.firstIndex(where: { $0.id == taskId }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Task not found\"}")
-        }
-        let channelId = taskRecords[index].channelId
-        lock.unlock()
-        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
-        case .missing: return Self.json(404, "{\"error\":\"Task not found\"}")
-        case .readOnly: return Self.json(403, "{\"error\":\"Join the channel to change tasks\"}")
-        case .write: break
-        }
-        lock.lock()
-        let current = taskRecords[index]
-        if postableChannels[channelId]?.deletedAt != nil,
-           !["done", "closed", "cancelled"].contains(status) {
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"This channel was deleted; only terminal task statuses are allowed\",\"code\":\"channel_deleted_terminal_only\"}")
-        }
-        if status == "todo", current.status == "in_progress", current.assigneeId != userId {
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"Only the current assignee can return this task to todo\"}")
-        }
-        taskRecords[index].status = status
-        if status == "done", taskRecords[index].completedAt == nil {
-            taskRecords[index].completedAt = Date()
-        }
-        if status == "closed" || status == "cancelled" {
-            taskRecords[index].closedAt = Date()
-        }
-        if status == "in_progress", taskRecords[index].claimedAt == nil {
-            taskRecords[index].claimedAt = Date()
-        }
-        if status == "todo" {
-            taskRecords[index].claimedAt = nil
-        }
-        taskRecords[index].revision += 1
-        let task = taskRecords[index]
-        lock.unlock()
-        return Self.json(200, taskJSON(task))
     }
 
-    public func convertMessageToTask(authorization: String?, serverId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let messageId = object["messageId"] as? String
-        else {
-            return Self.json(404, "{\"error\":\"Message not found\"}")
-        }
-        let storedChannelId: String?
-        if let known = oauth.messageChannelId(messageId) {
-            storedChannelId = known
-        } else {
-            lock.lock()
-            storedChannelId = humanMessageRows.first { $0.id == messageId }?.channelId
-            lock.unlock()
-        }
-        guard let channelId = storedChannelId else {
-            return Self.json(404, "{\"error\":\"Message not found\"}")
-        }
-        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
-        case .missing: return Self.json(404, "{\"error\":\"Message not found\"}")
-        case .readOnly: return Self.json(403, "{\"error\":\"Join the channel to change tasks\"}")
+    // POST /api/tasks/convert-message
+    public func convertMessageToTask(
+        authorization: String?,
+        serverId: String,
+        body: TaskConvertRequest?
+    ) throws -> TaskConvertResponse {
+        let userId = try requireSession(authorization)
+        guard let messageId = body?.messageId else { throw ManagedMCPAssignmentsError.messageNotFound }
+        let storedChannelId = oauth.messageChannelId(messageId)
+            ?? messages.humanMessageRows.first { $0.id == messageId }?.channelId
+        guard let channelId = storedChannelId else { throw ManagedMCPAssignmentsError.messageNotFound }
+        switch TasksAndLabsService.channelAccess(oauth: oauth, serverId: serverId, channelId: channelId, userId: userId) {
+        case .missing: throw ManagedMCPAssignmentsError.messageNotFound
+        case .readOnly: throw ManagedMCPAssignmentsError.joinChannelToChangeTasks
         case .write: break
         }
-        let ids = addTasks(channelId: channelId, titles: ["Converted message"], creatorId: userId)
-        lock.lock()
-        for index in taskRecords.indices where ids.contains(taskRecords[index].id) {
-            taskRecords[index].messageId = messageId
-        }
-        lock.unlock()
-        return Self.json(200, "{\"taskIds\":[\("\(ids.map { jsonString($0) }.joined(separator: ","))")]}")
+        let id = tasks.appendConvertedMessageTask(channelId: channelId, messageId: messageId, creatorId: userId)
+        return TaskConvertResponse(taskIds: [id])
     }
 
+    // MARK: - GET /api/tasks/server
+
+    /// Above this many body bytes a paginated/summary answer logs a warning.
     static let tasksServerResponseWarnBytes = 8 * 1024 * 1024
 
-    func taskServerReply(_ body: String, serverId: String, newShape: Bool) -> HTTPReply {
-        let bytes = Data(body.utf8).count
-        if newShape, bytes > Self.tasksServerResponseWarnBytes {
-            let warning = "[tasks/server] paginated/summary response for server \(serverId) is \(bytes) bytes"
-            lock.lock()
-            lastTaskServerWarning = warning
-            lock.unlock()
-            FileHandle.standardError.write(Data((warning + "\n").utf8))
-        }
-        return HTTPReply(status: 200, headers: [
-            "X-Robots-Tag": AppFallback.robotsTag,
-            "Content-Type": AppFallback.jsonContentType,
-            "Content-Length": String(bytes),
-            "x-response-bytes": String(bytes),
-        ], body: body)
-    }
-
-    public func listServerTasks(authorization: String?, serverId: String, rawQuery: String?) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
+    public func listServerTasks(
+        authorization: String?,
+        serverId: String,
+        rawQuery: String?
+    ) throws -> ServerTasksResponse {
+        let userId = try requireSession(authorization)
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw ChannelMembershipError.notAMember
         }
         func repeated(_ name: String) -> Bool {
             guard let rawQuery else { return false }
             return rawQuery.split(separator: "&").filter { $0.hasPrefix(name + "=") }.count > 1
         }
         if ["limit", "cursor", "detail", "status"].contains(where: repeated) {
-            return Self.json(400, "{\"error\":\"Repeated query parameter\"}")
+            throw ManagedMCPAssignmentsError.repeatedQueryParameter
         }
         let status: String?
-        switch Self.taskStatusFilter(rawQuery) {
-        case .invalid(let reply): return reply
+        switch TasksAndLabsService.statusFilter(rawQuery) {
+        case .invalid: throw TasksAndLabsError.invalidTaskStatus
         case .valid(let value): status = value
         }
         guard let rawQuery else {
-            let body = legacyTasksBody(serverId: serverId, userId: userId, status: status)
-            return taskServerReply(body, serverId: serverId, newShape: false)
+            let ordered = dependencies.orderedTasks(serverId, userId, status)
+            return ServerTasksResponse(
+                taskFragments: ordered.map { dependencies.taskFragment($0.task, $0.channelName, $0.channelType, false) },
+                paginated: false,
+                nextCursor: nil
+            )
         }
         var params: [String: String] = [:]
         for pair in rawQuery.split(separator: "&") {
@@ -730,32 +756,30 @@ extension EmailLoginDirectory {
         }
         let detail = params["detail"] ?? "full"
         guard detail == "full" || detail == "summary" else {
-            return Self.json(400, "{\"error\":\"detail must be full or summary\"}")
+            throw ManagedMCPAssignmentsError.detailMustBeFullOrSummary
         }
         var limit: Int?
         if let rawLimit = params["limit"] {
             guard let value = Int(rawLimit), (1...500).contains(value) else {
-                return Self.json(400, "{\"error\":\"limit must be between 1 and 500\"}")
+                throw ManagedMCPAssignmentsError.limitOutOfRange
             }
             limit = value
         }
         var cursor: (channelId: String, taskNumber: Int)?
         if let rawCursor = params["cursor"] {
-            guard limit != nil else {
-                return Self.json(400, "{\"error\":\"cursor requires limit\"}")
-            }
-            guard let decoded = Self.decodeCursor(rawCursor) else {
-                return Self.json(400, "{\"error\":\"Invalid cursor\"}")
+            guard limit != nil else { throw ManagedMCPAssignmentsError.cursorRequiresLimit }
+            guard let decoded = EmailLoginDirectory.decodeCursor(rawCursor) else {
+                throw ManagedMCPAssignmentsError.invalidCursor
             }
             cursor = decoded
         }
-        let ordered = orderedTasks(serverId: serverId, userId: userId, status: status)
+        let ordered = dependencies.orderedTasks(serverId, userId, status)
         var startIndex = 0
         if let cursor {
             guard let index = ordered.firstIndex(where: {
                 $0.task.channelId == cursor.channelId && $0.task.taskNumber == cursor.taskNumber
             }) else {
-                return Self.json(400, "{\"error\":\"Invalid cursor\"}")
+                throw ManagedMCPAssignmentsError.invalidCursor
             }
             startIndex = index + 1
         }
@@ -765,21 +789,22 @@ extension EmailLoginDirectory {
             let slice = Array(ordered.dropFirst(startIndex).prefix(limit))
             page = slice
             if let last = slice.last, startIndex + slice.count < ordered.count {
-                nextCursor = Self.encodeCursor(channelId: last.task.channelId, taskNumber: last.task.taskNumber)
+                nextCursor = EmailLoginDirectory.encodeCursor(channelId: last.task.channelId, taskNumber: last.task.taskNumber)
             }
-        } else {
-            page = Array(ordered.dropFirst(0))
         }
-        let items = page.map { entry in
-            detail == "summary"
-                ? summaryTaskJSON(entry.task, channelName: entry.channelName, channelType: entry.channelType)
-                : fullTaskJSON(entry.task, channelName: entry.channelName, channelType: entry.channelType)
-        }.joined(separator: ",")
-        if limit == nil {
-            return taskServerReply("{\"tasks\":[\("\(items)")]}", serverId: serverId, newShape: true)
+        let response = ServerTasksResponse(
+            taskFragments: page.map {
+                dependencies.taskFragment($0.task, $0.channelName, $0.channelType, detail == "summary")
+            },
+            paginated: limit != nil,
+            nextCursor: nextCursor
+        )
+        let bytes = response.responseBytes
+        if bytes > Self.tasksServerResponseWarnBytes {
+            let warning = "[tasks/server] paginated/summary response for server \(serverId) is \(bytes) bytes"
+            tasks.lastTaskServerWarning = warning
+            FileHandle.standardError.write(Data((warning + "\n").utf8))
         }
-        let cursorJSON = nextCursor.map { jsonString($0) } ?? "null"
-        return taskServerReply("{\"tasks\":[\("\(items)")],\"next_cursor\":\(cursorJSON)}", serverId: serverId, newShape: true)
+        return response
     }
-
 }

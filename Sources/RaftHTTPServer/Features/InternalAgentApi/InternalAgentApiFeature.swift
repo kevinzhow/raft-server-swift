@@ -158,11 +158,13 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.post("channels", ":channelId", "leave") { request -> Response in
-            routeResponse(services.emailAccounts.agentLeaveChannel(
-                authorization: request.headers[.authorization],
-                channelId: request.parameters.get("channelId") ?? ""
-            ))
+        agentApi.post("channels", ":channelId", "leave") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.channelAssignments().agentLeaveChannel(
+                    authorization: request.headers[.authorization],
+                    channelId: request.parameters.get("channelId") ?? ""
+                )
+            }
         }
         agentApi.patch("server") { request async throws -> Response in
             let body = await jsonRequestBody(AgentServerUpdateRequest.self, request, emptyDefault: "{}")
@@ -184,32 +186,42 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
         }
         agentApi.post("channels", "archive") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentChannelArchive(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}"),
-                archive: true
-            ))
+            let body = await jsonRequestBody(AgentChannelArchiveRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.managedMCPToolExecution.agentChannelArchive(
+                    authorization: request.headers[.authorization],
+                    body: body,
+                    archive: true
+                )
+            }
         }
         agentApi.post("channels", "unarchive") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentChannelArchive(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}"),
-                archive: false
-            ))
+            let body = await jsonRequestBody(AgentChannelArchiveRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.managedMCPToolExecution.agentChannelArchive(
+                    authorization: request.headers[.authorization],
+                    body: body,
+                    archive: false
+                )
+            }
         }
-        agentApi.post("channels", ":channelId", "mute") { request -> Response in
-            routeResponse(services.emailAccounts.agentSetChannelMute(
-                authorization: request.headers[.authorization],
-                channelId: request.parameters.get("channelId") ?? "",
-                muted: true
-            ))
+        agentApi.post("channels", ":channelId", "mute") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPToolExecution.agentSetChannelMute(
+                    authorization: request.headers[.authorization],
+                    channelId: request.parameters.get("channelId") ?? "",
+                    muted: true
+                )
+            }
         }
-        agentApi.post("channels", ":channelId", "unmute") { request -> Response in
-            routeResponse(services.emailAccounts.agentSetChannelMute(
-                authorization: request.headers[.authorization],
-                channelId: request.parameters.get("channelId") ?? "",
-                muted: false
-            ))
+        agentApi.post("channels", ":channelId", "unmute") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPToolExecution.agentSetChannelMute(
+                    authorization: request.headers[.authorization],
+                    channelId: request.parameters.get("channelId") ?? "",
+                    muted: false
+                )
+            }
         }
         agentApi.post("channels", ":channelId", "members") { request async throws -> Response in
             let body = await jsonRequestBody(AgentChannelMemberRequest.self, request, emptyDefault: "{}")

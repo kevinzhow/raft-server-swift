@@ -35,6 +35,13 @@ public struct MessagingFeature: RouteCollection, Sendable {
         let actions = routes.grouped("api", "actions")
         let tasks = routes.grouped("api", "tasks")
         let humanMessageCreate = services.emailAccounts.humanMessageCreate
+        // The claim publishes `task:updated` through the channel-messaging
+        // domain; the service hands it the claimed task's published JSON.
+        let assignments = services.emailAccounts.channelAssignments(
+            publishTaskUpdated: { replyBody in
+                services.channelMessaging.publishTaskUpdated(status: 200, replyBody: replyBody)
+            }
+        )
         let inbox = services.emailAccounts.inboxAndWake
         readMutations.post { request async throws -> Response in
             let body = await jsonRequestBody(LenientJSONObjectRequest.self, request, emptyDefault: "{}")
@@ -433,12 +440,14 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 )
             }
         }
-        tasks.delete(":taskId") { request -> Response in
-            routeResponse(services.emailAccounts.deleteTask(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                taskId: request.parameters.get("taskId") ?? ""
-            ))
+        tasks.delete(":taskId") { request async throws -> Response in
+            try await respond {
+                try assignments.deleteTask(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    taskId: request.parameters.get("taskId") ?? ""
+                )
+            }
         }
         tasks.patch(":taskId", "assignee") { request async throws -> Response in
             // A body sent without a JSON Content-Type was accepted before; a
@@ -453,56 +462,55 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 )
             }
         }
-        tasks.patch(":taskId", "unclaim") { request -> Response in
-            routeResponse(services.emailAccounts.unclaimTask(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                taskId: request.parameters.get("taskId") ?? ""
-            ))
+        tasks.patch(":taskId", "unclaim") { request async throws -> Response in
+            try await respond {
+                try assignments.unclaimTask(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    taskId: request.parameters.get("taskId") ?? ""
+                )
+            }
         }
-        tasks.patch(":taskId", "claim") { request -> Response in
-            let reply = services.emailAccounts.claimTask(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                taskId: request.parameters.get("taskId") ?? ""
-            )
-            services.channelMessaging.publishTaskUpdated(status: reply.status, replyBody: reply.body)
-            return routeResponse(reply)
+        tasks.patch(":taskId", "claim") { request async throws -> Response in
+            try await respond {
+                try assignments.claimTask(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    taskId: request.parameters.get("taskId") ?? ""
+                )
+            }
         }
         tasks.patch(":taskId", "status") { request async throws -> Response in
-            let taskId = request.parameters.get("taskId") ?? ""
-            let authorization = request.headers[.authorization]
-            let serverId = request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
             // `status` is the only key this route reads; an unknown value still
-            // answers the directory's `Invalid task status` 400.
-            if let body = try? await request.content.decode(TaskStatusUpdateRequestDTO.self) {
-                return routeResponse(services.emailAccounts.updateTaskStatus(
-                    authorization: authorization,
-                    serverId: serverId,
-                    taskId: taskId,
-                    body: body.encodedBody()
-                ))
+            // answers the published `Invalid task status` 400.
+            let body = await jsonRequestBody(TaskStatusRequest.self, request)
+            return try await respond {
+                try assignments.updateTaskStatus(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    taskId: request.parameters.get("taskId") ?? "",
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.updateTaskStatus(
-                authorization: authorization,
-                serverId: serverId,
-                taskId: taskId,
-                body: try await request.bodyText()
-            ))
         }
         tasks.post("convert-message") { request async throws -> Response in
-            routeResponse(services.emailAccounts.convertMessageToTask(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(TaskConvertRequest.self, request)
+            return try await respond {
+                try assignments.convertMessageToTask(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    body: body
+                )
+            }
         }
-        tasks.get("server") { request -> Response in
-            routeResponse(services.emailAccounts.listServerTasks(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                rawQuery: request.url.query
-            ))
+        tasks.get("server") { request async throws -> Response in
+            try await respond(headers: { $0.headers }) {
+                try assignments.listServerTasks(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    rawQuery: request.url.query
+                )
+            }
         }
 }
 

@@ -527,23 +527,6 @@ extension EmailLoginDirectory {
         return Self.json(409, ChannelMembershipError.channelArchived.publishedErrorBody.render())
     }
 
-    func leaveChannelForAgent(agentId: String, serverId: String, channelId: String) -> HTTPReply {
-        legacyMembershipReply {
-            try channelMembership.leaveChannel(agentId: agentId, serverId: serverId, channelId: channelId)
-        }
-    }
-
-    private func legacyMembershipReply(_ call: () throws -> OkResponse) -> HTTPReply {
-        do {
-            _ = try call()
-            return Self.json(200, "{\"ok\":true}")
-        } catch let error as any DomainError {
-            return Self.json(Int(error.status), error.publishedErrorBody.render())
-        } catch {
-            return Self.json(500, "{\"error\":\"Internal error\"}")
-        }
-    }
-
     /// The bearer credential of an agent, marking its use.
     func agentCredentialAgent(_ authorization: String?) -> (agentId: String, scopes: [String])? {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
@@ -561,8 +544,8 @@ extension EmailLoginDirectory {
 
     // MARK: - Task list projections (legacy)
 
-    // Shared with the unmigrated task listing; moved here unchanged from the
-    // managed-MCP catalog service file.
+    // Injected into `ManagedMCPAssignmentsService` as closures; moved here
+    // unchanged from the managed-MCP catalog service file.
 
     func orderedTasks(
         serverId: String,
@@ -587,14 +570,6 @@ extension EmailLoginDirectory {
                 if $0.task.taskNumber != $1.task.taskNumber { return $0.task.taskNumber < $1.task.taskNumber }
                 return $0.task.id < $1.task.id
             }
-    }
-
-    func legacyTasksBody(serverId: String, userId: String, status: String?) -> String {
-        let ordered = orderedTasks(serverId: serverId, userId: userId, status: status)
-        let items = ordered.map { entry in
-            fullTaskJSON(entry.task, channelName: entry.channelName, channelType: entry.channelType)
-        }.joined(separator: ",")
-        return "{\"tasks\":[\("\(items)")]}"
     }
 
     func fullTaskJSON(_ task: TaskRecord, channelName: String, channelType: String) -> String {

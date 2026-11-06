@@ -782,4 +782,48 @@ extension EmailLoginDirectory {
         }
         return nil
     }
+
+    /// Channel membership, thread creation and the human task routes. The
+    /// channel, read-state and task rows come from their stores; the session
+    /// lookup, the serialized system-notice append and the task-catalog
+    /// projections belong to unmigrated domains and enter as closures
+    /// (`ManagedMCPAssignmentsDependencies`). `publishTaskUpdated` takes the
+    /// claimed task's published JSON so the channel-messaging domain can emit
+    /// `task:updated`.
+    public func channelAssignments(
+        publishTaskUpdated: @escaping @Sendable (String) -> Void = { _ in }
+    ) -> ManagedMCPAssignmentsService {
+        ManagedMCPAssignmentsService(
+            directory: self,
+            appendSystemNotice: systemNoticeAppender,
+            publishTaskUpdated: publishTaskUpdated
+        )
+    }
+
+    /// Saved messages, direct channels, channel detail, read state and the
+    /// agent channel archive/mute surface.
+    public var managedMCPToolExecution: ManagedMCPToolExecutionService {
+        ManagedMCPToolExecutionService(directory: self)
+    }
+
+    // MARK: Channel-visibility and mute forwarders for unmigrated callers
+    //
+    // The decisions live in `ManagedMCPChannelVisibility` and
+    // `ManagedMCPToolExecutionService`; these keep the legacy signatures the
+    // managed-MCP OAuth, reaction, action-card execute and thread wiring still
+    // call.
+
+    func channelActorCanSee(channelId: String, userId: String) -> Bool {
+        ManagedMCPChannelVisibility(oauth: oauth, channels: serversAndChannelsStore)
+            .actorCanSee(channelId: channelId, userId: userId)
+    }
+
+    func guestDeniedHiddenChannel(channelId: String, serverId: String, userId: String) -> Bool {
+        ManagedMCPChannelVisibility(oauth: oauth, channels: serversAndChannelsStore)
+            .guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId)
+    }
+
+    func agentMessageSuppressedLocked(_ message: StoredHumanMessage, agentId: String) -> Bool {
+        managedMCPToolExecution.agentMessageSuppressed(message, agentId: agentId)
+    }
 }

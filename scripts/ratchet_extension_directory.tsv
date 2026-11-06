@@ -7,8 +7,6 @@ Sources/RaftHTTP/Services/DirectoryServiceAccessors.swift	1
 Sources/RaftHTTP/Services/FeedbackService.swift	1
 Sources/RaftHTTP/Services/InboxAndWakeService.swift	1
 Sources/RaftHTTP/Services/JoinLinksAndInvitesService.swift	1
-Sources/RaftHTTP/Services/ManagedMCPAssignmentsService.swift	1
-Sources/RaftHTTP/Services/ManagedMCPToolExecutionService.swift	1
 Sources/RaftHTTP/Services/MessageSendService.swift	1
 Sources/RaftHTTP/Services/OAuthFlowsService.swift	1
 Sources/RaftHTTP/Services/ProfileAndChannelFilesSupport.swift	1
