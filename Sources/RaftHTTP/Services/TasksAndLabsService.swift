@@ -64,31 +64,6 @@ extension EmailLoginDirectory {
         return Self.json(200, "{\"task\":\(taskJSON(task))}")
     }
 
-    public func createChannelTasks(authorization: String?, serverId: String, channelId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
-        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
-        case .missing: return Self.json(404, "{\"error\":\"Channel not found\"}")
-        case .readOnly: return Self.json(403, "{\"error\":\"Join the channel to change tasks\"}")
-        case .write: break
-        }
-        if let reply = archivedChannelReply(channelId) { return reply }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let tasks = object["tasks"] as? [[String: Any]],
-              !tasks.isEmpty
-        else {
-            return Self.json(400, "{\"error\":\"Invalid task list\"}")
-        }
-        let titles = tasks.compactMap { $0["title"] as? String }.filter { !$0.isEmpty }
-        let descriptions = tasks.map { $0["description"] as? String }
-        let ids = addTasks(channelId: channelId, titles: titles, descriptions: descriptions, creatorId: userId)
-        return Self.json(200, "{\"taskIds\":[\("\(ids.map { jsonString($0) }.joined(separator: ","))")]}")
-    }
-
     public func agentTasksAmend(authorization: String?, legacyAgentId: String?, body: String) -> HTTPReply {
         let auth: (agentId: String, serverId: String)
         switch agentTaskAuth(authorization: authorization, legacyAgentId: legacyAgentId) {

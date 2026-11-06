@@ -95,6 +95,46 @@ public struct FallbackServices: Sendable {
         self.shareBaseURL = shareBaseURL
         self.cdnBaseURL = cdnBaseURL
     }
+
+    /// Channel-messaging domain: task creation plus the realtime frames the
+    /// channel and task routes publish. The sinks and the not-yet-migrated
+    /// channel/task policy calls are wired here, so the service file owns the
+    /// orchestration without a directory or transport dependency.
+    public var channelMessaging: ChannelMessagingService {
+        let accounts = emailAccounts
+        let hub = realtime
+        return ChannelMessagingService(
+            dependencies: ChannelMessagingDependencies(
+                sessionUserId: { accounts.sessionUserId(authorization: $0) },
+                memberRole: { serverId, userId in
+                    accounts.oauth.memberRole(serverId: serverId, userId: userId)
+                },
+                taskChannelAccess: { serverId, channelId, userId in
+                    accounts.channelTaskAccess(serverId: serverId, channelId: channelId, userId: userId)
+                },
+                isChannelArchived: { accounts.oauth.channelArchivedAt(id: $0) != nil },
+                addTasks: { channelId, titles, descriptions, creatorId in
+                    accounts.addTasks(
+                        channelId: channelId,
+                        titles: titles,
+                        descriptions: descriptions,
+                        creatorId: creatorId
+                    )
+                }
+            ),
+            sink: ChannelRealtimeSink(
+                emit: { room, event, payload in
+                    accounts.realtimeEmitter?(room, event, payload)
+                },
+                emitToUser: { userId, event, payload in
+                    hub?.emit(room: "user:\(userId)", event: event, payloadJSON: payload)
+                },
+                joinUserSessions: { userId, room in
+                    hub?.joinUserSessions(userId: userId, room: room)
+                }
+            )
+        )
+    }
 }
 
 /// Canonical public bases for share artifacts. One page host (`SHARE_BASE_URL`,

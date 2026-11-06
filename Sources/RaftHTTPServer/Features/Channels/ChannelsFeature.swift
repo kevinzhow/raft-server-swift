@@ -174,7 +174,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     follow: true
                 )
-                publishThreadFollowers(reply, body: body, services: services)
+                services.channelMessaging.publishThreadFollowers(status: reply.status, body: body)
                 return routeResponse(reply)
             }
             let body = try await request.bodyText(default: "{}")
@@ -184,7 +184,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
                 body: body,
                 follow: true
             )
-            publishThreadFollowers(reply, body: body, services: services)
+            services.channelMessaging.publishThreadFollowers(status: reply.status, body: body)
             return routeResponse(reply)
         }
 
@@ -197,7 +197,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     follow: false
                 )
-                publishThreadFollowers(reply, body: body, services: services)
+                services.channelMessaging.publishThreadFollowers(status: reply.status, body: body)
                 return routeResponse(reply)
             }
             let body = try await request.bodyText(default: "{}")
@@ -207,7 +207,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
                 body: body,
                 follow: false
             )
-            publishThreadFollowers(reply, body: body, services: services)
+            services.channelMessaging.publishThreadFollowers(status: reply.status, body: body)
             return routeResponse(reply)
         }
 
@@ -544,7 +544,11 @@ public struct ChannelsFeature: RouteCollection, Sendable {
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 body: try await request.bodyText()
             )
-            publishCreatedChannel(reply, services: services, authorization: request.headers[.authorization])
+            services.channelMessaging.publishCreatedChannel(
+                status: reply.status,
+                replyBody: reply.body,
+                authorization: request.headers[.authorization]
+            )
             return routeResponse(reply)
         }
 
@@ -556,22 +560,4 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
     }
-}
-
-private func publishThreadFollowers(_ reply: HTTPReply, body: String, services: FallbackServices) {
-    guard reply.status == 200,
-          let emit = services.emailAccounts.realtimeEmitter,
-          let event = ChannelMessagingService.threadFollowersUpdatedEvent(fromBody: body)
-    else { return }
-    emit("channel:\(event.threadChannelId)", "thread:followers-updated", event.payloadJSON)
-}
-
-private func publishCreatedChannel(_ reply: HTTPReply, services: FallbackServices, authorization: String?) {
-    guard reply.status == 200,
-          let hub = services.realtime,
-          let userId = services.emailAccounts.sessionUserId(authorization: authorization),
-          let event = ChannelMessagingService.channelUpdatedEvent(fromReplyBody: reply.body)
-    else { return }
-    services.realtime?.joinUserSessions(userId: userId, room: "channel:\(event.channelId)")
-    hub.emit(room: "user:\(userId)", event: "channel:updated", payloadJSON: event.payloadJSON)
 }

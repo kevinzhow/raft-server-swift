@@ -73,4 +73,38 @@ final class TasksAndRemindersStore: @unchecked Sendable {
         get { state.assigneeChangeEvents }
         set { state.assigneeChangeEvents = newValue }
     }
+
+    /// Appends one posted task batch and returns the new ids in order.
+    ///
+    /// The task-number scan, the append and the next number's base all run in a
+    /// single locked critical section: the old helper read and rewrote the row
+    /// array through the directory's forwarding accessors, so this is the one
+    /// mutation a concurrent batch must not interleave with.
+    func appendTasks(
+        channelId: String,
+        titles: [String],
+        descriptions: [String?]?,
+        creatorId: String?
+    ) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        var ids: [String] = []
+        for (offset, title) in titles.enumerated() {
+            let taskNumber = storage.taskRecords.filter { $0.channelId == channelId }.count + 1
+            let id = UUID().uuidString.lowercased()
+            storage.taskRecords.append(TaskRecord(
+                id: id,
+                channelId: channelId,
+                title: title,
+                description: (descriptions?.count ?? 0) > offset ? (descriptions?[offset] ?? nil) : nil,
+                status: "todo",
+                taskNumber: taskNumber,
+                messageId: UUID().uuidString.lowercased(),
+                createdAt: Date(),
+                creatorId: creatorId
+            ))
+            ids.append(id)
+        }
+        return ids
+    }
 }

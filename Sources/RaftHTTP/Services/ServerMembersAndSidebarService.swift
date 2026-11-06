@@ -548,26 +548,18 @@ extension EmailLoginDirectory {
         channelId: String, titles: [String], descriptions: [String?]? = nil,
         creatorId: String? = nil, creatorType: String = "user"
     ) -> [String] {
+        // The directory lock keeps this append ordered with the readers that
+        // still snapshot `taskRecords`; the store method itself is one locked
+        // read-modify-write for the row array. `creatorType` is accepted for
+        // callers but the row has no column for it, as before.
         lock.lock()
         defer { lock.unlock() }
-        var ids: [String] = []
-        for (offset, title) in titles.enumerated() {
-            let taskNumber = taskRecords.filter { $0.channelId == channelId }.count + 1
-            let id = UUID().uuidString.lowercased()
-            taskRecords.append(TaskRecord(
-                id: id,
-                channelId: channelId,
-                title: title,
-                description: (descriptions?.count ?? 0) > offset ? (descriptions?[offset] ?? nil) : nil,
-                status: "todo",
-                taskNumber: taskNumber,
-                messageId: UUID().uuidString.lowercased(),
-                createdAt: Date(),
-                creatorId: creatorId
-            ))
-            ids.append(id)
-        }
-        return ids
+        return tasksAndRemindersStore.appendTasks(
+            channelId: channelId,
+            titles: titles,
+            descriptions: descriptions,
+            creatorId: creatorId
+        )
     }
 
 
@@ -580,6 +572,20 @@ extension EmailLoginDirectory {
         }
         let type = oauth.channelType(id: channelId) ?? "channel"
         return type == "channel" ? .readOnly : .missing
+    }
+
+    /// Public view of `taskChannelAccess` for the channel-messaging service
+    /// until the channel policy moves into its own store. Keeping the decision
+    /// here avoids a second copy of the participant/read-only rule.
+    public func channelTaskAccess(serverId: String, channelId: String, userId: String) -> ChannelTaskAccess {
+        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
+        case .missing:
+            .missing
+        case .readOnly:
+            .readOnly
+        case .write:
+            .write
+        }
     }
 
 
