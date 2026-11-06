@@ -18,6 +18,15 @@ public struct AgentsFeature: RouteCollection, Sendable {
         self.services = services
     }
 
+    /// Decodes one typed JSON body even when the client omitted a JSON
+    /// `Content-Type`. The retired raw parser accepted the body regardless of
+    /// the header, so the fallback keeps that behavior for the typed route.
+    private func jsonBody<T: Decodable>(_ type: T.Type, _ request: Request) async throws -> T? {
+        if let decoded = try? await request.content.decode(type) { return decoded }
+        guard let data = try await request.body.collect() else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
     public func boot(routes: any RoutesBuilder) async throws {
         register(routes: routes)
     }
@@ -266,12 +275,14 @@ public struct AgentsFeature: RouteCollection, Sendable {
                 credentialId: request.parameters.get("credentialId") ?? ""
             ))
         }
-        agents.get(":id", "external-diagnostics") { request -> Response in
-            routeResponse(services.emailAccounts.externalAgentDiagnostics(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                agentId: request.parameters.get("id") ?? ""
-            ))
+        agents.get(":id", "external-diagnostics") { request throws -> Response in
+            try respond {
+                try services.emailAccounts.agentMigrationStatus.externalDiagnostics(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    agentId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         agents.get(":id", "external-status") { request -> Response in
             routeResponse(services.emailAccounts.externalAgentStatus(
@@ -344,20 +355,29 @@ public struct AgentsFeature: RouteCollection, Sendable {
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
             ))
         }
-        agents.get(":id", "migration") { request -> Response in
-            routeResponse(services.emailAccounts.agentMigrationStatus(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                agentId: request.parameters.get("id") ?? ""
-            ))
+        agents.get(":id", "migration") { request throws -> Response in
+            try respond {
+                try services.emailAccounts.agentMigrationStatus.migrationStatus(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    agentId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         agents.post(":id", "migration", "cancel") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentMigrationCancel(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                agentId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            // The retired handler read the JSON object regardless of
+            // `Content-Type`, so a body without a JSON header still decodes
+            // here instead of falling back to an empty request.
+            let body = (try await jsonBody(AgentMigrationCancelRequest.self, request))
+                ?? AgentMigrationCancelRequest()
+            return try respond {
+                try services.emailAccounts.agentMigrationStatus.cancelMigration(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    agentId: request.parameters.get("id") ?? "",
+                    request: body
+                )
+            }
         }
         agents.post(":id", "migration", "confirm-hosted") { request async throws -> Response in
             routeResponse(services.emailAccounts.confirmHostedMigration(

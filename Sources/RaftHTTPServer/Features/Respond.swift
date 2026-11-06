@@ -73,6 +73,24 @@ func respond<DTO: Encodable, Failure: DomainErrorWithBody>(
     }
 }
 
+/// Overload for a domain whose published body has a fixed key order that is not
+/// alphabetical (`OrderedJSONBody`). The DTO prints itself through
+/// `OrderedJSON`, so the bytes are the legacy bytes instead of a
+/// dictionary-ordered `JSONEncoder` object. Swift ranks this overload above the
+/// `Encodable` one because its constraint refines `Encodable`; a DTO that does
+/// not conform keeps the plain overload. A thrown `DomainError` maps to
+/// `code`-then-`error`, the order every legacy coded failure published.
+func respond<DTO: OrderedJSONBody>(
+    status: UInt = 200,
+    _ call: () throws -> DTO
+) throws -> Response {
+    do {
+        return routeResponse(orderedReply(status: status, payload: try call().orderedJSON))
+    } catch let error as any DomainError {
+        return routeResponse(orderedErrorReply(error))
+    }
+}
+
 /// The upstream `{"error": …}` body. Domains with a richer published shape get
 /// their own DTO and a second mapping overload rather than JSON in the service.
 ///
@@ -136,4 +154,36 @@ private func jsonReply<T: Encodable>(
     ]
     for (name, value) in extraHeaders { headers[name] = value }
     return HTTPReply(status: Int(status), headers: headers, body: String(decoding: data, as: UTF8.self))
+}
+
+/// A body the domain already printed in its published key order. No encoder
+/// runs here, so the member order and every literal `null` survive.
+private func orderedReply(
+    status: UInt,
+    payload: OrderedJSON,
+    extraHeaders: [String: String] = [:]
+) -> HTTPReply {
+    let body = payload.serialized()
+    var headers = [
+        "X-Robots-Tag": AppFallback.robotsTag,
+        "Content-Type": AppFallback.jsonContentType,
+        "Content-Length": String(Data(body.utf8).count),
+    ]
+    for (name, value) in extraHeaders { headers[name] = value }
+    return HTTPReply(status: Int(status), headers: headers, body: body)
+}
+
+/// A typed failure printed in the legacy order: the machine code first, then
+/// the human message, and no `code` member for a domain that publishes none.
+private func orderedErrorReply(_ error: any DomainError) -> HTTPReply {
+    var fields: [OrderedJSONField] = []
+    if let code = error.errorCode {
+        fields.append(OrderedJSONField("code", .string(code)))
+    }
+    fields.append(OrderedJSONField("error", .string(error.errorMessage)))
+    return orderedReply(
+        status: error.status,
+        payload: .object(fields),
+        extraHeaders: error.responseHeaders
+    )
 }
