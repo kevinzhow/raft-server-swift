@@ -1,7 +1,5 @@
 Sources/RaftHTTP/DTO/RealtimeEventDTO.swift	1
 Sources/RaftHTTP/Services/ActionCardDirectoryHelpers.swift	5
-Sources/RaftHTTP/Services/AgentHostedMigrationService.swift	21
-Sources/RaftHTTP/Services/AgentMachineMigrationControlService.swift	23
 Sources/RaftHTTP/Services/AgentPrivateSurfaceService.swift	22
 Sources/RaftHTTP/Services/AgentsLifecycleService.swift	8
 Sources/RaftHTTP/Services/AttachmentsAndNotificationsService.swift	9

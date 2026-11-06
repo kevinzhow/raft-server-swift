@@ -84,7 +84,7 @@ extension EmailLoginDirectory {
             guard flagged else {
                 return Self.json(403, "{\"error\":\"The hosted runtime provider is not enabled for this server\",\"code\":\"agent_runtime_provider_disabled\"}")
             }
-            guard hostedProviderConfigured() else {
+            guard agentsRuntimeStore.hostedProviderConfigured() else {
                 return Self.json(409, "{\"error\":\"The hosted runtime provider is not configured for this deployment\",\"code\":\"agent_runtime_provider_not_configured\"}")
             }
             hostedProvider = provider

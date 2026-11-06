@@ -108,7 +108,6 @@ public struct AgentMigrationStatusService: Sendable {
     private let sessionUserId: @Sendable (String?) -> String?
     private let oauth: OAuthLedger
     private let agents: AgentsRuntimeStore
-    private let machines: MachinesAndComputersStore
     private let emitRealtime: @Sendable (_ room: String, _ event: String, _ payload: String) -> Void
     private let cancelDispatch: @Sendable (
         _ machineId: String,
@@ -123,7 +122,6 @@ public struct AgentMigrationStatusService: Sendable {
         sessionUserId: @escaping @Sendable (String?) -> String?,
         oauth: OAuthLedger,
         agents: AgentsRuntimeStore,
-        machines: MachinesAndComputersStore,
         emitRealtime: @escaping @Sendable (String, String, String) -> Void,
         cancelDispatch: @escaping @Sendable (String, String, String, String, Bool) -> Void,
         now: @escaping @Sendable () -> Date = { Date() }
@@ -131,7 +129,6 @@ public struct AgentMigrationStatusService: Sendable {
         self.sessionUserId = sessionUserId
         self.oauth = oauth
         self.agents = agents
-        self.machines = machines
         self.emitRealtime = emitRealtime
         self.cancelDispatch = cancelDispatch
         self.now = now
@@ -229,7 +226,7 @@ public struct AgentMigrationStatusService: Sendable {
         if let hosted = agents.hostedMigrations[agentId] {
             return AgentMigrationStatusResponse(migration: .hosted(HostedAgentMigrationStatus(hosted)))
         }
-        if let machine = machines.machineMigration(agentId: agentId, serverId: serverId) {
+        if let machine = agents.machineMigration(agentId: agentId, serverId: serverId) {
             return AgentMigrationStatusResponse(migration: .machine(MachineAgentMigrationStatus(machine)))
         }
         return AgentMigrationStatusResponse()
@@ -278,7 +275,7 @@ public struct AgentMigrationStatusService: Sendable {
             break
         }
 
-        switch machines.cancelMachineMigration(
+        switch agents.cancelMachineMigration(
             agentId: agentId,
             serverId: serverId,
             migrationRef: migrationRef,

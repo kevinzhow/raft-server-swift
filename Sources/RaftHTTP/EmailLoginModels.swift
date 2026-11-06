@@ -333,13 +333,6 @@ struct OnboardingAdoptionChange {
         var after: String?
     }
 
-struct MigrationArrivalContext {
-        var supportRef: String
-        var sourceMachineId: String
-        var agentId: String
-        var archiveCallback: (@Sendable (_ machineId: String, _ migrationRef: String, _ agentId: String) async throws -> Void)?
-    }
-
 struct AttachedComputer {
         let id: String
         let serverId: String

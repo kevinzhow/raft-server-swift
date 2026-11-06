@@ -20,7 +20,6 @@ private func makeService(
         sessionUserId: { _ in userId },
         oauth: directory.oauth,
         agents: directory.agentsRuntimeStore,
-        machines: directory.machinesAndComputersStore,
         emitRealtime: { _, _, _ in },
         cancelDispatch: { _, _, _, _, _ in },
         now: { now }
@@ -40,9 +39,9 @@ private func makeService(
         targetMachineId: "target-machine",
         transportGeneration: "generation-machine"
     )
-    directory.machinesAndComputersStore.machineMigrations = [machineRef: record]
+    directory.agentsRuntimeStore.machineMigrations = [machineRef: record]
 
-    let store = directory.machinesAndComputersStore
+    let store = directory.agentsRuntimeStore
     let winners = await withTaskGroup(of: Bool.self) { group in
         for _ in 0..<8 {
             group.addTask {
@@ -134,7 +133,7 @@ private func makeService(
         targetMachineId: "target-bool",
         transportGeneration: "generation-bool"
     )
-    directory.machinesAndComputersStore.machineMigrations = [machineRef: record]
+    directory.agentsRuntimeStore.machineMigrations = [machineRef: record]
 
     // A JSON `true` reached the retired `as? NSNumber` cast as 1.
     let body = try JSONDecoder().decode(

@@ -248,6 +248,48 @@ extension EmailLoginDirectory {
         )
     }
 
+    /// Machine-migration transport (the Computer callbacks), agent machine
+    /// assignment and agent credentials. The agent, machine and OAuth rows come
+    /// from their stores; the session lookup, the realtime emitter, the agent
+    /// credential mint and the migration-receipt DM (message-send domain) enter
+    /// as closures.
+    public var agentHostedMigration: AgentHostedMigrationService {
+        AgentHostedMigrationService(
+            agents: agentsRuntimeStore,
+            machines: machinesAndComputersStore,
+            oauth: oauth,
+            dependencies: AgentHostedMigrationDependencies(
+                sessionUserId: { [self] in sessionUserId(authorization: $0) },
+                emitRealtime: { [self] room, event, payload in emitRealtime(room, event, payload) },
+                mintAgentCredential: { [self] agentId, scopes, name in
+                    mintAgentCredential(agentId: agentId, scopes: scopes, name: name)
+                },
+                createMigrationReceiptDm: { [self] agentId, serverId, supportRef in
+                    messageSend.createMigrationReceiptDm(agentId: agentId, serverId: serverId, supportRef: supportRef)
+                }
+            )
+        )
+    }
+
+    /// Migrating an agent (hosted and Computer), the hosted confirmation, the
+    /// private agent surfaces, scopes, workspace tree/read, archived workspace,
+    /// delete and the runtime verbs. The session lookup and the realtime emitter
+    /// enter as closures.
+    public var agentMachineMigrationControl: AgentMachineMigrationControlService {
+        AgentMachineMigrationControlService(
+            agents: agentsRuntimeStore,
+            machines: machinesAndComputersStore,
+            channels: serversAndChannelsStore,
+            messages: messagesAndThreadsStore,
+            tasks: tasksAndRemindersStore,
+            oauth: oauth,
+            dependencies: AgentMachineMigrationControlDependencies(
+                sessionUserId: { [self] in sessionUserId(authorization: $0) },
+                emitRealtime: { [self] room, event, payload in emitRealtime(room, event, payload) }
+            )
+        )
+    }
+
     /// The Computer-key lookup `/daemon/connect` and the Computer fleet share.
     public func computerCredential(apiKey: String) -> ComputerCredentialLookup {
         machinesAndComputersStore.computerCredential(apiKey: apiKey)

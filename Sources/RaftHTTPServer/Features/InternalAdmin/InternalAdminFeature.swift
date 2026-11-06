@@ -441,93 +441,140 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
         // The resumable control manifest is the one JSON surface allowed past the
         // 100 KB global parser: 512 KB manifest plus envelope headroom.
         computer.on(.post, "agent-migrations", "by-id", ":migrationId", "resumable", "control", maxBodySize: "640kb") { request async throws -> Response in
-            routeResponse(services.emailAccounts.putMigrationControlManifest(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            // The route publishes the manifest text exactly as sent, so the
+            // service takes the raw body.
+            try await respond {
+                try services.emailAccounts.agentHostedMigration.putMigrationControlManifest(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? "",
+                    body: try await request.bodyText(default: "{}")
+                )
+            }
         }
-        computer.get("agent-migrations", "by-id", ":migrationId", "resumable", "control") { request -> Response in
-            routeResponse(services.emailAccounts.getMigrationControlManifest(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? ""
-            ))
+        computer.get("agent-migrations", "by-id", ":migrationId", "resumable", "control") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentHostedMigration.getMigrationControlManifest(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? ""
+                )
+            }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "resumable", "chunks", ":chunkIndex", "receipt") { request async throws -> Response in
-            routeResponse(services.emailAccounts.putMigrationChunkReceipt(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? "",
-                chunkIndex: Int(request.parameters.get("chunkIndex") ?? "") ?? -1,
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = try await migrationBody(MigrationChunkReceiptRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.agentHostedMigration.putMigrationChunkReceipt(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? "",
+                    chunkIndex: Int(request.parameters.get("chunkIndex") ?? "") ?? -1,
+                    request: body
+                )
+            }
         }
-        computer.get("agent-migrations", "by-id", ":migrationId", "resumable", "chunks") { request -> Response in
-            routeResponse(services.emailAccounts.migrationChunkStatus(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? ""
-            ))
+        computer.get("agent-migrations", "by-id", ":migrationId", "resumable", "chunks") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentHostedMigration.migrationChunkStatus(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? ""
+                )
+            }
         }
-        computer.post("agent-migrations", "by-id", ":migrationId", "resumable", "upload-complete") { request -> Response in
-            routeResponse(services.emailAccounts.completeMigrationUpload(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? ""
-            ))
+        computer.post("agent-migrations", "by-id", ":migrationId", "resumable", "upload-complete") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentHostedMigration.completeMigrationUpload(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? ""
+                )
+            }
         }
-        computer.get("agent-migrations", "by-id", ":migrationId") { request -> Response in
-            routeResponse(services.emailAccounts.getMigrationTargetView(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? ""
-            ))
+        computer.get("agent-migrations", "by-id", ":migrationId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentHostedMigration.getMigrationTargetView(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? ""
+                )
+            }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "start-transfer") { request async throws -> Response in
-            routeResponse(services.emailAccounts.startMigrationTransfer(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = try await migrationBody(MigrationGenerationRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.agentHostedMigration.startMigrationTransfer(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? "",
+                    request: body
+                )
+            }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "flip-machine") { request async throws -> Response in
-            routeResponse(services.emailAccounts.flipMigrationMachine(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = try await migrationBody(MigrationGenerationRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.agentHostedMigration.flipMigrationMachine(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? "",
+                    request: body
+                )
+            }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "arrived") { request async throws -> Response in
-            routeResponse(await services.emailAccounts.completeMigrationArrival(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = try await migrationBody(MigrationArrivalRequest.self, request)
+            return try await respond {
+                try await services.emailAccounts.agentHostedMigration.completeMigrationArrival(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? "",
+                    request: body
+                )
+            }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "transport-lost") { request async throws -> Response in
-            routeResponse(services.emailAccounts.markMigrationTransportLostFromComputer(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = try await migrationBody(MigrationTransportLostRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.agentHostedMigration.markMigrationTransportLostFromComputer(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? "",
+                    request: body
+                )
+            }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "cancel-ack") { request async throws -> Response in
-            routeResponse(services.emailAccounts.acknowledgeMigrationCancellation(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = try await migrationBody(MigrationCancelAckRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.agentHostedMigration.acknowledgeMigrationCancellation(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? "",
+                    request: body
+                )
+            }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "resumable", "source-quiesced") { request async throws -> Response in
-            routeResponse(services.emailAccounts.recordMigrationSourceQuiesced(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = try await migrationBody(MigrationSourceQuiescedRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.agentHostedMigration.recordMigrationSourceQuiesced(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? "",
+                    request: body
+                )
+            }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "resumable", "source-progress") { request async throws -> Response in
-            routeResponse(services.emailAccounts.recordMigrationSourceProgress(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            // The progress body is stored as sent, so the service takes the raw text.
+            try await respond {
+                try services.emailAccounts.agentHostedMigration.recordMigrationSourceProgress(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? "",
+                    body: try await request.bodyText(default: "{}")
+                )
+            }
         }
+    }
+
+    /// Decodes one typed migration callback body even when the client omitted a
+    /// JSON `Content-Type`: the retired handlers parsed the raw body regardless
+    /// of the header. A body that is not JSON reads as the empty request, which
+    /// is the `?? [:]` the old parser used.
+    private func migrationBody<T: Decodable>(_ type: T.Type, _ request: Request) async throws -> T {
+        if let decoded = try? await request.content.decode(type) { return decoded }
+        let empty = try JSONDecoder().decode(type, from: Data("{}".utf8))
+        guard let data = try await request.body.collect() else { return empty }
+        return (try? JSONDecoder().decode(type, from: data)) ?? empty
     }
 }
 

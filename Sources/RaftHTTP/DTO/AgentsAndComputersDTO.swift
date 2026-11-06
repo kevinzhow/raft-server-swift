@@ -92,43 +92,6 @@ public struct AgentCreatorPatchDTO: Codable, Sendable, Equatable, AgentsAndCompu
     }
 }
 
-/// `POST /api/agents/:id/assign-machine` request body.
-///
-/// The directory requires the `machineId` key to be present: `null` clears the
-/// assignment and a string assigns a Computer. `includesMachineID` records that
-/// presence so the round trip can re-emit `{"machineId":null}` instead of
-/// dropping the key and turning an unassign into `machineId is required`.
-public struct AgentAssignMachineDTO: Codable, Sendable, Equatable, AgentsAndComputersRequestDTO {
-    public var machineId: String?
-    /// `true` when the request carried the `machineId` key, including `null`.
-    public var includesMachineID: Bool
-
-    private enum CodingKeys: String, CodingKey {
-        case machineId
-    }
-
-    public init(machineId: String?) {
-        self.machineId = machineId
-        self.includesMachineID = true
-    }
-
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        includesMachineID = container.contains(.machineId)
-        machineId = includesMachineID ? try container.decodeIfPresent(String.self, forKey: .machineId) : nil
-    }
-
-    public func encode(to encoder: any Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        guard includesMachineID else { return }
-        if let machineId {
-            try container.encode(machineId, forKey: .machineId)
-        } else {
-            try container.encodeNil(forKey: .machineId)
-        }
-    }
-}
-
 /// `PUT /api/agents/:id/hosted-runtime/model` request body.
 ///
 /// The directory reads `model` as a model id or `null`, and treats a missing
