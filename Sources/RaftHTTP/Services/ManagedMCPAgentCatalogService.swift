@@ -99,8 +99,9 @@ public struct ManagedMCPAgentCatalogService: Sendable {
     }
 
     public func legacyReminderCreate(
-        authorization: String?, agentId: String, body: ReminderCreateRequest?
-    ) throws -> ReminderEnvelopeResponse {
+        authorization: String?, agentId: String, body: ReminderCreateRequest?,
+        delivery: ReminderDeliveryPreparation
+    ) throws -> ReminderCreateCompletion {
         let machine = try machineIdentity(authorization)
         guard let agent = agentOnServer(agentId, serverId: machine.serverId) else {
             throw ManagedMCPAgentCatalogError.agentNotFound
@@ -109,7 +110,7 @@ public struct ManagedMCPAgentCatalogService: Sendable {
         guard agent.runtime != "external" else {
             throw ManagedMCPAgentCatalogError.externalAgentsCannotRemind
         }
-        return try create(serverId: machine.serverId, ownerAgentId: agentId, body: body)
+        return try create(serverId: machine.serverId, ownerAgentId: agentId, body: body, delivery: delivery)
     }
 
     public func legacyReminderCancel(
@@ -231,14 +232,14 @@ public struct ManagedMCPAgentCatalogService: Sendable {
     }
 
     public func agentApiReminderCreate(
-        authorization: String?, body: ReminderCreateRequest?
-    ) throws -> ReminderEnvelopeResponse {
+        authorization: String?, body: ReminderCreateRequest?, delivery: ReminderDeliveryPreparation
+    ) throws -> ReminderCreateCompletion {
         try requireCapability(authorization, "tasks")
         let agent = try credentialAgent(authorization)
         guard agent.runtime != "external" else {
             throw ManagedMCPAgentCatalogError.externalAgentsCannotRemind
         }
-        return try create(serverId: agent.serverId, ownerAgentId: agent.id, body: body)
+        return try create(serverId: agent.serverId, ownerAgentId: agent.id, body: body, delivery: delivery)
     }
 
     // MARK: - Saved message (`POST /api/channels/saved`)
@@ -309,8 +310,9 @@ public struct ManagedMCPAgentCatalogService: Sendable {
     }
 
     private func create(
-        serverId: String, ownerAgentId: String, body: ReminderCreateRequest?
-    ) throws -> ReminderEnvelopeResponse {
+        serverId: String, ownerAgentId: String, body: ReminderCreateRequest?,
+        delivery: ReminderDeliveryPreparation
+    ) throws -> ReminderCreateCompletion {
         guard let title = body?.title, let request = body else {
             throw ManagedMCPAgentCatalogError.titleRequired
         }
@@ -324,9 +326,30 @@ public struct ManagedMCPAgentCatalogService: Sendable {
             channelId: request.channelId, threadId: request.threadId,
             actorType: "agent", actorId: ownerAgentId
         )
-        return ReminderEnvelopeResponse(
+        let response = ReminderEnvelopeResponse(
             reminder: ReminderSummary(id: id, status: "scheduled", version: 1, title: title),
             ownerAgentId: ownerAgentId
+        )
+        // The reminder and its scheduled record are committed before recipient
+        // reads. A missing transport skips only these post-commit lookups.
+        guard case .prepare = delivery,
+              let agent = oauth.agentRuntimeInfo(id: ownerAgentId)
+        else { return ReminderCreateCompletion(response: response, scheduledDelivery: nil) }
+        var recipients: Set<String> = []
+        if let creator = agent.creatorUserId { recipients.insert(creator) }
+        for member in oauth.memberRoles(serverId: agent.serverId)
+        where member.role == "owner" || member.role == "admin" {
+            recipients.insert(member.userId)
+        }
+        guard !recipients.isEmpty else {
+            return ReminderCreateCompletion(response: response, scheduledDelivery: nil)
+        }
+        return ReminderCreateCompletion(
+            response: response,
+            scheduledDelivery: ReminderScheduledDelivery(
+                recipientUserIds: recipients,
+                payload: ReminderRealtimePayload(reminderId: id, ownerAgentId: ownerAgentId)
+            )
         )
     }
 

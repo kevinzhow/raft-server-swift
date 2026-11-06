@@ -2195,3 +2195,9 @@ RFC 074 personal assistant：
 - 最后两个 Service 目录构造器及 Dependencies/live 删除；Assignments 直接持 auth/raw ownership/catalog/probe/notice/membership，Tools 直接持 task credentials/lookup/suppression/relay。原 Execute 的 writer/channel 包装本就直通 AgentTaskCredentials，仍用 writer 与 nil legacy id，不额外强制 tasks scope或改错误态；mute Lookup 仍用 nil legacy id/空 scopes。
 - Capability、credential、channel、membership 次序、fallback/grant、raw assistant owner、task 排序/pagination/full-summary JSON 条件保持。Probe 规则只提取一次供 Lifecycle 与 Assignments 复用，public/private/thread/residue 接受集不变。
 - SystemNoticeAppender 仍调用原 Messages.appendMessage，allocator/local append/OAuth mirror/born-read cursor/version 在一次 Messages 事务内，顺序 Messages→OAuth；typed membership ctor仅绑定旧 auth/visibility/notice。公开 notice/mute/unread/task 字节及混合 writers/history/resume、竞争附件和 role notice 回归保持。
+
+### Reminder create 的提交后 delivery
+
+- 两个 create 仍按原 auth/rollout/body 判定后写 reminder 与 scheduled record，再按原序读取 agent、creator、owner/admin roles，以 Set 去重产生 typed delivery。缺 agent 或 recipients 为空不发，不加 deleted/member 条件，也不对 Set 排序。HTTP 仍仅原 reminder envelope，payload 键序仍 reminderId→ownerAgentId。
+- 两条 Feature 仅向固定可选 Fallback Hub 发帧；nil Hub 不准备提交后 recipients，提醒仍创建，不能改发当前 relay slot。真实 HTTP/Socket.IO 的同十个参数场景在旧 helper 和新 completion 上通过：creator/admin 去重、creator 双 session、member/guest/另一 server 排除、两入口、拒绝无帧/无记录、nil Hub/live relay、固定 Hub/空 slot、注册后 relay 换 Hub。
+- 新 API 的编译红只证明接口迁移，旧网络基线原本绿；未声称修复线上 wire bug。确定性 commit→recipient-read 并发交错未新增测试钩子，保持顺序由代码直接核对；既有 CRUD、rollout、字节和 Store version/event/CAS 验收继续覆盖。

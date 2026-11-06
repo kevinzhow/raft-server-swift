@@ -81,16 +81,20 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
         }
         agentApi.post("reminders") { request async throws -> Response in
             let body = await jsonRequestBody(ReminderCreateRequest.self, request, emptyDefault: "{}")
+            let hub = services.realtime
             return try await respond {
-                let created = try services.emailAccounts.managedMCPAgentCatalog.agentApiReminderCreate(
+                let completion = try services.emailAccounts.managedMCPAgentCatalog.agentApiReminderCreate(
                     authorization: request.headers[.authorization],
-                    body: body
+                    body: body,
+                    delivery: hub == nil ? .omit : .prepare
                 )
-                publishReminderEvent(
-                    event: "reminder:scheduled", reminderId: created.reminder.id,
-                    agentId: created.ownerAgentId, services: services
-                )
-                return created
+                if let hub, let delivery = completion.scheduledDelivery {
+                    let payload = delivery.payload.jsonBody.render()
+                    for userId in delivery.recipientUserIds {
+                        hub.emit(room: "user:\(userId)", event: ReminderScheduledDelivery.eventName, payloadJSON: payload)
+                    }
+                }
+                return completion.response
             }
         }
         agentApi.get("users", "info") { request async throws -> Response in
@@ -918,26 +922,4 @@ private func parseAttachmentMultipart(data: Data, boundary: String) -> (channelI
     }
     guard let channelId, !channelId.isEmpty else { return nil }
     return (channelId, files)
-}
-
-private func publishReminderEvent(
-    event: String, reminderId: String, agentId: String, services: FallbackServices
-) {
-    guard let hub = services.realtime,
-          let agent = services.emailAccounts.oauth.agentRuntimeInfo(id: agentId)
-    else { return }
-    var recipients: Set<String> = []
-    if let creator = agent.creatorUserId { recipients.insert(creator) }
-    for member in services.emailAccounts.oauth.memberRoles(serverId: agent.serverId)
-    where member.role == "owner" || member.role == "admin" {
-        recipients.insert(member.userId)
-    }
-    guard !recipients.isEmpty else { return }
-    let payload = OrderedJSON.object([
-        OrderedJSONField("reminderId", reminderId),
-        OrderedJSONField("ownerAgentId", agentId),
-    ]).render()
-    for userId in recipients {
-        hub.emit(room: "user:\(userId)", event: event, payloadJSON: payload)
-    }
 }
