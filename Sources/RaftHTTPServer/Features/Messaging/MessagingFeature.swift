@@ -206,12 +206,15 @@ public struct MessagingFeature: RouteCollection, Sendable {
             ))
         }
         actions.post(":messageId", "execute") { request async throws -> Response in
-            routeResponse(services.emailAccounts.executeActionCard(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                messageId: request.parameters.get("messageId") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ActionCardExecuteRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.actionCardIntegrationRegister.executeActionCard(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    messageId: request.parameters.get("messageId") ?? "",
+                    body: body
+                )
+            }
         }
         actions.post(":messageId", "mark-executed") { request async throws -> Response in
             let body = (try? await request.content.decode(MarkActionCardExecutedRequest.self))

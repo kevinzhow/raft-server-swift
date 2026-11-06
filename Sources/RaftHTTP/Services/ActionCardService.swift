@@ -403,7 +403,10 @@ extension EmailLoginDirectory {
             oauth: oauth,
             sessionUserId: { self.sessionUserId(authorization: $0) },
             cardWriteDecision: { userId, card in
-                self.actionCardWriteDecision(userId: userId, card: card)
+                self.actionCardIntegrationRegister.actionCardWriteDecision(
+                    userId: userId,
+                    card: card
+                )
             },
             mcpIdentity: { authorization in
                 FeedbackLocatorService(directory: self).identityResolution(

@@ -87,11 +87,12 @@ func respond(
 /// A success body that owns its exact published order and whose headers depend
 /// on the value just produced.
 ///
-/// The task-create idempotent replay is the current caller: a first write uses
-/// the standard header set and a replay of the stored body publishes the
-/// legacy `Content-Type` / `Cache-Control` set without `X-Robots-Tag`. Keeping
-/// this overload separate from the `Encodable` one is what lets an ordered DTO
-/// carry a payload-dependent header policy.
+/// The task-create idempotent replay and the action-card prepare replay are the
+/// callers: a first write uses the standard header set and a replay of the
+/// stored body publishes the legacy `Content-Type` / `Cache-Control` set without
+/// `X-Robots-Tag`. A DTO that carries this policy conforms to
+/// `JSONBodyConvertible` only (not `Encodable`), so the overload stays
+/// unambiguous against the `Encodable` one and never falls back to sorted keys.
 func respond<DTO: JSONBodyConvertible>(
     status: UInt = 200,
     headers: @escaping (DTO) -> ResponseHeaders,

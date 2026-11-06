@@ -789,77 +789,26 @@ public struct ActionCardMarketplaceService: Sendable {
         return .missingScope(scope: scope)
     }
 
-    private enum TaskAuthResult {
-        case missingAuthorization
-        case invalidCredential
-        case ok(agentId: String, serverId: String)
+    private var credentials: AgentTaskCredentials {
+        AgentTaskCredentials(agents: agents, machines: machines, channels: channels, oauth: oauth)
     }
 
-    /// The legacy `agentTaskAuth` reading order: credential path first (a live
-    /// credential without `tasks` is the published invalid-token 401), then the
-    /// machine key plus the path agent id.
     private func taskAuth(
         _ authorization: String?,
         legacyAgentId: String?
-    ) -> TaskAuthResult {
-        guard let token = bearerToken(authorization) else { return .missingAuthorization }
-        let credential = agents.agentCredential(token: token)
-        let machine = machines.machines.first { $0.apiKey == token }
-        if let credential, credential.revokedAt == nil {
-            guard credential.scopes.contains("tasks") else { return .invalidCredential }
-            guard let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else {
-                return .invalidCredential
-            }
-            return .ok(agentId: agent.id, serverId: agent.serverId)
-        }
-        if let machine, let legacyAgentId,
-           let agent = oauth.agentRuntimeInfo(id: legacyAgentId), !agent.deleted,
-           agent.serverId == machine.serverId {
-            return .ok(agentId: agent.id, serverId: agent.serverId)
-        }
-        return .invalidCredential
+    ) -> AgentTaskCredentials.AuthOutcome {
+        credentials.auth(authorization: authorization, legacyAgentId: legacyAgentId)
     }
 
-    /// The legacy `agentTaskWriter`: write routes accept both an `sk_agent_*`
-    /// credential and the legacy machine key plus path agent id.
     private func taskWriter(
         _ authorization: String?,
         legacyAgentId: String?
     ) -> (agentId: String, serverId: String)? {
-        guard let token = bearerToken(authorization) else { return nil }
-        let credential = agents.agentCredential(token: token)
-        let machine = machines.machines.first { $0.apiKey == token }
-        if let credential, credential.revokedAt == nil,
-           let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted {
-            return (agent.id, agent.serverId)
-        }
-        if let machine, let legacyAgentId,
-           let agent = oauth.agentRuntimeInfo(id: legacyAgentId), !agent.deleted,
-           agent.serverId == machine.serverId {
-            return (agent.id, agent.serverId)
-        }
-        return nil
+        credentials.writer(authorization: authorization, legacyAgentId: legacyAgentId)
     }
 
-    /// The legacy `agentTaskChannel` reference resolution.
     private func taskChannel(serverId: String, agentId: String, reference: String) -> String? {
-        let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        let channelRows = channels.postableChannels
-        if trimmed.hasPrefix("#") {
-            let name = String(trimmed.dropFirst())
-            for (id, channel) in channelRows {
-                guard channel.serverId == serverId, channel.name == name, channel.deletedAt == nil else { continue }
-                guard channel.kind == "channel"
-                    || channel.memberIds.contains(agentId)
-                    || oauth.channelAgentIds(channelId: id).contains(agentId)
-                else { continue }
-                return id
-            }
-            return nil
-        }
-        guard channelRows[trimmed]?.serverId == serverId else { return nil }
-        return trimmed
+        credentials.channel(serverId: serverId, agentId: agentId, reference: reference)
     }
 
     /// Resolves `@handle` to exactly one visible agent or human channel member.
@@ -901,47 +850,5 @@ public struct ActionCardMarketplaceService: Sendable {
         case .conflict(let body):
             throw ActionCardMarketplaceError.idempotencyKeyReused(body: body)
         }
-    }
-}
-
-extension EmailLoginDirectory {
-    // Task credential/channel/freshness forwarders for the services that have
-    // not migrated yet. The policy lives in `ActionCardExecuteService`; these
-    // only keep the legacy signatures those callers already hold.
-
-    func agentTaskAuth(authorization: String?, legacyAgentId: String?) -> AgentTaskAuthResult {
-        do {
-            let identity = try actionCardExecute.taskAuth(
-                authorization: authorization,
-                legacyAgentId: legacyAgentId
-            )
-            return .ok(agentId: identity.agentId, serverId: identity.serverId)
-        } catch let error as any DomainError {
-            return .refused(Self.json(Int(error.status), error.publishedErrorBody.render()))
-        } catch {
-            return .refused(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
-        }
-    }
-
-    func agentTaskWriter(_ authorization: String?, legacyAgentId: String?) -> (agentId: String, serverId: String)? {
-        actionCardExecute.taskWriter(authorization: authorization, legacyAgentId: legacyAgentId)
-    }
-
-    func agentTaskChannel(serverId: String, agentId: String, reference: String) -> String? {
-        actionCardExecute.taskChannel(serverId: serverId, agentId: agentId, reference: reference)
-    }
-
-    func taskWriteFreshnessHold(
-        agentId: String,
-        channelId: String,
-        seenUpToSeq: Int?,
-        actionKey: String
-    ) -> AgentTaskWriteHoldResponse? {
-        actionCardExecute.taskWriteHold(
-            agentId: agentId,
-            channelId: channelId,
-            seenUpToSeq: seenUpToSeq,
-            actionKey: actionKey
-        )
     }
 }

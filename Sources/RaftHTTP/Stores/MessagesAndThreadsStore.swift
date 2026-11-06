@@ -845,4 +845,24 @@ final class MessagesAndThreadsStore: @unchecked Sendable {
             readCursor: storage.agentChannelReadCursors["\(channelId)\n\(agentId)"] ?? (seq: 0, version: 0)
         )
     }
+
+    // MARK: - Action-card reply rows
+
+    /// The first human-message id in `channelId` that starts with `idPrefix`,
+    /// in one critical section. The action-card DM-thread resolver uses it as
+    /// the legacy `humanMessageRows.first` anchor lookup.
+    func humanMessageId(channelId: String, idPrefix: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.humanMessageRows.first {
+            $0.channelId == channelId && $0.id.hasPrefix(idPrefix)
+        }?.id
+    }
+
+    /// Appends one mention row under the store lock.
+    func appendMention(_ mention: StoredMention) {
+        lock.lock()
+        storage.storedMentions.append(mention)
+        lock.unlock()
+    }
 }

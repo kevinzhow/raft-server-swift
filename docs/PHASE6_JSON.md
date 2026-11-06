@@ -116,8 +116,9 @@ return try await respond(
 
 `respond(status:headers:_:)` over `Encodable` prints sorted keys, so an ordered
 DTO could not carry a legacy header set that depends on the value just produced.
-The agent task-create idempotent replay needs both: a first write publishes the
-standard JSON header set, while a replay of the stored body publishes the legacy
+The agent task-create idempotent replay and the action-card prepare replay
+(`ActionCardIntegrationRegisterService.prepareActionCard`) need both: a first
+write publishes the standard JSON header set, while a replay of the stored body publishes the legacy
 `Content-Type` and `Cache-Control: no-store` set without `X-Robots-Tag`.
 `Respond.swift` gained one overload for that pair; it renders
 `JSONBodyConvertible.jsonBody` and passes the DTO to the header closure.
@@ -137,3 +138,5 @@ The `Encodable` overloads are unchanged and no existing caller combines both
 protocols. A future DTO that conforms to both would have to disambiguate the
 overload explicitly; `ActionCardTaskCreateResponse` conforms only to
 `JSONBodyConvertible`, so its member order cannot fall back to sorted keys.
+`ActionCardPrepareResponse` follows the same rule (it dropped its `Encodable`
+conformance when the two slices' overloads were unified into this one).
