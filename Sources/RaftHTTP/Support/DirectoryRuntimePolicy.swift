@@ -3,7 +3,9 @@ import Foundation
 public struct DirectoryRuntimePolicy: Sendable {
     let profiles: AuthProfileStore
 
-    public init(directory: EmailLoginDirectory) { profiles = directory.authProfileStore }
+    init(profiles: AuthProfileStore) { self.profiles = profiles }
+
+    public init(auth: AuthCoreService) { self.init(profiles: auth.store) }
 
     public var experimentalSurfacesDisabled: Bool {
         let override = profiles.experimentalSurfacesDisabledOverride

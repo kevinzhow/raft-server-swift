@@ -24,7 +24,7 @@ Current work is **Phase 6 architecture cleanup** ([docs/PLAN.md](docs/PLAN.md), 
 
 - Typed domain payloads and errors now cover the public/OAuth surfaces; response mapping stays in Features.
 - Request-body helpers preserve each route's established decoding and authentication order; compatibility input parsers retain duplicate-key and numeric behavior.
-- Directory field forwarding and its global lock are gone; store/ledger isolation and non-daemon checked boundaries are in place. Remaining factory captures, service construction cycles and Feature ledger calls must move to explicit domain composition before the final container migration.
+- Directory field forwarding and its global lock are gone; store/ledger isolation and non-daemon checked boundaries are in place. Remaining factory captures, broad initialization dependencies and Feature ledger calls must move to explicit domain composition before the final container migration; the credential-use and message-suppression construction loops have been separated.
 
 Domain state is currently in-memory and resets on restart. With `DATABASE_URL` set, `/health` runs a Postgres `SELECT 1` liveness check; without it the process keeps the 503 body.
 

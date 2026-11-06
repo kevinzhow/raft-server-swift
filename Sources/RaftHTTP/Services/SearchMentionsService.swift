@@ -168,8 +168,8 @@ struct SearchMentionsDependencies: Sendable {
         SearchMentionsDependencies(
             sessionUserId: { source.sessionUserId(authorization: $0) },
             machineIdForCredential: { source.machineIdForCredential(authorization: $0) },
-            agentCredential: { authorization in
-                AgentCredentialLookup(directory: source).agentCredentialAgent(authorization).map {
+            agentCredential: { [lookup = source.agentCredentialLookup] authorization in
+                lookup.agentCredentialAgent(authorization).map {
                     SearchMentionsAgentCredential(agentId: $0.agentId, scopes: $0.scopes)
                 }
             },

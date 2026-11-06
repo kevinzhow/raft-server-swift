@@ -2131,3 +2131,9 @@ RFC 074 personal assistant：
 - Spawn failure 保留公开 setter、原对象 identity、code 驱动分类及本体/直接 cause 两节点上限；自 cause 不重入自己的锁。Probe catch 的 status、code、cleanup 和 errorMessage 来自一次 payload 快照，不再在仅 status 并发变化时拼出不可能的结果；ABORT 和原错误对象传播不变。
 - Provider fetch 继续返回原 response 对象，text/clone 各捕获一次 body；公开 body 可变，clone 的 identity 规则及 nil/空 body 文本不变。替换 bytesNoCopy Data 时，旧 Data 的自定义 deallocator 在 Mutex 外最后释放，可同步等待另一个真实线程读取新 body 而不死锁。
 - Account-usage collector 一次读取 installation kind/command 决定该操作，再将同一个 installation 对象交给异步 reader；reader 仍能观察后续 setter 变化。各 setter 独立原子，不承诺多次 setter 或 parent/cause 整图事务。
+
+### 常驻策略服务的动态 owner 读取
+
+- Credential use 仍先做原 live-scope/revoked/throttle 检查与 lastUsedAt/lastSeenAt 更新，然后在锁外广播 external agent 的原 `agent:seen` 帧。真实 Socket.IO 验收覆盖第一次 use、节流期间不重复、live throttle override 与 emitter 卸载/重装；常驻 lookup 不冻结 relay slot。Legacy revoked read 的接受/不盖戳规则保持。
+- 同一 RuntimePolicy 或 MobileEmail helper 在构造后仍能看到 feature flag、unsubscribe secret 与 callback 的后续配置变化；HTML、签名、授权与取消 callback 的重入顺序不变。三 helper 已改显式 owner/Service 构造，移除目录形参不会缓存配置。
+- Execute/send/inbox 的 suppression 每次读当前 receiver 的 prefs 与 message mentions；muteFromSeq、个人 mention 穿透及原 actor 身份保持。先 mute、再插个人 mention、再 unmute 的同 app 公开请求仍及时反映变化，31 个已有公开路径回归继续通过。

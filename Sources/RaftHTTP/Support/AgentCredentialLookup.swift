@@ -3,12 +3,12 @@ import Foundation
 public struct AgentCredentialLookup: Sendable {
     let agents: AgentsRuntimeStore
     let channels: AgentChannelsService
-    let surface: AgentPrivateSurfaceService
+    let credentialUse: AgentCredentialUseService
 
-    public init(directory: EmailLoginDirectory) {
-        agents = directory.agentsRuntimeStore
-        channels = directory.agentChannels
-        surface = directory.agentSurface
+    init(agents: AgentsRuntimeStore, channels: AgentChannelsService, credentialUse: AgentCredentialUseService) {
+        self.agents = agents
+        self.channels = channels
+        self.credentialUse = credentialUse
     }
 
     func profileReadOutcome(_ authorization: String?) -> ProfileAgentReadOutcome {
@@ -16,7 +16,7 @@ public struct AgentCredentialLookup: Sendable {
         let token = String(authorization.dropFirst("Bearer ".count))
         // This legacy read requires the read scope; it does not reject revocation.
         guard let agentId = agents.profileReadCredential(token: token) else { return .invalidCredential }
-        surface.recordAgentCredentialUse(token: token)
+        credentialUse.record(token: token)
         return .success(agentId: agentId)
     }
 

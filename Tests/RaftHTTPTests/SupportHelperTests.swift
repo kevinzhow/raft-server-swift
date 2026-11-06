@@ -38,7 +38,7 @@ import Testing
 }
 
 @Test func supportHelperUnsubscribeKeepsInvalidHTML() {
-    let result = MobileAppEmailUnsubscribe(directory: EmailLoginDirectory()).mobileAppEmailUnsubscribePage(token: nil)
+    let result = MobileAppEmailUnsubscribe(notifications: EmailLoginDirectory().nativeNotifications).mobileAppEmailUnsubscribePage(token: nil)
     if case .invalidLink(let html) = result {
         #expect(html.contains("This unsubscribe link is invalid."))
     } else { Issue.record("Missing token must publish the invalid-link outcome") }

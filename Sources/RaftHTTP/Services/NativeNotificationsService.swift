@@ -36,6 +36,11 @@ public struct NativeNotificationsService: Sendable {
         self.now = now
     }
 
+    /// Assembles the email workflow from its existing notification/profile owners.
+    func mobileEmailUnsubscribeService() -> MobileAppEmailUnsubscribe {
+        MobileAppEmailUnsubscribe(profiles: profiles, notifications: settings)
+    }
+
     // MARK: - Enrollment
 
     /// `POST /api/notifications/enrollment-grants`. The opaque grant is

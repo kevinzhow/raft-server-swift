@@ -239,6 +239,62 @@ struct RealtimeTransportTests {
     #expect(web.textFrames.contains { $0.contains("\"notification:push\"") } == false)
 }
 
+@Test func credentialReadPublishesLivePresenceFramesWithDynamicThrottleAndRelay() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111643"
+    let serverId = "33333333-3333-4333-8333-333333333668"
+    accounts.addAccount(id: ownerId, email: "credential-wire@slock.test", password: "password123")
+    accounts.oauth.addOwnedServer(id: serverId, slug: "credential-wire", name: "Credential Wire", ownerId: ownerId)
+    let external = accounts.oauth.createAgent(serverId: serverId, name: "wire-external", runtime: "external")
+    let managed = accounts.oauth.createAgent(serverId: serverId, name: "wire-managed", runtime: "codex")
+    let externalKey = accounts.mintAgentCredential(agentId: external, scopes: ["read"], name: "wire-external")
+    let managedKey = accounts.mintAgentCredential(agentId: managed, scopes: ["read"], name: "wire-managed")
+    let reads = accounts.reactionsRealtime
+    let lifecycle = accounts.agentsLifecycle
+    let relay = accounts.realtimeRelay
+    accounts.setAgentCredentialUseThrottleMsForTesting(60_000)
+
+    let server = try await RealtimeServer.start(auth: StubAuth(
+        tokens: ["credential-viewer": ownerId],
+        roles: ["\(serverId)\n\(ownerId)": "owner"],
+        channels: [:]
+    ))
+    defer { Task { try? await server.close() } }
+    let client = try await RawSocketIOClient(port: server.port)
+    defer { client.close() }
+    #expect(await client.waitForText { $0.hasPrefix("0") } != nil)
+    client.send("40{\"token\":\"credential-viewer\",\"serverId\":\"\(serverId)\"}")
+    #expect(await client.waitForText { $0 == "42[\"rooms:joined\"]" } != nil)
+    relay.install { room, event, payload in
+        server.hub.emit(room: room, event: event, payloadJSON: payload)
+    }
+
+    _ = try reads.agentThirdPartyEvents(authorization: "Bearer \(externalKey)")
+    let first = try #require(await client.waitForText { $0.hasPrefix("42[\"agent:seen\",") })
+    #expect(first.contains("\"agentId\":\"\(external)\""))
+    #expect(first.contains("\"lastSeenAt\":\""))
+    _ = try lifecycle.agentApiIdentity(authorization: "Bearer \(externalKey)")
+    _ = try reads.agentThirdPartyEvents(authorization: "Bearer \(managedKey)")
+    #expect(await client.waitForText({ $0.hasPrefix("42[\"agent:seen\",") && $0 != first }, timeout: 0.15) == nil)
+    #expect(client.textFrames.filter { $0.hasPrefix("42[\"agent:seen\",") }.count == 1)
+
+    accounts.setAgentCredentialUseThrottleMsForTesting(0)
+    relay.install(nil)
+    _ = try reads.agentThirdPartyEvents(authorization: "Bearer \(externalKey)")
+    #expect(await client.waitForText({ $0.hasPrefix("42[\"agent:seen\",") && $0 != first }, timeout: 0.15) == nil)
+    relay.install { room, event, payload in
+        server.hub.emit(room: room, event: event, payloadJSON: payload)
+    }
+    _ = try reads.agentThirdPartyEvents(authorization: "Bearer \(externalKey)")
+    let second = try #require(await client.waitForText { $0.hasPrefix("42[\"agent:seen\",") && $0 != first })
+    #expect(second.contains("\"agentId\":\"\(external)\""))
+    #expect(client.textFrames.filter { $0.hasPrefix("42[\"agent:seen\",") }.count == 2)
+
+    accounts.revokeAgentCredentialForTesting(apiKey: externalKey)
+    _ = try reads.agentThirdPartyEvents(authorization: "Bearer \(externalKey)")
+    #expect(await client.waitForText({ $0.hasPrefix("42[\"agent:seen\",") && $0 != first && $0 != second }, timeout: 0.15) == nil)
+}
+
 @Test func relayCanUninstallItselfWhileDeliveringMessagesOverTheSocket() async throws {
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-111111111642"

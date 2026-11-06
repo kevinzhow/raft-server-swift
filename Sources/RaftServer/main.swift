@@ -88,7 +88,7 @@ enum Entrypoint {
             releaseBranch: processEnvironment["SLOCK_RELEASE_BRANCH"],
             deviceLoginGate: processEnvironment["SLOCK_DEVICE_LOGIN_ENABLED"]
         ))
-        let mobileEmail = MobileAppEmailUnsubscribe(directory: emailAccounts)
+        let mobileEmail = MobileAppEmailUnsubscribe(notifications: emailAccounts.nativeNotifications)
         mobileEmail.configureDeployment(.init(
             secret: nonEmpty(processEnvironment["MOBILE_APP_EMAIL_UNSUBSCRIBE_SECRET"])
                 ?? nonEmpty(processEnvironment["JWT_SECRET"])

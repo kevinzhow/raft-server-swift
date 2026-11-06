@@ -25,7 +25,7 @@ struct ReactionsRealtimeDependencies: Sendable {
     static func live(directory source: EmailLoginDirectory) -> ReactionsRealtimeDependencies {
         ReactionsRealtimeDependencies(
             sessionUserId: { source.sessionUserId(authorization: $0) },
-            agentReadOutcome: { AgentCredentialLookup(directory: source).profileReadOutcome($0) },
+            agentReadOutcome: { [lookup = source.agentCredentialLookup] in lookup.profileReadOutcome($0) },
             agentCredential: { token in
                 source.agentsRuntimeStore.agentCredential(token: token).map {
                     ReactionsAgentCredential(agentId: $0.agentId, scopes: Set($0.scopes))

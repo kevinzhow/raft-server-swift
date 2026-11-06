@@ -45,8 +45,8 @@ extension EmailLoginDirectory {
                 visibleAttachmentUnlocked: { [self] userId, serverId, attachment in
                     visibleAttachmentUnlocked(userId: userId, serverId: serverId, attachment: attachment)
                 },
-                agentCredential: { [self] authorization in
-                    AgentCredentialLookup(directory: self).agentCredentialAgent(authorization)
+                agentCredential: { [lookup = agentCredentialLookup] authorization in
+                    lookup.agentCredentialAgent(authorization)
                 },
                 agentVisibleAttachment: { [agentAttachments] agentId, serverId, attachmentId in
                     agentAttachments.visibleAttachment(agentId: agentId, serverId: serverId, attachmentId: attachmentId)
@@ -69,8 +69,8 @@ extension EmailLoginDirectory {
             oauth: oauth,
             logins: managedMCPAndCardsStore,
             dependencies: AgentIntegrationAppsDependencies(
-                agentCredential: { [self] authorization in
-                    AgentCredentialLookup(directory: self).agentCredentialAgent(authorization)
+                agentCredential: { [lookup = agentCredentialLookup] authorization in
+                    lookup.agentCredentialAgent(authorization)
                 },
                 prepareMarketplaceInstallCard: { [self] agent, client, scopes, target in
                     let register = actionCardIntegrationRegister
@@ -100,8 +100,8 @@ extension EmailLoginDirectory {
             profiles: authProfileStore,
             oauth: oauth,
             dependencies: AgentMessageLookupDependencies(
-                agentCredential: { [self] authorization in
-                    AgentCredentialLookup(directory: self).agentCredentialAgent(authorization)
+                agentCredential: { [lookup = agentCredentialLookup] authorization in
+                    lookup.agentCredentialAgent(authorization)
                 },
                 messageVisible: { channelId, serverId, agentId in
                     search.messageVisible(messageChannelId: channelId, serverId: serverId, viewer: .agent(agentId))

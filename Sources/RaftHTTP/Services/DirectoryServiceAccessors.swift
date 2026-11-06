@@ -128,8 +128,12 @@ extension EmailLoginDirectory {
         AgentPrivateSurfaceService(directory: self)
     }
 
-    func recordAgentCredentialUse(token: String) {
-        agentSurface.recordAgentCredentialUse(token: token)
+    var agentCredentialUse: AgentCredentialUseService {
+        AgentCredentialUseService(agents: agentsRuntimeStore, oauth: oauth, realtime: realtimeRelay)
+    }
+
+    var agentCredentialLookup: AgentCredentialLookup {
+        AgentCredentialLookup(agents: agentsRuntimeStore, channels: agentChannels, credentialUse: agentCredentialUse)
     }
 
     func assistantOwnerFor(agentId: String, serverId: String) -> String? {
@@ -202,8 +206,8 @@ extension EmailLoginDirectory {
             productEvents: productEventStore,
             oauth: oauth,
             dependencies: AgentsLifecycleDependencies(
-                recordAgentCredentialUse: { [self] token in
-                    recordAgentCredentialUse(token: token)
+                recordAgentCredentialUse: { [credentialUse = agentCredentialUse] token in
+                    credentialUse.record(token: token)
                 },
                 jointLocalChannelId: { [self] canonicalChannelId, serverId, userId in
                     MessageChannelFacts(serversAndChannelsStore.state).localChannel(
@@ -430,8 +434,8 @@ extension EmailLoginDirectory {
                 sessionUserId: { [self] authorization in
                     sessionUserId(authorization: authorization)
                 },
-                agentRead: { [self] authorization in
-                    AgentCredentialLookup(directory: self).profileReadOutcome(authorization)
+                agentRead: { [lookup = agentCredentialLookup] authorization in
+                    lookup.profileReadOutcome(authorization)
                 },
                 capabilityDenial: { [self] authorization, capability in
                     switch FeedbackLocatorService(directory: self)

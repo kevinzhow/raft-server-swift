@@ -100,12 +100,12 @@ public struct NotificationsFeature: RouteCollection, Sendable {
             routeResponse(await DesktopDownload.platformsReply(services.desktop))
         }
         email.get("mobile-app", "unsubscribe") { request -> Response in
-            mobileAppEmailUnsubscribeResponse(MobileAppEmailUnsubscribe(directory: services.emailAccounts).mobileAppEmailUnsubscribePage(
+            mobileAppEmailUnsubscribeResponse(MobileAppEmailUnsubscribe(notifications: services.emailAccounts.nativeNotifications).mobileAppEmailUnsubscribePage(
                 token: desktopQuery(request.url.query, "token")
             ))
         }
         email.post("mobile-app", "unsubscribe") { request async throws -> Response in
-            mobileAppEmailUnsubscribeResponse(MobileAppEmailUnsubscribe(directory: services.emailAccounts).mobileAppEmailUnsubscribeSubmit(
+            mobileAppEmailUnsubscribeResponse(MobileAppEmailUnsubscribe(notifications: services.emailAccounts.nativeNotifications).mobileAppEmailUnsubscribeSubmit(
                 token: desktopQuery(request.url.query, "token"),
                 source: desktopQuery(request.url.query, "source"),
                 body: try await request.bodyText()

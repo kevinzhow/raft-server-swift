@@ -16,6 +16,7 @@ struct AgentPrivateSurfaceDependencies: Sendable {
     var emitRealtime: @Sendable (String, String, String?) -> Void
     var oauth: OAuthLedger
     var agents: AgentsRuntimeStore
+    var credentialUse: AgentCredentialUseService
     var machines: MachinesAndComputersStore
     var channels: ServersAndChannelsStore
     var messages: MessagesAndThreadsStore
@@ -45,6 +46,7 @@ struct AgentPrivateSurfaceDependencies: Sendable {
             },
             oauth: source.oauth,
             agents: source.agentsRuntimeStore,
+            credentialUse: source.agentCredentialUse,
             machines: source.machinesAndComputersStore,
             channels: source.serversAndChannelsStore,
             messages: source.messagesAndThreadsStore,
@@ -584,20 +586,7 @@ public struct AgentPrivateSurfaceService: Sendable {
     /// Records one use of an agent credential and tells the server room when an
     /// external agent was seen.
     public func recordAgentCredentialUse(token: String) {
-        guard let agentId = dependencies.agents.recordCredentialUse(
-            token: token,
-            now: Date(),
-            defaultThrottleMs: AuthTokenCodec.agentCredentialUseDefaultThrottleMs
-        ) else { return }
-        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.runtime == "external" else { return }
-        dependencies.emitRealtime(
-            "server:\(agent.serverId)",
-            "agent:seen",
-            OrderedJSON.object([
-                OrderedJSONField("agentId", agent.id),
-                OrderedJSONField("lastSeenAt", Self.fractionalISO(Date())),
-            ]).render()
-        )
+        dependencies.credentialUse.record(token: token)
     }
 
     public func putAgentPushWebhook(

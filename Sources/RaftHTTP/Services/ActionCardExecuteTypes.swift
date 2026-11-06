@@ -120,8 +120,8 @@ struct AgentSendDependencies: Sendable {
                     name: name
                 )
             },
-            messageSuppressed: { message, agentId in
-                source.agentMessageSuppressedLocked(message, agentId: agentId)
+            messageSuppressed: { [suppression = MessageSuppressionService(messages: source.messagesAndThreadsStore, oauth: source.oauth)] message, agentId in
+                suppression.isSuppressed(message, agentId: agentId)
             },
             selfCausedExempt: { message, agentId in
                 source.isSelfCausedFreshnessExemptLocked(message, agentId: agentId)

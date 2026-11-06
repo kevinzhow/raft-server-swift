@@ -159,7 +159,7 @@ extension EmailLoginDirectory {
         let canonical = MobileAppEmailUnsubscribe.mobileAppUnsubscribeLocale(locale)
         let claims = "{\"v\":1,\"typ\":\"mobile-app-email-unsubscribe\",\"sub\":\(jsonString(userId)),\"locale\":\(jsonString(canonical))}"
         let payload = AuthTokenCodec.base64url(Data(claims.utf8))
-        let signature = MobileAppEmailUnsubscribe.mobileAppUnsubscribeSignature(payload: payload, secret: MobileAppEmailUnsubscribe(directory: self).deploymentConfiguration.secret)
+        let signature = MobileAppEmailUnsubscribe.mobileAppUnsubscribeSignature(payload: payload, secret: MobileAppEmailUnsubscribe(notifications: nativeNotifications).deploymentConfiguration.secret)
         return "\(payload).\(signature)"
     }
 

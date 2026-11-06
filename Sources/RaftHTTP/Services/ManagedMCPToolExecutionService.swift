@@ -27,8 +27,8 @@ struct ManagedMCPToolExecutionDependencies: Sendable {
             taskChannel: { serverId, agentId, reference in
                 source.actionCardExecute.taskChannel(serverId: serverId, agentId: agentId, reference: reference)
             },
-            agentWriter: { authorization in
-                AgentCredentialLookup(directory: source).agentWriterAndRole(authorization: authorization, legacyAgentId: nil, scopes: [])?.agent
+            agentWriter: { [lookup = source.agentCredentialLookup] authorization in
+                lookup.agentWriterAndRole(authorization: authorization, legacyAgentId: nil, scopes: [])?.agent
             },
             now: { Date() }
         )
@@ -372,17 +372,10 @@ public struct ManagedMCPToolExecutionService: Sendable {
         dependencies.emitRealtime("channel:\(channelId)", "scope_read:updated", payload)
     }
 
-    /// Whether Activity from this message is suppressed for the agent by an
-    /// active channel mute (a personal @mention always arrives). The predicate
-    /// is `MessagesAndThreadsStore.agentMessageSuppressed`, shared with the
-    /// agent inbox; this only supplies the mute prefs and the stored mentions.
+    /// Activity suppression is a fact-only query shared with execute and inbox.
     func agentMessageSuppressed(_ message: StoredHumanMessage, agentId: String) -> Bool {
-        MessagesAndThreadsStore.agentMessageSuppressed(
-            message,
-            agentId: agentId,
-            prefs: oauth.notificationPrefs(channelId: message.channelId, userId: agentId),
-            mentions: messages.storedMentions
-        )
+        MessageSuppressionService(messages: messages, oauth: oauth)
+            .isSuppressed(message, agentId: agentId)
     }
 
     // MARK: - POST /internal/agent-api/channels/archive|unarchive

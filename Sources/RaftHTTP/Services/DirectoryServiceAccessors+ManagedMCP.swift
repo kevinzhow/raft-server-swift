@@ -172,7 +172,4 @@ extension EmailLoginDirectory {
             .guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId)
     }
 
-    func agentMessageSuppressedLocked(_ message: StoredHumanMessage, agentId: String) -> Bool {
-        managedMCPToolExecution.agentMessageSuppressed(message, agentId: agentId)
-    }
 }

@@ -40,10 +40,7 @@ Sources/RaftHTTP/Stores/NotificationsStore.swift	6
 Sources/RaftHTTP/Stores/ProductEventStore.swift	1
 Sources/RaftHTTP/Stores/ServersAndChannelsStore.swift	2
 Sources/RaftHTTP/Stores/TasksAndRemindersStore.swift	2
-Sources/RaftHTTP/Support/AgentCredentialLookup.swift	1
-Sources/RaftHTTP/Support/DirectoryRuntimePolicy.swift	1
 Sources/RaftHTTP/Support/DirectoryTaskCatalog.swift	1
-Sources/RaftHTTP/Support/MobileAppEmailUnsubscribe.swift	1
 Sources/RaftHTTPServer/FallbackApplication.swift	4
 Sources/RaftHTTPServer/RequestBodyLimitMiddleware.swift	1
 Sources/RaftServer/LedgerMachineLookup.swift	1

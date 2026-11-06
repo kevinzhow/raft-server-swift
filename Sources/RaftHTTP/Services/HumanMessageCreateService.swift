@@ -119,8 +119,8 @@ public struct HumanMessageCreateService: Sendable {
             profiles: source.authProfileStore,
             oauth: source.oauth,
             dependencies: HumanMessageCreateDependencies(
-                agentReadOutcome: { [source] authorization in
-                    AgentCredentialLookup(directory: source).profileReadOutcome(authorization)
+                agentReadOutcome: { [lookup = source.agentCredentialLookup] authorization in
+                    lookup.profileReadOutcome(authorization)
                 },
                 storeHumanMessage: { [writer] channelId, senderId, content, randomId, attachmentIds, timezone, mentions in
                     writer.store(

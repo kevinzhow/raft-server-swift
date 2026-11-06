@@ -5,9 +5,13 @@ public struct MobileAppEmailUnsubscribe: Sendable {
     let profiles: AuthProfileStore
     let notifications: NotificationsStore
 
-    public init(directory: EmailLoginDirectory) {
-        profiles = directory.authProfileStore
-        notifications = directory.notificationsStore
+    init(profiles: AuthProfileStore, notifications: NotificationsStore) {
+        self.profiles = profiles
+        self.notifications = notifications
+    }
+
+    public init(notifications: NativeNotificationsService) {
+        self = notifications.mobileEmailUnsubscribeService()
     }
 
     static func isMobileUnsubscribeUserId(_ value: String) -> Bool {
