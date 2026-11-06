@@ -382,41 +382,6 @@ extension EmailLoginDirectory {
         return json(200, body)
     }
 
-    static func deviceContext(userAgent: String, country: String) -> [String: Any] {
-        var context: [String: Any] = [:]
-        if let range = userAgent.range(of: "Chrome/") {
-            let rest = userAgent[range.upperBound...]
-            let major = rest.prefix(while: { $0 != "." && !$0.isWhitespace })
-            context["$browser"] = "chrome"
-            if let version = Int(major) { context["$browser_version"] = version }
-        } else if userAgent.contains("Firefox/") {
-            context["$browser"] = "firefox"
-        } else if userAgent.contains("Safari/") {
-            context["$browser"] = "safari"
-        } else {
-            context["$browser"] = "unknown"
-        }
-        if userAgent.contains("Windows") {
-            context["$os"] = "windows"
-        } else if userAgent.contains("Mac OS X") {
-            context["$os"] = "macos"
-        } else if userAgent.contains("Android") {
-            context["$os"] = "android"
-        } else if userAgent.contains("iPhone") || userAgent.contains("iPad") {
-            context["$os"] = "ios"
-        } else if userAgent.contains("Linux") {
-            context["$os"] = "linux"
-        } else {
-            context["$os"] = "unknown"
-        }
-        context["$device_type"] = userAgent.contains("Mobile") ? "mobile" : "desktop"
-        let normalizedCountry = country.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        if normalizedCountry.wholeMatch(of: /^[A-Z]{2}$/) != nil {
-            context["$country"] = normalizedCountry
-        }
-        return context
-    }
-
     static func serializeJSON(_ object: [String: Any]) -> String {
         guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
             return "{}"

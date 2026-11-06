@@ -174,7 +174,7 @@ struct InboxAndWakeDependencies: Sendable {
                 ).map(OrderedJSON.raw)
             },
             actionCardMetadata: { messageId in
-                source.actionCardMetadataLocked(messageId: messageId).map(OrderedJSON.raw)
+                source.actionCardMetadata.metadata(messageId: messageId).map(OrderedJSON.raw)
             },
             threadSummaries: { parentChannelId, parentIds in
                 // The shared projection renders the object's member list; the

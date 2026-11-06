@@ -51,8 +51,8 @@ extension EmailLoginDirectory {
                 agentVisibleAttachment: { [agentAttachments] agentId, serverId, attachmentId in
                     agentAttachments.visibleAttachment(agentId: agentId, serverId: serverId, attachmentId: attachmentId)
                 },
-                agentHistoryThread: { [self] parentId, anchorMessageId in
-                    agentHistoryThread(parentId: parentId, anchorMessageId: anchorMessageId)
+                agentHistoryThread: { [serversAndChannelsStore] parentId, anchorMessageId in
+                    serversAndChannelsStore.historyThread(parentId: parentId, anchorMessageId: anchorMessageId)
                 },
                 recordMemberMentionRows: { [self] messageId, channelId, mentions in
                     recordMemberMentionRows(messageId: messageId, channelId: channelId, mentions: mentions)
@@ -73,10 +73,11 @@ extension EmailLoginDirectory {
                     agentCredentialAgent(authorization)
                 },
                 prepareMarketplaceInstallCard: { [self] agent, client, scopes, target in
-                    guard let resolved = actionCardTarget(
+                    let register = actionCardIntegrationRegister
+                    guard let resolved = register.actionCardTarget(
                         serverId: agent.serverId, agentId: agent.id, target: target
                     ) else { return nil }
-                    return actionCardIntegrationRegister.prepareMarketplaceInstallCard(
+                    return register.prepareMarketplaceInstallCard(
                         serverId: agent.serverId,
                         agent: agent,
                         client: client,

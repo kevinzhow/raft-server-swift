@@ -602,7 +602,7 @@ extension EmailLoginDirectory {
     /// `FeedbackService`, so they enter as closures; the account row, the
     /// feature-flag decision and product-event rows come from their stores.
     public var productFeedbackSubmissions: ProductFeedbackSubmissionService {
-        let feedback = FeedbackService(directory: self)
+        let feedback = feedbackTransport
         return ProductFeedbackSubmissionService(
             dependencies: ProductFeedbackSubmissionDependencies(
                 account: { [authProfileStore] userId in
@@ -624,7 +624,7 @@ extension EmailLoginDirectory {
                 },
                 multiAppEnabled: { [self] userId in
                     evaluateFeatureFlagKey(
-                        key: EmailLoginDirectory.productFeedbackMultiAppFlag,
+                        key: FeedbackService.productFeedbackMultiAppFlag,
                         userId: userId,
                         serverId: nil,
                         platform: nil,
@@ -818,7 +818,7 @@ extension EmailLoginDirectory {
     /// the not-yet-migrated `FeedbackService`, so they enter as closures; the
     /// session lookup and the account row come from their domains.
     public var feedbackMultiApp: FeedbackMultiAppService {
-        let feedback = FeedbackService(directory: self)
+        let feedback = feedbackTransport
         return FeedbackMultiAppService(
             dependencies: FeedbackMultiAppDependencies(
                 userId: { [self] authorization in
@@ -870,14 +870,14 @@ extension EmailLoginDirectory {
             actionCardPrepare: actionCardPrepare,
             channelMembership: channelMembership,
             dependencies: AgentHistoryDependencies(
-                threadByAnchor: { [self] parentId, anchorMessageId in
-                    agentHistoryThread(parentId: parentId, anchorMessageId: anchorMessageId)
+                threadByAnchor: { [serversAndChannelsStore] parentId, anchorMessageId in
+                    serversAndChannelsStore.historyThread(parentId: parentId, anchorMessageId: anchorMessageId)
                 },
-                threadById: { [self] parentId, suffix in
-                    agentHistoryThreadById(parentId: parentId, suffix: suffix)
+                threadById: { [serversAndChannelsStore] parentId, suffix in
+                    serversAndChannelsStore.historyThread(parentId: parentId, idPrefix: suffix)
                 },
-                threadByAnchorPrefix: { [self] parentId, suffix in
-                    agentHistoryThreadByAnchorPrefix(parentId: parentId, suffix: suffix)
+                threadByAnchorPrefix: { [serversAndChannelsStore] parentId, suffix in
+                    serversAndChannelsStore.historyThread(parentId: parentId, anchorPrefix: suffix)
                 },
                 agentReadUpdated: { [notificationsStore] serverId, channelId, agentId, seq in
                     notificationsStore.onAgentReadUpdated?(serverId, channelId, agentId, seq)

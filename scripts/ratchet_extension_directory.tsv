@@ -1,9 +1,8 @@
-Sources/RaftHTTP/Services/ActionCardDirectoryHelpers.swift	2
 Sources/RaftHTTP/Services/ActionCardService.swift	1
+Sources/RaftHTTP/Services/DirectoryServiceAccessors+ActionCards.swift	1
 Sources/RaftHTTP/Services/DirectoryServiceAccessors+Integrations.swift	1
 Sources/RaftHTTP/Services/DirectoryServiceAccessors+ManagedMCP.swift	1
 Sources/RaftHTTP/Services/DirectoryServiceAccessors.swift	1
-Sources/RaftHTTP/Services/FeedbackService.swift	1
 Sources/RaftHTTP/Services/InboxAndWakeService.swift	1
 Sources/RaftHTTP/Services/JoinLinksAndInvitesService.swift	1
 Sources/RaftHTTP/Services/MessageSendService.swift	1

@@ -23,9 +23,9 @@ struct ManagedMCPToolExecutionDependencies: Sendable {
         ManagedMCPToolExecutionDependencies(
             sessionUserId: { source.sessionUserId(authorization: $0) },
             emitRealtime: { room, event, payload in source.emitRealtime(room, event, payload) },
-            taskWriter: { source.agentTaskWriter($0, legacyAgentId: nil) },
+            taskWriter: { source.actionCardExecute.taskWriter(authorization: $0, legacyAgentId: nil) },
             taskChannel: { serverId, agentId, reference in
-                source.agentTaskChannel(serverId: serverId, agentId: agentId, reference: reference)
+                source.actionCardExecute.taskChannel(serverId: serverId, agentId: agentId, reference: reference)
             },
             agentWriter: { authorization in
                 source.agentWriterAndRole(authorization: authorization, legacyAgentId: nil, scopes: [])?.agent

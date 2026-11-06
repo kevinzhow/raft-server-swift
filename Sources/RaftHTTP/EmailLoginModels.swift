@@ -103,12 +103,6 @@ struct ExternalAvatarAsset {
         var active: Bool
     }
 
-struct ResumeAllAgentsContext {
-        var targets: [String]
-        var dispatch: (@Sendable (_ agentId: String, _ resumePrompt: String?) async throws -> AgentStartDispatchOutcome)?
-        var error: HTTPReply?
-    }
-
 struct ReminderEvent {
         var reminderId: String
         var serverId: String
@@ -188,11 +182,6 @@ struct AgentInboxRow {
         var joinedAt: Date
     }
 
-enum AgentTaskAuthResult {
-        case ok(agentId: String, serverId: String)
-        case refused(HTTPReply)
-    }
-
 struct AgentChannelCardSnapshot {
         let id: String
         let name: String
@@ -250,21 +239,11 @@ enum DMPeerResolution {
         case notFound
     }
 
-enum FeedbackLocatorIdentityResult {
-        case success(agentId: String, serverId: String)
-        case refused(HTTPReply)
-    }
-
 struct ServerLabsState: Equatable {
         var accessEnabled = false
         var version = 0
         var enrolled: Set<String> = []
         var updatedAt: [String: Date] = [:]
-    }
-
-enum TaskStatusFilterResult {
-        case valid(String?)
-        case invalid(HTTPReply)
     }
 
 enum TaskChannelAccess {

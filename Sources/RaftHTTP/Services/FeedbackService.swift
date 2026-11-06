@@ -1,5 +1,7 @@
 import Crypto
 import Foundation
+import RaftShared
+import Synchronization
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -12,10 +14,11 @@ import FoundationNetworking
 /// thread on a semaphore; the 12 s ceiling is enforced by the request timeout
 /// and a watchdog task that resumes the continuation exactly once.
 ///
-/// The directory owns the feedback ledger and the injected transport slot; the
-/// ticket routes live in `FeedbackMultiAppService` and the submission in
+/// The feedback ledger (route-binding cache, reporter sessions, commitments)
+/// lives in `FeedbackStore`; the ticket routes live in
+/// `FeedbackMultiAppService` and the submission in
 /// `ProductFeedbackSubmissionService`, which both reach this plumbing through
-/// closures wired in `AuthCoreService`.
+/// closures wired by the directory accessors.
 public struct FeedbackService: Sendable {
     public typealias UpstreamResponse = (status: Int, headers: [String: String], body: Data)
     public typealias InjectedTransport = (URLRequest) -> UpstreamResponse
@@ -23,10 +26,53 @@ public struct FeedbackService: Sendable {
     /// Mirrors the old `semaphore.wait(timeout: .now() + 12)` ceiling.
     public static let requestTimeout: TimeInterval = 12
 
-    public let directory: EmailLoginDirectory
+    /// Feature flag key from `productFeedbackApps.ts`.
+    public static let productFeedbackMultiAppFlag = "product_feedback_multi_app"
 
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
+    /// Trusted client sources; anything else is an invalid request.
+    static let productFeedbackSources: Set<String> = ["web", "ios", "android", "ohos"]
+
+    static let productFeedbackLegacyCommitmentLabel = "hands-feedback-route-subject:v1"
+    static let productFeedbackMultiCommitmentLabel = "hands-feedback-route-subject:multi:v1"
+
+    static let feedbackTimingNames: Set<String> = [
+        "hands_auth", "hands_preflight", "hands_commit", "hands_postcommit",
+        "hands_list", "hands_session_mint", "hands_session_verify",
+    ]
+
+    /// Cross-domain reads that belong to unmigrated or other domains.
+    struct Dependencies: Sendable {
+        /// `HANDS_FEEDBACK_CONVERSATION_SESSION_ENABLED` test seam (account store).
+        var conversationSessionEnabled: @Sendable () -> Bool?
+        /// The `product_feedback_multi_app` feature-flag decision for a user.
+        var multiAppEnabled: @Sendable (_ userId: String) -> Bool
+        /// Hands the warning to the operator sink; `false` when none is
+        /// installed, in which case the service prints it.
+        var deliverWarning: @Sendable (_ message: String) -> Bool
+        var processEnvironment: @Sendable () -> [String: String]
+        var now: @Sendable () -> Date
+
+        init(
+            conversationSessionEnabled: @escaping @Sendable () -> Bool?,
+            multiAppEnabled: @escaping @Sendable (String) -> Bool,
+            deliverWarning: @escaping @Sendable (String) -> Bool,
+            processEnvironment: @escaping @Sendable () -> [String: String] = { ProcessInfo.processInfo.environment },
+            now: @escaping @Sendable () -> Date = { Date() }
+        ) {
+            self.conversationSessionEnabled = conversationSessionEnabled
+            self.multiAppEnabled = multiAppEnabled
+            self.deliverWarning = deliverWarning
+            self.processEnvironment = processEnvironment
+            self.now = now
+        }
+    }
+
+    let store: FeedbackStore
+    let dependencies: Dependencies
+
+    init(store: FeedbackStore, dependencies: Dependencies) {
+        self.store = store
+        self.dependencies = dependencies
     }
 
     /// Sends `request` upstream.
@@ -79,66 +125,44 @@ public struct FeedbackService: Sendable {
 
     /// Async transport used by every production feedback route.
     func sendAsync(_ request: URLRequest) async -> UpstreamResponse {
-        let injected = locked { directory.handsFeedbackUpstreamHandler }
-        return await sendUpstreamRequest(request, injected: injected)
-    }
-
-    /// `NSLock.lock()`/`unlock()` are `noasync`; async entry points run their
-    /// critical sections through this synchronous scoped helper instead.
-    func locked<T>(_ body: () throws -> T) rethrows -> T {
-        directory.lock.lock()
-        defer { directory.lock.unlock() }
-        return try body()
+        await sendUpstreamRequest(request, injected: store.handsFeedbackUpstreamHandler)
     }
 
     // MARK: - Warning sink
 
     func warn(_ message: String) {
-        let sink = locked { directory.handsFeedbackWarningSink }
-        if let sink {
-            sink(message)
-        } else {
+        if !dependencies.deliverWarning(message) {
             print(message)
         }
     }
 
     // MARK: - Configuration resolution
 
-    func legacyEnvironmentLocked() -> [String: String] {
-        directory.feedbackStore.handsFeedbackEnvironment(
-            base: ProcessInfo.processInfo.environment,
-            conversationSessionEnabled: directory.handsConversationSessionEnabled
-        )
-    }
-
     func routeEnvironment(source: String, userId: String) throws -> FeedbackRouteEnvironment {
-        guard EmailLoginDirectory.productFeedbackSources.contains(source) else {
+        guard Self.productFeedbackSources.contains(source) else {
             throw FeedbackRouteFailure.invalidSource
         }
-        directory.lock.lock()
-        let environment = legacyEnvironmentLocked()
-        let appsJSON = directory.handsFeedbackAppsJSON
-        directory.lock.unlock()
-        let multiEnabled = directory.evaluateFeatureFlagKey(
-            key: EmailLoginDirectory.productFeedbackMultiAppFlag,
-            userId: userId,
-            serverId: nil,
-            platform: nil,
-            client: FeatureFlagClientFacts(os: nil, buildNumber: nil, buildType: nil)
-        ).enabled
-        if !multiEnabled { return EmailLoginDirectory.feedbackLegacyRouteEnvironment(environment) }
+        // One store critical section: the merged environment and the apps
+        // payload are read together.
+        let snapshot = store.handsFeedbackSubmissionConfiguration(
+            base: dependencies.processEnvironment(),
+            conversationSessionEnabled: dependencies.conversationSessionEnabled()
+        )
+        guard dependencies.multiAppEnabled(userId) else {
+            return EmailLoginDirectory.feedbackLegacyRouteEnvironment(snapshot.environment)
+        }
         return try EmailLoginDirectory.feedbackMultiRouteEnvironment(
             source: source,
-            appsJSON: appsJSON,
-            environment: environment
+            appsJSON: snapshot.appsJSON,
+            environment: snapshot.environment
         )
     }
 
     // MARK: - Reporter id
 
     func reporterId(userId: String) -> String {
-        let secret = directory.handsFeedbackBaseURLOverride
-            ?? ProcessInfo.processInfo.environment["HANDS_FEEDBACK_REPORTER_ID_SECRET"]
+        let secret = store.handsFeedbackBaseURLOverride
+            ?? dependencies.processEnvironment()["HANDS_FEEDBACK_REPORTER_ID_SECRET"]
             ?? "reporter-id-secret"
         let digest = SHA256.hash(data: Data("\(userId):\(secret)".utf8))
         return EmailLoginDirectory.feedbackBase64URL(Data(digest))
@@ -159,20 +183,23 @@ public struct FeedbackService: Sendable {
         let reporterId = EmailLoginDirectory.feedbackReporterId(userId: userId, secret: config.reporterIdSecret)
         let rootBytes = EmailLoginDirectory.feedbackRouteRootBytes(config.root) ?? Data()
         let commitment = Data(SHA256.hash(data: Data(config.commitmentLabel.utf8) + Data([0]) + rootBytes))
-        let now = Date()
+        let now = dependencies.now()
         let cacheKey = "\(config.appId)|\(config.credentialRevision)|\(config.commitmentLabel)|\(reporterId)"
-        let cachedBinding: Bool = try locked {
-            if let existing = directory.productFeedbackRouteCommitments[config.commitmentLabel] {
-                if existing != commitment {
-                    throw FeedbackRouteFailure.routeBinding(reason: "root_commitment_mismatch")
-                }
-            } else {
-                directory.productFeedbackRouteCommitments[config.commitmentLabel] = commitment
-            }
-            if let cached = directory.productFeedbackRouteBindingSuccesses[cacheKey], cached > now {
-                return true
-            }
-            return false
+        // Commitment check/insert and the cache lookup are ONE store critical
+        // section, as they were under the directory lock.
+        let cachedBinding: Bool
+        switch store.checkRouteBinding(
+            commitmentLabel: config.commitmentLabel,
+            commitment: commitment,
+            cacheKey: cacheKey,
+            now: now
+        ) {
+        case .commitmentMismatch:
+            throw FeedbackRouteFailure.routeBinding(reason: "root_commitment_mismatch")
+        case .cached:
+            cachedBinding = true
+        case .miss:
+            cachedBinding = false
         }
         if cachedBinding { return reporterId }
         guard let subject = EmailLoginDirectory.feedbackRouteSubject(config: config, userId: userId, reporterId: reporterId) else {
@@ -184,7 +211,7 @@ public struct FeedbackService: Sendable {
         request.setValue("Bearer \(config.appToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(reporterId, forHTTPHeaderField: "X-Hands-Reporter-Id")
-        request.httpBody = Data("{\"route_subject\":\(jsonString(subject))}".utf8)
+        request.httpBody = Data(OrderedJSON.object([OrderedJSONField("route_subject", subject)]).render().utf8)
         func bindingReason(_ status: Int) -> String {
             status == 0 ? "request_failed" : "hands_status_\(status)"
         }
@@ -195,15 +222,15 @@ public struct FeedbackService: Sendable {
         guard status == 200 || status == 201 else {
             throw FeedbackRouteFailure.routeBinding(reason: bindingReason(status))
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+        guard let object = Self.decodeObject(body),
               Set(object.keys) == ["changed", "subject_version"],
-              let changed = object["changed"] as? Bool,
-              object["subject_version"] as? String == "v1",
+              let changed = Self.legacyBool(object["changed"]),
+              object["subject_version"] == .string("v1"),
               (status == 201) == changed
         else {
             throw FeedbackRouteFailure.routeBinding(reason: "hands_unexpected_body")
         }
-        locked { directory.productFeedbackRouteBindingSuccesses[cacheKey] = Date().addingTimeInterval(300) }
+        store.recordRouteBindingSuccess(cacheKey: cacheKey, expiresAt: dependencies.now().addingTimeInterval(300))
         return reporterId
     }
 
@@ -224,13 +251,10 @@ public struct FeedbackService: Sendable {
             return conversationToken
         }
         let cacheKey = "\(environment.appId)|\(environment.credentialRevision)|\(userId)"
-        let cachedToken: String? = locked {
-            if let cached = directory.productFeedbackReporterSessionCache[cacheKey],
-               cached.expiresAt > Date().addingTimeInterval(5) {
-                return cached.token
-            }
-            return nil
-        }
+        let cachedToken = store.cachedReporterSession(
+            cacheKey: cacheKey,
+            validAfter: dependencies.now().addingTimeInterval(5)
+        )
         if let cachedToken { return cachedToken }
         var request = URLRequest(url: URL(string: "\(environment.baseURL)/api/apps/\(environment.appId)/reporter-feedback/session")!)
         request.httpMethod = "POST"
@@ -238,16 +262,23 @@ public struct FeedbackService: Sendable {
         request.setValue("Bearer \(conversationToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(reporterId, forHTTPHeaderField: "X-Hands-Reporter-Id")
-        request.httpBody = Data("{\"scopes\":[\"feedback:comment\",\"feedback:read\"]}".utf8)
+        request.httpBody = Data(OrderedJSON.object([
+            OrderedJSONField("scopes", .array([.string("feedback:comment"), .string("feedback:read")])),
+        ]).render().utf8)
         let (status, _, body) = await sendAsync(request)
         guard status == 200 || status == 201,
-              let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
-              let token = object["session_token"] as? String, !token.isEmpty
+              let object = Self.decodeObject(body),
+              case .string(let token)? = object["session_token"], !token.isEmpty
         else {
             throw FeedbackRouteFailure.configuration
         }
-        let expires = (object["expires_at"] as? NSNumber)?.doubleValue ?? Date().addingTimeInterval(30).timeIntervalSince1970
-        locked { directory.productFeedbackReporterSessionCache[cacheKey] = (token, Date(timeIntervalSince1970: expires)) }
+        let expires = Self.legacyNumber(object["expires_at"])
+            ?? dependencies.now().addingTimeInterval(30).timeIntervalSince1970
+        store.storeReporterSession(
+            cacheKey: cacheKey,
+            token: token,
+            expiresAt: Date(timeIntervalSince1970: expires)
+        )
         return token
     }
 
@@ -274,35 +305,50 @@ public struct FeedbackService: Sendable {
 
 }
 
-// MARK: - Directory entry points
-//
-// The static constants the rest of the module references. The instance
-// forwarders that delegated to `FeedbackService` were removed with the last
-// directory-bound callers.
+// MARK: - Upstream body decoding
 
-extension EmailLoginDirectory {
-    /// Feature flag key from `productFeedbackApps.ts`.
-    public static let productFeedbackMultiAppFlag = "product_feedback_multi_app"
+extension FeedbackService {
+    /// The top-level JSON object of an upstream body; any other shape (or
+    /// invalid JSON) is `nil`, as the retired object cast was.
+    static func decodeObject(_ body: Data) -> [String: JSONValue]? {
+        guard case .object(let object)? = try? JSONDecoder().decode(JSONValue.self, from: body) else {
+            return nil
+        }
+        return object
+    }
 
-    /// Trusted client sources; anything else is an invalid request.
-    static let productFeedbackSources: Set<String> = ["web", "ios", "android", "ohos"]
+    /// The legacy `as? Bool` bridge accepted a JSON boolean and the numbers
+    /// `0`/`1`; every other value was not a boolean.
+    static func legacyBool(_ value: JSONValue?) -> Bool? {
+        switch value {
+        case .bool(let flag)?: return flag
+        case .integer(let number)?: return number == 0 ? false : (number == 1 ? true : nil)
+        case .number(let number)?: return number == 0 ? false : (number == 1 ? true : nil)
+        default: return nil
+        }
+    }
 
-    static let productFeedbackLegacyCommitmentLabel = "hands-feedback-route-subject:v1"
-    static let productFeedbackMultiCommitmentLabel = "hands-feedback-route-subject:multi:v1"
-
-    static let feedbackTimingNames: Set<String> = [
-        "hands_auth", "hands_preflight", "hands_commit", "hands_postcommit",
-        "hands_list", "hands_session_mint", "hands_session_verify",
-    ]
+    /// The legacy `as? NSNumber` bridge: numbers and booleans, nothing else.
+    static func legacyNumber(_ value: JSONValue?) -> Double? {
+        switch value {
+        case .integer(let number)?: return Double(number)
+        case .number(let number)?: return number
+        case .bool(let flag)?: return flag ? 1 : 0
+        default: return nil
+        }
+    }
 }
 
 /// Resumes a continuation at most once: the data task and the timeout watchdog
 /// race, and whichever finishes first wins. The loser's asynchronous work is
 /// cancelled as soon as the winner resumes.
-private final class UpstreamContinuationBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var resumed = false
-    private var timeoutTask: Task<Void, Never>?
+private final class UpstreamContinuationBox: Sendable {
+    private struct State {
+        var resumed = false
+        var timeoutTask: Task<Void, Never>?
+    }
+
+    private let state = Mutex(State())
     private let continuation: CheckedContinuation<FeedbackService.UpstreamResponse, Never>
 
     init(continuation: CheckedContinuation<FeedbackService.UpstreamResponse, Never>) {
@@ -310,31 +356,32 @@ private final class UpstreamContinuationBox: @unchecked Sendable {
     }
 
     func install(timeoutTask: Task<Void, Never>) {
-        lock.lock()
-        self.timeoutTask = timeoutTask
-        lock.unlock()
+        state.withLock { $0.timeoutTask = timeoutTask }
     }
 
     /// Returns `true` when this call performed the resume.
     @discardableResult
     func resume(_ result: FeedbackService.UpstreamResponse) -> Bool {
-        lock.lock()
-        guard !resumed else {
-            lock.unlock()
-            return false
+        let outcome: (won: Bool, watchdog: Task<Void, Never>?) = state.withLock { state in
+            guard !state.resumed else { return (false, nil) }
+            state.resumed = true
+            let watchdog = state.timeoutTask
+            state.timeoutTask = nil
+            return (true, watchdog)
         }
-        resumed = true
-        let watchdog = timeoutTask
-        timeoutTask = nil
-        lock.unlock()
-        watchdog?.cancel()
+        guard outcome.won else { return false }
+        outcome.watchdog?.cancel()
         continuation.resume(returning: result)
         return true
     }
 }
 
-/// Keeps the in-flight task reachable from the timeout watchdog without
-/// crossing an actor boundary with a mutable reference.
-private final class DataTaskBox: @unchecked Sendable {
-    var task: URLSessionDataTask?
+/// Keeps the in-flight task reachable from the timeout watchdog.
+private final class DataTaskBox: Sendable {
+    private let storage = Mutex<URLSessionDataTask?>(nil)
+
+    var task: URLSessionDataTask? {
+        get { storage.withLock { $0 } }
+        set { storage.withLock { $0 = newValue } }
+    }
 }

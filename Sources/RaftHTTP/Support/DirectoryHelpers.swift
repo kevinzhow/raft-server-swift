@@ -371,38 +371,6 @@ extension EmailLoginDirectory {
         }
     }
 
-    func feedbackLocatorIdentity(
-        authorization: String?,
-        capability: String
-    ) -> FeedbackLocatorIdentityResult {
-        switch FeedbackLocatorService(directory: self)
-            .identityResolution(authorization: authorization, capability: capability) {
-        case .success(let agentId, let serverId):
-            return .success(agentId: agentId, serverId: serverId)
-        case .missingAuthorization:
-            return .refused(Self.json(
-                401,
-                FeedbackLocatorError.missingAuthorization.publishedErrorBody.render()
-            ))
-        case .invalidAccessToken:
-            return .refused(Self.json(
-                401,
-                FeedbackLocatorError.invalidAccessToken.publishedErrorBody.render()
-            ))
-        case .capabilityNotAuthorized(let capability):
-            return .refused(Self.json(
-                403,
-                FeedbackLocatorError.capabilityNotAuthorized(capability: capability)
-                    .publishedErrorBody.render()
-            ))
-        case .invalidAgentCredential:
-            return .refused(Self.json(
-                401,
-                FeedbackLocatorError.invalidAgentCredential.publishedErrorBody.render()
-            ))
-        }
-    }
-
 
 
 
@@ -454,11 +422,6 @@ extension EmailLoginDirectory {
             descriptions: descriptions,
             creatorId: creatorId
         )
-    }
-
-    func archivedChannelReply(_ channelId: String) -> HTTPReply? {
-        guard oauth.channelArchivedAt(id: channelId) != nil else { return nil }
-        return Self.json(409, ChannelMembershipError.channelArchived.publishedErrorBody.render())
     }
 
     /// The bearer credential of an agent, marking its use.
