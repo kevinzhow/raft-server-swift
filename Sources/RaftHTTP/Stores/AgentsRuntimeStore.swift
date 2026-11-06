@@ -52,6 +52,24 @@ final class AgentsRuntimeStore: @unchecked Sendable {
             "attachment_comments_v0": FeatureFlagRecord(key: "attachment_comments_v0", defaultEnabled: true),
         ]
         var featureFlagRuleRecords: [FeatureFlagRuleRecord] = []
+        // Injectable relays and configuration that used to live inline on
+        // `EmailLoginDirectory`. The directory keeps the atomic accessors.
+        var agentMigrationCancelDispatch: (@Sendable (_ machineId: String, _ role: String, _ migrationRef: String, _ transportGeneration: String, _ stopAgent: Bool) -> Void)? = nil
+        var agentStartDispatch: (@Sendable (_ agentId: String, _ resumePrompt: String?) async throws -> AgentStartDispatchOutcome)? = nil
+        var agentActivityLogProvider: (@Sendable (_ agentId: String, _ limit: Int?) -> AgentSurfaceResult)? = nil
+        var agentActivitySummariesProvider: (@Sendable (_ agentId: String, _ limit: Int, _ beforeEndedAt: Int?, _ beforeId: String?) -> AgentSurfaceResult)? = nil
+        var agentSkillsProvider: (@Sendable (_ agentId: String) -> AgentSurfaceResult)? = nil
+        var agentHasMachineLocally: (@Sendable (_ agentId: String) -> Bool)? = nil
+        var agentWorkspaceTreeProvider: (@Sendable (_ agentId: String, _ dirPath: String?, _ includeHidden: Bool) -> AgentSurfaceResult)? = nil
+        var agentWorkspaceReadProvider: (@Sendable (_ agentId: String, _ path: String?) -> AgentSurfaceResult)? = nil
+        var agentStartControlDispatch: (@Sendable (_ agentId: String, _ control: String) -> Void)? = nil
+        var agentResetDispatch: (@Sendable (_ agentId: String, _ mode: String, _ terminalControl: String) -> Void)? = nil
+        var agentConfigLiftDispatch: (@Sendable (_ agentId: String, _ runtimeValuesChanged: Bool) -> Void)? = nil
+        var agentConnectionOrigin = "http://localhost:3000"
+        var agentConnectionProviderStorage: (@Sendable (AgentConnectionProviderRequest) -> AgentConnectionProviderResult)? = nil
+        var agentCredentialUseThrottleOverrideMs: Int? = nil
+        var wakeStreamHeartbeatOverrideMs: Int? = nil
+        var agentAttachmentPresign: (@Sendable (String, Int, String, String) throws -> String)? = nil
     }
 
     private let lock = NSLock()
@@ -249,5 +267,87 @@ final class AgentsRuntimeStore: @unchecked Sendable {
     var featureFlagRuleRecords: [FeatureFlagRuleRecord] {
         get { state.featureFlagRuleRecords }
         set { state.featureFlagRuleRecords = newValue }
+    }
+
+    // MARK: - Injected agent relays and configuration
+
+    var agentMigrationCancelDispatch: (@Sendable (_ machineId: String, _ role: String, _ migrationRef: String, _ transportGeneration: String, _ stopAgent: Bool) -> Void)? {
+        get { state.agentMigrationCancelDispatch }
+        set { state.agentMigrationCancelDispatch = newValue }
+    }
+
+    var agentStartDispatch: (@Sendable (_ agentId: String, _ resumePrompt: String?) async throws -> AgentStartDispatchOutcome)? {
+        get { state.agentStartDispatch }
+        set { state.agentStartDispatch = newValue }
+    }
+
+    var agentActivityLogProvider: (@Sendable (_ agentId: String, _ limit: Int?) -> AgentSurfaceResult)? {
+        get { state.agentActivityLogProvider }
+        set { state.agentActivityLogProvider = newValue }
+    }
+
+    var agentActivitySummariesProvider: (@Sendable (_ agentId: String, _ limit: Int, _ beforeEndedAt: Int?, _ beforeId: String?) -> AgentSurfaceResult)? {
+        get { state.agentActivitySummariesProvider }
+        set { state.agentActivitySummariesProvider = newValue }
+    }
+
+    var agentSkillsProvider: (@Sendable (_ agentId: String) -> AgentSurfaceResult)? {
+        get { state.agentSkillsProvider }
+        set { state.agentSkillsProvider = newValue }
+    }
+
+    var agentHasMachineLocally: (@Sendable (_ agentId: String) -> Bool)? {
+        get { state.agentHasMachineLocally }
+        set { state.agentHasMachineLocally = newValue }
+    }
+
+    var agentWorkspaceTreeProvider: (@Sendable (_ agentId: String, _ dirPath: String?, _ includeHidden: Bool) -> AgentSurfaceResult)? {
+        get { state.agentWorkspaceTreeProvider }
+        set { state.agentWorkspaceTreeProvider = newValue }
+    }
+
+    var agentWorkspaceReadProvider: (@Sendable (_ agentId: String, _ path: String?) -> AgentSurfaceResult)? {
+        get { state.agentWorkspaceReadProvider }
+        set { state.agentWorkspaceReadProvider = newValue }
+    }
+
+    var agentStartControlDispatch: (@Sendable (_ agentId: String, _ control: String) -> Void)? {
+        get { state.agentStartControlDispatch }
+        set { state.agentStartControlDispatch = newValue }
+    }
+
+    var agentResetDispatch: (@Sendable (_ agentId: String, _ mode: String, _ terminalControl: String) -> Void)? {
+        get { state.agentResetDispatch }
+        set { state.agentResetDispatch = newValue }
+    }
+
+    var agentConfigLiftDispatch: (@Sendable (_ agentId: String, _ runtimeValuesChanged: Bool) -> Void)? {
+        get { state.agentConfigLiftDispatch }
+        set { state.agentConfigLiftDispatch = newValue }
+    }
+
+    var agentConnectionOrigin: String {
+        get { state.agentConnectionOrigin }
+        set { state.agentConnectionOrigin = newValue }
+    }
+
+    var agentConnectionProviderStorage: (@Sendable (AgentConnectionProviderRequest) -> AgentConnectionProviderResult)? {
+        get { state.agentConnectionProviderStorage }
+        set { state.agentConnectionProviderStorage = newValue }
+    }
+
+    var agentCredentialUseThrottleOverrideMs: Int? {
+        get { state.agentCredentialUseThrottleOverrideMs }
+        set { state.agentCredentialUseThrottleOverrideMs = newValue }
+    }
+
+    var wakeStreamHeartbeatOverrideMs: Int? {
+        get { state.wakeStreamHeartbeatOverrideMs }
+        set { state.wakeStreamHeartbeatOverrideMs = newValue }
+    }
+
+    var agentAttachmentPresign: (@Sendable (String, Int, String, String) throws -> String)? {
+        get { state.agentAttachmentPresign }
+        set { state.agentAttachmentPresign = newValue }
     }
 }

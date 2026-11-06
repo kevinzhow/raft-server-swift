@@ -274,7 +274,6 @@ public func configure(_ app: Application, services: FallbackServices) {
     middleware.use(JSONErrorBoundaryMiddleware())
     middleware.use(ExperimentalSurfaceGate(directory: services.emailAccounts))
     middleware.use(RequestBodyLimitMiddleware(accounts: services.emailAccounts))
-    middleware.use(BufferedRequestBodyMiddleware())
     middleware.use(CorsMiddleware(origins: services.corsOrigins))
     middleware.use(PublicSearchMiddleware(
         indexEnabled: services.publicSearchIndexEnabled,
@@ -511,6 +510,20 @@ private func requestTarget(_ url: URI) -> String {
 
 public func routeResponse(_ reply: HTTPReply) -> Response {
     vaporResponse(reply)
+}
+
+extension Request {
+    /// Reads the request body asynchronously without requiring a global buffering
+    /// middleware, working identically under `app.testing` and live NIO streams.
+    func bodyText(default fallback: String = "") async throws -> String {
+        if let buffered = body.string {
+            return buffered
+        }
+        guard let data = try await body.collect() else {
+            return fallback
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
 }
 
 /// Shared `HTTPReply` → Vapor `Response` adapter. Copies the reply headers,

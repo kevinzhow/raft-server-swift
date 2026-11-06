@@ -25,11 +25,12 @@ public struct ServersFeature: RouteCollection, Sendable {
     public func register(routes: any RoutesBuilder) {
         let servers = routes.grouped("api", "servers")
 
-        servers.post("join-community") { request -> Response in
+        servers.post("join-community") { request async throws -> Response in
             guard let directory = services.publicVisits else {
                 return routeResponse(PublicVisits.authRequired(authorization: request.headers[.authorization]))
             }
-            let slug = (try? JSONSerialization.jsonObject(with: Data((request.body.string ?? "").utf8))) as? [String: Any]
+            let rawBody = (try? await request.bodyText()) ?? ""
+            let slug = (try? JSONSerialization.jsonObject(with: Data(rawBody.utf8))) as? [String: Any]
             guard let userId = services.emailAccounts.authenticatedUserId(authorization: request.headers[.authorization]) else {
                 return routeResponse(PublicVisits.authRequired(authorization: request.headers[.authorization]))
             }
@@ -43,10 +44,10 @@ public struct ServersFeature: RouteCollection, Sendable {
                 authorization: request.headers[.authorization]
             ))
         }
-        servers.post() { request -> Response in
+        servers.post() { request async throws -> Response in
             routeResponse(services.emailAccounts.createServer(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         servers.get() { request -> Response in
@@ -61,27 +62,27 @@ public struct ServersFeature: RouteCollection, Sendable {
         servers.get("order") { request -> Response in
             routeResponse(services.emailAccounts.serverOrder(authorization: request.headers[.authorization]))
         }
-        servers.patch("order") { request -> Response in
+        servers.patch("order") { request async throws -> Response in
             routeResponse(services.emailAccounts.patchServerOrder(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        servers.post(":id", "machines", ":machineId", "agents", ":agentId", "feedback", ":reportId", "transcript") { request -> Response in
+        servers.post(":id", "machines", ":machineId", "agents", ":agentId", "feedback", ":reportId", "transcript") { request async throws -> Response in
             routeResponse(services.emailAccounts.submitTranscriptFeedback(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
                 agentId: request.parameters.get("agentId") ?? "",
                 reportId: request.parameters.get("reportId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        servers.post(":id", "machines", ":machineId", "computer-lifecycle-operations") { request -> Response in
+        servers.post(":id", "machines", ":machineId", "computer-lifecycle-operations") { request async throws -> Response in
             routeResponse(services.emailAccounts.computerLifecycleOperation(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
                 machineId: request.parameters.get("machineId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         servers.get(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "mention-delivery", ":messageId") { request -> Response in
@@ -101,21 +102,21 @@ public struct ServersFeature: RouteCollection, Sendable {
                 agentId: request.parameters.get("agentId") ?? ""
             ))
         }
-        servers.post(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "mention-delivery", ":messageId", "redrive") { request -> Response in
+        servers.post(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "mention-delivery", ":messageId", "redrive") { request async throws -> Response in
             routeResponse(services.emailAccounts.redriveMentionDelivery(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
                 machineId: request.parameters.get("machineId") ?? "",
                 agentId: request.parameters.get("agentId") ?? "",
                 messageId: request.parameters.get("messageId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        servers.post(":id", "scope-attestation") { request -> Response in
+        servers.post(":id", "scope-attestation") { request async throws -> Response in
             routeResponse(services.emailAccounts.serverScopeAttestation(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         servers.get(":id", "translation-settings") { request -> Response in
@@ -124,11 +125,11 @@ public struct ServersFeature: RouteCollection, Sendable {
                 serverId: request.parameters.get("id") ?? ""
             ))
         }
-        servers.patch(":id", "translation-settings") { request -> Response in
+        servers.patch(":id", "translation-settings") { request async throws -> Response in
             routeResponse(services.emailAccounts.patchServerTranslationSettings(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         servers.get(":id", "labs") { request -> Response in
@@ -138,21 +139,21 @@ public struct ServersFeature: RouteCollection, Sendable {
                 headerServerId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
             ))
         }
-        servers.patch(":id", "labs", "access") { request -> Response in
+        servers.patch(":id", "labs", "access") { request async throws -> Response in
             routeResponse(services.emailAccounts.patchServerLabsAccess(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
                 headerServerId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        servers.put(":id", "labs", ":labKey") { request -> Response in
+        servers.put(":id", "labs", ":labKey") { request async throws -> Response in
             routeResponse(services.emailAccounts.putServerLabEnrollment(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
                 headerServerId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 labKey: request.parameters.get("labKey") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         servers.get(":id", "agreement") { request -> Response in
@@ -161,11 +162,11 @@ public struct ServersFeature: RouteCollection, Sendable {
                 serverId: request.parameters.get("id") ?? ""
             ))
         }
-        servers.put(":id", "agreement") { request -> Response in
+        servers.put(":id", "agreement") { request async throws -> Response in
             routeResponse(services.emailAccounts.putServerAgreement(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         servers.post(":id", "avatar") { request -> Response in
@@ -174,11 +175,11 @@ public struct ServersFeature: RouteCollection, Sendable {
                 serverId: request.parameters.get("id") ?? ""
             ))
         }
-        servers.post(":id", "join-links") { request -> Response in
+        servers.post(":id", "join-links") { request async throws -> Response in
             routeResponse(services.emailAccounts.createJoinLink(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         servers.get(":id", "join-links") { request -> Response in
@@ -200,11 +201,11 @@ public struct ServersFeature: RouteCollection, Sendable {
                 serverId: request.parameters.get("id") ?? ""
             ))
         }
-        servers.post(":id", "invites") { request -> Response in
+        servers.post(":id", "invites") { request async throws -> Response in
             routeResponse(services.emailAccounts.createServerInvite(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         servers.post(":id", "setup-reset") { request -> Response in
@@ -246,19 +247,19 @@ public struct ServersFeature: RouteCollection, Sendable {
                 serverId: request.parameters.get("id") ?? ""
             ))
         }
-        servers.post(":id", "setup-transition") { request -> Response in
+        servers.post(":id", "setup-transition") { request async throws -> Response in
             routeResponse(services.emailAccounts.serverSetupTransition(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        servers.patch(":id", "members", ":memberId") { request -> Response in
+        servers.patch(":id", "members", ":memberId") { request async throws -> Response in
             routeResponse(services.emailAccounts.patchServerMemberRole(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
                 memberId: request.parameters.get("memberId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         servers.delete(":id", "members", ":memberId") { request -> Response in
@@ -281,7 +282,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 serverId: request.parameters.get("id") ?? ""
             ))
         }
-        servers.patch(":id", "sidebar-order") { request -> Response in
+        servers.patch(":id", "sidebar-order") { request async throws -> Response in
             let id = request.parameters.get("id") ?? ""
             if let reply = ServerScope.membersGuard(
                 serverId: id,
@@ -292,7 +293,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             return routeResponse(services.emailAccounts.patchSidebarOrder(
                 authorization: request.headers[.authorization],
                 serverId: id,
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
         servers.get(":id", "sidebar-order") { request -> Response in
@@ -320,11 +321,11 @@ public struct ServersFeature: RouteCollection, Sendable {
                 serverId: request.parameters.get("id") ?? ""
             ))
         }
-        servers.patch(":id", "product-analytics-settings") { request -> Response in
+        servers.patch(":id", "product-analytics-settings") { request async throws -> Response in
             routeResponse(services.emailAccounts.patchServerProductAnalyticsSettings(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         servers.get(":id", "settings") { request -> Response in
@@ -339,11 +340,11 @@ public struct ServersFeature: RouteCollection, Sendable {
                 serverId: request.parameters.get("id") ?? ""
             ))
         }
-        servers.patch(":id", "notification-settings") { request -> Response in
+        servers.patch(":id", "notification-settings") { request async throws -> Response in
             routeResponse(services.emailAccounts.patchServerNotificationSettings(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         servers.get(":id", "onboarding-settings") { request -> Response in
@@ -352,20 +353,20 @@ public struct ServersFeature: RouteCollection, Sendable {
                 serverId: request.parameters.get("id") ?? ""
             ))
         }
-        servers.patch(":id", "onboarding-settings") { request -> Response in
+        servers.patch(":id", "onboarding-settings") { request async throws -> Response in
             routeResponse(services.emailAccounts.patchServerOnboardingSettings(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        servers.post(":id", "machines", ":machineId", "computer", ":action") { request -> Response in
+        servers.post(":id", "machines", ":machineId", "computer", ":action") { request async throws -> Response in
             routeResponse(services.emailAccounts.computerAction(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
                 machineId: request.parameters.get("machineId") ?? "",
                 action: request.parameters.get("action") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         registerServerMachineDelete(on: servers)
@@ -469,13 +470,13 @@ public struct ServersFeature: RouteCollection, Sendable {
             response.headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
             return response
         }
-        servers.post(":id", "machines", ":machineId", "runtime-account-usage", ":provider", "refresh") { request -> Response in
+        servers.post(":id", "machines", ":machineId", "runtime-account-usage", ":provider", "refresh") { request async throws -> Response in
             routeResponse(services.emailAccounts.refreshMachineRuntimeAccountUsage(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
                 machineId: request.parameters.get("machineId") ?? "",
                 provider: request.parameters.get("provider") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         servers.delete(":id", "machines", ":machineId", "workspaces", ":directoryName") { request -> Response in
@@ -516,11 +517,11 @@ public struct ServersFeature: RouteCollection, Sendable {
                 incidentId: request.parameters.get("incidentId") ?? ""
             ))
         }
-        servers.post(":id", "machines") { request -> Response in
+        servers.post(":id", "machines") { request async throws -> Response in
             routeResponse(services.emailAccounts.registerServerMachine(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         servers.get(":id", "machines") { request -> Response in
@@ -537,19 +538,19 @@ public struct ServersFeature: RouteCollection, Sendable {
             ))
         }
         registerServerMachineDelete(on: servers)
-        servers.patch(":id", "machines", ":machineId") { request -> Response in
+        servers.patch(":id", "machines", ":machineId") { request async throws -> Response in
             routeResponse(services.emailAccounts.patchServerMachine(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
                 machineId: request.parameters.get("machineId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        servers.patch(":id") { request -> Response in
+        servers.patch(":id") { request async throws -> Response in
             routeResponse(services.emailAccounts.patchServerProfile(
                 authorization: request.headers[.authorization],
                 serverId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         servers.get(":id") { request -> Response in
@@ -618,34 +619,34 @@ public struct ServersFeature: RouteCollection, Sendable {
             }
             return routeResponse(directory.readVisibility(serverId: id, authorization: request.headers[.authorization]))
         }
-        servers.patch(":id", "public-guest-join") { request -> Response in
+        servers.patch(":id", "public-guest-join") { request async throws -> Response in
             guard let directory = services.publicServerDirectory, let id = request.parameters.get("id") else {
                 return routeResponse(HTTPReply(status: 404, headers: [:], body: "{\"error\":\"Not found\"}"))
             }
             return routeResponse(directory.patchGuestJoin(
                 serverId: id,
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        servers.patch(":id", "public-visibility") { request -> Response in
+        servers.patch(":id", "public-visibility") { request async throws -> Response in
             guard let directory = services.publicServerDirectory, let id = request.parameters.get("id") else {
                 return routeResponse(HTTPReply(status: 404, headers: [:], body: "{\"error\":\"Not found\"}"))
             }
             return routeResponse(directory.patchVisibility(
                 serverId: id,
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        servers.patch(":id", "public-search") { request -> Response in
+        servers.patch(":id", "public-search") { request async throws -> Response in
             guard let directory = services.publicServerDirectory, let id = request.parameters.get("id") else {
                 return routeResponse(HTTPReply(status: 404, headers: [:], body: "{\"error\":\"Not found\"}"))
             }
             return routeResponse(directory.patchSearch(
                 serverId: id,
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
     }

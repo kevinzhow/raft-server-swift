@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Owns the agent-reminder and product-feedback rows that used to be stored inline on
 /// `EmailLoginDirectory`.
@@ -22,6 +25,16 @@ final class FeedbackStore: @unchecked Sendable {
         var feedbackLocatorRecords: [FeedbackLocatorRecord] = []
         var handsFeedbackAppsJSON: String? = nil
         var handsFeedbackLegacyEnvironment: [String: String]? = nil
+        // Injectable Hands feedback transport configuration that used to live
+        // inline on `EmailLoginDirectory`.
+        var handsFeedbackUpstreamHandler: ((URLRequest) -> (status: Int, headers: [String: String], body: Data))? = nil
+        var handsConversationAppTokenOverride: String? = nil
+        var handsFeedbackBaseURLOverride: String? = nil
+        var handsFeedbackAppIdOverride: String? = nil
+        var handsFeedbackAppSlugOverride: String? = nil
+        var handsFeedbackAppTokenOverride: String? = nil
+        var handsFeedbackConfigured = false
+        var marketplaceReviewerOverride: Set<String>? = nil
     }
 
     private let lock = NSLock()
@@ -84,5 +97,47 @@ final class FeedbackStore: @unchecked Sendable {
     var handsFeedbackLegacyEnvironment: [String: String]? {
         get { state.handsFeedbackLegacyEnvironment }
         set { state.handsFeedbackLegacyEnvironment = newValue }
+    }
+
+    // MARK: - Injected Hands feedback transport configuration
+
+    var handsFeedbackUpstreamHandler: ((URLRequest) -> (status: Int, headers: [String: String], body: Data))? {
+        get { state.handsFeedbackUpstreamHandler }
+        set { state.handsFeedbackUpstreamHandler = newValue }
+    }
+
+    var handsConversationAppTokenOverride: String? {
+        get { state.handsConversationAppTokenOverride }
+        set { state.handsConversationAppTokenOverride = newValue }
+    }
+
+    var handsFeedbackBaseURLOverride: String? {
+        get { state.handsFeedbackBaseURLOverride }
+        set { state.handsFeedbackBaseURLOverride = newValue }
+    }
+
+    var handsFeedbackAppIdOverride: String? {
+        get { state.handsFeedbackAppIdOverride }
+        set { state.handsFeedbackAppIdOverride = newValue }
+    }
+
+    var handsFeedbackAppSlugOverride: String? {
+        get { state.handsFeedbackAppSlugOverride }
+        set { state.handsFeedbackAppSlugOverride = newValue }
+    }
+
+    var handsFeedbackAppTokenOverride: String? {
+        get { state.handsFeedbackAppTokenOverride }
+        set { state.handsFeedbackAppTokenOverride = newValue }
+    }
+
+    var handsFeedbackConfigured: Bool {
+        get { state.handsFeedbackConfigured }
+        set { state.handsFeedbackConfigured = newValue }
+    }
+
+    var marketplaceReviewerOverride: Set<String>? {
+        get { state.marketplaceReviewerOverride }
+        set { state.marketplaceReviewerOverride = newValue }
     }
 }

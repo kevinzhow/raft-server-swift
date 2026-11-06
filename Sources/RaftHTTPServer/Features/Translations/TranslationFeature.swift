@@ -28,21 +28,21 @@ struct TranslationFeature: RouteCollection {
     func register(routes: any RoutesBuilder) {
         let api = routes.grouped("api")
         let publicServer = routes.grouped("api", "public", "servers", ":slug")
-        api.post("message-translations:batch") { request -> Response in
+        api.post("message-translations:batch") { request async throws -> Response in
             routeResponse(services.emailAccounts.batchTranslateMessages(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        publicServer.post("message-translations:batch") { request -> Response in
+        publicServer.post("message-translations:batch") { request async throws -> Response in
             let client = request.remoteAddress?.host ?? "unknown"
             if !services.publicTranslationBudget.allow(ip: client) {
                 return routeResponse(PublicTranslations.tooMany())
             }
             let slug = request.parameters.get("slug") ?? ""
             return routeResponse(PublicTranslations.reply(
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 gate: services.publicVisits?.translationGate(slug: slug),
                 translator: services.publicVisits.map { visits in
                     { ids, target in visits.publicTranslationResults(slug: slug, targetLanguage: target, messageIds: ids) }

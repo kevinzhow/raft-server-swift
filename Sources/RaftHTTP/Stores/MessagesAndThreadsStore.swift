@@ -49,6 +49,14 @@ final class MessagesAndThreadsStore: @unchecked Sendable {
         var deferredUnreadAdvance: [String: Int] = [:]
         var externalAvatarAssets: [String: ExternalAvatarAsset] = [:]
         var externalAvatarStorageAvailable = true
+        // Injectable messaging/attachment configuration that used to live inline
+        // on `EmailLoginDirectory`.
+        var translationProviderOverride: String? = nil
+        var attachmentPreviewBody: (@Sendable (_ attachmentId: String) -> String?)? = nil
+        var attachmentPresign: (@Sendable (_ attachmentId: String, _ mimeType: String?, _ ttlSeconds: Int) -> String)? = nil
+        var readPositionSettleMs: Int = 2000
+        var sendFreshnessModeOverride: String? = nil
+        var realtimeEmitterStorage: (@Sendable (String, String, String?) -> Void)? = nil
     }
 
     private let lock = NSLock()
@@ -241,5 +249,37 @@ final class MessagesAndThreadsStore: @unchecked Sendable {
     var externalAvatarStorageAvailable: Bool {
         get { state.externalAvatarStorageAvailable }
         set { state.externalAvatarStorageAvailable = newValue }
+    }
+
+    // MARK: - Injected messaging configuration
+
+    var translationProviderOverride: String? {
+        get { state.translationProviderOverride }
+        set { state.translationProviderOverride = newValue }
+    }
+
+    var attachmentPreviewBody: (@Sendable (_ attachmentId: String) -> String?)? {
+        get { state.attachmentPreviewBody }
+        set { state.attachmentPreviewBody = newValue }
+    }
+
+    var attachmentPresign: (@Sendable (_ attachmentId: String, _ mimeType: String?, _ ttlSeconds: Int) -> String)? {
+        get { state.attachmentPresign }
+        set { state.attachmentPresign = newValue }
+    }
+
+    var readPositionSettleMs: Int {
+        get { state.readPositionSettleMs }
+        set { state.readPositionSettleMs = newValue }
+    }
+
+    var sendFreshnessModeOverride: String? {
+        get { state.sendFreshnessModeOverride }
+        set { state.sendFreshnessModeOverride = newValue }
+    }
+
+    var realtimeEmitterStorage: (@Sendable (String, String, String?) -> Void)? {
+        get { state.realtimeEmitterStorage }
+        set { state.realtimeEmitterStorage = newValue }
     }
 }

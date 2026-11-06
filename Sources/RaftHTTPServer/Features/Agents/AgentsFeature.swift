@@ -26,10 +26,10 @@ public struct AgentsFeature: RouteCollection, Sendable {
         let agentGroup = routes.grouped("api", "agent")
         let agents = routes.grouped("api", "agents")
 
-        agentGroup.post("login") { request -> Response in
+        agentGroup.post("login") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentLogin(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         agents.get { request -> Response in
@@ -38,18 +38,18 @@ public struct AgentsFeature: RouteCollection, Sendable {
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
             ))
         }
-        agents.post { request -> Response in
+        agents.post { request async throws -> Response in
             routeResponse(services.emailAccounts.createAgentRoute(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        agents.delete(":id") { request -> Response in
+        agents.delete(":id") { request async throws -> Response in
             routeResponse(services.emailAccounts.deleteAgentRoute(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
             ))
         }
@@ -60,11 +60,11 @@ public struct AgentsFeature: RouteCollection, Sendable {
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
             ))
         }
-        agents.patch(":id") { request -> Response in
+        agents.patch(":id") { request async throws -> Response in
             routeResponse(services.emailAccounts.patchAgent(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
             ))
         }
@@ -108,19 +108,19 @@ public struct AgentsFeature: RouteCollection, Sendable {
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
             ))
         }
-        agents.post(":id", "archive", "workspace") { request -> Response in
+        agents.post(":id", "archive", "workspace") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentArchiveWorkspaceAction(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 agentId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        agents.post(":id", "assign-machine") { request -> Response in
+        agents.post(":id", "assign-machine") { request async throws -> Response in
             routeResponse(services.emailAccounts.assignAgentMachine(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         agents.delete(":id", "assistant-owner") { request -> Response in
@@ -139,19 +139,19 @@ public struct AgentsFeature: RouteCollection, Sendable {
                 method: "PUT"
             ))
         }
-        agents.post(":id", "avatar") { request -> Response in
+        agents.post(":id", "avatar") { request async throws -> Response in
             routeResponse(services.emailAccounts.uploadAgentAvatar(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("id") ?? "",
-                byteCount: request.body.string?.utf8.count ?? 0
+                byteCount: (try await request.bodyText()).utf8.count
             ))
         }
-        agents.post(":id", "bootstrap-tokens") { request -> Response in
+        agents.post(":id", "bootstrap-tokens") { request async throws -> Response in
             routeResponse(services.emailAccounts.createAgentBootstrapToken(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 agentId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         agents.get(":id", "channels") { request -> Response in
@@ -177,31 +177,31 @@ public struct AgentsFeature: RouteCollection, Sendable {
                 provider: request.parameters.get("provider") ?? ""
             ))
         }
-        agents.post(":id", "connections", ":provider") { request -> Response in
+        agents.post(":id", "connections", ":provider") { request async throws -> Response in
             connectionResponse(services.emailAccounts.startAgentConnection(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 agentId: request.parameters.get("id") ?? "",
                 provider: request.parameters.get("provider") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        agents.put(":id", "connections", ":provider") { request -> Response in
+        agents.put(":id", "connections", ":provider") { request async throws -> Response in
             connectionResponse(services.emailAccounts.assignAgentConnection(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 agentId: request.parameters.get("id") ?? "",
                 provider: request.parameters.get("provider") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        agents.post(":id", "connections", ":provider", "confirm") { request -> Response in
+        agents.post(":id", "connections", ":provider", "confirm") { request async throws -> Response in
             connectionResponse(services.emailAccounts.confirmAgentConnection(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 agentId: request.parameters.get("id") ?? "",
                 provider: request.parameters.get("provider") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         agents.delete(":id", "connections", ":provider", "connectors", ":connectorId") { request -> Response in
@@ -213,12 +213,12 @@ public struct AgentsFeature: RouteCollection, Sendable {
                 connectorId: request.parameters.get("connectorId") ?? ""
             ))
         }
-        agents.patch(":id", "creator") { request -> Response in
+        agents.patch(":id", "creator") { request async throws -> Response in
             routeResponse(services.emailAccounts.patchAgentCreator(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 agentId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         agents.get(":id", "credentials") { request -> Response in
@@ -229,11 +229,11 @@ public struct AgentsFeature: RouteCollection, Sendable {
             response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
             return response
         }
-        agents.post(":id", "credentials") { request -> Response in
+        agents.post(":id", "credentials") { request async throws -> Response in
             var response = routeResponse(services.emailAccounts.issueAgentCredential(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
             response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
             return response
@@ -276,22 +276,22 @@ public struct AgentsFeature: RouteCollection, Sendable {
             response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
             return response
         }
-        agents.put(":id", "hosted-runtime", "model") { request -> Response in
+        agents.put(":id", "hosted-runtime", "model") { request async throws -> Response in
             var response = routeResponse(services.emailAccounts.setAgentHostedModel(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 agentId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
             response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
             return response
         }
-        agents.post(":id", "hosted-runtime", "retry") { request -> Response in
+        agents.post(":id", "hosted-runtime", "retry") { request async throws -> Response in
             routeResponse(services.emailAccounts.retryAgentProvisioning(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 agentId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         agents.get(":id", "hosted-runtime", "usage") { request -> Response in
@@ -304,12 +304,12 @@ public struct AgentsFeature: RouteCollection, Sendable {
             response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
             return response
         }
-        agents.post(":id", "migrate") { request -> Response in
+        agents.post(":id", "migrate") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentRuntimeAction(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("id") ?? "",
                 action: "migrate",
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
             ))
         }
@@ -320,20 +320,20 @@ public struct AgentsFeature: RouteCollection, Sendable {
                 agentId: request.parameters.get("id") ?? ""
             ))
         }
-        agents.post(":id", "migration", "cancel") { request -> Response in
+        agents.post(":id", "migration", "cancel") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentMigrationCancel(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 agentId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        agents.post(":id", "migration", "confirm-hosted") { request -> Response in
+        agents.post(":id", "migration", "confirm-hosted") { request async throws -> Response in
             routeResponse(services.emailAccounts.confirmHostedMigration(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 agentId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         agents.get(":id", "onboarding-identity-adoption") { request -> Response in
@@ -350,12 +350,12 @@ public struct AgentsFeature: RouteCollection, Sendable {
                 agentId: request.parameters.get("id") ?? ""
             ))
         }
-        agents.post(":id", "reset") { request -> Response in
+        agents.post(":id", "reset") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentRuntimeAction(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("id") ?? "",
                 action: "reset",
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
             ))
         }
@@ -385,13 +385,13 @@ public struct AgentsFeature: RouteCollection, Sendable {
                 body: ""
             ))
         }
-        agents.put(":id", "scopes") { request -> Response in
+        agents.put(":id", "scopes") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentScopesRoute(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 agentId: request.parameters.get("id") ?? "",
                 method: "PUT",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         agents.get(":id", "skills") { request -> Response in
@@ -407,21 +407,21 @@ public struct AgentsFeature: RouteCollection, Sendable {
                 hasReplayHeaders: hasReplayHeaders
             ))
         }
-        agents.post(":id", "start") { request -> Response in
+        agents.post(":id", "start") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentRuntimeAction(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("id") ?? "",
                 action: "start",
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
             ))
         }
-        agents.post(":id", "stop") { request -> Response in
+        agents.post(":id", "stop") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentRuntimeAction(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("id") ?? "",
                 action: "stop",
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
             ))
         }

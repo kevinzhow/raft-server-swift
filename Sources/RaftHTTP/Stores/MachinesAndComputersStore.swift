@@ -30,6 +30,20 @@ final class MachinesAndComputersStore: @unchecked Sendable {
         var machineBroadcastPolicies: [String: String] = [:]
         var machineModelSeenCapability: Set<String> = []
         var latestComputerRelease: (version: String, notesJSON: String)? = nil
+        // Injectable relays and configuration that used to live inline on
+        // `EmailLoginDirectory`.
+        var machineMigrationProvisioner: (@Sendable (_ sourceMachineId: String, _ targetMachineId: String) -> String?)? = nil
+        var machineMigrationLeaseDispatch: (@Sendable (_ machineId: String, _ role: String, _ migrationRef: String) -> Void)? = nil
+        var machineMigrationStartAgent: (@Sendable (_ agentId: String) async throws -> MachineMigrationAgentStartOutcome)? = nil
+        var machineMigrationArchiveSourceWorkspace: (@Sendable (_ machineId: String, _ migrationRef: String, _ agentId: String) async throws -> Void)? = nil
+        var builtinModelCatalogCheck: (@Sendable (_ machineId: String, _ modelId: String) -> BuiltinModelCatalogResult)? = nil
+        var agentRuntimeModelsForMachine: (@Sendable (_ machineId: String, _ runtime: String) -> [String]?)? = nil
+        var runtimeAccountUsageManualRefresh: (@Sendable (String, String) -> RuntimeAccountUsageManualResult)? = nil
+        var machineRuntimeModelProbe: (@Sendable (_ machineId: String, _ runtimeId: String, _ force: Bool) -> RuntimeModelProbeOutcome)? = nil
+        var machineRoutedLocally: (@Sendable (_ machineId: String) -> Bool)? = nil
+        var builtinCatalogMode: String = "supported"
+        var computerAttachEnabledOverride: Bool? = nil
+        var computerUpgradeSender: (@Sendable (_ machineId: String, _ targetVersion: String, _ requestId: String) -> Bool)? = nil
     }
 
     private let lock = NSLock()
@@ -132,5 +146,67 @@ final class MachinesAndComputersStore: @unchecked Sendable {
     var latestComputerRelease: (version: String, notesJSON: String)? {
         get { state.latestComputerRelease }
         set { state.latestComputerRelease = newValue }
+    }
+
+    // MARK: - Injected machine relays and configuration
+
+    var machineMigrationProvisioner: (@Sendable (_ sourceMachineId: String, _ targetMachineId: String) -> String?)? {
+        get { state.machineMigrationProvisioner }
+        set { state.machineMigrationProvisioner = newValue }
+    }
+
+    var machineMigrationLeaseDispatch: (@Sendable (_ machineId: String, _ role: String, _ migrationRef: String) -> Void)? {
+        get { state.machineMigrationLeaseDispatch }
+        set { state.machineMigrationLeaseDispatch = newValue }
+    }
+
+    var machineMigrationStartAgent: (@Sendable (_ agentId: String) async throws -> MachineMigrationAgentStartOutcome)? {
+        get { state.machineMigrationStartAgent }
+        set { state.machineMigrationStartAgent = newValue }
+    }
+
+    var machineMigrationArchiveSourceWorkspace: (@Sendable (_ machineId: String, _ migrationRef: String, _ agentId: String) async throws -> Void)? {
+        get { state.machineMigrationArchiveSourceWorkspace }
+        set { state.machineMigrationArchiveSourceWorkspace = newValue }
+    }
+
+    var builtinModelCatalogCheck: (@Sendable (_ machineId: String, _ modelId: String) -> BuiltinModelCatalogResult)? {
+        get { state.builtinModelCatalogCheck }
+        set { state.builtinModelCatalogCheck = newValue }
+    }
+
+    var agentRuntimeModelsForMachine: (@Sendable (_ machineId: String, _ runtime: String) -> [String]?)? {
+        get { state.agentRuntimeModelsForMachine }
+        set { state.agentRuntimeModelsForMachine = newValue }
+    }
+
+    var runtimeAccountUsageManualRefresh: (@Sendable (String, String) -> RuntimeAccountUsageManualResult)? {
+        get { state.runtimeAccountUsageManualRefresh }
+        set { state.runtimeAccountUsageManualRefresh = newValue }
+    }
+
+    var machineRuntimeModelProbe: (@Sendable (_ machineId: String, _ runtimeId: String, _ force: Bool) -> RuntimeModelProbeOutcome)? {
+        get { state.machineRuntimeModelProbe }
+        set { state.machineRuntimeModelProbe = newValue }
+    }
+
+    var machineRoutedLocally: (@Sendable (_ machineId: String) -> Bool)? {
+        get { state.machineRoutedLocally }
+        set { state.machineRoutedLocally = newValue }
+    }
+
+    var builtinCatalogMode: String {
+        get { state.builtinCatalogMode }
+        set { state.builtinCatalogMode = newValue }
+    }
+
+    var computerAttachEnabledOverride: Bool? {
+        get { state.computerAttachEnabledOverride }
+        set { state.computerAttachEnabledOverride = newValue }
+    }
+
+    var computerUpgradeSender: (@Sendable (_ machineId: String, _ targetVersion: String, _ requestId: String) -> Bool)? {
+        get { state.computerUpgradeSender }
+        set { state.computerUpgradeSender = newValue }
     }
 }

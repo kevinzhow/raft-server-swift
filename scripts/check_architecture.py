@@ -5,11 +5,12 @@ The target layering is described in ``docs/ARCHITECTURE.md``. This script
 enforces the part of it that can be measured today:
 
 1. ``Sources/RaftHTTP/EmailLogin.swift`` must not grow past its recorded
-   baseline (179 lines, the composition root: one lock, the domain stores, the
-   injectable relays and ``init()``). Every row ledger lives in a domain store
-   and every accessor lives in ``EmailLogin+StoreForwarders.swift``. Shrinking
-   is always allowed; the baseline constant is a ratchet and may only be
-   lowered.
+   baseline (48 lines, the composition root: the locks, the domain stores, the
+   OAuth ledger and ``init()``). Every row ledger and injected configuration
+   slot lives in a domain store, every accessor lives in
+   ``EmailLogin+StoreForwarders.swift``, and the domain services live under
+   ``Services/``. Shrinking is always allowed; the baseline constant is a
+   ratchet and may only be lowered.
 2. Every Swift file under ``Sources/RaftHTTPServer/Features/`` must stay at or
    below 1,200 lines. A missing directory is reported as zero files.
 3. Every Swift file under ``Sources/RaftHTTP/EmailLogin/`` must stay at or
@@ -49,10 +50,13 @@ FEATURES_RELATIVE = Path("Sources/RaftHTTPServer/Features")
 # after the TasksAndReminders/MachinesAndComputers/ServersAndChannels/
 # ManagedMCPAndCards/Feedback split, and again after the last domain-state
 # dictionaries moved into AuthProfileStore, MessagesAndThreadsStore and
-# AgentsRuntimeStore with the accessors in EmailLogin+StoreForwarders.swift.
+# AgentsRuntimeStore with the accessors in EmailLogin+StoreForwarders.swift,
+# and again after the injected relay/configuration slots moved into the domain
+# stores and the socket-membership, feedback-locator and action-card services
+# moved under Sources/RaftHTTP/Services/.
 # The line ceiling is a ratchet: lower it when a slice shrinks the file, never
 # raise it to make a check pass.
-EMAIL_LOGIN_LINE_BASELINE = 179
+EMAIL_LOGIN_LINE_BASELINE = 48
 EMAIL_LOGIN_FOR_TESTING_BASELINE = 0
 EMAIL_LOGIN_PRIVATE_FUNC_FOR_TESTING_BASELINE = 0
 

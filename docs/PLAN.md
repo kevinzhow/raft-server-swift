@@ -24,11 +24,11 @@ Daemon 的 2616 条用例中，约 1130 条属于 Node 运行时 / 进程管理 
 
 ### 1.3 分层基础（R1–R4）
 
-- **路由**：13 个 `RouteCollection` 模块，位于 `Sources/RaftHTTPServer/Features/`。
-- **存储**：10 个独立锁领域 `Store`，位于 `Sources/RaftHTTP/Stores/`。
-- **服务**：4 个无 Vapor 依赖的 `Service`，位于 `Sources/RaftHTTP/Services/`。
+- **路由**：16 个 `RouteCollection` 模块，位于 `Sources/RaftHTTPServer/Features/`（含 `AgentsFeature`、`ComputersFeature`、`RemindersFeature`，最大 712 行）。
+- **存储**：12 个独立锁领域 `Store`，位于 `Sources/RaftHTTP/Stores/`。
+- **服务**：7 个无 Vapor 依赖的 `Service`，位于 `Sources/RaftHTTP/Services/`。
 - **DTO**：4 个 `Codable` 模块，位于 `Sources/RaftHTTP/DTO/`。
-- **收敛结果**：`Sources/RaftHTTP/EmailLogin.swift` 从 34,306 行压降至 **432 行**；`ForTesting` 基线压降至 **12**。
+- **收敛结果**：`Sources/RaftHTTP/EmailLogin.swift` 从 34,306 行压降至 **48 行**（**-99.86%**）；`ForTesting` 基线压降至 **0**。`Features/**` 中同步 `request.body.string` 读取为 **0**，`BufferedRequestBodyMiddleware` 已退役。
 
 ## 2. 下一阶段目标：Phase 5 按域深度架构重构
 
@@ -52,8 +52,8 @@ Daemon 的 2616 条用例中，约 1130 条属于 Node 运行时 / 进程管理 
 
 ### 5.2 Vapor 5 `Content` 解码与中间件现代化
 
-- 将 `Sources/RaftHTTPServer/Features/**` 中剩余的同步 `request.body.string ?? ""` 读取逐步替换为 `try await req.content.decode(<RequestDTO>.self)`。
-- 所有请求体迁移完成后，移除全局缓冲的 `BufferedRequestBodyMiddleware`。
+- `Sources/RaftHTTPServer/Features/**` 中已无同步 `request.body.string ?? ""` 读取，请求体统一走 `try await req.content.decode(<RequestDTO>.self)`。
+- 全局缓冲的 `BufferedRequestBodyMiddleware` 已删除。
 - 引入 `AsyncBearerAuthenticator` 与统一 Server Scope 中间件，替代各 handler 内的重复鉴权与作用域检查。
 
 ### 5.3 拆分 `NotificationsFeature.swift` 杂糅路由
@@ -74,8 +74,8 @@ Daemon 的 2616 条用例中，约 1130 条属于 Node 运行时 / 进程管理 
 ### Phase 5 完成标准
 
 - `Sources/RaftHTTP/EmailLogin/` 下的 `EmailLogin+*.swift` 全部删除，业务逻辑按域收敛到 `<Domain>Service`。
-- `Features/**` 中不再有同步 `request.body.string ?? ""` 读取，`BufferedRequestBodyMiddleware` 已移除。
-- `NotificationsFeature.swift` 拆分完毕，`Agents`、`Computers`、`Reminders` 路由归属与上游 `routes/*.ts` 一一对应。
+- `Features/**` 中不再有同步 `request.body.string ?? ""` 读取，`BufferedRequestBodyMiddleware` 已移除。（已完成）
+- `NotificationsFeature.swift` 拆分完毕，`Agents`、`Computers`、`Reminders` 路由归属与上游 `routes/*.ts` 一一对应。（已完成）
 - 生产代码中不再有 `*ForTesting`，架构门禁基线归零。
 - 四项门禁全绿，`make parity` 仍为 406 / 406。
 

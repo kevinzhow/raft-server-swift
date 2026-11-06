@@ -213,7 +213,6 @@ Tests (any target) ──▶ TestSupport
    middleware.use(JSONErrorBoundaryMiddleware())
    middleware.use(ExperimentalSurfaceGate(directory: …))
    middleware.use(RequestBodyLimitMiddleware(accounts: …))
-   middleware.use(BufferedRequestBodyMiddleware())
    middleware.use(CorsMiddleware(origins: …))
    middleware.use(PublicSearchMiddleware(…))
    middleware.use(FallbackMiddleware(services: services))
@@ -222,6 +221,8 @@ Tests (any target) ──▶ TestSupport
 
 Route registration order inside `boot` is irrelevant to Vapor routing except
 for duplicate paths; the upstream path + method pair is the contract.
+Request bodies are decoded asynchronously in each feature handler; there is no
+global body-buffering middleware.
 
 ## 6. Migration order
 
@@ -245,10 +246,10 @@ lock, and owner, and no file needs to be 31k lines.
 
 | Check | Rule | Failure |
 | --- | --- | --- |
-| `email-login-ceiling` | `Sources/RaftHTTP/EmailLogin.swift` must stay at or below its recorded baseline of **432 lines** (composition root + stored state that has not moved into a domain store) | New line count > baseline. Lowering the file is always allowed; the baseline constant may then be lowered, never raised. |
+| `email-login-ceiling` | `Sources/RaftHTTP/EmailLogin.swift` must stay at or below its recorded baseline of **48 lines** (composition root + stored state that has not moved into a domain store) | New line count > baseline. Lowering the file is always allowed; the baseline constant may then be lowered, never raised. |
 | `feature-file-ceiling` | Every `.swift` file under `Sources/RaftHTTPServer/Features/` ≤ **1,200 lines** | Any file over the limit. A missing `Features/` directory is reported as zero files, not an error. |
 | `email-login-extension-ceiling` | Every `.swift` file under `Sources/RaftHTTP/EmailLogin/` ≤ **1,600 lines** | Any file over the limit, reported per file. A missing directory is reported as zero files, not an error. |
-| `email-login-test-seams` | `ForTesting` markers in `EmailLogin.swift` may not grow beyond the recorded **12**; `private func …ForTesting` baseline is **0** | **Warning only** (exit code unchanged). Migration to `TestSupport` is R5. |
+| `email-login-test-seams` | `ForTesting` markers in `EmailLogin.swift` may not grow beyond the recorded **0**; `private func …ForTesting` baseline is **0** | **Warning only** (exit code unchanged). Migration to `TestSupport` is R5. |
 
 Usage:
 
@@ -282,10 +283,10 @@ constant to make the check pass.
 
 | Stage | State | Evidence |
 | --- | --- | --- |
-| R1 route extraction | done for auth, feedback, public, translations, servers, channels, messaging, OAuth/OIDC, internal agent-api, internal admin, integrations, notifications/misc | `Sources/RaftHTTPServer/Features/` (12 collections, ~500 route registrations moved); `configure()` 4,520 -> 667 lines (only policy catch-alls + wiring); per-feature registration tests |
-| R2 canonical JSON | foundation done | `Sources/RaftHTTP/Support/JSONValue.swift` + `HTTPReply.jsonValue` + `Tests/RaftHTTPTests/JSONValueTests.swift`; feature handlers migrate as they are rewritten. `Sources/RaftHTTP/DTO/` now holds 4 DTO modules (`AuthVerificationDTO`, `AuthProfileDTO`, `FeedbackDTO`, `RealtimeEventDTO`), and `Sources/RaftHTTP/Services/` holds 4 Vapor-free services (`AuthVerificationService`, `AuthProfileService`, `FeedbackService`, `ChannelMessagingService`) |
-| R3 store/lock split | started | 10 dedicated stores under `Sources/RaftHTTP/Stores/`: `AuthProfileStore` (linked identities, password-reset tokens, legal acceptances), `NotificationsStore`, `TasksAndRemindersStore`, `MachinesAndComputersStore`, `ServersAndChannelsStore`, `ManagedMCPAndCardsStore`, `FeedbackStore`, `InboxFactStore`, `ProductEventStore` (product/client events + idempotency), `ThreadFollowStore` (agent thread-follow rows). `Sources/RaftHTTP/EmailLogin.swift` is down to 432 lines with 12 `ForTesting` markers. Target next: ChannelStore, TaskStore, ReadCursorStore |
-| R4 guardrails | done | `scripts/check_architecture.py`, `make architecture`: EmailLogin line ratchet (432 after the store/DTO/service split), Features <= 1,200 lines, EmailLogin/*.swift <= 1,600 lines, ForTesting warning baseline 12; 10 `Stores/`, 4 `Services/` and 4 `DTO/` modules now live outside `EmailLogin.swift` |
+| R1 route extraction | done for auth, feedback, public, translations, servers, channels, messaging, OAuth/OIDC, internal agent-api, internal admin, integrations, notifications/misc, agents, computers, reminders | `Sources/RaftHTTPServer/Features/` (16 collections, including `AgentsFeature`, `ComputersFeature`, `RemindersFeature`; largest 712 lines); `configure()` 4,520 -> 667 lines (only policy catch-alls + wiring); per-feature registration tests |
+| R2 canonical JSON | foundation done | `Sources/RaftHTTP/Support/JSONValue.swift` + `HTTPReply.jsonValue` + `Tests/RaftHTTPTests/JSONValueTests.swift`; feature handlers migrate as they are rewritten. `Sources/RaftHTTP/DTO/` now holds 4 DTO modules (`AuthVerificationDTO`, `AuthProfileDTO`, `FeedbackDTO`, `RealtimeEventDTO`), and `Sources/RaftHTTP/Services/` holds 7 Vapor-free services (`AuthVerificationService`, `AuthProfileService`, `FeedbackService`, `ChannelMessagingService`, `SocketMembershipService`, `FeedbackLocatorService`, `ActionCardService`) |
+| R3 store/lock split | started | 12 dedicated stores under `Sources/RaftHTTP/Stores/`: `AuthProfileStore` (linked identities, password-reset tokens, legal acceptances), `NotificationsStore`, `TasksAndRemindersStore`, `MachinesAndComputersStore`, `ServersAndChannelsStore`, `ManagedMCPAndCardsStore`, `FeedbackStore`, `MessagesAndThreadsStore`, `AgentsRuntimeStore`, `InboxFactStore`, `ProductEventStore` (product/client events + idempotency), `ThreadFollowStore` (agent thread-follow rows). `Sources/RaftHTTP/EmailLogin.swift` is down to 48 lines with 0 `ForTesting` markers. |
+| R4 guardrails | done | `scripts/check_architecture.py`, `make architecture`: EmailLogin line ratchet (48 after the store/DTO/service split), Features <= 1,200 lines, EmailLogin/*.swift <= 1,600 lines, ForTesting warning baseline 0; 12 `Stores/`, 7 `Services/` and 4 `DTO/` modules now live outside `EmailLogin.swift` |
 | R5 shared contracts | started | `Sources/RaftShared` target added; canonical `JSONValue` moved there, `HTTPReply.jsonValue` stays in RaftHTTP; next: capability/error-code contracts and feature DTOs |
 
 Remaining composition-root route families: internal agent-api, internal agent/computer/machine,
@@ -305,20 +306,23 @@ Generated knowledge corpus lives in `Sources/RaftHTTPServer/Generated/KnowledgeC
 
 ## EmailLogin split progress (2026-11-05)
 
-- `Sources/RaftHTTP/EmailLogin.swift`: 34,306 -> 432 lines (-33,874, -98.7%).
+- `Sources/RaftHTTP/EmailLogin.swift`: 34,306 -> 48 lines (-34,258, -99.86%).
   The residue is the composition root: the class shell, stored properties whose
-  state has not moved into a domain store, and `init`, with 12 `ForTesting`
-  markers left. Ten dedicated stores live under `Sources/RaftHTTP/Stores/`
+  state has not moved into a domain store, and `init`, with 0 `ForTesting`
+  markers left. Twelve dedicated stores live under `Sources/RaftHTTP/Stores/`
   (`AuthProfileStore`, `NotificationsStore`, `TasksAndRemindersStore`,
   `MachinesAndComputersStore`, `ServersAndChannelsStore`,
-  `ManagedMCPAndCardsStore`, `FeedbackStore`, `InboxFactStore`,
-  `ProductEventStore`, `ThreadFollowStore`); four Vapor-free services live
+  `ManagedMCPAndCardsStore`, `FeedbackStore`, `MessagesAndThreadsStore`,
+  `AgentsRuntimeStore`, `InboxFactStore`, `ProductEventStore`,
+  `ThreadFollowStore`); seven Vapor-free services live
   under `Sources/RaftHTTP/Services/` (`AuthVerificationService`,
-  `AuthProfileService`, `FeedbackService`, `ChannelMessagingService`); and four
-  DTO modules live under `Sources/RaftHTTP/DTO/` (`AuthVerificationDTO`,
+  `AuthProfileService`, `FeedbackService`, `ChannelMessagingService`,
+  `SocketMembershipService`, `FeedbackLocatorService`, `ActionCardService`); and
+  four DTO modules live under `Sources/RaftHTTP/DTO/` (`AuthVerificationDTO`,
   `AuthProfileDTO`, `FeedbackDTO`, `RealtimeEventDTO`).
 - All 748 instance/static `func` members (20,057 lines) moved **verbatim** into
-  19 domain extension files under `Sources/RaftHTTP/EmailLogin/`, each
+  19 domain extension files under `Sources/RaftHTTP/EmailLogin/` (30 files in
+  total with the pre-existing extensions below), each
   `extension EmailLoginDirectory { … }` and each at or below 1,600 lines. The
   split is contiguous by domain, so every file is cohesive. Subsequent slices
   moved domain state and orchestration out of these extensions into the stores,
@@ -349,7 +353,7 @@ Generated knowledge corpus lives in `Sources/RaftHTTPServer/Generated/KnowledgeC
 - Pre-existing extension files from earlier slices (`EmailLoginStatics1-3`,
   `EmailLogin+ActionCards1-3`, `EmailLogin+ManagedMCP1-4`,
   `EmailLogin+FeedbackLocators`, `EmailLogin+FeedbackMultiApp`,
-  `EmailLogin+TestSeams`) are unchanged; all 33 files in the directory are now
+  `EmailLogin+TestSeams`) are unchanged; all 30 files in the directory are now
   under the new 1,600-line ceiling (largest `EmailLogin+ManagedMCP1.swift` at
   1,572).
 - Earlier slices moved 109 nested data-model declarations (1,171 lines) into

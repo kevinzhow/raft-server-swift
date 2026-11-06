@@ -34,11 +34,11 @@ public struct MessagingFeature: RouteCollection, Sendable {
         let attachments = routes.grouped("api", "attachments")
         let actions = routes.grouped("api", "actions")
         let tasks = routes.grouped("api", "tasks")
-        readMutations.post { request -> Response in
+        readMutations.post { request async throws -> Response in
             routeResponse(services.emailAccounts.postReadMutation(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
         readMutations.get("frontier") { request -> Response in
@@ -47,17 +47,17 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 scopeIds: desktopQuery(request.url.query, "scopeIds")
             ))
         }
-        messages.post("mention-actions", "execute") { request -> Response in
+        messages.post("mention-actions", "execute") { request async throws -> Response in
             routeResponse(services.emailAccounts.executeMentionActions(
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
-        messages.post { request -> Response in
+        messages.post { request async throws -> Response in
             // requireAuth runs before the body check. An invalid body writes nothing.
             routeResponse(services.emailAccounts.createHumanMessage(
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
@@ -91,9 +91,9 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 propagateQueryToken: queryToken
             ))
         }
-        messages.post("forward") { request -> Response in
+        messages.post("forward") { request async throws -> Response in
             routeResponse(services.emailAccounts.forwardHumanMessage(
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
@@ -122,18 +122,18 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
-        messages.post(":messageId", "reactions") { request -> Response in
+        messages.post(":messageId", "reactions") { request async throws -> Response in
             routeResponse(services.emailAccounts.addMessageReaction(
                 messageId: request.parameters.get("messageId") ?? "",
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
-        messages.delete(":messageId", "reactions") { request -> Response in
+        messages.delete(":messageId", "reactions") { request async throws -> Response in
             routeResponse(services.emailAccounts.removeMessageReaction(
                 messageId: request.parameters.get("messageId") ?? "",
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
@@ -162,11 +162,11 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 attachmentId: request.parameters.get("id") ?? ""
             ))
         }
-        attachments.post(":id", "comments") { request -> Response in
+        attachments.post(":id", "comments") { request async throws -> Response in
             routeResponse(services.emailAccounts.createAttachmentComment(
                 authorization: request.headers[.authorization],
                 attachmentId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? "{}",
+                body: try await request.bodyText(default: "{}"),
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
@@ -177,20 +177,20 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 body: "{\"error\":\"Migration action cards are no longer supported\",\"code\":\"migration_action_card_not_supported\"}"
             ))
         }
-        actions.post(":messageId", "execute") { request -> Response in
+        actions.post(":messageId", "execute") { request async throws -> Response in
             routeResponse(services.emailAccounts.executeActionCard(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 messageId: request.parameters.get("messageId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        actions.post(":messageId", "mark-executed") { request -> Response in
+        actions.post(":messageId", "mark-executed") { request async throws -> Response in
             routeResponse(services.emailAccounts.markActionCardExecuted(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 messageId: request.parameters.get("messageId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         messages.get("sync") { request -> Response in
@@ -360,9 +360,9 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 taskNumber: Int(request.parameters.get("taskNumber") ?? "") ?? 0
             ))
         }
-        tasks.post("channel", ":channelId") { request -> Response in
+        tasks.post("channel", ":channelId") { request async throws -> Response in
             let channelId = request.parameters.get("channelId") ?? ""
-            let body = request.body.string ?? ""
+            let body = try await request.bodyText()
             let reply = services.emailAccounts.createChannelTasks(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -379,12 +379,12 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 taskId: request.parameters.get("taskId") ?? ""
             ))
         }
-        tasks.patch(":taskId", "assignee") { request -> Response in
+        tasks.patch(":taskId", "assignee") { request async throws -> Response in
             routeResponse(services.emailAccounts.assignTask(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 taskId: request.parameters.get("taskId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         tasks.patch(":taskId", "unclaim") { request -> Response in
@@ -403,19 +403,19 @@ public struct MessagingFeature: RouteCollection, Sendable {
             publishTaskUpdated(reply, services: services)
             return routeResponse(reply)
         }
-        tasks.patch(":taskId", "status") { request -> Response in
+        tasks.patch(":taskId", "status") { request async throws -> Response in
             routeResponse(services.emailAccounts.updateTaskStatus(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 taskId: request.parameters.get("taskId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        tasks.post("convert-message") { request -> Response in
+        tasks.post("convert-message") { request async throws -> Response in
             routeResponse(services.emailAccounts.convertMessageToTask(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         tasks.get("server") { request -> Response in

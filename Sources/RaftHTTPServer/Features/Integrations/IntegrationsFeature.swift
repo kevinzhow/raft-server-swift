@@ -38,28 +38,28 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             ))
         }
 
-        mcp.post("servers") { request -> Response in
+        mcp.post("servers") { request async throws -> Response in
             routeResponse(services.emailAccounts.createManagedMCPServer(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
 
-        mcp.post("servers", "test-configuration") { request -> Response in
+        mcp.post("servers", "test-configuration") { request async throws -> Response in
             routeResponse(services.emailAccounts.testManagedMCPConfiguration(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
 
-        mcp.patch("servers", ":id") { request -> Response in
+        mcp.patch("servers", ":id") { request async throws -> Response in
             routeResponse(services.emailAccounts.patchManagedMCPServer(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 serverIdPath: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
 
@@ -87,22 +87,22 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             ))
         }
 
-        mcp.put("agents", ":agentId", "assignments") { request -> Response in
+        mcp.put("agents", ":agentId", "assignments") { request async throws -> Response in
             routeResponse(services.emailAccounts.setManagedMCPAssignments(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 agentId: request.parameters.get("agentId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
 
-        mcp.put("agents", ":agentId", "assignments", ":mcpServerId") { request -> Response in
+        mcp.put("agents", ":agentId", "assignments", ":mcpServerId") { request async throws -> Response in
             routeResponse(services.emailAccounts.setSingleManagedMCPAssignment(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 agentId: request.parameters.get("agentId") ?? "",
                 mcpServerId: request.parameters.get("mcpServerId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
 
@@ -113,19 +113,19 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             ))
         }
 
-        integrations.post("requests", ":requestId", "approve") { request -> Response in
+        integrations.post("requests", ":requestId", "approve") { request async throws -> Response in
             routeResponse(services.emailAccounts.approveAgentAccessRequest(
                 authorization: request.headers[.authorization],
                 requestId: request.parameters.get("requestId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
 
-        integrations.post("agents", ":agentId", "grants") { request -> Response in
+        integrations.post("agents", ":agentId", "grants") { request async throws -> Response in
             routeResponse(services.emailAccounts.createAgentGrant(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("agentId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
 
@@ -175,12 +175,12 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             ))
         }
 
-        integrations.patch("clients", ":clientId") { request -> Response in
+        integrations.patch("clients", ":clientId") { request async throws -> Response in
             routeResponse(services.emailAccounts.updateIntegrationClientSetup(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 clientId: request.parameters.get("clientId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
 
@@ -207,12 +207,12 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             ))
         }
 
-        integrations.post("clients", ":clientId", "app-notifications", "permissions", "review") { request -> Response in
+        integrations.post("clients", ":clientId", "app-notifications", "permissions", "review") { request async throws -> Response in
             routeResponse(services.emailAccounts.reviewAppNotificationPermissions(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 clientId: request.parameters.get("clientId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
 
@@ -298,29 +298,29 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             ))
         }
 
-        providerConnections.patch(":id") { request -> Response in
+        providerConnections.patch(":id") { request async throws -> Response in
             routeResponse(services.emailAccounts.patchProviderConnection(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 connectionId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
 
-        providerConnections.post(":id", "credentials", "rotate") { request -> Response in
+        providerConnections.post(":id", "credentials", "rotate") { request async throws -> Response in
             routeResponse(services.emailAccounts.rotateProviderConnectionCredential(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 connectionId: request.parameters.get("id") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
 
-        providerConnections.post() { request -> Response in
+        providerConnections.post() { request async throws -> Response in
             routeResponse(services.emailAccounts.createProviderConnection(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
 

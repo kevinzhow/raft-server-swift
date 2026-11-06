@@ -253,4 +253,399 @@ extension EmailLoginDirectory {
             realtimeEmitterLock.unlock()
         }
     }
+
+    // MARK: - Agent relay configuration (AgentsRuntimeStore)
+
+    /// Test seam for the frozen-generation cancel dispatch to a Computer.
+    public var agentMigrationCancelDispatch: (@Sendable (_ machineId: String, _ role: String, _ migrationRef: String, _ transportGeneration: String, _ stopAgent: Bool) -> Void)? {
+        get { agentsRuntimeStore.agentMigrationCancelDispatch }
+        set { agentsRuntimeStore.agentMigrationCancelDispatch = newValue }
+    }
+
+    /// Agent start dispatch used by `POST /api/channels/:id/resume-all-agents`.
+    /// Returns `.dispatched` when the daemon accepted the resume prompt and
+    /// `.skipped(reason)` when a gate (for example a held wake lock) suppressed it.
+    public var agentStartDispatch: (@Sendable (_ agentId: String, _ resumePrompt: String?) async throws -> AgentStartDispatchOutcome)? {
+        get { agentsRuntimeStore.agentStartDispatch }
+        set { agentsRuntimeStore.agentStartDispatch = newValue }
+    }
+
+    /// Recent activity-log entries for one agent, serialized as the HTTP body.
+    public var agentActivityLogProvider: (@Sendable (_ agentId: String, _ limit: Int?) -> AgentSurfaceResult)? {
+        get { agentsRuntimeStore.agentActivityLogProvider }
+        set { agentsRuntimeStore.agentActivityLogProvider = newValue }
+    }
+
+    /// Turn summaries plus the next cursor; the handler redacts triggers the
+    /// viewer cannot see.
+    public var agentActivitySummariesProvider: (@Sendable (_ agentId: String, _ limit: Int, _ beforeEndedAt: Int?, _ beforeId: String?) -> AgentSurfaceResult)? {
+        get { agentsRuntimeStore.agentActivitySummariesProvider }
+        set { agentsRuntimeStore.agentActivitySummariesProvider = newValue }
+    }
+
+    /// `{"global":[...],"workspace":[...]}` skills body for one agent.
+    public var agentSkillsProvider: (@Sendable (_ agentId: String) -> AgentSurfaceResult)? {
+        get { agentsRuntimeStore.agentSkillsProvider }
+        set { agentsRuntimeStore.agentSkillsProvider = newValue }
+    }
+
+    /// Whether the agent's Computer connection is owned by this replica.
+    public var agentHasMachineLocally: (@Sendable (_ agentId: String) -> Bool)? {
+        get { agentsRuntimeStore.agentHasMachineLocally }
+        set { agentsRuntimeStore.agentHasMachineLocally = newValue }
+    }
+
+    /// File-tree JSON array for one agent workspace directory.
+    public var agentWorkspaceTreeProvider: (@Sendable (_ agentId: String, _ dirPath: String?, _ includeHidden: Bool) -> AgentSurfaceResult)? {
+        get { agentsRuntimeStore.agentWorkspaceTreeProvider }
+        set { agentsRuntimeStore.agentWorkspaceTreeProvider = newValue }
+    }
+
+    /// One workspace file read body.
+    public var agentWorkspaceReadProvider: (@Sendable (_ agentId: String, _ path: String?) -> AgentSurfaceResult)? {
+        get { agentsRuntimeStore.agentWorkspaceReadProvider }
+        set { agentsRuntimeStore.agentWorkspaceReadProvider = newValue }
+    }
+
+    /// Human Start control dispatch (`control: "human_start"`).
+    public var agentStartControlDispatch: (@Sendable (_ agentId: String, _ control: String) -> Void)? {
+        get { agentsRuntimeStore.agentStartControlDispatch }
+        set { agentsRuntimeStore.agentStartControlDispatch = newValue }
+    }
+
+    /// Human Reset dispatch (`terminalControl: "human_reset"`).
+    public var agentResetDispatch: (@Sendable (_ agentId: String, _ mode: String, _ terminalControl: String) -> Void)? {
+        get { agentsRuntimeStore.agentResetDispatch }
+        set { agentsRuntimeStore.agentResetDispatch = newValue }
+    }
+
+    /// Terminal-breaker lift on a PATCH, with whether a runtime value really changed.
+    public var agentConfigLiftDispatch: (@Sendable (_ agentId: String, _ runtimeValuesChanged: Bool) -> Void)? {
+        get { agentsRuntimeStore.agentConfigLiftDispatch }
+        set { agentsRuntimeStore.agentConfigLiftDispatch = newValue }
+    }
+
+    var agentConnectionOrigin: String {
+        get { agentsRuntimeStore.agentConnectionOrigin }
+        set { agentsRuntimeStore.agentConnectionOrigin = newValue }
+    }
+
+    var agentConnectionProviderStorage: (@Sendable (AgentConnectionProviderRequest) -> AgentConnectionProviderResult)? {
+        get { agentsRuntimeStore.agentConnectionProviderStorage }
+        set { agentsRuntimeStore.agentConnectionProviderStorage = newValue }
+    }
+
+    var agentCredentialUseThrottleOverrideMs: Int? {
+        get { agentsRuntimeStore.agentCredentialUseThrottleOverrideMs }
+        set { agentsRuntimeStore.agentCredentialUseThrottleOverrideMs = newValue }
+    }
+
+    var wakeStreamHeartbeatOverrideMs: Int? {
+        get { agentsRuntimeStore.wakeStreamHeartbeatOverrideMs }
+        set { agentsRuntimeStore.wakeStreamHeartbeatOverrideMs = newValue }
+    }
+
+    var agentAttachmentPresign: (@Sendable (String, Int, String, String) throws -> String)? {
+        get { agentsRuntimeStore.agentAttachmentPresign }
+        set { agentsRuntimeStore.agentAttachmentPresign = newValue }
+    }
+
+    // MARK: - Machine relay configuration (MachinesAndComputersStore)
+
+    /// Returns an object-store session id, or nil when provisioning fails.
+    public var machineMigrationProvisioner: (@Sendable (_ sourceMachineId: String, _ targetMachineId: String) -> String?)? {
+        get { machinesAndComputersStore.machineMigrationProvisioner }
+        set { machinesAndComputersStore.machineMigrationProvisioner = newValue }
+    }
+
+    /// Lease dispatch to the source (upload) and target (download) Computers.
+    public var machineMigrationLeaseDispatch: (@Sendable (_ machineId: String, _ role: String, _ migrationRef: String) -> Void)? {
+        get { machinesAndComputersStore.machineMigrationLeaseDispatch }
+        set { machinesAndComputersStore.machineMigrationLeaseDispatch = newValue }
+    }
+
+    /// Target-side agent start for target import arrival.
+    public var machineMigrationStartAgent: (@Sendable (_ agentId: String) async throws -> MachineMigrationAgentStartOutcome)? {
+        get { machinesAndComputersStore.machineMigrationStartAgent }
+        set { machinesAndComputersStore.machineMigrationStartAgent = newValue }
+    }
+
+    /// Ask the source Computer to archive the migrated-away workspace.
+    public var machineMigrationArchiveSourceWorkspace: (@Sendable (_ machineId: String, _ migrationRef: String, _ agentId: String) async throws -> Void)? {
+        get { machinesAndComputersStore.machineMigrationArchiveSourceWorkspace }
+        set { machinesAndComputersStore.machineMigrationArchiveSourceWorkspace = newValue }
+    }
+
+    /// Asks the target Computer whether its Built-in model catalog lists a preset.
+    public var builtinModelCatalogCheck: (@Sendable (_ machineId: String, _ modelId: String) -> BuiltinModelCatalogResult)? {
+        get { machinesAndComputersStore.builtinModelCatalogCheck }
+        set { machinesAndComputersStore.builtinModelCatalogCheck = newValue }
+    }
+
+    /// Live model ids a Computer advertises for a runtime (v2 field-pointing).
+    public var agentRuntimeModelsForMachine: (@Sendable (_ machineId: String, _ runtime: String) -> [String]?)? {
+        get { machinesAndComputersStore.agentRuntimeModelsForMachine }
+        set { machinesAndComputersStore.agentRuntimeModelsForMachine = newValue }
+    }
+
+    public var runtimeAccountUsageManualRefresh: (@Sendable (String, String) -> RuntimeAccountUsageManualResult)? {
+        get { machinesAndComputersStore.runtimeAccountUsageManualRefresh }
+        set { machinesAndComputersStore.runtimeAccountUsageManualRefresh = newValue }
+    }
+
+    /// Test seam for the Computer model probe. Production has no live daemon relay here.
+    public var machineRuntimeModelProbe: (@Sendable (_ machineId: String, _ runtimeId: String, _ force: Bool) -> RuntimeModelProbeOutcome)? {
+        get { machinesAndComputersStore.machineRuntimeModelProbe }
+        set { machinesAndComputersStore.machineRuntimeModelProbe = newValue }
+    }
+
+    /// Whether this server can route a probe to the Computer. Defaults to true.
+    public var machineRoutedLocally: (@Sendable (_ machineId: String) -> Bool)? {
+        get { machinesAndComputersStore.machineRoutedLocally }
+        set { machinesAndComputersStore.machineRoutedLocally = newValue }
+    }
+
+    /// Built-in model catalog authority as reported by the Computer.
+    public var builtinCatalogMode: String {
+        get { machinesAndComputersStore.builtinCatalogMode }
+        set { machinesAndComputersStore.builtinCatalogMode = newValue }
+    }
+
+    var computerAttachEnabledOverride: Bool? {
+        get { machinesAndComputersStore.computerAttachEnabledOverride }
+        set { machinesAndComputersStore.computerAttachEnabledOverride = newValue }
+    }
+
+    public var computerUpgradeSender: (@Sendable (_ machineId: String, _ targetVersion: String, _ requestId: String) -> Bool)? {
+        get { machinesAndComputersStore.computerUpgradeSender }
+        set { machinesAndComputersStore.computerUpgradeSender = newValue }
+    }
+
+    // MARK: - Sign-in configuration (AuthProfileStore)
+
+    var scopeAttestationSecretOverride: String?? {
+        get { authProfileStore.scopeAttestationSecretOverride }
+        set { authProfileStore.scopeAttestationSecretOverride = newValue }
+    }
+
+    var deploymentEnvironmentOverride: String?? {
+        get { authProfileStore.deploymentEnvironmentOverride }
+        set { authProfileStore.deploymentEnvironmentOverride = newValue }
+    }
+
+    public var mobileProviderProfile: MobileProviderProfile? {
+        get { authProfileStore.mobileProviderProfile }
+        set { authProfileStore.mobileProviderProfile = newValue }
+    }
+
+    /// Exchanged web provider profile. The form-post callback stores a completion and does not link an identity.
+    public var webProviderProfile: MobileProviderProfile? {
+        get { authProfileStore.webProviderProfile }
+        set { authProfileStore.webProviderProfile = newValue }
+    }
+
+    /// Providers with a client id and secret. Google and GitHub ignore the Apple platform gate.
+    public var configuredSocialAuthProviders: Set<String> {
+        get { authProfileStore.configuredSocialAuthProviders }
+        set { authProfileStore.configuredSocialAuthProviders = newValue }
+    }
+
+    /// `APPLE_CLIENT_ID`, or `APPLE_WEB_CLIENT_ID` when the first is empty.
+    public var appleClientId: String {
+        get { authProfileStore.appleClientId }
+        set { authProfileStore.appleClientId = newValue }
+    }
+
+    /// `APPLE_IOS_CLIENT_ID`. Native sign-in stays closed until this and the client secret are set.
+    public var nativeAppleClientId: String {
+        get { authProfileStore.nativeAppleClientId }
+        set { authProfileStore.nativeAppleClientId = newValue }
+    }
+
+    public var nativeAppleClientSecret: String {
+        get { authProfileStore.nativeAppleClientSecret }
+        set { authProfileStore.nativeAppleClientSecret = newValue }
+    }
+
+    /// HMAC secret for the native request token. `NATIVE_APPLE_AUTH_STATE_SECRET`.
+    public var nativeAppleStateSecret: String {
+        get { authProfileStore.nativeAppleStateSecret }
+        set { authProfileStore.nativeAppleStateSecret = newValue }
+    }
+
+    /// Stand-in for `https://appleid.apple.com/auth/token`. The shipped call builds the form body.
+    public var exchangeNativeAppleCode: (@Sendable (NativeAppleCodeExchange) async -> String?)? {
+        get { authProfileStore.exchangeNativeAppleCode }
+        set { authProfileStore.exchangeNativeAppleCode = newValue }
+    }
+
+    /// `SERVER_URL`, without a trailing slash. Used as the Apple redirect base.
+    public var serverURL: String {
+        get { authProfileStore.serverURL }
+        set { authProfileStore.serverURL = newValue }
+    }
+
+    /// `APP_URL`. Web OAuth errors redirect here.
+    public var appURL: String {
+        get { authProfileStore.appURL }
+        set { authProfileStore.appURL = newValue }
+    }
+
+    /// Raw `MOBILE_OAUTH_RETURN_URI`. A non-empty parsed list replaces the defaults.
+    public var mobileOAuthReturnURI: String? {
+        get { authProfileStore.mobileOAuthReturnURI }
+        set { authProfileStore.mobileOAuthReturnURI = newValue }
+    }
+
+    /// Raw `MOBILE_OAUTH_ALLOWED_RETURN_URIS`. Used only when the primary list is empty.
+    public var mobileOAuthAllowedReturnURIs: String? {
+        get { authProfileStore.mobileOAuthAllowedReturnURIs }
+        set { authProfileStore.mobileOAuthAllowedReturnURIs = newValue }
+    }
+
+    /// Raw `SLOCK_RELEASE_BRANCH`. Staging self-account opt-in is accepted only when this is exactly `staging`.
+    public var releaseBranch: String? {
+        get { authProfileStore.releaseBranch }
+        set { authProfileStore.releaseBranch = newValue }
+    }
+
+    /// Raw `SLOCK_DEVICE_LOGIN_ENABLED`. Unset or empty keeps device login on.
+    public var deviceLoginGate: String? {
+        get { authProfileStore.deviceLoginGate }
+        set { authProfileStore.deviceLoginGate = newValue }
+    }
+
+    // MARK: - Notification and mobile-email configuration (NotificationsStore)
+
+    /// `MOBILE_APP_EMAIL_UNSUBSCRIBE_SECRET`, or `JWT_SECRET`.
+    public var mobileAppEmailUnsubscribeSecret: String {
+        get { notificationsStore.mobileAppEmailUnsubscribeSecret }
+        set { notificationsStore.mobileAppEmailUnsubscribeSecret = newValue }
+    }
+
+    /// Cancels one scheduled mobile-app lifecycle email. Unset means there is no provider call to make.
+    public var cancelMobileAppEmail: (@Sendable (String) -> Void)? {
+        get { notificationsStore.cancelMobileAppEmail }
+        set { notificationsStore.cancelMobileAppEmail = newValue }
+    }
+
+    /// `SLOCK_NATIVE_NOTIFICATIONS_ENABLED=true`. Unset stays off outside the test harness.
+    public var nativeNotificationsEnabled: Bool {
+        get { notificationsStore.nativeNotificationsEnabled }
+        set { notificationsStore.nativeNotificationsEnabled = newValue }
+    }
+
+    /// `NATIVE_NOTIFICATION_STREAM_POLL_MS`. Clamped to 250...5000 when a stream polls.
+    public var nativeNotificationStreamPollMs: Int {
+        get { notificationsStore.nativeNotificationStreamPollMs }
+        set { notificationsStore.nativeNotificationStreamPollMs = newValue }
+    }
+
+    /// Emitted when an agent read cursor advances. Arguments: serverId, channelId, agentId, maxReadSeq.
+    public var onAgentReadUpdated: (@Sendable (String, String, String, Int) -> Void)? {
+        get { notificationsStore.onAgentReadUpdated }
+        set { notificationsStore.onAgentReadUpdated = newValue }
+    }
+
+    /// Test seam called before each already-read SSE frame. Production leaves it nil.
+    public var nativeNotificationLiveWriteHook: (@Sendable (_ index: Int, _ eventCount: Int) async -> Void)? {
+        get { notificationsStore.nativeNotificationLiveWriteHook }
+        set { notificationsStore.nativeNotificationLiveWriteHook = newValue }
+    }
+
+    /// `NATIVE_NOTIFICATION_ATTESTATION_MODE`. Nil means the variable is unset.
+    public var nativeNotificationAttestationMode: String? {
+        get { notificationsStore.nativeNotificationAttestationMode }
+        set { notificationsStore.nativeNotificationAttestationMode = newValue }
+    }
+
+    /// Process `NODE_ENV`. Production enforces desktop attestation even when the mode is unset.
+    public var nativeNotificationNodeEnv: String {
+        get { notificationsStore.nativeNotificationNodeEnv }
+        set { notificationsStore.nativeNotificationNodeEnv = newValue }
+    }
+
+    /// Test seam for signed-app attestation. A nil verifier never accepts evidence.
+    public var nativeNotificationAttestationVerifier: (@Sendable (String) -> Bool)? {
+        get { notificationsStore.nativeNotificationAttestationVerifier }
+        set { notificationsStore.nativeNotificationAttestationVerifier = newValue }
+    }
+
+    // MARK: - Messaging and attachment configuration (MessagesAndThreadsStore)
+
+    var translationProviderOverride: String? {
+        get { messagesAndThreadsStore.translationProviderOverride }
+        set { messagesAndThreadsStore.translationProviderOverride = newValue }
+    }
+
+    /// Test seam for the HTML preview body. Nil means the object is missing.
+    public var attachmentPreviewBody: (@Sendable (_ attachmentId: String) -> String?)? {
+        get { messagesAndThreadsStore.attachmentPreviewBody }
+        set { messagesAndThreadsStore.attachmentPreviewBody = newValue }
+    }
+
+    /// Test seam for presigning a stored attachment object.
+    public var attachmentPresign: (@Sendable (_ attachmentId: String, _ mimeType: String?, _ ttlSeconds: Int) -> String)? {
+        get { messagesAndThreadsStore.attachmentPresign }
+        set { messagesAndThreadsStore.attachmentPresign = newValue }
+    }
+
+    var readPositionSettleMs: Int {
+        get { messagesAndThreadsStore.readPositionSettleMs }
+        set { messagesAndThreadsStore.readPositionSettleMs = newValue }
+    }
+
+    /// Test-only override of `SLOCK_ATTESTED_SEND_MODE`; process environment is
+    /// global state and parallel suites must not race on it.
+    var sendFreshnessModeOverride: String? {
+        get { messagesAndThreadsStore.sendFreshnessModeOverride }
+        set { messagesAndThreadsStore.sendFreshnessModeOverride = newValue }
+    }
+
+    var realtimeEmitterStorage: (@Sendable (String, String, String?) -> Void)? {
+        get { messagesAndThreadsStore.realtimeEmitterStorage }
+        set { messagesAndThreadsStore.realtimeEmitterStorage = newValue }
+    }
+
+    // MARK: - Feedback transport configuration (FeedbackStore)
+
+    public var handsFeedbackUpstreamHandler: ((URLRequest) -> (status: Int, headers: [String: String], body: Data))? {
+        get { feedbackStore.handsFeedbackUpstreamHandler }
+        set { feedbackStore.handsFeedbackUpstreamHandler = newValue }
+    }
+
+    var handsConversationAppTokenOverride: String? {
+        get { feedbackStore.handsConversationAppTokenOverride }
+        set { feedbackStore.handsConversationAppTokenOverride = newValue }
+    }
+
+    var handsFeedbackBaseURLOverride: String? {
+        get { feedbackStore.handsFeedbackBaseURLOverride }
+        set { feedbackStore.handsFeedbackBaseURLOverride = newValue }
+    }
+
+    var handsFeedbackAppIdOverride: String? {
+        get { feedbackStore.handsFeedbackAppIdOverride }
+        set { feedbackStore.handsFeedbackAppIdOverride = newValue }
+    }
+
+    var handsFeedbackAppSlugOverride: String? {
+        get { feedbackStore.handsFeedbackAppSlugOverride }
+        set { feedbackStore.handsFeedbackAppSlugOverride = newValue }
+    }
+
+    var handsFeedbackAppTokenOverride: String? {
+        get { feedbackStore.handsFeedbackAppTokenOverride }
+        set { feedbackStore.handsFeedbackAppTokenOverride = newValue }
+    }
+
+    public var handsFeedbackConfigured: Bool {
+        get { feedbackStore.handsFeedbackConfigured }
+        set { feedbackStore.handsFeedbackConfigured = newValue }
+    }
+
+    var marketplaceReviewerOverride: Set<String>? {
+        get { feedbackStore.marketplaceReviewerOverride }
+        set { feedbackStore.marketplaceReviewerOverride = newValue }
+    }
 }

@@ -27,17 +27,17 @@ public struct FeedbackFeature: RouteCollection, Sendable {
         let feedback = api.grouped("product-feedback")
         let tickets = feedback.grouped("tickets")
 
-        api.post("app-installation", "agent-reminder-messages") { request -> Response in
+        api.post("app-installation", "agent-reminder-messages") { request async throws -> Response in
             routeResponse(services.emailAccounts.appAgentReminderMessage(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         tickets.post(":ticketId", "close") { request async throws -> Response in
             routeResponse(await services.emailAccounts.closeProductFeedbackTicketAsync(
                 authorization: request.headers[.authorization],
                 ticketId: request.parameters.get("ticketId") ?? "",
-                body: request.body.string ?? "{}",
+                body: try await request.bodyText(default: "{}"),
                 clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? ""
             ))
         }
@@ -46,7 +46,7 @@ public struct FeedbackFeature: RouteCollection, Sendable {
                 authorization: request.headers[.authorization],
                 ticketId: request.parameters.get("ticketId") ?? "",
                 contentType: request.headers[.contentType] ?? "",
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!] ?? ""
             ))
         }
@@ -77,7 +77,7 @@ public struct FeedbackFeature: RouteCollection, Sendable {
             routeResponse(await services.emailAccounts.submitProductFeedbackAsync(
                 authorization: request.headers[.authorization],
                 contentType: request.headers[.contentType] ?? "",
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 clientKindHeader: request.headers[HTTPField.Name("X-Raft-Client-Kind")!]
                     ?? request.headers[HTTPField.Name("X-Slock-Client-Kind")!]

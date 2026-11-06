@@ -22,16 +22,16 @@ public struct ComputersFeature: RouteCollection, Sendable {
     public func register(routes: any RoutesBuilder) {
         let computers = routes.grouped("api", "computer")
 
-        computers.post("adopt-legacy") { request -> Response in
+        computers.post("adopt-legacy") { request async throws -> Response in
             routeResponse(services.emailAccounts.adoptLegacyComputer(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        computers.post("attach") { request -> Response in
+        computers.post("attach") { request async throws -> Response in
             routeResponse(services.emailAccounts.attachComputer(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         computers.get("legacy-machines") { request -> Response in

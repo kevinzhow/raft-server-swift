@@ -10,7 +10,7 @@ This is an active reimplementation, not a production deployment. Behavioral pari
 
 - **406/406 upstream parity modules locked (100%)** in [docs/PARITY.tsv](docs/PARITY.tsv): `219/219` route modules (`2000/2000` cases), `7/7` socket modules (`16/16` cases), and `180/180` daemon modules (`2616/2616` cases).
 - **1,897+ Swift tests pass** across eight targets (`RaftHTTPServerTests`, `RaftDaemonClientTests`, `RaftHTTPTests`, `RaftRealtimeTests`, `RaftConnectAuthTests`, `RaftMachineSocketTests`, `RaftServerStartupTests`, plus `RaftShared`), alongside a **24-check real-process end-to-end smoke suite** (`./scripts/smoke-server.sh`).
-- The HTTP router mounts **519+ route registrations** across **13 `RouteCollection` feature modules** (`Sources/RaftHTTPServer/Features/`), backed by **10 per-domain in-memory stores** (`Sources/RaftHTTP/Stores/`), **4 domain service modules** (`Sources/RaftHTTP/Services/`), and **Codable DTOs** (`Sources/RaftHTTP/DTO/`).
+- The HTTP router mounts **519+ route registrations** across **16 `RouteCollection` feature modules** (`Sources/RaftHTTPServer/Features/`), backed by **12 per-domain in-memory stores** (`Sources/RaftHTTP/Stores/`), **7 domain service modules** (`Sources/RaftHTTP/Services/`), and **Codable DTOs** (`Sources/RaftHTTP/DTO/`). `Sources/RaftHTTP/EmailLogin.swift` is ratcheted to **48 lines** (from 34,306, `-99.86%`) with **0 `ForTesting` markers**; `Features/**` has **0 synchronous `request.body.string` reads**, and `BufferedRequestBodyMiddleware` is retired.
 - **The database is optional.** Without `DATABASE_URL` the process keeps the in-memory store and `/health` stays at `503 {"status":"error","detail":"database unreachable"}`; with `DATABASE_URL` (B2, PostgresNIO) `/health` runs `SELECT 1` and returns `200 {"status":"ok"}`.
 - The executable starts the Vapor HTTP app, the SwiftNIO `/daemon/connect` listener on `DAEMON_CONNECT_PORT` (default `8081`; `0` disables it), and the socket.io listener on `SOCKET_PORT` (default `8082`; `0` disables it). `RaftDaemon` performs the daemon-side handshake against that listener.
 - The locked behavioral reference lives in [docs/BEHAVIOR.md](docs/BEHAVIOR.md). It is the historical behavior log, not the project introduction.
@@ -23,8 +23,8 @@ This is an active reimplementation, not a production deployment. Behavioral pari
 Current work is **Phase 5 Strangler-Fig domain architecture refactoring** ([docs/PLAN.md](docs/PLAN.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)):
 
 - Migrating the remaining `EmailLogin+*.swift` extension methods into standalone Vapor-free `Services` + `Stores` + `Codable` DTOs.
-- Replacing the remaining raw `request.body.string` reads with Vapor 5 `req.content.decode`.
-- Isolating test seams so production targets no longer expose test-only entry points.
+- Request bodies decode through Vapor 5 `req.content.decode`; the global `BufferedRequestBodyMiddleware` is retired and no synchronous `request.body.string` reads remain in `Features/**`.
+- Isolating the remaining test seams so production targets no longer expose test-only entry points.
 
 Domain state is currently in-memory and resets on restart. With `DATABASE_URL` set, `/health` runs a Postgres `SELECT 1` liveness check; without it the process keeps the 503 body.
 
@@ -163,12 +163,12 @@ The upstream Node tests are the specification for scope validation, error codes,
 ```text
 Sources/
   RaftHTTP/              shared behavior, domain stores/services, and route handlers
-    Stores/              per-domain in-memory stores (10)
-    Services/            Vapor-free domain services (4)
+    Stores/              per-domain in-memory stores (12)
+    Services/            Vapor-free domain services (7)
     DTO/                 Codable request/response models
     OAuthLedger.swift    OAuth/agent ledger
   RaftHTTPServer/        Vapor mount and middleware
-    Features/            RouteCollection feature modules (13)
+    Features/            RouteCollection feature modules (16)
   RaftShared/            shared value types (JSONValue)
   RaftServer/            executable entrypoint
   RaftDaemon/            one-shot daemon handshake executable

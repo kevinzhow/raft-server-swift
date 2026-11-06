@@ -96,19 +96,19 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                 token: desktopQuery(request.url.query, "token")
             ))
         }
-        email.post("mobile-app", "unsubscribe") { request -> Response in
+        email.post("mobile-app", "unsubscribe") { request async throws -> Response in
             routeResponse(services.emailAccounts.mobileAppEmailUnsubscribeSubmit(
                 token: desktopQuery(request.url.query, "token"),
                 source: desktopQuery(request.url.query, "source"),
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         externalAvatars.get(":file") { request -> Response in
             routeResponse(services.emailAccounts.externalAvatar(file: request.parameters.get("file") ?? ""))
         }
-        featureFlags.post("evaluate") { request -> Response in
+        featureFlags.post("evaluate") { request async throws -> Response in
             routeResponse(services.emailAccounts.evaluateFeatureFlags(
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 authorization: request.headers[.authorization]
             ))
         }
@@ -124,10 +124,10 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                 authorization: request.headers[.authorization]
             ))
         }
-        notifications.post("credentials", "rotate") { request -> Response in
+        notifications.post("credentials", "rotate") { request async throws -> Response in
             routeResponse(services.emailAccounts.rotateNativeNotificationCredential(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         notifications.get("devices") { request -> Response in
@@ -141,12 +141,12 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                 deviceId: request.parameters.get("deviceId") ?? ""
             ))
         }
-        notifications.post("enrollment-exchanges") { request -> Response in
-            routeResponse(services.emailAccounts.exchangeNativeEnrollmentGrant(body: request.body.string ?? ""))
+        notifications.post("enrollment-exchanges") { request async throws -> Response in
+            routeResponse(services.emailAccounts.exchangeNativeEnrollmentGrant(body: try await request.bodyText()))
         }
-        notifications.post("enrollment-grants") { request -> Response in
+        notifications.post("enrollment-grants") { request async throws -> Response in
             routeResponse(services.emailAccounts.issueNativeEnrollmentGrant(
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 authorization: request.headers[.authorization]
             ))
         }
@@ -189,13 +189,13 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                 return response
             }
         }
-        productEvents.post("batch") { request -> Response in
+        productEvents.post("batch") { request async throws -> Response in
             routeResponse(services.emailAccounts.clientEventsBatch(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 userAgent: request.headers[HTTPField.Name("User-Agent")!] ?? "",
                 country: request.headers[HTTPField.Name("CloudFront-Viewer-Country")!] ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         productEvents.get("config") { request -> Response in
@@ -204,19 +204,19 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
             ))
         }
-        productEvents.post("onboarding-wizard") { request -> Response in
+        productEvents.post("onboarding-wizard") { request async throws -> Response in
             routeResponse(services.emailAccounts.recordOnboardingWizard(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        publicVisits.post(":slug") { request -> Response in
+        publicVisits.post(":slug") { request async throws -> Response in
             services.publicVisits?.record(
                 slug: request.parameters.get("slug") ?? "",
                 site: request.headers[HTTPField.Name("Sec-Fetch-Site")!],
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 userAgent: request.headers[.userAgent],
                 country: request.headers[HTTPField.Name("CloudFront-Viewer-Country")!]
             )
@@ -229,14 +229,14 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                 flags: services.featureFlags
             ))
         }
-        publicSurface.post("servers", ":slug", "join-as-guest") { request -> Response in
+        publicSurface.post("servers", ":slug", "join-as-guest") { request async throws -> Response in
             guard let directory = services.publicVisits else {
                 return routeResponse(PublicVisits.pageReply(found: false, mode: nil))
             }
             return routeResponse(directory.join(
                 slug: request.parameters.get("slug") ?? "",
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         push.get("delivery-status") { request -> Response in
@@ -245,19 +245,19 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                 installationId: desktopQuery(request.url.query, "installationId")
             ))
         }
-        push.post("family-revoke") { request -> Response in
-            let body = request.body.string ?? ""
+        push.post("family-revoke") { request async throws -> Response in
+            let body = try await request.bodyText()
             let reply = services.emailAccounts.revokePushFamily(body: body)
             if reply.status == 204 {
                 publishFamilyRevoke(body: body, services: services)
             }
             return routeResponse(reply)
         }
-        push.post("registrations") { request -> Response in
+        push.post("registrations") { request async throws -> Response in
             routeResponse(services.emailAccounts.registerPushDevice(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         push.delete("registrations", ":installationId") { request -> Response in
@@ -267,10 +267,10 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                 installationId: request.parameters.get("installationId") ?? ""
             ))
         }
-        push.post("subscribe") { request -> Response in
+        push.post("subscribe") { request async throws -> Response in
             routeResponse(services.emailAccounts.recordWebPushSubscription(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         releaseNotes.get { request in
@@ -320,9 +320,9 @@ public struct NotificationsFeature: RouteCollection, Sendable {
         slackBridge.get("provisioning") { _ -> Response in
             routeResponse(services.emailAccounts.slackBridgeUnavailable())
         }
-        v2.post("messages") { request -> Response in
+        v2.post("messages") { request async throws -> Response in
             routeResponse(services.emailAccounts.createHumanMessage(
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!],
                 contract: "v2"

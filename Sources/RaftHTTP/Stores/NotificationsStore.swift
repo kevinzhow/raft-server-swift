@@ -49,6 +49,17 @@ final class NotificationsStore: @unchecked Sendable {
         var announcementImageStorageAvailable = true
         var announcementDismissals: Set<String> = []
         var serverNotificationPrefs: [String: ServerNotificationPref] = [:]
+        // Injectable notification/mobile-email configuration that used to live
+        // inline on `EmailLoginDirectory`.
+        var mobileAppEmailUnsubscribeSecret: String = "test-jwt-secret"
+        var cancelMobileAppEmail: (@Sendable (String) -> Void)? = nil
+        var nativeNotificationsEnabled: Bool = false
+        var nativeNotificationStreamPollMs: Int = 1000
+        var onAgentReadUpdated: (@Sendable (String, String, String, Int) -> Void)? = nil
+        var nativeNotificationLiveWriteHook: (@Sendable (_ index: Int, _ eventCount: Int) async -> Void)? = nil
+        var nativeNotificationAttestationMode: String? = nil
+        var nativeNotificationNodeEnv: String = "development"
+        var nativeNotificationAttestationVerifier: (@Sendable (String) -> Bool)? = nil
     }
 
     private let lock = NSLock()
@@ -136,5 +147,52 @@ final class NotificationsStore: @unchecked Sendable {
     var serverNotificationPrefs: [String: ServerNotificationPref] {
         get { state.serverNotificationPrefs }
         set { state.serverNotificationPrefs = newValue }
+    }
+
+    // MARK: - Injected notification and mobile-email configuration
+
+    var mobileAppEmailUnsubscribeSecret: String {
+        get { state.mobileAppEmailUnsubscribeSecret }
+        set { state.mobileAppEmailUnsubscribeSecret = newValue }
+    }
+
+    var cancelMobileAppEmail: (@Sendable (String) -> Void)? {
+        get { state.cancelMobileAppEmail }
+        set { state.cancelMobileAppEmail = newValue }
+    }
+
+    var nativeNotificationsEnabled: Bool {
+        get { state.nativeNotificationsEnabled }
+        set { state.nativeNotificationsEnabled = newValue }
+    }
+
+    var nativeNotificationStreamPollMs: Int {
+        get { state.nativeNotificationStreamPollMs }
+        set { state.nativeNotificationStreamPollMs = newValue }
+    }
+
+    var onAgentReadUpdated: (@Sendable (String, String, String, Int) -> Void)? {
+        get { state.onAgentReadUpdated }
+        set { state.onAgentReadUpdated = newValue }
+    }
+
+    var nativeNotificationLiveWriteHook: (@Sendable (_ index: Int, _ eventCount: Int) async -> Void)? {
+        get { state.nativeNotificationLiveWriteHook }
+        set { state.nativeNotificationLiveWriteHook = newValue }
+    }
+
+    var nativeNotificationAttestationMode: String? {
+        get { state.nativeNotificationAttestationMode }
+        set { state.nativeNotificationAttestationMode = newValue }
+    }
+
+    var nativeNotificationNodeEnv: String {
+        get { state.nativeNotificationNodeEnv }
+        set { state.nativeNotificationNodeEnv = newValue }
+    }
+
+    var nativeNotificationAttestationVerifier: (@Sendable (String) -> Bool)? {
+        get { state.nativeNotificationAttestationVerifier }
+        set { state.nativeNotificationAttestationVerifier = newValue }
     }
 }

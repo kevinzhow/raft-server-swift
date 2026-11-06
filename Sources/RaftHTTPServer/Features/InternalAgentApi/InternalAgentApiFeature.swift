@@ -40,18 +40,18 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 reminderId: request.parameters.get("reminderId") ?? ""
             ))
         }
-        agentApi.post("reminders", ":reminderId", "snooze") { request -> Response in
+        agentApi.post("reminders", ":reminderId", "snooze") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentApiReminderSnooze(
                 authorization: request.headers[.authorization],
                 reminderId: request.parameters.get("reminderId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        agentApi.patch("reminders", ":reminderId") { request -> Response in
+        agentApi.patch("reminders", ":reminderId") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentApiReminderUpdate(
                 authorization: request.headers[.authorization],
                 reminderId: request.parameters.get("reminderId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
         agentApi.get("reminders", ":reminderId", "log") { request -> Response in
@@ -66,10 +66,10 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 status: desktopQuery(request.url.query, "status")
             ))
         }
-        agentApi.post("reminders") { request -> Response in
+        agentApi.post("reminders") { request async throws -> Response in
             let reply = services.emailAccounts.agentApiReminderCreate(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             )
             if let reminderId = reminderIdFromReply(reply),
                let agentId = services.emailAccounts.agentIdForReminderTesting(reminderId: reminderId) {
@@ -119,10 +119,10 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 target: desktopQuery(request.url.query, "target")
             ))
         }
-        agentApi.post("profile") { request -> Response in
+        agentApi.post("profile") { request async throws -> Response in
             routeResponse(services.emailAccounts.updateAgentProfile(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         agentApi.post("channels", ":channelId", "leave") { request -> Response in
@@ -131,30 +131,30 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 channelId: request.parameters.get("channelId") ?? ""
             ))
         }
-        agentApi.patch("server") { request -> Response in
+        agentApi.patch("server") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentUpdateServer(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        agentApi.patch("channels", ":channelId") { request -> Response in
+        agentApi.patch("channels", ":channelId") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentUpdateChannel(
                 authorization: request.headers[.authorization],
                 channelId: request.parameters.get("channelId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        agentApi.post("channels", "archive") { request -> Response in
+        agentApi.post("channels", "archive") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentChannelArchive(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}",
+                body: try await request.bodyText(default: "{}"),
                 archive: true
             ))
         }
-        agentApi.post("channels", "unarchive") { request -> Response in
+        agentApi.post("channels", "unarchive") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentChannelArchive(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}",
+                body: try await request.bodyText(default: "{}"),
                 archive: false
             ))
         }
@@ -172,19 +172,19 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 muted: false
             ))
         }
-        agentApi.post("channels", ":channelId", "members") { request -> Response in
+        agentApi.post("channels", ":channelId", "members") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentChannelMemberWrite(
                 authorization: request.headers[.authorization],
                 channelId: request.parameters.get("channelId") ?? "",
-                body: request.body.string ?? "{}",
+                body: try await request.bodyText(default: "{}"),
                 remove: false
             ))
         }
-        agentApi.delete("channels", ":channelId", "members") { request -> Response in
+        agentApi.delete("channels", ":channelId", "members") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentChannelMemberWrite(
                 authorization: request.headers[.authorization],
                 channelId: request.parameters.get("channelId") ?? "",
-                body: request.body.string ?? "{}",
+                body: try await request.bodyText(default: "{}"),
                 remove: true
             ))
         }
@@ -200,16 +200,16 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 authorization: request.headers[.authorization]
             ))
         }
-        agentApi.post("resolve-channel") { request -> Response in
+        agentApi.post("resolve-channel") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentResolveChannel(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        agentApi.post("channels") { request -> Response in
+        agentApi.post("channels") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentCreateChannel(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
         agentApi.get("attachment-upload-capabilities") { request -> Response in
@@ -283,16 +283,16 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 authorization: request.headers[.authorization]
             ))
         }
-        agentApi.post("integrations", "app", "prepare") { request -> Response in
+        agentApi.post("integrations", "app", "prepare") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentIntegrationAppPrepare(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        agentApi.post("integrations", "app", "update") { request -> Response in
+        agentApi.post("integrations", "app", "update") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentIntegrationAppUpdate(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
         agentApi.get("integrations", "app", "status") { request -> Response in
@@ -309,16 +309,16 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 limit: desktopQuery(request.url.query, "limit")
             ))
         }
-        agentApi.post("integrations", "login") { request -> Response in
+        agentApi.post("integrations", "login") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentIntegrationLogin(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        agentApi.post("integrations", "token") { request -> Response in
+        agentApi.post("integrations", "token") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentIntegrationToken(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         agentApi.get("context") { request -> Response in
@@ -332,24 +332,24 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 appId: request.parameters.get("appId") ?? ""
             ))
         }
-        agentApi.patch("apps", ":appId", "config") { request -> Response in
+        agentApi.patch("apps", ":appId", "config") { request async throws -> Response in
             routeResponse(services.emailAccounts.patchAgentAppConfig(
                 authorization: request.headers[.authorization],
                 appId: request.parameters.get("appId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        agentApi.post("send") { request -> Response in
+        agentApi.post("send") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentSendMessage(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 v2: false
             ))
         }
-        agentApi.post("v2", "send") { request -> Response in
+        agentApi.post("v2", "send") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentSendMessage(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 v2: true
             ))
         }
@@ -360,54 +360,54 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 channelRef: desktopQuery(request.url.query, "channel")
             ))
         }
-        agentApi.post("tasks") { request -> Response in
+        agentApi.post("tasks") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentTasksCreate(
                 authorization: request.headers[.authorization],
                 legacyAgentId: nil,
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        agentApi.post("tasks", "resource-receipt") { request -> Response in
+        agentApi.post("tasks", "resource-receipt") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentTaskResourceReceipt(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        agentApi.post("tasks", "assign") { request -> Response in
+        agentApi.post("tasks", "assign") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentTaskAssign(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        agentApi.post("tasks", "amend") { request -> Response in
+        agentApi.post("tasks", "amend") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentTasksAmend(
                 authorization: request.headers[.authorization],
                 legacyAgentId: nil,
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        agentApi.post("tasks", "claim") { request -> Response in
+        agentApi.post("tasks", "claim") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentTaskClaim(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        agentApi.post("tasks", "update-status") { request -> Response in
+        agentApi.post("tasks", "update-status") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentTaskUpdateStatus(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        agentApi.post("tasks", "delete") { request -> Response in
+        agentApi.post("tasks", "delete") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentTaskDelete(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        agentApi.post("tasks", "convert") { request -> Response in
+        agentApi.post("tasks", "convert") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentTaskConvert(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
         agentApi.post("channels", ":channelId", "join") { request -> Response in
@@ -416,26 +416,26 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 channelId: request.parameters.get("channelId") ?? ""
             ))
         }
-        agentApi.post("messages", ":messageId", "reactions") { request -> Response in
+        agentApi.post("messages", ":messageId", "reactions") { request async throws -> Response in
             routeResponse(services.emailAccounts.mutateAgentApiMessageReaction(
                 messageId: request.parameters.get("messageId") ?? "",
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 authorization: request.headers[.authorization],
                 remove: false
             ))
         }
-        agentApi.delete("messages", ":messageId", "reactions") { request -> Response in
+        agentApi.delete("messages", ":messageId", "reactions") { request async throws -> Response in
             routeResponse(services.emailAccounts.mutateAgentApiMessageReaction(
                 messageId: request.parameters.get("messageId") ?? "",
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 authorization: request.headers[.authorization],
                 remove: true
             ))
         }
-        agentApi.post("activity") { request -> Response in
+        agentApi.post("activity") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentActivityIngest(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
         agentApi.get("threads") { request -> Response in
@@ -443,10 +443,10 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 authorization: request.headers[.authorization]
             ))
         }
-        agentApi.post("threads", "unfollow") { request -> Response in
+        agentApi.post("threads", "unfollow") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentThreadUnfollow(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
         agentApi.get("messages", ":messageId", "mention-deliveries") { request -> Response in
@@ -477,10 +477,10 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 limit: desktopQuery(request.url.query, "limit")
             ))
         }
-        agentApi.post("prepare-action") { request -> Response in
+        agentApi.post("prepare-action") { request async throws -> Response in
             routeResponse(services.emailAccounts.prepareActionCard(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         agentApi.get("mcp", "tools") { request -> Response in
@@ -488,16 +488,16 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 authorization: request.headers[.authorization]
             ))
         }
-        agentApi.post("mcp", "call") { request -> Response in
+        agentApi.post("mcp", "call") { request async throws -> Response in
             routeResponse(services.emailAccounts.callManagedMCPTool(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        agentApi.post("feedback-locators") { request -> Response in
+        agentApi.post("feedback-locators") { request async throws -> Response in
             routeResponse(services.emailAccounts.ingestFeedbackLocator(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         agentApi.get("feedback-locators") { request -> Response in
@@ -561,25 +561,25 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 authorization: request.headers[.authorization]
             ))
         }
-        agentApi.post("mention-actions", "execute") { request -> Response in
+        agentApi.post("mention-actions", "execute") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentMentionActionsExecute(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
         agentApi.get("events") { request -> Response in
             routeResponse(services.emailAccounts.agentThirdPartyEvents(authorization: request.headers[.authorization]))
         }
-        agentApi.post("third-party-events", "delivered") { request -> Response in
+        agentApi.post("third-party-events", "delivered") { request async throws -> Response in
             routeResponse(services.emailAccounts.reportThirdPartyEventsDelivered(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        agentApi.put("push-webhook") { request -> Response in
+        agentApi.put("push-webhook") { request async throws -> Response in
             routeResponse(services.emailAccounts.putAgentPushWebhook(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         agentApi.post("upload") { request async throws -> Response in

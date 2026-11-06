@@ -55,11 +55,11 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
 
-        channels.post("inbox", "done") { request -> Response in
+        channels.post("inbox", "done") { request async throws -> Response in
             routeResponse(services.emailAccounts.channelInboxDone(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
 
@@ -78,27 +78,27 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
 
-        channels.post("inbox", "undone") { request -> Response in
+        channels.post("inbox", "undone") { request async throws -> Response in
             routeResponse(services.emailAccounts.inboxUndone(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
 
-        channels.post("threads", "undone") { request -> Response in
+        channels.post("threads", "undone") { request async throws -> Response in
             routeResponse(services.emailAccounts.threadInboxUndone(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
 
-        channels.post("threads", "done") { request -> Response in
+        channels.post("threads", "done") { request async throws -> Response in
             routeResponse(services.emailAccounts.threadInboxDone(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
 
@@ -141,13 +141,13 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
 
-        channels.post("threads", ":threadId", "followers", "agents", ":agentId", "restore") { request -> Response in
+        channels.post("threads", ":threadId", "followers", "agents", ":agentId", "restore") { request async throws -> Response in
             routeResponse(services.emailAccounts.restoreThreadFollower(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 threadId: request.parameters.get("threadId") ?? "",
                 agentId: request.parameters.get("agentId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
 
@@ -159,8 +159,8 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
 
-        channels.post("threads", "follow") { request -> Response in
-            let body = request.body.string ?? "{}"
+        channels.post("threads", "follow") { request async throws -> Response in
+            let body = try await request.bodyText(default: "{}")
             let reply = services.emailAccounts.setThreadFollow(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -171,8 +171,8 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             return routeResponse(reply)
         }
 
-        channels.post("threads", "unfollow") { request -> Response in
-            let body = request.body.string ?? "{}"
+        channels.post("threads", "unfollow") { request async throws -> Response in
+            let body = try await request.bodyText(default: "{}")
             let reply = services.emailAccounts.setThreadFollow(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -219,19 +219,19 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             routeResponse(services.emailAccounts.activityContractRejection())
         }
 
-        channels.post("saved", "check") { request -> Response in
+        channels.post("saved", "check") { request async throws -> Response in
             routeResponse(services.emailAccounts.checkSavedMessages(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
 
-        channels.post("saved") { request -> Response in
+        channels.post("saved") { request async throws -> Response in
             routeResponse(services.emailAccounts.saveChannelMessage(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
 
@@ -263,11 +263,11 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
 
-        channels.post("dm") { request -> Response in
+        channels.post("dm") { request async throws -> Response in
             routeResponse(services.emailAccounts.createDirectChannelRoute(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
 
@@ -286,30 +286,30 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
 
-        channels.post(":channelId", "resume-all-agents") { request async -> Response in
+        channels.post(":channelId", "resume-all-agents") { request async throws -> Response in
             routeResponse(await services.emailAccounts.resumeAllAgents(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 channelId: request.parameters.get("channelId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
 
-        channels.post(":channelId", "read") { request -> Response in
+        channels.post(":channelId", "read") { request async throws -> Response in
             routeResponse(services.emailAccounts.updateChannelReadState(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 channelId: request.parameters.get("channelId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
 
-        channels.post(":channelId", "read-all") { request -> Response in
+        channels.post(":channelId", "read-all") { request async throws -> Response in
             routeResponse(services.emailAccounts.markChannelReadAll(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 channelId: request.parameters.get("channelId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
 
@@ -345,12 +345,12 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
 
-        channels.patch(":channelId", "message-display-settings") { request -> Response in
+        channels.patch(":channelId", "message-display-settings") { request async throws -> Response in
             routeResponse(services.emailAccounts.patchChannelDisplaySettings(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 channelId: request.parameters.get("channelId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
 
@@ -375,12 +375,12 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             return routeResponse(reply)
         }
 
-        channels.post(":channelId", "members", "batch") { request -> Response in
+        channels.post(":channelId", "members", "batch") { request async throws -> Response in
             routeResponse(services.emailAccounts.addChannelMembersBatch(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 channelId: request.parameters.get("channelId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
 
@@ -391,31 +391,31 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
 
-        channels.post(":channelId", "threads") { request -> Response in
+        channels.post(":channelId", "threads") { request async throws -> Response in
             routeResponse(services.emailAccounts.createThreadFromChannel(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 channelId: request.parameters.get("channelId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
 
-        channels.post(":channelId", "members") { request -> Response in
+        channels.post(":channelId", "members") { request async throws -> Response in
             routeResponse(services.emailAccounts.addChannelMember(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 channelId: request.parameters.get("channelId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
 
-        channels.patch(":channelId", "members", "user", ":memberId", "role") { request -> Response in
+        channels.patch(":channelId", "members", "user", ":memberId", "role") { request async throws -> Response in
             routeResponse(services.emailAccounts.updateChannelHumanRole(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 channelId: request.parameters.get("channelId") ?? "",
                 memberId: request.parameters.get("memberId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
 
@@ -482,29 +482,29 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
 
-        channels.patch(":channelId", "notification-settings") { request -> Response in
+        channels.patch(":channelId", "notification-settings") { request async throws -> Response in
             routeResponse(services.emailAccounts.patchChannelNotificationSettings(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 channelId: request.parameters.get("channelId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
 
-        channels.patch(":channelId") { request -> Response in
+        channels.patch(":channelId") { request async throws -> Response in
             routeResponse(services.emailAccounts.patchChannelRoute(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 channelId: request.parameters.get("channelId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
 
-        channels.post { request -> Response in
+        channels.post { request async throws -> Response in
             let reply = services.emailAccounts.createChannelRoute(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             )
             publishCreatedChannel(reply, services: services, authorization: request.headers[.authorization])
             return routeResponse(reply)

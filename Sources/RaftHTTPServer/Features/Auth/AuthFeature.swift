@@ -56,33 +56,33 @@ public struct AuthFeature: RouteCollection, Sendable {
             routeResponse(services.emailAccounts.inviteInfo(token: desktopQuery(request.url.query, "token")))
         }
 
-        mobileAppleNative.post("start") { request -> Response in
+        mobileAppleNative.post("start") { request async throws -> Response in
             routeResponse(services.emailAccounts.startNativeApple(
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 authorization: request.headers[.authorization]
             ))
         }
-        mobileAppleNative.post("authorize") { request async -> Response in
+        mobileAppleNative.post("authorize") { request async throws -> Response in
             let reply = await services.emailAccounts.authorizeNativeApple(
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 authorization: request.headers[.authorization]
             )
             return routeResponse(reply)
         }
-        mobileOAuth.post("start") { request -> Response in
-            return routeResponse(services.emailAccounts.startMobileOAuth(body: request.body.string ?? ""))
+        mobileOAuth.post("start") { request async throws -> Response in
+            return routeResponse(services.emailAccounts.startMobileOAuth(body: try await request.bodyText()))
         }
-        mobileProvider.post("link", "start") { request -> Response in
+        mobileProvider.post("link", "start") { request async throws -> Response in
             return routeResponse(services.emailAccounts.startMobileOAuthLink(
                 provider: request.parameters.get("provider") ?? "",
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 authorization: request.headers[.authorization]
             ))
         }
-        mobileProvider.post("link", "complete") { request -> Response in
+        mobileProvider.post("link", "complete") { request async throws -> Response in
             return routeResponse(services.emailAccounts.completeMobileOAuthLink(
                 provider: request.parameters.get("provider") ?? "",
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 authorization: request.headers[.authorization]
             ))
         }
@@ -93,17 +93,17 @@ public struct AuthFeature: RouteCollection, Sendable {
                 linkOnConflict: desktopQuery(request.url.query, "linkOnConflict") == "1"
             ))
         }
-        provider.post("link", "start") { request -> Response in
+        provider.post("link", "start") { request async throws -> Response in
             routeResponse(services.emailAccounts.startWebOAuthLink(
                 provider: request.parameters.get("provider") ?? "",
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 authorization: request.headers[.authorization]
             ))
         }
-        provider.post("callback") { request -> Response in
+        provider.post("callback") { request async throws -> Response in
             routeResponse(services.emailAccounts.webOAuthCallback(
                 provider: request.parameters.get("provider") ?? "",
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 cookie: request.headers[.cookie]
             ))
         }
@@ -115,52 +115,52 @@ public struct AuthFeature: RouteCollection, Sendable {
                 providerError: desktopQuery(request.url.query, "error")
             ))
         }
-        mobileOAuth.post("complete") { request -> Response in
-            return routeResponse(services.emailAccounts.completeMobileOAuth(body: request.body.string ?? ""))
+        mobileOAuth.post("complete") { request async throws -> Response in
+            return routeResponse(services.emailAccounts.completeMobileOAuth(body: try await request.bodyText()))
         }
-        provider.post("complete") { request -> Response in
+        provider.post("complete") { request async throws -> Response in
             return routeResponse(services.emailAccounts.completeSocial(
                 provider: request.parameters.get("provider") ?? "",
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 userAgent: request.headers[.userAgent],
                 acceptLanguage: request.headers[.acceptLanguage],
                 authorization: request.headers[.authorization]
             ))
         }
-        device.post("authorize") { request -> Response in
-            return routeResponse(services.emailAccounts.authorizeDevice(body: request.body.string ?? ""))
+        device.post("authorize") { request async throws -> Response in
+            return routeResponse(services.emailAccounts.authorizeDevice(body: try await request.bodyText()))
         }
-        device.post("approve") { request -> Response in
+        device.post("approve") { request async throws -> Response in
             return routeResponse(services.emailAccounts.approveDevice(
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 authorization: request.headers[.authorization]
             ))
         }
-        device.post("token") { request -> Response in
-            return routeResponse(services.emailAccounts.pollDeviceToken(body: request.body.string ?? ""))
+        device.post("token") { request async throws -> Response in
+            return routeResponse(services.emailAccounts.pollDeviceToken(body: try await request.bodyText()))
         }
-        auth.post("staging-self-account", "retire") { request -> Response in
+        auth.post("staging-self-account", "retire") { request async throws -> Response in
             return routeResponse(services.emailAccounts.retireStagingSelfAccount(
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 authorization: request.headers[.authorization]
             ))
         }
-        auth.post("register") { request -> Response in
+        auth.post("register") { request async throws -> Response in
             return routeResponse(services.emailAccounts.register(
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 userAgent: request.headers[.userAgent],
                 acceptLanguage: request.headers[.acceptLanguage]
             ))
         }
-        auth.post("refresh") { request -> Response in
+        auth.post("refresh") { request async throws -> Response in
             return routeResponse(services.emailAccounts.refresh(
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 attemptHeader: request.headers[HTTPField.Name("X-Slock-Auth-Refresh-Attempt-Id")!],
                 installationHeader: request.headers[HTTPField.Name("X-Slock-Auth-Installation-Id")!]
             ))
         }
-        auth.post("logout") { request -> Response in
-            return routeResponse(services.emailAccounts.logout(body: request.body.string ?? ""))
+        auth.post("logout") { request async throws -> Response in
+            return routeResponse(services.emailAccounts.logout(body: try await request.bodyText()))
         }
         identities.get { request -> Response in
             routeResponse(services.emailAccounts.authIdentities(
@@ -180,7 +180,7 @@ public struct AuthFeature: RouteCollection, Sendable {
             if let body = try? await request.content.decode(ResetPasswordRequest.self) {
                 return routeResponse(profile.resetPassword(body))
             }
-            return routeResponse(services.emailAccounts.resetPassword(body: request.body.string ?? ""))
+            return routeResponse(services.emailAccounts.resetPassword(body: try await request.bodyText()))
         }
         auth.post("pending-link", "cancel") { request async throws -> Response in
             // An empty or malformed body still answers 204, so cancel stays
@@ -189,11 +189,11 @@ public struct AuthFeature: RouteCollection, Sendable {
                 ?? CancelPendingLinkRequest()
             return routeResponse(profile.cancelPendingLink(body))
         }
-        auth.post("login") { request -> Response in
-            return routeResponse(services.emailAccounts.login(body: request.body.string ?? ""))
+        auth.post("login") { request async throws -> Response in
+            return routeResponse(services.emailAccounts.login(body: try await request.bodyText()))
         }
-        appLogin.post("start") { request -> Response in
-            routeResponse(services.emailAccounts.appLoginStart(body: request.body.string ?? "{}"))
+        appLogin.post("start") { request async throws -> Response in
+            routeResponse(services.emailAccounts.appLoginStart(body: try await request.bodyText(default: "{}")))
         }
         appLoginRequest.get { request -> Response in
             routeResponse(services.emailAccounts.appLoginDescribe(
@@ -213,8 +213,8 @@ public struct AuthFeature: RouteCollection, Sendable {
                 requestId: request.parameters.get("requestId") ?? ""
             ))
         }
-        appLogin.post("complete") { request -> Response in
-            routeResponse(services.emailAccounts.appLoginComplete(body: request.body.string ?? "{}"))
+        appLogin.post("complete") { request async throws -> Response in
+            routeResponse(services.emailAccounts.appLoginComplete(body: try await request.bodyText(default: "{}")))
         }
         auth.get("providers") { request in
             routeResponse(services.emailAccounts.authProviders(platform: desktopQuery(request.url.query, "platform")))
@@ -230,29 +230,29 @@ public struct AuthFeature: RouteCollection, Sendable {
                 body: data
             ))
         }
-        me.post("complete-profile") { request -> Response in
+        me.post("complete-profile") { request async throws -> Response in
             routeResponse(services.emailAccounts.completeProfile(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        me.post("timezone-observation") { request -> Response in
+        me.post("timezone-observation") { request async throws -> Response in
             return routeResponse(services.emailAccounts.observeTimezone(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        me.patch { request -> Response in
+        me.patch { request async throws -> Response in
             return routeResponse(services.emailAccounts.patch(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        auth.post("accept-invite") { request -> Response in
+        auth.post("accept-invite") { request async throws -> Response in
             if let directory = services.publicServerDirectory {
                 let reply = directory.acceptInvite(
                     authorization: request.headers[.authorization],
-                    body: request.body.string ?? ""
+                    body: try await request.bodyText()
                 )
                 if reply.status != 404 {
                     return routeResponse(reply)
@@ -260,7 +260,7 @@ public struct AuthFeature: RouteCollection, Sendable {
             }
             return routeResponse(services.emailAccounts.acceptInvite(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
     }

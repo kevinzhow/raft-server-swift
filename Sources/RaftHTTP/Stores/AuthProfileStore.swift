@@ -240,8 +240,31 @@ final class AuthProfileStore: @unchecked Sendable {
         var handsFeedbackWarningSink: ((String) -> Void)? = nil
     }
 
+    /// Injected sign-in configuration that used to live inline on
+    /// `EmailLoginDirectory`: social/Apple providers, OAuth return URIs and the
+    /// deployment switches read by the auth extensions.
+    struct ConfigState {
+        var mobileProviderProfile: MobileProviderProfile? = nil
+        var webProviderProfile: MobileProviderProfile? = nil
+        var configuredSocialAuthProviders: Set<String> = []
+        var appleClientId: String = ""
+        var nativeAppleClientId: String = ""
+        var nativeAppleClientSecret: String = ""
+        var nativeAppleStateSecret: String = ""
+        var exchangeNativeAppleCode: (@Sendable (NativeAppleCodeExchange) async -> String?)? = nil
+        var serverURL: String = "http://localhost:3001"
+        var appURL: String = "http://localhost:3000"
+        var mobileOAuthReturnURI: String? = nil
+        var mobileOAuthAllowedReturnURIs: String? = nil
+        var releaseBranch: String? = nil
+        var deviceLoginGate: String? = nil
+        var scopeAttestationSecretOverride: String?? = nil
+        var deploymentEnvironmentOverride: String?? = nil
+    }
+
     private var accountSurface = AccountState()
     private var seamSurface = SeamState()
+    private var configSurface = ConfigState()
 
     /// The whole account/session surface. One read or one write is one locked
     /// critical section, so `EmailLoginDirectory`'s forwarding accessors stay
@@ -268,6 +291,21 @@ final class AuthProfileStore: @unchecked Sendable {
         set {
             lock.lock()
             seamSurface = newValue
+            lock.unlock()
+        }
+    }
+
+    /// The whole injected sign-in configuration. One read or one write is one
+    /// locked critical section.
+    var configState: ConfigState {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return configSurface
+        }
+        set {
+            lock.lock()
+            configSurface = newValue
             lock.unlock()
         }
     }
@@ -395,5 +433,87 @@ final class AuthProfileStore: @unchecked Sendable {
     var handsFeedbackWarningSink: ((String) -> Void)? {
         get { seamState.handsFeedbackWarningSink }
         set { seamState.handsFeedbackWarningSink = newValue }
+    }
+
+    // MARK: - Injected sign-in configuration
+
+    var mobileProviderProfile: MobileProviderProfile? {
+        get { configState.mobileProviderProfile }
+        set { configState.mobileProviderProfile = newValue }
+    }
+
+    var webProviderProfile: MobileProviderProfile? {
+        get { configState.webProviderProfile }
+        set { configState.webProviderProfile = newValue }
+    }
+
+    var configuredSocialAuthProviders: Set<String> {
+        get { configState.configuredSocialAuthProviders }
+        set { configState.configuredSocialAuthProviders = newValue }
+    }
+
+    var appleClientId: String {
+        get { configState.appleClientId }
+        set { configState.appleClientId = newValue }
+    }
+
+    var nativeAppleClientId: String {
+        get { configState.nativeAppleClientId }
+        set { configState.nativeAppleClientId = newValue }
+    }
+
+    var nativeAppleClientSecret: String {
+        get { configState.nativeAppleClientSecret }
+        set { configState.nativeAppleClientSecret = newValue }
+    }
+
+    var nativeAppleStateSecret: String {
+        get { configState.nativeAppleStateSecret }
+        set { configState.nativeAppleStateSecret = newValue }
+    }
+
+    var exchangeNativeAppleCode: (@Sendable (NativeAppleCodeExchange) async -> String?)? {
+        get { configState.exchangeNativeAppleCode }
+        set { configState.exchangeNativeAppleCode = newValue }
+    }
+
+    var serverURL: String {
+        get { configState.serverURL }
+        set { configState.serverURL = newValue }
+    }
+
+    var appURL: String {
+        get { configState.appURL }
+        set { configState.appURL = newValue }
+    }
+
+    var mobileOAuthReturnURI: String? {
+        get { configState.mobileOAuthReturnURI }
+        set { configState.mobileOAuthReturnURI = newValue }
+    }
+
+    var mobileOAuthAllowedReturnURIs: String? {
+        get { configState.mobileOAuthAllowedReturnURIs }
+        set { configState.mobileOAuthAllowedReturnURIs = newValue }
+    }
+
+    var releaseBranch: String? {
+        get { configState.releaseBranch }
+        set { configState.releaseBranch = newValue }
+    }
+
+    var deviceLoginGate: String? {
+        get { configState.deviceLoginGate }
+        set { configState.deviceLoginGate = newValue }
+    }
+
+    var scopeAttestationSecretOverride: String?? {
+        get { configState.scopeAttestationSecretOverride }
+        set { configState.scopeAttestationSecretOverride = newValue }
+    }
+
+    var deploymentEnvironmentOverride: String?? {
+        get { configState.deploymentEnvironmentOverride }
+        set { configState.deploymentEnvironmentOverride = newValue }
     }
 }

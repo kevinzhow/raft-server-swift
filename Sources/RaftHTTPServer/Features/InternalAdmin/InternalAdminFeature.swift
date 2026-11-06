@@ -57,40 +57,40 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 status: desktopQuery(request.url.query, "status")
             ))
         }
-        agent.post("reminders") { request -> Response in
+        agent.post("reminders") { request async throws -> Response in
             let agentId = request.parameters.get("agentId") ?? ""
             let reply = services.emailAccounts.legacyReminderCreate(
                 authorization: request.headers[.authorization],
                 agentId: agentId,
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             )
             if let reminderId = reminderIdFromReply(reply) {
                 publishReminderEvent(reply, event: "reminder:scheduled", reminderId: reminderId, agentId: agentId, services: services)
             }
             return routeResponse(reply)
         }
-        agent.delete("reminders", ":reminderId") { request -> Response in
+        agent.delete("reminders", ":reminderId") { request async throws -> Response in
             routeResponse(services.emailAccounts.legacyReminderCancel(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("agentId") ?? "",
                 reminderId: request.parameters.get("reminderId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        agent.post("reminders", ":reminderId", "snooze") { request -> Response in
+        agent.post("reminders", ":reminderId", "snooze") { request async throws -> Response in
             routeResponse(services.emailAccounts.legacyReminderSnooze(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("agentId") ?? "",
                 reminderId: request.parameters.get("reminderId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        agent.patch("reminders", ":reminderId") { request -> Response in
+        agent.patch("reminders", ":reminderId") { request async throws -> Response in
             routeResponse(services.emailAccounts.legacyReminderUpdate(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("agentId") ?? "",
                 reminderId: request.parameters.get("reminderId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
         agent.get("reminders", ":reminderId", "log") { request -> Response in
@@ -100,25 +100,25 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 reminderId: request.parameters.get("reminderId") ?? ""
             ))
         }
-        agent.post("send") { request -> Response in
+        agent.post("send") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentSend(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("agentId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        agent.post("receive-ack") { request -> Response in
+        agent.post("receive-ack") { request async throws -> Response in
             routeResponse(services.emailAccounts.legacyAgentReceiveAck(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("agentId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        agent.post("runtime-profile", "migration-done") { request -> Response in
+        agent.post("runtime-profile", "migration-done") { request async throws -> Response in
             routeResponse(services.emailAccounts.runtimeProfileMigrationDone(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("agentId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         agent.get("server") { request -> Response in
@@ -127,42 +127,42 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 legacyAgentId: request.parameters.get("agentId") ?? ""
             ))
         }
-        agent.patch("server") { request -> Response in
+        agent.patch("server") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentUpdateServer(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}",
+                body: try await request.bodyText(default: "{}"),
                 legacyAgentId: request.parameters.get("agentId") ?? ""
             ))
         }
-        agent.post("channels") { request -> Response in
+        agent.post("channels") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentCreateChannel(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}",
+                body: try await request.bodyText(default: "{}"),
                 legacyAgentId: request.parameters.get("agentId") ?? ""
             ))
         }
-        agent.patch("channels", ":channelId") { request -> Response in
+        agent.patch("channels", ":channelId") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentUpdateChannel(
                 authorization: request.headers[.authorization],
                 channelId: request.parameters.get("channelId") ?? "",
-                body: request.body.string ?? "{}",
+                body: try await request.bodyText(default: "{}"),
                 legacyAgentId: request.parameters.get("agentId") ?? ""
             ))
         }
-        agent.post("channels", ":channelId", "members") { request -> Response in
+        agent.post("channels", ":channelId", "members") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentChannelMemberWrite(
                 authorization: request.headers[.authorization],
                 channelId: request.parameters.get("channelId") ?? "",
-                body: request.body.string ?? "{}",
+                body: try await request.bodyText(default: "{}"),
                 remove: false,
                 legacyAgentId: request.parameters.get("agentId") ?? ""
             ))
         }
-        agent.delete("channels", ":channelId", "members") { request -> Response in
+        agent.delete("channels", ":channelId", "members") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentChannelMemberWrite(
                 authorization: request.headers[.authorization],
                 channelId: request.parameters.get("channelId") ?? "",
-                body: request.body.string ?? "{}",
+                body: try await request.bodyText(default: "{}"),
                 remove: true,
                 legacyAgentId: request.parameters.get("agentId") ?? ""
             ))
@@ -203,63 +203,63 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 consume: desktopQuery(request.url.query, "consume")
             ))
         }
-        agent.post("tasks") { request -> Response in
+        agent.post("tasks") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentTasksCreate(
                 authorization: request.headers[.authorization],
                 legacyAgentId: request.parameters.get("agentId"),
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
-        agent.post("tasks", "claim") { request -> Response in
+        agent.post("tasks", "claim") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentTaskClaim(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}",
+                body: try await request.bodyText(default: "{}"),
                 legacyAgentId: request.parameters.get("agentId")
             ))
         }
-        agent.post("tasks", "update-status") { request -> Response in
+        agent.post("tasks", "update-status") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentTaskUpdateStatus(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}",
+                body: try await request.bodyText(default: "{}"),
                 legacyAgentId: request.parameters.get("agentId")
             ))
         }
-        agent.post("tasks", "delete") { request -> Response in
+        agent.post("tasks", "delete") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentTaskDelete(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}",
+                body: try await request.bodyText(default: "{}"),
                 legacyAgentId: request.parameters.get("agentId")
             ))
         }
-        agent.post("tasks", "convert") { request -> Response in
+        agent.post("tasks", "convert") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentTaskConvert(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}",
+                body: try await request.bodyText(default: "{}"),
                 legacyAgentId: request.parameters.get("agentId")
             ))
         }
-        agent.post("messages", ":messageId", "reactions") { request -> Response in
+        agent.post("messages", ":messageId", "reactions") { request async throws -> Response in
             routeResponse(services.emailAccounts.mutateAgentMessageReaction(
                 agentId: request.parameters.get("agentId") ?? "",
                 messageId: request.parameters.get("messageId") ?? "",
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 authorization: request.headers[.authorization],
                 remove: false
             ))
         }
-        agent.delete("messages", ":messageId", "reactions") { request -> Response in
+        agent.delete("messages", ":messageId", "reactions") { request async throws -> Response in
             routeResponse(services.emailAccounts.mutateAgentMessageReaction(
                 agentId: request.parameters.get("agentId") ?? "",
                 messageId: request.parameters.get("messageId") ?? "",
-                body: request.body.string ?? "",
+                body: try await request.bodyText(),
                 authorization: request.headers[.authorization],
                 remove: true
             ))
         }
-        agent.post("threads", "unfollow") { request -> Response in
+        agent.post("threads", "unfollow") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentThreadUnfollow(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? "{}",
+                body: try await request.bodyText(default: "{}"),
                 legacyAgentId: request.parameters.get("agentId") ?? ""
             ))
         }
@@ -305,10 +305,10 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 sizeBytes: file.sizeBytes
             ))
         }
-        machine.post("scope-attestation") { request -> Response in
+        machine.post("scope-attestation") { request async throws -> Response in
             routeResponse(services.emailAccounts.machineScopeAttestation(
                 authorization: request.headers[.authorization],
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         computer.post("attachment", "revoke") { _ -> Response in
@@ -316,11 +316,11 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             headers[.contentType] = "application/json"
             return Response(status: .unauthorized, headers: headers, body: .init(string: "{\"error\":\"Authentication policy not registered for this path\",\"code\":\"auth_policy_unregistered_path\"}"))
         }
-        computer.post("runners", ":agentId", "credentials") { request -> Response in
+        computer.post("runners", ":agentId", "credentials") { request async throws -> Response in
             routeResponse(services.emailAccounts.computerMintRunnerCredential(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("agentId") ?? "",
-                body: request.body.string ?? ""
+                body: try await request.bodyText()
             ))
         }
         computer.delete("runners", ":agentId", "credentials", ":credentialId") { request -> Response in
@@ -344,11 +344,11 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
         }
         // The resumable control manifest is the one JSON surface allowed past the
         // 100 KB global parser: 512 KB manifest plus envelope headroom.
-        computer.on(.post, "agent-migrations", "by-id", ":migrationId", "resumable", "control", maxBodySize: "640kb") { request -> Response in
+        computer.on(.post, "agent-migrations", "by-id", ":migrationId", "resumable", "control", maxBodySize: "640kb") { request async throws -> Response in
             routeResponse(services.emailAccounts.putMigrationControlManifest(
                 authorization: request.headers[.authorization],
                 migrationRef: request.parameters.get("migrationId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
         computer.get("agent-migrations", "by-id", ":migrationId", "resumable", "control") { request -> Response in
@@ -357,12 +357,12 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 migrationRef: request.parameters.get("migrationId") ?? ""
             ))
         }
-        computer.post("agent-migrations", "by-id", ":migrationId", "resumable", "chunks", ":chunkIndex", "receipt") { request -> Response in
+        computer.post("agent-migrations", "by-id", ":migrationId", "resumable", "chunks", ":chunkIndex", "receipt") { request async throws -> Response in
             routeResponse(services.emailAccounts.putMigrationChunkReceipt(
                 authorization: request.headers[.authorization],
                 migrationRef: request.parameters.get("migrationId") ?? "",
                 chunkIndex: Int(request.parameters.get("chunkIndex") ?? "") ?? -1,
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
         computer.get("agent-migrations", "by-id", ":migrationId", "resumable", "chunks") { request -> Response in
@@ -383,53 +383,53 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 migrationRef: request.parameters.get("migrationId") ?? ""
             ))
         }
-        computer.post("agent-migrations", "by-id", ":migrationId", "start-transfer") { request -> Response in
+        computer.post("agent-migrations", "by-id", ":migrationId", "start-transfer") { request async throws -> Response in
             routeResponse(services.emailAccounts.startMigrationTransfer(
                 authorization: request.headers[.authorization],
                 migrationRef: request.parameters.get("migrationId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        computer.post("agent-migrations", "by-id", ":migrationId", "flip-machine") { request -> Response in
+        computer.post("agent-migrations", "by-id", ":migrationId", "flip-machine") { request async throws -> Response in
             routeResponse(services.emailAccounts.flipMigrationMachine(
                 authorization: request.headers[.authorization],
                 migrationRef: request.parameters.get("migrationId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        computer.post("agent-migrations", "by-id", ":migrationId", "arrived") { request async -> Response in
+        computer.post("agent-migrations", "by-id", ":migrationId", "arrived") { request async throws -> Response in
             routeResponse(await services.emailAccounts.completeMigrationArrival(
                 authorization: request.headers[.authorization],
                 migrationRef: request.parameters.get("migrationId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        computer.post("agent-migrations", "by-id", ":migrationId", "transport-lost") { request -> Response in
+        computer.post("agent-migrations", "by-id", ":migrationId", "transport-lost") { request async throws -> Response in
             routeResponse(services.emailAccounts.markMigrationTransportLostFromComputer(
                 authorization: request.headers[.authorization],
                 migrationRef: request.parameters.get("migrationId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        computer.post("agent-migrations", "by-id", ":migrationId", "cancel-ack") { request -> Response in
+        computer.post("agent-migrations", "by-id", ":migrationId", "cancel-ack") { request async throws -> Response in
             routeResponse(services.emailAccounts.acknowledgeMigrationCancellation(
                 authorization: request.headers[.authorization],
                 migrationRef: request.parameters.get("migrationId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        computer.post("agent-migrations", "by-id", ":migrationId", "resumable", "source-quiesced") { request -> Response in
+        computer.post("agent-migrations", "by-id", ":migrationId", "resumable", "source-quiesced") { request async throws -> Response in
             routeResponse(services.emailAccounts.recordMigrationSourceQuiesced(
                 authorization: request.headers[.authorization],
                 migrationRef: request.parameters.get("migrationId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
-        computer.post("agent-migrations", "by-id", ":migrationId", "resumable", "source-progress") { request -> Response in
+        computer.post("agent-migrations", "by-id", ":migrationId", "resumable", "source-progress") { request async throws -> Response in
             routeResponse(services.emailAccounts.recordMigrationSourceProgress(
                 authorization: request.headers[.authorization],
                 migrationRef: request.parameters.get("migrationId") ?? "",
-                body: request.body.string ?? "{}"
+                body: try await request.bodyText(default: "{}")
             ))
         }
     }
