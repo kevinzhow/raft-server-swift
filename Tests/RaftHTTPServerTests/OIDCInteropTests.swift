@@ -48,8 +48,8 @@ private struct OIDCInteropFixture {
 
 private func makeOIDCInteropFixture(suffix: String) throws -> OIDCInteropFixture {
     let accounts = EmailLoginDirectory()
-    accounts.serverURL = "https://api.raft.test"
-    accounts.appURL = "https://app.raft.test"
+    accounts.configureOAuthForTesting { $0.serverURL = "https://api.raft.test" }
+    accounts.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
     let number = Int(suffix) ?? 0
     let serverId = String(format: "33333333-3333-4333-8333-%012d", 100_000 + number)
     let otherServerId = String(format: "33333333-3333-4333-8333-%012d", 200_000 + number)

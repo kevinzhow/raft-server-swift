@@ -63,10 +63,8 @@ extension EmailLoginDirectory {
             guestDeniedHiddenChannel: { [self] channelId, serverId, userId in
                 guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId)
             },
-            appendMessage: { [self] message in
-                lock.lock()
-                defer { lock.unlock() }
-                appendHumanMessageLocked(message)
+            appendMessage: { [messages = messagesAndThreadsStore, ledger = MessageLedgerPort(oauth: oauth)] message in
+                messages.appendMessage(message, ledger: ledger, mirrorSystemMetadata: true)
             },
             oauth: oauth,
             notifications: notificationsStore,

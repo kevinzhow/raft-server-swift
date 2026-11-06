@@ -71,38 +71,36 @@ enum Entrypoint {
         let processEnvironment = ProcessInfo.processInfo.environment
         let nodeEnv = processEnvironment["NODE_ENV"] ?? "development"
         let emailAccounts = EmailLoginDirectory()
-        emailAccounts.mobileOAuthReturnURI = processEnvironment["MOBILE_OAUTH_RETURN_URI"]
-        emailAccounts.releaseBranch = processEnvironment["SLOCK_RELEASE_BRANCH"]
-        emailAccounts.deviceLoginGate = processEnvironment["SLOCK_DEVICE_LOGIN_ENABLED"]
-        emailAccounts.mobileOAuthAllowedReturnURIs = processEnvironment["MOBILE_OAUTH_ALLOWED_RETURN_URIS"]
-        emailAccounts.configuredSocialAuthProviders = configuredSocialAuthProviders(processEnvironment)
-        emailAccounts.appleClientId = nonEmpty(processEnvironment["APPLE_CLIENT_ID"]) ?? nonEmpty(processEnvironment["APPLE_WEB_CLIENT_ID"]) ?? ""
-        emailAccounts.nativeAppleClientId = nonEmpty(processEnvironment["APPLE_IOS_CLIENT_ID"]) ?? ""
-        emailAccounts.nativeAppleClientSecret = nonEmpty(processEnvironment["APPLE_IOS_CLIENT_SECRET"]) ?? ""
-        emailAccounts.nativeAppleStateSecret = nonEmpty(processEnvironment["NATIVE_APPLE_AUTH_STATE_SECRET"])
-            ?? nonEmpty(processEnvironment["SOCIAL_AUTH_STATE_SECRET"])
-            ?? nonEmpty(processEnvironment["JWT_SECRET"])
-            ?? ""
-        emailAccounts.mobileAppEmailUnsubscribeSecret = nonEmpty(processEnvironment["MOBILE_APP_EMAIL_UNSUBSCRIBE_SECRET"])
-            ?? nonEmpty(processEnvironment["JWT_SECRET"])
-            ?? emailAccounts.mobileAppEmailUnsubscribeSecret
-        if processEnvironment["SLOCK_NATIVE_NOTIFICATIONS_ENABLED"] != nil {
-            emailAccounts.nativeNotificationsEnabled = processEnvironment["SLOCK_NATIVE_NOTIFICATIONS_ENABLED"] == "true"
-        } else {
-            emailAccounts.nativeNotificationsEnabled = nodeEnv == "test"
-        }
-        emailAccounts.nativeNotificationNodeEnv = nodeEnv
-        if let attestationMode = processEnvironment["NATIVE_NOTIFICATION_ATTESTATION_MODE"] {
-            emailAccounts.nativeNotificationAttestationMode = attestationMode
-        }
+        emailAccounts.oauthFlows.configureDeployment(.init(
+            configuredSocialAuthProviders: configuredSocialAuthProviders(processEnvironment),
+            appleClientId: nonEmpty(processEnvironment["APPLE_CLIENT_ID"]) ?? nonEmpty(processEnvironment["APPLE_WEB_CLIENT_ID"]) ?? "",
+            nativeAppleClientId: nonEmpty(processEnvironment["APPLE_IOS_CLIENT_ID"]) ?? "",
+            nativeAppleClientSecret: nonEmpty(processEnvironment["APPLE_IOS_CLIENT_SECRET"]) ?? "",
+            nativeAppleStateSecret: nonEmpty(processEnvironment["NATIVE_APPLE_AUTH_STATE_SECRET"])
+                ?? nonEmpty(processEnvironment["SOCIAL_AUTH_STATE_SECRET"])
+                ?? nonEmpty(processEnvironment["JWT_SECRET"]) ?? "",
+            serverURL: nonEmpty(processEnvironment["SERVER_URL"]).map { $0.hasSuffix("/") ? String($0.dropLast()) : $0 } ?? "http://localhost:3001",
+            appURL: nonEmpty(processEnvironment["APP_URL"]).map { $0.hasSuffix("/") ? String($0.dropLast()) : $0 } ?? "http://localhost:3000",
+            mobileOAuthReturnURI: processEnvironment["MOBILE_OAUTH_RETURN_URI"],
+            mobileOAuthAllowedReturnURIs: processEnvironment["MOBILE_OAUTH_ALLOWED_RETURN_URIS"]
+        ))
+        emailAccounts.authCore.configureDeployment(.init(
+            releaseBranch: processEnvironment["SLOCK_RELEASE_BRANCH"],
+            deviceLoginGate: processEnvironment["SLOCK_DEVICE_LOGIN_ENABLED"]
+        ))
+        let mobileEmail = MobileAppEmailUnsubscribe(directory: emailAccounts)
+        mobileEmail.configureDeployment(.init(
+            secret: nonEmpty(processEnvironment["MOBILE_APP_EMAIL_UNSUBSCRIBE_SECRET"])
+                ?? nonEmpty(processEnvironment["JWT_SECRET"])
+                ?? mobileEmail.deploymentConfiguration.secret
+        ))
+        emailAccounts.nativeNotifications.configureDeployment(.init(
+            enabled: processEnvironment["SLOCK_NATIVE_NOTIFICATIONS_ENABLED"].map { $0 == "true" } ?? (nodeEnv == "test"),
+            attestationMode: processEnvironment["NATIVE_NOTIFICATION_ATTESTATION_MODE"],
+            nodeEnv: nodeEnv
+        ))
         if let jwtSecret = nonEmpty(processEnvironment["JWT_SECRET"]) {
             emailAccounts.oauth.jwtSecret = jwtSecret
-        }
-        if let serverURL = nonEmpty(processEnvironment["SERVER_URL"]) {
-            emailAccounts.serverURL = serverURL.hasSuffix("/") ? String(serverURL.dropLast()) : serverURL
-        }
-        if let appURL = nonEmpty(processEnvironment["APP_URL"]) {
-            emailAccounts.appURL = appURL.hasSuffix("/") ? String(appURL.dropLast()) : appURL
         }
         let database = DatabaseHealth(environment: processEnvironment)
         let ping: @Sendable () async throws -> Void = {
@@ -150,7 +148,7 @@ enum Entrypoint {
             emailAccounts.realtimeRelay.install { room, event, payload in
                 realtimeServer.hub.emit(room: room, event: event, payloadJSON: payload)
             }
-            emailAccounts.onAgentReadUpdated = { serverId, channelId, agentId, maxReadSeq in
+            emailAccounts.managedMCPToolExecution.installReadUpdateObserver { serverId, channelId, agentId, maxReadSeq in
                 guard emailAccounts.managedMCPToolExecution.readReceiptsEnabled(serverId: serverId),
                       let channel = emailAccounts.oauth.channelInfo(id: channelId),
                       channel.serverId == serverId,

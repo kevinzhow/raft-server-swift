@@ -1,6 +1,6 @@
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
 import Testing
 import TestSupport
@@ -52,7 +52,7 @@ private final class MigrationCancelDispatcher: @unchecked Sendable {
         transportGeneration: "route-transport-generation"
     )
     let dispatcher = MigrationCancelDispatcher()
-    accounts.agentMigrationCancelDispatch = { machineId, role, ref, generation, stopAgent in
+    accounts.agentsRuntimeStore.agentMigrationCancelDispatch = { machineId, role, ref, generation, stopAgent in
         dispatcher.append(machineId, role, ref, generation, stopAgent)
     }
 

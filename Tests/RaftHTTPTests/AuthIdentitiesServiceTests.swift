@@ -12,7 +12,7 @@ private let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
 
 private func makeDirectory(_ suffix: String, passwordEstablished: Bool = true) -> (directory: EmailLoginDirectory, userId: String, bearer: String) {
     let directory = EmailLoginDirectory()
-    directory.appURL = "https://app.raft.test"
+    directory.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
     let userId = "11111111-1111-4111-8111-0000020\(suffix)"
     directory.addAccount(
         id: userId,
@@ -123,19 +123,21 @@ private func render(_ error: AuthIdentitiesError) -> String {
 @Test func authIdentitiesMeRendersTheUserObjectInOrderWithTheObservedTimezone() throws {
     let (directory, userId, bearer) = makeDirectory("03")
     let service = directory.authIdentities
-    directory.accounts["identity-03@slock.test"] = Account(
-        id: userId,
-        email: "identity-03@slock.test",
-        passwordHash: AuthTokenCodec.sha256("password123"),
-        displayLanguage: "en",
-        name: "identity-03",
-        profileSetupSuggestedHandle: "ident",
-        profileSetupProvider: "google",
-        profileSetupCompletedAt: fixedDate,
-        avatarUrl: "/api/avatars/users/x.webp",
-        shareUsageData: true,
-        emailVerified: true
-    )
+    directory.authProfileStore.state.withLock { state in
+        state.accountSurface.accounts["identity-03@slock.test"] = Account(
+            id: userId,
+            email: "identity-03@slock.test",
+            passwordHash: AuthTokenCodec.sha256("password123"),
+            displayLanguage: "en",
+            name: "identity-03",
+            profileSetupSuggestedHandle: "ident",
+            profileSetupProvider: "google",
+            profileSetupCompletedAt: fixedDate,
+            avatarUrl: "/api/avatars/users/x.webp",
+            shareUsageData: true,
+            emailVerified: true
+        )
+    }
     let gravatar = AuthTokenCodec.sha256("identity-03@slock.test")
     let user = #"{"id":"\#(userId)","email":"identity-03@slock.test","name":"identity-03","emailVerified":true,"displayName":"identity-03","gravatarHash":"\#(gravatar)","displayLanguage":"en","profileSetupCompletedAt":"2023-11-14T22:13:20.000Z","profileSetupSuggestedHandle":"ident","profileSetupProvider":"google","avatarUrl":"/api/avatars/users/x.webp","shareUsageData":true,"preferredLanguage":null,"preferredTimezone":null,"preferredTranslationMode":"off","autoTranslationEnabled":false,"preferredTranslationDisplay":"translated","preferredTimeFormat":null,"preferredMessageBodyFontSize":null,"referralSource":null,"referralSourceOther":null,"referralSourceSkippedAt":null"#
 
@@ -143,9 +145,11 @@ private func render(_ error: AuthIdentitiesError) -> String {
     // The standalone user payload other domains embed renders the same bytes.
     #expect(AuthUserDTO(account: directory.authProfileStore.account(userId: userId)!).jsonBody.render() == user + "}")
 
-    directory.timezoneObservations[userId] = TimezoneObservation(
-        firstTimezone: "Asia/Tokyo", firstAt: fixedDate, lastTimezone: "UTC", lastAt: fixedDate
-    )
+    directory.authProfileStore.state.withLock { state in
+        state.profile.timezoneObservations[userId] = TimezoneObservation(
+            firstTimezone: "Asia/Tokyo", firstAt: fixedDate, lastTimezone: "UTC", lastAt: fixedDate
+        )
+    }
     #expect(try service.me(authorization: "Bearer \(bearer)").jsonBody.render()
         == user + #","firstObservedTimezone":"Asia/Tokyo","firstObservedTimezoneAt":"2023-11-14T22:13:20.000Z","lastObservedTimezone":"UTC","lastObservedTimezoneAt":"2023-11-14T22:13:20.000Z"}"#)
 
@@ -199,16 +203,16 @@ private func render(_ error: AuthIdentitiesError) -> String {
     #expect(try patch(#"{"referralSourceSkipped":true}"#).user.referralSourceSkippedAt != nil)
 
     // The usage opt-in mints an analytics id once; opting out removes it.
-    let before = directory.analyticsIds[userId]
+    let before = directory.authProfileStore.analyticsIds[userId]
     #expect(before != nil)
     _ = try patch(#"{"shareUsageData":true}"#)
-    #expect(directory.analyticsIds[userId] == before)
+    #expect(directory.authProfileStore.analyticsIds[userId] == before)
     _ = try patch(#"{"shareUsageData":false}"#)
-    #expect(directory.analyticsIds[userId] == nil)
+    #expect(directory.authProfileStore.analyticsIds[userId] == nil)
     _ = try patch(#"{"shareUsageData":null}"#)
-    #expect(directory.analyticsIds[userId] == nil)
+    #expect(directory.authProfileStore.analyticsIds[userId] == nil)
     _ = try patch(#"{"shareUsageData":true}"#)
-    #expect(directory.analyticsIds[userId] != nil && directory.analyticsIds[userId] != before)
+    #expect(directory.authProfileStore.analyticsIds[userId] != nil && directory.authProfileStore.analyticsIds[userId] != before)
 }
 
 @Test func authIdentitiesPatchWritesThePasswordBeforeLaterFieldsAreValidated() throws {

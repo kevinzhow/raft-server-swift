@@ -18,7 +18,7 @@ private struct AppLoginFixture {
 
 private func makeAppLoginFixture(_ suffix: String) -> AppLoginFixture {
     let accounts = EmailLoginDirectory()
-    accounts.appURL = "https://app.raft.test"
+    accounts.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
     let userId = "11111111-1111-4111-8111-000001038\(suffix)"
     let email = "app-login-\(suffix)@slock.test"
     accounts.addAccount(id: userId, email: email, password: "password123")

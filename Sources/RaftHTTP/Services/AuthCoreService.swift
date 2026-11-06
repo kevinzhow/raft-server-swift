@@ -153,7 +153,7 @@ public struct AuthCoreService: Sendable {
         }
         if capability != nil {
             let stagingEmail = email.wholeMatch(of: /(?i).*@mail\.build/) != nil
-            if store.releaseBranch != "staging" || !stagingEmail {
+            if deploymentConfiguration.releaseBranch != "staging" || !stagingEmail {
                 throw AuthCoreError.stagingRegistrationUnavailable
             }
         }
@@ -252,7 +252,7 @@ public struct AuthCoreService: Sendable {
         guard let token = Self.bearerToken(authorization),
               let actorId = store.accessTokenOwner(token)
         else { throw AuthCoreError.invalidToken }
-        guard store.releaseBranch == "staging" else { throw AuthCoreError.notFound }
+        guard deploymentConfiguration.releaseBranch == "staging" else { throw AuthCoreError.notFound }
         let userId = body.userId ?? ""
         let capability = body.capability ?? ""
         if userId != actorId { throw AuthCoreError.retirementOwnershipMismatch }
@@ -294,7 +294,7 @@ public struct AuthCoreService: Sendable {
     // MARK: Device grants
 
     private func requireDeviceSurface() throws {
-        guard AuthRedirects.deviceLoginEnabled(store.deviceLoginGate) else {
+        guard AuthRedirects.deviceLoginEnabled(deploymentConfiguration.deviceLoginGate) else {
             throw AuthCoreError.deviceLoginDisabled
         }
     }

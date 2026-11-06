@@ -30,10 +30,10 @@ public struct ProfileAndChannelFilesDependencies: Sendable {
     public var capabilityDenial: @Sendable (String?, String) -> String?
     public var emitRealtime: @Sendable (String, String, String?) -> Void
     public var attachmentCommentsEnabled: @Sendable (String, String) -> Bool
-    /// The published `attachments` array text for a message's attachment ids.
-    public var attachmentsJSON: @Sendable ([String], Bool) -> String
-    /// The published `commentRef` object text, when the message is a comment.
-    public var commentRefJSON: @Sendable (String) -> String?
+    /// Attachment chips from one Messages snapshot, including gated counts.
+    public var attachmentChips: @Sendable ([String], Bool) -> [InboxAttachmentChipDTO]
+    /// The scoped comment reference, when the message is a comment.
+    public var commentRef: @Sendable (String) -> InboxCommentRefDTO?
 
     public init(
         sessionUserId: @escaping @Sendable (String?) -> String?,
@@ -41,16 +41,16 @@ public struct ProfileAndChannelFilesDependencies: Sendable {
         capabilityDenial: @escaping @Sendable (String?, String) -> String?,
         emitRealtime: @escaping @Sendable (String, String, String?) -> Void,
         attachmentCommentsEnabled: @escaping @Sendable (String, String) -> Bool,
-        attachmentsJSON: @escaping @Sendable ([String], Bool) -> String,
-        commentRefJSON: @escaping @Sendable (String) -> String?
+        attachmentChips: @escaping @Sendable ([String], Bool) -> [InboxAttachmentChipDTO],
+        commentRef: @escaping @Sendable (String) -> InboxCommentRefDTO?
     ) {
         self.sessionUserId = sessionUserId
         self.agentRead = agentRead
         self.capabilityDenial = capabilityDenial
         self.emitRealtime = emitRealtime
         self.attachmentCommentsEnabled = attachmentCommentsEnabled
-        self.attachmentsJSON = attachmentsJSON
-        self.commentRefJSON = commentRefJSON
+        self.attachmentChips = attachmentChips
+        self.commentRef = commentRef
     }
 }
 
@@ -678,9 +678,9 @@ public struct ProfileAndChannelFilesService: Sendable {
         let buckets = reactionBuckets(rows: rows)
         let commentsVisible = dependencies.attachmentCommentsEnabled(serverId ?? "", actorId)
         let commentRef = commentsVisible
-            ? dependencies.commentRefJSON(message.id).map(OrderedJSON.raw)
+            ? dependencies.commentRef(message.id)?.jsonBody
             : nil
-        let attachments = OrderedJSON.raw(dependencies.attachmentsJSON(message.attachmentIds, commentsVisible))
+        let attachments = OrderedJSON.array(dependencies.attachmentChips(message.attachmentIds, commentsVisible).map(\.jsonBody))
         let actionMetadata = forwardedBundleJSON(
             messageId: message.id,
             userId: actorId,

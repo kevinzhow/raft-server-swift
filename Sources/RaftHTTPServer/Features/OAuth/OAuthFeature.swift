@@ -60,7 +60,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
                 try services.emailAccounts.oauth.exchangeToken(
                     authorization: request.headers[.authorization],
                     body: body,
-                    issuer: OAuthDiscovery.issuerOrigin(services.emailAccounts.serverURL) ?? ""
+                    issuer: OAuthDiscovery.issuerOrigin(oauthFlows.deploymentConfiguration.serverURL) ?? ""
                 )
             }
         }
@@ -68,7 +68,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
             try await respond {
                 try services.emailAccounts.oauth.userinfo(
                     authorization: request.headers[.authorization],
-                    baseURL: services.emailAccounts.serverURL
+                    baseURL: oauthFlows.deploymentConfiguration.serverURL
                 )
             }
         }
@@ -76,7 +76,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
             try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
                 try services.emailAccounts.oauth.agentDirectory(
                     authorization: request.headers[.authorization],
-                    baseURL: services.emailAccounts.serverURL
+                    baseURL: oauthFlows.deploymentConfiguration.serverURL
                 )
             }
         }
@@ -84,7 +84,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
             try await respond {
                 try services.emailAccounts.oauth.serverinfo(
                     authorization: request.headers[.authorization],
-                    baseURL: services.emailAccounts.serverURL
+                    baseURL: oauthFlows.deploymentConfiguration.serverURL
                 )
             }
         }
@@ -128,7 +128,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
         }
         app.get(".well-known", "openid-configuration") { _ async throws -> Response in
             try await respond(headers: .standard(extra: ["Cache-Control": "public, max-age=300"])) {
-                try OAuthDiscovery.openIDConfiguration(serverURL: services.emailAccounts.serverURL)
+                try OAuthDiscovery.openIDConfiguration(serverURL: oauthFlows.deploymentConfiguration.serverURL)
             }
         }
         oauth.get("jwks") { _ async throws -> Response in
@@ -140,13 +140,13 @@ public struct OAuthFeature: RouteCollection, Sendable {
             try await respond(status: { $0.status }, headers: { $0.headers }) {
                 try services.emailAccounts.oauth.browserAuthorize(
                     query: request.url.query ?? "",
-                    appURL: services.emailAccounts.appURL
+                    appURL: oauthFlows.deploymentConfiguration.appURL
                 )
             }
         }
         oauth.get(".well-known", "openid-configuration") { _ async throws -> Response in
             try await respond(headers: .standard(extra: ["Cache-Control": "public, max-age=300"])) {
-                try OAuthDiscovery.openIDConfiguration(serverURL: services.emailAccounts.serverURL)
+                try OAuthDiscovery.openIDConfiguration(serverURL: oauthFlows.deploymentConfiguration.serverURL)
             }
         }
         oidc.get(".well-known", "openid-configuration") { request async throws -> Response in
@@ -157,7 +157,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
             case .resolved:
                 return try await respond(headers: .standard(extra: ["Cache-Control": "public, max-age=300"])) {
                     try OAuthDiscovery.openIDConfiguration(
-                        serverURL: services.emailAccounts.serverURL,
+                        serverURL: oauthFlows.deploymentConfiguration.serverURL,
                         serverScope: segment
                     )
                 }
@@ -171,7 +171,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
             case .resolved:
                 return try await respond(headers: .standard(extra: ["Cache-Control": "public, max-age=300"])) {
                     try OAuthDiscovery.openIDConfiguration(
-                        serverURL: services.emailAccounts.serverURL,
+                        serverURL: oauthFlows.deploymentConfiguration.serverURL,
                         serverScope: segment
                     )
                 }
@@ -185,7 +185,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
                 return try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
                     try services.emailAccounts.oauth.agentDirectory(
                         authorization: request.headers[.authorization],
-                        baseURL: services.emailAccounts.serverURL,
+                        baseURL: oauthFlows.deploymentConfiguration.serverURL,
                         scopeServerId: scope
                     )
                 }
@@ -209,7 +209,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
                 return try await respond {
                     try services.emailAccounts.oauth.userinfo(
                         authorization: request.headers[.authorization],
-                        baseURL: services.emailAccounts.serverURL,
+                        baseURL: oauthFlows.deploymentConfiguration.serverURL,
                         scopeServerId: scope
                     )
                 }
@@ -223,7 +223,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
                 return try await respond {
                     try services.emailAccounts.oauth.serverinfo(
                         authorization: request.headers[.authorization],
-                        baseURL: services.emailAccounts.serverURL,
+                        baseURL: oauthFlows.deploymentConfiguration.serverURL,
                         scopeServerId: scope
                     )
                 }
@@ -237,7 +237,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
                 return try await respond(status: { $0.status }, headers: { $0.headers }) {
                     try services.emailAccounts.oauth.browserAuthorize(
                         query: request.url.query ?? "",
-                        appURL: services.emailAccounts.appURL,
+                        appURL: oauthFlows.deploymentConfiguration.appURL,
                         serverScope: request.parameters.get("server")
                     )
                 }
@@ -249,7 +249,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
             case .failure(let error):
                 return try await respond { () throws -> NoContentResponse in throw error }
             case .resolved(let scope):
-                let origin = OAuthDiscovery.issuerOrigin(services.emailAccounts.serverURL) ?? ""
+                let origin = OAuthDiscovery.issuerOrigin(oauthFlows.deploymentConfiguration.serverURL) ?? ""
                 let body = try await request.bodyText()
                 return try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
                     try services.emailAccounts.oauth.exchangeToken(

@@ -1,3 +1,4 @@
+import TestSupport
 import Foundation
 import HTTPTypes
 import RaftHTTP
@@ -42,7 +43,7 @@ private func contendOAuth(_ client: any Client, path: String, body: String) asyn
 @Test(arguments: [false, true])
 func oauthStateCodeConsumptionHasOneWinnerUnderContention(oidc: Bool) async throws {
     let accounts = EmailLoginDirectory()
-    accounts.serverURL = "https://api.raft.test"
+    accounts.configureOAuthForTesting { $0.serverURL = "https://api.raft.test" }
     let serverId = UUID().uuidString.lowercased()
     let ownerId = UUID().uuidString.lowercased()
     accounts.oauth.addOwnedServer(id: serverId, slug: "state-code", name: "Code", ownerId: ownerId)

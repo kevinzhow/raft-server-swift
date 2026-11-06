@@ -23,7 +23,7 @@ private func auditJSON(_ response: ClientResponse) -> [String: Any] {
 
 @Test func loggedOutDeviceIssuedTokenCannotCreateAFreshSession() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.appURL = "http://127.0.0.1:4173"
+    accounts.configureOAuthForTesting { $0.appURL = "http://127.0.0.1:4173" }
     let ownerId = "11111111-1111-4111-8111-111111111656"
     accounts.addAccount(id: ownerId, email: "audit-device@slock.test", password: "password123")
     try await withApp { app in

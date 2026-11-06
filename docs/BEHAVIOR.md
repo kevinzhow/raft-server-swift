@@ -2110,3 +2110,12 @@ RFC 074 personal assistant：
 ### Relay 安装与重入
 
 - provider/emitter slot 的一次读取或替换由所属 Store Mutex 保护，实际 provider 调用和广播在锁外。Provider 在处理首请求时卸载自己，首请求仍按已取得的 provider 完成，后续请求走原 unavailable 错误；emitter 自卸载后，第二条成功写入的消息不广播，重装后恢复原 `message:new` 真实 socket 帧。此项不改变缺省 provider/error 映射、房间名称或消息正文。
+
+### 消息提交、mention 与配置边界
+
+- Human、agent、attachment-comment 与系统/app notice 使用同一序号分配及 mirror 提交。96 路混合 HTTP 写入后，真实 resume 与 agent history 的消息 id/seq 一致，不再丢 comment 或留下只在一侧出现的序列。
+- Human replay 先核对 sender/randomId、channel 与有序附件集；重放不重绑、不广播，跨 channel 仍 409，附件 replay/重复/不可用/已链接仍返回原 400 正文。32 路 human 或 agent 争同一附件时只有一条成功，失败者不新增消息、mention 或广播；human 成功仍一帧，agent 保留原本不广播 `message:new` 的行为。
+- 两个同时提交的 role notice 复用同一个 DM；projection 和 agent/human membership 准备完毕后才追加。系统 notice 的 born-read/version 与本条 seq 同提交。官方 app reminder 也只分配一次 seq，保留 `agent.reminder_due` subtype、原 causal 字段省略和 agent unread 语义；普通四条消息后 reminder 在 local/history 均为 seq 5。
+- 同 message/target 的并发重复 mention batch 只留下一个可通知行，`mentionTarget=self` 实际搜索可读回；资格、个人 mention 与频道可见性判断保持原规则。
+- Legacy profile read 仍只按旧 read-scope predicate 返回，revoked credential 的 use recorder 仍拒绝盖戳；live credential 入口保留拒绝撤销凭证。Unsubscribe 的 opt-out 先可见、cancel 回调锁外且可重入，之后重新匹配仍 scheduled 的 journey；HTML、签名、locale 与状态字节不变。
+- Auth/OAuth/native/mobile-email 的 typed 部署配置按操作取得活的 owner cohort；并发整值替换不混出不同版本字段。Root 字段代理与全局锁删除后，旧 HTTP/帧、验证顺序、task full/summary 字节以及 callback 热替换合同继续成立。

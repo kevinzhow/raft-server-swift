@@ -24,10 +24,7 @@ public func makeActionCardMarketplaceService(
         locator: FeedbackLocatorService(directory: directory),
         idempotency: idempotency,
         appendHumanMessage: { message in
-            directory.lock.lock()
-            let seq = directory.appendHumanMessageLocked(message)
-            directory.lock.unlock()
-            return seq
+            directory.messagesAndThreadsStore.appendMessage(message, ledger: .init(oauth: directory.oauth))
         },
         serializeReceipt: { payload in
             guard case .object = payload else { return "{}" }

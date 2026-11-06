@@ -50,8 +50,8 @@ public struct NativeNotificationsService: Sendable {
         let config = settings.state
         let attestation = Self.attestationState(
             body: body,
-            mode: config.nativeNotificationAttestationMode,
-            nodeEnv: config.nativeNotificationNodeEnv,
+            mode: config.nativeDeployment.attestationMode,
+            nodeEnv: config.nativeDeployment.nodeEnv,
             verifier: config.nativeNotificationAttestationVerifier
         )
         if attestation == "rejected" { throw NativeNotificationsError.desktopAttestationRequired }
@@ -407,5 +407,32 @@ extension JSONScalarValue {
         case .number(let value): value >= 1 && value < 2
         case .null, .string, .other: false
         }
+    }
+}
+
+extension NativeNotificationsService {
+    public struct DeploymentConfiguration: Sendable, Equatable {
+        public var enabled: Bool
+        public var streamPollMs: Int
+        public var attestationMode: String?
+        public var nodeEnv: String
+
+        public init(
+            enabled: Bool = false,
+            streamPollMs: Int = 1000,
+            attestationMode: String? = nil,
+            nodeEnv: String = "development"
+        ) {
+            self.enabled = enabled
+            self.streamPollMs = streamPollMs
+            self.attestationMode = attestationMode
+            self.nodeEnv = nodeEnv
+        }
+    }
+
+    public var deploymentConfiguration: DeploymentConfiguration { settings.nativeDeploymentConfiguration }
+
+    public func configureDeployment(_ configuration: DeploymentConfiguration) {
+        settings.setNativeDeployment(configuration)
     }
 }

@@ -23,7 +23,7 @@ private struct AgentJWTFixture {
 
 private func makeAgentJWTFixture(suffix: String) throws -> AgentJWTFixture {
     let accounts = EmailLoginDirectory()
-    accounts.serverURL = "https://raft.example.test"
+    accounts.configureOAuthForTesting { $0.serverURL = "https://raft.example.test" }
     let number = Int(suffix) ?? 0
     let serverId = String(format: "33333333-3333-4333-8333-%012d", 120_000 + number)
     let foreignId = String(format: "33333333-3333-4333-8333-%012d", 130_000 + number)

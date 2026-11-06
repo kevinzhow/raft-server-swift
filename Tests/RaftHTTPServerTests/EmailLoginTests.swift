@@ -1,3 +1,4 @@
+import TestSupport
 import Foundation
 import HTTPTypes
 import RaftHTTP
@@ -363,7 +364,7 @@ private func registerJSON(
 
 @Test func stagingSelfAccountRetirementIsOwnerBoundAndIdempotent() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.releaseBranch = "staging"
+    accounts.configureAuthCoreForTesting { $0.releaseBranch = "staging" }
     let otherId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2"
     accounts.addAccount(id: otherId, email: "retire-other@mail.build", password: "password123")
     accounts.markEmailVerified(userId: otherId)
@@ -1111,11 +1112,11 @@ private func refreshBound(
     let returnUri = "http://127.0.0.1:49152/auth/done#state=\(desktopState)"
     let verifier = "mobile-login-verifier-0123456789"
     let challenge = "BMiEvmoBGmnhU8L_jWsCA7aj93_oMgdoPJeSV44gETs"
-    accounts.mobileProviderProfile = MobileProviderProfile(
+    accounts.configureAuthSimulationForTesting { $0.mobileProviderProfile = MobileProviderProfile(
         providerUserId: "google-mobile-user",
         email: "mobile-login@slock.test",
         displayName: "Mobile Login"
-    )
+    ) }
     try await withApp { app in
         configure(app, services: FallbackServices(
             nodeEnv: "test",
@@ -1191,11 +1192,11 @@ private func refreshBound(
     let accounts = EmailLoginDirectory()
     let verifier = "mobile-legal-retry-verifier-123456789"
     let challenge = "viYOYKFe73Jfjd-lIqh-6exlc2DFxMKVZ3DSeezDDvE"
-    accounts.mobileProviderProfile = MobileProviderProfile(
+    accounts.configureAuthSimulationForTesting { $0.mobileProviderProfile = MobileProviderProfile(
         providerUserId: "google-mobile-legal-retry-user",
         email: "mobile-legal-retry@slock.test",
         displayName: "Mobile Legal Retry"
-    )
+    ) }
     try await withApp { app in
         configure(app, services: FallbackServices(
             nodeEnv: "test",
@@ -1264,11 +1265,11 @@ private func refreshBound(
     let accounts = EmailLoginDirectory()
     let verifier = "mobile-github-verifier-0123456789"
     let challenge = "KeTxTublYElkrWm49I19Vug4vLodnrsob_5iOTahN1E"
-    accounts.mobileProviderProfile = MobileProviderProfile(
+    accounts.configureAuthSimulationForTesting { $0.mobileProviderProfile = MobileProviderProfile(
         providerUserId: "98765",
         email: "mobile-github@slock.test",
         displayName: "GitHub Mobile"
-    )
+    ) }
     try await withApp { app in
         configure(app, services: FallbackServices(
             nodeEnv: "test",
@@ -1355,7 +1356,7 @@ private func refreshBound(
 
 @Test func mobileOAuthStartFallsBackToLegacyAllowedReturnURIs() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.mobileOAuthAllowedReturnURIs = "raft-legacy://oauth/callback"
+    accounts.configureOAuthForTesting { $0.mobileOAuthAllowedReturnURIs = "raft-legacy://oauth/callback" }
     try await withApp { app in
         configure(app, services: FallbackServices(
             nodeEnv: "test",
@@ -1516,11 +1517,11 @@ private func refreshBound(
 
 @Test func mobileOAuthCompleteRejectsAnExpiredHandoffCode() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.mobileProviderProfile = MobileProviderProfile(
+    accounts.configureAuthSimulationForTesting { $0.mobileProviderProfile = MobileProviderProfile(
         providerUserId: "google-expired-user",
         email: "mobile-expired@slock.test",
         displayName: nil
-    )
+    ) }
     let verifier = "mobile-expired-verifier-123456789"
     let challenge = "tyoDKplpRXmNygAOoca3G-1C_aiyWZI4zVOsAKtGJYc"
     try await withApp { app in
@@ -1566,11 +1567,11 @@ private func refreshBound(
 
 @Test func mobileOAuthCompleteRejectsAPKCEMismatchWithoutASession() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.mobileProviderProfile = MobileProviderProfile(
+    accounts.configureAuthSimulationForTesting { $0.mobileProviderProfile = MobileProviderProfile(
         providerUserId: "google-pkce-user",
         email: "mobile-pkce@slock.test",
         displayName: nil
-    )
+    ) }
     let challenge = "Q1VLNyMseH2O2jx7a8w2tjzHSz7ks8mqmAddCAiCnRs"
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -1618,11 +1619,11 @@ private func refreshBound(
     let otherId = "22222222-2222-4222-8222-222222222222"
     accounts.addAccount(id: ownerId, email: "mobile-link-owner@slock.test", password: "password123")
     accounts.addAccount(id: otherId, email: "mobile-link-other@slock.test", password: "password123")
-    accounts.mobileProviderProfile = MobileProviderProfile(
+    accounts.configureAuthSimulationForTesting { $0.mobileProviderProfile = MobileProviderProfile(
         providerUserId: "google-link-user",
         email: "mobile-link-social@slock.test",
         displayName: nil
-    )
+    ) }
     let verifier = "mobile-link-verifier-123456789"
     let challenge = "iIBndehIqxMFMi6jj42QoGrh1vEHL8KrfaqF14grjKI"
     try await withApp { app in
@@ -1709,11 +1710,11 @@ private func refreshBound(
     let accounts = EmailLoginDirectory()
     let ownerId = "33333333-3333-4333-8333-333333333333"
     accounts.addAccount(id: ownerId, email: "mobile-link-mode-owner@slock.test", password: "password123")
-    accounts.mobileProviderProfile = MobileProviderProfile(
+    accounts.configureAuthSimulationForTesting { $0.mobileProviderProfile = MobileProviderProfile(
         providerUserId: "google-login-mode-user",
         email: "mobile-link-login-mode@slock.test",
         displayName: nil
-    )
+    ) }
     let verifier = "mobile-link-mode-verifier-123456789"
     let challenge = "mNM0WD-kylnNMf59CwY1Ws6_5vwBLe4NWm_SVk19CnI"
     try await withApp { app in
@@ -1870,7 +1871,7 @@ private func refreshBound(
 
 @Test func authProvidersFollowTheApplePlatformGate() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.configuredSocialAuthProviders = ["google", "github", "apple"]
+    accounts.configureOAuthForTesting { $0.configuredSocialAuthProviders = ["google", "github", "apple"] }
     try await withApp { app in
         configure(app, services: FallbackServices(
             nodeEnv: "test",
@@ -1916,9 +1917,9 @@ private func refreshBound(
 
 @Test func appleWebLoginStaysClosedUntilTheWebGateThenStartsFormPost() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.configuredSocialAuthProviders = ["apple"]
-    accounts.appleClientId = "apple-client-id"
-    accounts.serverURL = "https://api.example.test"
+    accounts.configureOAuthForTesting { $0.configuredSocialAuthProviders = ["apple"] }
+    accounts.configureOAuthForTesting { $0.appleClientId = "apple-client-id" }
+    accounts.configureOAuthForTesting { $0.serverURL = "https://api.example.test" }
     accounts.addAccount(id: "77777777-7777-4777-8777-777777777777", email: "apple-link-owner@slock.test", password: "password123")
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -2008,14 +2009,14 @@ private func refreshBound(
     let accounts = EmailLoginDirectory()
     let ownerId = "88888888-8888-4888-8888-888888888888"
     let otherId = "99999999-9999-4999-8999-999999999999"
-    accounts.configuredSocialAuthProviders = ["apple"]
-    accounts.appleClientId = "apple-client-id"
+    accounts.configureOAuthForTesting { $0.configuredSocialAuthProviders = ["apple"] }
+    accounts.configureOAuthForTesting { $0.appleClientId = "apple-client-id" }
     accounts.allowAppleLogin(on: ["web"])
-    accounts.webProviderProfile = MobileProviderProfile(
+    accounts.configureAuthSimulationForTesting { $0.webProviderProfile = MobileProviderProfile(
         providerUserId: "apple-route-link-sub",
         email: "apple-route-link-social@slock.test",
         displayName: nil
-    )
+    ) }
     accounts.addAccount(id: ownerId, email: "apple-link-owner-binding@slock.test", password: "password123")
     accounts.addAccount(id: otherId, email: "apple-link-other-binding@slock.test", password: "password123")
     try await withApp { app in
@@ -2106,10 +2107,10 @@ private func refreshBound(
 @Test func unverifiedAppleEmailCannotPersistThroughWebOrMobileLink() async throws {
     let accounts = EmailLoginDirectory()
     let ownerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-    accounts.configuredSocialAuthProviders = ["apple"]
-    accounts.appleClientId = "apple-client-id"
+    accounts.configureOAuthForTesting { $0.configuredSocialAuthProviders = ["apple"] }
+    accounts.configureOAuthForTesting { $0.appleClientId = "apple-client-id" }
     accounts.allowAppleLogin(on: ["web", "mobile"])
-    accounts.mobileOAuthReturnURI = "raft-debug://oauth/callback"
+    accounts.configureOAuthForTesting { $0.mobileOAuthReturnURI = "raft-debug://oauth/callback" }
     accounts.addAccount(id: ownerId, email: "apple-unverified-owner@slock.test", password: "password123")
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -2131,12 +2132,12 @@ private func refreshBound(
             #expect(webStart.status == .ok)
             let webURL = ((try JSONSerialization.jsonObject(with: Data(bodyText(webStart).utf8)) as? [String: Any])?["url"] as? String) ?? ""
             let webState = URLComponents(string: webURL)?.queryItems?.first { $0.name == "state" }?.value ?? ""
-            accounts.webProviderProfile = MobileProviderProfile(
+            accounts.configureAuthSimulationForTesting { $0.webProviderProfile = MobileProviderProfile(
                 providerUserId: "apple-web-unverified-sub",
                 email: "apple-unverified-owner@slock.test",
                 displayName: nil,
                 emailVerified: false
-            )
+            ) }
             let encodedWebState = webState.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(.init(charactersIn: "-_."))) ?? webState
             var webHeaders = HTTPFields()
             webHeaders[.contentType] = "application/x-www-form-urlencoded"
@@ -2159,12 +2160,12 @@ private func refreshBound(
             let mobileBody = try JSONSerialization.jsonObject(with: Data(bodyText(mobileStart).utf8)) as? [String: Any]
             let requestId = mobileBody?["requestId"] as? String ?? ""
             let mobileState = URLComponents(string: mobileBody?["authorizationUrl"] as? String ?? "")?.queryItems?.first { $0.name == "state" }?.value ?? ""
-            accounts.mobileProviderProfile = MobileProviderProfile(
+            accounts.configureAuthSimulationForTesting { $0.mobileProviderProfile = MobileProviderProfile(
                 providerUserId: "apple-mobile-unverified-sub",
                 email: "apple-unverified-owner@slock.test",
                 displayName: nil,
                 emailVerified: false
-            )
+            ) }
             let encodedMobileState = mobileState.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(.init(charactersIn: "-_."))) ?? mobileState
             var mobileHeaders = HTTPFields()
             mobileHeaders[.contentType] = "application/x-www-form-urlencoded"
@@ -2247,14 +2248,14 @@ private final class ExchangeCounter: @unchecked Sendable {
 @Test func nativeAppleIOSLoginVerifiesBothCredentialsAndPreservesTheLegalHandoff() async throws {
     let accounts = EmailLoginDirectory()
     let secret = "native-apple-request-capability-secret"
-    accounts.nativeAppleClientId = "build.raft.app"
-    accounts.nativeAppleClientSecret = "native-apple-client-secret"
-    accounts.nativeAppleStateSecret = secret
+    accounts.configureOAuthForTesting { $0.nativeAppleClientId = "build.raft.app" }
+    accounts.configureOAuthForTesting { $0.nativeAppleClientSecret = "native-apple-client-secret" }
+    accounts.configureOAuthForTesting { $0.nativeAppleStateSecret = secret }
     let exchanges = NativeAppleExchanges()
-    accounts.exchangeNativeAppleCode = { request async in
+    accounts.configureAuthSimulationForTesting { $0.exchangeNativeAppleCode = { request async in
         exchanges.calls.append(request)
         return exchanges.tokens[request.code]
-    }
+    } }
     let loginChallenge = "CbJjXWCZjxcTYirPVH_43kssx7RobpovoAuVwmxXZkY"
     let verifier = "native-apple-login-verifier-0123456789abcdef"
     try await withApp { app in
@@ -2273,7 +2274,7 @@ private final class ExchangeCounter: @unchecked Sendable {
             #expect(beforeGate.status == .notFound)
 
             accounts.allowAppleLogin(on: ["mobile"])
-            accounts.nativeAppleClientSecret = ""
+            accounts.configureOAuthForTesting { $0.nativeAppleClientSecret = "" }
             let withoutSecret = try await postJSON(
                 client,
                 "/api/auth/mobile/oauth/apple/native/start",
@@ -2281,7 +2282,7 @@ private final class ExchangeCounter: @unchecked Sendable {
             )
             #expect(withoutSecret.status == .notFound)
 
-            accounts.nativeAppleClientSecret = "native-apple-client-secret"
+            accounts.configureOAuthForTesting { $0.nativeAppleClientSecret = "native-apple-client-secret" }
             let wrongPlatform = try await postJSON(
                 client,
                 "/api/auth/mobile/oauth/apple/native/start",
@@ -2544,18 +2545,18 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
 
 @Test func nativeAppleAuthorizeClaimsTheRowBeforeTheCodeExchange() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.nativeAppleClientId = "build.raft.app"
-    accounts.nativeAppleClientSecret = "native-apple-client-secret"
-    accounts.nativeAppleStateSecret = "native-apple-request-capability-secret"
+    accounts.configureOAuthForTesting { $0.nativeAppleClientId = "build.raft.app" }
+    accounts.configureOAuthForTesting { $0.nativeAppleClientSecret = "native-apple-client-secret" }
+    accounts.configureOAuthForTesting { $0.nativeAppleStateSecret = "native-apple-request-capability-secret" }
     accounts.allowAppleLogin(on: ["mobile"])
     let barrier = NativeAppleAuthorizeBarrier()
     let challenge = "rp1L600Z3zab7r8wRCcv3BMaph53yjpVOpX3oK0PafQ"
     let subject = "native-apple-concurrent-subject"
     let email = "native-apple-concurrent@slock.test"
-    accounts.exchangeNativeAppleCode = { _ in
+    accounts.configureAuthSimulationForTesting { $0.exchangeNativeAppleCode = { _ in
         await barrier.enterExchange()
         return appleIdentityToken(subject: subject, nonce: challenge, email: email, emailVerified: true)
-    }
+    } }
     try await withApp { app in
         configure(app, services: FallbackServices(
             nodeEnv: "test",
@@ -2612,15 +2613,15 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
 
 @Test func nativeAppleAuthorizeExpiresFromTheRowWhileTheRequestTokenIsStillValid() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.nativeAppleClientId = "build.raft.app"
-    accounts.nativeAppleClientSecret = "native-apple-client-secret"
-    accounts.nativeAppleStateSecret = "native-apple-request-capability-secret"
+    accounts.configureOAuthForTesting { $0.nativeAppleClientId = "build.raft.app" }
+    accounts.configureOAuthForTesting { $0.nativeAppleClientSecret = "native-apple-client-secret" }
+    accounts.configureOAuthForTesting { $0.nativeAppleStateSecret = "native-apple-request-capability-secret" }
     accounts.allowAppleLogin(on: ["mobile"])
     let exchanges = ExchangeCounter()
-    accounts.exchangeNativeAppleCode = { _ in
+    accounts.configureAuthSimulationForTesting { $0.exchangeNativeAppleCode = { _ in
         exchanges.record()
         return "must-not-be-verified"
-    }
+    } }
     let challenge = "gRdfxIrs8i_xC4ieRa105lwST9s0QctbbsE05_peuEM"
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -2670,9 +2671,9 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
 
 @Test func nativeAppleLinkIsOwnerBoundAndLaterLoginReusesTheVerifiedStoredEmail() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.nativeAppleClientId = "build.raft.app"
-    accounts.nativeAppleClientSecret = "native-apple-client-secret"
-    accounts.nativeAppleStateSecret = "native-apple-request-capability-secret"
+    accounts.configureOAuthForTesting { $0.nativeAppleClientId = "build.raft.app" }
+    accounts.configureOAuthForTesting { $0.nativeAppleClientSecret = "native-apple-client-secret" }
+    accounts.configureOAuthForTesting { $0.nativeAppleStateSecret = "native-apple-request-capability-secret" }
     accounts.allowAppleLogin(on: ["mobile"])
     let ownerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"
     let otherId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2"
@@ -2680,10 +2681,10 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
     accounts.addAccount(id: ownerId, email: ownerEmail, password: "password123")
     accounts.addAccount(id: otherId, email: "native-apple-link-other@slock.test", password: "password123")
     let exchanges = NativeAppleExchanges()
-    accounts.exchangeNativeAppleCode = { request in
+    accounts.configureAuthSimulationForTesting { $0.exchangeNativeAppleCode = { request in
         exchanges.calls.append(request)
         return exchanges.tokens[request.code]
-    }
+    } }
     let subject = "native-apple-linked-subject"
     let ownerChallenge = "J5nSViUq2sYrA9SexY8TxhLDREfA0vgW3cyst8anku8"
     let laterChallenge = "_oFr4fp0yg5ADmKHtzHzNIEEWLWUlmB1yAlENXEVZLk"
@@ -2843,15 +2844,15 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
 
 @Test func nativeAppleAuthorizeFailsTerminallyWhenIdentityClaimsDisagree() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.nativeAppleClientId = "build.raft.app"
-    accounts.nativeAppleClientSecret = "native-apple-client-secret"
-    accounts.nativeAppleStateSecret = "native-apple-request-capability-secret"
+    accounts.configureOAuthForTesting { $0.nativeAppleClientId = "build.raft.app" }
+    accounts.configureOAuthForTesting { $0.nativeAppleClientSecret = "native-apple-client-secret" }
+    accounts.configureOAuthForTesting { $0.nativeAppleStateSecret = "native-apple-request-capability-secret" }
     accounts.allowAppleLogin(on: ["mobile"])
     let exchanges = NativeAppleExchanges()
-    accounts.exchangeNativeAppleCode = { request in
+    accounts.configureAuthSimulationForTesting { $0.exchangeNativeAppleCode = { request in
         exchanges.calls.append(request)
         return exchanges.tokens[request.code]
-    }
+    } }
     let cases: [(name: String, challenge: String, supplied: (String) -> String, exchanged: (String) -> String)] = [
         (
             "nonce",

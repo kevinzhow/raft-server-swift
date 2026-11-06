@@ -231,19 +231,17 @@ private let rtActionMessage = "66666666-6666-4666-8666-666666180013"
 /// the random record id can be normalized out of the bytes.
 private func seedRichEvents(_ fixture: RealtimeFixture) throws -> String {
     let accounts = fixture.accounts
-    accounts.lock.lock()
-    _ = accounts.appendHumanMessageLocked(StoredHumanMessage(
+    _ = accounts.messagesAndThreadsStore.appendMessage(StoredHumanMessage(
         id: rtExternal, channelId: rtChannel, senderId: "external-projection-1", content: "hello <result> @owner",
         messageType: "chat", senderType: "external_projection",
         createdAt: Date(timeIntervalSince1970: 1_700_000_400),
         externalMessageId: "1722387723.000100", externalProvider: "slack", externalSenderName: "Alice External"
-    ))
-    _ = accounts.appendHumanMessageLocked(StoredHumanMessage(
+    ), ledger: .init(oauth: accounts.oauth))
+    _ = accounts.messagesAndThreadsStore.appendMessage(StoredHumanMessage(
         id: rtSystem, channelId: rtSecond, senderId: "system", content: "system \"notice\"",
         messageType: "system", senderType: "system",
         createdAt: Date(timeIntervalSince1970: 1_700_000_500)
-    ))
-    accounts.lock.unlock()
+    ), ledger: .init(oauth: accounts.oauth))
     accounts.managedMCPAndCardsStore.appendPendingActionMessageEvent(
         agentId: fixture.agentId, messageId: rtActionMessage, content: "action \"reply\""
     )
@@ -291,9 +289,9 @@ private func seedRichEvents(_ fixture: RealtimeFixture) throws -> String {
 }
 
 private func markThreadDeleted(_ accounts: EmailLoginDirectory) {
-    accounts.lock.lock()
-    accounts.postableChannels[rtThread]?.deletedAt = Date()
-    accounts.lock.unlock()
+    accounts.serversAndChannelsStore.mutex.withLock { state in
+        state.postableChannels[rtThread]?.deletedAt = Date()
+    }
 }
 
 @Test func reactionsRealtimeDeletedThreadDoneKeepsOwnedReadCursor() async throws {

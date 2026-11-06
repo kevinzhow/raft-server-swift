@@ -9,35 +9,35 @@ extension EmailLoginDirectory {
     /// `SLOCK_EXPERIMENTAL_SURFACES_DISABLED=true` disables them; tests may
     /// override without touching the process environment.
     public func setExperimentalSurfacesDisabledForTesting(_ value: Bool?) {
-        lock.lock()
-        experimentalSurfacesDisabledOverride = value
-        lock.unlock()
+        authProfileStore.state.withLock { owned in
+            owned.accountSurface.experimentalSurfacesDisabledOverride = value
+        }
     }
 
     public func setAccountProfileForTesting(id: String, name: String, displayName: String? = nil) {
-        lock.lock()
-        if let key = accounts.first(where: { $0.value.id == id })?.key,
-           var account = accounts[key] {
-            account.name = name
-            account.displayName = displayName ?? name
-            accounts[key] = account
+        authProfileStore.state.withLock { owned in
+            if let key = owned.accountSurface.accounts.first(where: { $0.value.id == id })?.key,
+               var account = owned.accountSurface.accounts[key] {
+                account.name = name
+                account.displayName = displayName ?? name
+                owned.accountSurface.accounts[key] = account
+            }
         }
-        lock.unlock()
     }
 
     public func socialCompletionUserIdForTesting(provider: String, code: String) -> String?? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let completion = socialCompletions.first(where: { $0.provider == provider && $0.code == code }) else {
-            return nil
+        return authProfileStore.state.withLock { owned in
+            guard let completion = owned.accountSurface.socialCompletions.first(where: { $0.provider == provider && $0.code == code }) else {
+                return nil
+            }
+            return .some(completion.userId)
         }
-        return .some(completion.userId)
     }
 
     public func setAgentAttachmentPresignForTesting(_ handler: (@Sendable (String, Int, String, String) throws -> String)?) {
-        lock.lock()
-        agentAttachmentPresign = handler
-        lock.unlock()
+        agentsRuntimeStore.withState { state in
+            state.agentAttachmentPresign = handler
+        }
     }
 
     public func addAgentAttachmentForTesting(
@@ -50,44 +50,44 @@ extension EmailLoginDirectory {
         storageKey: String? = nil,
         bytes: Data
     ) {
-        lock.lock()
-        channelAttachments[id] = ChannelAttachment(
-            id: id,
-            channelId: channelId,
-            uploaderId: uploaderId,
-            filename: filename,
-            messageId: nil,
-            messagePosition: nil,
-            mimeType: mimeType,
-            sizeBytes: sizeBytes,
-            storageKey: storageKey
-        )
-        agentAttachmentBytes[id] = bytes
-        lock.unlock()
+        messagesAndThreadsStore.withState { state in
+            state.channelAttachments[id] = ChannelAttachment(
+                id: id,
+                channelId: channelId,
+                uploaderId: uploaderId,
+                filename: filename,
+                messageId: nil,
+                messagePosition: nil,
+                mimeType: mimeType,
+                sizeBytes: sizeBytes,
+                storageKey: storageKey
+            )
+        }
+        agentsRuntimeStore.storeAgentAttachmentBytes(id: id, bytes: bytes)
     }
 
     public func setAgentAudienceStatusForTesting(agentId: String, status: String) {
-        lock.lock()
-        agentAudienceStatusOverrides[agentId] = status
-        lock.unlock()
+        managedMCPAndCardsStore.storage.withLock { owned in
+            owned.agentAudienceStatusOverrides[agentId] = status
+        }
     }
 
     public func revokeAgentIntegrationGrantForTesting(agentId: String, clientKey: String) {
-        lock.lock()
-        agentIntegrationGrants["\(agentId)\n\(clientKey)"] = true
-        lock.unlock()
+        managedMCPAndCardsStore.storage.withLock { owned in
+            owned.agentIntegrationGrants["\(agentId)\n\(clientKey)"] = true
+        }
     }
 
     public func restoreAgentIntegrationGrantForTesting(agentId: String, clientKey: String) {
-        lock.lock()
-        agentIntegrationGrants["\(agentId)\n\(clientKey)"] = false
-        lock.unlock()
+        managedMCPAndCardsStore.storage.withLock { owned in
+            owned.agentIntegrationGrants["\(agentId)\n\(clientKey)"] = false
+        }
     }
 
     public func revokeAgentCredentialForTesting(apiKey: String) {
-        lock.lock()
-        agentCredentials[apiKey]?.revokedAt = Date()
-        lock.unlock()
+        agentsRuntimeStore.withState { owned in
+            owned.agentCredentials[apiKey]?.revokedAt = Date()
+        }
     }
 }
 
@@ -141,15 +141,15 @@ extension EmailLoginDirectory {
 
     /// Marks every session family for this user revoked. A later enrollment exchange must fail closed.
     public func revokeSessionFamilies(userId: String) {
-        lock.lock()
-        let now = Date()
-        for key in sessionFamilies.keys where sessionFamilies[key]?.userId == userId {
-            if sessionFamilies[key]?.revokedAt == nil {
-                sessionFamilies[key]?.revokedAt = now
+        authProfileStore.state.withLock { owned in
+            let now = Date()
+            for key in owned.accountSurface.sessionFamilies.keys where owned.accountSurface.sessionFamilies[key]?.userId == userId {
+                if owned.accountSurface.sessionFamilies[key]?.revokedAt == nil {
+                    owned.accountSurface.sessionFamilies[key]?.revokedAt = now
+                }
+                owned.accountSurface.revokedFamilies.insert(key)
             }
-            revokedFamilies.insert(key)
         }
-        lock.unlock()
     }
 
     // MARK: - Mobile-app lifecycle mail
@@ -159,63 +159,63 @@ extension EmailLoginDirectory {
         let canonical = MobileAppEmailUnsubscribe.mobileAppUnsubscribeLocale(locale)
         let claims = "{\"v\":1,\"typ\":\"mobile-app-email-unsubscribe\",\"sub\":\(jsonString(userId)),\"locale\":\(jsonString(canonical))}"
         let payload = AuthTokenCodec.base64url(Data(claims.utf8))
-        let signature = MobileAppEmailUnsubscribe.mobileAppUnsubscribeSignature(payload: payload, secret: mobileAppEmailUnsubscribeSecret)
+        let signature = MobileAppEmailUnsubscribe.mobileAppUnsubscribeSignature(payload: payload, secret: MobileAppEmailUnsubscribe(directory: self).deploymentConfiguration.secret)
         return "\(payload).\(signature)"
     }
 
     /// A scheduled mobile-app lifecycle email. Unsubscribe cancels `day1Status` of `scheduled`.
     public func addMobileAppEmailJourney(userId: String, email: String, journeyKey: String, day1Status: String, day1EmailId: String?) {
-        lock.lock()
-        storedMobileAppEmailJourneys.append(MobileAppEmailJourney(
-            userId: userId,
-            email: AccountNaming.normalize(email),
-            journeyKey: journeyKey,
-            day1Status: day1Status,
-            day1EmailId: day1EmailId,
-            suppressedReason: nil,
-            canceledAt: nil
-        ))
-        lock.unlock()
+        authProfileStore.state.withLock { owned in
+            owned.profile.storedMobileAppEmailJourneys.append(MobileAppEmailJourney(
+                userId: userId,
+                email: AccountNaming.normalize(email),
+                journeyKey: journeyKey,
+                day1Status: day1Status,
+                day1EmailId: day1EmailId,
+                suppressedReason: nil,
+                canceledAt: nil
+            ))
+        }
     }
 
     public func mobileAppEmailJourneys() -> [MobileAppEmailJourney] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storedMobileAppEmailJourneys
+        return authProfileStore.state.withLock { owned in
+            return owned.profile.storedMobileAppEmailJourneys
+        }
     }
 
     /// Local opt-outs for the mobile-app lifecycle audience. The human page does not write one.
     public func mobileAppEmailContacts() -> [MobileAppEmailContact] {
-        lock.lock()
-        defer { lock.unlock() }
-        return mobileAppEmailContactsByKey.values.sorted { $0.email < $1.email }
+        return authProfileStore.state.withLock { owned in
+            return owned.profile.mobileAppEmailContactsByKey.values.sorted { $0.email < $1.email }
+        }
     }
 
     // MARK: - Accounts
 
     public func addAccount(id: String, email: String, password: String, avatarUrl: String? = nil, passwordCredentialEstablished: Bool = true) {
         let normalized = AccountNaming.normalize(email)
-        lock.lock()
-        accounts[normalized] = Account(
-            id: id,
-            email: normalized,
-            passwordHash: AuthTokenCodec.sha256(password),
-            passwordCredentialEstablishedAt: passwordCredentialEstablished ? Date() : nil,
-            displayLanguage: nil,
-            name: String(normalized.split(separator: "@").first ?? "user"),
-            profileSetupSuggestedHandle: nil,
-            profileSetupProvider: nil,
-            profileSetupCompletedAt: Date(),
-            avatarUrl: avatarUrl
-        )
-        analyticsIds[id] = UUID().uuidString.lowercased()
-        lock.unlock()
+        authProfileStore.state.withLock { owned in
+            owned.accountSurface.accounts[normalized] = Account(
+                id: id,
+                email: normalized,
+                passwordHash: AuthTokenCodec.sha256(password),
+                passwordCredentialEstablishedAt: passwordCredentialEstablished ? Date() : nil,
+                displayLanguage: nil,
+                name: String(normalized.split(separator: "@").first ?? "user"),
+                profileSetupSuggestedHandle: nil,
+                profileSetupProvider: nil,
+                profileSetupCompletedAt: Date(),
+                avatarUrl: avatarUrl
+            )
+            owned.accountSurface.analyticsIds[id] = UUID().uuidString.lowercased()
+        }
     }
 
     /// The product-analytics id for this user. Opting out removes it. Opting back in mints a new one.
     public func analyticsId(userId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return analyticsIds[userId]
+        return authProfileStore.state.withLock { owned in
+            return owned.accountSurface.analyticsIds[userId]
+        }
     }
 }

@@ -2,9 +2,13 @@ import Crypto
 import Foundation
 
 public struct MobileAppEmailUnsubscribe: Sendable {
-    let directory: EmailLoginDirectory
+    let profiles: AuthProfileStore
+    let notifications: NotificationsStore
 
-    public init(directory: EmailLoginDirectory) { self.directory = directory }
+    public init(directory: EmailLoginDirectory) {
+        profiles = directory.authProfileStore
+        notifications = directory.notificationsStore
+    }
 
     static func isMobileUnsubscribeUserId(_ value: String) -> Bool {
         value.wholeMatch(of: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.ignoresCase()) != nil
@@ -83,7 +87,7 @@ public struct MobileAppEmailUnsubscribe: Sendable {
         guard !token.isEmpty, token.count <= 512 else { return nil }
         let parts = token.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
         guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
-        let expected = MobileAppEmailUnsubscribe.mobileAppUnsubscribeSignature(payload: parts[0], secret: directory.mobileAppEmailUnsubscribeSecret)
+        let expected = MobileAppEmailUnsubscribe.mobileAppUnsubscribeSignature(payload: parts[0], secret: deploymentConfiguration.secret)
         guard parts[1] == expected else { return nil }
         guard let data = AuthTokenCodec.base64urlDecode(parts[0]),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -124,53 +128,12 @@ public struct MobileAppEmailUnsubscribe: Sendable {
     }
 
     func recordMobileAppEmailOptOut(userId: String) {
-        directory.lock.lock()
-        guard let account = directory.accounts.values.first(where: { $0.id == userId }) else {
-            directory.lock.unlock()
-            return
-        }
-        let email = AccountNaming.normalize(account.email)
-        guard !email.isEmpty else {
-            directory.lock.unlock()
-            return
-        }
-        let audienceId = "mobile-app-lifecycle"
-        directory.mobileAppEmailContactsByKey["\(audienceId)\n\(email)"] = MobileAppEmailContact(
-            userId: userId,
-            email: email,
-            audienceId: audienceId,
-            status: "unsubscribed",
-            optedOutAt: Date()
-        )
-        let emailIds = directory.storedMobileAppEmailJourneys.compactMap { row -> String? in
-            guard row.journeyKey == "first_computer_mobile_app_48h",
-                  row.day1Status == "scheduled",
-                  let emailId = row.day1EmailId,
-                  !emailId.isEmpty,
-                  row.userId == userId || AccountNaming.normalize(row.email) == email
-            else { return nil }
-            return emailId
-        }
-        let cancel = directory.cancelMobileAppEmail
-        directory.lock.unlock()
-        for emailId in emailIds {
+        guard let optOut = profiles.beginMobileEmailOptOut(userId: userId) else { return }
+        let cancel = notifications.cancelMobileAppEmail
+        for emailId in optOut.emailIds {
             cancel?(emailId)
         }
-        guard !emailIds.isEmpty else { return }
-        directory.lock.lock()
-        let canceledAt = Date()
-        for index in directory.storedMobileAppEmailJourneys.indices {
-            let row = directory.storedMobileAppEmailJourneys[index]
-            guard row.journeyKey == "first_computer_mobile_app_48h",
-                  row.day1Status == "scheduled",
-                  let emailId = row.day1EmailId,
-                  emailIds.contains(emailId),
-                  row.userId == userId || AccountNaming.normalize(row.email) == email
-            else { continue }
-            directory.storedMobileAppEmailJourneys[index].day1Status = "skipped"
-            directory.storedMobileAppEmailJourneys[index].suppressedReason = "unsubscribed"
-            directory.storedMobileAppEmailJourneys[index].canceledAt = canceledAt
-        }
-        directory.lock.unlock()
+        guard !optOut.emailIds.isEmpty else { return }
+        profiles.finishMobileEmailOptOut(optOut)
     }
 }

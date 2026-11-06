@@ -1,6 +1,6 @@
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
 import Testing
 import TestSupport
@@ -156,7 +156,7 @@ private func v1SourceURL(_ fixture: FormCatalogFixture, _ runtime: String, _ sou
         ],
         default: "b/two"
     )
-    fixture.accounts.machineRuntimeModelProbe = { _, runtime, force in
+    fixture.accounts.machinesAndComputersStore.machineRuntimeModelProbe = { _, runtime, force in
         recorder.calls.append((runtime, force))
         return recorder.probe
     }
@@ -247,7 +247,7 @@ private func v1SourceURL(_ fixture: FormCatalogFixture, _ runtime: String, _ sou
 @Test func codexAndGrokReportOptionSourceStatusAcrossProbeOutcomes() async throws {
     let fixture = makeFormCatalogFixture(suffix: "1203", runtimes: ["codex", "grok", "opencode"])
     let recorder = RuntimeProbeRecorder()
-    fixture.accounts.machineRuntimeModelProbe = { _, runtime, force in
+    fixture.accounts.machinesAndComputersStore.machineRuntimeModelProbe = { _, runtime, force in
         recorder.calls.append((runtime, force))
         return recorder.probe
     }
@@ -335,7 +335,7 @@ private func v1SourceURL(_ fixture: FormCatalogFixture, _ runtime: String, _ sou
 @Test func kimiSDKOffersTheManagedDefaultAndKeepsV1FailuresTyped() async throws {
     let fixture = makeFormCatalogFixture(suffix: "1204", runtimes: ["kimi-sdk"])
     let recorder = RuntimeProbeRecorder()
-    fixture.accounts.machineRuntimeModelProbe = { _, _, _ in recorder.probe }
+    fixture.accounts.machinesAndComputersStore.machineRuntimeModelProbe = { _, _, _ in recorder.probe }
     fixture.accounts.installMachineRoutedLocallyForTesting { _ in recorder.routedLocally }
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -435,7 +435,7 @@ private func v1SourceURL(_ fixture: FormCatalogFixture, _ runtime: String, _ sou
 @Test func builtinAndKimiV2SourcesReportStatusInsteadOfHardFailures() async throws {
     let fixture = makeFormCatalogFixture(suffix: "1205", runtimes: ["builtin", "kimi-sdk"])
     let recorder = RuntimeProbeRecorder()
-    fixture.accounts.machineRuntimeModelProbe = { _, _, _ in recorder.probe }
+    fixture.accounts.machinesAndComputersStore.machineRuntimeModelProbe = { _, _, _ in recorder.probe }
     fixture.accounts.installMachineRoutedLocallyForTesting { _ in recorder.routedLocally }
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -495,13 +495,13 @@ private func v1SourceURL(_ fixture: FormCatalogFixture, _ runtime: String, _ sou
             let provider = try formCatalogObject(try await client.get(URI(string: optionSourceURL(fixture, "builtin", "provider")), headers: headers))
             #expect(provider["status"] == nil)
 
-            fixture.accounts.builtinCatalogMode = "offline"
+            fixture.accounts.machinesAndComputersStore.builtinCatalogMode = "offline"
             let bundled = try formCatalogObject(try await client.get(URI(string: builtin), headers: headers))
             #expect(bundled["status"] as? String == "fallback")
             #expect(bundled["reason"] as? String == "machine_offline")
             #expect(((bundled["optionsByValue"] as? [String: Any])?["deepseek"] as? [[String: Any]] ?? []).isEmpty == false)
 
-            fixture.accounts.builtinCatalogMode = "timeout"
+            fixture.accounts.machinesAndComputersStore.builtinCatalogMode = "timeout"
             let timedOut = try await client.get(URI(string: builtin), headers: headers)
             #expect(timedOut.status == .ok)
             let timedOutBody = try formCatalogObject(timedOut)
@@ -510,12 +510,12 @@ private func v1SourceURL(_ fixture: FormCatalogFixture, _ runtime: String, _ sou
             #expect(timedOutBody["retryable"] as? Bool == true)
             #expect((timedOutBody["optionsByValue"] as? [String: Any])?.isEmpty == true)
 
-            fixture.accounts.builtinCatalogMode = "legacy"
+            fixture.accounts.machinesAndComputersStore.builtinCatalogMode = "legacy"
             let legacy = try await client.get(URI(string: builtin), headers: headers)
             #expect(legacy.status == .conflict)
             #expect(try formCatalogObject(legacy)["code"] as? String == "builtin_catalog_capability_required")
 
-            fixture.accounts.builtinCatalogMode = "timeout"
+            fixture.accounts.machinesAndComputersStore.builtinCatalogMode = "timeout"
             let v1Builtin = try await client.get(
                 URI(string: "/api/servers/\(fixture.serverId)/machines/\(fixture.machineId)/runtime-form-definitions/builtin/option-sources/model?schemaVersion=builtin-pi.create.v3"),
                 headers: headers

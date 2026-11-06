@@ -119,7 +119,7 @@ private func makeSearchMentionsFixture() -> SearchMentionsFixture {
 @Test func storedMessageContextRendersThePublishedBytes() throws {
     let fixture = makeSearchMentionsFixture()
     let seq = try #require(
-        fixture.accounts.humanMessageRows.first { $0.id == fixture.contextMessageId }?.seq
+        fixture.accounts.messagesAndThreadsStore.humanMessageRow(id: fixture.contextMessageId)?.seq
     )
     let response = try #require(fixture.service.humanMessageContext(
         messageId: fixture.contextMessageId,
@@ -224,10 +224,29 @@ private func makeSearchMentionsFixture() -> SearchMentionsFixture {
     // value: exactly one caller may observe the live row.
     #expect(outcomes.filter { $0 == .deleted }.count == 1)
     #expect(outcomes.filter { $0 == .refused }.count == 23)
-    #expect(fixture.accounts.postableChannels[channelId]?.deletedAt != nil)
+    #expect(fixture.accounts.serversAndChannelsStore.postableChannel(id: channelId)?.deletedAt != nil)
     // The orphan-task closure is one locked task-store value and runs once.
-    #expect(fixture.accounts.taskRecords.first { $0.id == taskId }?.status == "closed")
-    #expect(fixture.accounts.taskEvents.filter {
+    #expect(fixture.accounts.tasksAndRemindersStore.task(id: taskId)?.status == "closed")
+    #expect(fixture.accounts.tasksAndRemindersStore.taskEvents.filter {
         $0.taskId == taskId && $0.eventType == "closed" && $0.actorType == "system"
     }.count == 1)
+}
+
+@Test func concurrentMemberMentionRegistrationIsVisibleOnceThroughMentionSearch() throws {
+    let fixture = makeSearchMentionsFixture()
+    let registrar = fixture.accounts.messageMentions
+    let messageId = fixture.messageId
+    let channelId = fixture.channelId
+    let member = MentionInput(type: "user", id: fixture.ownerId, name: fixture.ownerName)
+    DispatchQueue.concurrentPerform(iterations: 64) { _ in
+        registrar.register(messageId: messageId, channelId: channelId, mentions: [member, member])
+    }
+    let rows = fixture.accounts.messageMentionRows(messageId: messageId)
+    #expect(rows.count == 1)
+    #expect(rows.first?.notifiableAtSend == true)
+    let response = try fixture.service.searchHumanMessages(
+        query: "needle", sort: nil, limit: "10", authorization: fixture.ownerAuthorization,
+        serverId: fixture.serverId, mentionTarget: "self"
+    )
+    #expect(response.results.map(\.id) == [messageId])
 }

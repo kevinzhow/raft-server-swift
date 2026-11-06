@@ -1,3 +1,4 @@
+import TestSupport
 import Foundation
 import HTTPTypes
 import RaftHTTP
@@ -144,7 +145,7 @@ private func bodyText(_ response: ClientResponse) -> String {
         day1EmailId: "scheduled-mobile-email"
     )
     let canceled = CancelLog()
-    accounts.cancelMobileAppEmail = { canceled.ids.append($0) }
+    accounts.setMobileEmailCancellationForTesting({ canceled.ids.append($0) })
     let token = accounts.createMobileAppEmailUnsubscribeToken(userId: userId)
     try await withApp { app in
         configure(app, services: FallbackServices(

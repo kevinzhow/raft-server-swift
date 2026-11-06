@@ -75,8 +75,8 @@ import Testing
 
     accounts.socketMembership.revokeServerMembershipResources(serverId: serverId, userId: memberId)
 
-    #expect(accounts.postableChannels[channelId]?.memberIds.contains(memberId) == false)
-    #expect(accounts.postableChannels[threadId]?.memberIds.contains(memberId) == false)
-    #expect(accounts.threadFollows["\(serverId)\n\(memberId)\n\(threadId)"] == nil)
+    #expect(accounts.serversAndChannelsStore.postableChannels[channelId]?.memberIds.contains(memberId) == false)
+    #expect(accounts.serversAndChannelsStore.postableChannels[threadId]?.memberIds.contains(memberId) == false)
+    #expect(accounts.messagesAndThreadsStore.threadFollows["\(serverId)\n\(memberId)\n\(threadId)"] == nil)
     #expect(accounts.oauth.channelHumanIds(channelId: channelId).contains(memberId) == false)
 }

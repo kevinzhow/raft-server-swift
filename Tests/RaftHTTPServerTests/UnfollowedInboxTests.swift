@@ -1,3 +1,4 @@
+import TestSupport
 import Foundation
 import HTTPTypes
 import RaftHTTP

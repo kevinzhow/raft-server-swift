@@ -3,14 +3,14 @@ import Foundation
 
 extension EmailLoginDirectory {
     public func mintFamilyRevokeCapabilityForTesting(refreshToken: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let live = sessions[refreshToken], let family = sessionFamilies[live.familyId] else { return nil }
-        let nonce = family.revokeCapabilityNonce ?? AuthTokenCodec.randomHex(16)
-        var updated = family
-        updated.revokeCapabilityNonce = nonce
-        sessionFamilies[live.familyId] = updated
-        return "\(live.familyId).\(nonce)"
+        return authProfileStore.state.withLock { owned in
+            guard let live = owned.accountSurface.sessions[refreshToken], let family = owned.accountSurface.sessionFamilies[live.familyId] else { return nil }
+            let nonce = family.revokeCapabilityNonce ?? AuthTokenCodec.randomHex(16)
+            var updated = family
+            updated.revokeCapabilityNonce = nonce
+            owned.accountSurface.sessionFamilies[live.familyId] = updated
+            return "\(live.familyId).\(nonce)"
+        }
     }
 
     public static func pkceChallengeForTesting(_ verifier: String) -> String {
@@ -18,22 +18,22 @@ extension EmailLoginDirectory {
     }
 
     public func setPasswordForTesting(userId: String, password: String) {
-        lock.lock()
-        if let key = accounts.first(where: { $0.value.id == userId })?.key {
-            var account = accounts[key]!
-            account.passwordHash = AuthTokenCodec.sha256(password)
-            account.passwordCredentialEstablishedAt = Date()
-            accounts[key] = account
+        authProfileStore.state.withLock { owned in
+            if let key = owned.accountSurface.accounts.first(where: { $0.value.id == userId })?.key {
+                var account = owned.accountSurface.accounts[key]!
+                account.passwordHash = AuthTokenCodec.sha256(password)
+                account.passwordCredentialEstablishedAt = Date()
+                owned.accountSurface.accounts[key] = account
+            }
         }
-        lock.unlock()
     }
 
     public func linkIdentityForTesting(userId: String, provider: String, providerUserId: String, providerEmail: String? = nil) {
-        lock.lock()
-        linkedIdentities.append(LinkedIdentity(
-            userId: userId, provider: provider, providerUserId: providerUserId, providerEmail: providerEmail
-        ))
-        lock.unlock()
+        authProfileStore.state.withLock { owned in
+            owned.accountSurface.linkedIdentities.append(LinkedIdentity(
+                userId: userId, provider: provider, providerUserId: providerUserId, providerEmail: providerEmail
+            ))
+        }
     }
 
     @discardableResult
@@ -43,13 +43,13 @@ extension EmailLoginDirectory {
         expiresAt: Date = Date().addingTimeInterval(600)
     ) -> String {
         let token = AuthTokenCodec.randomHex(32)
-        lock.lock()
-        pendingSocialLinks[token] = PendingSocialLink(
-            token: token, provider: provider, providerUserId: providerUserId,
-            email: AccountNaming.normalize(email), returnTo: returnTo, returnUri: returnUri,
-            expiresAt: expiresAt
-        )
-        lock.unlock()
+        authProfileStore.state.withLock { owned in
+            owned.accountSurface.pendingSocialLinks[token] = PendingSocialLink(
+                token: token, provider: provider, providerUserId: providerUserId,
+                email: AccountNaming.normalize(email), returnTo: returnTo, returnUri: returnUri,
+                expiresAt: expiresAt
+            )
+        }
         return token
     }
 
@@ -60,11 +60,11 @@ extension EmailLoginDirectory {
     // MARK: Account and session readbacks (moved out of AuthCoreService.swift)
 
     public func markPasswordCredentialEstablished(userId: String) {
-        var state = authProfileStore.accountState
-        if let key = state.accounts.first(where: { $0.value.id == userId })?.key {
-            state.accounts[key]?.passwordCredentialEstablishedAt = Date()
+        authProfileStore.state.withLock { owned in
+            if let key = owned.accountSurface.accounts.first(where: { $0.value.id == userId })?.key {
+                owned.accountSurface.accounts[key]?.passwordCredentialEstablishedAt = Date()
+            }
         }
-        authProfileStore.accountState = state
     }
 
     public func hasAccount(email: String) -> Bool {
@@ -92,19 +92,19 @@ extension EmailLoginDirectory {
         providerUserId: String? = nil,
         linkOnConflict: Bool = false
     ) {
-        var state = authProfileStore.accountState
-        state.socialCompletions.append(SocialCompletion(
-            provider: provider,
-            code: code,
-            mode: mode,
-            intendedAction: intendedAction,
-            email: AccountNaming.normalize(email),
-            returnTo: returnTo,
-            userId: userId,
-            providerUserId: providerUserId,
-            linkOnConflict: linkOnConflict
-        ))
-        authProfileStore.accountState = state
+        authProfileStore.state.withLock { owned in
+            owned.accountSurface.socialCompletions.append(SocialCompletion(
+                provider: provider,
+                code: code,
+                mode: mode,
+                intendedAction: intendedAction,
+                email: AccountNaming.normalize(email),
+                returnTo: returnTo,
+                userId: userId,
+                providerUserId: providerUserId,
+                linkOnConflict: linkOnConflict
+            ))
+        }
     }
 
     public func linkedProviderUserIds(userId: String, provider: String) -> [String] {
@@ -128,19 +128,19 @@ extension EmailLoginDirectory {
     }
 
     public func expireRefreshReceipts() {
-        var state = authProfileStore.accountState
-        for key in state.rotationReceipts.keys {
-            state.rotationReceipts[key]?.expiresAt = Date(timeIntervalSinceNow: -1)
+        authProfileStore.state.withLock { owned in
+            for key in owned.accountSurface.rotationReceipts.keys {
+                owned.accountSurface.rotationReceipts[key]?.expiresAt = Date(timeIntervalSinceNow: -1)
+            }
         }
-        authProfileStore.accountState = state
     }
 
     /// Moves one mobile OAuth request's expiry into the past. Completion then
     /// reports `handoff_code_expired`.
     public func expireMobileOAuthRequest(id: String) {
-        var state = authProfileStore.accountState
-        state.mobileRequests[id]?.expiresAt = Date(timeIntervalSinceNow: -1)
-        authProfileStore.accountState = state
+        authProfileStore.state.withLock { owned in
+            owned.accountSurface.mobileRequests[id]?.expiresAt = Date(timeIntervalSinceNow: -1)
+        }
     }
 
     public func oauthRequestStatus(id: String) -> String? {
@@ -196,8 +196,8 @@ extension EmailLoginDirectory {
     /// Adds platform allow rules for Apple sign-in. An empty set leaves Apple
     /// disabled on every platform.
     public func allowAppleLogin(on platforms: [String]) {
-        var state = authProfileStore.accountState
-        state.appleLoginPlatforms.formUnion(platforms)
-        authProfileStore.accountState = state
+        authProfileStore.state.withLock { owned in
+            owned.accountSurface.appleLoginPlatforms.formUnion(platforms)
+        }
     }
 }

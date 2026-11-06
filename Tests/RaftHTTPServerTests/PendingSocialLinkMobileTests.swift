@@ -17,7 +17,7 @@ private func profile(_ sub: String, _ email: String) -> MobileProviderProfile {
     accounts.addAccount(id: existingId, email: "mobile@pending-link.test", password: "password123")
     accounts.markEmailVerified(userId: existingId)
     accounts.markPasswordCredentialEstablished(userId: existingId)
-    accounts.mobileProviderProfile = profile("google-sub-mobile", "mobile@pending-link.test")
+    accounts.configureAuthSimulationForTesting { $0.mobileProviderProfile = profile("google-sub-mobile", "mobile@pending-link.test") }
     let verifier = "pending-link-mobile-verifier-0123456789"
     let challenge = EmailLoginDirectory.pkceChallengeForTesting(verifier)
     let returnUri = "raft://oauth/callback"
@@ -90,7 +90,7 @@ private func profile(_ sub: String, _ email: String) -> MobileProviderProfile {
     let existingId = "11111111-1111-4111-8111-000001085011"
     accounts.addAccount(id: existingId, email: "mobile2@pending-link.test", password: "password123")
     accounts.markEmailVerified(userId: existingId)
-    accounts.mobileProviderProfile = profile("google-sub-mobile2", "mobile2@pending-link.test")
+    accounts.configureAuthSimulationForTesting { $0.mobileProviderProfile = profile("google-sub-mobile2", "mobile2@pending-link.test") }
     let challenge = EmailLoginDirectory.pkceChallengeForTesting("old-client-verifier-0123456789abc")
 
     try await withApp { app in
@@ -135,7 +135,7 @@ private func profile(_ sub: String, _ email: String) -> MobileProviderProfile {
             var headers = HTTPFields()
             headers[.contentType] = "application/json"
             func roundTrip(_ provider: String, _ sub: String) async throws -> String {
-                accounts.mobileProviderProfile = profile(sub, "mobile3@pending-link.test")
+                accounts.configureAuthSimulationForTesting { $0.mobileProviderProfile = profile(sub, "mobile3@pending-link.test") }
                 let startResponse = try await client.send(.post, headers: headers, to: URI(string: "/api/auth/mobile/oauth/start")) { request in
                     request.body = .init(string: "{\"provider\":\"\(provider)\",\"mode\":\"login\",\"returnUri\":\"raft://oauth/callback\",\"codeChallenge\":\"\(challenge)\",\"linkOnConflict\":true}")
                 }

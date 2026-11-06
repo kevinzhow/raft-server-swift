@@ -25,7 +25,7 @@ private struct BuiltInJWTFixture {
 
 private func makeBuiltInJWTFixture(suffix: String) throws -> BuiltInJWTFixture {
     let accounts = EmailLoginDirectory()
-    accounts.serverURL = "https://raft.example.test"
+    accounts.configureOAuthForTesting { $0.serverURL = "https://raft.example.test" }
     let number = Int(suffix) ?? 0
     let sourceServerId = String(format: "33333333-3333-4333-8333-%012d", 300_000 + number)
     let targetServerId = String(format: "33333333-3333-4333-8333-%012d", 400_000 + number)

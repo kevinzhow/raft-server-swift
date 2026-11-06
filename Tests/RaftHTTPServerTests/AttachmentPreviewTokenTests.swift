@@ -1,6 +1,7 @@
+import TestSupport
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
 import Testing
 import Vapor
@@ -19,7 +20,7 @@ import VaporTesting
     let first = accounts.addChannelAttachment(channelId: channel, uploaderId: ownerId, filename: "first.html", mimeType: "text/html", sizeBytes: 64)
     let second = accounts.addChannelAttachment(channelId: channel, uploaderId: ownerId, filename: "second.html", mimeType: "text/html", sizeBytes: 64)
     let html = "<!doctype html><html><body>ok</body></html>"
-    accounts.attachmentPreviewBody = { id in id == first ? html : nil }
+    accounts.messagesAndThreadsStore.attachmentPreviewBody = { id in id == first ? html : nil }
 
     try await withApp { app in
         configure(app, services: FallbackServices(

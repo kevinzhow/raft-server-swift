@@ -22,7 +22,7 @@ import Testing
     let ids = batches.flatMap { $0 }
     #expect(ids.count == 50)
     #expect(Set(ids).count == 50)
-    let numbers = accounts.taskRecords.filter { $0.channelId == channelId }.map(\.taskNumber)
+    let numbers = accounts.tasksAndRemindersStore.tasks(channelId: channelId, status: nil).map(\.taskNumber)
     #expect(numbers.count == 50)
     #expect(Set(numbers).count == 50)
     #expect(Set(numbers) == Set(1...50))

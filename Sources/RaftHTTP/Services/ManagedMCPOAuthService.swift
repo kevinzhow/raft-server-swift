@@ -487,16 +487,9 @@ public struct ManagedMCPOAuthService: Sendable {
             channelId = createdChannel
         }
         guard let channelId else { throw ManagedMCPOAuthError.reminderSurfaceUnavailable }
-        let message = oauth.createMessageRecord(
-            channelId: channelId,
-            content: text,
-            senderId: "system",
-            senderType: "user",
-            messageType: "system",
-            systemSubtype: "agent.reminder_due"
-        )
+        let messageId = UUID().uuidString.lowercased()
         dependencies.appendMessage(StoredHumanMessage(
-            id: message.id,
+            id: messageId,
             channelId: channelId,
             senderId: "system",
             content: text,
@@ -505,7 +498,7 @@ public struct ManagedMCPOAuthService: Sendable {
             senderType: "user",
             systemSubtype: "agent.reminder_due"
         ))
-        dependencies.feedback.recordAppAgentReminder(ledgerKey: ledgerKey, messageId: message.id)
-        return AppAgentReminderResponse(created: true, messageId: message.id)
+        dependencies.feedback.recordAppAgentReminder(ledgerKey: ledgerKey, messageId: messageId)
+        return AppAgentReminderResponse(created: true, messageId: messageId)
     }
 }

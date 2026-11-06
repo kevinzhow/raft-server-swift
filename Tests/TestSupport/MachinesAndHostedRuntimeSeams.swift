@@ -6,31 +6,31 @@ import Foundation
 extension EmailLoginDirectory {
 
     public func setMachineDescriptionForTesting(machineId: String, description: String?) {
-        lock.lock()
-        if let index = machines.firstIndex(where: { $0.id == machineId }) {
-            machines[index].description = description
+        machinesAndComputersStore.storage.withLock { storeState in
+            if let index = storeState.machines.firstIndex(where: { $0.id == machineId }) {
+                storeState.machines[index].description = description
+            }
         }
-        lock.unlock()
     }
 
     public func machineDescriptionForTesting(machineId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return machines.first { $0.id == machineId }?.description
+        return machinesAndComputersStore.storage.withLock { storeState in
+            return storeState.machines.first { $0.id == machineId }?.description
+        }
     }
 
     public func setMachineRuntimesForTesting(machineId: String, runtimes: [String]) {
-        lock.lock()
-        if let index = machines.firstIndex(where: { $0.id == machineId }) {
-            machines[index].runtimes = runtimes
+        machinesAndComputersStore.storage.withLock { storeState in
+            if let index = storeState.machines.firstIndex(where: { $0.id == machineId }) {
+                storeState.machines[index].runtimes = runtimes
+            }
         }
-        lock.unlock()
     }
 
     public func setHostedUsageForTesting(agentId: String, json: String) {
-        lock.lock()
-        hostedUsage[agentId] = json
-        lock.unlock()
+        agentsRuntimeStore.withState { storeState in
+            storeState.hostedUsage[agentId] = json
+        }
     }
 
     public func setHostedRuntimeForTesting(
@@ -40,15 +40,15 @@ extension EmailLoginDirectory {
         state: String = "active",
         retryNeedsModel: Bool = false
     ) {
-        lock.lock()
-        hostedRuntimes[agentId] = (provider, model, state, retryNeedsModel, Date())
-        lock.unlock()
+        agentsRuntimeStore.withState { storeState in
+            storeState.hostedRuntimes[agentId] = (provider, model, state, retryNeedsModel, Date())
+        }
     }
 
     public func hostedRuntimeStateForTesting(agentId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return hostedRuntimes[agentId]?.state
+        return agentsRuntimeStore.withState { storeState in
+            return storeState.hostedRuntimes[agentId]?.state
+        }
     }
 
     public func setHostedRuntimeStateForTesting(
@@ -56,13 +56,13 @@ extension EmailLoginDirectory {
         state: String,
         retryNeedsModel: Bool = false
     ) {
-        lock.lock()
-        if let existing = hostedRuntimes[agentId] {
-            hostedRuntimes[agentId] = (existing.provider, existing.model, state, retryNeedsModel, existing.createdAt)
-        } else {
-            hostedRuntimes[agentId] = ("antiproton", nil, state, retryNeedsModel, Date())
+        agentsRuntimeStore.withState { storeState in
+            if let existing = storeState.hostedRuntimes[agentId] {
+                storeState.hostedRuntimes[agentId] = (existing.provider, existing.model, state, retryNeedsModel, existing.createdAt)
+            } else {
+                storeState.hostedRuntimes[agentId] = ("antiproton", nil, state, retryNeedsModel, Date())
+            }
         }
-        lock.unlock()
     }
 
     public func setHostedModelForTesting(
@@ -78,20 +78,22 @@ extension EmailLoginDirectory {
         source: String = "default",
         locked: Bool = false
     ) {
-        lock.lock()
-        hostedModels[agentId] = HostedModelState(
-            models: models,
-            defaultModel: defaultModel,
-            defaultLabel: defaultLabel,
-            model: model,
-            label: label,
-            source: source,
-            locked: locked
-        )
-        lock.unlock()
+        agentsRuntimeStore.withState { storeState in
+            storeState.hostedModels[agentId] = HostedModelState(
+                models: models,
+                defaultModel: defaultModel,
+                defaultLabel: defaultLabel,
+                model: model,
+                label: label,
+                source: source,
+                locked: locked
+            )
+        }
     }
 
     public func setAgentConnectionOriginForTesting(origin: String) {
-        agentsRuntimeStore.agentConnectionOrigin = origin
+        agentsRuntimeStore.withState { storeState in
+            storeState.agentConnectionOrigin = origin
+        }
     }
 }

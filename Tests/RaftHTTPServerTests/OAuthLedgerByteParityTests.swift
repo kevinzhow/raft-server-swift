@@ -1,3 +1,4 @@
+import TestSupport
 import Crypto
 import Foundation
 import HTTPTypes
@@ -31,7 +32,7 @@ private func oauthDiscoveryBytes(issuer: String) -> String {
 
 @Test func oauthLedgerDiscoveryAndJWKSPreserveBytesAndFailureCachePolicies() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.serverURL = "https://api.raft.test/base/"
+    accounts.configureOAuthForTesting { $0.serverURL = "https://api.raft.test/base/" }
     accounts.oauth.addOwnedServer(id: UUID().uuidString.lowercased(), slug: "oauth-bytes", name: "Bytes", ownerId: "owner")
     try await withApp { app in
         try await app.register(collection: OAuthFeature(services: FallbackServices(
@@ -69,7 +70,7 @@ private func oauthDiscoveryBytes(issuer: String) -> String {
             let unavailable = try await client.get("/api/oauth/jwks")
             #expect(unavailable.status == .serviceUnavailable)
             expectOAuthBytes(unavailable, "{\"error\":\"oidc_not_configured\"}")
-            accounts.serverURL = "invalid origin"
+            accounts.configureOAuthForTesting { $0.serverURL = "invalid origin" }
             let discoveryUnavailable = try await client.get("/.well-known/openid-configuration")
             #expect(discoveryUnavailable.status == .serviceUnavailable)
             expectOAuthBytes(discoveryUnavailable, "{\"error\":\"oidc_not_configured\"}")
@@ -79,7 +80,7 @@ private func oauthDiscoveryBytes(issuer: String) -> String {
 
 @Test func oauthLedgerTokenAndIdentityBodiesKeepOrderNullsAndEscaping() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.serverURL = "https://api.raft.test"
+    accounts.configureOAuthForTesting { $0.serverURL = "https://api.raft.test" }
     let serverId = UUID().uuidString.lowercased()
     let ownerId = UUID().uuidString.lowercased()
     let name = "用户/\n\"name"

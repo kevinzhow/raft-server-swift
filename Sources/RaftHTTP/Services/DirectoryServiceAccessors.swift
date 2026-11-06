@@ -62,11 +62,8 @@ extension EmailLoginDirectory {
                     agentsLifecycle.computerAttachEnabled()
                 },
                 mintAgentCredential: { [self] agentId, scopes, name in
-                    let minted = mintAgentCredential(agentId: agentId, scopes: scopes, name: name)
-                    lock.lock()
-                    let credentialId = agentCredentials[minted]?.id ?? UUID().uuidString.lowercased()
-                    lock.unlock()
-                    return ComputersFleetDependencies.MintedCredential(apiKey: minted, credentialId: credentialId)
+                    let minted = agentsRuntimeStore.mintAgentCredential(agentId: agentId, scopes: scopes, name: name)
+                    return ComputersFleetDependencies.MintedCredential(apiKey: minted.apiKey, credentialId: minted.credentialId)
                 },
                 computerCredential: { [self] apiKey in
                     computerCredential(apiKey: apiKey)
@@ -173,44 +170,11 @@ extension EmailLoginDirectory {
             && message.systemSubtype.map { AgentFreshnessIdentity.selfCausedFreshnessExemptSubtypes.contains($0) } == true
     }
 
-    /// A real server-role change on an agent posts a system notice into the
-    /// actor's DM with the agent (creating the DM when needed). The account,
-    /// channel and message ledgers change together, so this stays one directory
-    /// critical section.
-    func postAgentRoleNotice(
-        serverId: String,
-        actorUserId: String,
-        agentId: String,
-        agentName: String,
-        from: String,
-        to: String
-    ) {
-        lock.lock()
-        let actorName = accounts.values.first { $0.id == actorUserId }?.name ?? "Someone"
-        var dmId = postableChannels.first { _, channel in
-            channel.serverId == serverId && channel.kind == "dm"
-                && channel.memberIds.contains(actorUserId) && channel.memberIds.contains(agentId)
-        }?.key
-        if dmId == nil {
-            dmId = oauth.createDirectChannel(serverId: serverId, firstUserId: actorUserId, secondUserId: agentId)
-            if let created = dmId {
-                postableChannels[created] = PostableChannel(serverId: serverId, memberIds: [actorUserId, agentId], kind: "dm", name: "dm")
-                oauth.addChannelAgent(channelId: created, agentId: agentId)
-                oauth.addChannelHuman(channelId: created, userId: actorUserId)
-            }
-        }
-        if let dmId {
-            appendHumanMessageLocked(StoredHumanMessage(
-                id: UUID().uuidString.lowercased(),
-                channelId: dmId,
-                senderId: actorUserId,
-                content: "@\(actorName) changed @\(agentName)'s server role from \(from) to \(to).",
-                messageType: "system",
-                senderType: "user",
-                actionKind: "agent.server_role_changed"
-            ))
-        }
-        lock.unlock()
+    /// Role-change notices own their DM preparation and use the same message
+    /// commit as ordinary sends.
+    var agentRoleNotices: AgentRoleNoticeService {
+        AgentRoleNoticeService(profiles: authProfileStore, channels: serversAndChannelsStore,
+            messages: messagesAndThreadsStore, oauth: oauth)
     }
 
     /// Human message create, the sender-side mention actions and the forward
@@ -242,8 +206,8 @@ extension EmailLoginDirectory {
                     recordAgentCredentialUse(token: token)
                 },
                 jointLocalChannelId: { [self] canonicalChannelId, serverId, userId in
-                    jointLocalChannelIdLocked(
-                        canonicalChannelId: canonicalChannelId,
+                    MessageChannelFacts(serversAndChannelsStore.state).localChannel(
+                        canonical: canonicalChannelId,
                         serverId: serverId,
                         userId: userId
                     )
@@ -325,7 +289,7 @@ extension EmailLoginDirectory {
                 realtimeRelay.emit(room, event, payload)
             },
             registerPostableChannel: { [self] serverId, channelId, memberId, kind, name in
-                addPostableChannel(
+                serversAndChannelsStore.addPostableChannel(
                     serverId: serverId,
                     channelId: channelId,
                     memberId: memberId,
@@ -333,13 +297,8 @@ extension EmailLoginDirectory {
                     name: name
                 )
             },
-            appendHumanMessage: { [self] message in
-                // The append still serializes with every other message writer
-                // under the directory lock until the channel-message domain
-                // moves its seq stamping into `MessagesAndThreadsStore`.
-                lock.lock()
-                defer { lock.unlock() }
-                return appendHumanMessageLocked(message)
+            appendHumanMessage: { [messages = messagesAndThreadsStore, ledger = MessageLedgerPort(oauth: oauth)] message in
+                messages.appendMessage(message, ledger: ledger)
             }
         )
     }
@@ -355,7 +314,7 @@ extension EmailLoginDirectory {
             messages: messagesAndThreadsStore,
             oauth: oauth,
             attachmentCommentsEnabled: { [self] serverId, userId in
-                attachmentCommentsEnabled(serverId: serverId, userId: userId)
+                messageReadProjection.commentsEnabled(serverId: serverId, userId: userId)
             }
         )
     }
@@ -412,8 +371,9 @@ extension EmailLoginDirectory {
             emitRealtime: { room, event, payload in
                 accounts.realtimeRelay.emit(room, event, payload)
             },
-            cancelDispatch: { machineId, role, migrationRef, transportGeneration, stopAgent in
-                accounts.agentMigrationCancelDispatch?(
+            cancelDispatch: { [agents = agentsRuntimeStore] machineId, role, migrationRef, transportGeneration, stopAgent in
+                let dispatch = agents.agentMigrationCancelDispatch
+                dispatch?(
                     machineId,
                     role,
                     migrationRef,
@@ -444,11 +404,8 @@ extension EmailLoginDirectory {
                     viewer: viewer
                 )
             },
-            appendHumanMessage: { [self] message in
-                lock.lock()
-                let seq = appendHumanMessageLocked(message)
-                lock.unlock()
-                return seq
+            appendHumanMessage: { [messages = messagesAndThreadsStore, ledger = MessageLedgerPort(oauth: oauth)] message in
+                messages.appendMessage(message, ledger: ledger)
             },
             integrationServices: { [self] serverId in
                 oauth.integrationServices(serverId: serverId).map(AgentIntegrationProjection.snapshot)
@@ -474,7 +431,7 @@ extension EmailLoginDirectory {
                     sessionUserId(authorization: authorization)
                 },
                 agentRead: { [self] authorization in
-                    profileAgentReadOutcome(authorization)
+                    AgentCredentialLookup(directory: self).profileReadOutcome(authorization)
                 },
                 capabilityDenial: { [self] authorization, capability in
                     switch FeedbackLocatorService(directory: self)
@@ -489,17 +446,17 @@ extension EmailLoginDirectory {
                     realtimeRelay.emit(room, event, payload)
                 },
                 attachmentCommentsEnabled: { [self] serverId, userId in
-                    attachmentCommentsEnabled(serverId: serverId, userId: userId)
+                    messageReadProjection.commentsEnabled(serverId: serverId, userId: userId)
                 },
-                attachmentsJSON: { [self] ids, commentsVisible in
-                    lock.lock()
-                    defer { lock.unlock() }
-                    return "[" + messageAttachmentsJSONLocked(ids, commentsVisible: commentsVisible) + "]"
+                attachmentChips: { [messagesAndThreadsStore] ids, commentsVisible in
+                    messagesAndThreadsStore.attachmentCommentSummaries(ids: ids, commentsVisible: commentsVisible)
+                        .map { InboxAttachmentChipDTO(id: $0.attachmentId, commentCount: $0.commentCount) }
                 },
-                commentRefJSON: { [self] messageId in
-                    lock.lock()
-                    defer { lock.unlock() }
-                    return commentRefJSONLocked(messageId: messageId)
+                commentRef: { [messagesAndThreadsStore] messageId in
+                    messagesAndThreadsStore.commentRef(messageId: messageId).map {
+                        InboxCommentRefDTO(attachmentId: $0.attachmentId, hostMessageId: $0.hostMessageId,
+                            hostSource: InboxCommentSourceDTO(channelId: $0.hostChannelId, rootThreadChannelId: $0.threadChannelId))
+                    }
                 }
             )
         )
@@ -541,55 +498,6 @@ extension EmailLoginDirectory {
     /// projections enter as closures.
     public var searchMentions: SearchMentionsService {
         SearchMentionsService(directory: self)
-    }
-
-    public var sessionCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return sessions.count
-    }
-
-    public var userCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return accounts.count
-    }
-
-    public var legalAcceptanceCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return authProfileStore.legalAcceptanceCount
-    }
-
-    public var emailVerificationCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return emailVerifications
-    }
-
-    public var providerExchangeCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return providerExchanges
-    }
-
-    public var retirementReceiptCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return retirementReceipts.count
-    }
-
-    public var mobileOAuthRequestCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return mobileRequests.count
-    }
-
-    /// Rows the directory holds for `GET /api/messages` style readbacks.
-    public var humanMessageCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return humanMessageRows.count
     }
 
     /// Product-feedback submission and onboarding-wizard event recording. The
@@ -687,19 +595,11 @@ extension EmailLoginDirectory {
         )
     }
 
-    /// The system notice (and the acting agent's born-read cursor) the channel
-    /// membership writes post; the append still serializes under the directory lock.
+    /// The notice, mirror and acting agent's born-read cursor share one
+    /// Messages transaction; external effects run after that transaction returns.
     var systemNoticeAppender: @Sendable (StoredHumanMessage, String?) -> Int {
-        { [self] message, bornReadAgentId in
-            lock.lock()
-            defer { lock.unlock() }
-            let seq = appendHumanMessageLocked(message)
-            if let bornReadAgentId {
-                messagesAndThreadsStore.markBornRead(
-                    channelId: message.channelId, agentId: bornReadAgentId, seq: seq
-                )
-            }
-            return seq
+        { [messages = messagesAndThreadsStore, ledger = MessageLedgerPort(oauth: oauth)] message, bornReadAgentId in
+            messages.appendMessage(message, ledger: ledger, bornReadAgentId: bornReadAgentId)
         }
     }
 
@@ -745,7 +645,7 @@ extension EmailLoginDirectory {
                 sessionUserId: { [self] in sessionUserId(authorization: $0) },
                 emitRealtime: { [self] room, event, payload in realtimeRelay.emit(room, event, payload) },
                 mintAgentCredential: { [self] agentId, scopes, name in
-                    mintAgentCredential(agentId: agentId, scopes: scopes, name: name)
+                    agentsRuntimeStore.mintAgentCredential(agentId: agentId, scopes: scopes, name: name).apiKey
                 },
                 createMigrationReceiptDm: { [self] agentId, serverId, supportRef in
                     messageSend.createMigrationReceiptDm(agentId: agentId, serverId: serverId, supportRef: supportRef)

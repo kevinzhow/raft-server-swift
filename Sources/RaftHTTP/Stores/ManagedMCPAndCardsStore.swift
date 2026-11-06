@@ -64,7 +64,7 @@ final class ManagedMCPAndCardsStore: Sendable {
         var agentApiIdempotencyKeys: [AgentApiIdempotencyRecord] = []
     }
 
-    private let storage = Mutex(State())
+    let storage = Mutex(State())
 
     /// The whole owned state. A read or a write is one locked critical section.
     var state: State {

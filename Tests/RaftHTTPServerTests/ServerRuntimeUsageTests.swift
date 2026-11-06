@@ -1,6 +1,6 @@
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
 import Testing
 import TestSupport
@@ -125,7 +125,7 @@ private func runtimeObject(_ response: ClientResponse) throws -> [String: Any] {
     let fixture = makeRuntimeFixture(suffix: "997")
     let snapshot = "{\"protocolVersion\":2,\"provider\":\"codex\",\"collectedAt\":\"2026-11-01T00:00:00.000Z\",\"staleAfter\":\"\(ISO8601DateFormatter().string(from: Date().addingTimeInterval(1800)))\",\"collectorVersion\":\"1.6.2\",\"accounts\":[]}"
     let behavior = RuntimeUsageBehavior()
-    fixture.accounts.runtimeAccountUsageManualRefresh = { _, _ in
+    fixture.accounts.machinesAndComputersStore.runtimeAccountUsageManualRefresh = { _, _ in
         behavior.value == "timeout" ? .timeout : .snapshot(json: snapshot)
     }
     try await withApp { app in

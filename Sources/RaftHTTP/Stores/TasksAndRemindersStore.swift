@@ -22,7 +22,7 @@ final class TasksAndRemindersStore: Sendable {
         var assigneeChangeEvents: [(taskId: String, assigneeId: String?, assigneeType: String?, previousAssigneeId: String?, previousAssigneeType: String?, actorType: String, actorId: String)] = []
     }
 
-    private let mutex = Mutex(State())
+    let mutex = Mutex(State())
 
     /// A value snapshot; transaction methods hold the Mutex for their whole decision.
     var state: State {
@@ -581,6 +581,10 @@ extension TasksAndRemindersStore {
         mutex.withLock { storage in
             return storage.taskRecords.first { $0.id == id }
         }
+    }
+
+    func task(messageId: String) -> TaskRecord? {
+        mutex.withLock { $0.taskRecords.first { $0.messageId == messageId } }
     }
 
     // MARK: - Human task routes (managed-MCP assignments)

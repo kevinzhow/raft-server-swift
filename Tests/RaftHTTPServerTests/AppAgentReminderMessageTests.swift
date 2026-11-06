@@ -50,6 +50,21 @@ import VaporTesting
                 }
                 return (response, (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:])
             }
+            // Other channels already consumed global sequences before this
+            // reminder's private surface exists. Its mirror must use that same
+            // allocator, rather than a fresh per-channel sequence starting at 1.
+            let seedChannel = accounts.oauth.createChannel(serverId: serverId, name: "sequence-seed", creatorUserId: ownerId)
+            accounts.addPostableChannel(serverId: serverId, channelId: seedChannel, memberId: ownerId, name: "sequence-seed")
+            var seedHeaders = HTTPFields()
+            seedHeaders[.authorization] = "Bearer \(accounts.mintAccessTokenForTesting(userId: ownerId))"
+            seedHeaders[.contentType] = "application/json"
+            seedHeaders[HTTPField.Name("X-Server-Id")!] = serverId
+            for index in 0..<4 {
+                let seeded = try await client.send(.post, headers: seedHeaders, to: "/api/messages") { request in
+                    request.body = .init(string: "{\"channelId\":\"\(seedChannel)\",\"content\":\"seed-\(index)\"}")
+                }
+                #expect(seeded.status == .ok)
+            }
             let base: [String: Any] = ["agentId": agentId, "idempotencyKey": "rem-1:fire-1", "text": "Reminder: check the deploy"]
             let first = try await post(token, base)
             #expect(first.0.status == .ok)
@@ -90,6 +105,12 @@ import VaporTesting
             #expect(history.status == .ok)
             let historyText = history.body.string ?? ""
             #expect(historyText.contains("Reminder: check the deploy"))
+            let historyBody = try #require(try JSONSerialization.jsonObject(with: Data(historyText.utf8)) as? [String: Any])
+            let historyRows = try #require(historyBody["messages"] as? [[String: Any]])
+            let reminderRow = try #require(historyRows.first { $0["id"] as? String == messageId })
+            #expect(reminderRow["seq"] as? Int == 5)
+            #expect(accounts.humanMessageSequence(id: messageId) == 5)
+            #expect(historyRows.count == 1, "duplicate and refused calls append no extra reminder")
             let encodedMarker = "check%20the%20deploy"
             let search = try await client.get(URI(string: "/internal/agent-api/search?q=\(encodedMarker)&sort=recent&channel=\(encodedTarget)"), headers: agentHeaders)
             #expect(search.status == .ok)

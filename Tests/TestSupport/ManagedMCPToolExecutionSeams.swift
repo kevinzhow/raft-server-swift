@@ -15,9 +15,11 @@ extension EmailLoginDirectory {
     }
 
     public func systemMessageContents(channelId: String) -> [String] {
-        messagesAndThreadsStore.humanMessageRows
-            .filter { $0.channelId == channelId && $0.messageType == "system" }
-            .map(\.content)
+        messagesAndThreadsStore.withState { state in
+            state.humanMessageRows
+                .filter { $0.channelId == channelId && $0.messageType == "system" }
+                .map(\.content)
+        }
     }
 
     public func humanMessageSequence(id: String) -> Int? {
@@ -31,43 +33,43 @@ extension EmailLoginDirectory {
     }
 
     public func setAgentReadCursorForTesting(agentId: String, channelId: String, seq: Int, version: Int = 1) {
-        lock.lock()
-        agentChannelReadCursors["\(channelId)\n\(agentId)"] = (seq, version)
-        lock.unlock()
+        messagesAndThreadsStore.withState { state in
+            state.agentChannelReadCursors["\(channelId)\n\(agentId)"] = (seq, version)
+        }
     }
 
     public func setChannelHumanRoleForTesting(channelId: String, userId: String, role: String) {
-        lock.lock()
-        channelHumanRoles["\(channelId)\n\(userId)"] = role
-        lock.unlock()
+        serversAndChannelsStore.mutex.withLock { state in
+            state.channelHumanRoles["\(channelId)\n\(userId)"] = role
+        }
     }
 
     public func setAccountDescriptionForTesting(userId: String, description: String?) {
-        lock.lock()
-        if let index = accounts.values.firstIndex(where: { $0.id == userId }) {
-            var account = accounts.values[index]
-            account.description = description
-            accounts.values[index] = account
+        authProfileStore.state.withLock { state in
+            if let index = state.accountSurface.accounts.values.firstIndex(where: { $0.id == userId }) {
+                var account = state.accountSurface.accounts.values[index]
+                account.description = description
+                state.accountSurface.accounts.values[index] = account
+            }
         }
-        lock.unlock()
     }
 
     public func seedDMForTesting(serverId: String, humanUserId: String, agentId: String, name: String = "dm") -> String {
         let channelId = oauth.createDirectChannel(serverId: serverId, firstUserId: humanUserId, secondUserId: agentId)
-        addPostableChannel(serverId: serverId, channelId: channelId, memberId: agentId, kind: "dm", name: name)
-        addPostableChannel(serverId: serverId, channelId: channelId, memberId: humanUserId, kind: "dm", name: name)
+        serversAndChannelsStore.addPostableChannel(serverId: serverId, channelId: channelId, memberId: agentId, kind: "dm", name: name)
+        serversAndChannelsStore.addPostableChannel(serverId: serverId, channelId: channelId, memberId: humanUserId, kind: "dm", name: name)
         oauth.addChannelHuman(channelId: channelId, userId: humanUserId)
         return channelId
     }
 
     public func channelCardRevisionForTesting(channelId: String) -> String? {
-        lock.lock(); defer { lock.unlock() }
-        return actionCardPrepare.channelCardSnapshot(channelId: channelId)?.rev
+        actionCardPrepare.channelCardSnapshot(channelId: channelId)?.rev
     }
 
     public func mentionsForTesting(messageId: String) -> [(targetType: String, targetId: String, handle: String)] {
-        lock.lock(); defer { lock.unlock() }
-        return storedMentions.filter { $0.messageId == messageId }.map { ($0.targetType, $0.targetId, $0.handle) }
+        messagesAndThreadsStore.withState { state in
+            return state.storedMentions.filter { $0.messageId == messageId }.map { ($0.targetType, $0.targetId, $0.handle) }
+        }
     }
 
     public func addStoredMentionForTesting(
@@ -78,31 +80,31 @@ extension EmailLoginDirectory {
         handle: String = "peer",
         terminalCode: String? = nil
     ) {
-        lock.lock()
-        storedMentions.append(StoredMention(
-            id: UUID().uuidString.lowercased(),
-            messageId: messageId,
-            channelId: channelId,
-            senderId: "peer",
-            targetType: targetType,
-            targetId: targetId,
-            handle: handle,
-            notifiableAtSend: true,
-            notifiedAt: nil,
-            notifiedByType: nil,
-            notifiedById: nil,
-            notifiedAction: nil,
-            terminalCode: terminalCode
-        ))
-        lock.unlock()
+        messagesAndThreadsStore.withState { state in
+            state.storedMentions.append(StoredMention(
+                id: UUID().uuidString.lowercased(),
+                messageId: messageId,
+                channelId: channelId,
+                senderId: "peer",
+                targetType: targetType,
+                targetId: targetId,
+                handle: handle,
+                notifiableAtSend: true,
+                notifiedAt: nil,
+                notifiedByType: nil,
+                notifiedById: nil,
+                notifiedAction: nil,
+                terminalCode: terminalCode
+            ))
+        }
     }
 
     @discardableResult
     public func setAnnouncementAudienceForTesting(id: String, serverIds: [String]) {
-        lock.lock()
-        if let index = announcements.firstIndex(where: { $0.id == id }) {
-            announcements[index].audienceServerIds = serverIds
+        notificationsStore.storage.withLock { owned in
+            if let index = owned.announcements.firstIndex(where: { $0.id == id }) {
+                owned.announcements[index].audienceServerIds = serverIds
+            }
         }
-        lock.unlock()
     }
 }

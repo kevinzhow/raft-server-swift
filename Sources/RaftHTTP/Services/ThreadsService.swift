@@ -213,10 +213,10 @@ struct ThreadsDependencies: Sendable {
             },
             guestCanSeeScope: { source.guestCanSeeScopeLocked($0) },
             userName: { userId in
-                source.accounts.values.first { $0.id == userId }?.name
+                source.authProfileStore.account(userId: userId)?.name
             },
             taskForMessage: { messageId in
-                guard let task = source.taskRecords.first(where: { $0.messageId == messageId }) else {
+                guard let task = source.tasksAndRemindersStore.task(messageId: messageId) else {
                     return nil
                 }
                 return ThreadsTaskInfo(

@@ -8,14 +8,14 @@ extension EmailLoginDirectory {
         enabled: Bool = true,
         killSwitch: Bool = false
     ) {
-        lock.lock()
-        featureFlagRecords[key] = FeatureFlagRecord(
-            key: key,
-            enabled: enabled,
-            killSwitch: killSwitch,
-            defaultEnabled: defaultEnabled
-        )
-        lock.unlock()
+        agentsRuntimeStore.withState { owned in
+            owned.featureFlagRecords[key] = FeatureFlagRecord(
+                key: key,
+                enabled: enabled,
+                killSwitch: killSwitch,
+                defaultEnabled: defaultEnabled
+            )
+        }
     }
 
     public func addFeatureFlagRuleForTesting(
@@ -28,29 +28,29 @@ extension EmailLoginDirectory {
         clientBuildTypes: [String]? = nil,
         priority: Int = 0
     ) {
-        lock.lock()
-        featureFlagRuleRecords.append(FeatureFlagRuleRecord(
-            key: key,
-            stage: stage,
-            decision: decision,
-            values: values,
-            clientOs: clientOs,
-            minClientBuild: minClientBuild,
-            clientBuildTypes: clientBuildTypes,
-            priority: priority
-        ))
-        lock.unlock()
+        agentsRuntimeStore.withState { owned in
+            owned.featureFlagRuleRecords.append(FeatureFlagRuleRecord(
+                key: key,
+                stage: stage,
+                decision: decision,
+                values: values,
+                clientOs: clientOs,
+                minClientBuild: minClientBuild,
+                clientBuildTypes: clientBuildTypes,
+                priority: priority
+            ))
+        }
     }
 
     public func setFeatureFlagDefaultForTesting(key: String, defaultEnabled: Bool) {
-        lock.lock()
-        featureFlagRecords[key]?.defaultEnabled = defaultEnabled
-        lock.unlock()
+        agentsRuntimeStore.withState { owned in
+            owned.featureFlagRecords[key]?.defaultEnabled = defaultEnabled
+        }
     }
 
     public func setFeatureFlagKillSwitchForTesting(key: String, killSwitch: Bool) {
-        lock.lock()
-        featureFlagRecords[key]?.killSwitch = killSwitch
-        lock.unlock()
+        agentsRuntimeStore.withState { owned in
+            owned.featureFlagRecords[key]?.killSwitch = killSwitch
+        }
     }
 }

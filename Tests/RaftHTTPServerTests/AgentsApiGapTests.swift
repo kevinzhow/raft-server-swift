@@ -1,6 +1,6 @@
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
 import Testing
 import TestSupport
@@ -608,7 +608,9 @@ private func agentsGapBuiltinConfig(_ modelId: String) -> String {
 
 @Test func agentBuiltinPresetCreateAssignAndChangeRespectTheCatalog() async throws {
     let fixture = makeAgentsGapFixture(5301)
-    fixture.accounts.machineMigrationCapabilities[fixture.machineId] = ["migration/v3"]
+    fixture.accounts.machinesAndComputersStore.storage.withLock { state in
+        state.machineMigrationCapabilities[fixture.machineId] = ["migration/v3"]
+    }
     fixture.accounts.setMachineRuntimesForTesting(machineId: fixture.machineId, runtimes: ["builtin"])
     let recorder = AgentsGapRecorder()
     try await withAgentsGapApp(fixture) { client, _, creatorHeaders, _ in
@@ -684,8 +686,10 @@ private func agentsGapBuiltinConfig(_ modelId: String) -> String {
     fixture.accounts.enableAgentMigrationForTesting(serverId: fixture.serverId)
     fixture.accounts.setMachineRuntimesForTesting(machineId: fixture.machineId, runtimes: ["builtin"])
     fixture.accounts.setMachineRuntimesForTesting(machineId: fixture.targetMachineId, runtimes: ["builtin"])
-    fixture.accounts.machineMigrationCapabilities[fixture.machineId] = ["migration/v3"]
-    fixture.accounts.machineMigrationCapabilities[fixture.targetMachineId] = ["migration/v3"]
+    fixture.accounts.machinesAndComputersStore.storage.withLock { state in
+        state.machineMigrationCapabilities[fixture.machineId] = ["migration/v3"]
+        state.machineMigrationCapabilities[fixture.targetMachineId] = ["migration/v3"]
+    }
     let agent = fixture.accounts.oauth.createAgent(
         serverId: fixture.serverId,
         name: "builtin-migrate-\(5302)",

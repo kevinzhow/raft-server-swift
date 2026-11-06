@@ -15,13 +15,13 @@ private func challenge() -> String { EmailLoginDirectory.pkceChallengeForTesting
 
 private func makeDirectory() -> EmailLoginDirectory {
     let directory = EmailLoginDirectory()
-    directory.appURL = "https://app.raft.test"
-    directory.serverURL = "https://api.raft.test"
-    directory.configuredSocialAuthProviders = ["google", "github", "apple"]
+    directory.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
+    directory.configureOAuthForTesting { $0.serverURL = "https://api.raft.test" }
+    directory.configureOAuthForTesting { $0.configuredSocialAuthProviders = ["google", "github", "apple"] }
     directory.allowAppleLogin(on: ["web", "mobile"])
-    directory.mobileProviderProfile = MobileProviderProfile(
+    directory.configureAuthSimulationForTesting { $0.mobileProviderProfile = MobileProviderProfile(
         providerUserId: "google-sub-1", email: "Person@Flows.test", displayName: "Flow Person", emailVerified: true
-    )
+    ) }
     return directory
 }
 
@@ -116,7 +116,7 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
 
     // A directory with github unconfigured and Apple allowed on mobile only.
     let gated = EmailLoginDirectory()
-    gated.configuredSocialAuthProviders = ["google", "apple"]
+    gated.configureOAuthForTesting { $0.configuredSocialAuthProviders = ["google", "apple"] }
     gated.allowAppleLogin(on: ["mobile"])
     #expect(try gated.oauthFlows.authProviders(platform: nil).jsonBody.render()
         == #"{"providers":[{"id":"google","label":"Google","enabled":true},{"id":"github","label":"GitHub","enabled":false},{"id":"apple","label":"Apple","enabled":false}]}"#)

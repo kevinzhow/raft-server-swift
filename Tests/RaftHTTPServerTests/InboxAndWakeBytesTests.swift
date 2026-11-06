@@ -54,24 +54,26 @@ private func inboxByteSeed(withThread: Bool) -> EmailLoginDirectory {
         content: "hello \"quoted\"\nline"
     )
     accounts.setMessageAttachmentIdsForTesting(messageId: messageId, attachmentIds: ["att-1"])
-    accounts.attachmentCommentRecords["att-1"] = [AttachmentCommentRecord(
-        id: messageId,
-        attachmentId: "att-1",
-        content: "a comment",
-        anchorJSON: nil,
-        senderId: ownerId,
-        senderType: "user",
-        createdAt: Date(timeIntervalSince1970: 1_700_000_000),
-        threadChannelId: nil,
-        hostMessageId: messageId,
-        hostChannelId: channelId
-    )]
-    accounts.messageReactions = [StoredReaction(
-        messageId: messageId,
-        emoji: "👍",
-        reactorId: "unknown-user",
-        reactorType: "user"
-    )]
+    accounts.messagesAndThreadsStore.withState { state in
+        state.attachmentCommentRecords["att-1"] = [AttachmentCommentRecord(
+            id: messageId,
+            attachmentId: "att-1",
+            content: "a comment",
+            anchorJSON: nil,
+            senderId: ownerId,
+            senderType: "user",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            threadChannelId: nil,
+            hostMessageId: messageId,
+            hostChannelId: channelId
+        )]
+        state.messageReactions = [StoredReaction(
+            messageId: messageId,
+            emoji: "👍",
+            reactorId: "unknown-user",
+            reactorType: "user"
+        )]
+    }
     accounts.addMessageMention(messageId: messageId, targetType: "user", targetId: peerId)
     if withThread {
         accounts.addPostableChannel(
@@ -179,12 +181,10 @@ private func expectByteExact(
 @Test func inboxBroadcastSyncAndDoneBodiesAreByteExact() async throws {
     let accounts = inboxByteSeed(withThread: false)
     let doneKey = "\(ownerId)\n\(channelId)"
-    var scopes = accounts.inboxDoneScopes
-    scopes.insert(doneKey)
-    accounts.inboxDoneScopes = scopes
-    var doneAt = accounts.inboxDoneAt
-    doneAt[doneKey] = Date(timeIntervalSince1970: 1_800_000_000.5)
-    accounts.inboxDoneAt = doneAt
+    accounts.messagesAndThreadsStore.withState { state in
+        state.inboxDoneScopes.insert(doneKey)
+        state.inboxDoneAt[doneKey] = Date(timeIntervalSince1970: 1_800_000_000.5)
+    }
 
     try await withApp { app in
         configure(app, services: FallbackServices(

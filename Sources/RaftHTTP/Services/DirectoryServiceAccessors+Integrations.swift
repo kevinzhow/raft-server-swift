@@ -37,7 +37,7 @@ extension EmailLoginDirectory {
                     sessionUserId(authorization: authorization)
                 },
                 commentsEnabled: { [self] serverId, userId in
-                    attachmentCommentsEnabled(serverId: serverId, userId: userId)
+                    messageReadProjection.commentsEnabled(serverId: serverId, userId: userId)
                 },
                 visibleAttachment: { [self] userId, serverId, attachment in
                     visibleAttachment(userId: userId, serverId: serverId, attachment: attachment)
@@ -55,7 +55,7 @@ extension EmailLoginDirectory {
                     serversAndChannelsStore.historyThread(parentId: parentId, anchorMessageId: anchorMessageId)
                 },
                 recordMemberMentionRows: { [self] messageId, channelId, mentions in
-                    recordMemberMentionRows(messageId: messageId, channelId: channelId, mentions: mentions)
+                    messageMentions.register(messageId: messageId, channelId: channelId, mentions: mentions)
                 }
             )
         )
@@ -110,45 +110,13 @@ extension EmailLoginDirectory {
         )
     }
 
-    // MARK: - Attachment-comment helpers with callers in other domains
-    //
-    // Moved unchanged from the retired integrations extension: the feature-flag
-    // gate is read by search and the profile/files accessor, and the two chip
-    // projections are read by search and the auth-core human message surface.
-
-    /// Feature flag gate shared by the attachment-comment routes. It answers
-    /// before body validation so a disabled server sees one uniform 403.
-    public func attachmentCommentsEnabled(serverId: String, userId: String? = nil) -> Bool {
-        evaluateFeatureFlagKey(
-            key: "attachment_comments_v0",
-            userId: userId ?? "",
-            serverId: serverId,
-            platform: nil,
-            client: FeatureFlagClientFacts(os: nil, buildNumber: nil, buildType: nil)
-        ).enabled
+    var messageReadProjection: MessageReadProjection {
+        MessageReadProjection(messages: messagesAndThreadsStore, channels: serversAndChannelsStore,
+            profiles: authProfileStore, agents: agentsRuntimeStore, oauth: oauth)
     }
 
-    /// Attachment projection with the scoped comment count; a viewer who cannot
-    /// use attachment comments always observes zero, never a hint.
-    func messageAttachmentsJSONLocked(_ ids: [String], commentsVisible: Bool) -> String {
-        ids.map { id -> String in
-            let count = commentsVisible ? (attachmentCommentRecords[id]?.count ?? 0) : 0
-            return "{\"id\":\(jsonString(id)),\"commentCount\":\(count)}"
-        }.joined(separator: ",")
-    }
-
-    /// Scoped commentRef projection. Callers hold the directory lock. The chip
-    /// payload carries the host coordinates the client routes with; it is only
-    /// emitted to viewers who may see the scoped comment.
-    func commentRefJSONLocked(messageId: String) -> String? {
-        for (attachmentId, records) in attachmentCommentRecords {
-            guard let record = records.first(where: { $0.id == messageId }),
-                  let hostMessageId = record.hostMessageId,
-                  let hostChannelId = record.hostChannelId
-            else { continue }
-            let threadJSON = record.threadChannelId.map(jsonString) ?? "null"
-            return "{\"attachmentId\":\(jsonString(attachmentId)),\"hostMessageId\":\(jsonString(hostMessageId)),\"hostSource\":{\"type\":\"channel\",\"routeKind\":\"channel\",\"channelId\":\(jsonString(hostChannelId)),\"rootThreadChannelId\":\(threadJSON)}}"
-        }
-        return nil
+    var messageMentions: MessageMentionsService {
+        MessageMentionsService(messages: messagesAndThreadsStore, channels: serversAndChannelsStore,
+            profiles: authProfileStore, agents: agentsRuntimeStore, oauth: oauth)
     }
 }

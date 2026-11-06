@@ -274,8 +274,9 @@ public func configure(_ app: Application, services: FallbackServices) {
     PublicFeature(services: services).register(routes: app)
     AuthFeature(services: services).register(routes: app)
     KnowledgeFeature(services: services).register(routes: app)
-    services.emailAccounts.onAgentReadUpdated = { serverId, channelId, agentId, maxReadSeq in
-        services.emailAccounts.managedMCPToolExecution.emitAgentScopeRead(
+    let readReceipts = services.emailAccounts.managedMCPToolExecution
+    readReceipts.installReadUpdateObserver { serverId, channelId, agentId, maxReadSeq in
+        readReceipts.emitAgentScopeRead(
             serverId: serverId,
             channelId: channelId,
             agentId: agentId,

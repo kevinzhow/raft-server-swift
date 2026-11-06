@@ -3,21 +3,16 @@ import Foundation
 
 extension EmailLoginDirectory {
     public func inboxFactsForTesting(messageId: String) -> [(receiverType: String, receiverId: String, personalMention: Bool, unreadEligible: Bool)] {
-        lock.lock()
-        defer { lock.unlock() }
         return inboxFactStore.all().filter { $0.messageId == messageId }.map {
             ($0.receiverType, $0.receiverId, $0.personalMention, $0.unreadEligible)
         }
     }
 
     public func markInboxResidueForTesting(userId: String, channelId: String) {
-        lock.lock()
-        inboxResidues.insert("\(userId)\n\(channelId)")
-        lock.unlock()
+        messagesAndThreadsStore.withState { _ = $0.inboxResidues.insert("\(userId)\n\(channelId)") }
     }
 
     public func addInboxFactForTesting(receiverId: String, serverId: String, channelId: String, messageId: String) {
-        lock.lock()
         inboxFactStore.append(StoredInboxFact(
             messageId: messageId,
             receiverType: "user",
@@ -26,7 +21,6 @@ extension EmailLoginDirectory {
             serverId: serverId,
             personalMention: false
         ))
-        lock.unlock()
     }
 
     @discardableResult
@@ -40,8 +34,7 @@ extension EmailLoginDirectory {
         messageType: String = "chat"
     ) -> String {
         let id = explicitId ?? UUID().uuidString.lowercased()
-        lock.lock()
-        appendHumanMessageLocked(StoredHumanMessage(
+        messagesAndThreadsStore.appendMessage(StoredHumanMessage(
             id: id,
             channelId: channelId,
             senderId: senderId,
@@ -50,16 +43,14 @@ extension EmailLoginDirectory {
             messageType: messageType,
             senderType: senderType,
             createdAt: createdAt
-        ))
-        lock.unlock()
+        ), ledger: .init(oauth: oauth))
         return id
     }
 
     @discardableResult
     public func addSystemMessageForTesting(channelId: String, content: String) -> String {
         let id = UUID().uuidString.lowercased()
-        lock.lock()
-        appendHumanMessageLocked(StoredHumanMessage(
+        messagesAndThreadsStore.appendMessage(StoredHumanMessage(
             id: id,
             channelId: channelId,
             senderId: "system",
@@ -67,8 +58,7 @@ extension EmailLoginDirectory {
             randomId: nil,
             messageType: "system",
             senderType: "user"
-        ))
-        lock.unlock()
+        ), ledger: .init(oauth: oauth))
         return id
     }
 
@@ -81,8 +71,7 @@ extension EmailLoginDirectory {
         causalActorId: String? = nil
     ) -> String {
         let id = UUID().uuidString.lowercased()
-        lock.lock()
-        appendHumanMessageLocked(StoredHumanMessage(
+        messagesAndThreadsStore.appendMessage(StoredHumanMessage(
             id: id,
             channelId: channelId,
             senderId: "system",
@@ -93,8 +82,7 @@ extension EmailLoginDirectory {
             systemSubtype: subtype,
             causalActorType: causalActorType,
             causalActorId: causalActorId
-        ))
-        lock.unlock()
+        ), ledger: .init(oauth: oauth))
         return id
     }
 
@@ -106,9 +94,8 @@ extension EmailLoginDirectory {
         provider: String = "slack"
     ) -> String {
         let id = UUID().uuidString.lowercased()
-        let rendered = provider == "slack" ? content : Self.neutralizeExternalProjectionContent(content)
-        lock.lock()
-        appendHumanMessageLocked(StoredHumanMessage(
+        let rendered = provider == "slack" ? content : ExternalProjectionFixturePolicy.neutralize(content)
+        messagesAndThreadsStore.appendMessage(StoredHumanMessage(
             id: id,
             channelId: channelId,
             senderId: "external-projection-\(id.prefix(8))",
@@ -119,8 +106,21 @@ extension EmailLoginDirectory {
             externalMessageId: externalMessageId,
             externalProvider: provider,
             externalSenderName: senderName
-        ))
-        lock.unlock()
+        ), ledger: .init(oauth: oauth))
         return id
     }
+}
+
+private enum ExternalProjectionFixturePolicy {
+    /// Third-party content stays inert: mentions read as plain `user:<handle>`.
+    static func neutralize(_ text: String) -> String {
+        var value = text
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+        value = value.replacingOccurrences(of: "@([A-Za-z0-9_.-]+)", with: "user:$1", options: .regularExpression)
+        value = value.replacingOccurrences(of: "#([A-Za-z0-9_.-]+)", with: "channel:$1", options: .regularExpression)
+        return value
+    }
+
 }

@@ -107,10 +107,9 @@ enum InboxChannelProbe: Sendable, Equatable {
 /// attachment-comments flag, the channel probe, guest scope visibility, message
 /// search visibility, and the four per-message fragments owned by unmigrated
 /// domains (reaction buckets, forward metadata, action-card metadata, thread
-/// summaries) enter here; `live(directory:)` wires them to the existing
-/// directory entry points at the composition root. The four fragment closures
-/// return `OrderedJSON` because their owners still render those bytes; the
-/// service places them at the published position without re-deriving them.
+/// summaries) enter as ordered trees from typed projection readers. The
+/// composition root supplies their owning stores; the service places each
+/// projection at its published position.
 struct InboxAndWakeDependencies: Sendable {
     var authorize: @Sendable (String?) -> InboxAuthorization
     var isEmailVerified: @Sendable (String) -> Bool
@@ -136,7 +135,7 @@ struct InboxAndWakeDependencies: Sendable {
             },
             isEmailVerified: { source.isEmailVerified(userId: $0) },
             attachmentCommentsEnabled: { serverId, userId in
-                source.attachmentCommentsEnabled(serverId: serverId, userId: userId)
+                source.messageReadProjection.commentsEnabled(serverId: serverId, userId: userId)
             },
             channelProbeAccess: { channelId, serverId, userId in
                 switch source.channelProbeAccessLocked(
@@ -158,29 +157,16 @@ struct InboxAndWakeDependencies: Sendable {
                 )
             },
             reactions: { messageId in
-                // The shared projection renders the bucket list; the brackets
-                // are the DTO's array value (no reactions is `[]`).
-                let buckets = source.reactionJSONLocked(messageId: messageId)
-                return .raw("[\(buckets)]")
+                .array(source.messageReadProjection.reactions(messageId: messageId).map(\.jsonBody))
             },
             forwardMetadata: { messageId, userId, serverId in
-                source.forwardMetadataJSONLocked(
-                    messageId: messageId,
-                    userId: userId,
-                    serverId: serverId
-                ).map(OrderedJSON.raw)
+                source.messageReadProjection.forward(messageId: messageId, userId: userId, serverId: serverId)
             },
             actionCardMetadata: { messageId in
                 source.actionCardMetadata.metadata(messageId: messageId).map(OrderedJSON.raw)
             },
             threadSummaries: { parentChannelId, parentIds in
-                // The shared projection renders the object's member list; the
-                // braces are the DTO's object value (an empty page is `{}`).
-                let members = source.threadSummariesJSONLocked(
-                    parentChannelId: parentChannelId,
-                    parentIds: parentIds
-                )
-                return .raw("{\(members)}")
+                source.messageReadProjection.threadSummaries(parentChannelId: parentChannelId, parentIds: parentIds)
             }
         )
     }
@@ -704,229 +690,4 @@ public struct InboxAndWakeService: Sendable {
         }
         return nil
     }
-}
-
-// MARK: - Stored-message seams for unmigrated domains
-
-/// Stored-message seams and the shared thread-summary projection that
-/// unmigrated domains still call through the directory accessor. They are not
-/// part of the served-inbox service; removing them would break callers in the
-/// search, message-send and task domains that have not migrated yet.
-extension EmailLoginDirectory {
-
-    /// Summaries for threads whose parent message is on this page. Newest three non-system replies, oldest of those first.
-    func threadSummariesJSONLocked(parentChannelId: String, parentIds: [String]) -> String {
-        let parents = Set(parentIds)
-        var parts: [String] = []
-        for (threadId, thread) in postableChannels {
-            guard thread.kind == "thread",
-                  thread.deletedAt == nil,
-                  thread.parentChannelId == parentChannelId,
-                  let parentId = thread.parentMessageId,
-                  parents.contains(parentId)
-            else { continue }
-            let replies = humanMessageRows.filter { $0.channelId == threadId }
-            let previews = replies.filter { $0.messageType != "system" }.suffix(3)
-            let latest = previews.map { "{\"preview\":\(jsonString($0.content))}" }.joined(separator: ",")
-            parts.append("\(jsonString(parentId)):{\"replyCount\":\(replies.count),\"latestReplies\":[\(latest)]}")
-        }
-        return parts.joined(separator: ",")
-    }
-
-    /// Stores a message row with a fixed id. Reaction short-id tests need a known prefix.
-    public func insertHumanMessage(id: String, channelId: String, senderId: String, content: String, messageType: String = "chat", senderType: String = "user", actionKind: String? = nil) {
-        lock.lock()
-        appendHumanMessageLocked(StoredHumanMessage(
-            id: id,
-            channelId: channelId,
-            senderId: senderId,
-            content: content,
-            messageType: messageType,
-            senderType: senderType,
-            actionKind: actionKind
-        ))
-        lock.unlock()
-    }
-
-    /// Task columns on a source message. A forward must not copy them onto the destination.
-    public func setHumanMessageTask(messageId: String, status: String, number: Int, assigneeType: String, assigneeId: String, claimedAt: String, completedAt: String) {
-        lock.lock()
-        if let index = humanMessageRows.firstIndex(where: { $0.id == messageId }) {
-            humanMessageRows[index].taskStatus = status
-            humanMessageRows[index].taskNumber = number
-            humanMessageRows[index].taskAssigneeType = assigneeType
-            humanMessageRows[index].taskAssigneeId = assigneeId
-            humanMessageRows[index].taskClaimedAt = claimedAt
-            humanMessageRows[index].taskCompletedAt = completedAt
-        }
-        lock.unlock()
-    }
-
-    /// A mention row search can filter with `mentionTarget=self`. Send only stores mentions of people who are not yet members.
-    /// A notifiable agent mention whose delivery ended in a terminal code. The author route projects that code.
-    public func recordAgentMentionDelivery(messageId: String, agentId: String, handle: String, terminalCode: String) {
-        lock.lock()
-        let message = humanMessageRows.first { $0.id == messageId }
-        storedMentions.append(StoredMention(
-            id: UUID().uuidString.lowercased(),
-            messageId: messageId,
-            channelId: message?.channelId ?? "",
-            senderId: message?.senderId ?? "",
-            targetType: "agent",
-            targetId: agentId,
-            handle: handle,
-            notifiableAtSend: true,
-            notifiedAt: nil,
-            notifiedByType: nil,
-            notifiedById: nil,
-            notifiedAction: nil,
-            terminalCode: terminalCode
-        ))
-        lock.unlock()
-    }
-
-    public func addMessageMention(
-        messageId: String,
-        targetType: String,
-        targetId: String,
-        notifiableAtSend: Bool = true,
-        notifiedAt: Date? = nil,
-        notifiedByType: String? = nil,
-        notifiedById: String? = nil,
-        notifiedAction: String? = nil
-    ) {
-        lock.lock()
-        let message = humanMessageRows.first { $0.id == messageId }
-        storedMentions.append(StoredMention(
-            id: UUID().uuidString.lowercased(),
-            messageId: messageId,
-            channelId: message?.channelId ?? "",
-            senderId: message?.senderId ?? "",
-            targetType: targetType,
-            targetId: targetId,
-            handle: "",
-            notifiableAtSend: notifiableAtSend,
-            notifiedAt: notifiedAt,
-            notifiedByType: notifiedByType,
-            notifiedById: notifiedById,
-            notifiedAction: notifiedAction
-        ))
-        lock.unlock()
-    }
-
-    /// Pins the timestamp used by `sort=recent` message search.
-    public func setHumanMessageCreatedAt(messageId: String, createdAt: Date) {
-        lock.lock()
-        if let index = humanMessageRows.firstIndex(where: { $0.id == messageId }) {
-            humanMessageRows[index].createdAt = createdAt
-        }
-        lock.unlock()
-    }
-
-    public func markMessageSystem(messageId: String) {
-        lock.lock()
-        if let index = humanMessageRows.firstIndex(where: { $0.id == messageId }) {
-            humanMessageRows[index].messageType = "system"
-        }
-        lock.unlock()
-    }
-
-    public func archiveChannel(channelId: String) {
-        lock.lock()
-        postableChannels[channelId]?.archived = true
-        lock.unlock()
-    }
-
-    public func markChannelDeleted(channelId: String) {
-        lock.lock()
-        postableChannels[channelId]?.deletedAt = Date()
-        lock.unlock()
-    }
-
-    /// Drops a channel membership. A later send on another channel must not replay this channel's randomId.
-    public func removeChannelMember(channelId: String, memberId: String) {
-        lock.lock()
-        postableChannels[channelId]?.memberIds.remove(memberId)
-        lock.unlock()
-    }
-
-    public func humanMessageRandomIds(channelId: String) -> [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return humanMessageRows.filter { $0.channelId == channelId }.compactMap(\.randomId)
-    }
-
-    public func humanMessageIds(channelId: String) -> [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return humanMessageRows.filter { $0.channelId == channelId }.map(\.id)
-    }
-
-    /// The IANA zone stored for a human send. Human HTTP never returns this column.
-    public func storedSenderTimezone(messageId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return humanMessageRows.first { $0.id == messageId }?.senderTimezone
-    }
-
-    /// The stored notify/add row for one resolution id.
-    public func mentionActionRecord(id: String) -> MentionActionRecord? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let row = storedMentions.first(where: { $0.id == id }) else { return nil }
-        return MentionActionRecord(
-            notified: row.notifiedAt != nil,
-            notifiedByType: row.notifiedByType,
-            notifiedById: row.notifiedById,
-            notifiedAction: row.notifiedAction
-        )
-    }
-
-    public func channelAgentIds(channelId: String) -> [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return Array(channelAgentMembers[channelId] ?? []).sorted()
-    }
-
-    public func channelMemberIds(channelId: String) -> [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return Array(postableChannels[channelId]?.memberIds ?? []).sorted()
-    }
-
-    /// Mention rows written for this message. Public-channel outsiders stay `notifiableAtSend: false` and unnotified.
-    public func messageMentionRows(messageId: String) -> [MentionFact] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storedMentions.filter { $0.messageId == messageId }.map {
-            MentionFact(targetType: $0.targetType, targetId: $0.targetId, notifiableAtSend: $0.notifiableAtSend, notified: $0.notifiedAt != nil)
-        }
-    }
-
-    public func inboxFacts(messageId: String, receiverIds: [String]) -> [InboxFact] {
-        lock.lock()
-        defer { lock.unlock() }
-        let wanted = Set(receiverIds)
-        return inboxFactStore.all().filter { $0.messageId == messageId && wanted.contains($0.receiverId) }.map {
-            InboxFact(
-                receiverType: $0.receiverType,
-                receiverId: $0.receiverId,
-                personalMention: $0.personalMention,
-                unreadEligible: $0.unreadEligible
-            )
-        }
-    }
-
-    public func agentDeliveries(agentId: String) -> [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storedAgentDeliveries.filter { $0.agentId == agentId }.map(\.messageId)
-    }
-
-    public func agentDeliveryChannelTypes(agentId: String) -> [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storedAgentDeliveries.filter { $0.agentId == agentId }.map(\.channelType)
-    }
-
 }

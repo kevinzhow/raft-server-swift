@@ -1,6 +1,22 @@
 import Foundation
 
 extension AgentsRuntimeStore {
+    func profileReadCredential(token: String) -> String? {
+        withState { state in
+            guard let credential = state.agentCredentials[token], credential.scopes.contains("read") else { return nil }
+            return credential.agentId
+        }
+    }
+
+    func mintAgentCredential(agentId: String, scopes: [String], name: String) -> (apiKey: String, credentialId: String) {
+        let key = "sk_agent_" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        return withState { state in
+            let credential = AgentCredential(agentId: agentId, scopes: Set(scopes), name: name)
+            state.agentCredentials[key] = credential
+            return (key, credential.id)
+        }
+    }
+
     // MARK: - Agent send delivery
 
     /// Reads one agent credential without changing it. The caller still checks

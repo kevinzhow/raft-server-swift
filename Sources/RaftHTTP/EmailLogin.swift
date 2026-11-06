@@ -1,25 +1,13 @@
-import Crypto
-import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
-
-/// Dependency assembly for the HTTP domain services.
+/// Shared owner instances for the HTTP service factories.
 ///
-/// Services implement authentication and domain decisions; stores own state.
-/// A global transaction lock still protects unmigrated directory operations.
+/// Stores own mutable records and callback slots behind checked Mutex state.
+/// Message commits and DM preparation use explicit typed owner transactions;
+/// this root supplies no shared lock or per-field forwarding surface.
 ///
-/// The root holds immutable references to its stores, OAuth ledger, and locks.
-/// Checked Sendable validates those references; it does not remove the
-/// transaction coordination still used by the directory's remaining helpers.
-/// Store forwarding accessors live in `Stores/DirectoryStoreForwarders.swift`;
-/// domain services live under `Services/`, with test seams in `TestSupport`.
+/// Checked Sendable validates these stored references. Factory extensions still
+/// capture this transitional root and must move to explicit service assembly.
 public final class EmailLoginDirectory: Sendable {
-    let lock = NSLock()
-
-    // Domain stores. Each owns one ledger family behind its own lock, and the
-    // forwarding accessors keep the extension files' property names while this
-    // body stays a composition root.
+    // Each domain owns one ledger family; factories share these instances.
     let authProfileStore = AuthProfileStore()
     let notificationsStore = NotificationsStore()
     let productEventStore = ProductEventStore()
@@ -33,7 +21,7 @@ public final class EmailLoginDirectory: Sendable {
     let managedMCPAndCardsStore = ManagedMCPAndCardsStore()
     let feedbackStore = FeedbackStore()
 
-    /// Human authorization codes and the token endpoint. The same ledger the HTTP routes exchange.
+    /// Shared OAuth protocol state and the exact message mirror.
     public let oauth = OAuthLedger()
 
     public init() {}

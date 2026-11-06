@@ -1,6 +1,6 @@
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
 import Testing
 import TestSupport
@@ -126,8 +126,10 @@ private func makeMigrationGapFixture(_ suffix: Int) -> MigrationGapFixture {
     accounts.setMachineRuntimesForTesting(machineId: source, runtimes: ["codex"])
     accounts.setMachineRuntimesForTesting(machineId: target, runtimes: ["codex"])
     accounts.setMachineOnline(machineId: target, online: true)
-    accounts.machineMigrationCapabilities[source] = ["migration/v3"]
-    accounts.machineMigrationCapabilities[target] = ["migration/v3"]
+    accounts.machinesAndComputersStore.storage.withLock { state in
+        state.machineMigrationCapabilities[source] = ["migration/v3"]
+        state.machineMigrationCapabilities[target] = ["migration/v3"]
+    }
     let agent = accounts.oauth.createAgent(
         serverId: serverId,
         name: "gap-agent-\(suffix)",

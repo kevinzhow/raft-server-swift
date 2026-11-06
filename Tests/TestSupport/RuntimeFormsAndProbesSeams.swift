@@ -6,47 +6,43 @@ import Foundation
 extension EmailLoginDirectory {
 
     public func addAgentMigrationForTesting(id: String, agentId: String = "", sourceMachineId: String, targetMachineId: String, state: String) {
-        lock.lock()
-        activeAgentMigrations[id] = AgentMigrationFact(
-            agentId: agentId,
-            sourceMachineId: sourceMachineId,
-            targetMachineId: targetMachineId,
-            state: state
-        )
-        lock.unlock()
+        agentsRuntimeStore.withState { owned in
+            owned.activeAgentMigrations[id] = AgentMigrationFact(
+                agentId: agentId,
+                sourceMachineId: sourceMachineId,
+                targetMachineId: targetMachineId,
+                state: state
+            )
+        }
     }
 
     public func setAgentMigrationStateForTesting(id: String, state: String) {
-        lock.lock()
-        if var migration = activeAgentMigrations[id] {
-            migration.state = state
-            activeAgentMigrations[id] = migration
+        agentsRuntimeStore.withState { owned in
+            if var migration = owned.activeAgentMigrations[id] {
+                migration.state = state
+                owned.activeAgentMigrations[id] = migration
+            }
         }
-        lock.unlock()
     }
 
     public func agentMigrationStateForTesting(id: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return activeAgentMigrations[id]?.state
+        return agentsRuntimeStore.withState { owned in owned.activeAgentMigrations[id]?.state }
     }
 
     public func agentMigrationCountForTesting() -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return activeAgentMigrations.count
+        return agentsRuntimeStore.withState { owned in owned.activeAgentMigrations.count }
     }
 
     public func setLatestComputerReleaseForTesting(version: String, releaseNotesJSON: String) {
-        lock.lock()
-        latestComputerRelease = (version, releaseNotesJSON)
-        lock.unlock()
+        machinesAndComputersStore.storage.withLock { owned in
+            owned.latestComputerRelease = (version, releaseNotesJSON)
+        }
     }
 
     public func setMachineBroadcastPolicyForTesting(machineId: String, policyJSON: String) {
-        lock.lock()
-        machineBroadcastPolicies[machineId] = policyJSON
-        lock.unlock()
+        machinesAndComputersStore.storage.withLock { owned in
+            owned.machineBroadcastPolicies[machineId] = policyJSON
+        }
     }
 
     public func setAgentRuntimeProfileForTesting(
@@ -59,57 +55,51 @@ extension EmailLoginDirectory {
         pendingKind: String? = nil,
         pendingReleaseNotesUrl: String? = nil
     ) {
-        lock.lock()
-        agentRuntimeProfiles[agentId] = AgentRuntimeProfileFact(
-            agentId: agentId,
-            machineId: machineId,
-            baselineMachineId: baselineMachineId,
-            pendingBeforeMachineId: pendingBeforeMachineId,
-            pendingAfterMachineId: pendingAfterMachineId,
-            migrationStatus: migrationStatus,
-            pendingKind: pendingKind,
-            pendingReleaseNotesUrl: pendingReleaseNotesUrl
-        )
-        lock.unlock()
+        agentsRuntimeStore.withState { owned in
+            owned.agentRuntimeProfiles[agentId] = AgentRuntimeProfileFact(
+                agentId: agentId,
+                machineId: machineId,
+                baselineMachineId: baselineMachineId,
+                pendingBeforeMachineId: pendingBeforeMachineId,
+                pendingAfterMachineId: pendingAfterMachineId,
+                migrationStatus: migrationStatus,
+                pendingKind: pendingKind,
+                pendingReleaseNotesUrl: pendingReleaseNotesUrl
+            )
+        }
     }
 
     public func agentRuntimeProfileForTesting(agentId: String) -> AgentRuntimeProfileFact? {
-        lock.lock()
-        defer { lock.unlock() }
-        return agentRuntimeProfiles[agentId]
+        return agentsRuntimeStore.withState { owned in owned.agentRuntimeProfiles[agentId] }
     }
 
     public func agentMachineIdForTesting(agentId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return agentMachineIds[agentId]
+        return agentsRuntimeStore.withState { owned in owned.agentMachineIds[agentId] }
     }
 
     public func revokeAccessTokenForTesting(_ token: String) {
-        lock.lock()
-        accessTokens.removeValue(forKey: token)
-        lock.unlock()
+        authProfileStore.state.withLock { owned in
+            _ = owned.accountSurface.accessTokens.removeValue(forKey: token)
+        }
     }
 
     public func retireUserForTesting(userId: String) {
-        lock.lock()
-        if let key = accounts.first(where: { $0.value.id == userId })?.key {
-            accounts[key]?.retiredAt = Date()
+        authProfileStore.state.withLock { owned in
+            if let key = owned.accountSurface.accounts.first(where: { $0.value.id == userId })?.key {
+                owned.accountSurface.accounts[key]?.retiredAt = Date()
+            }
         }
-        lock.unlock()
     }
 
     public func setAgentMachineForTesting(agentId: String, machineId: String) {
-        lock.lock()
-        agentMachineIds[agentId] = machineId
-        lock.unlock()
+        agentsRuntimeStore.withState { owned in
+            owned.agentMachineIds[agentId] = machineId
+        }
     }
 
     public func setAgentStatusForTesting(agentId: String, status: String) {
         oauth.setAgentStatus(id: agentId, status: status)
-        lock.lock()
-        serverAgents[agentId]?.status = status
-        lock.unlock()
+        agentsRuntimeStore.withState { $0.serverAgents[agentId]?.status = status }
     }
 
     public func setRuntimeAccountUsageForTesting(
@@ -118,8 +108,8 @@ extension EmailLoginDirectory {
         json: String,
         staleAfter: Date
     ) {
-        var state = machinesAndComputersStore.state
-        state.runtimeAccountUsage["\(machineId)\n\(provider)"] = (json, staleAfter)
-        machinesAndComputersStore.state = state
+        machinesAndComputersStore.storage.withLock { owned in
+            owned.runtimeAccountUsage["\(machineId)\n\(provider)"] = (json, staleAfter)
+        }
     }
 }

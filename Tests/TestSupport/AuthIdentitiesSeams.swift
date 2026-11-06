@@ -7,21 +7,17 @@ extension EmailLoginDirectory {
     }
 
     public func addAuthIdentityForTesting(userId: String, provider: String, providerEmail: String) {
-        lock.lock()
         authProfileStore.appendIdentity(userId: userId, provider: provider, providerEmail: providerEmail)
-        lock.unlock()
     }
 
     public func addPasswordResetTokenForTesting(userId: String, token: String, expiresAt: Date) {
-        lock.lock()
         authProfileStore.setResetToken(hash: AuthTokenCodec.sha256(token), userId: userId, expiresAt: expiresAt)
-        lock.unlock()
     }
 
     public func expireAppLoginRequestForTesting(requestId: String) {
-        var state = authProfileStore.accountState
-        state.appLoginRequests[requestId]?.expiresAt = Date().addingTimeInterval(-1)
-        authProfileStore.accountState = state
+        authProfileStore.state.withLock { owned in
+            owned.accountSurface.appLoginRequests[requestId]?.expiresAt = Date().addingTimeInterval(-1)
+        }
     }
 
     public func authIdentityCount(userId: String) -> Int {

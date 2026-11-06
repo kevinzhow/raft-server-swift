@@ -1,12 +1,18 @@
 import Foundation
 
 public struct DirectoryTaskCatalog: Sendable {
-    let directory: EmailLoginDirectory
+    let tasks: TasksAndRemindersStore
+    let profiles: AuthProfileStore
+    let oauth: OAuthLedger
 
-    public init(directory: EmailLoginDirectory) { self.directory = directory }
+    public init(directory: EmailLoginDirectory) {
+        tasks = directory.tasksAndRemindersStore
+        profiles = directory.authProfileStore
+        oauth = directory.oauth
+    }
 
     func taskChannelAccess(serverId: String, channelId: String, userId: String) -> TaskChannelAccess {
-        TasksAndLabsService.channelAccess(oauth: directory.oauth, serverId: serverId, channelId: channelId, userId: userId)
+        TasksAndLabsService.channelAccess(oauth: oauth, serverId: serverId, channelId: channelId, userId: userId)
     }
 
     public func channelTaskAccess(serverId: String, channelId: String, userId: String) -> ChannelTaskAccess {
@@ -24,13 +30,9 @@ public struct DirectoryTaskCatalog: Sendable {
         channelId: String, titles: [String], descriptions: [String?]? = nil,
         creatorId: String? = nil, creatorType: String = "user"
     ) -> [String] {
-        // The directory lock keeps this append ordered with the readers that
-        // still snapshot taskRecords; the store method itself is one locked
-        // read-modify-write for the row array. `creatorType` is accepted for
-        // callers but the row has no column for it, as before.
-        directory.lock.lock()
-        defer { directory.lock.unlock() }
-        return directory.tasksAndRemindersStore.appendTasks(
+        // Number allocation and the batch append are one Tasks transaction.
+        // `creatorType` remains accepted without a corresponding row column.
+        return tasks.appendTasks(
             channelId: channelId,
             titles: titles,
             descriptions: descriptions,
@@ -43,17 +45,15 @@ public struct DirectoryTaskCatalog: Sendable {
         userId: String,
         status: String?
     ) -> [(task: TaskRecord, channelName: String, channelType: String)] {
-        let visible = directory.oauth.channelsForServer(serverId: serverId, userId: userId).filter {
+        let visible = oauth.channelsForServer(serverId: serverId, userId: userId).filter {
             $0.joined && ($0.type == "channel" || $0.type == "joint")
-                && directory.oauth.channelArchivedAt(id: $0.id) == nil
+                && oauth.channelArchivedAt(id: $0.id) == nil
         }
         let names = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, $0.name) })
         let types = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, $0.type) })
-        directory.lock.lock()
-        let rows = directory.taskRecords.filter {
+        let rows = tasks.taskRecords.filter {
             names[$0.channelId] != nil && (status == nil || $0.status == status)
         }
-        directory.lock.unlock()
         return rows
             .map { (task: $0, channelName: names[$0.channelId] ?? "", channelType: types[$0.channelId] ?? "channel") }
             .sorted {
@@ -86,29 +86,25 @@ public struct DirectoryTaskCatalog: Sendable {
         let assigneeType = task.assigneeType
         var claimedByName: String?
         if let assigneeId = task.assigneeId {
-            directory.lock.lock()
-            if task.assigneeType == "agent", let agent = directory.oauth.agentRuntimeInfo(id: assigneeId) {
+            if task.assigneeType == "agent", let agent = oauth.agentRuntimeInfo(id: assigneeId) {
                 claimedByName = agent.name
-            } else if let name = directory.accounts.values.first(where: { $0.id == assigneeId })?.name {
+            } else if let name = profiles.account(userId: assigneeId)?.name {
                 claimedByName = name
             }
-            directory.lock.unlock()
         }
         var createdById: String?
         var createdByName: String?
         var createdByType: String?
         if let creatorId = task.creatorId {
-            directory.lock.lock()
-            if let agent = directory.oauth.agentRuntimeInfo(id: creatorId) {
+            if let agent = oauth.agentRuntimeInfo(id: creatorId) {
                 createdById = creatorId
                 createdByName = agent.name
                 createdByType = "agent"
-            } else if let name = directory.accounts.values.first(where: { $0.id == creatorId })?.name {
+            } else if let name = profiles.account(userId: creatorId)?.name {
                 createdById = creatorId
                 createdByName = name
                 createdByType = "user"
             }
-            directory.lock.unlock()
         }
         return OrderedJSON.object([
             OrderedJSONField("channelId", task.channelId),

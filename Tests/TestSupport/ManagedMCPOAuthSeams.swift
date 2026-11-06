@@ -13,19 +13,19 @@ extension EmailLoginDirectory {
         audienceServerIds: [String] = []
     ) -> String {
         let id = UUID().uuidString.lowercased()
-        lock.lock()
-        announcements.append((
-            id: id,
-            title: title,
-            pages: pages,
-            startsAt: startsAt,
-            expiresAt: expiresAt,
-            status: status,
-            publishedAt: publishedAt ?? (status == "draft" ? nil : Date()),
-            imageId: imageId,
-            audienceServerIds: audienceServerIds
-        ))
-        lock.unlock()
+        notificationsStore.storage.withLock { owned in
+            owned.announcements.append((
+                id: id,
+                title: title,
+                pages: pages,
+                startsAt: startsAt,
+                expiresAt: expiresAt,
+                status: status,
+                publishedAt: publishedAt ?? (status == "draft" ? nil : Date()),
+                imageId: imageId,
+                audienceServerIds: audienceServerIds
+            ))
+        }
         return id
     }
 
@@ -35,24 +35,24 @@ extension EmailLoginDirectory {
         publishedAt: Date?,
         startsAt: Date
     ) {
-        lock.lock()
-        if let index = announcements.firstIndex(where: { $0.id == id }) {
-            announcements[index].status = status
-            announcements[index].publishedAt = publishedAt
-            announcements[index].startsAt = startsAt
+        notificationsStore.storage.withLock { owned in
+            if let index = owned.announcements.firstIndex(where: { $0.id == id }) {
+                owned.announcements[index].status = status
+                owned.announcements[index].publishedAt = publishedAt
+                owned.announcements[index].startsAt = startsAt
+            }
         }
-        lock.unlock()
     }
 
     public func addAnnouncementImageForTesting(id: String, announcementId: String, contentType: String, bytes: Data) {
-        lock.lock()
-        notificationsStore.announcementImageAssets[id] = AnnouncementImageAsset(
-            id: id,
-            announcementId: announcementId,
-            contentType: contentType,
-            bytes: bytes
-        )
-        lock.unlock()
+        notificationsStore.storage.withLock { state in
+            state.announcementImageAssets[id] = AnnouncementImageAsset(
+                id: id,
+                announcementId: announcementId,
+                contentType: contentType,
+                bytes: bytes
+            )
+        }
     }
 
     public func addExternalAvatarForTesting(
@@ -62,45 +62,43 @@ extension EmailLoginDirectory {
         sourceDigest: String,
         active: Bool = true
     ) {
-        lock.lock()
-        messagesAndThreadsStore.externalAvatarAssets[id] = ExternalAvatarAsset(
-            id: id,
-            contentType: contentType,
-            bytes: bytes,
-            sourceDigest: sourceDigest,
-            active: active
-        )
-        lock.unlock()
+        messagesAndThreadsStore.withState { state in
+            state.externalAvatarAssets[id] = ExternalAvatarAsset(
+                id: id,
+                contentType: contentType,
+                bytes: bytes,
+                sourceDigest: sourceDigest,
+                active: active
+            )
+        }
     }
 
     public func setExternalAvatarStorageAvailableForTesting(_ available: Bool) {
-        lock.lock()
-        messagesAndThreadsStore.externalAvatarStorageAvailable = available
-        lock.unlock()
+        messagesAndThreadsStore.withState { state in
+            state.externalAvatarStorageAvailable = available
+        }
     }
 
     public func setAnnouncementImageStorageAvailableForTesting(_ available: Bool) {
-        lock.lock()
-        notificationsStore.announcementImageStorageAvailable = available
-        lock.unlock()
+        notificationsStore.storage.withLock { state in
+            state.announcementImageStorageAvailable = available
+        }
     }
 
     public func setUserChannelReadCursorForTesting(userId: String, channelId: String, seq: Int) {
-        lock.lock()
-        userChannelReadCursors["\(userId)\n\(channelId)"] = seq
-        lock.unlock()
+        messagesAndThreadsStore.withState { state in
+            state.userChannelReadCursors["\(userId)\n\(channelId)"] = seq
+        }
     }
 
     public func softDeleteAgentReminderSurfaceForTesting(agentId: String) {
-        lock.lock()
-        if let channelId = agentReminderSurfaceChannels[agentId] {
-            postableChannels[channelId]?.deletedAt = Date()
+        guard let channelId = feedbackStore.agentReminderSurfaceChannelId(agentId: agentId) else { return }
+        serversAndChannelsStore.mutex.withLock { state in
+            state.postableChannels[channelId]?.deletedAt = Date()
         }
-        lock.unlock()
     }
 
     public func agentReminderSurfaceForTesting(agentId: String) -> String? {
-        lock.lock(); defer { lock.unlock() }
-        return agentReminderSurfaceChannels[agentId]
+        feedbackStore.agentReminderSurfaceChannelId(agentId: agentId)
     }
 }

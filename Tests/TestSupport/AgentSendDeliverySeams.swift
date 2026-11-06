@@ -4,15 +4,15 @@ import Foundation
 
 extension EmailLoginDirectory {
     public func agentActivityForTesting(agentId: String) -> (activity: String, detail: String)? {
-        lock.lock()
-        defer { lock.unlock() }
-        return agentActivities[agentId]
+        return agentsRuntimeStore.withState { storeState in
+            return storeState.agentActivities[agentId]
+        }
     }
 
     public func agentStatusAdoptedForTesting(agentId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return agentStatusAdopted.contains(agentId)
+        return agentsRuntimeStore.withState { storeState in
+            return storeState.agentStatusAdopted.contains(agentId)
+        }
     }
 }
 

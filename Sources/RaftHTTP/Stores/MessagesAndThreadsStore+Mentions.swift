@@ -36,6 +36,22 @@ struct ThreadMentionFollowTarget: Sendable, Equatable {
 }
 
 extension MessagesAndThreadsStore {
+    /// Membership is an explicit cross-store fact supplied by the caller. The
+    /// unique-key check and append share this one Messages transaction.
+    func recordMemberMentions(messageId: String, channelId: String, mentions: [MentionInput]) {
+        withState { state in
+            var existing = Set(state.storedMentions.filter { $0.messageId == messageId }
+                .map { "\($0.targetType):\($0.targetId)" })
+            for mention in mentions where existing.insert("\(mention.type):\(mention.id)").inserted {
+                state.storedMentions.append(StoredMention(
+                    id: UUID().uuidString.lowercased(), messageId: messageId, channelId: channelId,
+                    senderId: "system", targetType: mention.type, targetId: mention.id, handle: mention.name,
+                    notifiableAtSend: true, notifiedAt: nil, notifiedByType: nil, notifiedById: nil, notifiedAction: nil
+                ))
+            }
+        }
+    }
+
     /// Resolution rows for the outsider mentions a send leaves pending, in one
     /// critical section: a mention that already has a row for this
     /// `(message, target)` reuses it, otherwise one row is appended. Two

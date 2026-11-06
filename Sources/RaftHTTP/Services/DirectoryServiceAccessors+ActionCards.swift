@@ -63,11 +63,8 @@ extension EmailLoginDirectory {
             oauth: oauth,
             locator: FeedbackLocatorService(directory: self),
             idempotency: ActionCardTaskIdempotencyLedger.port(cards: managedMCPAndCardsStore),
-            appendHumanMessage: { [self] message in
-                lock.lock()
-                let seq = appendHumanMessageLocked(message)
-                lock.unlock()
-                return seq
+            appendHumanMessage: { [messages = messagesAndThreadsStore, ledger = MessageLedgerPort(oauth: oauth)] message in
+                messages.appendMessage(message, ledger: ledger)
             },
             serializeReceipt: { payload in
                 guard case .object = payload else { return "{}" }
@@ -105,14 +102,11 @@ extension EmailLoginDirectory {
                         oauth: oauth
                     ).identityResolution(authorization: authorization, capability: capability)
                 },
-                appendHumanMessage: { [self] message in
-                    lock.lock()
-                    let seq = appendHumanMessageLocked(message)
-                    lock.unlock()
-                    return seq
+                appendHumanMessage: { [messages = messagesAndThreadsStore, ledger = MessageLedgerPort(oauth: oauth)] message in
+                    messages.appendMessage(message, ledger: ledger)
                 },
                 addPostableChannel: { [self] serverId, channelId, memberId, kind, parentChannelId, parentMessageId, name in
-                    addPostableChannel(
+                    serversAndChannelsStore.addPostableChannel(
                         serverId: serverId,
                         channelId: channelId,
                         memberId: memberId,

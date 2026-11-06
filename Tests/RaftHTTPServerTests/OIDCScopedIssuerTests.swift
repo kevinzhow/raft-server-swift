@@ -1,3 +1,4 @@
+import TestSupport
 import Foundation
 import HTTPTypes
 import RaftHTTP
@@ -13,8 +14,8 @@ private func issuerObject(_ response: ClientResponse) throws -> [String: Any] {
 
 @Test func scopedIssuerReplacesTheServerQueryParameter() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.serverURL = "https://api.raft.test"
-    accounts.appURL = "https://app.raft.test"
+    accounts.configureOAuthForTesting { $0.serverURL = "https://api.raft.test" }
+    accounts.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
     let ownerId = "11111111-1111-4111-8111-111111111238"
     let serverId = "33333333-3333-4333-8333-333333333434"
     let slug = "scoped-oidc-238"

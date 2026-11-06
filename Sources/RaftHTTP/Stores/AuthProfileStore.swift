@@ -140,12 +140,6 @@ final class AuthProfileStore: Sendable {
         }
     }
 
-    var legalAcceptanceCount: Int {
-        return state.withLock { state in
-            return state.legalAcceptances.count
-        }
-    }
-
     func legalAcceptance(userId: String) -> EmailLegalAcceptance? {
         return state.withLock { state in
             return state.legalAcceptances[userId]
@@ -404,20 +398,11 @@ final class AuthProfileStore: Sendable {
     /// `EmailLoginDirectory`: social/Apple providers, OAuth return URIs and the
     /// deployment switches read by the auth extensions.
     struct ConfigState: Sendable {
+        var oauthDeployment = OAuthFlowsService.DeploymentConfiguration()
+        var authCoreDeployment = AuthCoreService.DeploymentConfiguration()
         var mobileProviderProfile: MobileProviderProfile? = nil
         var webProviderProfile: MobileProviderProfile? = nil
-        var configuredSocialAuthProviders: Set<String> = []
-        var appleClientId: String = ""
-        var nativeAppleClientId: String = ""
-        var nativeAppleClientSecret: String = ""
-        var nativeAppleStateSecret: String = ""
         var exchangeNativeAppleCode: (@Sendable (NativeAppleCodeExchange) async -> String?)? = nil
-        var serverURL: String = "http://localhost:3001"
-        var appURL: String = "http://localhost:3000"
-        var mobileOAuthReturnURI: String? = nil
-        var mobileOAuthAllowedReturnURIs: String? = nil
-        var releaseBranch: String? = nil
-        var deviceLoginGate: String? = nil
         var scopeAttestationSecretOverride: String?? = nil
         var deploymentEnvironmentOverride: String?? = nil
     }
@@ -595,28 +580,28 @@ final class AuthProfileStore: Sendable {
     }
 
     var configuredSocialAuthProviders: Set<String> {
-        get { state.withLock { $0.configSurface.configuredSocialAuthProviders } }
-        set { state.withLock { $0.configSurface.configuredSocialAuthProviders = newValue } }
+        get { state.withLock { $0.configSurface.oauthDeployment.configuredSocialAuthProviders } }
+        set { state.withLock { $0.configSurface.oauthDeployment.configuredSocialAuthProviders = newValue } }
     }
 
     var appleClientId: String {
-        get { state.withLock { $0.configSurface.appleClientId } }
-        set { state.withLock { $0.configSurface.appleClientId = newValue } }
+        get { state.withLock { $0.configSurface.oauthDeployment.appleClientId } }
+        set { state.withLock { $0.configSurface.oauthDeployment.appleClientId = newValue } }
     }
 
     var nativeAppleClientId: String {
-        get { state.withLock { $0.configSurface.nativeAppleClientId } }
-        set { state.withLock { $0.configSurface.nativeAppleClientId = newValue } }
+        get { state.withLock { $0.configSurface.oauthDeployment.nativeAppleClientId } }
+        set { state.withLock { $0.configSurface.oauthDeployment.nativeAppleClientId = newValue } }
     }
 
     var nativeAppleClientSecret: String {
-        get { state.withLock { $0.configSurface.nativeAppleClientSecret } }
-        set { state.withLock { $0.configSurface.nativeAppleClientSecret = newValue } }
+        get { state.withLock { $0.configSurface.oauthDeployment.nativeAppleClientSecret } }
+        set { state.withLock { $0.configSurface.oauthDeployment.nativeAppleClientSecret = newValue } }
     }
 
     var nativeAppleStateSecret: String {
-        get { state.withLock { $0.configSurface.nativeAppleStateSecret } }
-        set { state.withLock { $0.configSurface.nativeAppleStateSecret = newValue } }
+        get { state.withLock { $0.configSurface.oauthDeployment.nativeAppleStateSecret } }
+        set { state.withLock { $0.configSurface.oauthDeployment.nativeAppleStateSecret = newValue } }
     }
 
     var exchangeNativeAppleCode: (@Sendable (NativeAppleCodeExchange) async -> String?)? {
@@ -625,33 +610,33 @@ final class AuthProfileStore: Sendable {
     }
 
     var serverURL: String {
-        get { state.withLock { $0.configSurface.serverURL } }
-        set { state.withLock { $0.configSurface.serverURL = newValue } }
+        get { state.withLock { $0.configSurface.oauthDeployment.serverURL } }
+        set { state.withLock { $0.configSurface.oauthDeployment.serverURL = newValue } }
     }
 
     var appURL: String {
-        get { state.withLock { $0.configSurface.appURL } }
-        set { state.withLock { $0.configSurface.appURL = newValue } }
+        get { state.withLock { $0.configSurface.oauthDeployment.appURL } }
+        set { state.withLock { $0.configSurface.oauthDeployment.appURL = newValue } }
     }
 
     var mobileOAuthReturnURI: String? {
-        get { state.withLock { $0.configSurface.mobileOAuthReturnURI } }
-        set { state.withLock { $0.configSurface.mobileOAuthReturnURI = newValue } }
+        get { state.withLock { $0.configSurface.oauthDeployment.mobileOAuthReturnURI } }
+        set { state.withLock { $0.configSurface.oauthDeployment.mobileOAuthReturnURI = newValue } }
     }
 
     var mobileOAuthAllowedReturnURIs: String? {
-        get { state.withLock { $0.configSurface.mobileOAuthAllowedReturnURIs } }
-        set { state.withLock { $0.configSurface.mobileOAuthAllowedReturnURIs = newValue } }
+        get { state.withLock { $0.configSurface.oauthDeployment.mobileOAuthAllowedReturnURIs } }
+        set { state.withLock { $0.configSurface.oauthDeployment.mobileOAuthAllowedReturnURIs = newValue } }
     }
 
     var releaseBranch: String? {
-        get { state.withLock { $0.configSurface.releaseBranch } }
-        set { state.withLock { $0.configSurface.releaseBranch = newValue } }
+        get { state.withLock { $0.configSurface.authCoreDeployment.releaseBranch } }
+        set { state.withLock { $0.configSurface.authCoreDeployment.releaseBranch = newValue } }
     }
 
     var deviceLoginGate: String? {
-        get { state.withLock { $0.configSurface.deviceLoginGate } }
-        set { state.withLock { $0.configSurface.deviceLoginGate = newValue } }
+        get { state.withLock { $0.configSurface.authCoreDeployment.deviceLoginGate } }
+        set { state.withLock { $0.configSurface.authCoreDeployment.deviceLoginGate = newValue } }
     }
 
     var scopeAttestationSecretOverride: String?? {

@@ -17,9 +17,9 @@ private func providerProfile(_ sub: String, _ email: String, verified: Bool = tr
     accounts.addAccount(id: existingId, email: "existing@web-link.test", password: "password123")
     accounts.markEmailVerified(userId: existingId)
     accounts.markPasswordCredentialEstablished(userId: existingId)
-    accounts.appURL = "http://app.web-link.test"
-    accounts.configuredSocialAuthProviders = ["google"]
-    accounts.webProviderProfile = providerProfile("google-sub-web", "existing@web-link.test")
+    accounts.configureOAuthForTesting { $0.appURL = "http://app.web-link.test" }
+    accounts.configureOAuthForTesting { $0.configuredSocialAuthProviders = ["google"] }
+    accounts.configureAuthSimulationForTesting { $0.webProviderProfile = providerProfile("google-sub-web", "existing@web-link.test") }
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -79,9 +79,9 @@ private func providerProfile(_ sub: String, _ email: String, verified: Bool = tr
     let existingId = "11111111-1111-4111-8111-000001084011"
     accounts.addAccount(id: existingId, email: "existing@web-link2.test", password: "password123")
     accounts.markEmailVerified(userId: existingId)
-    accounts.appURL = "http://app.web-link2.test"
-    accounts.configuredSocialAuthProviders = ["google"]
-    accounts.webProviderProfile = providerProfile("google-sub-web2", "existing@web-link2.test")
+    accounts.configureOAuthForTesting { $0.appURL = "http://app.web-link2.test" }
+    accounts.configureOAuthForTesting { $0.configuredSocialAuthProviders = ["google"] }
+    accounts.configureAuthSimulationForTesting { $0.webProviderProfile = providerProfile("google-sub-web2", "existing@web-link2.test") }
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -122,8 +122,8 @@ private func providerProfile(_ sub: String, _ email: String, verified: Bool = tr
     accounts.markEmailVerified(userId: existingId)
     accounts.markPasswordCredentialEstablished(userId: existingId)
     accounts.linkIdentityForTesting(userId: existingId, provider: "github", providerUserId: "1304", providerEmail: "existing@web-link3.test")
-    accounts.appURL = "http://app.web-link3.test"
-    accounts.configuredSocialAuthProviders = ["google", "github"]
+    accounts.configureOAuthForTesting { $0.appURL = "http://app.web-link3.test" }
+    accounts.configureOAuthForTesting { $0.configuredSocialAuthProviders = ["google", "github"] }
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -146,7 +146,7 @@ private func providerProfile(_ sub: String, _ email: String, verified: Bool = tr
                 }
             }
             func roundTrip(_ provider: String, _ sub: String, _ linkOnConflict: Bool) async throws -> String? {
-                accounts.webProviderProfile = providerProfile(sub, "existing@web-link3.test")
+                accounts.configureAuthSimulationForTesting { $0.webProviderProfile = providerProfile(sub, "existing@web-link3.test") }
                 let path = "/api/auth/\(provider)/start" + (linkOnConflict ? "?linkOnConflict=1" : "")
                 let started = try await startState(path)
                 let callback = try await formPost("/api/auth/\(provider)/callback",

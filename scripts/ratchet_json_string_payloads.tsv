@@ -10,7 +10,6 @@ Sources/RaftHTTP/DTO/MessagingAndChannelsDTO.swift	1
 Sources/RaftHTTP/DTO/ProductFeedbackSubmissionDTO.swift	1
 Sources/RaftHTTP/DTO/RuntimeFormsAndProbesDTO.swift	1
 Sources/RaftHTTP/DTO/RuntimeUsageAndAttestationsDTO.swift	3
-Sources/RaftHTTP/DTO/SearchMentionsDTO.swift	2
 Sources/RaftHTTP/DTO/ServersAndTasksDTO.swift	1
 Sources/RaftHTTP/DTO/SocketMembershipDTO.swift	5
 Sources/RaftHTTP/DesktopDownload.swift	5
@@ -34,15 +33,10 @@ Sources/RaftHTTP/Services/AgentPrivateSurfaceError.swift	2
 Sources/RaftHTTP/Services/AgentsLifecycleService.swift	1
 Sources/RaftHTTP/Services/ChannelMessagingService.swift	1
 Sources/RaftHTTP/Services/DirectoryServiceAccessors+ActionCards.swift	2
-Sources/RaftHTTP/Services/DirectoryServiceAccessors+Integrations.swift	2
-Sources/RaftHTTP/Services/DirectoryServiceAccessors.swift	1
 Sources/RaftHTTP/Services/FeedbackLocatorService.swift	2
-Sources/RaftHTTP/Services/InboxAndWakeService.swift	3
 Sources/RaftHTTP/Services/JoinLinksAndInvitesService.swift	3
 Sources/RaftHTTP/Services/ManagedMCPControlPlaneService.swift	1
-Sources/RaftHTTP/Services/MessageSendService.swift	1
 Sources/RaftHTTP/Services/ProductFeedbackSubmissionService.swift	1
-Sources/RaftHTTP/Services/ProfileAndChannelFilesSupport.swift	7
 Sources/RaftHTTP/Services/ServerMembersAndSidebarService.swift	11
 Sources/RaftHTTP/Services/ServerProfileAndOrderAttestation.swift	1
 Sources/RaftHTTP/Services/ServerProfileAndOrderError.swift	2

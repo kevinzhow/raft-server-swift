@@ -1,3 +1,4 @@
+import TestSupport
 import Crypto
 import Foundation
 import Testing
@@ -28,17 +29,19 @@ private struct Fixture {
 
     init() {
         let directory = EmailLoginDirectory()
-        directory.nativeNotificationsEnabled = true
+        directory.configureNativeNotificationsForTesting { $0.enabled = true }
         let userId = UUID().uuidString.lowercased()
         directory.addAccount(id: userId, email: "native-\(userId)@slock.test", password: "password123")
         directory.markEmailVerified(userId: userId)
         let token = "access-\(UUID().uuidString.lowercased())"
         let family = "family-\(userId)"
-        directory.accessTokens[token] = userId
-        directory.accessTokenFamilies[token] = family
-        directory.sessionFamilies[family] = SessionFamily(
-            userId: userId, revokedAt: nil, revokedReason: nil, revokeCapabilityNonce: nil, capabilityRetainUntil: nil
-        )
+        directory.authProfileStore.state.withLock { state in
+            state.accountSurface.accessTokens[token] = userId
+            state.accountSurface.accessTokenFamilies[token] = family
+            state.accountSurface.sessionFamilies[family] = SessionFamily(
+                userId: userId, revokedAt: nil, revokedReason: nil, revokeCapabilityNonce: nil, capabilityRetainUntil: nil
+            )
+        }
         self.directory = directory
         self.service = directory.nativeNotifications
         self.userId = userId
@@ -135,7 +138,7 @@ private struct Fixture {
 
 @Test func killSwitchAnswersBeforeAnyOtherCheck() throws {
     let fixture = Fixture()
-    fixture.directory.nativeNotificationsEnabled = false
+    fixture.directory.configureNativeNotificationsForTesting { $0.enabled = false }
     #expect(throws: NativeNotificationsError.notFound) { try fixture.service.listDevices(authorization: nil) }
     #expect(throws: NativeNotificationsError.notFound) { try fixture.service.deleteCurrentCredential(authorization: nil) }
     #expect(throws: NativeNotificationsError.notFound) { try fixture.service.beginStream(authorization: nil, lastEventId: nil) }

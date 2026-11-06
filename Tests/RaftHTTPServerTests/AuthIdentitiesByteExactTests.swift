@@ -14,7 +14,7 @@ private let standardHeaders = ["X-Robots-Tag", "Content-Type"]
 
 private func byteFixture() -> (accounts: EmailLoginDirectory, userId: String, bearer: String) {
     let accounts = EmailLoginDirectory()
-    accounts.appURL = "https://app.raft.test"
+    accounts.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
     let userId = "11111111-1111-4111-8111-000002100001"
     accounts.addAccount(id: userId, email: "bytes@slock.test", password: "password123", passwordCredentialEstablished: false)
     accounts.addAuthIdentityForTesting(userId: userId, provider: "github", providerEmail: "gh@example.com")

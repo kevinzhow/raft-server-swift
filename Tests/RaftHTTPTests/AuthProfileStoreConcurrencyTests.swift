@@ -127,7 +127,7 @@ private func raceAuthStore<T: Sendable>(
     }
     #expect(winners.filter { $0 }.count == 1)
     #expect(store.accounts.count == 1)
-    #expect(store.legalAcceptanceCount == 1)
+    #expect(store.state.withLock { $0.legalAcceptances.count } == 1)
     #expect(store.linkedIdentities.count == 1)
     #expect(store.sessions.count == 1)
     #expect(store.consumedHandoffs == ["handoff"])

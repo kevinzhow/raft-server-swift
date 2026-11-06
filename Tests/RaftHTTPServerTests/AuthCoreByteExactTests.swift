@@ -44,7 +44,7 @@ private func services(_ accounts: EmailLoginDirectory) -> FallbackServices {
 
 @Test func authCoreRoutesPublishTheLegacyErrorBytes() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.appURL = "https://app.raft.test"
+    accounts.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
     try await withApp { app in
         configure(app, services: services(accounts))
         try await app.testing { client in
@@ -85,7 +85,7 @@ private func services(_ accounts: EmailLoginDirectory) -> FallbackServices {
 
 @Test func authCoreDeviceRoutesPublishTheLegacyBytes() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.appURL = "https://app.raft.test"
+    accounts.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
     let userId = "11111111-1111-4111-8111-000003100002"
     accounts.addAccount(id: userId, email: "device-bytes@slock.test", password: "password123")
     let bearer = accounts.mintAccessTokenForTesting(userId: userId)

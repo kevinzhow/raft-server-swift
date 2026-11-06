@@ -1,6 +1,6 @@
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
 import Testing
 import TestSupport
@@ -17,7 +17,7 @@ import VaporTesting
     accounts.oauth.addOwnedServer(id: serverId, slug: "builtin-form", name: "Builtin Form", ownerId: ownerId)
     let machine = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "builtin-form-machine")
     accounts.setMachineRuntimesForTesting(machineId: machine, runtimes: ["builtin"])
-    accounts.builtinCatalogMode = "supported"
+    accounts.machinesAndComputersStore.builtinCatalogMode = "supported"
 
     try await withApp { app in
         configure(app, services: FallbackServices(

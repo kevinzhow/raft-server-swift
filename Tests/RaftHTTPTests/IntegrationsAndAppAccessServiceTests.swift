@@ -49,7 +49,9 @@ private func decode(_ text: String) throws -> IntegrationRequestBody {
 }
 
 @Test func concurrentCommentAppendsStampDistinctSequencesInOneSection() async throws {
-    let store = EmailLoginDirectory().messagesAndThreadsStore
+    let accounts = EmailLoginDirectory()
+    let store = accounts.messagesAndThreadsStore
+    let ledger = MessageLedgerPort(oauth: accounts.oauth)
     let sequences = await withTaskGroup(of: Int.self) { group in
         for index in 0..<100 {
             group.addTask {
@@ -63,7 +65,8 @@ private func decode(_ text: String) throws -> IntegrationRequestBody {
                     message: StoredHumanMessage(
                         id: id, channelId: "t", senderId: "u", content: "c\(index)", randomId: nil,
                         messageType: "comment", senderType: "user", createdAt: Date()
-                    )
+                    ),
+                    ledger: ledger
                 )
             }
         }

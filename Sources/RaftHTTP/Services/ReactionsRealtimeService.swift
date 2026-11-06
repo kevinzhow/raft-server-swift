@@ -25,14 +25,14 @@ struct ReactionsRealtimeDependencies: Sendable {
     static func live(directory source: EmailLoginDirectory) -> ReactionsRealtimeDependencies {
         ReactionsRealtimeDependencies(
             sessionUserId: { source.sessionUserId(authorization: $0) },
-            agentReadOutcome: { source.profileAgentReadOutcome($0) },
+            agentReadOutcome: { AgentCredentialLookup(directory: source).profileReadOutcome($0) },
             agentCredential: { token in
-                source.agentCredentials[token].map {
-                    ReactionsAgentCredential(agentId: $0.agentId, scopes: $0.scopes)
+                source.agentsRuntimeStore.agentCredential(token: token).map {
+                    ReactionsAgentCredential(agentId: $0.agentId, scopes: Set($0.scopes))
                 }
             },
             guestCanSeeScope: { source.guestCanSeeScopeLocked($0) },
-            userName: { userId in source.accounts.values.first { $0.id == userId }?.name },
+            userName: { source.authProfileStore.account(userId: $0)?.name },
             now: { Date() }
         )
     }

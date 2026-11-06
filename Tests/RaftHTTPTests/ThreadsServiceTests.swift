@@ -94,7 +94,7 @@ private func makeThreadsFixture() -> ThreadsFixture {
     }
     // Production writes creation order when a thread is opened; the fixture
     // records the same order so the summary map is deterministic.
-    accounts.threadOrder = [threadA, threadB]
+    accounts.serversAndChannelsStore.mutex.withLock { $0.threadOrder = [threadA, threadB] }
     let replyA = accounts.addChannelMessageForTesting(
         channelId: threadA,
         content: "reply a",
@@ -240,7 +240,7 @@ private final class FollowerPublishCollector: @unchecked Sendable {
         follow: true
     )
     #expect(followed.jsonBody.render() == "{\"ok\":true,\"following\":true}")
-    #expect(fixture.accounts.threadFollows[fixture.key(fixture.threadA, userId: fixture.ownerId)] != nil)
+    #expect(fixture.accounts.messagesAndThreadsStore.threadFollows[fixture.key(fixture.threadA, userId: fixture.ownerId)] != nil)
 
     let unfollowed = try service.setThreadFollow(
         ThreadFollowMutationDTO(threadChannelId: fixture.threadA),
@@ -249,8 +249,8 @@ private final class FollowerPublishCollector: @unchecked Sendable {
         follow: false
     )
     #expect(unfollowed.jsonBody.render() == "{\"ok\":true,\"following\":false}")
-    #expect(fixture.accounts.threadFollows[fixture.key(fixture.threadA, userId: fixture.ownerId)] == nil)
-    #expect(fixture.accounts.threadUnfollows[fixture.key(fixture.threadA, userId: fixture.ownerId)] != nil)
+    #expect(fixture.accounts.messagesAndThreadsStore.threadFollows[fixture.key(fixture.threadA, userId: fixture.ownerId)] == nil)
+    #expect(fixture.accounts.messagesAndThreadsStore.threadUnfollows[fixture.key(fixture.threadA, userId: fixture.ownerId)] != nil)
 }
 
 @Test func threadFollowResolvesTheParentMessageAndPublishesOnlyTheNamedThread() throws {
@@ -265,7 +265,7 @@ private final class FollowerPublishCollector: @unchecked Sendable {
         follow: true
     )
     #expect(byParent.jsonBody.render() == "{\"ok\":true,\"following\":true}")
-    #expect(fixture.accounts.threadFollows[fixture.key(fixture.threadA, userId: fixture.ownerId)] != nil)
+    #expect(fixture.accounts.messagesAndThreadsStore.threadFollows[fixture.key(fixture.threadA, userId: fixture.ownerId)] != nil)
     // The legacy frame guard decoded `threadChannelId` from the request body, so
     // a parent-only request wrote the row but emitted no event.
     #expect(collector.payloads.isEmpty)
@@ -642,8 +642,9 @@ private final class FollowerPublishCollector: @unchecked Sendable {
             _ = try? service.setThreadFollow(body, authorization: authorization, serverId: serverId, follow: false)
         }()
         _ = await (followed, unfollowed)
-        let isFollowing = fixture.accounts.threadFollows[key] != nil
-        let suppressed = fixture.accounts.threadUnfollows[key] != nil
+        let snapshot = fixture.accounts.messagesAndThreadsStore.state
+        let isFollowing = snapshot.threadFollows[key] != nil
+        let suppressed = snapshot.threadUnfollows[key] != nil
         #expect(isFollowing != suppressed, "a follow row and its unfollow suppression row must never coexist")
     }
 }
@@ -672,9 +673,9 @@ private final class FollowerPublishCollector: @unchecked Sendable {
     )
 
     let key = fixture.key(fixture.threadA, userId: fixture.ownerId)
-    let record = try #require(fixture.accounts.threadUnfollows[key])
+    let record = try #require(fixture.accounts.messagesAndThreadsStore.threadUnfollows[key])
     #expect(record.replyCount == 1)
     #expect(record.latestMessageId == lateReply)
     #expect(record.frozenMessages.map(\.id) == [lateReply])
-    #expect(fixture.accounts.threadFollowStarts[key] == nil)
+    #expect(fixture.accounts.messagesAndThreadsStore.threadFollowStarts[key] == nil)
 }

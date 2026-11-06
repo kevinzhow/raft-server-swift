@@ -1,6 +1,6 @@
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
 import Testing
 import TestSupport
@@ -48,8 +48,10 @@ private func makeMachineMigrationFixture(suffix: String) -> MachineMigrationFixt
     accounts.setMachineRuntimesForTesting(machineId: source, runtimes: ["codex"])
     accounts.setMachineRuntimesForTesting(machineId: target, runtimes: ["codex"])
     accounts.setMachineOnline(machineId: target, online: true)
-    accounts.machineMigrationCapabilities[source] = ["migration/v3"]
-    accounts.machineMigrationCapabilities[target] = ["migration/v3"]
+    accounts.machinesAndComputersStore.storage.withLock { state in
+        state.machineMigrationCapabilities[source] = ["migration/v3"]
+        state.machineMigrationCapabilities[target] = ["migration/v3"]
+    }
     let agent = accounts.oauth.createAgent(serverId: serverId, name: "transport-agent-\(suffix)", creatorUserId: ownerId, runtime: "codex")
     accounts.setAgentMachineForTesting(agentId: agent, machineId: source)
     return MachineMigrationFixture(
@@ -170,7 +172,9 @@ private func transportObject(_ response: ClientResponse) throws -> [String: Any]
                 return try transportObject(response)["migration"]
             }
 
-            fixture.accounts.machineMigrationCapabilities[fixture.target] = ["migration:chunk-upload-v1"]
+            fixture.accounts.machinesAndComputersStore.storage.withLock { state in
+                state.machineMigrationCapabilities[fixture.target] = ["migration:chunk-upload-v1"]
+            }
             let capability = try await migrate("{\"targetComputer\":\"\(fixture.target)\"}")
             #expect(capability.status == .init(code: 422, reasonPhrase: "Unprocessable Entity"))
             let capabilityBody = try transportObject(capability)
@@ -178,7 +182,9 @@ private func transportObject(_ response: ClientResponse) throws -> [String: Any]
             #expect((capabilityBody["details"] as? [String: Any])?["side"] as? String == "target")
             #expect(try await statusMigration() is NSNull)
 
-            fixture.accounts.machineMigrationCapabilities[fixture.target] = ["migration/v3"]
+            fixture.accounts.machinesAndComputersStore.storage.withLock { state in
+                state.machineMigrationCapabilities[fixture.target] = ["migration/v3"]
+            }
             fixture.accounts.setMachineOnline(machineId: fixture.target, online: false)
             let offline = try await migrate("{\"targetComputer\":\"\(fixture.target)\"}")
             #expect(offline.status == .conflict)

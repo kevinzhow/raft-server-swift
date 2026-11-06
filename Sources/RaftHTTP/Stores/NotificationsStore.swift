@@ -47,18 +47,15 @@ final class NotificationsStore: Sendable {
         var serverNotificationPrefs: [String: ServerNotificationPref] = [:]
         // Injectable notification/mobile-email configuration that used to live
         // inline on `EmailLoginDirectory`.
-        var mobileAppEmailUnsubscribeSecret: String = "test-jwt-secret"
+        var mobileEmailDeployment = MobileAppEmailUnsubscribe.DeploymentConfiguration()
+        var nativeDeployment = NativeNotificationsService.DeploymentConfiguration()
         var cancelMobileAppEmail: (@Sendable (String) -> Void)? = nil
-        var nativeNotificationsEnabled: Bool = false
-        var nativeNotificationStreamPollMs: Int = 1000
         var onAgentReadUpdated: (@Sendable (String, String, String, Int) -> Void)? = nil
         var nativeNotificationLiveWriteHook: (@Sendable (_ index: Int, _ eventCount: Int) async -> Void)? = nil
-        var nativeNotificationAttestationMode: String? = nil
-        var nativeNotificationNodeEnv: String = "development"
         var nativeNotificationAttestationVerifier: (@Sendable (String) -> Bool)? = nil
     }
 
-    private let storage = Mutex(State())
+    let storage = Mutex(State())
 
     /// Enrollment grants, devices, native credentials and the event ledger.
     /// A `Mutex`-guarded store of its own; this store keeps only the kill
@@ -119,8 +116,8 @@ final class NotificationsStore: Sendable {
     // MARK: - Injected notification and mobile-email configuration
 
     var mobileAppEmailUnsubscribeSecret: String {
-        get { storage.withLock { $0.mobileAppEmailUnsubscribeSecret } }
-        set { storage.withLock { $0.mobileAppEmailUnsubscribeSecret = newValue } }
+        get { storage.withLock { $0.mobileEmailDeployment.secret } }
+        set { storage.withLock { $0.mobileEmailDeployment.secret = newValue } }
     }
 
     var cancelMobileAppEmail: (@Sendable (String) -> Void)? {
@@ -129,13 +126,13 @@ final class NotificationsStore: Sendable {
     }
 
     var nativeNotificationsEnabled: Bool {
-        get { storage.withLock { $0.nativeNotificationsEnabled } }
-        set { storage.withLock { $0.nativeNotificationsEnabled = newValue } }
+        get { storage.withLock { $0.nativeDeployment.enabled } }
+        set { storage.withLock { $0.nativeDeployment.enabled = newValue } }
     }
 
     var nativeNotificationStreamPollMs: Int {
-        get { storage.withLock { $0.nativeNotificationStreamPollMs } }
-        set { storage.withLock { $0.nativeNotificationStreamPollMs = newValue } }
+        get { storage.withLock { $0.nativeDeployment.streamPollMs } }
+        set { storage.withLock { $0.nativeDeployment.streamPollMs = newValue } }
     }
 
     var onAgentReadUpdated: (@Sendable (String, String, String, Int) -> Void)? {
@@ -149,13 +146,13 @@ final class NotificationsStore: Sendable {
     }
 
     var nativeNotificationAttestationMode: String? {
-        get { storage.withLock { $0.nativeNotificationAttestationMode } }
-        set { storage.withLock { $0.nativeNotificationAttestationMode = newValue } }
+        get { storage.withLock { $0.nativeDeployment.attestationMode } }
+        set { storage.withLock { $0.nativeDeployment.attestationMode = newValue } }
     }
 
     var nativeNotificationNodeEnv: String {
-        get { storage.withLock { $0.nativeNotificationNodeEnv } }
-        set { storage.withLock { $0.nativeNotificationNodeEnv = newValue } }
+        get { storage.withLock { $0.nativeDeployment.nodeEnv } }
+        set { storage.withLock { $0.nativeDeployment.nodeEnv = newValue } }
     }
 
     var nativeNotificationAttestationVerifier: (@Sendable (String) -> Bool)? {
@@ -324,5 +321,23 @@ extension NotificationsStore {
         return storage.withLock { storage in
             return storage.announcements.first { $0.id == id }
         }
+    }
+}
+
+extension NotificationsStore {
+    var nativeDeploymentConfiguration: NativeNotificationsService.DeploymentConfiguration {
+        storage.withLock { $0.nativeDeployment }
+    }
+
+    func setNativeDeployment(_ configuration: NativeNotificationsService.DeploymentConfiguration) {
+        storage.withLock { $0.nativeDeployment = configuration }
+    }
+
+    var mobileEmailDeploymentConfiguration: MobileAppEmailUnsubscribe.DeploymentConfiguration {
+        storage.withLock { $0.mobileEmailDeployment }
+    }
+
+    func setMobileEmailDeployment(_ configuration: MobileAppEmailUnsubscribe.DeploymentConfiguration) {
+        storage.withLock { $0.mobileEmailDeployment = configuration }
     }
 }

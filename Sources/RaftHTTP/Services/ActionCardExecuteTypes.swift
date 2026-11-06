@@ -110,7 +110,7 @@ struct AgentSendDependencies: Sendable {
                 source.serversAndChannelsStore.historyThread(parentId: parentId, anchorPrefix: suffix)
             },
             addPostableChannel: { serverId, channelId, memberId, kind, parentChannelId, parentMessageId, name in
-                source.addPostableChannel(
+                source.serversAndChannelsStore.addPostableChannel(
                     serverId: serverId,
                     channelId: channelId,
                     memberId: memberId,
@@ -127,65 +127,43 @@ struct AgentSendDependencies: Sendable {
                 source.isSelfCausedFreshnessExemptLocked(message, agentId: agentId)
             },
             resolvedMentions: { serverId, senderId, content, typed, warn in
-                source.resolvedMessageMentions(
+                let resolved = source.messageMentions.resolve(
                     serverId: serverId,
                     senderId: senderId,
                     content: content,
                     typed: typed,
                     warnUnresolved: warn
                 )
+                return (resolved.mentions, resolved.unresolved)
             },
             recordMemberMentionRows: { messageId, channelId, mentions in
-                source.recordMemberMentionRows(
+                source.messageMentions.register(
                     messageId: messageId,
                     channelId: channelId,
                     mentions: mentions
                 )
             },
             recordAttestedSendEvent: { eventType, agentId, messageId, metadata in
-                source.recordAttestedSendEvent(
-                    eventType,
+                source.messagesAndThreadsStore.recordAttestedSendEvent(AttestedSendEventRecord(
+                    eventType: eventType,
                     agentId: agentId,
                     messageId: messageId,
-                    metadata: metadata
-                )
+                    metadataJSON: metadata.jsonBody.render()
+                ))
             },
             recordAgentSendActivity: { agentId, title, text, producerFactId in
-                source.recordAgentSendActivity(
+                source.messagesAndThreadsStore.recordAgentSendActivity(
                     agentId: agentId,
                     title: title,
                     text: text,
                     producerFactId: producerFactId
                 )
             },
-            commitAgentSend: { message, attachmentIds, channelId, uploaderId in
-                source.lock.lock()
-                defer { source.lock.unlock() }
-                switch source.messagesAndThreadsStore.validateSendAttachments(
-                    ids: attachmentIds,
-                    channelId: channelId,
-                    uploaderId: uploaderId
-                ) {
-                case .ok:
-                    break
-                case .duplicate(let id):
-                    return .duplicate(id)
-                case .unavailable(let id):
-                    return .unavailable(id)
-                case .alreadyLinked(let id):
-                    return .alreadyLinked(id)
-                }
-                let seq = source.appendHumanMessageLocked(message)
-                source.messagesAndThreadsStore.linkSendAttachments(
-                    ids: attachmentIds,
-                    messageId: message.id
+            commitAgentSend: { [messages = source.messagesAndThreadsStore, ledger = MessageLedgerPort(oauth: source.oauth)] message, attachmentIds, channelId, uploaderId in
+                messages.commitAgentSend(
+                    message, attachmentIds: attachmentIds, channelId: channelId,
+                    uploaderId: uploaderId, ledger: ledger
                 )
-                source.messagesAndThreadsStore.advanceAgentReadCursorAfterSend(
-                    channelId: channelId,
-                    agentId: message.senderId,
-                    ownSeq: seq
-                )
-                return .committed(seq: seq)
             }
         )
     }
@@ -351,8 +329,8 @@ public enum AgentSendError: DomainError, Equatable {
 }
 
 /// The attachment-validating append outcome. The legacy handler validated the
-/// attachment set, appended the row and linked the ids under one directory
-/// lock; the injected `commitAgentSend` keeps that same section.
+/// attachment set, appended the row and linked the ids in one transaction.
+/// The message owner now keeps that whole section in its State Mutex.
 enum AgentSendAppendOutcome: Sendable, Equatable {
     case duplicate(String)
     case unavailable(String)

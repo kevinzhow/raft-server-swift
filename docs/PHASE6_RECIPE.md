@@ -75,12 +75,12 @@ auth.post("verify-email") { request async throws -> Response in
 ```
 
 ## 6. Delete the old path
-- Remove the `extension EmailLoginDirectory` handlers/forwarders and the seam
-  only they used; the directory keeps a computed accessor for the service
-  (`EmailLogin.swift` has a 40-line ceiling — do not add lines there).
-- Remove unread result types, DTOs and `DirectoryStoreForwarders` accessors;
-  keep a thin forwarder only where unmigrated code calls it, and update tests
-  to use the store, the service, or the HTTP route.
+- Remove the `extension EmailLoginDirectory` handlers and their unused seams;
+  remaining computed factories are transitional and must eventually use explicit
+  composition (`EmailLogin.swift` has a 28-line ceiling).
+- The legacy field-forwarder file is deleted and its baseline is zero. Do not
+  recreate those proxies elsewhere; callers use a named Service or a complete
+  owning Store transaction, and test setup stays in `TestSupport`.
 
 ## 7. Verify, then commit everything together
 ```console

@@ -1,6 +1,6 @@
 # Architecture: target Swift layering
 
-**Status**: Phase 5 extracted the old `EmailLogin/` files; Phase 6 is removing the remaining transport, directory, and concurrency coupling. An empty old directory and a 40-line class body do not mean that migration is complete. `EmailLoginDirectory` still owns a global lock, has extensions outside that directory, and is referenced by services and tests. The remaining milestones live in `docs/PLAN.md`.
+**Status**: Phase 6 has removed directory state forwarding and the global transaction lock. `EmailLoginDirectory` is a 28-line owner assembly root, but six extensions still contain factories or nested contracts and services/tests still reference that type. Explicit service composition and the final `ServiceContainer` migration remain; the empty old directory and smaller root do not establish completion. The remaining milestones live in `docs/PLAN.md`.
 
 **Specification**: observable HTTP status codes, JSON bytes, response headers, and socket frames asserted by the upstream suite at `v1.21.23-source.1`. Refactoring preserves those contracts, including validation order, omission versus null, input coercion, and stored JSON fingerprints.
 
@@ -14,16 +14,16 @@ The upstream server separates route modules, services, database schema, middlewa
 | --- | --- |
 | `Sources/RaftHTTPServer/FallbackApplication.swift` | Composition, middleware order, lifecycle wiring, and policy catch-alls |
 | `Sources/RaftHTTPServer/Features/` | 16 `RouteCollection` modules plus request/response helpers; 19 Swift files |
-| `Sources/RaftHTTP/EmailLogin.swift` | 40-line directory root: 12 principal store instances, OAuth ledger, and the remaining directory transaction lock |
-| `Sources/RaftHTTP/Services/` | 96 Swift files of domain services and remaining directory accessors; no Vapor imports |
-| `Sources/RaftHTTP/Stores/` | 50 Swift files; large store implementations split into extensions by responsibility; every file at most 1,000 lines |
+| `Sources/RaftHTTP/EmailLogin.swift` | 28-line directory root: 12 principal store instances and the OAuth ledger; no shared lock or field forwarders |
+| `Sources/RaftHTTP/Services/` | 102 Swift files of domain services and remaining directory accessors; no Vapor imports |
+| `Sources/RaftHTTP/Stores/` | 54 Swift files; implementations split by responsibility; every file at most 1,000 lines, currently largest 974 |
 | `Sources/RaftHTTP/DTO/` | Codable request shapes, ordered response payloads, and semantic outcomes |
 | `Sources/RaftHTTP/Support/` | Naming, token, cursor, projection, runtime-config, and policy helpers; no directory extensions or legacy reply factories |
-| `Sources/RaftHTTP/OAuthLedger.swift` and `OAuth/` | 97-line ledger root plus 18 domain files; the largest OAuth file is 466 lines |
+| `Sources/RaftHTTP/OAuthLedger.swift` and `OAuth/` | 97-line ledger root plus 19 domain files; the largest OAuth file is 466 lines |
 | `Sources/RaftShared/` | Shared value contracts, including `JSONValue` |
 | `Tests/TestSupport/` | Test-only seams, deterministic setup, and injected dependencies; never a production dependency |
 
-`Sources/RaftHTTP/EmailLogin/` has no Swift files. The remaining directory extensions are under `Services/` and `Stores/`, not hidden by that empty-directory result. File extraction preserved the original transactions; the subsequent Mutex migration keeps those transaction boundaries while grouping each store's mutable records into typed state.
+`Sources/RaftHTTP/EmailLogin/` has no Swift files. The six remaining directory extensions are under `Services/`; the Store forwarding file has been deleted. They contain service factories or a nested contract and still need migration to explicit composition. Mutex state and typed owner transactions protect domain operations independently of the old directory lock.
 
 ## 2. Target layers
 
@@ -31,7 +31,7 @@ The upstream server separates route modules, services, database schema, middlewa
 | --- | --- | --- |
 | Feature | Registration, request extraction, response status/headers/body projection | Calls services; does not implement domain state or hand-build JSON |
 | Service | Authorization and validation order, domain orchestration, typed results/errors | Vapor-free; state belongs in stores |
-| Store | Domain records and atomic domain operations | Does not create HTTP replies or invoke another store while holding its state lock |
+| Store | Domain records and atomic domain operations | No HTTP replies or arbitrary callbacks under a state borrow; the two fixed ledger-port edges are documented below |
 | DTO | Codable request values, `JSONBodyConvertible` response payloads, explicit domain outcomes | No mutable shared state and no Vapor dependency |
 | Support | Small functions and policies with a named responsibility | Does not become another directory or a generic reply factory |
 | Shared | Contracts consumed by multiple targets | Does not depend on server, daemon, or Vapor targets |
@@ -47,7 +47,7 @@ RaftRealtime -----------------> RaftShared
 Tests ------------------------> TestSupport
 ```
 
-This is the target boundary. Directory accessors, cross-domain snapshots, and global-lock critical sections remain migration debt, even when their source file is under `Services/`. The script enforces measurable rules, not every architectural property in this table.
+This is the target boundary. Directory factory captures, policy closures in assembly, broad initialization dependencies, and raw ledger calls from Features remain migration debt, even under `Services/`. The global directory lock and field proxies are gone. The script enforces measurable rules, not every architectural property in this table.
 
 ### 2.1 Features and request decoding
 
@@ -69,11 +69,20 @@ Conditional release-note responses retain their ETag and the original 304 header
 
 Each principal store owns one record family. All twelve principal stores and the OAuth ledger now declare checked Sendable conformance, with mutable records and configuration isolated by `Mutex`. State values and the 55 shared value records used by those transactions have checked conformances too. Locked helpers borrow the caller's state explicitly and do not acquire that Mutex again. OAuth flows intentionally share the AuthProfileStore state so account, identity, legal acceptance, and session writes remain one auth transaction.
 
-Field setters update only their own field in one transaction. This fixes the old whole-State copy/writeback race that could discard a concurrent write to another field. Whole-state replacement remains a setup operation; legacy field reads followed by a separate write still do not form an atomic read-modify-write. Directory forwarders and their callers must migrate to domain operations before the global lock can disappear.
+Field setters update only their own field in one transaction, fixing the old whole-State copy/writeback race. Separately locked getters/setters still do not form an atomic read-modify-write. Directory field proxies have now been deleted, and test setup borrows the actual owning State for complete single-owner operations. Multi-field OAuth/native deployment settings use typed owner cohorts; Services read them when handling an operation.
 
-The directory root now has checked conformance because its stored fields are immutable references to Sendable stores, the ledger, and lock objects. Its directory transaction lock remains. The two relay locks and unused freshness-lock declaration have been deleted: owned Store slot accessors take the snapshot, then relay Services invoke the callback outside the Mutex. This conformance does not establish a consistent cross-store authorization snapshot or make the remaining directory extensions pure composition.
+The 28-line directory root has only immutable checked owner references and no transaction lock. Human, agent, comment, system, and app-reminder writers share one Messages allocator. Human replay/attachment validation/binding/append/mirror/done/cursor writes remain one transaction; a refusal returns before mutation. Mention uniqueness and insertion also share one Messages borrow. Relay slots are copied under their owner's Mutex and invoked outside it. These boundaries do not establish a cross-store authorization snapshot or make remaining factory extensions pure composition.
 
-OAuth's signing secret uses a separate Mutex so signing can run after a record transaction. The cards store's send-commit barrier remains separate from its State Mutex: the protected orchestration calls back into receipt/state operations, so merging the two would cause reentry. Existing cross-store callbacks retain their original positions and still require explicit ownership and lock-order review.
+OAuth's signing secret uses a separate Mutex so signing can run after a record transaction. The cards store's send-commit barrier remains separate from its State Mutex: the protected orchestration calls back into receipt/state operations, so merging the two would cause reentry.
+
+Two concrete callback-free ledger ports permit nested owner transactions:
+
+| Held owner → leaf owner | Complete operation |
+| --- | --- |
+| Messages → OAuth | Append the already constructed mirror and advance the human sender cursor before releasing Messages |
+| Channels → OAuth | Reuse the existing DM identity operation, then prepare the local projection and agent/human membership before releasing Channels |
+
+These ports hold only a checked OAuthLedger reference and enter record-only leaf methods. OAuth has no reverse dependency on Messages or Channels and calls no service or injected callback on these paths. Role notices release Channels before entering Messages; Messages never takes Channels or Auth. Payload rendering, realtime publication, cancellation, and arbitrary callbacks stay outside State borrows. Fixed-sequence test setup uses the same approved Messages → OAuth mirror boundary without adding a production sequence override.
 
 ### 2.4 JSON and compatibility boundaries
 
@@ -95,7 +104,7 @@ Run `make architecture` or `python3 scripts/check_architecture.py`. `--json` ret
 
 | Check | Rule |
 | --- | --- |
-| Directory root size | `EmailLogin.swift` at most 40 lines; the ceiling only decreases |
+| Directory root size | `EmailLogin.swift` at most 28 lines; the ceiling only decreases |
 | Feature size | Every feature/helper Swift file at most 1,200 lines |
 | Service size | Every service/accessor Swift file at most 1,200 lines |
 | Store size | Every Store Swift file, including nested extension files, at most 1,000 lines |
@@ -131,7 +140,7 @@ For a new metric, expanded scope, or a reviewed pure file move, `--print-ratchet
 
 ### 3.2 Snapshot and exclusions
 
-The current handwritten-source snapshot has 12 directory extension occurrences, a 388-line forwarding file with 132 properties, 60 server reply tokens, 94 server JSON-any text occurrences, 98 directory type references, and 185 string-literal candidates. Services have zero reply tokens; the combined Services/DTO JSON-any occurrence and the two Services `directory.` occurrences are comments. Source-level transport and string construction remain outside those narrow service zeros.
+The current handwritten-source snapshot has six directory extension occurrences, zero forwarding lines/properties, 60 server reply tokens, 94 server JSON-any text occurrences, 87 directory type references, and 169 string-literal candidates. Services have zero reply tokens; the combined Services/DTO JSON-any occurrence and the remaining Services `directory.` occurrence are comments. Source-level transport/string construction, factory captures, and nested directory contracts remain outside those narrow zeros.
 
 The unchecked conformance ratchet now covers all Sources, including Generated: 35 declarations, all daemon-only; the complete server dependency closure is zero. Stores, public directories, caches, the immutable directory root, the realtime hub/session/attention state, connect state, and generated knowledge telemetry use checked storage. The realtime parser handler is deliberately non-Sendable and transferred only through SDK `NIOLoopBound` for synchronous installation on its channel loop; every entry checks that loop. Connect tasks capture immutable values and checked connection state, with channel writes/status callbacks on the owning loop. Session terminal writes and attention callbacks use a single ordered drainer outside their state locks. Session drains process at most 64 frames per batch; only backlog schedules a 1 ms continuation, so continuous HTTP broadcasts cannot keep one immediate task running indefinitely or prevent the selector from polling other connections. Idle admission still schedules its first drain immediately.
 
@@ -143,4 +152,4 @@ The 35 daemon declarations are not certified safe merely because they are outsid
 
 Every accepted slice runs relevant published-path regressions, `make test`, `make test-e2e`, `scripts/smoke-server.sh`, `make architecture`, and `make parity-check`. Smoke is supplemental evidence for real-process wiring, not proof of every locked module. Coverage progress comes from `make parity` and the qualifications in `docs/PARITY.tsv`.
 
-The remaining boundaries are removal of the directory extensions/forwarders and global lock, the repository-wide `ServiceContainer` composition change, and the unresolved daemon boundaries documented above. Checked server state and the generated unchecked scan are complete, but legacy cross-store orchestration is not. The detailed phase order belongs in `docs/PLAN.md`. None of these steps changes the pinned Vapor revision, replaces the SwiftNIO listeners, or changes the no-database `/health` 503 contract.
+The remaining work is explicit construction of Services, removal of factory captures and nested directory contracts, migration of raw ledger operations in Features, and replacement of the old type with a pure `ServiceContainer`. The current owner root has no global lock or field proxies; that does not complete those composition boundaries. Unresolved daemon boundaries remain documented separately. The detailed phase order belongs in `docs/PLAN.md`. None of these steps changes the pinned Vapor revision, replaces the SwiftNIO listeners, or changes the no-database `/health` 503 contract.

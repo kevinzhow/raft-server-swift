@@ -346,6 +346,12 @@ public struct ManagedMCPToolExecutionService: Sendable {
 
     // MARK: - Read receipts
 
+    /// Replaces the read-update observer; invocation uses the owner's slot
+    /// snapshot after its Mutex has been released.
+    public func installReadUpdateObserver(_ observer: (@Sendable (String, String, String, Int) -> Void)?) {
+        notifications.onAgentReadUpdated = observer
+    }
+
     /// Whether read receipts are enabled for the server.
     public func readReceiptsEnabled(serverId: String) -> Bool {
         channels.readReceiptsEnabled(serverId: serverId)

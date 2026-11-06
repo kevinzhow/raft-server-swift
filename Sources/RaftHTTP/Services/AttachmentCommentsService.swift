@@ -325,7 +325,7 @@ public struct AttachmentCommentsService: Sendable {
 
         let now = Date()
         let id = UUID().uuidString.lowercased()
-        let sequence = messages.appendAttachmentComment(
+        messages.appendAttachmentComment(
             AttachmentCommentRecord(
                 id: id,
                 attachmentId: attachmentId,
@@ -347,19 +347,8 @@ public struct AttachmentCommentsService: Sendable {
                 messageType: "comment",
                 senderType: "user",
                 createdAt: now
-            )
-        )
-        // Mirror into the ledger so ledger-backed reads see the same sequence.
-        oauth.appendMirroredMessage(
-            id: id,
-            channelId: threadChannelId,
-            content: content,
-            senderId: userId,
-            seq: sequence,
-            createdAt: now,
-            senderTimezone: nil,
-            senderType: "user",
-            messageType: "comment"
+            ),
+            ledger: MessageLedgerPort(oauth: oauth)
         )
         if !mentions.isEmpty {
             dependencies.recordMemberMentionRows(id, threadChannelId, mentions)

@@ -153,7 +153,7 @@ private func makeService(
             )
         },
         appendHumanMessage: { message in
-            accounts.appendHumanMessageLocked(message)
+            accounts.messagesAndThreadsStore.appendMessage(message, ledger: .init(oauth: accounts.oauth))
         },
         now: { now },
         makeToken: makeToken
@@ -164,7 +164,7 @@ private func makeService(
 
 @Test func attachmentDownloadURLPublishesTheLegacyBodyOrder() throws {
     let fixture = makeMessageSendFixture()
-    fixture.accounts.attachmentPresign = { id, _, _ in "https://cdn.test/\(id)" }
+    fixture.accounts.messagesAndThreadsStore.attachmentPresign = { id, _, _ in "https://cdn.test/\(id)" }
     let service = makeService(fixture.accounts)
 
     let response = try service.attachmentDownloadURL(
@@ -223,7 +223,7 @@ private func makeService(
 
 @Test func attachmentDownloadURLPropagatesTheQueryTokenAndPublishesNullExpiry() throws {
     let fixture = makeMessageSendFixture()
-    fixture.accounts.attachmentPresign = { id, _, _ in "https://cdn.test/\(id)?sig=1" }
+    fixture.accounts.messagesAndThreadsStore.attachmentPresign = { id, _, _ in "https://cdn.test/\(id)?sig=1" }
     let service = makeService(fixture.accounts)
 
     let response = try service.attachmentDownloadURL(

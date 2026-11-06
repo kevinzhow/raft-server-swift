@@ -108,16 +108,16 @@ struct OAuthFlowsStore: Sendable {
     func config() -> OAuthFlowsConfig {
         profiles.state.withLock { state in
             OAuthFlowsConfig(
-                configuredProviders: state.configSurface.configuredSocialAuthProviders,
+                configuredProviders: state.configSurface.oauthDeployment.configuredSocialAuthProviders,
                 applePlatforms: state.accountSurface.appleLoginPlatforms,
-                appleClientId: state.configSurface.appleClientId,
-                nativeAppleClientId: state.configSurface.nativeAppleClientId,
-                nativeAppleClientSecret: state.configSurface.nativeAppleClientSecret,
-                nativeAppleStateSecret: state.configSurface.nativeAppleStateSecret,
-                serverURL: state.configSurface.serverURL,
-                appURL: state.configSurface.appURL,
-                mobileOAuthReturnURI: state.configSurface.mobileOAuthReturnURI,
-                mobileOAuthAllowedReturnURIs: state.configSurface.mobileOAuthAllowedReturnURIs,
+                appleClientId: state.configSurface.oauthDeployment.appleClientId,
+                nativeAppleClientId: state.configSurface.oauthDeployment.nativeAppleClientId,
+                nativeAppleClientSecret: state.configSurface.oauthDeployment.nativeAppleClientSecret,
+                nativeAppleStateSecret: state.configSurface.oauthDeployment.nativeAppleStateSecret,
+                serverURL: state.configSurface.oauthDeployment.serverURL,
+                appURL: state.configSurface.oauthDeployment.appURL,
+                mobileOAuthReturnURI: state.configSurface.oauthDeployment.mobileOAuthReturnURI,
+                mobileOAuthAllowedReturnURIs: state.configSurface.oauthDeployment.mobileOAuthAllowedReturnURIs,
                 exchangeNativeAppleCode: state.configSurface.exchangeNativeAppleCode,
                 mobileProviderProfile: state.configSurface.mobileProviderProfile,
                 webProviderProfile: state.configSurface.webProviderProfile

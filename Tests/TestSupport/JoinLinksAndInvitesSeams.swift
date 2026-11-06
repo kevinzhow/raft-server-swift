@@ -8,23 +8,21 @@ extension EmailLoginDirectory {
     public func membershipAgreementAuditsForTesting(serverId: String, subjectId: String) -> [(
         source: String, actorUserId: String, agreementId: String?, agreementVersion: Int?
     )] {
-        lock.lock()
-        defer { lock.unlock() }
-        return membershipAgreementAudits
-            .filter { $0.serverId == serverId && $0.subjectId == subjectId }
-            .map { ($0.source, $0.actorUserId, $0.agreementId, $0.agreementVersion) }
+        serversAndChannelsStore.mutex.withLock { state in
+            state.membershipAgreementAudits
+                .filter { $0.serverId == serverId && $0.subjectId == subjectId }
+                .map { ($0.source, $0.actorUserId, $0.agreementId, $0.agreementVersion) }
+        }
     }
 
     public func joinLinkUseCountForTesting(token: String) -> Int? {
-        lock.lock()
-        defer { lock.unlock() }
-        return joinLinks[token.lowercased()]?.useCount
+        serversAndChannelsStore.mutex.withLock { state in
+            state.joinLinks[token.lowercased()]?.useCount
+        }
     }
 
     public func setServerHideHumansForTesting(serverId: String, hidden: Bool) {
-        lock.lock()
-        hideHumansFromMembers[serverId] = hidden
-        lock.unlock()
+        serversAndChannelsStore.setHideHumansFromMembers(serverId: serverId, hidden: hidden)
     }
 
     public func setServerInviteTokenForTesting(inviteId: String, token: String) {

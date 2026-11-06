@@ -1,6 +1,6 @@
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
 import Testing
 import Vapor
@@ -22,7 +22,7 @@ private final class ManualRefreshBehavior: @unchecked Sendable {
     accounts.setMachineOnline(machineId: machine, online: true)
     let behavior = ManualRefreshBehavior()
     let snapshot = "{\"protocolVersion\":2,\"provider\":\"codex\",\"collectedAt\":\"2026-10-11T08:00:00.000Z\",\"staleAfter\":\"2026-10-11T08:25:00.000Z\",\"collectorVersion\":\"1.6.2\",\"accounts\":[{\"accountKey\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"maskedLabel\":\"man****email@company.com\",\"planLabel\":\"Pro\",\"health\":\"ok\",\"windows\":[]}]}"
-    accounts.runtimeAccountUsageManualRefresh = { _, _ in
+    accounts.machinesAndComputersStore.runtimeAccountUsageManualRefresh = { _, _ in
         switch behavior.mode {
         case .fresh: return .snapshot(json: snapshot)
         case .timeout: return .timeout

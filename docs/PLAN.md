@@ -19,7 +19,7 @@ Phases 0–4 的真实进程闭环已建立：`make test-e2e` 启动两个隔离
 
 Phase 5 已完成旧 `EmailLogin/` 文件提取、Feature 路由拆分、同步 body 读取退役和生产 `ForTesting` 入口迁移。`EmailLogin.swift` 从 34,306 行降到 48 行，原目录中不再有 Swift 文件。测试 seam 位于不被生产 target 依赖的 `Tests/TestSupport`。
 
-这些结果不代表深度架构重构已经完成：旧类型在其他目录仍有扩展和调用，目录全局锁与 forwarding 文件仍在。Store/OAuth 状态的 checked 隔离已在后续子批完成，但跨 Store 业务协调仍需迁移。当前工作是 Phase 6；精确分层、检测范围和数值快照只在 `docs/ARCHITECTURE.md` 维护。
+这些结果不代表深度架构重构已经完成：字段转发和目录全局锁已删除，旧类型在其他目录仍有工厂扩展、构造调用和测试 API。Store/OAuth 的 checked 隔离与消息 owner 事务已完成，最终显式 Service 装配仍需迁移。当前工作是 Phase 6；精确分层、检测范围和数值快照只在 `docs/ARCHITECTURE.md` 维护。
 
 ## 2. Phase 6：消除剩余耦合
 
@@ -49,16 +49,16 @@ Phase 5 已完成旧 `EmailLogin/` 文件提取、Feature 路由拆分、同步 
 
 已完成状态隔离子批：十二个主 Store、OAuth ledger、只持有不可变引用的目录根类型、公开 server/visit 目录均为 checked Sendable，领域记录与配置由 Mutex 隔离；55 个共享值模型补齐 checked conformance。保持原事务，修复兼容 setter 整份 State 回写覆盖其他字段并发更新的问题。非 daemon 的显式 unchecked 现已清零，口径包含 Generated；NIO handler 的 loop 边界、共享会话发送队列和 telemetry 生成入口已落实。此前 HTTP 缓存/预算切片也已完成。
 
-这些数字不代表整批完成。relay/配置子片已删 63 个转发属性和三把专用锁；Root 上限从 48 收紧到 40 行。仍有 12 处目录扩展和 132 个属性组成的 388 行 forwarding 文件；全局锁、生产文件内的测试夹具和复合消息提交都要按真实消费者迁移。消息 comment writer 原本不经过目录锁，必须与 human/agent append 统一序号分配，不能只删锁保留 count/get/append。
+目录行为迁移子批已删除全部 195 个旧字段转发属性、forwarding 文件和 Root 全局锁；Root 自然排版为 28 行。Human/agent/comment/notice/app-reminder 共用 Messages 分配与 mirror 事务，修复混写丢 comment 和 MCP 双 allocator；mention 判重与 append 同 owner。Auth/Tasks/投影/fixture 的 Root 状态访问已转真实 owner 操作，typed config 保持按请求活读。仍有六处目录工厂或嵌套契约扩展，factory capture、依赖环和 Feature raw-ledger 调用还不属于最终纯装配。
 
-1. 把剩余目录扩展中的领域逻辑和跨域 helper 移到真正的 Service / Store；删除旧实现和 forwarding 文件，不保留另一层兼容外壳。
+1. 继续将剩余工厂闭包中的策略归还领域 Service，显式初始化所需 owner/窄能力，再删除目录构造器和嵌套类型；不把原字段搬到另一层兼容外壳。
 2. **已完成状态隔离**：可变 Store 状态使用编译器检查的 Mutex，原 read-modify-write 事务保持完整。后续业务迁移仍不能把事务拆成分别锁住的 getter/setter。
-3. 把目录全局锁下的操作逐项迁入拥有状态的领域事务，再删除全局锁。核查跨域调用与锁顺序，保持会话刷新、消息序号、幂等、mention、task 与权限决策。
+3. **已删除目录全局锁**：生产与 fixture 均使用实际 owner 事务；Messages→OAuth 与 Channels→OAuth 两条固定无 callback 叶边已核对，无反向/Channels+Messages 同时持锁。Cards freshness barrier 保持独立，后续构造迁移不得拆开已建立的业务事务。
 4. 每个切片用并发断言或 published-path 回归证明其边界，再跑完整门禁。
 
 ### 第十批：纯装配容器与剩余服务端 Sendable
 
-1. 目录只负责依赖装配后，全仓将 `EmailLoginDirectory` 重命名为 `ServiceContainer`，包括测试；删除过渡类型、旧别名和 forwarding 路径。
+1. 先拆 credential-use 与 message-suppression 两个叶节点以消除构造环，再将消息、agent/machine、task/channel、integration/feedback、transport 的工厂与策略迁到显式依赖。配置、flags、credential 与 callback slots 仍按操作活读。最终 `ServiceContainer` 只装配已构造的窄 Service；Feature 与专属 fixture 迁走旧类型、raw ledger 与目录构造器，删除全部扩展/嵌套契约/别名，不以全仓改名代替职责迁移。
 2. **已完成非 daemon unchecked 清理**：完整服务端依赖闭包与 Generated 均为零，guard 包含生成代码；恢复可复现的 knowledge 生成脚本及 template，`--check` 不改变固定语料。NIO 局部非 Sendable handler 通过 SDK loop-bound 值限定安装与访问，不以新 unchecked 壳替代。
 3. daemon-only 基线 41 处已逐项阅读字段、写入/逃逸路径及测试；六个不可变错误已 checked，余下 35 处详见 `docs/CONCURRENCY.md`。现有缺口包括默认 child timer、HTTP timeout 跨队列状态、timer check/register/publish、公开可变错误/模型和 raw Any；它们不是获准安全的例外。先修可复现的生命周期/状态问题，再收窄可证明的存储或 SDK/loop 边界；行为测试不能替代并发证明。
 4. 如实同步文档，再跑最终完整门禁。只在所有目标确实完成后宣布 Phase 6 结束。

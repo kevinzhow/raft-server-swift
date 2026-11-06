@@ -1,3 +1,4 @@
+import TestSupport
 import Crypto
 import Foundation
 import HTTPTypes
@@ -68,7 +69,7 @@ private func postJSON(_ client: any Client, path: String, body: String, authoriz
 
 @Test func nativeNotificationKillSwitchClosesTheStreamAndPersistsNothing() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.nativeNotificationsEnabled = false
+    accounts.configureNativeNotificationsForTesting { $0.enabled = false }
     let inserted = accounts.nativeNotifications.persist([
         NativeNotificationIntent(
             recipientUserId: "11111111-1111-4111-8111-111111111184",
@@ -102,7 +103,7 @@ private func postJSON(_ client: any Client, path: String, body: String, authoriz
 
 @Test func enrollmentIsKeyBoundShortLivedHashOnlyAndSingleUse() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.nativeNotificationsEnabled = true
+    accounts.configureNativeNotificationsForTesting { $0.enabled = true }
     let userId = "11111111-1111-4111-8111-111111111185"
     accounts.addAccount(id: userId, email: "native-enroll-185@slock.test", password: "password123")
     accounts.markEmailVerified(userId: userId)
@@ -182,7 +183,7 @@ private func postJSON(_ client: any Client, path: String, body: String, authoriz
 
 @Test func previewNoProofExpiredGrantAndDeadSessionFamilyFailClosed() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.nativeNotificationsEnabled = true
+    accounts.configureNativeNotificationsForTesting { $0.enabled = true }
     let userId = "11111111-1111-4111-8111-111111111186"
     accounts.addAccount(id: userId, email: "native-negative-186@slock.test", password: "password123")
     accounts.markEmailVerified(userId: userId)
@@ -263,8 +264,8 @@ private func postJSON(_ client: any Client, path: String, body: String, authoriz
 
 @Test func enforcedAttestationFailsClosedUnlessTheSignedAppVerifierAcceptsTheEvidence() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.nativeNotificationsEnabled = true
-    accounts.nativeNotificationAttestationMode = "enforce"
+    accounts.configureNativeNotificationsForTesting { $0.enabled = true }
+    accounts.configureNativeNotificationsForTesting { $0.attestationMode = "enforce" }
     let userId = "11111111-1111-4111-8111-111111111187"
     accounts.addAccount(id: userId, email: "native-attestation-187@slock.test", password: "password123")
     accounts.markEmailVerified(userId: userId)
@@ -284,7 +285,7 @@ private func postJSON(_ client: any Client, path: String, body: String, authoriz
             let missing = try await postJSON(client, path: "/api/notifications/enrollment-grants", body: native.body, authorization: authorization)
             #expect(missing.status == .forbidden)
 
-            accounts.nativeNotificationAttestationVerifier = { $0 == evidence }
+            accounts.setNativeAttestationVerifierForTesting({ $0 == evidence })
             let attested = String(native.body.dropLast()) + ",\"attestation\":\(jsonString(evidence))}"
             let accepted = try await postJSON(client, path: "/api/notifications/enrollment-grants", body: attested, authorization: authorization)
             #expect(accepted.status == .created)
@@ -294,8 +295,8 @@ private func postJSON(_ client: any Client, path: String, body: String, authoriz
 
 @Test func notificationStreamRejectsUserSessionsStartsAtLatestReplaysAndClosesOnLogout() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.nativeNotificationsEnabled = true
-    accounts.nativeNotificationStreamPollMs = 250
+    accounts.configureNativeNotificationsForTesting { $0.enabled = true }
+    accounts.configureNativeNotificationsForTesting { $0.streamPollMs = 250 }
     let userId = "11111111-1111-4111-8111-111111111188"
     let foreignId = "11111111-1111-4111-8111-111111111189"
     let serverId = "33333333-3333-4333-8333-333333333383"
@@ -508,8 +509,8 @@ private func waitForTask(_ task: Task<Void, Error>, timeoutMs: Int) async -> Boo
 @Test func liveSSEReauthenticatesBeforeEveryFrameAndStopsARevokedBatch() async throws {
     for revocation in ["credential", "session-family"] {
         let accounts = EmailLoginDirectory()
-        accounts.nativeNotificationsEnabled = true
-        accounts.nativeNotificationStreamPollMs = 250
+        accounts.configureNativeNotificationsForTesting { $0.enabled = true }
+        accounts.configureNativeNotificationsForTesting { $0.streamPollMs = 250 }
         let userId = revocation == "credential"
             ? "11111111-1111-4111-8111-111111111190"
             : "11111111-1111-4111-8111-111111111191"
@@ -556,7 +557,7 @@ private func waitForTask(_ task: Task<Void, Error>, timeoutMs: Int) async -> Boo
                 headers[.accept] = "text/event-stream"
                 let stream = try await client.send(.get, headers: headers, to: "/api/notifications/stream")
                 #expect(stream.status == .ok, "\(revocation) stream should open")
-                accounts.nativeNotificationLiveWriteHook = { index, eventCount in
+                accounts.setNativeLiveWriteHookForTesting({ index, eventCount in
                     calls.add()
                     if eventCount != 2 || index != 1 { return }
                     if revocation == "credential" {
@@ -565,7 +566,7 @@ private func waitForTask(_ task: Task<Void, Error>, timeoutMs: Int) async -> Boo
                         let logout = try? await postJSON(client, path: "/api/auth/logout", body: "{\"refreshToken\":\(jsonString(refreshToken))}")
                         if logout?.status != .ok { calls.noteLogoutFailed() }
                     }
-                }
+                })
                 let buffer = SSEBuffer()
                 let reader = Task {
                     try await stream.body.withStreamingBytes { span in
@@ -613,7 +614,7 @@ private final class HookLog: @unchecked Sendable {
 
 @Test func credentialRotationIsKeyBoundAndExpiryOrRevokeInvalidatesCredentials() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.nativeNotificationsEnabled = true
+    accounts.configureNativeNotificationsForTesting { $0.enabled = true }
     let userId = "11111111-1111-4111-8111-111111111192"
     accounts.addAccount(id: userId, email: "native-rotate-192@slock.test", password: "password123")
     accounts.markEmailVerified(userId: userId)
@@ -684,7 +685,7 @@ private final class HookLog: @unchecked Sendable {
 
 @Test func nativeNotificationErrorResponsesDoNotEchoSubmittedSecrets() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.nativeNotificationsEnabled = true
+    accounts.configureNativeNotificationsForTesting { $0.enabled = true }
     let userId = "11111111-1111-4111-8111-111111111193"
     accounts.addAccount(id: userId, email: "native-log-scrub-193@slock.test", password: "password123")
     accounts.markEmailVerified(userId: userId)
@@ -723,7 +724,7 @@ private final class HookLog: @unchecked Sendable {
 
 @Test func replayOverflowAndExpiredCursorsFailBeforeSSEHeaders() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.nativeNotificationsEnabled = true
+    accounts.configureNativeNotificationsForTesting { $0.enabled = true }
     let userId = "11111111-1111-4111-8111-111111111194"
     let serverId = "33333333-3333-4333-8333-333333333386"
     let channelId = "22222222-2222-4222-8222-222222222309"

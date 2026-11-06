@@ -10,53 +10,49 @@ extension EmailLoginDirectory {
     }
 
     public func setWakeStreamHeartbeatMsForTesting(_ value: Int?) {
-        lock.lock()
-        wakeStreamHeartbeatOverrideMs = value
-        lock.unlock()
+        agentsRuntimeStore.withState { owned in
+            owned.wakeStreamHeartbeatOverrideMs = value
+        }
     }
 
     public func setAgentCredentialUseThrottleMsForTesting(_ value: Int?) {
-        lock.lock()
-        agentCredentialUseThrottleOverrideMs = value
-        lock.unlock()
+        agentsRuntimeStore.withState { owned in
+            owned.agentCredentialUseThrottleOverrideMs = value
+        }
     }
 
     /// Stamps every credential of the agent as just used.
     public func markAgentCredentialUsed(agentId: String) {
-        lock.lock()
-        for key in agentCredentials.keys where agentCredentials[key]?.agentId == agentId {
-            agentCredentials[key]?.lastUsedAt = Date()
+        agentsRuntimeStore.withState { owned in
+            for key in owned.agentCredentials.keys where owned.agentCredentials[key]?.agentId == agentId {
+                owned.agentCredentials[key]?.lastUsedAt = Date()
+            }
         }
-        lock.unlock()
     }
 
     public func agentCredentialLastUsedAtForTesting(apiKey: String) -> Date? {
-        lock.lock()
-        defer { lock.unlock() }
-        return agentCredentials[apiKey]?.lastUsedAt
+        return agentsRuntimeStore.withState { owned in owned.agentCredentials[apiKey]?.lastUsedAt }
     }
 
     /// Inventory size only — enough to prove a read-only surface minted nothing.
     public func agentCredentialInventoryCountForTesting() -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return agentCredentials.count
+        return agentsRuntimeStore.withState { owned in owned.agentCredentials.count }
     }
 
     public func channelSystemMessagesForTesting(channelId: String) -> [(content: String, subtype: String?)] {
-        lock.lock()
-        defer { lock.unlock() }
-        return humanMessageRows
-            .filter { $0.channelId == channelId && $0.messageType == "system" }
-            .map { ($0.content, $0.actionKind) }
+        messagesAndThreadsStore.withState { state in
+            return state.humanMessageRows
+                .filter { $0.channelId == channelId && $0.messageType == "system" }
+                .map { ($0.content, $0.actionKind) }
+        }
     }
 
     public func directChannelIdForTesting(serverId: String, firstId: String, secondId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return postableChannels.first { _, channel in
-            channel.serverId == serverId && channel.kind == "dm"
-                && channel.memberIds.contains(firstId) && channel.memberIds.contains(secondId)
-        }?.key
+        serversAndChannelsStore.mutex.withLock { state in
+            return state.postableChannels.first { _, channel in
+                channel.serverId == serverId && channel.kind == "dm"
+                    && channel.memberIds.contains(firstId) && channel.memberIds.contains(secondId)
+            }?.key
+        }
     }
 }

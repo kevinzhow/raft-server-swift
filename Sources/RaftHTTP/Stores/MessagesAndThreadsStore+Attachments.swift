@@ -44,18 +44,17 @@ extension MessagesAndThreadsStore {
         }
     }
 
-    /// One critical section for an attachment comment: the comment row and the
-    /// host-thread message row it posts as. The sequence is the server-wide
-    /// `rows.count + 1` the shared append stamps, so a concurrent comment can
-    /// never take the same sequence or land between the two writes. Returns the
-    /// stamped sequence.
-    func appendAttachmentComment(_ record: AttachmentCommentRecord, message: StoredHumanMessage) -> Int {
+    /// The comment row, shared message sequence and mirror commit stay in one
+    /// Messages transaction, using the same allocator as human and agent sends.
+    @discardableResult
+    func appendAttachmentComment(
+        _ record: AttachmentCommentRecord,
+        message: StoredHumanMessage,
+        ledger: MessageLedgerPort
+    ) -> Int {
         withState { state in
             state.attachmentCommentRecords[record.attachmentId, default: []].append(record)
-            var stored = message
-            stored.seq = state.humanMessageRows.count + 1
-            state.humanMessageRows.append(stored)
-            return stored.seq
+            return state.appendMessage(message, ledger: ledger)
         }
     }
 

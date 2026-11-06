@@ -157,11 +157,11 @@ struct SearchMentionsDependencies: Sendable {
     var agentCredential: @Sendable (String?) -> SearchMentionsAgentCredential?
     var canMachineServeAgent: @Sendable (String, OAuthLedger.AgentRuntimeInfo) -> Bool
     var attachmentCommentsEnabled: @Sendable (_ serverId: String, _ userId: String) -> Bool
-    var attachmentsJSON: @Sendable (_ ids: [String], _ commentsVisible: Bool) -> String
-    var commentRefJSON: @Sendable (_ messageId: String) -> String?
-    var forwardMetadataJSON: @Sendable (_ messageId: String, _ userId: String, _ serverId: String?) -> String?
+    var attachmentChips: @Sendable (_ ids: [String], _ commentsVisible: Bool) -> [InboxAttachmentChipDTO]
+    var commentRef: @Sendable (_ messageId: String) -> InboxCommentRefDTO?
+    var forwardMetadata: @Sendable (_ messageId: String, _ userId: String, _ serverId: String?) -> OrderedJSON?
     var actionCardMetadataJSON: @Sendable (_ messageId: String) -> String?
-    var threadSummariesJSON: @Sendable (_ parentChannelId: String, _ parentIds: [String]) -> String
+    var threadSummaries: @Sendable (_ parentChannelId: String, _ parentIds: [String]) -> OrderedJSON
     var now: @Sendable () -> Date
 
     static func live(directory source: EmailLoginDirectory) -> SearchMentionsDependencies {
@@ -177,18 +177,18 @@ struct SearchMentionsDependencies: Sendable {
                 source.canMachineServeAgent(machineId: machineId, agent: agent)
             },
             attachmentCommentsEnabled: { serverId, userId in
-                source.attachmentCommentsEnabled(serverId: serverId, userId: userId)
+                source.messageReadProjection.commentsEnabled(serverId: serverId, userId: userId)
             },
-            attachmentsJSON: { ids, commentsVisible in
-                source.messageAttachmentsJSONLocked(ids, commentsVisible: commentsVisible)
+            attachmentChips: { ids, commentsVisible in
+                source.messageReadProjection.attachments(ids, commentsVisible: commentsVisible)
             },
-            commentRefJSON: { source.commentRefJSONLocked(messageId: $0) },
-            forwardMetadataJSON: { messageId, userId, serverId in
-                source.forwardMetadataJSONLocked(messageId: messageId, userId: userId, serverId: serverId)
+            commentRef: { source.messageReadProjection.comment(messageId: $0) },
+            forwardMetadata: { messageId, userId, serverId in
+                source.messageReadProjection.forward(messageId: messageId, userId: userId, serverId: serverId)
             },
             actionCardMetadataJSON: { source.actionCardMetadata.metadata(messageId: $0) },
-            threadSummariesJSON: { parentChannelId, parentIds in
-                source.threadSummariesJSONLocked(parentChannelId: parentChannelId, parentIds: parentIds)
+            threadSummaries: { parentChannelId, parentIds in
+                source.messageReadProjection.threadSummaries(parentChannelId: parentChannelId, parentIds: parentIds)
             },
             now: { Date() }
         )
@@ -825,16 +825,16 @@ public struct SearchMentionsService: Sendable {
                     serverId ?? "",
                     userId
                 )
-                let metadata = dependencies.forwardMetadataJSON(row.id, userId, serverId)
-                    ?? dependencies.actionCardMetadataJSON(row.id)
+                let metadata = dependencies.forwardMetadata(row.id, userId, serverId)
+                    ?? dependencies.actionCardMetadataJSON(row.id).map(OrderedJSON.raw)
                 return MessageContextMessageDTO(
                     id: row.id,
                     channelId: channelId,
                     content: row.content,
                     seq: row.seq,
-                    attachmentsJSON: dependencies.attachmentsJSON(row.attachmentIds, commentsVisible),
-                    commentRefJSON: commentsVisible ? dependencies.commentRefJSON(row.id) : nil,
-                    actionMetadataJSON: metadata
+                    attachmentChips: dependencies.attachmentChips(row.attachmentIds, commentsVisible),
+                    commentRef: commentsVisible ? dependencies.commentRef(row.id) : nil,
+                    actionMetadata: metadata
                 )
             }
             let windowIds = scopedRows[start..<end].map(\.id)
@@ -845,7 +845,7 @@ public struct SearchMentionsService: Sendable {
                 hasNewer: end < scopedRows.count,
                 messages: parts,
                 canonicalTarget: nil,
-                threadSummariesByParentMessageIdJSON: dependencies.threadSummariesJSON(channelId, windowIds),
+                threadSummariesByParentMessageId: dependencies.threadSummaries(channelId, windowIds),
                 channelArchived: channel.archived
             )
         }
@@ -873,7 +873,7 @@ public struct SearchMentionsService: Sendable {
                     threadParentMessageId: localThread.parentMessageId ?? "",
                     threadChannelId: canonicalThreadId
                 ),
-                threadSummariesByParentMessageIdJSON: "",
+                threadSummariesByParentMessageId: .object([]),
                 channelArchived: localThread.archived
             )
         }
@@ -907,7 +907,7 @@ public struct SearchMentionsService: Sendable {
                     threadParentMessageId: thread.parentMessageId ?? "",
                     threadChannelId: reply.channelId
                 ),
-                threadSummariesByParentMessageIdJSON: "",
+                threadSummariesByParentMessageId: .object([]),
                 channelArchived: thread.archived
             )
         }
@@ -932,7 +932,7 @@ public struct SearchMentionsService: Sendable {
             hasNewer: false,
             messages: [Self.singleMessage(parent, channelId: parent.channelId, seq: seq)],
             canonicalTarget: nil,
-            threadSummariesByParentMessageIdJSON: "",
+            threadSummariesByParentMessageId: .object([]),
             channelArchived: channel.archived
         )
     }
@@ -998,90 +998,9 @@ public struct SearchMentionsService: Sendable {
             channelId: channelId,
             content: message.content,
             seq: seq,
-            attachmentsJSON: nil,
-            commentRefJSON: nil,
-            actionMetadataJSON: nil
-        )
-    }
-}
-
-// MARK: - Cross-domain channel fixtures
-//
-// These six mutators are not part of the search/mentions operations. They are
-// the shared channel-fixture surface that the message-send, action-card,
-// integration, private-surface and reminder domains still call, plus the
-// `Tests/TestSupport` fixtures. The state writes now live in
-// `ServersAndChannelsStore`; the methods stay on the directory so the pending
-// domains keep their call sites, and they disappear with those slices.
-extension EmailLoginDirectory {
-    /// Records a channel the owner can post in. Resource-reference checks run
-    /// only after this membership is visible.
-    public func addPostableChannel(
-        serverId: String,
-        channelId: String,
-        memberId: String,
-        kind: String = "channel",
-        parentChannelId: String? = nil,
-        parentMessageId: String? = nil,
-        name: String? = nil
-    ) {
-        serversAndChannelsStore.addPostableChannel(
-            serverId: serverId,
-            channelId: channelId,
-            memberId: memberId,
-            kind: kind,
-            parentChannelId: parentChannelId,
-            parentMessageId: parentMessageId,
-            name: name
-        )
-    }
-
-    /// Server role used by the hidden human directory. Only `member` is hidden
-    /// on #all.
-    public func setServerMemberRole(serverId: String, userId: String, role: String) {
-        serversAndChannelsStore.setServerMemberRole(serverId: serverId, userId: userId, role: role)
-    }
-
-    public func setHideHumansFromMembers(serverId: String, hidden: Bool) {
-        serversAndChannelsStore.setHideHumansFromMembers(serverId: serverId, hidden: hidden)
-    }
-
-    /// Links a server's local joint channel to the canonical channel that
-    /// stores the messages.
-    public func addJointChannelProjection(localChannelId: String, canonicalChannelId: String, serverId: String) {
-        serversAndChannelsStore.addJointChannelProjection(
-            localChannelId: localChannelId,
-            canonicalChannelId: canonicalChannelId,
-            serverId: serverId
-        )
-    }
-
-    /// A thread whose messages hang off one parent message. Context short links
-    /// on the parent channel can land here.
-    public func addThreadChannel(
-        serverId: String,
-        threadChannelId: String,
-        parentChannelId: String,
-        parentMessageId: String,
-        memberId: String
-    ) {
-        serversAndChannelsStore.addThreadChannel(
-            serverId: serverId,
-            threadChannelId: threadChannelId,
-            parentChannelId: parentChannelId,
-            parentMessageId: parentMessageId,
-            memberId: memberId
-        )
-    }
-
-    /// A user-to-user DM. Only the two participants may be notified by a
-    /// mention.
-    public func addDirectMessage(serverId: String, channelId: String, participantIds: [String], agentId: String? = nil) {
-        serversAndChannelsStore.addDirectMessage(
-            serverId: serverId,
-            channelId: channelId,
-            participantIds: participantIds,
-            agentId: agentId
+            attachmentChips: nil,
+            commentRef: nil,
+            actionMetadata: nil
         )
     }
 }

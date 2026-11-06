@@ -56,8 +56,8 @@ struct AgentPrivateSurfaceDependencies: Sendable {
             directChannelId: { serverId, agentId, peerId in
                 source.actionCardPrepare.dmChannelId(serverId: serverId, agentId: agentId, peerId: peerId)
             },
-            postAgentRoleNotice: { serverId, actorUserId, agentId, agentName, from, to in
-                source.postAgentRoleNotice(
+            postAgentRoleNotice: { [notices = source.agentRoleNotices] serverId, actorUserId, agentId, agentName, from, to in
+                notices.post(
                     serverId: serverId,
                     actorUserId: actorUserId,
                     agentId: agentId,

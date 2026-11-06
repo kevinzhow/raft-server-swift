@@ -77,12 +77,10 @@ struct HumanMessageCreateDependencies: Sendable {
 /// mention actions it leaves pending, the forward lookup and the forward write
 /// (`HumanMessageForwardService.swift`).
 ///
-/// Every read-modify-write runs inside one store critical section
-/// (`MessagesAndThreadsStore`, `AgentsRuntimeStore`, `ServersAndChannelsStore`);
-/// a decision that needs rows of another store is made from a snapshot taken
-/// first and handed in as a pure closure, so no store lock is held while
-/// another is taken. The routes only decode a body and project the returned
-/// DTO or the thrown `DomainError`.
+/// Cross-domain policies use owner snapshots. The message commit deliberately
+/// nests only its concrete Messages -> OAuth leaf port, preserving mirror order;
+/// it invokes no Service callback while State is borrowed. Routes decode the
+/// body and project the returned DTO or thrown DomainError.
 public struct HumanMessageCreateService: Sendable {
     let channels: ServersAndChannelsStore
     let messages: MessagesAndThreadsStore
@@ -108,6 +106,12 @@ public struct HumanMessageCreateService: Sendable {
     }
 
     public init(directory source: EmailLoginDirectory) {
+        let writer = HumanMessageCommitService(
+            messages: source.messagesAndThreadsStore,
+            channels: source.serversAndChannelsStore,
+            ledger: MessageLedgerPort(oauth: source.oauth),
+            emit: { [relay = source.realtimeRelay] room, event, payload in relay.emit(room, event, payload) }
+        )
         self.init(
             channels: source.serversAndChannelsStore,
             messages: source.messagesAndThreadsStore,
@@ -116,22 +120,16 @@ public struct HumanMessageCreateService: Sendable {
             oauth: source.oauth,
             dependencies: HumanMessageCreateDependencies(
                 agentReadOutcome: { [source] authorization in
-                    source.profileAgentReadOutcome(authorization)
+                    AgentCredentialLookup(directory: source).profileReadOutcome(authorization)
                 },
-                storeHumanMessage: { [source] channelId, senderId, content, randomId, attachmentIds, timezone, mentions in
-                    let written = source.storeHumanMessage(
-                        channelId: channelId,
-                        senderId: senderId,
-                        content: content,
-                        randomId: randomId,
-                        attachmentIds: attachmentIds,
-                        senderTimezone: timezone,
-                        mentions: mentions
+                storeHumanMessage: { [writer] channelId, senderId, content, randomId, attachmentIds, timezone, mentions in
+                    writer.store(
+                        channelId: channelId, senderId: senderId, content: content, randomId: randomId,
+                        attachmentIds: attachmentIds, senderTimezone: timezone, mentions: mentions
                     )
-                    return HumanMessageWrite(status: written.status, body: written.body, created: written.created)
                 },
                 resolveMentions: { [source] serverId, senderId, content, typed, warnUnresolved in
-                    let resolved = source.resolvedMessageMentions(
+                    let resolved = source.messageMentions.resolve(
                         serverId: serverId,
                         senderId: senderId,
                         content: content,
@@ -141,10 +139,10 @@ public struct HumanMessageCreateService: Sendable {
                     return ResolvedMentions(mentions: resolved.mentions, unresolved: resolved.unresolved)
                 },
                 recordMemberMentionRows: { [source] messageId, channelId, mentions in
-                    source.recordMemberMentionRows(messageId: messageId, channelId: channelId, mentions: mentions)
+                    source.messageMentions.register(messageId: messageId, channelId: channelId, mentions: mentions)
                 },
                 jointLocalChannelId: { [source] canonical, serverId, userId in
-                    source.jointLocalChannelIdLocked(canonicalChannelId: canonical, serverId: serverId, userId: userId)
+                    MessageChannelFacts(source.serversAndChannelsStore.state).localChannel(canonical: canonical, serverId: serverId, userId: userId)
                 },
                 messageVisibleToUser: { [source] channelId, serverId, userId in
                     source.searchMentions.messageVisible(

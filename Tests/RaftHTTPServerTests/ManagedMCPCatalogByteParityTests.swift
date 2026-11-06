@@ -182,7 +182,7 @@ private func jsonField(_ body: String, _ key: String) -> String {
             #expect(callback.headers[HTTPField.Name("X-Robots-Tag")!] == nil)
 
             let metadata = try await client.get("/api/mcp/oauth/client-metadata")
-            let base = fixture.accounts.serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let base = fixture.accounts.oauthFlows.deploymentConfiguration.serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             #expect(text(metadata) == "{\"client_id\":\"\(base)/api/mcp/oauth/client-metadata\",\"redirect_uris\":[\"\(base)/api/mcp/oauth/callback\"]}")
             #expect(metadata.headers[.cacheControl] == "no-store")
             #expect(metadata.headers[.contentType] == "application/json; charset=utf-8")

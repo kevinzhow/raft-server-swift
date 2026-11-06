@@ -1,3 +1,4 @@
+import TestSupport
 import Crypto
 import Foundation
 import HTTPTypes
@@ -20,8 +21,8 @@ private func decodeBase64URL(_ value: String) -> Data? {
 
 @Test func idTokenSignatureVerifiesWithThePublishedJWKS() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.serverURL = "https://api.raft.test"
-    accounts.appURL = "https://app.raft.test"
+    accounts.configureOAuthForTesting { $0.serverURL = "https://api.raft.test" }
+    accounts.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
     let ownerId = "11111111-1111-4111-8111-111111111240"
     let serverId = "33333333-3333-4333-8333-333333333436"
     let email = "oidc-owner-240@raft.test"

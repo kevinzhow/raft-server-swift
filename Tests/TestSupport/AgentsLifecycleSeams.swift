@@ -5,33 +5,33 @@ import Foundation
 extension EmailLoginDirectory {
     public func removeChannelMemberForTesting(channelId: String, userId: String) {
         oauth.removeChannelHuman(channelId: channelId, userId: userId)
-        lock.lock()
-        postableChannels[channelId]?.memberIds.remove(userId)
-        lock.unlock()
+        serversAndChannelsStore.mutex.withLock { owned in
+            _ = owned.postableChannels[channelId]?.memberIds.remove(userId)
+        }
     }
 
     public func setChannelGuestVisibleForTesting(channelId: String, visible: Bool) {
-        lock.lock()
-        guestVisibleChannels[channelId] = visible
-        lock.unlock()
+        serversAndChannelsStore.mutex.withLock { owned in
+            owned.guestVisibleChannels[channelId] = visible
+        }
     }
 
     public func setChannelGuestJoinableForTesting(channelId: String, joinable: Bool) {
-        lock.lock()
-        guestJoinableChannels[channelId] = joinable
-        lock.unlock()
+        serversAndChannelsStore.mutex.withLock { owned in
+            owned.guestJoinableChannels[channelId] = joinable
+        }
     }
 
     public func setChannelPostablePrivateForTesting(channelId: String) {
-        lock.lock()
-        postableChannels[channelId]?.kind = "private"
-        lock.unlock()
+        serversAndChannelsStore.mutex.withLock { owned in
+            owned.postableChannels[channelId]?.kind = "private"
+        }
     }
 
     public func addChannelAttachmentForTesting(channelId: String, id: String, uploaderId: String, filename: String) {
-        lock.lock()
-        channelAttachments[id] = ChannelAttachment(id: id, channelId: channelId, uploaderId: uploaderId, filename: filename, messageId: nil, messagePosition: nil)
-        lock.unlock()
+        messagesAndThreadsStore.withState { state in
+            state.channelAttachments[id] = ChannelAttachment(id: id, channelId: channelId, uploaderId: uploaderId, filename: filename, messageId: nil, messagePosition: nil)
+        }
     }
 
     public func addChannelFileForTesting(
@@ -46,46 +46,42 @@ extension EmailLoginDirectory {
         createdAt: Date,
         thumbnailKey: String? = nil
     ) {
-        lock.lock()
-        channelAttachments[id] = ChannelAttachment(
-            id: id,
-            channelId: channelId,
-            uploaderId: uploaderId,
-            filename: filename,
-            messageId: messageId,
-            messagePosition: 0,
-            mimeType: mimeType,
-            sizeBytes: sizeBytes,
-            uploaderType: uploaderType,
-            createdAt: createdAt,
-            thumbnailKey: thumbnailKey
-        )
-        lock.unlock()
+        messagesAndThreadsStore.withState { state in
+            state.channelAttachments[id] = ChannelAttachment(
+                id: id,
+                channelId: channelId,
+                uploaderId: uploaderId,
+                filename: filename,
+                messageId: messageId,
+                messagePosition: 0,
+                mimeType: mimeType,
+                sizeBytes: sizeBytes,
+                uploaderType: uploaderType,
+                createdAt: createdAt,
+                thumbnailKey: thumbnailKey
+            )
+        }
     }
 
     public func setScopeAttestationSecretForTesting(_ secret: String?) {
-        lock.lock()
         authProfileStore.scopeAttestationSecretOverride = .some(secret)
-        lock.unlock()
     }
 
     public func setDeploymentEnvironmentForTesting(_ environment: String?) {
-        lock.lock()
         authProfileStore.deploymentEnvironmentOverride = .some(environment)
-        lock.unlock()
     }
 
     public func setComputerAttachEnabledForTesting(_ enabled: Bool?) {
-        lock.lock()
-        computerAttachEnabledOverride = enabled
-        lock.unlock()
+        machinesAndComputersStore.storage.withLock { owned in
+            owned.computerAttachEnabledOverride = enabled
+        }
     }
 
     public func setShareUsageData(userId: String, value: Bool?) {
-        var state = authProfileStore.accountState
-        if let key = state.accounts.first(where: { $0.value.id == userId })?.key {
-            state.accounts[key]?.shareUsageData = value
-            authProfileStore.accountState = state
+        authProfileStore.state.withLock { owned in
+            if let key = owned.accountSurface.accounts.first(where: { $0.value.id == userId })?.key {
+                owned.accountSurface.accounts[key]?.shareUsageData = value
+            }
         }
     }
 

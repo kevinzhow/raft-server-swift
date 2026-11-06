@@ -1,6 +1,7 @@
+import TestSupport
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
 import Testing
 import Vapor
@@ -18,7 +19,7 @@ import VaporTesting
     accounts.addPostableChannel(serverId: serverId, channelId: channel, memberId: ownerId, name: "preview-bridge-room")
     let attachment = accounts.addChannelAttachment(channelId: channel, uploaderId: ownerId, filename: "report.html", mimeType: "text/html", sizeBytes: 64)
     let html = "<!doctype html><html><body><h1>Report</h1><p>D0>=35</p></body></html>"
-    accounts.attachmentPreviewBody = { id in id == attachment ? html : nil }
+    accounts.messagesAndThreadsStore.attachmentPreviewBody = { id in id == attachment ? html : nil }
 
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))

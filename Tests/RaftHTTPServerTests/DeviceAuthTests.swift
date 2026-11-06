@@ -1,3 +1,4 @@
+import TestSupport
 import Foundation
 import HTTPTypes
 import RaftHTTP
@@ -32,7 +33,7 @@ private func deviceApp(_ accounts: EmailLoginDirectory) -> FallbackServices {
 
 @Test func deviceLoginSurfaceFollowsTheExplicitKillSwitch() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.appURL = "http://127.0.0.1:4173"
+    accounts.configureOAuthForTesting { $0.appURL = "http://127.0.0.1:4173" }
     try await withApp { app in
         configure(app, services: deviceApp(accounts))
         try await app.testing { client in
@@ -40,13 +41,13 @@ private func deviceApp(_ accounts: EmailLoginDirectory) -> FallbackServices {
             #expect(unset.status == .created)
 
             for kill in ["false", "0", "no", "off", "FALSE", "False"] {
-                accounts.deviceLoginGate = kill
+                accounts.configureAuthCoreForTesting { $0.deviceLoginGate = kill }
                 let response = try await postJSON(client, "/api/auth/device/authorize", body: "{}")
                 #expect(response.status == .notFound)
             }
 
             for live in ["", "true", "1", "yes", "on"] {
-                accounts.deviceLoginGate = live
+                accounts.configureAuthCoreForTesting { $0.deviceLoginGate = live }
                 let response = try await postJSON(client, "/api/auth/device/authorize", body: "{\"clientName\":\"test\"}")
                 #expect(response.status == .created)
             }
@@ -56,7 +57,7 @@ private func deviceApp(_ accounts: EmailLoginDirectory) -> FallbackServices {
 
 @Test func deviceLoginLifecycleApprovesOnceThenRejectsASecondPoll() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.appURL = "http://127.0.0.1:4173"
+    accounts.configureOAuthForTesting { $0.appURL = "http://127.0.0.1:4173" }
     let userId = "cccccccc-cccc-4ccc-8ccc-ccccccccccc3"
     accounts.addAccount(id: userId, email: "device-user@slock.test", password: "password123")
     try await withApp { app in
@@ -110,7 +111,7 @@ private func deviceApp(_ accounts: EmailLoginDirectory) -> FallbackServices {
 
 @Test func deviceLoginAuthorizeFailsClosedWhenTheAppURLIsEmpty() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.appURL = ""
+    accounts.configureOAuthForTesting { $0.appURL = "" }
     try await withApp { app in
         configure(app, services: deviceApp(accounts))
         try await app.testing { client in
@@ -124,7 +125,7 @@ private func deviceApp(_ accounts: EmailLoginDirectory) -> FallbackServices {
 
 @Test func deviceLoginDenialMakesTheTokenPollReturnAccessDenied() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.appURL = "http://127.0.0.1:4173"
+    accounts.configureOAuthForTesting { $0.appURL = "http://127.0.0.1:4173" }
     accounts.addAccount(id: "dddddddd-dddd-4ddd-8ddd-ddddddddddd4", email: "device-deny@slock.test", password: "password123")
     try await withApp { app in
         configure(app, services: deviceApp(accounts))
@@ -152,7 +153,7 @@ private func deviceApp(_ accounts: EmailLoginDirectory) -> FallbackServices {
 
 @Test func deviceLoginUnknownCodesStayUniform() async throws {
     let accounts = EmailLoginDirectory()
-    accounts.appURL = "http://127.0.0.1:4173"
+    accounts.configureOAuthForTesting { $0.appURL = "http://127.0.0.1:4173" }
     accounts.addAccount(id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5", email: "device-unknown@slock.test", password: "password123")
     try await withApp { app in
         configure(app, services: deviceApp(accounts))

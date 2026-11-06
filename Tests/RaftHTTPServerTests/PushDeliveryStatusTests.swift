@@ -1,3 +1,4 @@
+import TestSupport
 import Foundation
 import HTTPTypes
 import RaftHTTP
@@ -75,7 +76,7 @@ import VaporTesting
             #expect(otherInstall[serverA]?["fcmActive"] == false)
             #expect(otherInstall[serverB]?["fcmActive"] == false)
 
-            accounts.fcmPushAvailable = false
+            accounts.setFCMPushAvailableForTesting(false)
             #expect(try await servers("android-status-1")[serverA]?["fcmActive"] == false)
         }
     }

@@ -1,6 +1,6 @@
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
 import Testing
 import TestSupport
@@ -168,7 +168,7 @@ private func serverApiObject(_ response: ClientResponse) throws -> [String: Any]
     let machine = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "grok-machine")
     accounts.setMachineRuntimesForTesting(machineId: machine, runtimes: ["codex", "grok"])
     let probe = RuntimeProbeCounter()
-    accounts.machineRuntimeModelProbe = { _, _, _ in probe.next() }
+    accounts.machinesAndComputersStore.machineRuntimeModelProbe = { _, _, _ in probe.next() }
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -335,7 +335,7 @@ private final class RuntimeProbeCounter: @unchecked Sendable {
     accounts.linkComputerForTesting(serverId: serverId, machineId: machine, online: true, version: "1.0.23", attachedByUserId: ownerId)
     accounts.setLatestComputerReleaseForTesting(version: "1.0.31", releaseNotesJSON: "{\"version\":\"1.0.31\"}")
     let sent = ServerEventCollector()
-    accounts.computerUpgradeSender = { machineId, target, requestId in
+    accounts.machinesAndComputersStore.computerUpgradeSender = { machineId, target, requestId in
         sent.append(machineId, target, requestId)
         return true
     }
@@ -363,7 +363,7 @@ private final class RuntimeProbeCounter: @unchecked Sendable {
             #expect(sent.values.count == 1)
             #expect(sent.values.first?.event == "1.0.31")
 
-            accounts.computerUpgradeSender = { _, _, _ in false }
+            accounts.machinesAndComputersStore.computerUpgradeSender = { _, _, _ in false }
             let undelivered = try await client.send(.post, headers: headers, to: URI(string: "/api/servers/\(serverId)/machines/\(machine)/computer/upgrade")) { request in
                 request.body = .init(string: "{\"targetVersion\":\"1.0.31\"}")
             }

@@ -8,39 +8,35 @@ extension EmailLoginDirectory {
         actionType: String = "channel:create", state: String = "prepared"
     ) -> String {
         let id = UUID().uuidString.lowercased()
-        lock.lock()
-        actionCardRecords[id] = ActionCardRecord(
-            messageId: id, serverId: serverId, requesterAgentId: agentId,
-            storageChannelId: carrierChannelId, localCarrierChannelId: carrierChannelId,
-            actionType: actionType, channelName: "test-card-channel", visibility: "public",
-            state: state, executedByUserId: nil
-        )
-        lock.unlock()
+        managedMCPAndCardsStore.storage.withLock { owned in
+            owned.actionCardRecords[id] = ActionCardRecord(
+                messageId: id, serverId: serverId, requesterAgentId: agentId,
+                storageChannelId: carrierChannelId, localCarrierChannelId: carrierChannelId,
+                actionType: actionType, channelName: "test-card-channel", visibility: "public",
+                state: state, executedByUserId: nil
+            )
+        }
         return id
     }
 
     public func actionCardStateForTesting(messageId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return actionCardRecords[messageId]?.state
+        return managedMCPAndCardsStore.storage.withLock { owned in
+            return owned.actionCardRecords[messageId]?.state
+        }
     }
 
     public func setAgentInboxAvailableForTesting(_ value: Bool?) {
-        lock.lock()
-        agentInboxAvailable = value
-        lock.unlock()
+        agentsRuntimeStore.withState { owned in
+            owned.agentInboxAvailable = value
+        }
     }
 
     public func setMarketplaceReviewerIdsForTesting(_ ids: Set<String>?) {
-        lock.lock()
         feedbackStore.marketplaceReviewerOverride = ids
-        lock.unlock()
     }
 
     public func setSendFreshnessModeForTesting(_ mode: String?) {
-        lock.lock()
-        sendFreshnessModeOverride = mode
-        lock.unlock()
+        messagesAndThreadsStore.withState { $0.sendFreshnessModeOverride = mode }
     }
 
     public func addManagedMCPServerForTesting(
@@ -57,19 +53,19 @@ extension EmailLoginDirectory {
         let catalog = tools.map { tool in
             "{\"name\":\(jsonString(tool.name)),\"inputSchema\":\(tool.inputSchemaJSON)}"
         }.joined(separator: ",")
-        lock.lock()
-        managedMCPServers.append(ManagedMCPServerRecord(
-            id: id,
-            serverId: serverId,
-            name: name,
-            provider: provider,
-            authMode: authMode,
-            oauthStatus: oauthStatus,
-            endpointUrl: endpointUrl,
-            toolCatalogJSON: "[\(catalog)]",
-            catalogVersion: catalogVersion
-        ))
-        lock.unlock()
+        managedMCPAndCardsStore.storage.withLock { owned in
+            owned.managedMCPServers.append(ManagedMCPServerRecord(
+                id: id,
+                serverId: serverId,
+                name: name,
+                provider: provider,
+                authMode: authMode,
+                oauthStatus: oauthStatus,
+                endpointUrl: endpointUrl,
+                toolCatalogJSON: "[\(catalog)]",
+                catalogVersion: catalogVersion
+            ))
+        }
         return id
     }
 }

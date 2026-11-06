@@ -1,6 +1,7 @@
+import TestSupport
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
 import Testing
 import Vapor
@@ -37,7 +38,7 @@ private final class PresignRecorder: @unchecked Sendable {
     let audio = accounts.addChannelAttachment(channelId: channel, uploaderId: ownerId, filename: "voice.mp3", mimeType: "audio/mpeg", sizeBytes: 42)
     let pdf = accounts.addChannelAttachment(channelId: channel, uploaderId: ownerId, filename: "doc.pdf", mimeType: "application/pdf", sizeBytes: 42)
     let recorder = PresignRecorder()
-    accounts.attachmentPresign = { id, _, ttl in
+    accounts.messagesAndThreadsStore.attachmentPresign = { id, _, ttl in
         recorder.append(id, ttl)
         return "https://storage.example.test/\(id)"
     }

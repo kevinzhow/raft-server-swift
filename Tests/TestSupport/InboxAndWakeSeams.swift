@@ -3,151 +3,150 @@ import Foundation
 
 extension EmailLoginDirectory {
     public func addBackfilledTaskForTesting(channelId: String, title: String, taskNumber: Int, messageId: String) -> String {
-        lock.lock()
         let id = UUID().uuidString.lowercased()
-        taskRecords.append(TaskRecord(
-            id: id,
-            channelId: channelId,
-            title: title,
-            description: nil,
-            status: "todo",
-            taskNumber: taskNumber,
-            messageId: messageId,
-            createdAt: Date()
-        ))
-        if let index = humanMessageRows.firstIndex(where: { $0.id == messageId }) {
-            humanMessageRows[index].taskStatus = "todo"
-            humanMessageRows[index].taskNumber = taskNumber
+        tasksAndRemindersStore.mutex.withLock { state in
+            state.taskRecords.append(TaskRecord(id: id, channelId: channelId, title: title, description: nil,
+                status: "todo", taskNumber: taskNumber, messageId: messageId, createdAt: Date()))
         }
-        lock.unlock()
+        messagesAndThreadsStore.withState { state in
+            if let index = state.humanMessageRows.firstIndex(where: { $0.id == messageId }) {
+                state.humanMessageRows[index].taskStatus = "todo"
+                state.humanMessageRows[index].taskNumber = taskNumber
+            }
+        }
         return id
     }
 
     public func mentionNotifiedActionForTesting(id: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storedMentions.first { $0.id == id }?.notifiedAction
+        messagesAndThreadsStore.withState { state in
+            return state.storedMentions.first { $0.id == id }?.notifiedAction
+        }
     }
 
     public func messageAttachmentIdsForTesting(messageId: String) -> [String] {
-        lock.lock(); defer { lock.unlock() }
-        return humanMessageRows.first { $0.id == messageId }?.attachmentIds ?? []
+        messagesAndThreadsStore.withState { state in
+            return state.humanMessageRows.first { $0.id == messageId }?.attachmentIds ?? []
+        }
     }
 
     public func setMessageAttachmentIdsForTesting(messageId: String, attachmentIds: [String]) {
-        lock.lock()
-        if let index = humanMessageRows.firstIndex(where: { $0.id == messageId }) {
-            humanMessageRows[index].attachmentIds = attachmentIds
+        messagesAndThreadsStore.withState { state in
+            if let index = state.humanMessageRows.firstIndex(where: { $0.id == messageId }) {
+                state.humanMessageRows[index].attachmentIds = attachmentIds
+            }
         }
-        lock.unlock()
     }
 
     public func amendTaskForTesting(taskId: String, title: String, description: String?, amendedByName: String = "user") {
-        lock.lock()
-        if let index = taskRecords.firstIndex(where: { $0.id == taskId }) {
-            taskRecords[index].title = title
-            if let description { taskRecords[index].description = description }
-            taskRecords[index].revision += 1
-            taskRecords[index].amendedAt = Date()
-            taskRecords[index].amendedByType = "user"
-            taskRecords[index].amendedByName = amendedByName
-            taskRecords[index].superseded = true
+        tasksAndRemindersStore.mutex.withLock { owned in
+            if let index = owned.taskRecords.firstIndex(where: { $0.id == taskId }) {
+                owned.taskRecords[index].title = title
+                if let description { owned.taskRecords[index].description = description }
+                owned.taskRecords[index].revision += 1
+                owned.taskRecords[index].amendedAt = Date()
+                owned.taskRecords[index].amendedByType = "user"
+                owned.taskRecords[index].amendedByName = amendedByName
+                owned.taskRecords[index].superseded = true
+            }
         }
-        lock.unlock()
     }
 
     public func taskNumberForTaskIdForTesting(taskId: String) -> Int? {
-        lock.lock(); defer { lock.unlock() }
-        return taskRecords.first { $0.id == taskId }?.taskNumber
+        return tasksAndRemindersStore.mutex.withLock { owned in
+            return owned.taskRecords.first { $0.id == taskId }?.taskNumber
+        }
     }
 
     public func messageChannelIdForTesting(messageId: String) -> String? {
-        lock.lock(); defer { lock.unlock() }
-        return humanMessageRows.first { $0.id == messageId }?.channelId
+        messagesAndThreadsStore.withState { state in
+            return state.humanMessageRows.first { $0.id == messageId }?.channelId
+        }
     }
 
     public func messageSeqForTesting(messageId: String) -> Int? {
-        lock.lock(); defer { lock.unlock() }
-        return humanMessageRows.first { $0.id == messageId }?.seq
+        messagesAndThreadsStore.withState { state in
+            return state.humanMessageRows.first { $0.id == messageId }?.seq
+        }
     }
 
     public func messageCreatedAtForTesting(messageId: String) -> Date? {
-        lock.lock(); defer { lock.unlock() }
-        return humanMessageRows.first { $0.id == messageId }?.createdAt
+        messagesAndThreadsStore.withState { state in
+            return state.humanMessageRows.first { $0.id == messageId }?.createdAt
+        }
     }
 
     public func setMessageCreatedAtForTesting(messageId: String, at date: Date) {
-        lock.lock()
-        if let index = humanMessageRows.firstIndex(where: { $0.id == messageId }) {
-            humanMessageRows[index].createdAt = date
+        messagesAndThreadsStore.withState { state in
+            if let index = state.humanMessageRows.firstIndex(where: { $0.id == messageId }) {
+                state.humanMessageRows[index].createdAt = date
+            }
         }
-        lock.unlock()
     }
 
     public func messageCountForTesting(channelId: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return humanMessageRows.filter { $0.channelId == channelId }.count
+        messagesAndThreadsStore.withState { state in
+            return state.humanMessageRows.filter { $0.channelId == channelId }.count
+        }
     }
 
     public func removeMessageForTesting(messageId: String) {
-        lock.lock()
-        humanMessageRows.removeAll { $0.id == messageId }
-        for key in attachmentCommentRecords.keys {
-            attachmentCommentRecords[key]?.removeAll { $0.id == messageId }
+        messagesAndThreadsStore.withState { state in
+            state.humanMessageRows.removeAll { $0.id == messageId }
+            for key in state.attachmentCommentRecords.keys {
+                state.attachmentCommentRecords[key]?.removeAll { $0.id == messageId }
+            }
         }
-        lock.unlock()
     }
 
     public func addOrphanTaskForTesting(channelId: String, title: String, taskNumber: Int) -> String {
-        lock.lock()
-        let id = UUID().uuidString.lowercased()
-        var record = TaskRecord(
-            id: id,
-            channelId: channelId,
-            title: title,
-            description: nil,
-            status: "todo",
-            taskNumber: taskNumber,
-            messageId: UUID().uuidString.lowercased(),
-            createdAt: Date()
-        )
-        record.hasHostMessage = false
-        taskRecords.append(record)
-        lock.unlock()
-        return id
+        return tasksAndRemindersStore.mutex.withLock { owned in
+            let id = UUID().uuidString.lowercased()
+            var record = TaskRecord(
+                id: id,
+                channelId: channelId,
+                title: title,
+                description: nil,
+                status: "todo",
+                taskNumber: taskNumber,
+                messageId: UUID().uuidString.lowercased(),
+                createdAt: Date()
+            )
+            record.hasHostMessage = false
+            owned.taskRecords.append(record)
+            return id
+        }
     }
 
     public func assignTaskForTesting(taskId: String, assigneeId: String?) {
-        lock.lock()
-        if let index = taskRecords.firstIndex(where: { $0.id == taskId }) {
-            taskRecords[index].assigneeId = assigneeId
-            taskRecords[index].assigneeType = assigneeId == nil ? nil : "agent"
-            taskRecords[index].claimedAt = nil
+        tasksAndRemindersStore.mutex.withLock { owned in
+            if let index = owned.taskRecords.firstIndex(where: { $0.id == taskId }) {
+                owned.taskRecords[index].assigneeId = assigneeId
+                owned.taskRecords[index].assigneeType = assigneeId == nil ? nil : "agent"
+                owned.taskRecords[index].claimedAt = nil
+            }
         }
-        lock.unlock()
     }
 
     public func taskAssigneeForTesting(taskId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return taskRecords.first { $0.id == taskId }?.assigneeId
+        return tasksAndRemindersStore.mutex.withLock { owned in
+            return owned.taskRecords.first { $0.id == taskId }?.assigneeId
+        }
     }
 
     public func messageTaskShadowForTesting(messageId: String) -> (status: String, number: Int)? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let row = humanMessageRows.first(where: { $0.id == messageId }),
-              let status = row.taskStatus, let number = row.taskNumber
-        else { return nil }
-        return (status, number)
+        messagesAndThreadsStore.withState { state in
+            guard let row = state.humanMessageRows.first(where: { $0.id == messageId }),
+                  let status = row.taskStatus, let number = row.taskNumber
+            else { return nil }
+            return (status, number)
+        }
     }
 
     public func setChannelMessageCreatedAtForTesting(id: String, createdAt: Date) {
-        lock.lock()
-        if let index = humanMessageRows.firstIndex(where: { $0.id == id }) {
-            humanMessageRows[index].createdAt = createdAt
+        messagesAndThreadsStore.withState { state in
+            if let index = state.humanMessageRows.firstIndex(where: { $0.id == id }) {
+                state.humanMessageRows[index].createdAt = createdAt
+            }
         }
-        lock.unlock()
     }
 }

@@ -388,35 +388,33 @@ public struct MessageContextCanonicalTargetDTO: Sendable, Equatable, JSONBodyCon
 /// `attachments`, then `commentRef` and `actionMetadata` when the projection
 /// supplied them. The window path always publishes `attachments`; the legacy
 /// single-message joint/thread path omitted it entirely, which is why the
-/// member is optional. The attachment rows, comment reference and action
-/// metadata are rendered by the not-yet-migrated attachment/action-card
-/// domains, so they enter as raw JSON fragments whose member order those
-/// domains own.
+/// member is optional. Attachment chips and the comment reference are typed
+/// projections. Action metadata retains its owner's ordered JSON tree.
 public struct MessageContextMessageDTO: Sendable, Equatable, JSONBodyConvertible {
     public var id: String
     public var channelId: String
     public var content: String
     public var seq: Int
-    public var attachmentsJSON: String?
-    public var commentRefJSON: String?
-    public var actionMetadataJSON: String?
+    public var attachmentChips: [InboxAttachmentChipDTO]?
+    public var commentRef: InboxCommentRefDTO?
+    public var actionMetadata: OrderedJSON?
 
     public init(
         id: String,
         channelId: String,
         content: String,
         seq: Int,
-        attachmentsJSON: String?,
-        commentRefJSON: String?,
-        actionMetadataJSON: String?
+        attachmentChips: [InboxAttachmentChipDTO]?,
+        commentRef: InboxCommentRefDTO?,
+        actionMetadata: OrderedJSON?
     ) {
         self.id = id
         self.channelId = channelId
         self.content = content
         self.seq = seq
-        self.attachmentsJSON = attachmentsJSON
-        self.commentRefJSON = commentRefJSON
-        self.actionMetadataJSON = actionMetadataJSON
+        self.attachmentChips = attachmentChips
+        self.commentRef = commentRef
+        self.actionMetadata = actionMetadata
     }
 
     public var jsonBody: OrderedJSON {
@@ -425,14 +423,14 @@ public struct MessageContextMessageDTO: Sendable, Equatable, JSONBodyConvertible
         body.append("channelId", channelId)
         body.append("content", content)
         body.append("seq", seq)
-        if let attachmentsJSON {
-            body.append("attachments", .raw("[\(attachmentsJSON)]"))
+        if let attachmentChips {
+            body.append("attachments", .array(attachmentChips.map(\.jsonBody)))
         }
-        if let commentRefJSON {
-            body.append("commentRef", .raw(commentRefJSON))
+        if let commentRef {
+            body.append("commentRef", commentRef.jsonBody)
         }
-        if let actionMetadataJSON {
-            body.append("actionMetadata", .raw(actionMetadataJSON))
+        if let actionMetadata {
+            body.append("actionMetadata", actionMetadata)
         }
         return body.json
     }
@@ -450,9 +448,8 @@ public struct StoredMessageContextResponse: Sendable, Equatable, JSONBodyConvert
     public var hasNewer: Bool
     public var messages: [MessageContextMessageDTO]
     public var canonicalTarget: MessageContextCanonicalTargetDTO?
-    /// The comma-joined `"parentId":{…}` members the thread-summary domain
-    /// renders; the surrounding object braces are added here.
-    public var threadSummariesByParentMessageIdJSON: String
+    /// The thread-summary object's ordered members, including an empty map.
+    public var threadSummariesByParentMessageId: OrderedJSON
     public var channelArchived: Bool
 
     public init(
@@ -462,7 +459,7 @@ public struct StoredMessageContextResponse: Sendable, Equatable, JSONBodyConvert
         hasNewer: Bool,
         messages: [MessageContextMessageDTO],
         canonicalTarget: MessageContextCanonicalTargetDTO?,
-        threadSummariesByParentMessageIdJSON: String,
+        threadSummariesByParentMessageId: OrderedJSON,
         channelArchived: Bool
     ) {
         self.channelId = channelId
@@ -471,7 +468,7 @@ public struct StoredMessageContextResponse: Sendable, Equatable, JSONBodyConvert
         self.hasNewer = hasNewer
         self.messages = messages
         self.canonicalTarget = canonicalTarget
-        self.threadSummariesByParentMessageIdJSON = threadSummariesByParentMessageIdJSON
+        self.threadSummariesByParentMessageId = threadSummariesByParentMessageId
         self.channelArchived = channelArchived
     }
 
@@ -487,7 +484,7 @@ public struct StoredMessageContextResponse: Sendable, Equatable, JSONBodyConvert
         }
         body.append(
             "threadSummariesByParentMessageId",
-            .raw("{\(threadSummariesByParentMessageIdJSON)}")
+            threadSummariesByParentMessageId
         )
         body.append("historyLimited", false)
         body.append("channelArchived", channelArchived)

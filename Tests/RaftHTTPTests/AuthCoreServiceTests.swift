@@ -11,7 +11,7 @@ private let userId = "11111111-1111-4111-8111-000003100001"
 
 private func fixture() -> (directory: EmailLoginDirectory, service: AuthCoreService) {
     let directory = EmailLoginDirectory()
-    directory.appURL = "https://app.raft.test/"
+    directory.configureOAuthForTesting { $0.appURL = "https://app.raft.test/" }
     directory.addAccount(id: userId, email: "core@slock.test", password: "password123")
     return (directory, directory.authCore)
 }
@@ -93,12 +93,12 @@ private func successes<T: Sendable>(
 
 @Test func authCoreDeviceAuthorizeStoresTheGrantBeforeTheUrlCheck() {
     let (directory, service) = fixture()
-    directory.appURL = "  "
+    directory.configureOAuthForTesting { $0.appURL = "  " }
     #expect(thrown { try service.authorizeDevice(DeviceAuthorizeRequest()) } == .deviceLoginURLUnavailable)
     #expect(directory.authProfileStore.accountState.deviceGrants.count == 1)
     #expect(body(AuthCoreError.deviceLoginURLUnavailable)
         == #"{"error":"Device login URL is not configured","code":"DEVICE_LOGIN_URL_UNAVAILABLE"}"#)
-    directory.deviceLoginGate = "off"
+    directory.configureAuthCoreForTesting { $0.deviceLoginGate = "off" }
     #expect(thrown { try service.authorizeDevice(DeviceAuthorizeRequest()) } == .deviceLoginDisabled)
     #expect(body(AuthCoreError.deviceLoginDisabled)
         == #"{"error":"Device login is not enabled","code":"device_login_disabled"}"#)
@@ -345,7 +345,7 @@ private func successes<T: Sendable>(
 
 @Test func authCoreConcurrentRetirementsWriteOneReceipt() async throws {
     let (directory, _) = fixture()
-    directory.releaseBranch = "staging"
+    directory.configureAuthCoreForTesting { $0.releaseBranch = "staging" }
     let capability = String(repeating: "c", count: 40)
     var state = directory.authProfileStore.accountState
     let key = AccountNaming.normalize("core@slock.test")

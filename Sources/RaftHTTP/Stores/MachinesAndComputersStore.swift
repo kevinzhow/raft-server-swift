@@ -46,7 +46,7 @@ final class MachinesAndComputersStore: Sendable {
         var computerUpgradeSender: (@Sendable (_ machineId: String, _ targetVersion: String, _ requestId: String) -> Bool)? = nil
     }
 
-    private let storage = Mutex(State())
+    let storage = Mutex(State())
 
     /// A copied snapshot of every owned row. Whole-state replacement is retained
     /// for deterministic setup; field setters below update only their own field.
