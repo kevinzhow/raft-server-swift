@@ -404,6 +404,89 @@ extension EmailLoginDirectory {
         return parts.joined(separator: "; ")
     }
 
+    // MARK: - Agent credential and grant projections (legacy)
+
+    // The decisions live in `FeedbackLocatorService`; these untyped HTTP
+    // projections stay only for the agent-API handlers that have not moved to
+    // the typed service yet. Each body is the service error's exact bytes.
+
+    func agentCapabilityDenial(_ authorization: String?, required: String) -> HTTPReply? {
+        let service = FeedbackLocatorService(directory: self)
+        switch service.capabilityDecision(authorization: authorization, capability: required) {
+        case .allowed:
+            return nil
+        case .denied(let capability):
+            return Self.json(
+                403,
+                FeedbackLocatorError.capabilityNotAuthorized(capability: capability)
+                    .orderedJSONString()
+            )
+        }
+    }
+
+    func agentGrantDenial(agentId: String, scope: String) -> HTTPReply? {
+        let service = FeedbackLocatorService(directory: self)
+        switch service.grantDecision(agentId: agentId, scope: scope) {
+        case .allowed:
+            return nil
+        case .missingScope(let scope):
+            return Self.json(
+                403,
+                FeedbackLocatorError.missingScope(scope: scope).orderedJSONString()
+            )
+        }
+    }
+
+    func agentCredentialIdentity(
+        authorization: String?,
+        capability: String
+    ) -> (agentId: String, serverId: String)? {
+        switch FeedbackLocatorService(directory: self)
+            .identityResolution(authorization: authorization, capability: capability) {
+        case .success(let agentId, let serverId):
+            return (agentId: agentId, serverId: serverId)
+        case .missingAuthorization, .invalidAccessToken, .capabilityNotAuthorized,
+             .invalidAgentCredential:
+            return nil
+        }
+    }
+
+    func agentCredentialScopes(authorization: String?) -> [String]? {
+        FeedbackLocatorService(directory: self).credentialScopes(authorization: authorization)
+    }
+
+    func feedbackLocatorIdentity(
+        authorization: String?,
+        capability: String
+    ) -> FeedbackLocatorIdentityResult {
+        switch FeedbackLocatorService(directory: self)
+            .identityResolution(authorization: authorization, capability: capability) {
+        case .success(let agentId, let serverId):
+            return .success(agentId: agentId, serverId: serverId)
+        case .missingAuthorization:
+            return .refused(Self.json(
+                401,
+                FeedbackLocatorError.missingAuthorization.orderedJSONString()
+            ))
+        case .invalidAccessToken:
+            return .refused(Self.json(
+                401,
+                FeedbackLocatorError.invalidAccessToken.orderedJSONString()
+            ))
+        case .capabilityNotAuthorized(let capability):
+            return .refused(Self.json(
+                403,
+                FeedbackLocatorError.capabilityNotAuthorized(capability: capability)
+                    .orderedJSONString()
+            ))
+        case .invalidAgentCredential:
+            return .refused(Self.json(
+                401,
+                FeedbackLocatorError.invalidAgentCredential.orderedJSONString()
+            ))
+        }
+    }
+
 
 
 

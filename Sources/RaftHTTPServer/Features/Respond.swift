@@ -73,6 +73,64 @@ func respond<DTO: Encodable, Failure: DomainErrorWithBody>(
     }
 }
 
+/// Overload for a body whose published JSON must keep a non-alphabetical key
+/// order byte for byte.
+///
+/// Linux `JSONEncoder` writes keyed containers in hash order, so the DTO
+/// renders its own exact text. The header set and content length are the same
+/// ones `jsonReply` produces; a `DomainError` still maps through the published
+/// error shape.
+func respond<DTO: OrderedJSONBody>(
+    status: UInt = 200,
+    _ call: () throws -> DTO
+) throws -> Response {
+    do {
+        return orderedJSONResponse(status: status, body: try call().orderedJSONString())
+    } catch let error as any OrderedJSONDomainError {
+        return orderedJSONResponse(
+            status: error.status,
+            body: error.orderedJSONString(),
+            extraHeaders: error.responseHeaders
+        )
+    } catch let error as any DomainError {
+        return try domainErrorResponse(error)
+    }
+}
+
+/// The rich-error counterpart: the domain's success DTO and every thrown case
+/// publish their exact key order.
+func respond<DTO: OrderedJSONBody, Failure: OrderedJSONDomainError>(
+    errors _: Failure.Type,
+    status: UInt = 200,
+    _ call: () throws -> DTO
+) throws -> Response {
+    do {
+        return orderedJSONResponse(status: status, body: try call().orderedJSONString())
+    } catch let error as Failure {
+        return orderedJSONResponse(
+            status: error.status,
+            body: error.orderedJSONString(),
+            extraHeaders: error.responseHeaders
+        )
+    }
+}
+
+/// The exact header set `jsonReply` uses, for a body the domain already
+/// serialized.
+private func orderedJSONResponse(
+    status: UInt,
+    body: String,
+    extraHeaders: [String: String] = [:]
+) -> Response {
+    var headers = [
+        "X-Robots-Tag": AppFallback.robotsTag,
+        "Content-Type": AppFallback.jsonContentType,
+        "Content-Length": String(body.utf8.count),
+    ]
+    for (name, value) in extraHeaders { headers[name] = value }
+    return routeResponse(HTTPReply(status: Int(status), headers: headers, body: body))
+}
+
 /// The upstream `{"error": …}` body. Domains with a richer published shape get
 /// their own DTO and a second mapping overload rather than JSON in the service.
 ///
