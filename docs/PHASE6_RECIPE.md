@@ -98,3 +98,7 @@ Commit code, `scripts/ratchet_*.tsv`, and the `docs/ARCHITECTURE.md` row togethe
 - Keep the upstream order: authorization (401) before any policy write.
 - Ratchets are bidirectional; an `--update-baselines` run that raises a count
   is a rejected slice.
+- a read-modify-write that used to run under the directory lock must stay ONE
+  store critical section. Split `count` + `latest` + `insert` + `increment`
+  calls let two concurrent requests both pass a rate-limit policy; expose one
+  store method that decides and writes under the same lock.

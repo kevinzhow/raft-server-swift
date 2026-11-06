@@ -104,26 +104,22 @@ public struct AuthVerificationService: Sendable {
         if store.isEmailVerified(userId: userId) { throw AuthVerificationError.alreadyVerified }
 
         let current = now()
-        let recentIssued = store.recentVerificationTokensCount(
-            userId: userId,
-            since: current.addingTimeInterval(-60 * 60)
-        )
-        if recentIssued >= Self.hourlyLimit { throw AuthVerificationError.tooManyRequests }
-        if recentIssued > 0,
-           let latest = store.latestVerificationToken(userId: userId),
-           current.timeIntervalSince(latest.createdAt) < Self.cooldown {
-            throw AuthVerificationError.cooldown
-        }
-
         let token = makeToken()
-        store.issueVerificationToken(
+        switch store.issueVerificationTokenIfAllowed(
             userId: userId,
             token: token,
             tokenHash: hashToken(token),
             now: current,
-            ttl: Self.tokenLifetime
-        )
-        store.recordEmailVerificationIssued()
-        return OkResponse()
+            ttl: Self.tokenLifetime,
+            hourlyLimit: Self.hourlyLimit,
+            cooldown: Self.cooldown
+        ) {
+        case .issued:
+            return OkResponse()
+        case .tooManyRequests:
+            throw AuthVerificationError.tooManyRequests
+        case .cooldown:
+            throw AuthVerificationError.cooldown
+        }
     }
 }
