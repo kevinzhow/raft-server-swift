@@ -283,13 +283,13 @@ struct RealtimeTransportTests {
     accounts.realtimeEmitter = { room, event, payload in
         box.append(room: room, event: event, payload: payload)
     }
-    let reply = accounts.addMessageReaction(
+    let reply = try accounts.profileAndChannelFiles.addMessageReaction(
         messageId: messageId,
-        body: "{\"emoji\":\"👍\"}",
+        emoji: "👍",
         authorization: "Bearer \(token)",
         serverId: serverId
     )
-    #expect(reply.status == 200)
+    #expect(reply.reactions.first?.emoji == "👍")
     let event = try #require(box.events.first { $0.event == "message:updated" })
     #expect(event.room == "channel:\(channel)")
     let payload = try JSONSerialization.jsonObject(with: Data((event.payload ?? "").utf8)) as? [String: Any]

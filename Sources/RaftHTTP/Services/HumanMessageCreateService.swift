@@ -428,11 +428,11 @@ extension EmailLoginDirectory {
                 return Self.json(400, "{\"error\":\"randomId must be a non-empty string with at most 128 characters\"}")
             }
             let stored = storeHumanMessage(channelId: channelId, senderId: userId, content: content, randomId: randomId, attachmentIds: attachmentIds, senderTimezone: senderTimezone, mentions: mentions)
-            reply = stored.reply
+            reply = Self.json(stored.status, stored.body)
             createdMessage = stored.created
         } else {
             let stored = storeHumanMessage(channelId: channelId, senderId: userId, content: content, randomId: nil, attachmentIds: attachmentIds, senderTimezone: senderTimezone, mentions: mentions)
-            reply = stored.reply
+            reply = Self.json(stored.status, stored.body)
             createdMessage = stored.created
         }
         if createdMessage, reply.status == 200,
@@ -861,13 +861,14 @@ extension EmailLoginDirectory {
         let storageChannelId = jointProjections.first { $0.localChannelId == destinationChannelId }?.canonicalChannelId ?? destinationChannelId
         let record = StoredForwardRecord(sourceIds: sourceIds, items: itemRecords, destinationTargetId: destinationChannelId)
         lock.unlock()
-        let storedReply = storeHumanMessage(
+        let storedWrite = storeHumanMessage(
             channelId: storageChannelId,
             senderId: userId,
             content: content,
             randomId: randomId,
             attachmentIds: []
-        ).reply
+        )
+        let storedReply = Self.json(storedWrite.status, storedWrite.body)
         guard storedReply.status == 200,
               let data = storedReply.body.data(using: .utf8),
               let stored = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

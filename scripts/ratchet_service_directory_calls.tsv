@@ -4,8 +4,7 @@ Sources/RaftHTTP/Services/AuthIdentitiesService.swift	6
 Sources/RaftHTTP/Services/FeedbackMultiAppService.swift	12
 Sources/RaftHTTP/Services/FeedbackService.swift	35
 Sources/RaftHTTP/Services/HumanMessageCreateService.swift	7
-Sources/RaftHTTP/Services/MessageSendService.swift	3
+Sources/RaftHTTP/Services/MessageSendService.swift	1
 Sources/RaftHTTP/Services/OAuthFlowsService.swift	4
-Sources/RaftHTTP/Services/ProfileAndChannelFilesService.swift	4
 Sources/RaftHTTP/Services/ReactionsRealtimeService.swift	8
 Sources/RaftHTTP/Services/SearchMentionsService.swift	2

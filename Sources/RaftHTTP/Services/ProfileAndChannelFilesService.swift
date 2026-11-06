@@ -1,8 +1,852 @@
 import Crypto
 import Foundation
+import RaftShared
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
+
+/// One typed agent-read outcome.
+///
+/// The third-party delivery operation needs the same credential check the
+/// unmigrated `agentReadCredential` helper performs, but as a value it can map
+/// to a `DomainError` instead of inheriting a reply value.
+public enum ProfileAgentReadOutcome: Sendable, Equatable {
+    case success(agentId: String)
+    case missingAuthorization
+    case invalidCredential
+}
+
+/// The not-yet-migrated dependencies this surface still reads.
+///
+/// Session lookup lives in `AuthCoreService`, the agent read credential and its
+/// use throttle in `AgentPrivateSurfaceService`, the capability decision in
+/// `FeedbackLocatorService`, and the attachment-comment projections and channel
+/// emitter in the integrations/realtime extensions. Each one enters as a
+/// closure so this service never calls the directory or builds a reply.
+public struct ProfileAndChannelFilesDependencies: Sendable {
+    public var sessionUserId: @Sendable (String?) -> String?
+    public var agentRead: @Sendable (String?) -> ProfileAgentReadOutcome
+    /// The capability name when a live credential lacks it; `nil` when allowed.
+    public var capabilityDenial: @Sendable (String?, String) -> String?
+    public var emitRealtime: @Sendable (String, String, String?) -> Void
+    public var attachmentCommentsEnabled: @Sendable (String, String) -> Bool
+    /// The published `attachments` array text for a message's attachment ids.
+    public var attachmentsJSON: @Sendable ([String], Bool) -> String
+    /// The published `commentRef` object text, when the message is a comment.
+    public var commentRefJSON: @Sendable (String) -> String?
+
+    public init(
+        sessionUserId: @escaping @Sendable (String?) -> String?,
+        agentRead: @escaping @Sendable (String?) -> ProfileAgentReadOutcome,
+        capabilityDenial: @escaping @Sendable (String?, String) -> String?,
+        emitRealtime: @escaping @Sendable (String, String, String?) -> Void,
+        attachmentCommentsEnabled: @escaping @Sendable (String, String) -> Bool,
+        attachmentsJSON: @escaping @Sendable ([String], Bool) -> String,
+        commentRefJSON: @escaping @Sendable (String) -> String?
+    ) {
+        self.sessionUserId = sessionUserId
+        self.agentRead = agentRead
+        self.capabilityDenial = capabilityDenial
+        self.emitRealtime = emitRealtime
+        self.attachmentCommentsEnabled = attachmentCommentsEnabled
+        self.attachmentsJSON = attachmentsJSON
+        self.commentRefJSON = commentRefJSON
+    }
+}
+
+/// The message-reaction surface: the human add/remove ACK, the viewer and actor
+/// pages, the two agent reaction routes, and the managed-daemon third-party
+/// delivery report.
+///
+/// Reaction rows, versions and forwarded bundles live in
+/// `MessagesAndThreadsStore`; channels, roles and joint links in
+/// `ServersAndChannelsStore`; accounts in `AuthProfileStore`; machine keys in
+/// `MachinesAndComputersStore`; agent credentials/rows in `AgentsRuntimeStore`.
+/// Every reaction write is one store critical section. The service returns
+/// ordered DTOs and throws `ProfileAndChannelFilesError`; it never builds a
+/// reply, header set or ad-hoc dictionary.
+public struct ProfileAndChannelFilesService: Sendable {
+    private let messages: MessagesAndThreadsStore
+    private let channels: ServersAndChannelsStore
+    private let accounts: AuthProfileStore
+    private let agents: AgentsRuntimeStore
+    private let machines: MachinesAndComputersStore
+    private let oauth: OAuthLedger
+    private let dependencies: ProfileAndChannelFilesDependencies
+
+    init(
+        messages: MessagesAndThreadsStore,
+        channels: ServersAndChannelsStore,
+        accounts: AuthProfileStore,
+        agents: AgentsRuntimeStore,
+        machines: MachinesAndComputersStore,
+        oauth: OAuthLedger,
+        dependencies: ProfileAndChannelFilesDependencies
+    ) {
+        self.messages = messages
+        self.channels = channels
+        self.accounts = accounts
+        self.agents = agents
+        self.machines = machines
+        self.oauth = oauth
+        self.dependencies = dependencies
+    }
+
+    /// `POST /api/messages/:messageId/reactions`.
+    public func addMessageReaction(
+        messageId: String,
+        emoji: String?,
+        authorization: String?,
+        serverId: String?
+    ) throws -> ReactionMutationResponseDTO {
+        try mutateUserReaction(
+            messageId: messageId,
+            emoji: emoji,
+            authorization: authorization,
+            serverId: serverId,
+            remove: false
+        )
+    }
+
+    /// `DELETE /api/messages/:messageId/reactions`.
+    public func removeMessageReaction(
+        messageId: String,
+        emoji: String?,
+        authorization: String?,
+        serverId: String?
+    ) throws -> ReactionMutationResponseDTO {
+        try mutateUserReaction(
+            messageId: messageId,
+            emoji: emoji,
+            authorization: authorization,
+            serverId: serverId,
+            remove: true
+        )
+    }
+
+    /// `GET /api/messages/:messageId/reactions/viewer`.
+    public func reactionViewer(
+        messageId: String,
+        authorization: String?,
+        serverId: String?
+    ) throws -> ReactionViewerResponseDTO {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ProfileAndChannelFilesError.authRequired(
+                bearerPresent: authorization?.hasPrefix("Bearer ") == true
+            )
+        }
+        let state = channelState()
+        switch resolveReactionTarget(
+            messageId: messageId,
+            userId: userId,
+            serverId: serverId,
+            rows: messages.humanMessageRows,
+            state: state
+        ) {
+        case .missing:
+            throw ProfileAndChannelFilesError.messageNotFound
+        case .ambiguous:
+            throw ProfileAndChannelFilesError.ambiguousShortId
+        case .message(let message, let channel, _):
+            guard message.messageType != "system" else {
+                throw ProfileAndChannelFilesError.systemMessage
+            }
+            guard !channel.archived else {
+                throw ProfileAndChannelFilesError.channelArchived
+            }
+            let snapshot = messages.reactionViewerSnapshot(messageId: message.id, userId: userId)
+            return ReactionViewerResponseDTO(
+                serverId: serverId ?? "",
+                messageId: message.id,
+                viewerVersion: snapshot.viewerVersion,
+                reactedEmojis: snapshot.reactedEmojis
+            )
+        }
+    }
+
+    /// `GET /api/messages/:messageId/reactions/actors`.
+    public func listReactionActors(
+        messageId: String,
+        authorization: String?,
+        serverId: String?,
+        emoji: String?,
+        limit: String?,
+        cursor: String?
+    ) throws -> ReactionActorsResponseDTO {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ProfileAndChannelFilesError.authRequired(
+                bearerPresent: authorization?.hasPrefix("Bearer ") == true
+            )
+        }
+        guard let emoji, let validEmoji = EmailLoginDirectory.validReactionEmoji(emoji) else {
+            throw ProfileAndChannelFilesError.invalidActorEmoji
+        }
+        let pageLimit: Int
+        if let limit {
+            guard let parsed = Int(limit), parsed >= 1, parsed <= 100, String(parsed) == limit else {
+                throw ProfileAndChannelFilesError.invalidActorLimit
+            }
+            pageLimit = parsed
+        } else {
+            pageLimit = 50
+        }
+        let state = channelState()
+        let message: StoredHumanMessage
+        let channel: PostableChannel
+        let localChannelId: String
+        switch resolveReactionTarget(
+            messageId: messageId,
+            userId: userId,
+            serverId: serverId,
+            rows: messages.humanMessageRows,
+            state: state
+        ) {
+        case .missing:
+            throw ProfileAndChannelFilesError.messageNotFound
+        case .ambiguous:
+            throw ProfileAndChannelFilesError.ambiguousShortId
+        case .message(let resolved, let resolvedChannel, let resolvedLocalId):
+            guard resolved.messageType != "system" else {
+                throw ProfileAndChannelFilesError.systemMessage
+            }
+            guard !resolvedChannel.archived else {
+                throw ProfileAndChannelFilesError.channelArchived
+            }
+            message = resolved
+            channel = resolvedChannel
+            localChannelId = resolvedLocalId
+        }
+        let discussion = messages.reactionDiscussionSnapshot(messageId: message.id, emoji: validEmoji)
+        let currentVersion = discussion.discussionVersion
+        var afterKind: String?
+        var afterId: String?
+        if let cursor {
+            guard let decoded = EmailLoginDirectory.decodeActorCursor(cursor) else {
+                throw ProfileAndChannelFilesError.invalidActorCursor
+            }
+            guard decoded.principalId == userId,
+                  decoded.serverId == (serverId ?? ""),
+                  decoded.messageId == message.id,
+                  decoded.emoji == validEmoji
+            else {
+                throw ProfileAndChannelFilesError.invalidActorCursor
+            }
+            let visibility = reactionActorVisibility(
+                channelId: localChannelId,
+                requesterId: userId,
+                state: state
+            )
+            guard decoded.visibilityHash == visibility.hash else {
+                throw ProfileAndChannelFilesError.actorVisibilityChanged
+            }
+            guard decoded.discussionVersion == currentVersion else {
+                throw ProfileAndChannelFilesError.discussionVersionChanged(currentVersion: currentVersion)
+            }
+            afterKind = decoded.actorKind
+            afterId = decoded.actorId
+        }
+        let visibility = reactionActorVisibility(
+            channelId: localChannelId,
+            requesterId: userId,
+            state: state
+        )
+        var actors: [ProfileReactionActor] = discussion.rows
+            .filter { row in
+                (row.reactorType == "user" && visibility.humans.contains(row.reactorId))
+                    || (row.reactorType == "agent" && visibility.agents.contains(row.reactorId))
+            }
+            .map { ProfileReactionActor(kind: $0.reactorType, id: $0.reactorId) }
+            .sorted { lhs, rhs in
+                if lhs.kind != rhs.kind { return lhs.kind < rhs.kind }
+                return lhs.id < rhs.id
+            }
+        if let afterKind, let afterId {
+            actors = actors.filter {
+                $0.kind > afterKind || ($0.kind == afterKind && $0.id > afterId)
+            }
+        }
+        let hasMore = actors.count > pageLimit
+        let page = Array(actors.prefix(pageLimit))
+        let nextCursor: String?
+        if hasMore, let last = page.last {
+            nextCursor = EmailLoginDirectory.encodeActorCursor(ActorCursor(
+                principalId: userId,
+                serverId: serverId ?? "",
+                messageId: message.id,
+                emoji: validEmoji,
+                discussionVersion: currentVersion,
+                visibilityHash: visibility.hash,
+                actorKind: last.kind,
+                actorId: last.id
+            ))
+        } else {
+            nextCursor = nil
+        }
+        let scopeKind = channel.kind == "thread" ? "thread" : "channel"
+        let localServer = serverId ?? ""
+        let discussionBody = OrderedJSON.object([
+            OrderedJSONField("root", .object([
+                OrderedJSONField("kind", "message"),
+                OrderedJSONField("serverId", localServer),
+                OrderedJSONField("id", message.id),
+            ])),
+            OrderedJSONField("relation", .object([
+                OrderedJSONField("kind", "reactionActors"),
+                OrderedJSONField("emoji", validEmoji),
+            ])),
+            OrderedJSONField("parentScope", .object([
+                OrderedJSONField("serverId", localServer),
+                OrderedJSONField("scopeKind", scopeKind),
+                OrderedJSONField("scopeId", localChannelId),
+            ])),
+        ])
+        return ReactionActorsResponseDTO(
+            discussion: discussionBody,
+            discussionVersion: currentVersion,
+            actors: page,
+            nextCursor: nextCursor
+        )
+    }
+
+    /// `POST|DELETE /internal/agent/:agentId/messages/:messageId/reactions`.
+    /// The legacy machine key must belong to that agent and the agent must be in
+    /// the channel.
+    public func mutateAgentMessageReaction(
+        agentId: String,
+        messageId: String,
+        emoji: String?,
+        authorization: String?,
+        remove: Bool
+    ) throws -> ReactionMutationResponseDTO {
+        guard let emoji, let validEmoji = EmailLoginDirectory.validReactionEmoji(emoji) else {
+            throw ProfileAndChannelFilesError.invalidEmoji
+        }
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            throw ProfileAndChannelFilesError.agentAuthRequired(
+                message: "Missing or invalid Authorization header"
+            )
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        guard let machine = machines.machineKeys[token], machine.agentId == agentId else {
+            throw ProfileAndChannelFilesError.agentAuthRequired(message: "Invalid or expired token")
+        }
+        let state = channelState()
+        let rows = messages.humanMessageRows
+        guard let message = rows.first(where: { $0.id.caseInsensitiveCompare(messageId) == .orderedSame }),
+              state.channels[message.channelId]?.serverId == machine.serverId,
+              state.agentMembers[message.channelId]?.contains(agentId) == true
+        else {
+            throw ProfileAndChannelFilesError.messageNotFound
+        }
+        let written = messages.applyAgentReaction(
+            messageId: message.id,
+            agentId: agentId,
+            emoji: validEmoji,
+            remove: remove
+        )
+        return mutationResponse(
+            message: message,
+            rows: written.rows,
+            actorId: agentId,
+            serverId: machine.serverId,
+            state: state,
+            viewerVersion: nil
+        )
+    }
+
+    /// `POST|DELETE /internal/agent-api/messages/:messageId/reactions`.
+    /// The credential must include `reactions`; visibility follows the agent's
+    /// channel membership and the parent thread rule.
+    public func mutateAgentApiMessageReaction(
+        messageId: String,
+        emoji: String?,
+        authorization: String?,
+        remove: Bool
+    ) throws -> ReactionMutationResponseDTO {
+        if let denied = dependencies.capabilityDenial(authorization, "reactions") {
+            throw ProfileAndChannelFilesError.capabilityNotAuthorized(capability: denied)
+        }
+        guard let emoji, let validEmoji = EmailLoginDirectory.validReactionEmoji(emoji) else {
+            throw ProfileAndChannelFilesError.invalidEmoji
+        }
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            throw ProfileAndChannelFilesError.agentAuthRequired(
+                message: "Missing or invalid Authorization header"
+            )
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        let state = channelState()
+        guard let credential = agents.agentCredentials[token],
+              credential.scopes.contains("reactions")
+        else {
+            throw ProfileAndChannelFilesError.agentAuthRequired(message: "Invalid or expired token")
+        }
+        let agentId = credential.agentId
+        let agentServerId: String?
+        if let agent = agents.serverAgents[agentId] {
+            agentServerId = agent.serverId
+        } else if let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted {
+            agentServerId = agent.serverId
+        } else {
+            agentServerId = nil
+        }
+        guard let agentServerId else {
+            throw ProfileAndChannelFilesError.messageNotFound
+        }
+        let isUUID = ServerScope.isUUID(messageId)
+        let isShortId = messageId.count == 8 && messageId.allSatisfy { $0.isHexDigit }
+        guard isUUID || isShortId else {
+            throw ProfileAndChannelFilesError.invalidMessageId
+        }
+        func visibleToAgent(_ message: StoredHumanMessage) -> Bool {
+            guard let channel = state.channels[message.channelId],
+                  channel.serverId == agentServerId
+            else { return false }
+            if channel.kind == "channel" { return true }
+            if channel.kind == "thread",
+               let parentId = channel.parentChannelId,
+               let parent = state.channels[parentId],
+               parent.serverId == agentServerId {
+                if parent.kind == "channel" { return true }
+                if parent.memberIds.contains(agentId)
+                    || state.agentMembers[parentId]?.contains(agentId) == true {
+                    return true
+                }
+            }
+            return channel.memberIds.contains(agentId)
+                || state.agentMembers[message.channelId]?.contains(agentId) == true
+        }
+        let candidates = messages.humanMessageRows.filter { message in
+            if isUUID {
+                return message.id.caseInsensitiveCompare(messageId) == .orderedSame
+            }
+            return message.id.lowercased().hasPrefix(messageId.lowercased())
+        }.filter { visibleToAgent($0) }
+        guard let message = candidates.first else {
+            throw ProfileAndChannelFilesError.messageNotFound
+        }
+        guard candidates.count == 1 else {
+            throw ProfileAndChannelFilesError.ambiguousShortIdAgentApi
+        }
+        let written = messages.applyAgentReaction(
+            messageId: message.id,
+            agentId: agentId,
+            emoji: validEmoji,
+            remove: remove
+        )
+        return mutationResponse(
+            message: message,
+            rows: written.rows,
+            actorId: agentId,
+            serverId: agentServerId,
+            state: state,
+            viewerVersion: nil
+        )
+    }
+
+    /// `POST /internal/agent-api/third-party-events/delivered`.
+    public func reportThirdPartyEventsDelivered(
+        authorization: String?,
+        eventIds: [JSONValue]?
+    ) throws -> ThirdPartyEventDeliveryResponseDTO {
+        let agentId: String
+        switch dependencies.agentRead(authorization) {
+        case .missingAuthorization:
+            throw ProfileAndChannelFilesError.agentAuthRequired(
+                message: "Missing or invalid Authorization header"
+            )
+        case .invalidCredential:
+            throw ProfileAndChannelFilesError.agentAuthRequired(message: "Invalid or expired token")
+        case .success(let id):
+            agentId = id
+        }
+        guard let eventIds, !eventIds.isEmpty else {
+            throw ProfileAndChannelFilesError.eventIdsNotEmpty
+        }
+        var ids: [String] = []
+        for item in eventIds {
+            guard case .string(let text) = item,
+                  text.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil
+            else {
+                throw ProfileAndChannelFilesError.eventIdsInvalid
+            }
+            ids.append(text.lowercased())
+        }
+        let delivered = oauth.markThirdPartyEventsDelivered(agentId: agentId, ids: ids)
+        return ThirdPartyEventDeliveryResponseDTO(delivered: delivered)
+    }
+
+    // MARK: - Human reaction write
+
+    private func mutateUserReaction(
+        messageId: String,
+        emoji: String?,
+        authorization: String?,
+        serverId: String?,
+        remove: Bool
+    ) throws -> ReactionMutationResponseDTO {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ProfileAndChannelFilesError.authRequired(
+                bearerPresent: authorization?.hasPrefix("Bearer ") == true
+            )
+        }
+        guard let emoji, let validEmoji = EmailLoginDirectory.validReactionEmoji(emoji) else {
+            throw ProfileAndChannelFilesError.invalidEmoji
+        }
+        let state = channelState()
+        switch resolveReactionTarget(
+            messageId: messageId,
+            userId: userId,
+            serverId: serverId,
+            rows: messages.humanMessageRows,
+            state: state
+        ) {
+        case .missing:
+            throw ProfileAndChannelFilesError.messageNotFound
+        case .ambiguous:
+            throw ProfileAndChannelFilesError.ambiguousShortId
+        case .message(let message, let channel, _):
+            guard message.messageType != "system" else {
+                throw ProfileAndChannelFilesError.systemMessage
+            }
+            guard channel.memberIds.contains(userId) else {
+                throw ProfileAndChannelFilesError.notChannelMember
+            }
+            guard !channel.archived else {
+                throw ProfileAndChannelFilesError.channelArchived
+            }
+            let written = messages.applyUserReaction(
+                messageId: message.id,
+                userId: userId,
+                emoji: validEmoji,
+                remove: remove
+            )
+            return mutationResponse(
+                message: message,
+                rows: written.rows,
+                actorId: userId,
+                serverId: serverId,
+                state: state,
+                viewerVersion: written.viewerVersion
+            )
+        }
+    }
+
+    // MARK: - Projection
+
+    /// The channel/role/joint snapshot one request reads. It is not one store
+    /// lock because those rows belong to `ServersAndChannelsStore`; the write it
+    /// guards is still one `MessagesAndThreadsStore` critical section.
+    private struct ChannelState {
+        let channels: [String: PostableChannel]
+        let jointProjections: [JointChannelLink]
+        let memberRoles: [String: String]
+        let hiddenServers: [String: Bool]
+        let agentMembers: [String: Set<String>]
+    }
+
+    private func channelState() -> ChannelState {
+        ChannelState(
+            channels: channels.postableChannels,
+            jointProjections: channels.jointProjections,
+            memberRoles: channels.serverMemberRoles,
+            hiddenServers: channels.hideHumansFromMembers,
+            agentMembers: agents.channelAgentMembers
+        )
+    }
+
+    private enum ReactionTargetResolution {
+        case missing
+        case ambiguous
+        case message(StoredHumanMessage, PostableChannel, String)
+    }
+
+    private func resolveReactionTarget(
+        messageId: String,
+        userId: String,
+        serverId: String?,
+        rows: [StoredHumanMessage],
+        state: ChannelState
+    ) -> ReactionTargetResolution {
+        if MessageContext.isShortId(messageId) {
+            let matches = rows.filter {
+                EmailLoginDirectory.messageIdHasShortPrefix($0.id, prefix: messageId)
+                    && reactionMessageVisible($0, userId: userId, serverId: serverId, state: state)
+            }
+            if matches.count > 1 { return .ambiguous }
+            if let message = matches.first, let channel = state.channels[message.channelId] {
+                return .message(message, channel, message.channelId)
+            }
+            return .missing
+        }
+        guard let message = rows.first(where: { $0.id.caseInsensitiveCompare(messageId) == .orderedSame }) else {
+            return .missing
+        }
+        if reactionMessageVisible(message, userId: userId, serverId: serverId, state: state),
+           let channel = state.channels[message.channelId] {
+            return .message(message, channel, message.channelId)
+        }
+        if state.channels[message.channelId]?.deletedAt == nil,
+           let localId = jointLocalChannelId(
+               canonicalChannelId: message.channelId,
+               serverId: serverId,
+               userId: userId,
+               state: state
+           ),
+           let local = state.channels[localId],
+           local.deletedAt == nil {
+            return .message(message, local, localId)
+        }
+        return .missing
+    }
+
+    private func jointLocalChannelId(
+        canonicalChannelId: String,
+        serverId: String?,
+        userId: String,
+        state: ChannelState
+    ) -> String? {
+        guard let serverId else { return nil }
+        return state.jointProjections.first { link in
+            link.canonicalChannelId == canonicalChannelId
+                && link.serverId == serverId
+                && state.channels[link.localChannelId]?.memberIds.contains(userId) == true
+        }?.localChannelId
+    }
+
+    /// Members of every local projection of one joint channel; nil when this
+    /// channel is not joint.
+    private func jointRoster(channelId: String, state: ChannelState) -> Set<String>? {
+        let canonical = state.jointProjections.first { $0.localChannelId == channelId }?.canonicalChannelId
+            ?? (state.jointProjections.contains { $0.canonicalChannelId == channelId } ? channelId : nil)
+        guard let canonical else { return nil }
+        var ids = state.channels[canonical]?.memberIds ?? []
+        for link in state.jointProjections where link.canonicalChannelId == canonical {
+            ids.formUnion(state.channels[link.localChannelId]?.memberIds ?? [])
+        }
+        return ids
+    }
+
+    private func reactionMessageVisible(
+        _ message: StoredHumanMessage,
+        userId: String,
+        serverId: String?,
+        state: ChannelState
+    ) -> Bool {
+        guard let channel = state.channels[message.channelId],
+              channel.serverId == serverId,
+              channel.deletedAt == nil
+        else { return false }
+        if channel.kind == "channel" { return true }
+        return channel.memberIds.contains(userId)
+    }
+
+    /// On #all, a member of a hidden human directory sees only themself. Agents
+    /// stay visible. Owners are not hidden.
+    private func reactionActorVisibility(
+        channelId: String,
+        requesterId: String,
+        state: ChannelState
+    ) -> (humans: Set<String>, agents: Set<String>, hash: String) {
+        guard let channel = state.channels[channelId] else { return ([], [], "") }
+        let requesterRole = state.memberRoles["\(channel.serverId)\n\(requesterId)"]
+            ?? oauth.memberRole(serverId: channel.serverId, userId: requesterId)
+        let hiddenDirectory = state.hiddenServers[channel.serverId] == true
+            && requesterRole == "member"
+            && channel.name == "all"
+            && (channel.kind == "channel" || channel.kind == "private")
+        let roster = jointRoster(channelId: channelId, state: state) ?? channel.memberIds
+        let humans = hiddenDirectory ? roster.filter { $0 == requesterId } : roster
+        let agents = state.agentMembers[channelId] ?? []
+        let hash = humans.sorted().joined(separator: ",")
+            + "|" + agents.sorted().joined(separator: ",")
+        return (humans, agents, hash)
+    }
+
+    /// One ACK body plus the `message:updated` frame the legacy writer emitted.
+    ///
+    /// `viewerVersion` is non-nil only for the human routes, which append the
+    /// caller's `reactionViewer` snapshot.
+    private func mutationResponse(
+        message: StoredHumanMessage,
+        rows: [StoredReaction],
+        actorId: String,
+        serverId: String?,
+        state: ChannelState,
+        viewerVersion: Int?
+    ) -> ReactionMutationResponseDTO {
+        let buckets = reactionBuckets(rows: rows)
+        let commentsVisible = dependencies.attachmentCommentsEnabled(serverId ?? "", actorId)
+        let commentRef = commentsVisible
+            ? dependencies.commentRefJSON(message.id).map(OrderedJSON.raw)
+            : nil
+        let attachments = OrderedJSON.raw(dependencies.attachmentsJSON(message.attachmentIds, commentsVisible))
+        let actionMetadata = forwardedBundleJSON(
+            messageId: message.id,
+            userId: actorId,
+            serverId: serverId,
+            scrub: false,
+            state: state
+        )
+        let socketMetadata = forwardedBundleJSON(
+            messageId: message.id,
+            userId: actorId,
+            serverId: serverId,
+            scrub: true,
+            state: state
+        )
+        let viewer: OrderedJSON?
+        if let viewerVersion {
+            let emojis = rows
+                .filter {
+                    $0.reactorType == "user" && $0.reactorId == actorId
+                }
+                .map(\.emoji)
+                .sorted(by: EmailLoginDirectory.utf16Ascending)
+            var body = OrderedJSONObject()
+            body.append("serverId", serverId ?? "")
+            body.append("messageId", message.id)
+            body.append("viewerVersion", viewerVersion)
+            body.append("reactedEmojis", .array(emojis.map(OrderedJSON.string)))
+            viewer = body.json
+        } else {
+            viewer = nil
+        }
+
+        var payload = OrderedJSONObject()
+        payload.append("id", message.id)
+        payload.append("channelId", message.channelId)
+        payload.append("content", message.content)
+        payload.append("senderName", senderName(message.senderId))
+        payload.append("commentRef", OrderedJSON.null)
+        payload.append("reactions", .array(buckets.map(\.jsonBody)))
+        payload.append("actionMetadata", ifPresent: socketMetadata)
+        dependencies.emitRealtime(
+            "channel:\(message.channelId)",
+            "message:updated",
+            payload.json.render()
+        )
+        // The legacy writer published the caller's versioned viewer snapshot on
+        // the caller's own room after the channel frame. Agent routes carry no
+        // viewer snapshot and therefore emit no viewer frame.
+        if let viewer {
+            dependencies.emitRealtime(
+                "user:\(actorId)",
+                "reaction_viewer:updated",
+                viewer.render()
+            )
+        }
+
+        return ReactionMutationResponseDTO(
+            reactions: buckets,
+            commentRef: commentRef,
+            attachments: attachments,
+            actionMetadata: actionMetadata,
+            reactionViewer: viewer
+        )
+    }
+
+    /// Emoji buckets in first-reaction order, ids/names in row order.
+    private func reactionBuckets(rows: [StoredReaction]) -> [ProfileReactionBucket] {
+        var order: [String] = []
+        var ids: [String: [String]] = [:]
+        var names: [String: [String]] = [:]
+        for row in rows {
+            if ids[row.emoji] == nil {
+                order.append(row.emoji)
+                ids[row.emoji] = []
+                names[row.emoji] = []
+            }
+            ids[row.emoji, default: []].append(row.reactorId)
+            names[row.emoji, default: []].append(reactionName(row))
+        }
+        return order.map { emoji in
+            ProfileReactionBucket(
+                emoji: emoji,
+                reactorIds: ids[emoji] ?? [],
+                reactorNames: names[emoji] ?? []
+            )
+        }
+    }
+
+    private func reactionName(_ row: StoredReaction) -> String {
+        if row.reactorType == "agent" {
+            if let runtime = oauth.agentRuntimeInfo(id: row.reactorId) {
+                return runtime.displayName.isEmpty ? runtime.name : runtime.displayName
+            }
+            return agents.serverAgents[row.reactorId]?.name ?? "Unknown agent"
+        }
+        return accounts.accounts.values.first { $0.id == row.reactorId }
+            .map { $0.displayName ?? $0.name } ?? "Unknown user"
+    }
+
+    private func senderName(_ senderId: String) -> String {
+        accounts.accounts.values.first { $0.id == senderId }?.name ?? "Unknown user"
+    }
+
+    /// The HTTP body keeps a forwarded source the viewer can read; the channel
+    /// broadcast always strips it.
+    private func forwardedBundleJSON(
+        messageId: String,
+        userId: String,
+        serverId: String?,
+        scrub: Bool,
+        state: ChannelState
+    ) -> OrderedJSON? {
+        guard let items = messages.forwardedBundles[messageId], !items.isEmpty else { return nil }
+        let rendered = items.map { item -> OrderedJSON in
+            let readable = !scrub
+                && viewerCanReadForwardedSource(item, userId: userId, serverId: serverId, state: state)
+            if readable {
+                return .object([
+                    OrderedJSONField("sourceServerId", item.sourceServerId),
+                    OrderedJSONField("sourceTargetId", item.sourceTargetId),
+                    OrderedJSONField("sourceMessageId", item.sourceMessageId),
+                    OrderedJSONField("sourceTargetSnapshot", .object([
+                        OrderedJSONField("id", item.snapshotId),
+                        OrderedJSONField("type", item.snapshotType),
+                        OrderedJSONField("label", item.snapshotLabel),
+                        OrderedJSONField("labelVisibility", item.snapshotLabelVisibility),
+                    ])),
+                    OrderedJSONField("provenanceState", item.provenanceState),
+                ])
+            }
+            let type = item.snapshotType.isEmpty ? "channel" : item.snapshotType
+            return .object([
+                OrderedJSONField("sourceMessageId", .null),
+                OrderedJSONField("sourceServerId", .null),
+                OrderedJSONField("sourceTargetId", .null),
+                OrderedJSONField("sourceTargetSnapshot", .object([
+                    OrderedJSONField("id", .null),
+                    OrderedJSONField("type", type),
+                    OrderedJSONField("label", ""),
+                    OrderedJSONField("labelVisibility", "restricted"),
+                ])),
+                OrderedJSONField("provenanceState", "original_unavailable"),
+            ])
+        }
+        return .object([
+            OrderedJSONField("kind", "forwarded-bundle"),
+            OrderedJSONField("forwardedItems", .array(rendered)),
+        ])
+    }
+
+    private func viewerCanReadForwardedSource(
+        _ item: EmailLoginDirectory.ForwardedSource,
+        userId: String,
+        serverId: String?,
+        state: ChannelState
+    ) -> Bool {
+        guard item.sourceServerId == serverId,
+              let channel = state.channels[item.sourceTargetId],
+              channel.serverId == serverId
+        else { return false }
+        if channel.kind == "channel" { return true }
+        return channel.memberIds.contains(userId)
+    }
+}
+
+// MARK: - Shared helpers still owned by unmigrated domains
 
 extension EmailLoginDirectory {
 
@@ -17,46 +861,33 @@ extension EmailLoginDirectory {
         return value
     }
 
-    /// `GET /internal/agent-api/wake-hints/stream`. The SSE projection opens
-    /// with the same pending hints; reading it does not drain the inbox.
-    /// `POST /internal/agent-api/third-party-events/delivered`. A managed
-    /// daemon reports the events it served locally so they stop replaying.
-    public func reportThirdPartyEventsDelivered(authorization: String?, body: String) -> HTTPReply {
-        switch agentReadCredential(authorization) {
-        case .failure(let reply):
-            return reply
-        case .success(let agentId):
-            let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
-            guard let raw = object?["eventIds"] as? [Any], !raw.isEmpty else {
-                return Self.json(400, "{\"error\":\"eventIds must be a non-empty array\",\"code\":\"event_ids_invalid\"}")
-            }
-            var ids: [String] = []
-            for item in raw {
-                guard let text = item as? String,
-                      text.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil
-                else {
-                    return Self.json(400, "{\"error\":\"eventIds must contain third-party event ids\",\"code\":\"event_ids_invalid\"}")
-                }
-                ids.append(text.lowercased())
-            }
-            let delivered = oauth.markThirdPartyEventsDelivered(agentId: agentId, ids: ids)
-            return Self.json(200, "{\"ok\":true,\"delivered\":\(delivered)}")
-        }
-    }
-
-    func agentReadCredential(_ authorization: String?) -> AgentRead {
+    /// The typed agent read check. The third-party delivery operation uses it
+    /// through `ProfileAndChannelFilesService`; `agentReadCredential` keeps the
+    /// legacy reply projection for the unmigrated callers.
+    func profileAgentReadOutcome(_ authorization: String?) -> ProfileAgentReadOutcome {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return .failure(Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}"))
+            return .missingAuthorization
         }
         let token = String(authorization.dropFirst("Bearer ".count))
         lock.lock()
         let credential = agentCredentials[token]
         lock.unlock()
         guard let credential, credential.scopes.contains("read") else {
-            return .failure(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
+            return .invalidCredential
         }
         recordAgentCredentialUse(token: token)
-        return .success(credential.agentId)
+        return .success(agentId: credential.agentId)
+    }
+
+    func agentReadCredential(_ authorization: String?) -> AgentRead {
+        switch profileAgentReadOutcome(authorization) {
+        case .success(let agentId):
+            return .success(agentId)
+        case .missingAuthorization:
+            return .failure(Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}"))
+        case .invalidCredential:
+            return .failure(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
+        }
     }
 
     /// A raw agent API key. The mentions inbox accepts it when `mentions` is one of the scopes.
@@ -81,14 +912,9 @@ extension EmailLoginDirectory {
         _ eventType: String,
         agentId: String,
         messageId: String?,
-        metadata: [String: Any]
+        metadata: [String: JSONValue]
     ) {
-        let metadataJSON: String
-        if let data = try? JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]) {
-            metadataJSON = String(decoding: data, as: UTF8.self)
-        } else {
-            metadataJSON = "{}"
-        }
+        let metadataJSON = (try? JSONValue.object(metadata).string()) ?? "{}"
         lock.lock()
         attestedSendEventRecords.append(AttestedSendEventRecord(
             eventType: eventType,
@@ -118,14 +944,14 @@ extension EmailLoginDirectory {
             let latestSeq
         ):
             recordAttestedSendEvent(eventType, agentId: agentId, messageId: messageId, metadata: [
-                "last_seen_msg_id": lastSeenMessageId as Any? ?? NSNull(),
-                "latest_msg_id": latestMessageId as Any? ?? NSNull(),
-                "has_formal_mention_since_last_seen": false,
-                "draft_replaced_existing": draftReplacedExisting,
-                "new_message_count": newMessageCount,
-                "boundary_source": boundarySource,
-                "boundary_seq": boundarySeq,
-                "latest_seq": latestSeq,
+                "last_seen_msg_id": lastSeenMessageId.map(JSONValue.string) ?? .null,
+                "latest_msg_id": latestMessageId.map(JSONValue.string) ?? .null,
+                "has_formal_mention_since_last_seen": .bool(false),
+                "draft_replaced_existing": .bool(draftReplacedExisting),
+                "new_message_count": .integer(Int64(newMessageCount)),
+                "boundary_source": .string(boundarySource),
+                "boundary_seq": .integer(Int64(boundarySeq)),
+                "latest_seq": .integer(Int64(latestSeq)),
             ])
         case .mentionExemption(
             let mentionMessageId,
@@ -133,9 +959,9 @@ extension EmailLoginDirectory {
             let newMessageCountSinceLastSeen
         ):
             recordAttestedSendEvent(eventType, agentId: agentId, messageId: messageId, metadata: [
-                "mention_message_id": mentionMessageId,
-                "mentioned_handle": mentionedHandle,
-                "new_message_count_since_last_seen": newMessageCountSinceLastSeen,
+                "mention_message_id": .string(mentionMessageId),
+                "mentioned_handle": .string(mentionedHandle),
+                "new_message_count_since_last_seen": .integer(Int64(newMessageCountSinceLastSeen)),
             ])
         }
     }
@@ -174,432 +1000,10 @@ extension EmailLoginDirectory {
         return messageReactions.filter { $0.messageId == messageId }.map { ($0.emoji, $0.reactorId) }
     }
 
-    /// `POST /api/messages/:messageId/reactions`. A second add of the same emoji by the same user does not raise the count.
-    public func addMessageReaction(messageId: String, body: String, authorization: String?, serverId: String?) -> HTTPReply {
-        mutateMessageReaction(messageId: messageId, body: body, authorization: authorization, serverId: serverId, remove: false)
-    }
-
-    /// `DELETE /api/messages/:messageId/reactions`.
-    public func removeMessageReaction(messageId: String, body: String, authorization: String?, serverId: String?) -> HTTPReply {
-        mutateMessageReaction(messageId: messageId, body: body, authorization: authorization, serverId: serverId, remove: true)
-    }
-
-    func mutateMessageReaction(messageId: String, body: String, authorization: String?, serverId: String?, remove: Bool) -> HTTPReply {
-        let userId: String
-        switch authorize(authorization) {
-        case .rejected:
-            return PublicVisits.authRequired(authorization: authorization)
-        case .user(let id):
-            userId = id
-        }
-        guard let emoji = Self.reactionEmoji(body) else {
-            return Self.json(400, "{\"error\":\"A valid emoji is required\"}")
-        }
-        lock.lock()
-        let message: StoredHumanMessage
-        let channel: PostableChannel
-        switch resolveReactionTargetLocked(messageId: messageId, userId: userId, serverId: serverId) {
-        case .missing:
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Message not found\"}")
-        case .ambiguous:
-            lock.unlock()
-            return Self.json(400, "{\"error\":\"Message short id is ambiguous\"}")
-        case .message(let resolvedMessage, let resolvedChannel, _):
-            message = resolvedMessage
-            channel = resolvedChannel
-        }
-        if message.messageType == "system" {
-            lock.unlock()
-            return Self.json(400, "{\"error\":\"System messages cannot receive reactions\"}")
-        }
-        if !channel.memberIds.contains(userId) {
-            lock.unlock()
-            return Self.json(403, "{\"error\":\"You must join this channel to react to messages\"}")
-        }
-        if channel.archived {
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"This channel is archived\",\"code\":\"channel_archived\"}")
-        }
-        let changed: Bool
-        if remove {
-            let before = messageReactions.count
-            messageReactions.removeAll { $0.messageId == message.id && $0.emoji == emoji && $0.reactorId == userId && $0.reactorType == "user" }
-            changed = messageReactions.count != before
-        } else if messageReactions.contains(where: { $0.messageId == message.id && $0.emoji == emoji && $0.reactorId == userId && $0.reactorType == "user" }) {
-            changed = false
-        } else {
-            messageReactions.append(StoredReaction(messageId: message.id, emoji: emoji, reactorId: userId, reactorType: "user"))
-            changed = true
-        }
-        let viewerKey = "\(message.id)\n\(userId)"
-        if changed {
-            reactionViewerVersions[viewerKey] = (reactionViewerVersions[viewerKey] ?? 0) + 1
-            noteDiscussionChangeLocked(messageId: message.id, emoji: emoji)
-        }
-        let viewerJSON = reactionViewerJSONLocked(messageId: message.id, userId: userId, serverId: serverId ?? "")
-        let bodyJSON = finishReactionLocked(message: message, actorId: userId, serverId: serverId, viewerJSON: viewerJSON)
-        lock.unlock()
-        emitRealtime("user:\(userId)", "reaction_viewer:updated", viewerJSON)
-        return Self.json(200, bodyJSON)
-    }
-
-    /// `GET /api/messages/:messageId/reactions/viewer`. A cold read uses the same snapshot as the last mutation ACK.
-    public func reactionViewer(messageId: String, authorization: String?, serverId: String?) -> HTTPReply {
-        let userId: String
-        switch authorize(authorization) {
-        case .rejected:
-            return PublicVisits.authRequired(authorization: authorization)
-        case .user(let id):
-            userId = id
-        }
-        lock.lock()
-        switch resolveReactionTargetLocked(messageId: messageId, userId: userId, serverId: serverId) {
-        case .missing:
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Message not found\"}")
-        case .ambiguous:
-            lock.unlock()
-            return Self.json(400, "{\"error\":\"Message short id is ambiguous\"}")
-        case .message(let message, let channel, _):
-            if message.messageType == "system" {
-                lock.unlock()
-                return Self.json(400, "{\"error\":\"System messages cannot receive reactions\"}")
-            }
-            if channel.archived {
-                lock.unlock()
-                return Self.json(409, "{\"error\":\"This channel is archived\",\"code\":\"channel_archived\"}")
-            }
-            let body = reactionViewerJSONLocked(messageId: message.id, userId: userId, serverId: serverId ?? "")
-            lock.unlock()
-            return Self.json(200, body)
-        }
-    }
-
-    /// `POST` and `DELETE /internal/agent/:agentId/messages/:messageId/reactions`. The machine key must belong to that agent.
-    public func mutateAgentMessageReaction(agentId: String, messageId: String, body: String, authorization: String?, remove: Bool) -> HTTPReply {
-        guard let emoji = Self.reactionEmoji(body) else {
-            return Self.json(400, "{\"error\":\"A valid emoji is required\"}")
-        }
-        guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
-        }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        guard let machine = machineKeys[token], machine.agentId == agentId else {
-            lock.unlock()
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
-        }
-        guard let message = humanMessageRows.first(where: { $0.id.caseInsensitiveCompare(messageId) == .orderedSame }),
-              postableChannels[message.channelId]?.serverId == machine.serverId,
-              channelAgentMembers[message.channelId]?.contains(agentId) == true
-        else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Message not found\"}")
-        }
-        let bodyJSON = writeAgentReactionLocked(message: message, agentId: agentId, emoji: emoji, serverId: machine.serverId, remove: remove)
-        lock.unlock()
-        return Self.json(200, bodyJSON)
-    }
-
-    /// `POST` and `DELETE /internal/agent-api/messages/:messageId/reactions`. The credential must include `reactions`.
-    public func mutateAgentApiMessageReaction(messageId: String, body: String, authorization: String?, remove: Bool) -> HTTPReply {
-        if let denial = agentCapabilityDenial(authorization, required: "reactions") { return denial }
-        guard let emoji = Self.reactionEmoji(body) else {
-            return Self.json(400, "{\"error\":\"A valid emoji is required\"}")
-        }
-        guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
-        }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        guard let credential = agentCredentials[token], credential.scopes.contains("reactions") else {
-            lock.unlock()
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
-        }
-        let agentId = credential.agentId
-        let agentServerId: String?
-        if let agent = serverAgents[agentId] {
-            agentServerId = agent.serverId
-        } else if let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted {
-            agentServerId = agent.serverId
-        } else {
-            agentServerId = nil
-        }
-        guard let agentServerId else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Message not found\"}")
-        }
-        // Message ids are a full UUID or an 8-character short id; anything else
-        // is a caller error, not an invisible message.
-        let isUUID = ServerScope.isUUID(messageId)
-        let isShortId = messageId.count == 8 && messageId.allSatisfy { $0.isHexDigit }
-        guard isUUID || isShortId else {
-            lock.unlock()
-            return Self.json(400, "{\"error\":\"Message id must be a full UUID or 8-character short id\"}")
-        }
-        func visibleToAgent(_ message: StoredHumanMessage) -> Bool {
-            guard let channel = postableChannels[message.channelId], channel.serverId == agentServerId else { return false }
-            if channel.kind == "channel" { return true }
-            if channel.kind == "thread",
-               let parentId = channel.parentChannelId,
-               let parent = postableChannels[parentId],
-               parent.serverId == agentServerId {
-                if parent.kind == "channel" { return true }
-                if parent.memberIds.contains(agentId) || channelAgentMembers[parentId]?.contains(agentId) == true { return true }
-            }
-            return channel.memberIds.contains(agentId) || channelAgentMembers[message.channelId]?.contains(agentId) == true
-        }
-        let candidates = humanMessageRows.filter { message in
-            if isUUID { return message.id.caseInsensitiveCompare(messageId) == .orderedSame }
-            return message.id.lowercased().hasPrefix(messageId.lowercased())
-        }.filter { visibleToAgent($0) }
-        guard let message = candidates.first else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Message not found\"}")
-        }
-        guard candidates.count == 1 else {
-            lock.unlock()
-            return Self.json(400, "{\"error\":\"Message short id is ambiguous\",\"errorCode\":\"AMBIGUOUS_ID\"}")
-        }
-        let bodyJSON = writeAgentReactionLocked(message: message, agentId: agentId, emoji: emoji, serverId: agentServerId, remove: remove)
-        lock.unlock()
-        return Self.json(200, bodyJSON)
-    }
-
-    /// `GET /api/messages/:messageId/reactions/actors`. The cursor is bound to the caller, message, emoji, and discussion version.
-    public func listReactionActors(messageId: String, authorization: String?, serverId: String?, emoji: String?, limit: String?, cursor: String?) -> HTTPReply {
-        let userId: String
-        switch authorize(authorization) {
-        case .rejected:
-            return PublicVisits.authRequired(authorization: authorization)
-        case .user(let id):
-            userId = id
-        }
-        guard let emoji, let validEmoji = Self.validReactionEmoji(emoji) else {
-            return Self.json(400, "{\"error\":\"A valid emoji is required\",\"code\":\"invalid_reaction_emoji\"}")
-        }
-        let pageLimit: Int
-        if let limit {
-            guard let parsed = Int(limit), parsed >= 1, parsed <= 100, String(parsed) == limit else {
-                return Self.json(400, "{\"error\":\"limit must be an integer between 1 and 100\",\"code\":\"invalid_reaction_actor_limit\"}")
-            }
-            pageLimit = parsed
-        } else {
-            pageLimit = 50
-        }
-        lock.lock()
-        let message: StoredHumanMessage
-        let channel: PostableChannel
-        let localChannelId: String
-        switch resolveReactionTargetLocked(messageId: messageId, userId: userId, serverId: serverId) {
-        case .missing:
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Message not found\"}")
-        case .ambiguous:
-            lock.unlock()
-            return Self.json(400, "{\"error\":\"Message short id is ambiguous\"}")
-        case .message(let resolved, let resolvedChannel, let resolvedLocalId):
-            if resolved.messageType == "system" {
-                lock.unlock()
-                return Self.json(400, "{\"error\":\"System messages cannot receive reactions\"}")
-            }
-            if resolvedChannel.archived {
-                lock.unlock()
-                return Self.json(409, "{\"error\":\"This channel is archived\",\"code\":\"channel_archived\"}")
-            }
-            message = resolved
-            channel = resolvedChannel
-            localChannelId = resolvedLocalId
-        }
-        let currentVersion = reactionDiscussionVersions["\(message.id)\n\(validEmoji)"] ?? 0
-        var afterKind: String?
-        var afterId: String?
-        if let cursor {
-            guard let decoded = Self.decodeActorCursor(cursor) else {
-                lock.unlock()
-                return Self.json(400, "{\"error\":\"Invalid reaction actors cursor\",\"code\":\"invalid_reaction_actors_cursor\"}")
-            }
-            if decoded.principalId != userId || decoded.serverId != (serverId ?? "") || decoded.messageId != message.id || decoded.emoji != validEmoji {
-                lock.unlock()
-                return Self.json(400, "{\"error\":\"Invalid reaction actors cursor\",\"code\":\"invalid_reaction_actors_cursor\"}")
-            }
-            let visibility = reactionActorVisibilityLocked(channelId: localChannelId, requesterId: userId)
-            if decoded.visibilityHash != visibility.hash {
-                lock.unlock()
-                return Self.json(409, "{\"error\":\"Reaction actor visibility changed while reading this page\",\"code\":\"reaction_actor_visibility_changed\",\"rebaselineRequired\":true}")
-            }
-            if decoded.discussionVersion != currentVersion {
-                lock.unlock()
-                return Self.json(409, "{\"error\":\"Reaction discussion changed while reading this page\",\"code\":\"reaction_discussion_version_changed\",\"currentDiscussionVersion\":\(currentVersion),\"rebaselineRequired\":true}")
-            }
-            afterKind = decoded.actorKind
-            afterId = decoded.actorId
-        }
-        let visibility = reactionActorVisibilityLocked(channelId: localChannelId, requesterId: userId)
-        var actors = messageReactions
-            .filter { row in
-                row.messageId == message.id && row.emoji == validEmoji && (
-                    (row.reactorType == "user" && visibility.humans.contains(row.reactorId))
-                    || (row.reactorType == "agent" && visibility.agents.contains(row.reactorId))
-                )
-            }
-            .map { (kind: $0.reactorType, id: $0.reactorId) }
-            .sorted { lhs, rhs in
-                if lhs.kind != rhs.kind { return lhs.kind < rhs.kind }
-                return lhs.id < rhs.id
-            }
-        if let afterKind, let afterId {
-            actors = actors.filter { $0.kind > afterKind || ($0.kind == afterKind && $0.id > afterId) }
-        }
-        let hasMore = actors.count > pageLimit
-        let page = Array(actors.prefix(pageLimit))
-        let nextCursor: String?
-        if hasMore, let last = page.last {
-            nextCursor = Self.encodeActorCursor(ActorCursor(
-                principalId: userId,
-                serverId: serverId ?? "",
-                messageId: message.id,
-                emoji: validEmoji,
-                discussionVersion: currentVersion,
-                visibilityHash: visibility.hash,
-                actorKind: last.kind,
-                actorId: last.id
-            ))
-        } else {
-            nextCursor = nil
-        }
-        let actorJSON = page.map { "{\"actorRef\":{\"kind\":\(jsonString($0.kind)),\"id\":\(jsonString($0.id))}}" }.joined(separator: ",")
-        let cursorJSON = nextCursor.map { jsonString($0) } ?? "null"
-        let scopeKind = channel.kind == "thread" ? "thread" : "channel"
-        let localServer = jsonString(serverId ?? "")
-        let discussion = "{\"root\":{\"kind\":\"message\",\"serverId\":\(localServer),\"id\":\(jsonString(message.id))},\"relation\":{\"kind\":\"reactionActors\",\"emoji\":\(jsonString(validEmoji))},\"parentScope\":{\"serverId\":\(localServer),\"scopeKind\":\(jsonString(scopeKind)),\"scopeId\":\(jsonString(localChannelId))}}"
-        lock.unlock()
-        return Self.json(200, "{\"discussion\":\(discussion),\"discussionVersion\":\(currentVersion),\"actors\":[\(actorJSON)],\"nextCursor\":\(cursorJSON)}")
-    }
-
-    func writeAgentReactionLocked(message: StoredHumanMessage, agentId: String, emoji: String, serverId: String, remove: Bool) -> String {
-        let changed: Bool
-        if remove {
-            let before = messageReactions.count
-            messageReactions.removeAll { $0.messageId == message.id && $0.emoji == emoji && $0.reactorId == agentId && $0.reactorType == "agent" }
-            changed = messageReactions.count != before
-        } else if messageReactions.contains(where: { $0.messageId == message.id && $0.emoji == emoji && $0.reactorId == agentId && $0.reactorType == "agent" }) {
-            changed = false
-        } else {
-            messageReactions.append(StoredReaction(messageId: message.id, emoji: emoji, reactorId: agentId, reactorType: "agent"))
-            changed = true
-        }
-        if changed {
-            noteDiscussionChangeLocked(messageId: message.id, emoji: emoji)
-        }
-        return finishReactionLocked(message: message, actorId: agentId, serverId: serverId)
-    }
-
+    /// The discussion-version bump the reaction test seam still uses.
     func noteDiscussionChangeLocked(messageId: String, emoji: String) {
         let key = "\(messageId)\n\(emoji)"
         reactionDiscussionVersions[key] = (reactionDiscussionVersions[key] ?? 0) + 1
-    }
-
-    /// On #all, a member of a hidden human directory sees only themself. Agents stay visible. Owners are not hidden.
-    func reactionActorVisibilityLocked(channelId: String, requesterId: String) -> (humans: Set<String>, agents: Set<String>, hash: String) {
-        guard let channel = postableChannels[channelId] else { return ([], [], "") }
-        let requesterRole = serverMemberRoles["\(channel.serverId)\n\(requesterId)"]
-            ?? oauth.memberRole(serverId: channel.serverId, userId: requesterId)
-        let hiddenDirectory = hideHumansFromMembers[channel.serverId] == true
-            && requesterRole == "member"
-            && channel.name == "all"
-            && (channel.kind == "channel" || channel.kind == "private")
-        let roster = jointRosterLocked(channelId: channelId) ?? channel.memberIds
-        let humans = hiddenDirectory
-            ? roster.filter { $0 == requesterId }
-            : roster
-        let agents = channelAgentMembers[channelId] ?? []
-        let hash = humans.sorted().joined(separator: ",") + "|" + agents.sorted().joined(separator: ",")
-        return (humans, agents, hash)
-    }
-
-    func finishReactionLocked(message: StoredHumanMessage, actorId: String, serverId: String?, viewerJSON: String? = nil) -> String {
-        let reactions = reactionJSONLocked(messageId: message.id)
-        let senderName = accounts.values.first { $0.id == message.senderId }?.name ?? "Unknown user"
-        let httpMetadata = forwardedBundleJSONLocked(messageId: message.id, userId: actorId, serverId: serverId, scrub: false)
-        let socketMetadata = forwardedBundleJSONLocked(messageId: message.id, userId: actorId, serverId: serverId, scrub: true)
-        let commentsVisible = attachmentCommentsEnabled(serverId: serverId ?? "", userId: actorId)
-        let commentRef = commentsVisible ? commentRefJSONLocked(messageId: message.id) : nil
-        var bodyJSON = "{\"reactions\":[\(reactions)],\"commentRef\":\(commentRef ?? "null"),\"attachments\":[\(messageAttachmentsJSONLocked(message.attachmentIds, commentsVisible: commentsVisible))]"
-        if let httpMetadata {
-            bodyJSON += ",\"actionMetadata\":\(httpMetadata)"
-        }
-        if let viewerJSON {
-            bodyJSON += ",\"reactionViewer\":\(viewerJSON)"
-        }
-        bodyJSON += "}"
-        var payload = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(message.channelId)),\"content\":\(jsonString(message.content)),\"senderName\":\(jsonString(senderName)),\"commentRef\":null,\"reactions\":[\(reactions)]"
-        if let socketMetadata {
-            payload += ",\"actionMetadata\":\(socketMetadata)"
-        }
-        payload += "}"
-        emitRealtime("channel:\(message.channelId)", "message:updated", payload)
-        return bodyJSON
-    }
-
-    func emitRealtime(_ room: String, _ event: String, _ payload: String?) {
-        realtimeEmitterLock.lock()
-        let emitter = realtimeEmitterStorage
-        realtimeEmitterLock.unlock()
-        emitter?(room, event, payload)
-    }
-
-    /// The HTTP body keeps a forwarded source the viewer can read. The channel broadcast always strips it.
-    func forwardedBundleJSONLocked(messageId: String, userId: String, serverId: String?, scrub: Bool) -> String? {
-        guard let items = forwardedBundles[messageId], !items.isEmpty else { return nil }
-        let rendered = items.map { item -> String in
-            let readable = !scrub && viewerCanReadForwardedSourceLocked(item, userId: userId, serverId: serverId)
-            if readable {
-                return "{\"sourceServerId\":\(jsonString(item.sourceServerId)),\"sourceTargetId\":\(jsonString(item.sourceTargetId)),\"sourceMessageId\":\(jsonString(item.sourceMessageId)),\"sourceTargetSnapshot\":{\"id\":\(jsonString(item.snapshotId)),\"type\":\(jsonString(item.snapshotType)),\"label\":\(jsonString(item.snapshotLabel)),\"labelVisibility\":\(jsonString(item.snapshotLabelVisibility))},\"provenanceState\":\(jsonString(item.provenanceState))}"
-            }
-            let type = item.snapshotType.isEmpty ? "channel" : item.snapshotType
-            return "{\"sourceMessageId\":null,\"sourceServerId\":null,\"sourceTargetId\":null,\"sourceTargetSnapshot\":{\"id\":null,\"type\":\(jsonString(type)),\"label\":\"\",\"labelVisibility\":\"restricted\"},\"provenanceState\":\"original_unavailable\"}"
-        }.joined(separator: ",")
-        return "{\"kind\":\"forwarded-bundle\",\"forwardedItems\":[\(rendered)]}"
-    }
-
-    func viewerCanReadForwardedSourceLocked(_ item: ForwardedSource, userId: String, serverId: String?) -> Bool {
-        guard item.sourceServerId == serverId,
-              let channel = postableChannels[item.sourceTargetId],
-              channel.serverId == serverId
-        else { return false }
-        if channel.kind == "channel" { return true }
-        return channel.memberIds.contains(userId)
-    }
-
-    /// A short id counts only messages this user can see. Hidden private rows with the same prefix stay out of the match.
-    /// A joint guest resolves the canonical message through that server's local projection.
-    func resolveReactionTargetLocked(messageId: String, userId: String, serverId: String?) -> ReactionTarget {
-        if MessageContext.isShortId(messageId) {
-            let matches = humanMessageRows.filter {
-                Self.messageIdHasShortPrefix($0.id, prefix: messageId) && reactionMessageVisibleLocked($0, userId: userId, serverId: serverId)
-            }
-            if matches.count > 1 { return .ambiguous }
-            if let message = matches.first, let channel = postableChannels[message.channelId] {
-                return .message(message, channel, message.channelId)
-            }
-            return .missing
-        }
-        guard let message = humanMessageRows.first(where: { $0.id.caseInsensitiveCompare(messageId) == .orderedSame }) else {
-            return .missing
-        }
-        if reactionMessageVisibleLocked(message, userId: userId, serverId: serverId),
-           let channel = postableChannels[message.channelId] {
-            return .message(message, channel, message.channelId)
-        }
-        if postableChannels[message.channelId]?.deletedAt == nil,
-           let localId = jointLocalChannelIdLocked(canonicalChannelId: message.channelId, serverId: serverId, userId: userId),
-           let local = postableChannels[localId],
-           local.deletedAt == nil {
-            return .message(message, local, localId)
-        }
-        return .missing
     }
 
     func jointLocalChannelIdLocked(canonicalChannelId: String, serverId: String?, userId: String) -> String? {
@@ -622,32 +1026,6 @@ extension EmailLoginDirectory {
         }
         return ids
     }
-
-    /// Public channels are visible to any authenticated user on the server. Private, DM, and thread rows require membership.
-    /// A deleted channel is not visible, so the reaction route answers 404 before the archive check.
-    func reactionMessageVisibleLocked(_ message: StoredHumanMessage, userId: String, serverId: String?) -> Bool {
-        guard let channel = postableChannels[message.channelId],
-              channel.serverId == serverId,
-              channel.deletedAt == nil
-        else { return false }
-        if channel.kind == "channel" { return true }
-        return channel.memberIds.contains(userId)
-    }
-
-    /// The caller's own emojis, ordered by UTF-16 code units, plus the version that advances only when a row changes.
-    func reactionViewerJSONLocked(messageId: String, userId: String, serverId: String) -> String {
-        let version = reactionViewerVersions["\(messageId)\n\(userId)"] ?? 0
-        let emojis = messageReactions
-            .filter { $0.messageId == messageId && $0.reactorType == "user" && $0.reactorId == userId }
-            .map(\.emoji)
-            .sorted(by: Self.utf16Ascending)
-        let list = emojis.map { jsonString($0) }.joined(separator: ",")
-        return "{\"serverId\":\(jsonString(serverId)),\"messageId\":\(jsonString(messageId)),\"viewerVersion\":\(version),\"reactedEmojis\":[\(list)]}"
-    }
-
-    /// Node `uuidShortIdRange`: the half-open prefix of canonical lowercase UUID text.
-
-    /// Node `parseReactionEmoji`: a trimmed string, at most 16 UTF-16 code units, with no whitespace.
 
     func reactionJSONLocked(messageId: String) -> String {
         var order: [String] = []
@@ -702,35 +1080,67 @@ extension EmailLoginDirectory {
         return stored.seq
     }
 
-    func storeHumanMessage(channelId: String, senderId: String, content: String, randomId: String?, attachmentIds: [String], senderTimezone: String? = nil, mentions: [MentionInput] = []) -> (reply: HTTPReply, created: Bool) {
+    /// The outcome of one human-message insert, shaped so this file owns no
+    /// reply type. The message-create service turns it into the published reply.
+    struct StoredHumanMessageWrite: Sendable {
+        let status: Int
+        let body: String
+        let created: Bool
+    }
+
+    func storeHumanMessage(channelId: String, senderId: String, content: String, randomId: String?, attachmentIds: [String], senderTimezone: String? = nil, mentions: [MentionInput] = []) -> StoredHumanMessageWrite {
         lock.lock()
         if let randomId, let existing = humanMessageRows.first(where: { $0.senderId == senderId && $0.randomId == randomId }) {
             if existing.channelId != channelId {
                 lock.unlock()
-                return (Self.json(409, "{\"error\":\"randomId has already been used for a different message\",\"code\":\"random_id_conflict\"}"), false)
+                return StoredHumanMessageWrite(
+                    status: 409,
+                    body: "{\"error\":\"randomId has already been used for a different message\",\"code\":\"random_id_conflict\"}",
+                    created: false
+                )
             }
             let matches = attachmentOrderMatches(message: existing, attachmentIds: attachmentIds, uploaderId: senderId)
             let snapshot = existing
             lock.unlock()
             if matches {
-                return (Self.humanMessageJSON(snapshot), false)
+                return StoredHumanMessageWrite(
+                    status: 200,
+                    body: Self.humanMessageJSON(snapshot).body,
+                    created: false
+                )
             }
-            return (Self.json(400, "{\"error\":\"This idempotent send was already committed with a different ordered attachment set.\",\"code\":\"attachment_replay_conflict\"}"), false)
+            return StoredHumanMessageWrite(
+                status: 400,
+                body: "{\"error\":\"This idempotent send was already committed with a different ordered attachment set.\",\"code\":\"attachment_replay_conflict\"}",
+                created: false
+            )
         }
         var seenAttachmentIds = Set<String>()
         for id in attachmentIds {
             if seenAttachmentIds.contains(id) {
                 lock.unlock()
-                return (Self.json(400, "{\"error\":\"Attachment \(id) was requested more than once. Send each attachment ID exactly once.\",\"code\":\"attachment_duplicate\"}"), false)
+                return StoredHumanMessageWrite(
+                    status: 400,
+                    body: "{\"error\":\"Attachment \(id) was requested more than once. Send each attachment ID exactly once.\",\"code\":\"attachment_duplicate\"}",
+                    created: false
+                )
             }
             seenAttachmentIds.insert(id)
             guard let row = channelAttachments[id], row.channelId == channelId, row.uploaderId == senderId else {
                 lock.unlock()
-                return (Self.json(400, "{\"error\":\"Attachment \(id) is not available for this sender. Re-upload the file and send the new attachment ID.\",\"code\":\"attachment_not_found\"}"), false)
+                return StoredHumanMessageWrite(
+                    status: 400,
+                    body: "{\"error\":\"Attachment \(id) is not available for this sender. Re-upload the file and send the new attachment ID.\",\"code\":\"attachment_not_found\"}",
+                    created: false
+                )
             }
             if row.messageId != nil {
                 lock.unlock()
-                return (Self.json(400, "{\"error\":\"Attachment \(id) is already attached to another message. Re-upload the file and send the new attachment ID.\",\"code\":\"attachment_already_linked\"}"), false)
+                return StoredHumanMessageWrite(
+                    status: 400,
+                    body: "{\"error\":\"Attachment \(id) is already attached to another message. Re-upload the file and send the new attachment ID.\",\"code\":\"attachment_already_linked\"}",
+                    created: false
+                )
             }
         }
         let storedMentionsForEcho = postableChannels[channelId]?.kind == "dm"
@@ -770,7 +1180,7 @@ extension EmailLoginDirectory {
         lock.unlock()
         let reply = Self.humanMessageJSON(stored)
         emitRealtime("channel:\(channelId)", "message:new", reply.body)
-        return (reply, true)
+        return StoredHumanMessageWrite(status: 200, body: reply.body, created: true)
     }
 
     /// Replay accepts only the stored ids, positions, and uploader. It does not write.
@@ -793,74 +1203,10 @@ extension EmailLoginDirectory {
         return recordedChannelMessageEvents
     }
 
-}
-
-/// Typed facade over the message-reaction and channel-message surface that the
-/// identity/profile extension used to carry: reaction writes and viewers, agent
-/// read projections, third-party event delivery, and the channel-message and
-/// attachment assembly behind `POST /api/messages`.
-///
-/// The state transitions stay on `EmailLoginDirectory` with unchanged
-/// signatures; this type is the `Service` boundary the routes call.
-public struct ProfileAndChannelFilesService: Sendable {
-    public let directory: EmailLoginDirectory
-
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
-    }
-
-    /// `POST /api/messages/:messageId/reactions`.
-    public func addMessageReaction(
-        messageId: String,
-        body: String,
-        authorization: String?,
-        serverId: String?
-    ) -> HTTPReply {
-        directory.addMessageReaction(
-            messageId: messageId,
-            body: body,
-            authorization: authorization,
-            serverId: serverId
-        )
-    }
-
-    /// `DELETE /api/messages/:messageId/reactions`.
-    public func removeMessageReaction(
-        messageId: String,
-        body: String,
-        authorization: String?,
-        serverId: String?
-    ) -> HTTPReply {
-        directory.removeMessageReaction(
-            messageId: messageId,
-            body: body,
-            authorization: authorization,
-            serverId: serverId
-        )
-    }
-
-    /// `GET /api/messages/:messageId/reactions`.
-    public func listReactionActors(
-        messageId: String,
-        authorization: String?,
-        serverId: String?,
-        emoji: String?,
-        limit: String?,
-        cursor: String?
-    ) -> HTTPReply {
-        directory.listReactionActors(
-            messageId: messageId,
-            authorization: authorization,
-            serverId: serverId,
-            emoji: emoji,
-            limit: limit,
-            cursor: cursor
-        )
-    }
-
-    /// `POST /internal/agent-api/third-party-events/delivered`.
-    public func reportThirdPartyEventsDelivered(authorization: String?, body: String) -> HTTPReply {
-        directory.reportThirdPartyEventsDelivered(authorization: authorization, body: body)
+    func emitRealtime(_ room: String, _ event: String, _ payload: String?) {
+        realtimeEmitterLock.lock()
+        let emitter = realtimeEmitterStorage
+        realtimeEmitterLock.unlock()
+        emitter?(room, event, payload)
     }
 }
-
