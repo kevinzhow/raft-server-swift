@@ -391,18 +391,21 @@ as 0, and a missing TSV ratchets every file against 0). Generated sources under
 
 | Metric | Scanned | Counted | Baseline file | Current total |
 | --- | --- | --- | --- | --- |
-| `extension_directory` | `Sources/RaftHTTP` | occurrences of `extension EmailLoginDirectory` | `scripts/ratchet_extension_directory.tsv` | 51 in 47 files |
+| `extension_directory` | `Sources/RaftHTTP` | occurrences of `extension EmailLoginDirectory` | `scripts/ratchet_extension_directory.tsv` | 50 in 47 files |
 | `service_httpreply` | `Sources/RaftHTTP/Services` | `HTTPReply` tokens | `scripts/ratchet_service_httpreply.tsv` | 612 in 43 files |
 | `service_json_any` | `Sources/RaftHTTP/Services`, `Sources/RaftHTTP/DTO` | `JSONSerialization`, `[String: Any]`, `[String:Any]` | `scripts/ratchet_service_json_any.tsv` | 498 in 41 files |
 | `unchecked_sendable` | `Sources` | `@unchecked Sendable` | `scripts/ratchet_unchecked_sendable.tsv` | 71 in 57 files |
 | `directory_forwarder` | `Sources/RaftHTTP/Stores/DirectoryStoreForwarders.swift` | line count (0 when the file is gone) | `scripts/ratchet_directory_forwarder.tsv` | 710 in 1 file |
-| `service_directory_calls` | `Sources/RaftHTTP/Services` | `directory.` call sites | `scripts/ratchet_service_directory_calls.tsv` | 370 in 17 files |
+| `service_directory_calls` | `Sources/RaftHTTP/Services` | `directory.` call sites | `scripts/ratchet_service_directory_calls.tsv` | 369 in 16 files |
 
 Every ratchet is bidirectional: a file above its baseline fails, and so does a
 file below it, because **the baseline may only decrease**. A slice that shrinks a
 metric runs `python3 scripts/check_architecture.py --update-baselines` in the
 same commit to rewrite all six TSVs from the tree; no slice hand-raises a
 baseline. The update command never touches `scripts/for_testing_baseline.tsv`.
+
+The repeatable slice recipe — inventory, store, error contract, service, `respond`,
+ratchet update — lives in `docs/PHASE6_RECIPE.md`.
 
 The services layer also carries a hard zero, not a baseline: no file under
 `Sources/RaftHTTP/Services/**` may contain `import Vapor` (currently 0 in 45

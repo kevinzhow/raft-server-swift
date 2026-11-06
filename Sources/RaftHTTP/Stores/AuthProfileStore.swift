@@ -160,6 +160,51 @@ final class AuthProfileStore: @unchecked Sendable {
         return emailVerificationIssueDates[userId]?.filter { $0 >= since }.count ?? 0
     }
 
+    /// Counts one issued verification email for the startup log.
+    func recordEmailVerificationIssued() {
+        lock.lock()
+        accountSurface.emailVerifications += 1
+        lock.unlock()
+    }
+
+    // MARK: - Verification policy lookups
+
+    /// Whether an account row still exists for `userId`.
+    func accountExists(userId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return accountSurface.accounts.values.contains { $0.id == userId }
+    }
+
+    func isEmailVerified(userId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return accountSurface.accounts.values.first { $0.id == userId }?.emailVerified ?? false
+    }
+
+    /// The Node fixture marks a row verified without an HTTP call. Retirement
+    /// refuses an unverified account.
+    func markEmailVerified(userId: String) {
+        lock.lock()
+        if let key = accountSurface.accounts.first(where: { $0.value.id == userId })?.key {
+            accountSurface.accounts[key]?.emailVerified = true
+        }
+        lock.unlock()
+    }
+
+    /// The account id behind a bearer access token, or `nil` when the token is
+    /// unknown or its session family was revoked.
+    func userId(forAccessToken token: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let userId = accountSurface.accessTokens[token] else { return nil }
+        if let family = accountSurface.accessTokenFamilies[token],
+           accountSurface.revokedFamilies.contains(family) {
+            return nil
+        }
+        return userId
+    }
+
     // MARK: - Profile surface
 
     /// The whole profile surface. One read or one write is one locked critical

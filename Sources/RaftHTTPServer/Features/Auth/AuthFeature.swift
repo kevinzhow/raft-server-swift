@@ -46,12 +46,14 @@ public struct AuthFeature: RouteCollection, Sendable {
             // An empty or malformed body falls back to a nil token so the
             // missing-token branch still answers the upstream 400.
             let body = (try? await request.content.decode(VerifyEmailRequest.self)) ?? VerifyEmailRequest()
-            return try authVerificationResponse(services.emailAccounts.verifyEmail(token: body.token))
+            return try respond { try services.emailAccounts.authVerification.verifyEmail(token: body.token) }
         }
         auth.post("resend-verification") { request async throws -> Response in
-            return try authVerificationResponse(services.emailAccounts.resendVerificationEmail(
-                authorization: request.headers[.authorization]
-            ))
+            return try respond {
+                try services.emailAccounts.authVerification.resendVerificationEmail(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
 
         auth.get("invite-info") { request -> Response in
@@ -301,29 +303,4 @@ public struct AuthFeature: RouteCollection, Sendable {
             ))
         }
     }
-}
-
-/// Encodes one typed verification result with `JSONEncoder` into the same
-/// header/body shape the rest of the auth surface publishes.
-private func authVerificationResponse(_ result: AuthVerificationResult) throws -> Response {
-    let status: Int
-    let payload: Data
-    switch result {
-    case .verified, .sent:
-        status = 200
-        payload = try JSONEncoder().encode(OkResponse())
-    case .failure(let failure):
-        status = Int(failure.status)
-        payload = try JSONEncoder().encode(AuthErrorResponse(error: failure.message))
-    }
-    let reply = HTTPReply(
-        status: status,
-        headers: [
-            "X-Robots-Tag": AppFallback.robotsTag,
-            "Content-Type": AppFallback.jsonContentType,
-            "Content-Length": String(payload.count),
-        ],
-        body: String(decoding: payload, as: UTF8.self)
-    )
-    return routeResponse(reply)
 }

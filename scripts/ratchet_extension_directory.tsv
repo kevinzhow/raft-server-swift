@@ -10,7 +10,7 @@ Sources/RaftHTTP/Services/AgentPrivateSurfaceService.swift	1
 Sources/RaftHTTP/Services/AgentSendDeliveryService.swift	1
 Sources/RaftHTTP/Services/AgentsLifecycleService.swift	1
 Sources/RaftHTTP/Services/AttachmentsAndNotificationsService.swift	1
-Sources/RaftHTTP/Services/AuthCoreService.swift	3
+Sources/RaftHTTP/Services/AuthCoreService.swift	2
 Sources/RaftHTTP/Services/AuthIdentitiesService.swift	1
 Sources/RaftHTTP/Services/ComputersFleetService.swift	1
 Sources/RaftHTTP/Services/FeedbackLocatorService.swift	1
