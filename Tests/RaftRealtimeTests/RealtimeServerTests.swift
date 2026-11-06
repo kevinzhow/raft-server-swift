@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import NIOCore
 import NIOPosix
 import RaftHTTP
@@ -379,6 +380,124 @@ struct RealtimeTransportTests {
         try? await Task.sleep(for: .milliseconds(20))
     }
     #expect(seen.isEmpty)
+}
+
+@Test func realtimeStateConcurrentEmitsKeepMembershipRemovalAsTheFinalFrame() async throws {
+    let auth = StubAuth(
+        tokens: ["good": "user-1"],
+        roles: ["s1\nuser-1": "member"],
+        channels: ["s1\nuser-1": ["c1"]]
+    )
+    let server = try await RealtimeServer.start(auth: auth)
+    defer { Task { try? await server.close() } }
+    let client = try await RawSocketIOClient(port: server.port)
+    defer { client.close() }
+    _ = await client.waitForText { $0.hasPrefix("0") }
+    client.send("40{\"token\":\"good\",\"serverId\":\"s1\"}")
+    #expect(await client.waitForText { $0 == "42[\"rooms:joined\"]" } != nil)
+
+    await withTaskGroup(of: Void.self) { group in
+        for index in 0..<256 {
+            group.addTask {
+                if index == 128 || index == 129 {
+                    server.hub.removeServerMembership(serverId: "s1", userId: "user-1")
+                } else if index.isMultiple(of: 3) {
+                    client.send("2")
+                } else {
+                    server.hub.emit(room: "channel:c1", event: "message:new", payloadJSON: "{\"id\":\"race-\(index)\"}")
+                }
+            }
+        }
+    }
+    #expect(await client.waitForClose())
+    let notice = "42[\"server:membership-removed\",{\"serverId\":\"s1\"}]"
+    #expect(client.textFrames.filter { $0 == notice }.count == 1)
+    #expect(client.textFrames.last == notice)
+    let deadline = Date().addingTimeInterval(3)
+    while server.hub.connectionCount > 0 && Date() < deadline {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(server.hub.connectionCount == 0)
+}
+
+@Test func realtimeStateBusySocketYieldsForAnotherSocketsHandshakePingAndClose() async throws {
+    let auth = StubAuth(
+        tokens: ["hot": "hot-user", "cold": "cold-user"],
+        roles: ["s1\nhot-user": "member"],
+        channels: ["s1\nhot-user": ["hot"]]
+    )
+    let server = try await RealtimeServer.start(auth: auth)
+    defer { Task { try? await server.close() } }
+    let hot = try await RawSocketIOClient(port: server.port)
+    defer { hot.close() }
+    _ = await hot.waitForText { $0.hasPrefix("0") }
+    hot.send("40{\"token\":\"hot\",\"serverId\":\"s1\"}")
+    _ = try #require(await hot.waitForText { $0 == "42[\"rooms:joined\"]" })
+
+    let finished = Mutex(0)
+    let producerDeadline = ContinuousClock.now.advanced(by: .seconds(4))
+    let payload = "{\"content\":\"" + String(repeating: "x", count: 128) + "\"}"
+    let producers = (0..<4).map { _ in
+        Task.detached {
+            var emitted = 0
+            // Bound time and volume as well as honoring explicit cancellation,
+            // so the regression cannot leave a busy loop running after failure.
+            while !Task.isCancelled && ContinuousClock.now < producerDeadline && emitted < 50_000 {
+                server.hub.emit(room: "channel:hot", event: "load", payloadJSON: payload)
+                emitted += 1
+                if emitted.isMultiple(of: 64) { await Task.yield() }
+            }
+            finished.withLock { $0 += 1 }
+            return emitted
+        }
+    }
+    defer { for producer in producers { producer.cancel() } }
+    _ = try #require(await hot.waitForText({ $0.hasPrefix("42[\"load\",") }, timeout: 1))
+
+    let cold = try await RawSocketIOClient(port: server.port)
+    defer { cold.close() }
+    let open = await cold.waitForText({ $0.hasPrefix("0") }, timeout: 0.5)
+    cold.send("40{\"token\":\"cold\"}")
+    let connected = await cold.waitForText({ $0.hasPrefix("40") }, timeout: 0.5)
+    cold.send("2")
+    let pong = await cold.waitForText({ $0 == "3" }, timeout: 0.5)
+    cold.send("41")
+    let closed = await cold.waitForClose(timeout: 0.5)
+    let finishedBeforeClose = finished.withLock { $0 }
+    for producer in producers { producer.cancel() }
+    var emitted = 0
+    for producer in producers { emitted += await producer.value }
+
+    #expect(open != nil, "a busy session must yield to another socket's upgrade")
+    #expect(connected != nil, "another socket must authenticate while producers run")
+    #expect(pong == "3", "another socket's protocol reply must make progress")
+    #expect(closed, "another socket must close while producers run")
+    #expect(finishedBeforeClose < producers.count, "producer traffic must still be active through the close")
+    #expect(emitted > 0)
+}
+
+@Test func realtimeStateQueuedFramesRetainOrderBeforeMembershipRemoval() async throws {
+    let auth = StubAuth(
+        tokens: ["good": "user-1"],
+        roles: ["s1\nuser-1": "member"],
+        channels: ["s1\nuser-1": ["c1"]]
+    )
+    let server = try await RealtimeServer.start(auth: auth)
+    defer { Task { try? await server.close() } }
+    let client = try await RawSocketIOClient(port: server.port)
+    defer { client.close() }
+    _ = await client.waitForText { $0.hasPrefix("0") }
+    client.send("40{\"token\":\"good\",\"serverId\":\"s1\"}")
+    _ = try #require(await client.waitForText { $0 == "42[\"rooms:joined\"]" })
+
+    for index in 0..<193 {
+        server.hub.emit(room: "channel:c1", event: "ordered", payloadJSON: "{\"index\":\(index)}")
+    }
+    server.hub.removeServerMembership(serverId: "s1", userId: "user-1")
+    #expect(await client.waitForClose())
+    let expected = (0..<193).map { "42[\"ordered\",{\"index\":\($0)}]" }
+    #expect(client.textFrames.filter { $0.hasPrefix("42[\"ordered\",") } == expected)
+    #expect(client.textFrames.last == "42[\"server:membership-removed\",{\"serverId\":\"s1\"}]")
 }
 
 }

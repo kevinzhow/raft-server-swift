@@ -62,16 +62,39 @@ class ArchitectureGuardTests(ArchitectureFixture):
         self.assertEqual(guard.scan_ratchet_metric(self.root, metric),
                          {"Sources/RaftHTTP/Services/Example.swift": 2})
 
-    def test_generated_exclusion_is_exact_and_shared_by_all_match_metrics(self):
+    def test_generated_exclusion_is_exact_except_for_unchecked_metrics(self):
         text = "HTTPReply JSONSerialization EmailLoginDirectory @unchecked Sendable\n"
-        self.put("Sources/RaftHTTPServer/Generated/Nested/Corpus.swift", text * 3)
+        generated = "Sources/RaftHTTPServer/Generated/Nested/Corpus.swift"
+        self.put(generated, text * 3)
         handwritten = "Sources/RaftHTTPServer/GeneratedHelpers/Example.swift"
         self.put(handwritten, text)
-        for metric_id in ("httpreply_sources", "json_any_sources", "directory_references",
-                          "unchecked_sendable", "unchecked_sendable_server"):
+        for metric_id in ("httpreply_sources", "json_any_sources", "directory_references"):
             with self.subTest(metric=metric_id):
                 self.assertEqual(guard.scan_ratchet_metric(self.root, METRICS[metric_id]),
                                  {handwritten: 1})
+        for metric_id in ("unchecked_sendable", "unchecked_sendable_server"):
+            with self.subTest(metric=metric_id):
+                self.assertEqual(guard.scan_ratchet_metric(self.root, METRICS[metric_id]),
+                                 {generated: 3, handwritten: 1})
+
+    def test_generated_unchecked_growth_is_rejected_by_both_ratchets(self):
+        generated = "Sources/RaftHTTPServer/Generated/KnowledgeCorpus.swift"
+        self.put(generated, "final class Telemetry: @unchecked Sendable {}\n")
+        for metric_id in ("unchecked_sendable", "unchecked_sendable_server"):
+            with self.subTest(metric=metric_id):
+                baseline = self.baseline(metric_id, {})
+                before = baseline.read_bytes()
+                result = guard.check_ratchet_metric(self.root, METRICS[metric_id])
+                self.assertEqual(result["status"], "fail")
+                self.assertIn(generated, result["files"])
+                with self.assertRaisesRegex(guard.GuardrailError, "refusing to raise"):
+                    guard.update_ratchet_baselines(self.root)
+                self.assertEqual(baseline.read_bytes(), before)
+
+    def test_generated_json_string_payload_exclusion_is_unchanged(self):
+        self.put("Sources/RaftHTTPServer/Generated/Nested/Corpus.swift",
+                 'let body = #"{"id":1}"#\n')
+        self.assertEqual(guard.scan_ratchet_metric(self.root, METRICS["json_string_payloads"]), {})
 
     def test_json_any_metric_does_not_claim_string_json_coverage(self):
         typed = "Sources/RaftHTTP/Typed.swift"

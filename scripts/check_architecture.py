@@ -77,7 +77,9 @@ enforces the part of it that can be measured today:
    A file above its baseline fails, and so does a file below it: the baseline
    may only decrease, so the slice that shrinks a metric runs
    ``--update-baselines`` in the same commit. Generated sources under
-   ``Sources/RaftHTTPServer/Generated/`` are out of scope for every ratchet.
+   ``Sources/RaftHTTPServer/Generated/`` are counted only by
+   ``unchecked_sendable`` and ``unchecked_sendable_server``; other ratchets
+   retain the generated-source exclusion.
 
 8. Hard zero: no file under ``Sources/RaftHTTP/Services/`` may contain
    ``import Vapor``; the service layer is Vapor-free by construction.
@@ -129,9 +131,9 @@ SERVER_SURFACE_RELATIVE = (
 SERVER_SURFACE_SCAN_PATH = ", ".join(path.as_posix() for path in SERVER_SURFACE_RELATIVE)
 FOR_TESTING_BASELINE_RELATIVE = Path("scripts/for_testing_baseline.tsv")
 
-# Generated sources are data-only corpora (for example
-# ``Sources/RaftHTTPServer/Generated/KnowledgeCorpus.swift``). They are not
-# hand-written architecture, so no Phase 6 ratchet counts them.
+# Generated sources contain corpora as well as synchronization code. Only the
+# unchecked Sendable metrics include them; other Phase 6 ratchets still exclude
+# the generated corpus tokens.
 GENERATED_RELATIVE = Path("Sources/RaftHTTPServer/Generated")
 GENERATED_PREFIX = GENERATED_RELATIVE.as_posix() + "/"
 
@@ -699,11 +701,10 @@ def check_for_testing_tree_baseline(root: Path) -> dict:
     }
 
 
-def iter_swift_sources(root: Path, bases: tuple[Path, ...]) -> list[tuple[str, Path]]:
-    """Sorted ``(relative_posix_path, absolute_path)`` pairs for Swift files under ``bases``.
-
-    Generated sources are excluded; a missing base directory contributes nothing.
-    """
+def iter_swift_sources(
+    root: Path, bases: tuple[Path, ...], *, include_generated: bool = False
+) -> list[tuple[str, Path]]:
+    """Sorted unique Swift paths; generated sources are opt-in per metric."""
     found: dict[str, Path] = {}
     for base_relative in bases:
         base = root / base_relative
@@ -713,7 +714,7 @@ def iter_swift_sources(root: Path, bases: tuple[Path, ...]) -> list[tuple[str, P
             if not path.is_file():
                 continue
             relative = path.relative_to(root).as_posix()
-            if relative.startswith(GENERATED_PREFIX) or relative in found:
+            if (not include_generated and relative.startswith(GENERATED_PREFIX)) or relative in found:
                 continue
             found[relative] = path
     return sorted(found.items())
@@ -862,7 +863,8 @@ def scan_ratchet_metric(root: Path, metric: dict) -> dict[str, int]:
         return {metric["path"].as_posix(): count_lines(path)}
 
     counts: dict[str, int] = {}
-    for relative, path in iter_swift_sources(root, metric["roots"]):
+    include_generated = metric["id"] in {"unchecked_sendable", "unchecked_sendable_server"}
+    for relative, path in iter_swift_sources(root, metric["roots"], include_generated=include_generated):
         if metric["kind"] == "json_strings":
             count = count_json_string_payloads(path.read_text(encoding="utf-8", errors="replace"))
         else:

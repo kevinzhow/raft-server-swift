@@ -2098,3 +2098,11 @@ RFC 074 personal assistant：
 ### Daemon 不可变错误值的既有契约
 
 - Direct upload 继续保留 attestation/create/put hop、HTTP status 和 cause；HTTP-status 错误保留 tool/status/serverError。Chat-bridge timeout 仍报告原 tool/target/timeout/duration 和说明文本；provider materialization 的 kind/status、Node host unavailable 的 host kind、migration entry-limit 的 count/max/top paths 均不变。六种错误的 stored field 都为不可变 Sendable 值，改为 checked conformance 不改构造、分类或 wire 信息。
+
+### NIO 会话与升级的输出顺序
+
+- membership removal 对目标 server/user 的 socket 只发送一次 `server:membership-removed` 终帧，flush 后关闭；已经接纳的普通帧保持序列，终帧 claim 后的新广播、ping/text 回复和重复关闭不能越过它。rooms、replay 与 family revocation 的现有帧保持不变。
+- 持续 hot-room 广播期间，另一真实 socket 的 upgrade、鉴权、ping 与关闭仍可推进；帧序和 membership 终帧不变，发送批次不能无限占用共享 event loop。
+- Desktop attention 保留 Bool/NSNumber 0/1 输入、节流和 blur 后立即重新记录的行为；回调重入不会死锁，已接纳的 record/clear 动作按序交付，TTL 边界不变。
+- 并发 machine lookup 仍返回原 101 与 machine context 字节，online/offline 状态回调在所属 channel loop 执行；断连后迟到的 lookup 结果不再发 online 或写已断连接。拒绝路径仍先 flush 原错误响应再关闭。
+- Knowledge registry/table 固定语料不变；metadata-only telemetry 继续不存 document body，生成器从固定上游与仓库 template 再生后字节一致。

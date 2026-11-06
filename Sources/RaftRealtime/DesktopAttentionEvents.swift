@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// `desktop:attention { attended: true|false }` from Raft Desktop sockets.
 /// Only a desktop socket may silence its own browser notifications; a blur
@@ -19,12 +20,11 @@ public protocol DesktopAttentionRecording: Sendable {
 /// In-memory record of users whose desktop window was attended within the
 /// fixed window. The upstream service is Redis-backed with a TTL; this port
 /// keeps the same observable suppression state.
-public final class DesktopAttentionRegistry: DesktopAttentionRecording, @unchecked Sendable {
+public final class DesktopAttentionRegistry: DesktopAttentionRecording {
     /// Fixed window (not user-configurable): a desktop that is merely open but
     /// unused stops suppressing after it lapses.
     public static let windowMs = 10 * 60 * 1000
-    private let lock = NSLock()
-    private var attendedUntil: [String: Int] = [:]
+    private let attendedUntil = Mutex<[String: Int]>([:])
 
     public init() {}
 
@@ -33,15 +33,15 @@ public final class DesktopAttentionRegistry: DesktopAttentionRecording, @uncheck
     }
 
     public func record(userId: String, now: Int) {
-        lock.withLock { attendedUntil[userId] = now + Self.windowMs }
+        attendedUntil.withLock { $0[userId] = now + Self.windowMs }
     }
 
     public func clear(userId: String) {
-        lock.withLock { attendedUntil.removeValue(forKey: userId) }
+        _ = attendedUntil.withLock { $0.removeValue(forKey: userId) }
     }
 
     public func isAttended(userId: String, now: Int = Int(Date().timeIntervalSince1970 * 1000)) -> Bool {
-        lock.withLock {
+        attendedUntil.withLock { attendedUntil in
             guard let until = attendedUntil[userId] else { return false }
             if until > now { return true }
             attendedUntil.removeValue(forKey: userId)
@@ -62,20 +62,32 @@ public final class DesktopAttentionRegistry: DesktopAttentionRecording, @uncheck
     }
 
     public func resetForTests() {
-        lock.withLock { attendedUntil.removeAll() }
+        attendedUntil.withLock { $0.removeAll() }
     }
 }
 
 /// The socket-facing handler: attach it to one socket's event registry and
 /// forward that socket's `desktop:attention` payloads to `handle`.
-public final class DesktopAttentionHandler: @unchecked Sendable {
+public final class DesktopAttentionHandler: Sendable {
     public let userId: String
     public let clientKind: SocketClientKind
     private let recorder: any DesktopAttentionRecording
     private let now: @Sendable () -> Int
     private let onError: @Sendable (String) -> Void
-    private var lastRecordedAt: Int?
-    private var lastClearedAt: Int?
+
+    private enum Action: Sendable {
+        case record
+        case clear
+    }
+
+    private struct State: Sendable {
+        var lastRecordedAt: Int?
+        var lastClearedAt: Int?
+        var pending: [Action] = []
+        var delivering = false
+    }
+
+    private let state = Mutex(State())
 
     public init(
         userId: String,
@@ -99,17 +111,46 @@ public final class DesktopAttentionHandler: @unchecked Sendable {
         guard let object = payload as? [String: Any] else { return }
         let attended = object["attended"]
         let at = now()
+        let action: Action
         if (attended as? Bool) == false {
-            if let last = lastClearedAt, at - last < DesktopAttentionEvents.minIntervalMs { return }
-            lastClearedAt = at
-            // The user's return must be recorded at once, not up to 30 s later.
-            lastRecordedAt = nil
-            recorder.clear(userId: userId)
-            return
+            action = .clear
+        } else {
+            guard (attended as? Bool) == true else { return }
+            action = .record
         }
-        guard (attended as? Bool) == true else { return }
-        if let last = lastRecordedAt, at - last < DesktopAttentionEvents.minIntervalMs { return }
-        lastRecordedAt = at
-        recorder.record(userId: userId)
+        let shouldDeliver = state.withLock { state in
+            switch action {
+            case .clear:
+                if let last = state.lastClearedAt, at - last < DesktopAttentionEvents.minIntervalMs { return false }
+                state.lastClearedAt = at
+                // The user's return must be recorded at once, not up to 30 s later.
+                state.lastRecordedAt = nil
+            case .record:
+                if let last = state.lastRecordedAt, at - last < DesktopAttentionEvents.minIntervalMs { return false }
+                state.lastRecordedAt = at
+            }
+            state.pending.append(action)
+            guard !state.delivering else { return false }
+            state.delivering = true
+            return true
+        }
+        if shouldDeliver { deliverPending() }
+    }
+
+    private func deliverPending() {
+        // Recorder callbacks can reenter handle. Claim each action under the
+        // mutex, then call out after releasing it; one drainer preserves order.
+        while let action = state.withLock({ state -> Action? in
+            guard !state.pending.isEmpty else {
+                state.delivering = false
+                return nil
+            }
+            return state.pending.removeFirst()
+        }) {
+            switch action {
+            case .record: recorder.record(userId: userId)
+            case .clear: recorder.clear(userId: userId)
+            }
+        }
     }
 }

@@ -19,7 +19,7 @@ Phases 0–4 的真实进程闭环已建立：`make test-e2e` 启动两个隔离
 
 Phase 5 已完成旧 `EmailLogin/` 文件提取、Feature 路由拆分、同步 body 读取退役和生产 `ForTesting` 入口迁移。`EmailLogin.swift` 从 34,306 行降到 48 行，原目录中不再有 Swift 文件。测试 seam 位于不被生产 target 依赖的 `Tests/TestSupport`。
 
-这些结果不代表深度架构重构已经完成：旧类型在其他目录仍有扩展和调用，目录全局锁与 forwarding 文件仍在，多个 Store 和 OAuth ledger 仍有 unchecked Sendable。当前工作是 Phase 6；精确分层、检测范围和数值快照只在 `docs/ARCHITECTURE.md` 维护。
+这些结果不代表深度架构重构已经完成：旧类型在其他目录仍有扩展和调用，目录全局锁与 forwarding 文件仍在。Store/OAuth 状态的 checked 隔离已在后续子批完成，但跨 Store 业务协调仍需迁移。当前工作是 Phase 6；精确分层、检测范围和数值快照只在 `docs/ARCHITECTURE.md` 维护。
 
 ## 2. Phase 6：消除剩余耦合
 
@@ -28,7 +28,7 @@ Phase 5 已完成旧 `EmailLogin/` 文件提取、Feature 路由拆分、同步 
 - Service 的旧回复类型文本已归零；成功响应采用具名 DTO / `JSONBodyConvertible`，失败采用 typed DomainError。JSON 字节顺序和省略规则由 `OrderedJSON` 保留。
 - 已迁移域使用 `respond`；其他 JSON 路径仍有旧 adapter，不能称整个路由层已迁完。请求体 helper 统一实现机制，仍显式保留各路由的空体、空白体、Content-Type 和错误处理策略。
 - Store 按领域拥有状态；大文件按职责拆成同类型扩展，并增加每文件 1,000 行上限。文件拆分与锁模型改造分开验收。
-- 棘轮覆盖完整服务端依赖闭包，目录类型引用与 unchecked conformance 还有全 Sources 口径；daemon-only 与生成代码例外明确单列。字符串 JSON 候选采用独立检测，不把 JSON-any 计数当作所有手工 JSON。
+- 棘轮覆盖完整服务端依赖闭包；两项 unchecked 口径包含全部 Sources/Generated，daemon-only 保留项逐项记录。其他度量仍明确排除生成语料。字符串 JSON 候选采用独立检测，不把 JSON-any 计数当作所有手工 JSON。
 
 ### 第八批：扩大清理范围（已通过完整门禁）
 
@@ -47,7 +47,7 @@ Phase 5 已完成旧 `EmailLogin/` 文件提取、Feature 路由拆分、同步 
 
 ### 第九批：目录收缩与 Store 并发边界
 
-已完成状态隔离子批：十二个主 Store、OAuth ledger、只持有不可变引用的目录根类型、公开 server/visit 目录均为 checked Sendable，领域记录与配置由 Mutex 隔离；55 个共享值模型补齐 checked conformance。保持原事务，修复兼容 setter 整份 State 回写覆盖其他字段并发更新的问题。非生成服务端 unchecked 现为 6，另有生成 telemetry 1 处。此前 HTTP 缓存/预算切片也已完成。
+已完成状态隔离子批：十二个主 Store、OAuth ledger、只持有不可变引用的目录根类型、公开 server/visit 目录均为 checked Sendable，领域记录与配置由 Mutex 隔离；55 个共享值模型补齐 checked conformance。保持原事务，修复兼容 setter 整份 State 回写覆盖其他字段并发更新的问题。非 daemon 的显式 unchecked 现已清零，口径包含 Generated；NIO handler 的 loop 边界、共享会话发送队列和 telemetry 生成入口已落实。此前 HTTP 缓存/预算切片也已完成。
 
 这些数字不代表整批完成。仍有 12 处目录扩展和 195 个属性组成的 580 行 forwarding 文件；全局锁、生产文件内的测试夹具和复合消息提交都要按真实消费者迁移。消息 comment writer 原本不经过目录锁，必须与 human/agent append 统一序号分配，不能只删锁保留 count/get/append。
 
@@ -59,8 +59,8 @@ Phase 5 已完成旧 `EmailLogin/` 文件提取、Feature 路由拆分、同步 
 ### 第十批：纯装配容器与剩余服务端 Sendable
 
 1. 目录只负责依赖装配后，全仓将 `EmailLoginDirectory` 重命名为 `ServiceContainer`，包括测试；删除过渡类型、旧别名和 forwarding 路径。
-2. 清理 daemon-only targets 之外的显式 unchecked conformance，包含目前被棘轮排除的生成 telemetry helper；修生成入口，避免下次生成恢复旧实现。
-3. 对 daemon-only 的 NIO handler、Process 句柄等逐项评估。基线 41 处中，六个全 `let`、纯 Sendable 值字段的错误类型已改为 checked；其余 35 处仍需按实际保护和逃逸路径核查。不预先承诺全部清零；保留项必须有具体并发约束、原因和测试证据。
+2. **已完成非 daemon unchecked 清理**：完整服务端依赖闭包与 Generated 均为零，guard 包含生成代码；恢复可复现的 knowledge 生成脚本及 template，`--check` 不改变固定语料。NIO 局部非 Sendable handler 通过 SDK loop-bound 值限定安装与访问，不以新 unchecked 壳替代。
+3. daemon-only 基线 41 处已逐项阅读字段、写入/逃逸路径及测试；六个不可变错误已 checked，余下 35 处详见 `docs/CONCURRENCY.md`。现有缺口包括默认 child timer、HTTP timeout 跨队列状态、timer check/register/publish、公开可变错误/模型和 raw Any；它们不是获准安全的例外。先修可复现的生命周期/状态问题，再收窄可证明的存储或 SDK/loop 边界；行为测试不能替代并发证明。
 4. 如实同步文档，再跑最终完整门禁。只在所有目标确实完成后宣布 Phase 6 结束。
 
 ## 3. 切片门禁与工作契约

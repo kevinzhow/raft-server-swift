@@ -3,6 +3,7 @@ import NIOCore
 import NIOHTTP1
 import NIOPosix
 import RaftConnectAuth
+import Synchronization
 
 /// Listens for the raw `/daemon/connect` upgrade.
 /// 401 and 500 bytes come from `machineUpgradeFailurePrelude`.
@@ -29,8 +30,12 @@ public final class MachineConnectServer: Sendable {
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
-                channel.pipeline.addHandler(ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .dropBytes))).flatMap {
-                    channel.pipeline.addHandler(ConnectHandler(
+                channel.eventLoop.preconditionInEventLoop()
+                return channel.eventLoop.makeCompletedFuture {
+                    try channel.pipeline.syncOperations.addHandler(
+                        ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .dropBytes))
+                    )
+                    try channel.pipeline.syncOperations.addHandler(ConnectHandler(
                         lookup: lookup,
                         capabilities: capabilities,
                         onStatusChange: onStatusChange
@@ -61,15 +66,52 @@ public enum MachineConnectError: Error {
     case missingPort
 }
 
-private final class ConnectHandler: ChannelInboundHandler, @unchecked Sendable {
+/// Shared only across the async credential lookup and the NIO event loop.
+/// Mutable connection state is checked Sendable; status callbacks and channel
+/// writes still run on the channel's event loop, after releasing the Mutex.
+private final class ConnectState: Sendable {
+    private struct State: Sendable {
+        var responded = false
+        var closed = false
+        var acceptedMachine: MatchedMachine?
+    }
+
+    private let state = Mutex(State())
+
+    func claimResponse() -> Bool {
+        state.withLock { state in
+            guard !state.responded, !state.closed else { return false }
+            state.responded = true
+            return true
+        }
+    }
+
+    func complete(machine: MatchedMachine?) -> Bool {
+        state.withLock { state in
+            guard !state.closed else { return false }
+            state.acceptedMachine = machine
+            return true
+        }
+    }
+
+    func disconnect() -> MatchedMachine? {
+        state.withLock { state in
+            state.closed = true
+            let machine = state.acceptedMachine
+            state.acceptedMachine = nil
+            return machine
+        }
+    }
+}
+
+private final class ConnectHandler: ChannelInboundHandler, Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = ByteBuffer
 
     private let lookup: any MachineCredentialLooking
     private let capabilities: [String]
     private let onStatusChange: (@Sendable (MatchedMachine, Bool) -> Void)?
-    private var responded = false
-    private var acceptedMachine: MatchedMachine?
+    private let connection = ConnectState()
 
     init(
         lookup: any MachineCredentialLooking,
@@ -82,8 +124,8 @@ private final class ConnectHandler: ChannelInboundHandler, @unchecked Sendable {
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        guard case .head(let head) = unwrapInboundIn(data), !responded else { return }
-        responded = true
+        context.eventLoop.preconditionInEventLoop()
+        guard case .head(let head) = unwrapInboundIn(data), connection.claimResponse() else { return }
         let uri = head.uri
         let authorization = head.headers.first(name: "authorization")
         let host = head.headers.first(name: "host")
@@ -91,6 +133,7 @@ private final class ConnectHandler: ChannelInboundHandler, @unchecked Sendable {
         let lookup = self.lookup
         let capabilities = self.capabilities
         let onStatusChange = self.onStatusChange
+        let connection = self.connection
         let loop = context.eventLoop
         let channel = context.channel
         Task {
@@ -104,8 +147,9 @@ private final class ConnectHandler: ChannelInboundHandler, @unchecked Sendable {
             )
             let closeAfter = outcome.bytes.starts(with: Array("HTTP/1.1 101".utf8)) == false
             loop.execute {
+                loop.preconditionInEventLoop()
+                guard connection.complete(machine: outcome.machine) else { return }
                 if let machine = outcome.machine {
-                    self.acceptedMachine = machine
                     onStatusChange?(machine, true)
                 }
                 var buffer = channel.allocator.buffer(capacity: outcome.bytes.count)
@@ -119,10 +163,11 @@ private final class ConnectHandler: ChannelInboundHandler, @unchecked Sendable {
     }
 
     func channelInactive(context: ChannelHandlerContext) {
-        if let acceptedMachine {
+        context.eventLoop.preconditionInEventLoop()
+        if let acceptedMachine = connection.disconnect() {
             onStatusChange?(acceptedMachine, false)
-            self.acceptedMachine = nil
         }
+        context.fireChannelInactive()
     }
 
     private static func responseBytes(
@@ -163,7 +208,7 @@ private final class ConnectHandler: ChannelInboundHandler, @unchecked Sendable {
     }
 }
 
-private struct MachineConnectOutcome {
+private struct MachineConnectOutcome: Sendable {
     var bytes: [UInt8]
     var machine: MatchedMachine?
 }

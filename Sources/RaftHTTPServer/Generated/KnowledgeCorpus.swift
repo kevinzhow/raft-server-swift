@@ -1,5 +1,6 @@
 import Foundation
 import RaftHTTP
+import Synchronization
 
 /// Agent-facing Manual directory: registry, retrieval, search ranking, not-found
 /// guidance and the metadata-only telemetry seam.
@@ -103,26 +104,19 @@ struct KnowledgeTelemetryEvent: Sendable, Equatable {
 
 /// In-memory telemetry seam for `agent_knowledge_events`. The upstream row has
 /// the same metadata fields; the body is never stored.
-final class KnowledgeTelemetryStore: @unchecked Sendable {
-    private let lock = NSLock()
-    private var events: [KnowledgeTelemetryEvent] = []
+final class KnowledgeTelemetryStore: Sendable {
+    private let events = Mutex<[KnowledgeTelemetryEvent]>([])
 
     func record(_ event: KnowledgeTelemetryEvent) {
-        lock.lock()
-        events.append(event)
-        lock.unlock()
+        events.withLock { $0.append(event) }
     }
 
     func reset() {
-        lock.lock()
-        events.removeAll()
-        lock.unlock()
+        events.withLock { $0.removeAll() }
     }
 
     func all() -> [KnowledgeTelemetryEvent] {
-        lock.lock()
-        defer { lock.unlock() }
-        return events
+        events.withLock { $0 }
     }
 
     func events(agentId: String) -> [KnowledgeTelemetryEvent] {

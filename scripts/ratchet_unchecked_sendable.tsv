@@ -27,6 +27,3 @@ Sources/RaftDaemonClient/RuntimeTurnTokens.swift	1
 Sources/RaftDaemonClient/ScopedAppStorage.swift	2
 Sources/RaftDaemonClient/SpawnFailureClassification.swift	1
 Sources/RaftDaemonClient/StandingPromptRefresh.swift	1
-Sources/RaftMachineSocket/MachineConnectServer.swift	1
-Sources/RaftRealtime/DesktopAttentionEvents.swift	2
-Sources/RaftRealtime/RealtimeServer.swift	3

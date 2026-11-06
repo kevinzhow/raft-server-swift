@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import NIOCore
 import NIOPosix
 import RaftConnectAuth
@@ -21,73 +22,54 @@ public extension RealtimeAuthorizing {
     }
 }
 
-public final class RealtimeHub: @unchecked Sendable {
-    private let lock = NSLock()
-    private var sessions: [ObjectIdentifier: SocketIOSession] = [:]
+public final class RealtimeHub: Sendable {
+    private let sessions = Mutex<[ObjectIdentifier: SocketIOSession]>([:])
 
     public init() {}
 
-    public var connectionCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return sessions.count
+    public var connectionCount: Int { sessions.withLock { $0.count } }
+
+    private func snapshot() -> [SocketIOSession] {
+        sessions.withLock { Array($0.values) }
     }
 
     public func emit(room: String, event: String, payloadJSON: String? = nil) {
-        lock.lock()
-        let targets = sessions.values.filter { $0.hasRoom(room) }
-        lock.unlock()
+        // Session locks and channel callbacks never run under the hub mutex.
+        let targets = snapshot().filter { $0.hasRoom(room) }
         let frame = socketIOEventFrame(event, payloadJSON: payloadJSON)
-        for session in targets {
-            session.send(frame)
-        }
+        for session in targets { session.send(frame) }
     }
 
     func register(_ session: SocketIOSession) {
-        lock.lock()
-        sessions[ObjectIdentifier(session)] = session
-        lock.unlock()
+        sessions.withLock { $0[ObjectIdentifier(session)] = session }
     }
 
     func unregister(_ session: SocketIOSession) {
-        lock.lock()
-        sessions.removeValue(forKey: ObjectIdentifier(session))
-        lock.unlock()
+        _ = sessions.withLock { $0.removeValue(forKey: ObjectIdentifier(session)) }
     }
 
     /// Close every socket that belongs to one user session family.
     public func revokeFamily(userId: String, familyId: String) {
-        lock.lock()
-        let targets = sessions.values.filter { session in
+        let targets = snapshot().filter { session in
             session.userId == userId && (session.familyId == nil || session.familyId == familyId)
         }
-        lock.unlock()
-        for session in targets {
-            session.close()
-        }
+        for session in targets { session.close() }
     }
 
     /// Channel creation and membership grants add the room to every live
     /// session of that user so later channel-room events are delivered.
     public func joinUserSessions(userId: String, room: String) {
-        lock.lock()
-        let targets = sessions.values.filter { $0.userId == userId }
-        lock.unlock()
-        for session in targets {
-            session.join([room])
-        }
+        let targets = snapshot().filter { $0.userId == userId }
+        for session in targets { session.join([room]) }
     }
 
     /// `server:membership-removed` is the last packet before the close, and
     /// only connections attached to that server are affected.
-    public func removeServerMembership(serverId: String, userId: String) {        lock.lock()
-        let targets = sessions.values.filter { $0.serverId == serverId && $0.userId == userId }
-        lock.unlock()
+    public func removeServerMembership(serverId: String, userId: String) {
+        let targets = snapshot().filter { $0.serverId == serverId && $0.userId == userId }
         let payload = "{\"serverId\":\(quotedJSON(serverId))}"
         let frame = socketIOEventFrame("server:membership-removed", payloadJSON: payload)
-        for session in targets {
-            session.sendAndClose(frame)
-        }
+        for session in targets { session.sendAndClose(frame) }
     }
 
     /// Drop one user's subscriptions to the given rooms (a channel plus its
@@ -95,14 +77,10 @@ public final class RealtimeHub: @unchecked Sendable {
     /// the same server are touched.
     public func leaveUserRooms(userId: String, serverId: String?, rooms: [String]) {
         guard !rooms.isEmpty else { return }
-        lock.lock()
-        let targets = sessions.values.filter { session in
+        let targets = snapshot().filter { session in
             session.userId == userId && (serverId == nil || session.serverId == serverId)
         }
-        lock.unlock()
-        for session in targets {
-            session.leave(rooms)
-        }
+        for session in targets { session.leave(rooms) }
     }
 
     /// One shared `channel:<id>` frame with the agent's new watermark.
@@ -138,9 +116,17 @@ public final class RealtimeServer: Sendable {
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
-                channel.pipeline.addHandler(
-                    RealtimeConnectionHandler(auth: auth, hub: hub, serverPort: port, desktopAttention: desktopAttention)
+                // ServerBootstrap invokes this initializer on the child loop.
+                // The SDK bound value checks that ownership across the Sendable
+                // submit closure; synchronous installation never transfers the
+                // non-Sendable handler to another executor or channel.
+                let handler = NIOLoopBound(
+                    RealtimeConnectionHandler(auth: auth, hub: hub, serverPort: port, desktopAttention: desktopAttention),
+                    eventLoop: channel.eventLoop
                 )
+                return channel.eventLoop.submit {
+                    try channel.pipeline.syncOperations.addHandler(handler.value)
+                }
             }
         do {
             let channel = try await bootstrap.bind(host: host, port: port).get()
@@ -166,7 +152,10 @@ public enum RealtimeServerError: Error {
     case missingPort
 }
 
-private final class RealtimeConnectionHandler: ChannelInboundHandler, @unchecked Sendable {
+// All mutable parser and handshake state belongs exclusively to the channel
+// event loop. Construction/installation above and every pipeline entry below
+// check that confinement; this handler is deliberately not Sendable.
+private final class RealtimeConnectionHandler: ChannelInboundHandler {
     typealias InboundIn = ByteBuffer
 
     private let auth: any RealtimeAuthorizing
@@ -186,6 +175,7 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler, @unchecked
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        context.eventLoop.preconditionInEventLoop()
         var buffer = unwrapInboundIn(data)
         guard let bytes = buffer.readBytes(length: buffer.readableBytes), !bytes.isEmpty else {
             return
@@ -200,10 +190,12 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler, @unchecked
     }
 
     func channelInactive(context: ChannelHandlerContext) {
+        context.eventLoop.preconditionInEventLoop()
         closeSession()
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
+        context.eventLoop.preconditionInEventLoop()
         closeSession()
         context.close(promise: nil)
     }
@@ -376,6 +368,11 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler, @unchecked
     }
 
     private func write(context: ChannelHandlerContext, bytes: [UInt8]) {
+        context.eventLoop.preconditionInEventLoop()
+        // Protocol replies share the terminal gate with hub events. Since this
+        // write is synchronous on the owner loop, a concurrent terminal drain
+        // cannot overtake it after the open-state check.
+        guard session?.isClosed != true else { return }
         var buffer = context.channel.allocator.buffer(capacity: bytes.count)
         buffer.writeBytes(bytes)
         context.writeAndFlush(NIOAny(buffer), promise: nil)
@@ -405,16 +402,28 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler, @unchecked
     }
 }
 
-final class SocketIOSession: @unchecked Sendable {
+final class SocketIOSession: Sendable {
     let id: String
     let userId: String
     let serverId: String?
     let clientKind: SocketClientKind
     let familyId: String?
     let channel: any Channel
-    private let lock = NSLock()
-    private var rooms: Set<String> = []
-    private var closed = false
+
+    private enum Write: Sendable {
+        case frame(String)
+        case close
+        case finalFrame(String)
+    }
+
+    private struct State: Sendable {
+        var rooms: Set<String> = []
+        var closed = false
+        var pending = CircularBuffer<Write>(initialCapacity: 64)
+        var draining = false
+    }
+
+    private let state = Mutex(State())
 
     init(
         id: String,
@@ -432,77 +441,97 @@ final class SocketIOSession: @unchecked Sendable {
         self.channel = channel
     }
 
-    func hasRoom(_ room: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return rooms.contains(room)
-    }
+    var isClosed: Bool { state.withLock { $0.closed } }
 
-    func join(_ newRooms: [String]) {
-        lock.lock()
-        rooms.formUnion(newRooms)
-        lock.unlock()
-    }
+    func hasRoom(_ room: String) -> Bool { state.withLock { $0.rooms.contains(room) } }
 
-    func leave(_ room: String) {
-        lock.lock()
-        rooms.remove(room)
-        lock.unlock()
-    }
+    func join(_ newRooms: [String]) { state.withLock { $0.rooms.formUnion(newRooms) } }
+
+    func leave(_ room: String) { _ = state.withLock { $0.rooms.remove(room) } }
 
     func leave(_ leavingRooms: [String]) {
         guard !leavingRooms.isEmpty else { return }
-        lock.lock()
-        rooms.subtract(leavingRooms)
-        lock.unlock()
+        state.withLock { $0.rooms.subtract(leavingRooms) }
     }
 
     func markClosed() {
-        lock.lock()
-        closed = true
-        lock.unlock()
-    }
-
-    func send(_ text: String) {
-        lock.lock()
-        let closed = self.closed
-        lock.unlock()
-        guard !closed else { return }
-        channel.eventLoop.execute { [channel] in
-            guard channel.isActive else { return }
-            var buffer = channel.allocator.buffer(capacity: text.utf8.count + 4)
-            buffer.writeBytes(websocketTextFrame(text))
-            channel.writeAndFlush(NIOAny(buffer), promise: nil)
+        state.withLock {
+            $0.closed = true
+            $0.pending.removeAll()
         }
     }
 
-    func close() {
-        lock.lock()
-        closed = true
-        lock.unlock()
-        channel.eventLoop.execute { [channel] in
-            channel.close(promise: nil)
+    func send(_ text: String) { enqueue(.frame(text), terminal: false) }
+
+    func close() { enqueue(.close, terminal: true) }
+
+    func sendAndClose(_ text: String) { enqueue(.finalFrame(text), terminal: true) }
+
+    private func enqueue(_ write: Write, terminal: Bool) {
+        let shouldDrain = state.withLock { state in
+            guard !state.closed else { return false }
+            if terminal { state.closed = true }
+            state.pending.append(write)
+            guard !state.draining else { return false }
+            state.draining = true
+            return true
+        }
+        if shouldDrain {
+            // No loop scheduling or outbound handler callback runs under the
+            // state mutex. One drainer preserves admitted frame/close order.
+            channel.eventLoop.execute { self.drainWrites() }
         }
     }
 
-    func sendAndClose(_ text: String) {        lock.lock()
-        if closed {
-            lock.unlock()
-            channel.close(promise: nil)
-            return
+    private func drainWrites() {
+        channel.eventLoop.preconditionInEventLoop()
+        let writes = state.withLock { state in
+            let count = min(state.pending.count, 64)
+            var writes: [Write] = []
+            writes.reserveCapacity(count)
+            for _ in 0..<count { writes.append(state.pending.removeFirst()) }
+            return writes
         }
-        closed = true
-        lock.unlock()
-        channel.eventLoop.execute { [channel] in
-            guard channel.isActive else {
+        for write in writes {
+            switch write {
+            case .frame(let text):
+                guard channel.isActive else { continue }
+                writeFrame(text, closeAfterFlush: false)
+            case .close:
                 channel.close(promise: nil)
-                return
+            case .finalFrame(let text):
+                guard channel.isActive else {
+                    channel.close(promise: nil)
+                    continue
+                }
+                writeFrame(text, closeAfterFlush: true)
             }
-            var buffer = channel.allocator.buffer(capacity: text.utf8.count + 4)
-            buffer.writeBytes(websocketTextFrame(text))
-            channel.writeAndFlush(NIOAny(buffer)).whenComplete { _ in
+        }
+        let shouldContinue = state.withLock { state in
+            // Keep ownership while work remains. An enqueue after this empty
+            // check either sees draining=true or claims the next drain itself.
+            guard state.pending.isEmpty else { return true }
+            state.draining = false
+            return false
+        }
+        if shouldContinue {
+            // This NIO loop drains immediate tasks until none remain. A future
+            // tick, rather than execute(), also yields to selector I/O under a
+            // continuous producer, while the single drainer preserves FIFO.
+            _ = channel.eventLoop.scheduleTask(in: .milliseconds(1)) { self.drainWrites() }
+        }
+    }
+
+    private func writeFrame(_ text: String, closeAfterFlush: Bool) {
+        channel.eventLoop.preconditionInEventLoop()
+        var buffer = channel.allocator.buffer(capacity: text.utf8.count + 4)
+        buffer.writeBytes(websocketTextFrame(text))
+        if closeAfterFlush {
+            channel.writeAndFlush(buffer).whenComplete { [channel] _ in
                 channel.close(promise: nil)
             }
+        } else {
+            channel.writeAndFlush(buffer, promise: nil)
         }
     }
 }

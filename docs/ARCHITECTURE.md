@@ -4,7 +4,7 @@
 
 **Specification**: observable HTTP status codes, JSON bytes, response headers, and socket frames asserted by the upstream suite at `v1.21.23-source.1`. Refactoring preserves those contracts, including validation order, omission versus null, input coercion, and stored JSON fingerprints.
 
-**Scope**: the complete local dependency closure of `RaftServer`: `RaftHTTP`, `RaftHTTPServer`, `RaftRealtime`, `RaftServer`, `RaftMachineSocket`, `RaftConnectAuth`, and `RaftShared`. The daemon-only targets are `RaftDaemonClient` and `RaftDaemon`. Shared targets are counted once. The ratchets exclude `Sources/RaftHTTPServer/Generated/`; that exception is explicit and does not apply to the production `ForTesting` scan.
+**Scope**: the complete local dependency closure of `RaftServer`: `RaftHTTP`, `RaftHTTPServer`, `RaftRealtime`, `RaftServer`, `RaftMachineSocket`, `RaftConnectAuth`, and `RaftShared`. The daemon-only targets are `RaftDaemonClient` and `RaftDaemon`. Shared targets are counted once. Both unchecked-conformance ratchets and the production `ForTesting` scan include Generated. Other ratchets exclude `Sources/RaftHTTPServer/Generated/` because of the embedded corpus; this does not exempt generated executable code from the unchecked scan.
 
 ## 1. Current structure
 
@@ -112,13 +112,13 @@ Each metric has `scripts/ratchet_<metric>.tsv` with `path<TAB>count`. An unliste
 | `extension_directory` | `Sources/RaftHTTP` | Literal directory extension declarations |
 | `service_httpreply` | Services | Legacy reply tokens |
 | `service_json_any` | Services and DTO | `JSONSerialization`, `[String: Any]`, `[String:Any]` |
-| `unchecked_sendable` | Sources excluding Generated | Explicit unchecked Sendable declarations |
+| `unchecked_sendable` | All Sources, including Generated | Explicit unchecked Sendable declarations |
 | `directory_forwarder` | Directory forwarding file | Physical lines; zero after deletion |
 | `service_directory_calls` | Services | Literal `directory.` text, including comments |
 | `httpreply_sources` | Seven server targets | Legacy reply tokens, including transport adapters and comments |
 | `json_any_sources` | Seven server targets | The same three JSON-any text patterns |
 | `directory_references` | Sources excluding Generated | Bare directory type identifiers, with word boundaries |
-| `unchecked_sendable_server` | Seven server targets | Explicit unchecked Sendable declarations |
+| `unchecked_sendable_server` | Seven server targets, including Generated | Explicit unchecked Sendable declarations |
 | `json_string_payloads` | Seven server targets | Object/array-shaped Swift string literal candidates |
 
 The two JSON metrics measure different things. The string scanner handles ordinary, raw, and multiline strings, interpolation, nested strings inside interpolation, and concatenation prefixes. It skips line and nested block comments. Constants and DTO defaults are candidates too; a JSON-shaped label such as `[1]` can be a false positive. It does not validate complete JSON, follow variables/appends/arbitrary splits, decode Unicode escapes, or parse Swift regex literals. Neither metric proves that all handwritten response construction is gone.
@@ -133,10 +133,14 @@ For a new metric, expanded scope, or a reviewed pure file move, `--print-ratchet
 
 The current handwritten-source snapshot has 12 directory extension occurrences, a 580-line forwarding file, 60 server reply tokens, 94 server JSON-any text occurrences, 98 directory type references, and 185 string-literal candidates. Services have zero reply tokens; the combined Services/DTO JSON-any occurrence and the two Services `directory.` occurrences are comments. Source-level transport and string construction remain outside those narrow service zeros.
 
-The unchecked conformance ratchet is 41 across handwritten Sources: six in the server dependency closure and 35 in daemon-only targets. All twelve principal stores, the OAuth ledger, the immutable directory root, the public server/visit directories, HTTP caches/budgets, and the internal-surface snapshot now use checked conformances. The remaining six handwritten server declarations are the machine-connect handler and five realtime/session/desktop-attention classes. Generated knowledge telemetry contains one additional explicit unchecked conformance, so the physical full-source count is 42. Six daemon errors with only immutable Sendable value fields now use checked conformance: upload-stage and HTTP-status failures, chat-bridge timeout, provider-materialization failure, migration-entry-limit failure, and unavailable Node host. Their messages, classifications, and causes are unchanged. The generated exception is not a concurrency-safety conclusion. Its generator and the remaining server classes still need migration; daemon NIO handlers and process handles require individual assessment.
+The unchecked conformance ratchet now covers all Sources, including Generated: 35 declarations, all daemon-only; the complete server dependency closure is zero. Stores, public directories, caches, the immutable directory root, the realtime hub/session/attention state, connect state, and generated knowledge telemetry use checked storage. The realtime parser handler is deliberately non-Sendable and transferred only through SDK `NIOLoopBound` for synchronous installation on its channel loop; every entry checks that loop. Connect tasks capture immutable values and checked connection state, with channel writes/status callbacks on the owning loop. Session terminal writes and attention callbacks use a single ordered drainer outside their state locks. Session drains process at most 64 frames per batch; only backlog schedules a 1 ms continuation, so continuous HTTP broadcasts cannot keep one immediate task running indefinitely or prevent the selector from polling other connections. Idle admission still schedules its first drain immediately.
+
+The generated telemetry helper no longer has an unchecked exception. Its recovered generator and template are in `scripts/generate_knowledge.py` and `scripts/templates/knowledge.swift`; `python3 scripts/generate_knowledge.py --upstream-root /path/to/raft-source-v1.21.23 --check` verifies reproduction. Registry/table blocks remain byte-identical to the pinned corpus.
+
+The 35 daemon declarations are not certified safe merely because they are outside the server closure. The [daemon concurrency inventory](CONCURRENCY.md) records their fields, actual protections, callback/ownership assumptions, inspected tests, and concrete gaps. It distinguishes complete one-shot/storage gates from unprotected public mutable models, raw Any payloads, timer publication/cancellation windows, and cross-queue accesses. Six immutable daemon errors already use checked conformance; remaining fixes require domain transactions and lifecycle evidence, not annotation deletion.
 
 ## 4. Behavioral gates and remaining work
 
 Every accepted slice runs relevant published-path regressions, `make test`, `make test-e2e`, `scripts/smoke-server.sh`, `make architecture`, and `make parity-check`. Smoke is supplemental evidence for real-process wiring, not proof of every locked module. Coverage progress comes from `make parity` and the qualifications in `docs/PARITY.tsv`.
 
-The remaining boundaries are removal of the directory extensions/forwarders and global lock, then the repository-wide `ServiceContainer` rename, realtime/connect-handler isolation, the generated telemetry helper, and assessment of daemon exceptions. Checked store state is complete, but legacy cross-store orchestration is not. The detailed phase order belongs in `docs/PLAN.md`. None of these steps changes the pinned Vapor revision, replaces the SwiftNIO listeners, or changes the no-database `/health` 503 contract.
+The remaining boundaries are removal of the directory extensions/forwarders and global lock, the repository-wide `ServiceContainer` composition change, and the unresolved daemon boundaries documented above. Checked server state and the generated unchecked scan are complete, but legacy cross-store orchestration is not. The detailed phase order belongs in `docs/PLAN.md`. None of these steps changes the pinned Vapor revision, replaces the SwiftNIO listeners, or changes the no-database `/health` 503 contract.

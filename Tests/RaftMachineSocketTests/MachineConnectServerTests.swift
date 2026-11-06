@@ -8,8 +8,14 @@ import Testing
 private struct ScriptedLookup: MachineCredentialLooking {
     var computer: ComputerAuthResolution = .denied(.computerNotFound)
     var machineById: MatchedMachine?
-    func findComputer(apiKey: String) async throws -> ComputerAuthResolution { computer }
-    func machine(id: String) async throws -> MatchedMachine? { machineById }
+    func findComputer(apiKey: String) async throws -> ComputerAuthResolution {
+        await Task.yield()
+        return computer
+    }
+    func machine(id: String) async throws -> MatchedMachine? {
+        await Task.yield()
+        return machineById
+    }
     func serverExists(id: String) async throws -> Bool { true }
     func machine(apiKey: String) async throws -> MatchedMachine? { nil }
 }
@@ -87,6 +93,59 @@ private let rfcAccept = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
     defer { Task { try? await server.close() } }
     let response = try await exchange(port: server.port, request: upgradeRequest(path: "/socket.io/"))
     #expect(String(decoding: response, as: UTF8.self).hasPrefix("HTTP/1.1 404 Not Found\r\n"))
+}
+
+@Test func concurrentAsyncMachineUpgradesKeepFramesAndBalancedStatus() async throws {
+    let machine = MatchedMachine(id: "m1", serverId: "s1")
+    let (stream, continuation) = AsyncStream<(MatchedMachine, Bool)>.makeStream()
+    defer { continuation.finish() }
+    let server = try await MachineConnectServer.start(
+        lookup: ScriptedLookup(computer: .linked(computerId: "c1", machineId: "m1"), machineById: machine),
+        onStatusChange: { continuation.yield(($0, $1)) }
+    )
+    defer { Task { try? await server.close() } }
+    let port = server.port
+    let replies = try await withThrowingTaskGroup(of: Data.self) { group in
+        for _ in 0..<16 {
+            group.addTask {
+                try await exchange(
+                    port: port,
+                    request: upgradeRequest(path: "/daemon/connect", authorization: "Bearer sk_computer_live"),
+                    stopAfterWebSocketFrame: true
+                )
+            }
+        }
+        var replies: [Data] = []
+        for try await reply in group { replies.append(reply) }
+        return replies
+    }
+    for reply in replies {
+        let text = String(decoding: reply, as: UTF8.self)
+        #expect(text.contains("HTTP/1.1 101 Switching Protocols\r\n"))
+        #expect(text.contains("Sec-WebSocket-Accept: \(rfcAccept)\r\n"))
+        #expect(text.contains("\"type\":\"machine:context\""))
+        #expect(text.contains("\"machineId\":\"m1\""))
+    }
+    let statuses = try await withThrowingTaskGroup(of: [(MatchedMachine, Bool)].self) { group in
+        group.addTask {
+            var statuses: [(MatchedMachine, Bool)] = []
+            for await event in stream {
+                statuses.append(event)
+                if statuses.count == 32 { break }
+            }
+            return statuses
+        }
+        group.addTask {
+            try await Task.sleep(for: .seconds(3))
+            throw MachineConnectTestTimeout()
+        }
+        let first = try await group.next()!
+        group.cancelAll()
+        return first
+    }
+    #expect(statuses.allSatisfy { $0.0 == machine })
+    #expect(statuses.filter { $0.1 }.count == 16)
+    #expect(statuses.filter { !$0.1 }.count == 16)
 }
 
 private func upgradeRequest(path: String, authorization: String? = nil) -> String {
