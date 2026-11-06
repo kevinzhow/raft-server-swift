@@ -47,16 +47,16 @@ public struct OAuthClientRejection: Error, Sendable {
 /// `POST /api/oauth/authorize/human` and `POST /api/oauth/token` both use this ledger.
 public final class OAuthLedger: @unchecked Sendable {
     public var jwtSecret: String = "test-jwt-secret"
-    private let lock = NSLock()
+    let lock = NSLock()
     private var servers: [String: Server] = [:]
-    private var agents: [String: Agent] = [:]
+    var agents: [String: Agent] = [:]
     private var agentRoles: [String: String] = [:]
     /// Agent owners of a server-local App (`oauth_client_maintainers`).
     private var clientMaintainerOwners: [String: Set<String>] = [:]
-    private var agentEvents: [AgentEvent] = []
+    var agentEvents: [AgentEvent] = []
     private var revokedGrantClients: Set<String> = []
-    private var agentGrants: [AgentGrant] = []
-    private var autoGrantBlocked: Set<String> = []
+    var agentGrants: [AgentGrant] = []
+    var autoGrantBlocked: Set<String> = []
     private var members: [String: String] = [:]
     private var channelRecords: [ChannelRecord] = []
     private var channelHumans: Set<String> = []
@@ -72,13 +72,13 @@ public final class OAuthLedger: @unchecked Sendable {
     private var serverAgreementRecords: [String: [ServerAgreementInfo]] = [:]
     private var serverPushMutes: Set<String> = []
 
-    private var clients: [Client] = []
+    var clients: [Client] = []
     private var integrationAuditEvents: [IntegrationAuditEvent] = []
-    private var requests: [AccessRequest] = []
-    private var tokens: [AccessToken] = []
-    private var installations: [Installation] = []
+    var requests: [AccessRequest] = []
+    var tokens: [AccessToken] = []
+    var installations: [Installation] = []
     private var installationTokens: [InstallationToken] = []
-    private var officialAppClientIds: Set<String> = []
+    var officialAppClientIds: Set<String> = []
 
     public init() {}
 
@@ -204,14 +204,6 @@ public final class OAuthLedger: @unchecked Sendable {
         return installations.first { $0.clientId == clientRecordId && $0.serverId == serverId }?.status
     }
 
-    public func setClientAgentJWTEnabledForTesting(clientRecordId: String, enabled: Bool?) {
-        lock.lock()
-        if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
-            clients[index].agentJwtEnabled = enabled
-        }
-        lock.unlock()
-    }
-
     public func clientAgentJWTEnabled(clientRecordId: String) -> Bool? {
         lock.lock()
         defer { lock.unlock() }
@@ -222,66 +214,6 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return installations.first { $0.clientId == clientRecordId && $0.serverId == serverId }?.agentJwtEnabled
-    }
-
-    /// Conversion into a private share: the App keeps issuing for its source
-    /// because conversion installs it there too.
-    @discardableResult
-    public func convertClientToPrivateShareForTesting(
-        clientRecordId: String,
-        installedByUserId: String
-    ) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let index = clients.firstIndex(where: { $0.id == clientRecordId }) else { return nil }
-        clients[index].appType = "third_party_global"
-        clients[index].humanMarketplaceVisible = false
-        if !installations.contains(where: { $0.clientId == clientRecordId && $0.serverId == clients[index].serverId }) {
-            installations.append(Installation(
-                id: UUID().uuidString.lowercased(),
-                serverId: clients[index].serverId,
-                clientId: clientRecordId,
-                installedByUserId: installedByUserId,
-                approvedGroups: [],
-                grantRevision: 0,
-                status: "active"
-            ))
-        }
-        return "raft_share_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-    }
-
-    public func installSharedClientForTesting(
-        clientRecordId: String,
-        serverId: String,
-        installedByUserId: String
-    ) {
-        lock.lock()
-        if !installations.contains(where: { $0.clientId == clientRecordId && $0.serverId == serverId }) {
-            installations.append(Installation(
-                id: UUID().uuidString.lowercased(),
-                serverId: serverId,
-                clientId: clientRecordId,
-                installedByUserId: installedByUserId,
-                approvedGroups: [],
-                grantRevision: 0,
-                status: "active"
-            ))
-        }
-        lock.unlock()
-    }
-
-    public func setInstallationStatusForTesting(clientRecordId: String, serverId: String, status: String) {
-        lock.lock()
-        if let index = installations.firstIndex(where: { $0.clientId == clientRecordId && $0.serverId == serverId }) {
-            installations[index].status = status
-        }
-        lock.unlock()
-    }
-
-    public func removeInstallationForTesting(clientRecordId: String, serverId: String) {
-        lock.lock()
-        installations.removeAll { $0.clientId == clientRecordId && $0.serverId == serverId }
-        lock.unlock()
     }
 
     public func signAgentAudienceToken(
@@ -1035,18 +967,6 @@ public final class OAuthLedger: @unchecked Sendable {
             .map { HistoryMessage(id: $0.id, content: $0.content, senderId: $0.senderId, seq: $0.seq, createdAt: $0.createdAt, senderTimezone: $0.senderTimezone, senderType: $0.senderType, messageType: $0.messageType) }
     }
 
-    public func markOfficialAppForTesting(clientRecordId: String) {
-        lock.lock(); officialAppClientIds.insert(clientRecordId); lock.unlock()
-    }
-
-    public func setClientOutboundGroupsForTesting(clientRecordId: String, groups: [String]) {
-        lock.lock()
-        if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
-            clients[index].outboundGroups = groups
-        }
-        lock.unlock()
-    }
-
     public func reminderMessageMetadata(id: String) -> (channelId: String, senderId: String, senderType: String, messageType: String, systemSubtype: String?, causalActorId: String?)? {
         lock.lock(); defer { lock.unlock() }
         guard let message = channelMessages.first(where: { $0.id == id }) else { return nil }
@@ -1480,16 +1400,6 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Seeds a legacy-shaped secret hash so HTTP client authentication can be
-    /// exercised without exposing the private client store.
-    public func setClientSecretForTesting(clientRecordId: String, secret: String) {
-        lock.lock()
-        if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
-            clients[index].secretHash = sha256(secret)
-        }
-        lock.unlock()
-    }
-
     public func createClient(
         serverId: String,
         createdByUserId: String,
@@ -1663,13 +1573,6 @@ public final class OAuthLedger: @unchecked Sendable {
         integrationServices(serverId: serverId).first { ($0["clientId"] as? String) == clientId || ($0["id"] as? String) == clientId }
     }
 
-    /// Moves a human authorization code one second past its 10-minute life. The token endpoint must not mint.
-    public func removeAuthorizationCodeForTesting(id: String) {
-        lock.lock()
-        requests.removeAll { $0.id == id }
-        lock.unlock()
-    }
-
     public func expireAuthorizationCode(id: String) {
         lock.lock()
         if let index = requests.firstIndex(where: { $0.id == id }) {
@@ -1737,54 +1640,6 @@ public final class OAuthLedger: @unchecked Sendable {
             ))
         }
         return true
-    }
-
-    public func setClientPublishStatusForTesting(clientRecordId: String, status: String) {
-        lock.lock()
-        if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
-            clients[index].publishStatus = status
-        }
-        lock.unlock()
-    }
-
-    public func removeInstallationsForTesting(clientRecordId: String) {
-        lock.lock()
-        installations.removeAll { $0.clientId == clientRecordId }
-        lock.unlock()
-    }
-
-    public func installationGroupsForTesting(clientRecordId: String, serverId: String) -> [String]? {
-        lock.lock()
-        defer { lock.unlock() }
-        return installations.first {
-            $0.clientId == clientRecordId && $0.serverId == serverId && $0.status == "active"
-        }?.approvedGroups
-    }
-
-    public func seedRevokedOAuthAccessTokenForTesting(
-        serverId: String,
-        clientRecordId: String,
-        userId: String,
-        rawToken: String
-    ) {
-        lock.lock()
-        tokens.append(AccessToken(
-            serverId: serverId,
-            userId: userId,
-            clientId: clientRecordId,
-            requestId: UUID().uuidString.lowercased(),
-            tokenHash: sha256(rawToken),
-            scopes: ["openid"],
-            expiresAt: Date().addingTimeInterval(3600),
-            revokedAt: Date()
-        ))
-        lock.unlock()
-    }
-
-    public func revokedOAuthTokenCountForTesting(clientRecordId: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return tokens.filter { $0.clientId == clientRecordId && $0.revokedAt != nil }.count
     }
 
     /// Settings list: every App this Server owns or has installed. A published
@@ -1937,14 +1792,6 @@ public final class OAuthLedger: @unchecked Sendable {
         lock.lock()
         if let index = clients.firstIndex(where: { $0.id == clientRecordId }) {
             clients[index].returnUrl = returnUrl
-        }
-        lock.unlock()
-    }
-
-    public func expireAccessTokensForTesting(clientRecordId: String) {
-        lock.lock()
-        for index in tokens.indices where tokens[index].clientId == clientRecordId {
-            tokens[index].expiresAt = Date(timeIntervalSince1970: 0)
         }
         lock.unlock()
     }
@@ -2386,21 +2233,6 @@ public final class OAuthLedger: @unchecked Sendable {
             }
     }
 
-    public func agentGrantRowsForTesting(agentId: String) -> [AgentGrantRow] {
-        lock.lock()
-        defer { lock.unlock() }
-        return agentGrants.filter { $0.agentId == agentId && $0.revokedAt == nil }.map {
-            AgentGrantRow(id: $0.id, clientRecordId: $0.clientRecordId, scopes: $0.scopes,
-                          grantSource: $0.grantSource, grantedByUserId: $0.grantedByUserId)
-        }
-    }
-
-    public func autoGrantBlockCountForTesting(agentId: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return autoGrantBlocked.filter { $0.hasPrefix("\(agentId)\n") }.count
-    }
-
     /// Approve a pending agent access request. The agent's creator or an
     /// owner/admin may approve; `remember` turns the request into a grant.
     public func approveAgentAccessRequest(userId: String, requestId: String, remember: Bool) -> HTTPReply? {
@@ -2823,35 +2655,6 @@ public final class OAuthLedger: @unchecked Sendable {
         ))
     }
 
-    public func addThirdPartyAgentEventForTesting(
-        id: String,
-        serverId: String,
-        agentId: String,
-        clientRecordId: String,
-        kind: String = "notification",
-        summary: String,
-        payloadJSON: String = "{}",
-        expiresAt: Date,
-        status: String = "delivered"
-    ) {
-        lock.lock()
-        agentEvents.append(AgentEvent(
-            id: id.lowercased(),
-            serverId: serverId,
-            agentId: agentId,
-            clientId: clientRecordId,
-            kind: kind,
-            summary: summary,
-            payloadHash: sha256(payloadJSON),
-            payloadJSON: payloadJSON,
-            externalEventId: nil,
-            status: status,
-            expiresAt: expiresAt,
-            createdAt: Date()
-        ))
-        lock.unlock()
-    }
-
     public static let agentAppEventRetentionAfterExpiryMs = 30 * 24 * 60 * 60 * 1000
 
     public enum AgentAppEventListOutcome: Sendable {
@@ -2969,22 +2772,6 @@ public final class OAuthLedger: @unchecked Sendable {
         let removing = Set(candidates.prefix(max(1, batchSize)))
         agentEvents = agentEvents.enumerated().filter { !removing.contains($0.offset) }.map(\.element)
         return removing.count
-    }
-
-    public func seedAgentAppEventForTesting(
-        id: String, agentId: String, clientRecordId: String, summary: String,
-        status: String, expiresAt: Date, createdAt: Date, payloadJSON: String = "{}",
-        externalEventId: String? = nil
-    ) {
-        lock.lock()
-        agentEvents.append(AgentEvent(
-            id: id.lowercased(), serverId: agents[agentId]?.serverId ?? "",
-            agentId: agentId, clientId: clientRecordId, kind: "notification",
-            summary: summary, payloadHash: sha256(payloadJSON), payloadJSON: payloadJSON,
-            externalEventId: externalEventId, status: status,
-            expiresAt: expiresAt, createdAt: createdAt
-        ))
-        lock.unlock()
     }
 
     public func pendingThirdPartyEventMessages(agentId: String) -> [ThirdPartyEventMessage] {
@@ -3621,7 +3408,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var publicGuestJoinEnabled = false
     }
 
-    private struct Agent {
+    struct Agent {
         var id: String
         var serverId: String
         var name: String
@@ -3636,7 +3423,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var deleted = false
     }
 
-    private struct AgentGrant {
+    struct AgentGrant {
         var id: String
         var serverId: String
         var agentId: String
@@ -3648,7 +3435,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var revokedAt: Date? = nil
     }
 
-    private struct AgentEvent {
+    struct AgentEvent {
         var id: String
         var serverId: String
         var agentId: String
@@ -3664,7 +3451,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var deliveredAt: Date? = nil
     }
 
-    private struct Client {
+    struct Client {
         var id: String
         var serverId: String
         var clientId: String
@@ -4055,7 +3842,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var expiresAt: Date
     }
 
-    private struct Installation {
+    struct Installation {
         var id: String
         var serverId: String
         var clientId: String
@@ -4069,7 +3856,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var setupCompletedAt: Date? = nil
     }
 
-    private struct AccessRequest {
+    struct AccessRequest {
         var id: String
         var serverId: String
         var userId: String
@@ -4089,7 +3876,7 @@ public final class OAuthLedger: @unchecked Sendable {
         var consumedAt: Date? = nil
     }
 
-    private struct AccessToken {
+    struct AccessToken {
         var serverId: String
         var userId: String
         var clientId: String
@@ -4272,7 +4059,7 @@ private enum OAuthIDToken {
     }
 }
 
-private func sha256(_ value: String) -> String {
+func sha256(_ value: String) -> String {
     SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
 }
 
