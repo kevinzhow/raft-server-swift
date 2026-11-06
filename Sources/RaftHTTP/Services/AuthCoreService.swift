@@ -1130,4 +1130,17 @@ extension EmailLoginDirectory {
     public var serverMembersAndSidebar: ServerMembersAndSidebarService {
         ServerMembersAndSidebarService(directory: self)
     }
+
+    /// Server profile, switcher order, pre-join agreement, translation, the
+    /// member directory, scope attestations and the share-artifact pages. The
+    /// directory supplies the stores and the OAuth ledger; the session and
+    /// machine-credential lookups enter as closures.
+    public var serverProfileAndOrder: ServerProfileAndOrderService {
+        ServerProfileAndOrderService(directory: self)
+    }
+
+    /// The user id behind a live access token, for the community-join route.
+    public func authenticatedUserId(authorization: String?) -> String? {
+        sessionUserId(authorization: authorization)
+    }
 }

@@ -1230,6 +1230,108 @@ final class ServersAndChannelsStore: @unchecked Sendable {
         }?.key
     }
 
+    // MARK: - Server switcher order
+
+    /// The caller's stored switcher order intersected with their live
+    /// memberships, plus the version. `memberIds` runs inside the critical
+    /// section so the order and the membership it is sanitized against are one
+    /// read.
+    func serverOrder(userId: String, memberIds: () -> [String]) -> (ids: [String], version: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        let members = Set(memberIds())
+        let ordered = Self.sanitizedServerOrder(
+            stored: storage.serverSwitcherOrders[userId]?.ids ?? [],
+            requested: nil,
+            memberIds: members
+        )
+        return (ordered, storage.serverSwitcherOrders[userId]?.version ?? 0)
+    }
+
+    /// Replaces the caller's switcher order. The version moves only when the
+    /// sanitized list differs from the stored one; comparing, bumping and
+    /// storing are one critical section, so two concurrent patches cannot both
+    /// read the same version.
+    func updateServerOrder(
+        userId: String,
+        requested: [String],
+        memberIds: () -> [String]
+    ) -> (ids: [String], version: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        let members = Set(memberIds())
+        let stored = storage.serverSwitcherOrders[userId]
+        let current = stored?.ids ?? Self.sanitizedServerOrder(stored: [], requested: nil, memberIds: members)
+        let ordered = Self.sanitizedServerOrder(stored: stored?.ids ?? [], requested: requested, memberIds: members)
+        var version = stored?.version ?? 0
+        if ordered != current {
+            version += 1
+        }
+        storage.serverSwitcherOrders[userId] = (ordered, version)
+        return (ordered, version)
+    }
+
+    /// Requested (or stored) ids the caller still belongs to, de-duplicated in
+    /// order, then every remaining membership in sorted order.
+    private static func sanitizedServerOrder(
+        stored: [String],
+        requested: [String]?,
+        memberIds: Set<String>
+    ) -> [String] {
+        let base = requested ?? stored
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for id in base where memberIds.contains(id) && !seen.contains(id) {
+            seen.insert(id)
+            ordered.append(id)
+        }
+        for id in memberIds.sorted() where !seen.contains(id) {
+            seen.insert(id)
+            ordered.append(id)
+        }
+        return ordered
+    }
+
+    // MARK: - Server profile reads and writes
+
+    /// Whether the composer resource references (and therefore the apps list)
+    /// are enabled for the server.
+    func isComposerResourceEnabled(serverId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.composerResourceServers.contains(serverId)
+    }
+
+    /// Applies the optional human-directory flag and returns the value the
+    /// server now has, in one critical section.
+    func updateHideHumans(serverId: String, hidden: Bool?) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if let hidden {
+            storage.hideHumansFromMembers[serverId] = hidden
+        }
+        return storage.hideHumansFromMembers[serverId] == true
+    }
+
+    /// Whether the member was removed from the server (and not re-added).
+    func isMemberRemoved(serverId: String, userId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.removedServerMembers.contains("\(serverId)\n\(userId)")
+    }
+
+    /// The local channel an active joint projection of `canonicalChannelId`
+    /// publishes inside `serverId`.
+    func activeJointLocalChannelId(canonicalChannelId: String, serverId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.jointProjections.first {
+            $0.canonicalChannelId == canonicalChannelId
+                && $0.serverId == serverId
+                && $0.status == "active"
+        }?.localChannelId
+    }
+
     private static func joinLinkExpired(_ link: JoinLinkRecord, now: Date) -> Bool {
         if let expiresAt = link.expiresAt, expiresAt <= now { return true }
         return false

@@ -354,10 +354,13 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             ))
         }
         machine.post("scope-attestation") { request async throws -> Response in
-            routeResponse(services.emailAccounts.machineScopeAttestation(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(MachineScopeAttestationRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.serverProfileAndOrder.machineScopeAttestation(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         computer.post("attachment", "revoke") { _ -> Response in
             var headers = HTTPFields()

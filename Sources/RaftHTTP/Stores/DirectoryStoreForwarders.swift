@@ -68,10 +68,8 @@ extension EmailLoginDirectory {
     var membershipAgreementAudits: [(serverId: String, subjectId: String, actorUserId: String, source: String, agreementId: String?, agreementVersion: Int?)] { get { serversAndChannelsStore.membershipAgreementAudits } set { serversAndChannelsStore.membershipAgreementAudits = newValue } }
     var jointProjections: [JointChannelLink] { get { serversAndChannelsStore.jointProjections } set { serversAndChannelsStore.jointProjections = newValue } }
     var serverMemberEvents: [ServerMemberEvent] { get { serversAndChannelsStore.serverMemberEvents } set { serversAndChannelsStore.serverMemberEvents = newValue } }
-    var removedServerMembers: Set<String> { get { serversAndChannelsStore.removedServerMembers } set { serversAndChannelsStore.removedServerMembers = newValue } }
     public var serverPlans: [String: String] { get { serversAndChannelsStore.serverPlans } set { serversAndChannelsStore.serverPlans = newValue } }
     var serverInvites: [(id: String, serverId: String, email: String, role: String, tokenHash: String?)] { get { serversAndChannelsStore.serverInvites } set { serversAndChannelsStore.serverInvites = newValue } }
-    var serverSwitcherOrders: [String: (ids: [String], version: Int)] { get { serversAndChannelsStore.serverSwitcherOrders } set { serversAndChannelsStore.serverSwitcherOrders = newValue } }
     var serverOnboardingSettings: [String: (agentId: String?, greeting: Bool)] { get { serversAndChannelsStore.serverOnboardingSettings } set { serversAndChannelsStore.serverOnboardingSettings = newValue } }
     var setupPhases: [String: String] { get { serversAndChannelsStore.setupPhases } set { serversAndChannelsStore.setupPhases = newValue } }
     var setupHandoffs: Set<String> { get { serversAndChannelsStore.setupHandoffs } set { serversAndChannelsStore.setupHandoffs = newValue } }
@@ -149,12 +147,10 @@ extension EmailLoginDirectory {
     var reactionDiscussionVersions: [String: Int] { get { messagesAndThreadsStore.reactionDiscussionVersions } set { messagesAndThreadsStore.reactionDiscussionVersions = newValue } }
     var storedMentions: [StoredMention] { get { messagesAndThreadsStore.storedMentions } set { messagesAndThreadsStore.storedMentions = newValue } }
     var attachmentCommentRecords: [String: [AttachmentCommentRecord]] { get { messagesAndThreadsStore.attachmentCommentRecords } set { messagesAndThreadsStore.attachmentCommentRecords = newValue } }
-    var messageTranslationLedger: [String: (status: String, providerBilledChars: Int, targetLanguage: String, translatedContent: String)] { get { messagesAndThreadsStore.messageTranslationLedger } set { messagesAndThreadsStore.messageTranslationLedger = newValue } }
     var readMutationRecords: [String: ReadMutationRecord] { get { messagesAndThreadsStore.readMutationRecords } set { messagesAndThreadsStore.readMutationRecords = newValue } }
     var readMutationAuthoritySeq: [String: Int] { get { messagesAndThreadsStore.readMutationAuthoritySeq } set { messagesAndThreadsStore.readMutationAuthoritySeq = newValue } }
     var readMutationOrder: [String] { get { messagesAndThreadsStore.readMutationOrder } set { messagesAndThreadsStore.readMutationOrder = newValue } }
     var readMutationAcks: [String: (scopeId: String, throughSeq: Int)] { get { messagesAndThreadsStore.readMutationAcks } set { messagesAndThreadsStore.readMutationAcks = newValue } }
-    var shareArtifacts: [String: ShareArtifactRecord] { get { messagesAndThreadsStore.shareArtifacts } set { messagesAndThreadsStore.shareArtifacts = newValue } }
     var threadFollows: [String: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String)] { get { messagesAndThreadsStore.threadFollows } set { messagesAndThreadsStore.threadFollows = newValue } }
     var threadUnfollows: [String: ThreadUnfollowRecord] { get { messagesAndThreadsStore.threadUnfollows } set { messagesAndThreadsStore.threadUnfollows = newValue } }
     var threadFollowStarts: [String: Date] { get { messagesAndThreadsStore.threadFollowStarts } set { messagesAndThreadsStore.threadFollowStarts = newValue } }
@@ -402,16 +398,6 @@ extension EmailLoginDirectory {
 
     // MARK: - Sign-in configuration (AuthProfileStore)
 
-    var scopeAttestationSecretOverride: String?? {
-        get { authProfileStore.scopeAttestationSecretOverride }
-        set { authProfileStore.scopeAttestationSecretOverride = newValue }
-    }
-
-    var deploymentEnvironmentOverride: String?? {
-        get { authProfileStore.deploymentEnvironmentOverride }
-        set { authProfileStore.deploymentEnvironmentOverride = newValue }
-    }
-
     public var mobileProviderProfile: MobileProviderProfile? {
         get { authProfileStore.mobileProviderProfile }
         set { authProfileStore.mobileProviderProfile = newValue }
@@ -551,11 +537,6 @@ extension EmailLoginDirectory {
     }
 
     // MARK: - Messaging and attachment configuration (MessagesAndThreadsStore)
-
-    var translationProviderOverride: String? {
-        get { messagesAndThreadsStore.translationProviderOverride }
-        set { messagesAndThreadsStore.translationProviderOverride = newValue }
-    }
 
     /// Test seam for the HTML preview body. Nil means the object is missing.
     public var attachmentPreviewBody: (@Sendable (_ attachmentId: String) -> String?)? {

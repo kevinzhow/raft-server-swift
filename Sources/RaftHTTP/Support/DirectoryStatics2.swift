@@ -273,67 +273,10 @@ extension EmailLoginDirectory {
         return ""
     }
 
-    static func escapeHTML(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
-            .replacingOccurrences(of: "\"", with: "&quot;")
-            .replacingOccurrences(of: "'", with: "&#39;")
-    }
-
     static func timezoneJSON(_ observation: TimezoneObservation) -> String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return "{\"firstObservedTimezone\":\(jsonString(observation.firstTimezone)),\"firstObservedTimezoneAt\":\(jsonString(formatter.string(from: observation.firstAt))),\"lastObservedTimezone\":\(jsonString(observation.lastTimezone)),\"lastObservedTimezoneAt\":\(jsonString(formatter.string(from: observation.lastAt)))}"
-    }
-
-    static func attestationString(_ value: Any?) -> String? {
-        guard let value = value as? String else { return nil }
-        return value
-    }
-
-    static func attestationInt(_ value: Any?) -> Int? {
-        guard let number = value as? NSNumber else { return nil }
-        let double = number.doubleValue
-        guard double.rounded() == double, double >= 0, double <= 9_007_199_254_740_991 else { return nil }
-        return number.intValue
-    }
-
-    static func signHS256(header: [String: Any], claims: [String: Any], secret: String) -> String {
-        func base64url(_ data: Data) -> String {
-            data.base64EncodedString()
-                .replacingOccurrences(of: "+", with: "-")
-                .replacingOccurrences(of: "/", with: "_")
-                .replacingOccurrences(of: "=", with: "")
-        }
-        let headerJSON = (try? JSONSerialization.data(withJSONObject: header, options: [.sortedKeys])) ?? Data("{}".utf8)
-        let claimsJSON = (try? JSONSerialization.data(withJSONObject: claims, options: [.sortedKeys])) ?? Data("{}".utf8)
-        let signingInput = "\(base64url(headerJSON)).\(base64url(claimsJSON))"
-        let mac = Data(HMAC<SHA256>.authenticationCode(for: Data(signingInput.utf8), using: SymmetricKey(data: Data(secret.utf8))))
-        return "\(signingInput).\(base64url(mac))"
-    }
-
-    static func agreementJSON(_ agreement: OAuthLedger.ServerAgreementInfo) -> String {
-        "{\"id\":\(jsonString(agreement.id)),\"version\":\(agreement.version),\"title\":\(jsonString(agreement.title)),\"bodyMarkdown\":\(jsonString(agreement.bodyMarkdown)),\"enabled\":\(agreement.enabled)}"
-    }
-
-    static func detectTranslationLanguage(_ content: String) -> (language: String, confidence: Int) {
-        let hasCJK = content.unicodeScalars.contains { scalar in
-            (0x4E00...0x9FFF).contains(scalar.value) || (0x3040...0x30FF).contains(scalar.value)
-        }
-        if hasCJK { return ("zh", 95) }
-        let hasLetter = content.unicodeScalars.contains { CharacterSet.letters.contains($0) }
-        return hasLetter ? ("en", 99) : ("en", 20)
-    }
-
-    static func translationCodeOrLinkOnly(_ content: String) -> Bool {
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("```") && trimmed.hasSuffix("```") && trimmed.count >= 6 { return true }
-        let linkOnly = trimmed.split(whereSeparator: { $0.isWhitespace }).allSatisfy { token in
-            token.lowercased().hasPrefix("http://") || token.lowercased().hasPrefix("https://")
-        }
-        return !trimmed.isEmpty && linkOnly
     }
 
     static func sha256Hex(_ data: Data) -> String {

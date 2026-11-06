@@ -49,10 +49,12 @@ public struct ServersFeature: RouteCollection, Sendable {
                 slug: slug?["slug"] as? String
             ))
         }
-        servers.get("unread-summary") { request -> Response in
-            routeResponse(services.emailAccounts.serversUnreadSummary(
-                authorization: request.headers[.authorization]
-            ))
+        servers.get("unread-summary") { request async throws -> Response in
+            try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
+                try services.emailAccounts.serverProfileAndOrder.serversUnreadSummary(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         servers.post() { request async throws -> Response in
             // `name` and `slug` are the only body fields. A body that does not
@@ -69,32 +71,30 @@ public struct ServersFeature: RouteCollection, Sendable {
                 body: try await request.bodyText()
             ))
         }
-        servers.get() { request -> Response in
-            if let ordered = services.emailAccounts.orderedServerList(authorization: request.headers[.authorization]) {
-                return routeResponse(ordered)
+        servers.get() { request async throws -> Response in
+            if let ordered = services.emailAccounts.serverProfileAndOrder.orderedServerList(authorization: request.headers[.authorization]) {
+                return try await respond { ordered }
             }
             guard let directory = services.publicVisits else {
                 return routeResponse(PublicVisits.authRequired(authorization: request.headers[.authorization]))
             }
             return routeResponse(directory.serverList(authorization: request.headers[.authorization]))
         }
-        servers.get("order") { request -> Response in
-            routeResponse(services.emailAccounts.serverOrder(authorization: request.headers[.authorization]))
+        servers.get("order") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.serverProfileAndOrder.serverOrder(authorization: request.headers[.authorization])
+            }
         }
         servers.patch("order") { request async throws -> Response in
             // `serverOrder` is the only field. A body that does not decode
-            // keeps the directory's raw parser, which owns the sanitizing and
-            // the `Invalid server order` 400.
-            if let body = try? await request.content.decode(ServerOrderPatchDTO.self) {
-                return routeResponse(services.emailAccounts.patchServerOrder(
+            // reaches the service as nil and keeps the `Invalid server order` 400.
+            let body = await jsonRequestBody(ServerOrderPatchDTO.self, request)
+            return try await respond {
+                try services.emailAccounts.serverProfileAndOrder.patchServerOrder(
                     authorization: request.headers[.authorization],
-                    body: body.encodedBody()
-                ))
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.patchServerOrder(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
         }
         servers.post(":id", "machines", ":machineId", "agents", ":agentId", "feedback", ":reportId", "transcript") { request async throws -> Response in
             // A typed body is the common case; a body without a JSON
@@ -180,24 +180,32 @@ public struct ServersFeature: RouteCollection, Sendable {
             }
         }
         servers.post(":id", "scope-attestation") { request async throws -> Response in
-            routeResponse(services.emailAccounts.serverScopeAttestation(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ServerScopeAttestationRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.serverProfileAndOrder.serverScopeAttestation(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    body: body
+                )
+            }
         }
-        servers.get(":id", "translation-settings") { request -> Response in
-            routeResponse(services.emailAccounts.serverTranslationSettings(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "translation-settings") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.serverProfileAndOrder.serverTranslationSettings(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         servers.patch(":id", "translation-settings") { request async throws -> Response in
-            routeResponse(services.emailAccounts.patchServerTranslationSettings(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ServerTranslationSettingsPatchRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.serverProfileAndOrder.patchServerTranslationSettings(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    body: body
+                )
+            }
         }
         servers.get(":id", "labs") { request async throws -> Response in
             try await respond {
@@ -231,24 +239,31 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "agreement") { request -> Response in
-            routeResponse(services.emailAccounts.getServerAgreement(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "agreement") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.serverProfileAndOrder.getServerAgreement(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         servers.put(":id", "agreement") { request async throws -> Response in
-            routeResponse(services.emailAccounts.putServerAgreement(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ServerAgreementPutRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.serverProfileAndOrder.putServerAgreement(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    body: body
+                )
+            }
         }
-        servers.post(":id", "avatar") { request -> Response in
-            routeResponse(services.emailAccounts.uploadServerAvatar(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.post(":id", "avatar") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.serverProfileAndOrder.uploadServerAvatar(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         servers.post(":id", "join-links") { request async throws -> Response in
             // `expiresAt` and `maxUses` are the only fields. The typed decoder
@@ -691,11 +706,14 @@ public struct ServersFeature: RouteCollection, Sendable {
             ))
         }
         servers.patch(":id") { request async throws -> Response in
-            routeResponse(services.emailAccounts.patchServerProfile(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ServerProfilePatchRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.serverProfileAndOrder.patchServerProfile(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    body: body
+                )
+            }
         }
         servers.get(":id") { request -> Response in
             routeResponse(services.emailAccounts.serverDetails(
@@ -703,7 +721,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 serverId: request.parameters.get("id") ?? ""
             ))
         }
-        servers.get(":id", "members", ":memberId", "profile") { request -> Response in
+        servers.get(":id", "members", ":memberId", "profile") { request async throws -> Response in
             let id = request.parameters.get("id") ?? ""
             let memberId = request.parameters.get("memberId") ?? ""
             if let reply = ServerScope.membersGuard(
@@ -719,19 +737,23 @@ public struct ServersFeature: RouteCollection, Sendable {
                     memberId: memberId
                 ))
             }
-            return routeResponse(services.emailAccounts.memberProfile(
-                authorization: request.headers[.authorization],
-                serverId: id,
-                memberId: memberId
-            ))
+            return try await respond {
+                try services.emailAccounts.serverProfileAndOrder.memberProfile(
+                    authorization: request.headers[.authorization],
+                    serverId: id,
+                    memberId: memberId
+                )
+            }
         }
-        servers.get(":id", "apps") { request -> Response in
-            routeResponse(services.emailAccounts.serverApps(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "apps") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.serverProfileAndOrder.serverApps(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
-        servers.get(":id", "member-graph") { request -> Response in
+        servers.get(":id", "member-graph") { request async throws -> Response in
             let id = request.parameters.get("id") ?? ""
             if let reply = ServerScope.membersGuard(
                 serverId: id,
@@ -739,12 +761,14 @@ public struct ServersFeature: RouteCollection, Sendable {
             ) {
                 return routeResponse(reply)
             }
-            return routeResponse(services.emailAccounts.serverMemberGraph(
-                authorization: request.headers[.authorization],
-                serverId: id
-            ))
+            return try await respond {
+                try services.emailAccounts.serverProfileAndOrder.serverMemberGraph(
+                    authorization: request.headers[.authorization],
+                    serverId: id
+                )
+            }
         }
-        servers.get(":id", "members") { request -> Response in
+        servers.get(":id", "members") { request async throws -> Response in
             let id = request.parameters.get("id") ?? ""
             if let reply = ServerScope.membersGuard(
                 serverId: id,
@@ -752,10 +776,12 @@ public struct ServersFeature: RouteCollection, Sendable {
             ) {
                 return routeResponse(reply)
             }
-            return routeResponse(services.emailAccounts.serverMembersList(
-                authorization: request.headers[.authorization],
-                serverId: id
-            ))
+            return try await respond {
+                try services.emailAccounts.serverProfileAndOrder.serverMembersList(
+                    authorization: request.headers[.authorization],
+                    serverId: id
+                )
+            }
         }
         servers.get(":id", "public-visibility") { request -> Response in
             guard let directory = services.publicServerDirectory, let id = request.parameters.get("id") else {
