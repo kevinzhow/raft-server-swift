@@ -337,7 +337,7 @@ extension EmailLoginDirectory {
 
     public func userChannelReadCursorForTesting(userId: String, channelId: String) -> Int? {
         lock.lock(); defer { lock.unlock() }
-        return userChannelReadCursorsForTesting["\(userId)\n\(channelId)"]
+        return userChannelReadCursors["\(userId)\n\(channelId)"]
     }
 
     public func threadFollowerIdsForTesting(threadChannelId: String) -> [String] {

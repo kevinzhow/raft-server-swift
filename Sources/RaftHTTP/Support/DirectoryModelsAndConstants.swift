@@ -1200,7 +1200,7 @@ extension EmailLoginDirectory {
 
     public var experimentalSurfacesDisabled: Bool {
         lock.lock()
-        let override = experimentalSurfacesDisabledForTesting
+        let override = experimentalSurfacesDisabledOverride
         lock.unlock()
         if let override { return override }
         return (ProcessInfo.processInfo.environment["SLOCK_EXPERIMENTAL_SURFACES_DISABLED"] ?? "")

@@ -226,15 +226,12 @@ final class AuthProfileStore: @unchecked Sendable {
         var deviceUserCodes: [String: String] = [:]
         var appleLoginPlatforms: Set<String> = []
         var linkedIdentities: [LinkedIdentity] = []
-        /// Injected session-issuance failure: the pending link must roll back
-        /// and stay usable.
-        var failNextSessionIssuance = false
         /// Forces every experimental surface off when set.
         var experimentalSurfacesDisabledOverride: Bool? = nil
     }
 
-    /// Switches that are only reachable through `EmailLogin+TestSeams.swift`;
-    /// the directory body keeps no `ForTesting` storage of its own.
+    /// Injected hands-feedback switches (conversation session flag and the
+    /// warning sink); the directory body keeps no storage of its own.
     struct SeamState {
         var handsConversationSessionEnabled: Bool? = nil
         var handsFeedbackWarningSink: ((String) -> Void)? = nil
@@ -413,11 +410,6 @@ final class AuthProfileStore: @unchecked Sendable {
     var linkedIdentities: [LinkedIdentity] {
         get { accountState.linkedIdentities }
         set { accountState.linkedIdentities = newValue }
-    }
-
-    var failNextSessionIssuance: Bool {
-        get { accountState.failNextSessionIssuance }
-        set { accountState.failNextSessionIssuance = newValue }
     }
 
     var experimentalSurfacesDisabledOverride: Bool? {

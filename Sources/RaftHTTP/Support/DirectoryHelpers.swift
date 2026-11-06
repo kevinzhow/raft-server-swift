@@ -4,10 +4,11 @@ import Foundation
 import FoundationNetworking
 #endif
 
-// MARK: Seams shared with existing tests
+// MARK: Directory helpers
 
-/// Test-only seams shared with the existing suite. Migrated verbatim from
-/// the remaining helpers in `EmailLogin+TestSeams.swift`; new seams belong in `TestSupport`.
+/// Locale, slug, social/Apple token and model helpers shared by the services.
+/// The two hands-feedback setters at the top are the remaining test seams here;
+/// they move to the `TestSupport` target in a later slice.
 extension EmailLoginDirectory {
 
     public func setHandsFeedbackForTesting(baseURL: String?, appId: String?, appToken: String?, appSlug: String? = nil) {
@@ -667,72 +668,5 @@ public struct AttachmentCommentRecord: Sendable, Equatable {
         self.threadChannelId = threadChannelId
         self.hostMessageId = hostMessageId
         self.hostChannelId = hostChannelId
-    }
-}
-
-// MARK: - Store-backed test seams
-
-/// `EmailLogin.swift` keeps no `ForTesting` storage: each of these accessors
-/// forwards to a domain store whose property carries the production name.
-extension EmailLoginDirectory {
-    /// Forces the next session issuance to fail so the pending link rolls back.
-    public var failNextSessionIssuanceForTesting: Bool {
-        get { authProfileStore.failNextSessionIssuance }
-        set { authProfileStore.failNextSessionIssuance = newValue }
-    }
-
-    var handsConversationSessionEnabledForTesting: Bool? {
-        get { authProfileStore.handsConversationSessionEnabled }
-        set { authProfileStore.handsConversationSessionEnabled = newValue }
-    }
-
-    var handsFeedbackWarningSinkForTesting: ((String) -> Void)? {
-        get { authProfileStore.handsFeedbackWarningSink }
-        set { authProfileStore.handsFeedbackWarningSink = newValue }
-    }
-
-    var experimentalSurfacesDisabledForTesting: Bool? {
-        get { authProfileStore.experimentalSurfacesDisabledOverride }
-        set { authProfileStore.experimentalSurfacesDisabledOverride = newValue }
-    }
-
-    var inboxResiduesForTesting: Set<String> {
-        get { messagesAndThreadsStore.inboxResidues }
-        set { messagesAndThreadsStore.inboxResidues = newValue }
-    }
-
-    var userChannelReadCursorsForTesting: [String: Int] {
-        get { messagesAndThreadsStore.userChannelReadCursors }
-        set { messagesAndThreadsStore.userChannelReadCursors = newValue }
-    }
-
-    var agentInboxAvailableForTesting: Bool? {
-        get { agentsRuntimeStore.agentInboxAvailable }
-        set { agentsRuntimeStore.agentInboxAvailable = newValue }
-    }
-
-    var machineBroadcastPoliciesForTesting: [String: String] {
-        get { machinesAndComputersStore.machineBroadcastPolicies }
-        set { machinesAndComputersStore.machineBroadcastPolicies = newValue }
-    }
-
-    var machineModelSeenCapabilityForTesting: Set<String> {
-        get { machinesAndComputersStore.machineModelSeenCapability }
-        set { machinesAndComputersStore.machineModelSeenCapability = newValue }
-    }
-
-    var latestComputerReleaseForTesting: (version: String, notesJSON: String)? {
-        get { machinesAndComputersStore.latestComputerRelease }
-        set { machinesAndComputersStore.latestComputerRelease = newValue }
-    }
-
-    var handsFeedbackAppsJSONForTesting: String? {
-        get { feedbackStore.handsFeedbackAppsJSON }
-        set { feedbackStore.handsFeedbackAppsJSON = newValue }
-    }
-
-    var handsFeedbackLegacyEnvironmentForTesting: [String: String]? {
-        get { feedbackStore.handsFeedbackLegacyEnvironment }
-        set { feedbackStore.handsFeedbackLegacyEnvironment = newValue }
     }
 }

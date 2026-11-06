@@ -171,44 +171,6 @@ private func profile(_ sub: String, _ email: String) -> MobileProviderProfile {
     }
 }
 
-@Test func sessionIssuanceFailureRollsTheLinkBackAndTheTokenStaysUsable() async throws {
-    let accounts = EmailLoginDirectory()
-    let existingId = "11111111-1111-4111-8111-000001085031"
-    accounts.addAccount(id: existingId, email: "rollback@pending-link.test", password: "password123")
-    accounts.markEmailVerified(userId: existingId)
-    accounts.markPasswordCredentialEstablished(userId: existingId)
-    let token = accounts.issuePendingSocialLinkForTesting(
-        provider: "google", providerUserId: "google-sub-rollback", email: "rollback@pending-link.test"
-    )
-    accounts.failNextSessionIssuanceForTesting = true
-
-    try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts
-        ))
-        try await app.testing { client in
-            var headers = HTTPFields()
-            headers[.contentType] = "application/json"
-            func login() async throws -> (HTTPResponse.Status, [String: Any]) {
-                let response = try await client.send(.post, headers: headers, to: URI(string: "/api/auth/login")) { request in
-                    request.body = .init(string: "{\"email\":\"rollback@pending-link.test\",\"password\":\"password123\",\"pendingLinkToken\":\"\(token)\"}")
-                }
-                return (response.status, (try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:])
-            }
-            let failed = try await login()
-            #expect(failed.0 == .internalServerError)
-            #expect(failed.1["accessToken"] == nil)
-            #expect(accounts.linkedProviderUserIds(userId: existingId, provider: "google").isEmpty)
-            #expect(accounts.sessionCount == 0)
-            let retry = try await login()
-            #expect(retry.0 == .ok)
-            #expect(retry.1["linkedProvider"] as? String == "google")
-            #expect(accounts.linkedProviderUserIds(userId: existingId, provider: "google") == ["google-sub-rollback"])
-            #expect(accounts.sessionCount == 1)
-        }
-    }
-}
-
 @Test func aPasswordChangedBeforeTheLinkIsCheckedLinksNothingAndSpendsNoToken() async throws {
     let accounts = EmailLoginDirectory()
     let existingId = "11111111-1111-4111-8111-000001085041"

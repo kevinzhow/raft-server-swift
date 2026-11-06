@@ -110,7 +110,7 @@ extension EmailLoginDirectory {
         }
         lock.lock()
         let environment = feedbackLegacyEnvironmentLocked()
-        let appsJSON = handsFeedbackAppsJSONForTesting
+        let appsJSON = handsFeedbackAppsJSON
         lock.unlock()
         guard handsFeedbackConfigured || environment["HANDS_FEEDBACK_BASE_URL"] != nil else {
             return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_not_configured\"}")
@@ -332,7 +332,7 @@ extension EmailLoginDirectory {
                 "handle": handle,
             ]
         }
-        let (environment, appsJSON) = feedbackLocked { (feedbackLegacyEnvironmentLocked(), handsFeedbackAppsJSONForTesting) }
+        let (environment, appsJSON) = feedbackLocked { (feedbackLegacyEnvironmentLocked(), handsFeedbackAppsJSON) }
         guard handsFeedbackConfigured || environment["HANDS_FEEDBACK_BASE_URL"] != nil else {
             return Self.json(503, "{\"error\":\"Feedback service is temporarily unavailable\",\"code\":\"feedback_not_configured\"}")
         }

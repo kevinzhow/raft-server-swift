@@ -9,8 +9,7 @@ import FoundationNetworking
 /// Every accessor here forwards to one domain store, and each store owns its
 /// row family behind its own lock. Keeping them in an extension leaves
 /// `EmailLogin.swift` as a composition root: the directory lock, the store
-/// instances, the injectable relays and `init()`. The `*ForTesting` accessors
-/// live in `EmailLogin+TestSeams.swift`.
+/// instances, the injectable relays and `init()`.
 extension EmailLoginDirectory {
 
     // Notification/announcement/push rows live in `NotificationsStore`. These
@@ -43,7 +42,6 @@ extension EmailLoginDirectory {
     var taskWriteHolds: [String: (seen: Int, latest: Int)] { get { tasksAndRemindersStore.taskWriteHolds } set { tasksAndRemindersStore.taskWriteHolds = newValue } }
     var taskEvents: [(taskId: String, eventType: String, actorType: String)] { get { tasksAndRemindersStore.taskEvents } set { tasksAndRemindersStore.taskEvents = newValue } }
     var lastTaskServerWarning: String? { get { tasksAndRemindersStore.lastTaskServerWarning } set { tasksAndRemindersStore.lastTaskServerWarning = newValue } }
-    var lastTaskServerQuery: String? { get { tasksAndRemindersStore.lastTaskServerQuery } set { tasksAndRemindersStore.lastTaskServerQuery = newValue } }
     var assigneeChangeEvents: [(taskId: String, assigneeId: String?, assigneeType: String?, previousAssigneeId: String?, previousAssigneeType: String?, actorType: String, actorId: String)] { get { tasksAndRemindersStore.assigneeChangeEvents } set { tasksAndRemindersStore.assigneeChangeEvents = newValue } }
 
     // Rows for the machine, Computer and migration surface live in `MachinesAndComputersStore`.
@@ -647,5 +645,66 @@ extension EmailLoginDirectory {
     var marketplaceReviewerOverride: Set<String>? {
         get { feedbackStore.marketplaceReviewerOverride }
         set { feedbackStore.marketplaceReviewerOverride = newValue }
+    }
+}
+
+// MARK: - Store-backed accessors
+
+/// Directory-level accessors for store properties that production services read
+/// and write. Each forwards to the domain store property of the same name.
+extension EmailLoginDirectory {
+    var handsConversationSessionEnabled: Bool? {
+        get { authProfileStore.handsConversationSessionEnabled }
+        set { authProfileStore.handsConversationSessionEnabled = newValue }
+    }
+
+    var handsFeedbackWarningSink: ((String) -> Void)? {
+        get { authProfileStore.handsFeedbackWarningSink }
+        set { authProfileStore.handsFeedbackWarningSink = newValue }
+    }
+
+    var experimentalSurfacesDisabledOverride: Bool? {
+        get { authProfileStore.experimentalSurfacesDisabledOverride }
+        set { authProfileStore.experimentalSurfacesDisabledOverride = newValue }
+    }
+
+    var inboxResidues: Set<String> {
+        get { messagesAndThreadsStore.inboxResidues }
+        set { messagesAndThreadsStore.inboxResidues = newValue }
+    }
+
+    var userChannelReadCursors: [String: Int] {
+        get { messagesAndThreadsStore.userChannelReadCursors }
+        set { messagesAndThreadsStore.userChannelReadCursors = newValue }
+    }
+
+    var agentInboxAvailable: Bool? {
+        get { agentsRuntimeStore.agentInboxAvailable }
+        set { agentsRuntimeStore.agentInboxAvailable = newValue }
+    }
+
+    var machineBroadcastPolicies: [String: String] {
+        get { machinesAndComputersStore.machineBroadcastPolicies }
+        set { machinesAndComputersStore.machineBroadcastPolicies = newValue }
+    }
+
+    var machineModelSeenCapability: Set<String> {
+        get { machinesAndComputersStore.machineModelSeenCapability }
+        set { machinesAndComputersStore.machineModelSeenCapability = newValue }
+    }
+
+    var latestComputerRelease: (version: String, notesJSON: String)? {
+        get { machinesAndComputersStore.latestComputerRelease }
+        set { machinesAndComputersStore.latestComputerRelease = newValue }
+    }
+
+    var handsFeedbackAppsJSON: String? {
+        get { feedbackStore.handsFeedbackAppsJSON }
+        set { feedbackStore.handsFeedbackAppsJSON = newValue }
+    }
+
+    var handsFeedbackLegacyEnvironment: [String: String]? {
+        get { feedbackStore.handsFeedbackLegacyEnvironment }
+        set { feedbackStore.handsFeedbackLegacyEnvironment = newValue }
     }
 }

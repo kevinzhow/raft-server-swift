@@ -369,11 +369,6 @@ extension EmailLoginDirectory {
             accountSnapshot.passwordCredentialEstablishedAt = Date()
             accounts[email] = accountSnapshot
         }
-        if failNextSessionIssuanceForTesting {
-            failNextSessionIssuanceForTesting = false
-            lock.unlock()
-            return Self.json(500, "{\"error\":\"Unable to complete sign-in\"}")
-        }
         let issued = openSessionLocked(userId: accountSnapshot.id)
         var linkedProviderJSON = "null"
         if var pending = pendingLink {

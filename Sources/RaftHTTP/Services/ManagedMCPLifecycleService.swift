@@ -52,9 +52,9 @@ extension EmailLoginDirectory {
         let rows = scopeIds.map { scope -> String in
             let latest = humanMessageRows.filter { $0.channelId == scope }.map(\.seq).max() ?? 0
             let key = "\(userId)\n\(scope)"
-            let previous = userChannelReadCursorsForTesting[key] ?? 0
+            let previous = userChannelReadCursors[key] ?? 0
             let version = previous + 1
-            userChannelReadCursorsForTesting[key] = max(previous, latest)
+            userChannelReadCursors[key] = max(previous, latest)
             return "{\"scopeId\":\(jsonString(scope)),\"maxReadSeq\":\(latest),\"readStateVersion\":\(version)}"
         }.joined(separator: ",")
         lock.unlock()
@@ -87,7 +87,7 @@ extension EmailLoginDirectory {
                 lock.unlock()
                 return Self.json(409, "{\"error\":\"Mutation id reused with a different payload\",\"code\":\"MUTATION_ID_PAYLOAD_MISMATCH\"}")
             }
-            let cursor = userChannelReadCursorsForTesting["\(userId)\n\(existing.scopeId ?? "")"] ?? 0
+            let cursor = userChannelReadCursors["\(userId)\n\(existing.scopeId ?? "")"] ?? 0
             lock.unlock()
             if existing.kind == "channel_read_all", cursor > 0 {
                 return Self.json(200, "{\"outcome\":\"ALREADY_TERMINAL\",\"ack\":{\"terminalReason\":\"completed\",\"capturedBoundary\":[{\"scopeId\":\(jsonString(existing.scopeId ?? "")),\"throughSeq\":\(cursor)}],\"scopes\":[{\"scopeId\":\(jsonString(existing.scopeId ?? "")),\"maxReadSeq\":\(cursor)}]}}")
@@ -107,7 +107,7 @@ extension EmailLoginDirectory {
                 return Self.json(404, "{\"error\":\"Channel not found\"}")
             }
             lock.lock()
-            let hasOwnedCursor = userChannelReadCursorsForTesting["\(userId)\n\(rawScope)"] != nil
+            let hasOwnedCursor = userChannelReadCursors["\(userId)\n\(rawScope)"] != nil
             let visible = postableChannels[rawScope]?.memberIds.contains(userId) == true
                 || oauth.channelHumanIds(channelId: rawScope).contains(userId)
                 || (channelType == "channel" && oauth.memberRole(serverId: serverId, userId: userId) != nil)
@@ -149,7 +149,7 @@ extension EmailLoginDirectory {
         var scopesJSON: String?
         if let scopeIds {
             let rows = scopeIds.split(separator: ",").map(String.init).map { scope -> String in
-                let cursor = userChannelReadCursorsForTesting["\(userId)\n\(scope)"] ?? 0
+                let cursor = userChannelReadCursors["\(userId)\n\(scope)"] ?? 0
                 return "{\"scopeId\":\(jsonString(scope)),\"maxReadSeq\":\(cursor)}"
             }.joined(separator: ",")
             scopesJSON = "[\("\(rows)")]"

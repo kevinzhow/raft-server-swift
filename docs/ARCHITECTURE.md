@@ -142,8 +142,9 @@ strings (`Self.json(200, "{…}")`). The DTO layer is now in place:
 ### 2.5 Test seams
 
 The production ledger once carried 243 `…ForTesting` markers. `EmailLogin.swift`
-now has **0**, and the test-only seams live in
-`Sources/RaftHTTP/Support/DirectoryTestSeams.swift`. The rule is:
+now has **0**; the remaining seams are being moved into the `TestSupport`
+target slice by slice (per-file baseline in `scripts/for_testing_baseline.tsv`,
+enforced by `make architecture`). The rule is:
 
 - deterministic seams live in `Tests/TestSupport/` as fakes/hooks passed through
   `FallbackServices`, not as mutable members on a production type;
@@ -174,7 +175,7 @@ Sources/
     Services/<Domain>Service.swift# 45 Vapor-free domain services
     DTO/<Domain>DTO.swift         # 8 Codable shape modules
     Support/                      # DirectoryStatics1-2, DirectoryModelsAndConstants,
-                                  # DirectoryTestSeams, HTTPReply+JSONValue
+                                  # DirectoryHelpers, HTTPReply+JSONValue
   RaftHTTPServer/
     FallbackApplication.swift     # composition root only (middleware + register)
     Features/<Name>/<Name>Feature.swift   # 16 RouteCollection modules

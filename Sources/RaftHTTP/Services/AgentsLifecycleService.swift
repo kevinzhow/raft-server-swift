@@ -517,7 +517,7 @@ extension EmailLoginDirectory {
             || (channel.kind == "thread" && threadFollows["\(serverId)\n\(userId)\n\(channelId)"] != nil) {
             return .allowed
         }
-        let residue = inboxResiduesForTesting.contains("\(userId)\n\(channelId)")
+        let residue = inboxResidues.contains("\(userId)\n\(channelId)")
             || inboxFactStore.all().contains {
                 $0.receiverType == "user" && $0.receiverId == userId && $0.channelId == channelId
             }

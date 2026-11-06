@@ -456,11 +456,6 @@ extension EmailLoginDirectory {
         return taskRecords.first { $0.id == taskId }?.taskNumber
     }
 
-    public func taskNumberForMessageForTesting(messageId: String) -> Int? {
-        lock.lock(); defer { lock.unlock() }
-        return taskRecords.first { $0.messageId == messageId }?.taskNumber
-    }
-
     public func messageChannelIdForTesting(messageId: String) -> String? {
         lock.lock(); defer { lock.unlock() }
         return humanMessageRows.first { $0.id == messageId }?.channelId

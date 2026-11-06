@@ -292,7 +292,7 @@ extension EmailLoginDirectory {
 
     public func markInboxResidueForTesting(userId: String, channelId: String) {
         lock.lock()
-        inboxResiduesForTesting.insert("\(userId)\n\(channelId)")
+        inboxResidues.insert("\(userId)\n\(channelId)")
         lock.unlock()
     }
 

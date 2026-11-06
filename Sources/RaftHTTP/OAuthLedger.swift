@@ -218,14 +218,6 @@ public final class OAuthLedger: @unchecked Sendable {
         return clients.first { $0.id == clientRecordId }?.agentJwtEnabled
     }
 
-    public func setInstallationAgentJWTEnabledForTesting(clientRecordId: String, serverId: String, enabled: Bool?) {
-        lock.lock()
-        if let index = installations.firstIndex(where: { $0.clientId == clientRecordId && $0.serverId == serverId }) {
-            installations[index].agentJwtEnabled = enabled
-        }
-        lock.unlock()
-    }
-
     public func installationAgentJWTEnabled(clientRecordId: String, serverId: String) -> Bool? {
         lock.lock()
         defer { lock.unlock() }
@@ -3866,7 +3858,7 @@ public final class OAuthLedger: @unchecked Sendable {
         return integrationAuditEvents.filter { $0.eventType == eventType }.count
     }
 
-    public func clientSetupDeclarationForTesting(clientRecordId: String) -> (url: String?, description: String?, revision: Int)? {
+    public func clientSetupDeclaration(clientRecordId: String) -> (url: String?, description: String?, revision: Int)? {
         lock.lock()
         defer { lock.unlock() }
         guard let client = clients.first(where: { $0.id == clientRecordId }) else { return nil }

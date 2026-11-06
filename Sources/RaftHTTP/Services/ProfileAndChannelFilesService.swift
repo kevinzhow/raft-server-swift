@@ -103,9 +103,9 @@ extension EmailLoginDirectory {
     public func setMachineModelSeenCapabilityForTesting(agentId: String, enabled: Bool) {
         lock.lock()
         if enabled {
-            machineModelSeenCapabilityForTesting.insert(agentId)
+            machineModelSeenCapability.insert(agentId)
         } else {
-            machineModelSeenCapabilityForTesting.remove(agentId)
+            machineModelSeenCapability.remove(agentId)
         }
         lock.unlock()
     }

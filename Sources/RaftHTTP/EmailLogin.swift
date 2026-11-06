@@ -13,7 +13,7 @@ import FoundationNetworking
 /// the lock-guarded relay slots, one store per ledger family, and the OAuth
 /// ledger. Store forwarding accessors live in
 /// `EmailLogin+StoreForwarders.swift`; domain services live under
-/// `Services/`; the test-only seams live in `EmailLogin+TestSeams.swift`.
+/// `Services/`; test seams belong in the `TestSupport` target.
 public final class EmailLoginDirectory: @unchecked Sendable {
     let lock = NSLock()
 

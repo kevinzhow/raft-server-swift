@@ -106,7 +106,7 @@ extension EmailLoginDirectory {
               let rawName = client["name"] as? String
         else { return nil }
         let binding = Self.marketplaceAppNameBinding(rawName)
-        let declaration = oauth.clientSetupDeclarationForTesting(clientRecordId: recordId)
+        let declaration = oauth.clientSetupDeclaration(clientRecordId: recordId)
         let agentName = agent.displayName.isEmpty ? agent.name : agent.displayName
         let messageId = UUID().uuidString.lowercased()
         let card = MarketplaceInstallCard(
@@ -178,7 +178,7 @@ extension EmailLoginDirectory {
         guard binding.sha256 == card.clientNameSha256, binding.name == card.clientName else {
             return Self.json(409, "{\"error\":\"Marketplace app identity changed; prepare a fresh login request\",\"errorCode\":\"MARKETPLACE_APP_CHANGED\"}")
         }
-        let declaration = oauth.clientSetupDeclarationForTesting(clientRecordId: card.clientRecordId)
+        let declaration = oauth.clientSetupDeclaration(clientRecordId: card.clientRecordId)
         guard (declaration?.url ?? nil) == card.setupUrl, (declaration?.revision ?? 1) == card.setupRevision else {
             return Self.json(409, "{\"error\":\"The App setup declaration changed; prepare a fresh request\",\"errorCode\":\"APP_SETUP_CHANGED\"}")
         }

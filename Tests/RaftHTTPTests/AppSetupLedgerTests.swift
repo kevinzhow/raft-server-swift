@@ -18,7 +18,7 @@ private func ledgerFixture() throws -> (OAuthLedger, String, String, String) {
 
 @Test func creatingAClientStoresTheSetupDeclarationAtRevisionOne() throws {
     let (ledger, _, _, client) = try ledgerFixture()
-    let declaration = try #require(ledger.clientSetupDeclarationForTesting(clientRecordId: client))
+    let declaration = try #require(ledger.clientSetupDeclaration(clientRecordId: client))
     #expect(declaration.url == "https://setup.example.test/configure")
     #expect(declaration.description == "Choose a repository")
     #expect(declaration.revision == 1)
@@ -43,7 +43,7 @@ private func ledgerFixture() throws -> (OAuthLedger, String, String, String) {
     let installation = ledger.installClient(serverId: serverId, clientRecordId: client, installedByUserId: "u-owner", groups: [])
     #expect(try ledger.updateAppInstallationSetup(clientRecordId: client, installationId: installation, revision: 1, status: "complete")?.status == .complete)
     #expect(try ledger.updateClientSetupDeclaration(clientRecordId: client, setupUrl: "https://setup.example.test/revised", setupDescription: nil))
-    let declaration = try #require(ledger.clientSetupDeclarationForTesting(clientRecordId: client))
+    let declaration = try #require(ledger.clientSetupDeclaration(clientRecordId: client))
     #expect(declaration.revision == 2)
     #expect(try ledger.getAppInstallationSetup(clientRecordId: client, serverId: serverId)?.status == .pending)
 }
@@ -55,7 +55,7 @@ private func ledgerFixture() throws -> (OAuthLedger, String, String, String) {
     #expect(try ledger.updateClientSetupDeclaration(
         clientRecordId: client, setupUrl: "https://setup.example.test/configure", setupDescription: "Clarified instructions"
     ))
-    let declaration = try #require(ledger.clientSetupDeclarationForTesting(clientRecordId: client))
+    let declaration = try #require(ledger.clientSetupDeclaration(clientRecordId: client))
     #expect(declaration.revision == 1)
     #expect(try ledger.getAppInstallationSetup(clientRecordId: client, serverId: serverId)?.status == .complete)
 }

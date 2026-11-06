@@ -5,19 +5,19 @@ import TestSupport
 
 @Test func appReminderLifecycleIsVersionBoundAndEventful() {
     let accounts = EmailLoginDirectory()
-    let reminder = accounts.createAppReminderForTesting(
+    let reminder = accounts.createAppReminder(
         serverId: "s1", ownerAgentId: "a1", title: "Stand up",
         fireAt: Date(timeIntervalSince1970: 1_700_000_000)
     )
-    #expect(accounts.appReminderRowForTesting(id: reminder)?.status == "scheduled")
-    #expect(accounts.appReminderRowForTesting(id: reminder)?.version == 1)
+    #expect(accounts.appReminderRow(id: reminder)?.status == "scheduled")
+    #expect(accounts.appReminderRow(id: reminder)?.version == 1)
     #expect(accounts.appReminderEventsForTesting(reminderId: reminder).map(\.type) == ["scheduled"])
 
     guard case .conflict(let current) = accounts.cancelAppReminder(
         reminderId: reminder, ownerAgentId: "a1", expectedVersion: 99
     ) else { Issue.record("stale cancel must conflict"); return }
     #expect(current == 1)
-    #expect(accounts.appReminderRowForTesting(id: reminder)?.status == "scheduled")
+    #expect(accounts.appReminderRow(id: reminder)?.status == "scheduled")
 
     guard case .ok(let version) = accounts.snoozeAppReminder(
         reminderId: reminder, ownerAgentId: "a1", expectedVersion: 1,
@@ -33,15 +33,15 @@ import TestSupport
         reminderId: reminder, ownerAgentId: "a1", expectedVersion: 3
     ) else { Issue.record("cancel must succeed"); return }
     #expect(canceledVersion == 4)
-    #expect(accounts.appReminderRowForTesting(id: reminder)?.status == "canceled")
+    #expect(accounts.appReminderRow(id: reminder)?.status == "canceled")
     #expect(accounts.appReminderEventsForTesting(reminderId: reminder).map(\.type) == ["scheduled", "snoozed", "updated", "canceled"])
     #expect(accounts.appReminderEventsForTesting(reminderId: reminder).map(\.version) == [1, 2, 3, 4])
 }
 
 @Test func appReminderOwnershipAndStatusFilterAreEnforced() {
     let accounts = EmailLoginDirectory()
-    let first = accounts.createAppReminderForTesting(serverId: "s1", ownerAgentId: "a1", title: "One", fireAt: Date())
-    let second = accounts.createAppReminderForTesting(serverId: "s1", ownerAgentId: "a2", title: "Two", fireAt: Date())
+    let first = accounts.createAppReminder(serverId: "s1", ownerAgentId: "a1", title: "One", fireAt: Date())
+    let second = accounts.createAppReminder(serverId: "s1", ownerAgentId: "a2", title: "Two", fireAt: Date())
     _ = accounts.cancelAppReminder(reminderId: second, ownerAgentId: "a2", expectedVersion: 1)
 
     guard case .notFound = accounts.cancelAppReminder(reminderId: first, ownerAgentId: "a2", expectedVersion: 1) else {

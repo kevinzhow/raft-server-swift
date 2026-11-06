@@ -105,7 +105,7 @@ public struct FeedbackService: Sendable {
     // MARK: - Warning sink
 
     func warn(_ message: String) {
-        let sink = locked { directory.handsFeedbackWarningSinkForTesting }
+        let sink = locked { directory.handsFeedbackWarningSink }
         if let sink {
             sink(message)
         } else {
@@ -120,7 +120,7 @@ public struct FeedbackService: Sendable {
     /// (or a test) supplies the payload.
     func setHandsFeedbackApps(_ appsJSON: String?) {
         locked {
-            directory.handsFeedbackAppsJSONForTesting = appsJSON
+            directory.handsFeedbackAppsJSON = appsJSON
             directory.productFeedbackReporterSessionCache.removeAll()
             directory.productFeedbackRouteBindingSuccesses.removeAll()
             directory.productFeedbackRouteVerifiedCommitments.removeAll()
@@ -130,7 +130,7 @@ public struct FeedbackService: Sendable {
     /// Overlays the legacy `HANDS_FEEDBACK_*` environment view for a test.
     func setHandsFeedbackLegacyEnvironment(_ values: [String: String]?) {
         locked {
-            directory.handsFeedbackLegacyEnvironmentForTesting = values
+            directory.handsFeedbackLegacyEnvironment = values
             directory.productFeedbackReporterSessionCache.removeAll()
             directory.productFeedbackRouteBindingSuccesses.removeAll()
             directory.productFeedbackRouteVerifiedCommitments.removeAll()
@@ -140,7 +140,7 @@ public struct FeedbackService: Sendable {
     /// Operator log sink (upstream uses `console.warn`). Tests install one to
     /// assert the fixed reason codes without reading process output.
     func setWarningSink(_ sink: ((String) -> Void)?) {
-        locked { directory.handsFeedbackWarningSinkForTesting = sink }
+        locked { directory.handsFeedbackWarningSink = sink }
     }
 
     /// Labels committed into `integrationSecretCommitments` by route binding.
@@ -158,7 +158,7 @@ public struct FeedbackService: Sendable {
 
     func setConversation(enabled: Bool, appToken: String?) {
         locked {
-            directory.handsConversationSessionEnabledForTesting = enabled
+            directory.handsConversationSessionEnabled = enabled
             directory.handsConversationAppTokenOverride = appToken
             directory.productFeedbackReporterSessionCache.removeAll()
         }
@@ -168,7 +168,7 @@ public struct FeedbackService: Sendable {
 
     func legacyEnvironmentLocked() -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
-        if let overlay = directory.handsFeedbackLegacyEnvironmentForTesting {
+        if let overlay = directory.handsFeedbackLegacyEnvironment {
             for (key, value) in overlay { environment[key] = value }
         }
         if let handsFeedbackBaseURLOverride = directory.handsFeedbackBaseURLOverride {
@@ -183,8 +183,8 @@ public struct FeedbackService: Sendable {
         if let handsFeedbackAppTokenOverride = directory.handsFeedbackAppTokenOverride {
             environment["HANDS_FEEDBACK_APP_TOKEN"] = handsFeedbackAppTokenOverride
         }
-        if let handsConversationSessionEnabledForTesting = directory.handsConversationSessionEnabledForTesting {
-            environment["HANDS_FEEDBACK_CONVERSATION_SESSION_ENABLED"] = handsConversationSessionEnabledForTesting ? "true" : "false"
+        if let handsConversationSessionEnabled = directory.handsConversationSessionEnabled {
+            environment["HANDS_FEEDBACK_CONVERSATION_SESSION_ENABLED"] = handsConversationSessionEnabled ? "true" : "false"
         }
         if let handsConversationAppTokenOverride = directory.handsConversationAppTokenOverride {
             environment["HANDS_FEEDBACK_CONVERSATION_APP_TOKEN"] = handsConversationAppTokenOverride
@@ -198,7 +198,7 @@ public struct FeedbackService: Sendable {
         }
         directory.lock.lock()
         let environment = legacyEnvironmentLocked()
-        let appsJSON = directory.handsFeedbackAppsJSONForTesting
+        let appsJSON = directory.handsFeedbackAppsJSON
         directory.lock.unlock()
         let multiEnabled = directory.evaluateFeatureFlagKey(
             key: EmailLoginDirectory.productFeedbackMultiAppFlag,

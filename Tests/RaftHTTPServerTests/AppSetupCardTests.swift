@@ -153,7 +153,7 @@ import VaporTesting
             }
             #expect(execute.status == .ok)
             let recordId = try #require(accounts.oauth.clientRecordIdForServer(serverId: serverId, clientKey: "registered-setup"))
-            let declaration = try #require(accounts.oauth.clientSetupDeclarationForTesting(clientRecordId: recordId))
+            let declaration = try #require(accounts.oauth.clientSetupDeclaration(clientRecordId: recordId))
             #expect(declaration.url == "https://registered.example.test/setup")
             #expect(declaration.description == "Select a repository")
         }

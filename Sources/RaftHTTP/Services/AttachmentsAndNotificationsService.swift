@@ -22,7 +22,7 @@ struct AttachmentsAndNotificationsService {
     /// override without touching the process environment.
     func setExperimentalSurfacesDisabled(_ value: Bool?) {
         directory.lock.lock()
-        directory.experimentalSurfacesDisabledForTesting = value
+        directory.experimentalSurfacesDisabledOverride = value
         directory.lock.unlock()
     }
 

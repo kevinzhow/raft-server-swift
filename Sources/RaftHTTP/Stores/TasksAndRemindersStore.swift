@@ -19,7 +19,6 @@ final class TasksAndRemindersStore: @unchecked Sendable {
         var taskWriteHolds: [String: (seen: Int, latest: Int)] = [:]
         var taskEvents: [(taskId: String, eventType: String, actorType: String)] = []
         var lastTaskServerWarning: String? = nil
-        var lastTaskServerQuery: String? = nil
         var assigneeChangeEvents: [(taskId: String, assigneeId: String?, assigneeType: String?, previousAssigneeId: String?, previousAssigneeType: String?, actorType: String, actorId: String)] = []
     }
 
@@ -68,11 +67,6 @@ final class TasksAndRemindersStore: @unchecked Sendable {
     var lastTaskServerWarning: String? {
         get { state.lastTaskServerWarning }
         set { state.lastTaskServerWarning = newValue }
-    }
-
-    var lastTaskServerQuery: String? {
-        get { state.lastTaskServerQuery }
-        set { state.lastTaskServerQuery = newValue }
     }
 
     var assigneeChangeEvents: [(taskId: String, assigneeId: String?, assigneeType: String?, previousAssigneeId: String?, previousAssigneeType: String?, actorType: String, actorId: String)] {

@@ -57,8 +57,8 @@ extension EmailLoginDirectory {
         }
         lock.lock()
         let rows = machines.filter { $0.serverId == serverId }
-        let latest = latestComputerReleaseForTesting
-        let policies = machineBroadcastPoliciesForTesting
+        let latest = latestComputerRelease
+        let policies = machineBroadcastPolicies
         let attachers = computerAttachers
         let computerVersions = computers.reduce(into: [String: String?]()) { result, computer in
             if let machineId = computer.machineId { result[machineId] = computer.version }
@@ -1003,7 +1003,7 @@ extension EmailLoginDirectory {
         var resolvedTarget = targetVersion
         if action == "upgrade", resolvedTarget == nil {
             lock.lock()
-            let latest = latestComputerReleaseForTesting?.version
+            let latest = latestComputerRelease?.version
             lock.unlock()
             guard let latest else {
                 return Self.json(409, "{\"error\":\"Hands could not select a newer alpha release for this Computer.\",\"code\":\"computer_upgrade_unavailable\"}")

@@ -297,7 +297,7 @@ extension EmailLoginDirectory {
 
     public func setAgentInboxAvailableForTesting(_ value: Bool?) {
         lock.lock()
-        agentInboxAvailableForTesting = value
+        agentInboxAvailable = value
         lock.unlock()
     }
 
@@ -316,7 +316,7 @@ extension EmailLoginDirectory {
         case .success(let agentId, let serverId): identity = (agentId, serverId)
         }
         lock.lock()
-        let available = agentInboxAvailableForTesting ?? true
+        let available = agentInboxAvailable ?? true
         lock.unlock()
         guard available else {
             return Self.json(503, "{\"error\":\"The agent inbox is unavailable\",\"code\":\"INBOX_UNAVAILABLE\",\"suggestedNextAction\":\"Retry after the inbox service recovers.\"}")

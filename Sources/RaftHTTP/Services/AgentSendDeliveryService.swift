@@ -105,8 +105,8 @@ extension EmailLoginDirectory {    public func agentSend(authorization: String?,
         lock.lock()
         let machine = machines.first { $0.apiKey == apiKey }
         let legacy = machineKeys[apiKey]
-        var capability = machineModelSeenCapabilityForTesting.contains(agentId)
-        if let machine, machineModelSeenCapabilityForTesting.contains(machine.id) { capability = true }
+        var capability = machineModelSeenCapability.contains(agentId)
+        if let machine, machineModelSeenCapability.contains(machine.id) { capability = true }
         lock.unlock()
         guard let serverId = machine?.serverId ?? legacy?.serverId else {
             return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")

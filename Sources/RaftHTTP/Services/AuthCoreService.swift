@@ -144,12 +144,6 @@ extension EmailLoginDirectory {
         return token
     }
 
-    public func pendingSocialLinkExpiryForTesting(token: String) -> Date? {
-        lock.lock()
-        defer { lock.unlock() }
-        return pendingSocialLinks[token]?.expiresAt
-    }
-
     /// `POST /api/auth/pending-link/cancel`. Cancelling twice stays 204.
     /// The route already decoded `CancelPendingLinkRequest`, so a nil, empty
     /// or unknown token is a no-op that still answers 204.

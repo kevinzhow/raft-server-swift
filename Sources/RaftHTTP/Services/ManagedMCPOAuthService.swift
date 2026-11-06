@@ -581,7 +581,7 @@ extension EmailLoginDirectory {
 
     public func setUserChannelReadCursorForTesting(userId: String, channelId: String, seq: Int) {
         lock.lock()
-        userChannelReadCursorsForTesting["\(userId)\n\(channelId)"] = seq
+        userChannelReadCursors["\(userId)\n\(channelId)"] = seq
         lock.unlock()
     }
 

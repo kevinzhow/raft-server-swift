@@ -67,11 +67,6 @@ public final class PublicSearchMemoryBucketStore: PublicSearchBucketStoring, Pub
         lock.lock(); inFlight = max(0, inFlight - 1); lock.unlock()
     }
 
-    public var inFlightForTesting: Int {
-        lock.lock(); defer { lock.unlock() }
-        return inFlight
-    }
-
     public func consume(limit: Int) -> PublicSearchBucketDecision {
         lock.lock()
         defer { lock.unlock() }

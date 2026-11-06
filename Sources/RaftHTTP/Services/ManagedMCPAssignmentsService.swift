@@ -695,11 +695,6 @@ extension EmailLoginDirectory {
         return id
     }
 
-    public func lastTaskServerQueryForTesting() -> String? {
-        lock.lock(); defer { lock.unlock() }
-        return lastTaskServerQuery
-    }
-
     public func lastTaskServerWarningForTesting() -> String? {
         lock.lock()
         defer { lock.unlock() }
@@ -726,9 +721,6 @@ extension EmailLoginDirectory {
     }
 
     public func listServerTasks(authorization: String?, serverId: String, rawQuery: String?) -> HTTPReply {
-        lock.lock()
-        lastTaskServerQuery = rawQuery
-        lock.unlock()
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
         }

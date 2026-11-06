@@ -70,7 +70,7 @@ extension EmailLoginDirectory {
         } catch {
             return Self.json(400, "{\"error\":\"Invalid app metadata\",\"errorCode\":\"INVALID_APP_METADATA\"}")
         }
-        let declaration = oauth.clientSetupDeclarationForTesting(clientRecordId: recordId)
+        let declaration = oauth.clientSetupDeclaration(clientRecordId: recordId)
         let body = "{\"clientId\":\(jsonString(clientId)),\"setupUrl\":\(declaration?.url.map(jsonString) ?? "null"),\"setupDescription\":\(declaration?.description.map(jsonString) ?? "null"),\"setupRevision\":\(declaration?.revision ?? 1)}"
         return Self.json(200, body)
     }
@@ -629,8 +629,8 @@ extension EmailLoginDirectory {
             do {
                 try oauth.updateClientSetupDeclaration(
                     clientRecordId: recordId,
-                    setupUrl: object["setupUrl"] as? String ?? oauth.clientSetupDeclarationForTesting(clientRecordId: recordId)?.url,
-                    setupDescription: object["setupDescription"] as? String ?? oauth.clientSetupDeclarationForTesting(clientRecordId: recordId)?.description
+                    setupUrl: object["setupUrl"] as? String ?? oauth.clientSetupDeclaration(clientRecordId: recordId)?.url,
+                    setupDescription: object["setupDescription"] as? String ?? oauth.clientSetupDeclaration(clientRecordId: recordId)?.description
                 )
                 if object.keys.contains("setupUrl") { updatedFields.append("setupUrl") }
                 if object.keys.contains("setupDescription") { updatedFields.append("setupDescription") }

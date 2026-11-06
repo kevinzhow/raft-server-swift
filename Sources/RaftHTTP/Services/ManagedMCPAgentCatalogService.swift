@@ -348,7 +348,7 @@ extension EmailLoginDirectory {
     }
 
     @discardableResult
-    public func createAppReminderForTesting(
+    public func createAppReminder(
         serverId: String, ownerAgentId: String, title: String, fireAt: Date,
         notes: String? = nil, recurrenceJSON: String? = nil,
         channelId: String? = nil, threadId: String? = nil,
@@ -366,7 +366,7 @@ extension EmailLoginDirectory {
         return reminder.id
     }
 
-    public func appReminderRowForTesting(id: String) -> (status: String, version: Int, title: String, fireAt: Date)? {
+    public func appReminderRow(id: String) -> (status: String, version: Int, title: String, fireAt: Date)? {
         lock.lock()
         defer { lock.unlock() }
         guard let reminder = reminderRecords.first(where: { $0.id == id }) else { return nil }
@@ -457,7 +457,7 @@ extension EmailLoginDirectory {
 
     public func fireAppReminderForTesting(reminderId: String) -> ReminderMutationOutcome {
         mutateAppReminder(reminderId: reminderId, ownerAgentId: ownerAgentIdForReminder(reminderId) ?? "",
-                          expectedVersion: appReminderRowForTesting(id: reminderId)?.version ?? 0, type: "fired") { reminder in
+                          expectedVersion: appReminderRow(id: reminderId)?.version ?? 0, type: "fired") { reminder in
             reminder.status = "fired"
         }
     }
@@ -472,7 +472,7 @@ extension EmailLoginDirectory {
         return reminderRecords.first(where: { $0.id == reminderId })?.ownerAgentId
     }
 
-    public func appReminderEventLogForTesting(reminderId: String) -> [(eventType: String, version: Int)] {
+    public func appReminderEventLog(reminderId: String) -> [(eventType: String, version: Int)] {
         lock.lock()
         defer { lock.unlock() }
         return reminderEvents.filter { $0.reminderId == reminderId }
@@ -549,7 +549,7 @@ extension EmailLoginDirectory {
         } else {
             return Self.json(400, "{\"error\":\"fireAt or delaySeconds is required\"}")
         }
-        let id = createAppReminderForTesting(
+        let id = createAppReminder(
             serverId: machine.serverId, ownerAgentId: agentId, title: title, fireAt: fireAt,
             notes: object["notes"] as? String, recurrenceJSON: object["recurrence"] as? String,
             channelId: object["channelId"] as? String, threadId: object["threadId"] as? String,
@@ -572,7 +572,7 @@ extension EmailLoginDirectory {
         case .invalid:
             return Self.json(400, "{\"error\":\"Invalid reminder update\"}")
         case .ok(let version):
-            let row = (id: reminderId, status: "canceled", version: version, title: appReminderRowForTesting(id: reminderId)?.title ?? "")
+            let row = (id: reminderId, status: "canceled", version: version, title: appReminderRow(id: reminderId)?.title ?? "")
             return Self.json(200, "{\"reminder\":\(Self.reminderSummaryJSON(row))}")
         }
     }
@@ -586,7 +586,7 @@ extension EmailLoginDirectory {
         case .invalid(let message):
             return Self.json(409, "{\"error\":\(jsonString(message))}")
         case .ok:
-            let row = appReminderRowForTesting(id: reminderId)
+            let row = appReminderRow(id: reminderId)
             let summary = Self.reminderSummaryJSON(
                 (reminderId, row?.status ?? "scheduled", row?.version ?? 0, row?.title ?? ""),
                 ownerAgentId: ownerAgentId, fireAt: row?.fireAt
@@ -598,7 +598,7 @@ extension EmailLoginDirectory {
     public func legacyReminderSnooze(authorization: String?, agentId: String, reminderId: String, body: String) -> HTTPReply {
         guard let machine = legacyReminderMachine(authorization) else { return Self.json(401, "{\"error\":\"Unauthorized\"}") }
         if legacyReminderWritesMoved(serverId: machine.serverId) { return Self.remindersMovedReply }
-        guard let row = appReminderRowForTesting(id: reminderId), row.status != "canceled" else {
+        guard let row = appReminderRow(id: reminderId), row.status != "canceled" else {
             return Self.json(404, "{\"error\":\"Reminder not found\"}")
         }
         let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
@@ -617,7 +617,7 @@ extension EmailLoginDirectory {
     public func legacyReminderUpdate(authorization: String?, agentId: String, reminderId: String, body: String) -> HTTPReply {
         guard let machine = legacyReminderMachine(authorization) else { return Self.json(401, "{\"error\":\"Unauthorized\"}") }
         if legacyReminderWritesMoved(serverId: machine.serverId) { return Self.remindersMovedReply }
-        guard let row = appReminderRowForTesting(id: reminderId) else { return Self.json(404, "{\"error\":\"Reminder not found\"}") }
+        guard let row = appReminderRow(id: reminderId) else { return Self.json(404, "{\"error\":\"Reminder not found\"}") }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
             return Self.json(400, "{\"error\":\"Invalid reminder update\"}")
         }
@@ -633,7 +633,7 @@ extension EmailLoginDirectory {
     public func legacyReminderLog(authorization: String?, agentId: String, reminderId: String) -> HTTPReply {
         guard legacyReminderMachine(authorization) != nil else { return Self.json(401, "{\"error\":\"Unauthorized\"}") }
         guard ownerAgentIdForReminder(reminderId) == agentId else { return Self.json(404, "{\"error\":\"Reminder not found\"}") }
-        return Self.json(200, Self.reminderLogJSON(appReminderEventLogForTesting(reminderId: reminderId)))
+        return Self.json(200, Self.reminderLogJSON(appReminderEventLog(reminderId: reminderId)))
     }
 
     public func agentApiReminderCancel(authorization: String?, reminderId: String) -> HTTPReply {
@@ -641,7 +641,7 @@ extension EmailLoginDirectory {
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
         else { return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}") }
-        guard let row = appReminderRowForTesting(id: reminderId) else { return Self.json(404, "{\"error\":\"Reminder not found\"}") }
+        guard let row = appReminderRow(id: reminderId) else { return Self.json(404, "{\"error\":\"Reminder not found\"}") }
         return reminderMutationReply(
             cancelAppReminder(reminderId: reminderId, ownerAgentId: agent.id, expectedVersion: row.version),
             reminderId: reminderId, ownerAgentId: agent.id
@@ -652,7 +652,7 @@ extension EmailLoginDirectory {
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
         else { return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}") }
-        guard let row = appReminderRowForTesting(id: reminderId) else { return Self.json(404, "{\"error\":\"Reminder not found\"}") }
+        guard let row = appReminderRow(id: reminderId) else { return Self.json(404, "{\"error\":\"Reminder not found\"}") }
         let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
         let fireAt: Date
         if let raw = object["fireAt"] as? String, let parsed = ISO8601DateFormatter().date(from: raw) {
@@ -672,7 +672,7 @@ extension EmailLoginDirectory {
         guard let credential = agentCredentialAgent(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
         else { return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}") }
-        guard let row = appReminderRowForTesting(id: reminderId) else { return Self.json(404, "{\"error\":\"Reminder not found\"}") }
+        guard let row = appReminderRow(id: reminderId) else { return Self.json(404, "{\"error\":\"Reminder not found\"}") }
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
             return Self.json(400, "{\"error\":\"Invalid reminder update\"}")
         }
@@ -691,7 +691,7 @@ extension EmailLoginDirectory {
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
         else { return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}") }
         guard ownerAgentIdForReminder(reminderId) == agent.id else { return Self.json(404, "{\"error\":\"Reminder not found\"}") }
-        return Self.json(200, Self.reminderLogJSON(appReminderEventLogForTesting(reminderId: reminderId)))
+        return Self.json(200, Self.reminderLogJSON(appReminderEventLog(reminderId: reminderId)))
     }
 
     public func agentApiReminderList(authorization: String?, status: String?) -> HTTPReply {
@@ -737,7 +737,7 @@ extension EmailLoginDirectory {
         } else {
             return Self.json(400, "{\"error\":\"fireAt or delaySeconds is required\"}")
         }
-        let id = createAppReminderForTesting(
+        let id = createAppReminder(
             serverId: agent.serverId, ownerAgentId: agent.id, title: title, fireAt: fireAt,
             notes: object["notes"] as? String, recurrenceJSON: object["recurrence"] as? String,
             channelId: object["channelId"] as? String, threadId: object["threadId"] as? String,

@@ -103,13 +103,13 @@ extension EmailLoginDirectory {
 
     public func setLatestComputerReleaseForTesting(version: String, releaseNotesJSON: String) {
         lock.lock()
-        latestComputerReleaseForTesting = (version, releaseNotesJSON)
+        latestComputerRelease = (version, releaseNotesJSON)
         lock.unlock()
     }
 
     public func setMachineBroadcastPolicyForTesting(machineId: String, policyJSON: String) {
         lock.lock()
-        machineBroadcastPoliciesForTesting[machineId] = policyJSON
+        machineBroadcastPolicies[machineId] = policyJSON
         lock.unlock()
     }
 
