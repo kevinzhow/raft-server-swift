@@ -139,4 +139,114 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         get { state.agentApiIdempotencyKeys }
         set { state.agentApiIdempotencyKeys = newValue }
     }
+
+    // MARK: - Action-card execution
+
+    /// One locked read of the card a route is about to authorize. The write
+    /// below re-reads under its own lock, so the read is only a snapshot.
+    func actionCard(messageId: String) -> ActionCardRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.actionCardRecords[messageId]
+    }
+
+    /// Marks the card executed and returns the updated row in one critical
+    /// section, so the lookup and the state write cannot interleave with
+    /// another request. `nil` means the row vanished between authorization and
+    /// the write.
+    func markActionCardExecuted(messageId: String, userId: String) -> ActionCardRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var card = storage.actionCardRecords[messageId] else { return nil }
+        if card.state != "executed" {
+            card.state = "executed"
+            card.executedByUserId = userId
+            storage.actionCardRecords[messageId] = card
+        }
+        return card
+    }
+
+    // MARK: - Managed MCP reads
+
+    func managedMCPServers(serverId: String) -> [ManagedMCPServerRecord] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.managedMCPServers.filter { $0.serverId == serverId }
+    }
+
+    func managedMCPServer(id: String, serverId: String) -> ManagedMCPServerRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.managedMCPServers.first { $0.id == id && $0.serverId == serverId }
+    }
+
+    // MARK: - Provider connections
+
+    enum ProviderAssignmentLookup {
+        case connectionNotFound
+        case assignmentNotFound
+        case ok
+    }
+
+    func providerAssignmentLookup(
+        serverId: String,
+        connectionId: String,
+        agentId: String
+    ) -> ProviderAssignmentLookup {
+        lock.lock()
+        defer { lock.unlock() }
+        guard storage.providerConnections.contains(where: { $0.id == connectionId && $0.serverId == serverId }) else {
+            return .connectionNotFound
+        }
+        guard storage.providerAssignments.contains(where: {
+            $0.connectionId == connectionId && $0.serverId == serverId && $0.agentId == agentId
+        }) else {
+            return .assignmentNotFound
+        }
+        return .ok
+    }
+
+    /// Removes one assignment under a single lock, the write half of detach.
+    @discardableResult
+    func removeProviderAssignment(serverId: String, connectionId: String, agentId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let before = storage.providerAssignments.count
+        storage.providerAssignments.removeAll {
+            $0.connectionId == connectionId && $0.serverId == serverId && $0.agentId == agentId
+        }
+        return storage.providerAssignments.count != before
+    }
+
+    enum ProviderConnectionLookup {
+        case connectionNotFound
+        case found(assignments: [ProviderAssignment])
+    }
+
+    func providerConnectionLookup(serverId: String, connectionId: String) -> ProviderConnectionLookup {
+        lock.lock()
+        defer { lock.unlock() }
+        guard storage.providerConnections.contains(where: { $0.id == connectionId && $0.serverId == serverId }) else {
+            return .connectionNotFound
+        }
+        let assignments = storage.providerAssignments.filter {
+            $0.connectionId == connectionId && $0.serverId == serverId
+        }
+        return .found(assignments: assignments)
+    }
+
+    /// Removes the connection and every one of its assignments in the same
+    /// critical section; the legacy path removed both rows under the directory
+    /// lock.
+    @discardableResult
+    func deleteProviderConnection(serverId: String, connectionId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let before = storage.providerConnections.count
+        storage.providerConnections.removeAll { $0.id == connectionId && $0.serverId == serverId }
+        storage.providerAssignments.removeAll {
+            $0.connectionId == connectionId && $0.serverId == serverId
+        }
+        return storage.providerConnections.count != before
+    }
 }

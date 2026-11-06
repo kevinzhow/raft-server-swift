@@ -295,21 +295,25 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             ))
         }
 
-        providerConnections.delete(":id", "agents", ":agentId") { request -> Response in
-            routeResponse(services.emailAccounts.detachProviderAgent(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                connectionId: request.parameters.get("id") ?? "",
-                agentId: request.parameters.get("agentId") ?? ""
-            ))
+        providerConnections.delete(":id", "agents", ":agentId") { request async throws -> Response in
+            try respond(errors: ActionCardServiceError.self) {
+                try services.emailAccounts.actionCards.detachProviderAgent(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    connectionId: request.parameters.get("id") ?? "",
+                    agentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
 
-        providerConnections.delete(":id") { request -> Response in
-            routeResponse(services.emailAccounts.deleteProviderConnection(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                connectionId: request.parameters.get("id") ?? ""
-            ))
+        providerConnections.delete(":id") { request async throws -> Response in
+            try respond(errors: ActionCardServiceError.self) {
+                try services.emailAccounts.actionCards.deleteProviderConnection(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    connectionId: request.parameters.get("id") ?? ""
+                )
+            }
         }
 
         providerConnections.patch(":id") { request async throws -> Response in
