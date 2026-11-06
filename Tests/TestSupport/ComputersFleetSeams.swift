@@ -70,7 +70,7 @@ extension EmailLoginDirectory {
     ) -> (id: String, apiKey: String, fingerprint: String) {
         let id = UUID().uuidString.lowercased()
         let apiKey = providedApiKey ?? Self.machineAPIKeyMaterial()
-        let fingerprint = Self.apiKeyFingerprint(apiKey)
+        let fingerprint = ComputersFleetService.apiKeyFingerprint(apiKey)
         lock.lock()
         machines.append(MachineRecord(
             id: id,
@@ -99,5 +99,19 @@ extension EmailLoginDirectory {
             machines[index].legacyKeyMigratedAt = date
         }
         lock.unlock()
+    }
+
+    /// Seeds the machine runtime model catalog the label-catalog and
+    /// runtime-options routes read.
+    public func setMachineRuntimeModels(machineId: String, runtime: String, models: [(id: String, label: String)]) {
+        lock.lock()
+        machineRuntimeModels[machineId, default: [:]][runtime] = (models, Date())
+        lock.unlock()
+    }
+
+    public func machineCount(serverId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return machines.filter { $0.serverId == serverId }.count
     }
 }

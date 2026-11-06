@@ -324,3 +324,214 @@ extension MachinesAndComputersStore {
         return storage.machines.first { $0.id == id }
     }
 }
+
+// MARK: - Computers fleet (ComputersFleetService)
+
+/// Result of one permission-gated machine write.
+enum FleetMachineMutation<Value> {
+    case missing
+    case forbidden
+    case applied(Value)
+}
+
+enum ComputerAttachOutcome {
+    case nameCollision
+    case attached(machineId: String, computerId: String)
+}
+
+enum LegacyAdoptionOutcome {
+    case machineMissing
+    case alreadyMigrated
+    case adopted(computerId: String, serverId: String, resumed: Bool)
+}
+
+extension MachinesAndComputersStore {
+    /// Records one deleted machine workspace (`machineId\ndirectoryName`).
+    func markWorkspaceDeleted(machineId: String, directoryName: String) {
+        lock.lock()
+        storage.deletedMachineWorkspaces.insert("\(machineId)\n\(directoryName)")
+        lock.unlock()
+    }
+
+    /// Lookup, creator/admin gate and description write in one critical
+    /// section. A non-nil `description` is trimmed and an empty result clears
+    /// the stored value.
+    func updateMachineDescription(
+        serverId: String,
+        machineId: String,
+        userId: String,
+        role: String,
+        description: String?
+    ) -> FleetMachineMutation<MachineRecord> {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = storage.machines.firstIndex(where: { $0.id == machineId && $0.serverId == serverId }) else {
+            return .missing
+        }
+        if role != "owner", role != "admin", storage.machines[index].userId != userId {
+            return .forbidden
+        }
+        if let description {
+            let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
+            storage.machines[index].description = trimmed.isEmpty ? nil : trimmed
+        }
+        return .applied(storage.machines[index])
+    }
+
+    /// Lookup, creator/admin gate and key replacement in one critical section.
+    func rotateMachineKey(
+        serverId: String,
+        machineId: String,
+        userId: String,
+        role: String,
+        apiKey: String
+    ) -> FleetMachineMutation<String> {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = storage.machines.firstIndex(where: { $0.id == machineId && $0.serverId == serverId }) else {
+            return .missing
+        }
+        if role != "owner", role != "admin", storage.machines[index].userId != userId {
+            return .forbidden
+        }
+        storage.machines[index].apiKey = apiKey
+        return .applied(apiKey)
+    }
+
+    /// The name-collision check, the machine registration, the Computer row
+    /// and the attacher binding in one critical section, so two concurrent
+    /// attaches of one name cannot both pass the collision check.
+    func attachComputer(
+        serverId: String,
+        userId: String,
+        name: String,
+        machineId: String,
+        machineApiKey: String,
+        computerId: String,
+        computerApiKey: String
+    ) -> ComputerAttachOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        let collides = storage.computers.contains { computer in
+            computer.revokedAt == nil
+                && computer.serverId == serverId
+                && computer.name == name
+                && storage.computerAttachers[computer.machineId ?? ""] == userId
+        }
+        if collides { return .nameCollision }
+        storage.machines.append(MachineRecord(
+            id: machineId,
+            serverId: serverId,
+            userId: userId,
+            name: name,
+            description: nil,
+            apiKey: machineApiKey
+        ))
+        storage.computers.append((
+            id: computerId,
+            serverId: serverId,
+            name: name,
+            apiKey: computerApiKey,
+            machineId: machineId,
+            revokedAt: nil,
+            online: false,
+            version: nil
+        ))
+        storage.computerAttachers[machineId] = userId
+        return .attached(machineId: machineId, computerId: computerId)
+    }
+
+    /// The legacy-key migration mark and the Computer mint/rotation in one
+    /// critical section: only the first caller flips `legacyKeyMigratedAt`, so
+    /// concurrent adoption requests collapse into exactly one winner. A row
+    /// that was already migrated may only resume its live Computer (with a
+    /// rotated credential) when the selector allows it.
+    func adoptLegacyMachine(
+        machineId: String,
+        userId: String,
+        name: String,
+        allowAlreadyMigratedResume: Bool,
+        apiKey: String,
+        newComputerId: String,
+        now: Date
+    ) -> LegacyAdoptionOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let machineIndex = storage.machines.firstIndex(where: { $0.id == machineId }) else {
+            return .machineMissing
+        }
+        let serverId = storage.machines[machineIndex].serverId
+        let liveComputerIndex = storage.computers.firstIndex { computer in
+            computer.machineId == machineId && computer.serverId == serverId && computer.revokedAt == nil
+        }
+        if storage.machines[machineIndex].legacyKeyMigratedAt != nil {
+            // Roster/daemon selection may retry after the server committed: the
+            // setup did not finish locally, so resume the linked Computer with
+            // a rotated credential instead of demanding the legacy key again.
+            guard allowAlreadyMigratedResume, let liveComputerIndex else { return .alreadyMigrated }
+            let live = storage.computers[liveComputerIndex]
+            storage.computers[liveComputerIndex] = (
+                id: live.id,
+                serverId: serverId,
+                name: name,
+                apiKey: apiKey,
+                machineId: machineId,
+                revokedAt: nil,
+                online: live.online,
+                version: live.version
+            )
+            return .adopted(computerId: live.id, serverId: serverId, resumed: true)
+        }
+        storage.machines[machineIndex].legacyKeyMigratedAt = now
+        let computerId: String
+        let resumed: Bool
+        if let liveComputerIndex {
+            let live = storage.computers[liveComputerIndex]
+            storage.computers[liveComputerIndex] = (
+                id: live.id,
+                serverId: serverId,
+                name: name,
+                apiKey: apiKey,
+                machineId: machineId,
+                revokedAt: nil,
+                online: live.online,
+                version: live.version
+            )
+            computerId = live.id
+            resumed = true
+        } else {
+            computerId = newComputerId
+            storage.computers.append((
+                id: computerId,
+                serverId: serverId,
+                name: name,
+                apiKey: apiKey,
+                machineId: machineId,
+                revokedAt: nil,
+                online: false,
+                version: nil
+            ))
+            resumed = false
+        }
+        storage.computerAttachers[machineId] = userId
+        return .adopted(computerId: computerId, serverId: serverId, resumed: resumed)
+    }
+
+    /// Removes one machine row and revokes every Computer linked to it (the
+    /// machine link is cleared, matched case-insensitively) in one critical
+    /// section. Returns false when the machine is already gone.
+    func removeMachine(serverId: String, machineId: String, now: Date) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = storage.machines.firstIndex(where: { $0.id == machineId && $0.serverId == serverId }) else {
+            return false
+        }
+        storage.machines.remove(at: index)
+        for computerIndex in storage.computers.indices
+        where storage.computers[computerIndex].machineId?.caseInsensitiveCompare(machineId) == .orderedSame {
+            storage.computers[computerIndex].machineId = nil
+            storage.computers[computerIndex].revokedAt = now
+        }
+        return true
+    }
+}

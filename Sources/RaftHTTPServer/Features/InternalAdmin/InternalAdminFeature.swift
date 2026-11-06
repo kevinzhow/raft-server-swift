@@ -377,30 +377,40 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             return Response(status: .unauthorized, headers: headers, body: .init(string: "{\"error\":\"Authentication policy not registered for this path\",\"code\":\"auth_policy_unregistered_path\"}"))
         }
         computer.post("runners", ":agentId", "credentials") { request async throws -> Response in
-            routeResponse(services.emailAccounts.computerMintRunnerCredential(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ComputerRunnerCredentialRequest.self, request)
+                ?? ComputerRunnerCredentialRequest()
+            return try await respond(status: 201) {
+                try services.emailAccounts.computersFleet.computerMintRunnerCredential(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    request: body
+                )
+            }
         }
-        computer.delete("runners", ":agentId", "credentials", ":credentialId") { request -> Response in
-            routeResponse(services.emailAccounts.computerRevokeRunnerCredential(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                credentialId: request.parameters.get("credentialId") ?? ""
-            ))
+        computer.delete("runners", ":agentId", "credentials", ":credentialId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.computersFleet.computerRevokeRunnerCredential(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    credentialId: request.parameters.get("credentialId") ?? ""
+                )
+            }
         }
-        computer.post("runners", ":agentId", "stop") { request -> Response in
-            routeResponse(services.emailAccounts.computerStopRunner(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? ""
-            ))
+        computer.post("runners", ":agentId", "stop") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.computersFleet.computerStopRunner(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
-        computer.get("runners") { request -> Response in
-            routeResponse(services.emailAccounts.computerRunners(
-                authorization: request.headers[.authorization],
-                scope: desktopQuery(request.url.query, "scope")
-            ))
+        computer.get("runners") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.computersFleet.computerRunners(
+                    authorization: request.headers[.authorization],
+                    scope: desktopQuery(request.url.query, "scope")
+                )
+            }
         }
         // The resumable control manifest is the one JSON surface allowed past the
         // 100 KB global parser: 512 KB manifest plus envelope headroom.

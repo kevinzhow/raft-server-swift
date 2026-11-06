@@ -165,54 +165,6 @@ public struct AgentHostedModelDTO: Codable, Sendable, Equatable, AgentsAndComput
     }
 }
 
-/// `POST /api/computer/attach` request body.
-///
-/// `serverSlug` selects the Server and `name` is the Computer label; the
-/// directory trims the name and falls back to `raft-computer`, and answers
-/// `server_slug_required` when the slug is absent or empty.
-public struct ComputerAttachRequestDTO: Codable, Sendable, Equatable, AgentsAndComputersRequestDTO {
-    public var serverSlug: String?
-    public var name: String?
-
-    public init(serverSlug: String? = nil, name: String? = nil) {
-        self.serverSlug = serverSlug
-        self.name = name
-    }
-}
-
-/// `POST /api/computer/adopt-legacy` request body.
-///
-/// One of three selectors identifies the legacy daemon: the raw
-/// `legacyApiKey`, the fingerprint roster triple
-/// (`serverSlug` + `legacyMachineId` + `apiKeyFingerprint`), or
-/// `serverSlug` + `daemonId`. The directory decides which selector applies and
-/// answers `legacy_api_key_required` when none does, so an incomplete or absent
-/// selector keeps the raw path.
-public struct ComputerAdoptLegacyRequestDTO: Codable, Sendable, Equatable, AgentsAndComputersRequestDTO {
-    public var legacyApiKey: String?
-    public var serverSlug: String?
-    public var legacyMachineId: String?
-    public var apiKeyFingerprint: String?
-    public var daemonId: String?
-    public var name: String?
-
-    public init(
-        legacyApiKey: String? = nil,
-        serverSlug: String? = nil,
-        legacyMachineId: String? = nil,
-        apiKeyFingerprint: String? = nil,
-        daemonId: String? = nil,
-        name: String? = nil
-    ) {
-        self.legacyApiKey = legacyApiKey
-        self.serverSlug = serverSlug
-        self.legacyMachineId = legacyMachineId
-        self.apiKeyFingerprint = apiKeyFingerprint
-        self.daemonId = daemonId
-        self.name = name
-    }
-}
-
 /// `PATCH /api/provider-connections/:id` request body.
 ///
 /// The route refuses a body with any key outside

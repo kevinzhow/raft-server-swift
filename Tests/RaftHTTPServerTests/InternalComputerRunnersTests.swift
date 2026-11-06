@@ -32,13 +32,12 @@ private func makeRunnersFixture() -> RunnersFixture {
     accounts.markEmailVerified(userId: ownerId)
     accounts.oauth.addOwnedServer(id: serverId, slug: serverSlug, name: "Runners Co", ownerId: ownerId)
     let ownerToken = accounts.mintAccessTokenForTesting(userId: ownerId)
-    let attach = accounts.attachComputer(
+    let attach = try? accounts.computersFleet.attachComputer(
         authorization: "Bearer \(ownerToken)",
-        body: "{\"serverSlug\":\"\(serverSlug)\",\"name\":\"runners-computer\"}"
+        request: ComputerAttachRequest(serverSlug: serverSlug, name: "runners-computer")
     )
-    let attachBody = (try? JSONSerialization.jsonObject(with: Data(attach.body.utf8))) as? [String: Any] ?? [:]
-    let computerKey = attachBody["apiKey"] as? String ?? ""
-    let machineId = attachBody["machineId"] as? String ?? ""
+    let computerKey = attach?.apiKey ?? ""
+    let machineId = attach?.machineId ?? ""
     let otherMachineId = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "other-machine")
 
     let agentId = accounts.oauth.createAgent(

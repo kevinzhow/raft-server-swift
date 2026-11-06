@@ -1,197 +1,347 @@
 import Crypto
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 
-/// The Computer fleet: machine registration surfaces, Computer
-/// attach/adoption, runner control and the legacy machine roster.
-///
-/// These handlers were lifted from `EmailLogin+ComputersUsage1.swift`.
+/// The not-yet-migrated domains the fleet still needs: the human session
+/// lookup, the realtime room emitter, the device-login feature gate, the agent
+/// credential mint and the Computer credential lookup.
+public struct ComputersFleetDependencies: Sendable {
+    /// One minted `sk_agent_*` credential and its row id.
+    public struct MintedCredential: Sendable, Equatable {
+        public var apiKey: String
+        public var credentialId: String
 
-public struct ComputersFleetService: Sendable {
-    public let directory: EmailLoginDirectory
+        public init(apiKey: String, credentialId: String) {
+            self.apiKey = apiKey
+            self.credentialId = credentialId
+        }
+    }
 
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
+    public var sessionUserId: @Sendable (String?) -> String?
+    public var emitRealtime: @Sendable (_ room: String, _ event: String, _ payload: String?) -> Void
+    public var computerAttachEnabled: @Sendable () -> Bool
+    public var mintAgentCredential: @Sendable (_ agentId: String, _ scopes: [String], _ name: String) -> MintedCredential
+    public var computerCredential: @Sendable (_ apiKey: String) -> ComputerCredentialLookup
+
+    public init(
+        sessionUserId: @escaping @Sendable (String?) -> String?,
+        emitRealtime: @escaping @Sendable (String, String, String?) -> Void,
+        computerAttachEnabled: @escaping @Sendable () -> Bool,
+        mintAgentCredential: @escaping @Sendable (String, [String], String) -> MintedCredential,
+        computerCredential: @escaping @Sendable (String) -> ComputerCredentialLookup
+    ) {
+        self.sessionUserId = sessionUserId
+        self.emitRealtime = emitRealtime
+        self.computerAttachEnabled = computerAttachEnabled
+        self.mintAgentCredential = mintAgentCredential
+        self.computerCredential = computerCredential
     }
 }
 
-extension EmailLoginDirectory {
+/// The Computer fleet: machine registration surfaces, Computer attach/adoption,
+/// runner control and the legacy machine roster.
+///
+/// The service owns authorization and projection; the machine/Computer rows
+/// live in `MachinesAndComputersStore` and the runner bindings in
+/// `AgentsRuntimeStore`, each mutation one critical section of its store.
+public struct ComputersFleetService: Sendable {
+    private let machines: MachinesAndComputersStore
+    private let agents: AgentsRuntimeStore
+    private let profiles: AuthProfileStore
+    private let oauth: OAuthLedger
+    private let dependencies: ComputersFleetDependencies
+    private let now: @Sendable () -> Date
 
-    public func deleteMachineWorkspace(authorization: String?, serverId: String, machineId: String, directoryName: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
-        }
-        lock.lock()
-        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Machine not found in this server\"}")
-        }
-        let canManage = role == "owner" || role == "admin" || machine.userId == userId
-        let ownsDirectory = agentMachineIds[directoryName] == machineId
-        lock.unlock()
-        guard canManage else {
-            return Self.json(403, "{\"error\":\"The `controlComputers` capability or machine creator authority is required to delete machine workspaces\"}")
-        }
-        guard ownsDirectory, let agent = oauth.agentRuntimeInfo(id: directoryName), agent.serverId == serverId else {
-            return Self.json(404, "{\"error\":\"Workspace not found\"}")
-        }
-        lock.lock()
-        deletedMachineWorkspaces.insert("\(machineId)\n\(directoryName)")
-        lock.unlock()
-        return Self.json(200, "{\"ok\":true}")
+    init(
+        machines: MachinesAndComputersStore,
+        agents: AgentsRuntimeStore,
+        profiles: AuthProfileStore,
+        oauth: OAuthLedger,
+        dependencies: ComputersFleetDependencies,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
+        self.machines = machines
+        self.agents = agents
+        self.profiles = profiles
+        self.oauth = oauth
+        self.dependencies = dependencies
+        self.now = now
     }
 
-    public func listServerMachines(authorization: String?, serverId: String) -> HTTPReply {        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
+    // MARK: - Machine roster
+
+    /// `DELETE /api/servers/:id/machines/:machineId/workspaces/:directoryName`.
+    public func deleteMachineWorkspace(
+        authorization: String?,
+        serverId: String,
+        machineId: String,
+        directoryName: String
+    ) throws -> OkResponse {
+        let userId = try requireUser(authorization)
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
+            throw ComputersFleetError.serverNotFound
         }
-        guard role != "guest" else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        guard let machine = machine(id: machineId, serverId: serverId) else {
+            throw ComputersFleetError.machineNotFoundInServer
         }
-        lock.lock()
-        let rows = machines.filter { $0.serverId == serverId }
-        let latest = latestComputerRelease
-        let policies = machineBroadcastPolicies
-        let attachers = computerAttachers
-        let computerVersions = computers.reduce(into: [String: String?]()) { result, computer in
-            if let machineId = computer.machineId { result[machineId] = computer.version }
+        let canManage = role == "owner" || role == "admin" || machine.userId == userId
+        let ownsDirectory = agents.state.agentMachineIds[directoryName] == machineId
+        guard canManage else { throw ComputersFleetError.workspaceDeleteForbidden }
+        guard ownsDirectory,
+              let agent = oauth.agentRuntimeInfo(id: directoryName),
+              agent.serverId == serverId
+        else { throw ComputersFleetError.workspaceNotFound }
+        machines.markWorkspaceDeleted(machineId: machineId, directoryName: directoryName)
+        return OkResponse()
+    }
+
+    /// `GET /api/servers/:id/machines`.
+    public func listServerMachines(authorization: String?, serverId: String) throws -> ServerMachinesResponse {
+        let userId = try requireUser(authorization)
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw ComputersFleetError.serverNotFound
         }
-        let assignments = agentMachineIds
-        let accountsSnapshot = accounts
-        let remoteUpgradeDisabled = remoteUpgradeDisabledServers.contains(serverId)
-        lock.unlock()
+        guard role != "guest" else { throw ComputersFleetError.forbidden }
+        let snapshot = machines.state
+        let assignments = agents.state
+        let rows = snapshot.machines.filter { $0.serverId == serverId }
+        let latest = snapshot.latestComputerRelease
+        let linkedMachineIds = Set(snapshot.computers.compactMap(\.machineId))
+        let remoteUpgradeDisabled = assignments.remoteUpgradeDisabledServers.contains(serverId)
+        let accountsSnapshot = profiles.accounts
         let memberIds = Set(oauth.memberIdsWithRoles(serverId: serverId).map(\.id))
-        let json = rows.map { machine -> String in
-            let policy = policies[machine.id]
-            let linked = computerVersions.keys.contains(machine.id)
-            let upgrade: String
-            let policyJSON: String
+        let entries = rows.map { machine -> ServerMachineEntry in
+            let policy = snapshot.machineBroadcastPolicies[machine.id]
+            let linked = linkedMachineIds.contains(machine.id)
+            let upgrade: Bool?
+            let policyBody: OrderedJSON
             if !linked {
-                upgrade = "null"
-                policyJSON = "null"
+                upgrade = nil
+                policyBody = .null
             } else if remoteUpgradeDisabled {
-                upgrade = "false"
-                policyJSON = "{\"eligibility\":\"no_broadcast\",\"targetVersion\":null,\"policyRevision\":null,\"reasonCode\":\"broadcast_disabled\"}"
+                upgrade = false
+                policyBody = Self.broadcastPolicy(eligibility: "no_broadcast", reasonCode: "broadcast_disabled")
             } else {
-                upgrade = (policy != nil && latest != nil) ? "true" : "false"
-                policyJSON = policy ?? "{\"eligibility\":\"ineligible\",\"targetVersion\":null,\"policyRevision\":null,\"reasonCode\":\"policy_row_missing\"}"
+                upgrade = policy != nil && latest != nil
+                policyBody = policy.map(OrderedJSON.raw)
+                    ?? Self.broadcastPolicy(eligibility: "ineligible", reasonCode: "policy_row_missing")
             }
-            let agentCount = assignments.filter { agentId, machineId in
+            let agentCount = assignments.agentMachineIds.filter { agentId, machineId in
                 machineId == machine.id && oauth.agentRuntimeInfo(id: agentId).map { !$0.deleted } == true
             }.count
             let account = accountsSnapshot.values.first { $0.id == machine.userId }
-            let creatorJSON: String
+            var creator: ServerMachineCreator?
             if memberIds.contains(machine.userId), let account {
-                let gravatar = Self.sha256(account.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
-                creatorJSON = "{\"type\":\"human\",\"id\":\(jsonString(account.id)),\"name\":\(jsonString(account.name)),\"displayName\":\(account.displayName.map(jsonString) ?? "null"),\"avatarUrl\":\(account.avatarUrl.map(jsonString) ?? "null"),\"gravatarHash\":\(jsonString(gravatar))}"
-            } else {
-                creatorJSON = "null"
+                creator = ServerMachineCreator(
+                    id: account.id,
+                    name: account.name,
+                    displayName: account.displayName,
+                    avatarUrl: account.avatarUrl,
+                    gravatarHash: Self.sha256Hex(account.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+                )
             }
-            let runtimes = machine.runtimes.map(jsonString).joined(separator: ",")
-            return "{\"id\":\(jsonString(machine.id)),\"name\":\(jsonString(machine.name)),\"userId\":\(jsonString(machine.userId)),\"description\":\(machine.description.map { jsonString($0) } ?? "null"),\"isComputer\":\(linked ? "true" : "false"),\"computerAttachedByCurrentUser\":\((attachers[machine.id] == userId) ? "true" : "false"),\"agentCount\":\(agentCount),\"creator\":\(creatorJSON),\"runtimes\":[\(runtimes)],\"computerUpgradeAvailable\":\(upgrade),\"computerBroadcastPolicy\":\(policyJSON)}"
-        }.joined(separator: ",")
-        let latestVersionJSON = latest.map { jsonString($0.version) } ?? "null"
-        let notesJSON = latest.map { $0.notesJSON } ?? "null"
-        return Self.json(200, "{\"machines\":[\(json)],\"latestComputerVersion\":\(latestVersionJSON),\"latestComputerReleaseNotes\":\(notesJSON)}")
+            return ServerMachineEntry(
+                id: machine.id,
+                name: machine.name,
+                userId: machine.userId,
+                description: machine.description,
+                isComputer: linked,
+                computerAttachedByCurrentUser: snapshot.computerAttachers[machine.id] == userId,
+                agentCount: agentCount,
+                creator: creator,
+                runtimes: machine.runtimes,
+                computerUpgradeAvailable: upgrade,
+                computerBroadcastPolicy: policyBody
+            )
+        }
+        return ServerMachinesResponse(
+            machines: entries,
+            latestComputerVersion: latest?.version,
+            latestComputerReleaseNotesJSON: latest?.notesJSON
+        )
     }
 
-    public func patchServerMachine(authorization: String?, serverId: String, machineId: String, body: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
+    /// `PATCH /api/servers/:id/machines/:machineId`.
+    public func patchServerMachine(
+        authorization: String?,
+        serverId: String,
+        machineId: String,
+        request: MachineDescriptionRequest
+    ) throws -> MachineDescriptionResponse {
+        let userId = try requireUser(authorization)
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw ComputersFleetError.notAMember
         }
-        lock.lock()
-        guard let index = machines.firstIndex(where: { $0.id == machineId && $0.serverId == serverId }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Machine not found\"}")
+        switch machines.updateMachineDescription(
+            serverId: serverId,
+            machineId: machineId,
+            userId: userId,
+            role: role,
+            description: request.description
+        ) {
+        case .missing:
+            throw ComputersFleetError.machineNotFound
+        case .forbidden:
+            throw ComputersFleetError.forbidden
+        case .applied(let machine):
+            emitMachineUpdated(serverId: serverId, machineId: machineId)
+            return MachineDescriptionResponse(id: machine.id, name: machine.name, description: machine.description)
         }
-        if role != "owner", role != "admin", machines[index].userId != userId {
-            lock.unlock()
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
-        }
-        if let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-           let description = object["description"] as? String {
-            let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
-            machines[index].description = trimmed.isEmpty ? nil : trimmed
-        }
-        let machine = machines[index]
-        lock.unlock()
-        emitRealtime("server:\(serverId)", "machine:updated", "{\"serverId\":\(jsonString(serverId)),\"machineId\":\(jsonString(machineId))}")
-        return Self.json(200, "{\"id\":\(jsonString(machine.id)),\"name\":\(jsonString(machine.name)),\"description\":\(machine.description.map { jsonString($0) } ?? "null")}")
     }
 
-    public func rotateServerMachineKey(authorization: String?, serverId: String, machineId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
+    /// `POST /api/servers/:id/machines/:machineId/rotate-key`.
+    public func rotateServerMachineKey(
+        authorization: String?,
+        serverId: String,
+        machineId: String
+    ) throws -> MachineKeyRotationResponse {
+        let userId = try requireUser(authorization)
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw ComputersFleetError.notAMember
         }
-        lock.lock()
-        guard let index = machines.firstIndex(where: { $0.id == machineId && $0.serverId == serverId }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Machine not found\"}")
+        switch machines.rotateMachineKey(
+            serverId: serverId,
+            machineId: machineId,
+            userId: userId,
+            role: role,
+            apiKey: EmailLoginDirectory.machineAPIKeyMaterial()
+        ) {
+        case .missing:
+            throw ComputersFleetError.machineNotFound
+        case .forbidden:
+            throw ComputersFleetError.forbidden
+        case .applied(let apiKey):
+            return MachineKeyRotationResponse(apiKey: apiKey)
         }
-        if role != "owner", role != "admin", machines[index].userId != userId {
-            lock.unlock()
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
-        }
-        machines[index].apiKey = Self.machineAPIKeyMaterial()
-        let key = machines[index].apiKey ?? ""
-        lock.unlock()
-        return Self.json(200, "{\"apiKey\":\(jsonString(key))}")
     }
 
-    public func attachComputer(authorization: String?, body: String) -> HTTPReply {
-        guard computerAttachEnabled() else {
-            return Self.json(404, "{\"error\":\"Not found\",\"code\":\"not_found\"}")
+    /// `DELETE /api/servers/:id/machines/:machineId`.
+    ///
+    /// The runtime-profile gate and the profile cleanup are one critical
+    /// section of `AgentsRuntimeStore`; the row removal and the Computer
+    /// revocation are one critical section of `MachinesAndComputersStore`.
+    /// The two stores never lock together, so the sections run in that order:
+    /// a refused delete leaves both stores untouched.
+    public func deleteServerMachine(
+        authorization: String?,
+        serverId: String,
+        machineId: String
+    ) throws -> OkResponse {
+        let userId = try requireUser(authorization)
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw ComputersFleetError.notAMember
         }
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
+        guard let machine = machine(id: machineId, serverId: serverId) else {
+            throw ComputersFleetError.machineNotFound
         }
-        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
-        guard let serverSlug = object["serverSlug"] as? String, !serverSlug.isEmpty else {
-            return Self.json(400, "{\"error\":\"serverSlug is required\",\"code\":\"server_slug_required\"}")
+        if role != "owner", role != "admin", machine.userId != userId {
+            throw ComputersFleetError.forbidden
+        }
+        switch agents.releaseMachineProfiles(machineId: machineId, agentActive: { [oauth] agentId in
+            guard let agent = oauth.agentRuntimeInfo(id: agentId) else { return false }
+            return !agent.deleted
+        }) {
+        case .activeMigration:
+            throw ComputersFleetError.machineHasActiveMigration
+        case .activeRuntimeProfile:
+            throw ComputersFleetError.machineHasActiveRuntimeProfile
+        case .released:
+            break
+        }
+        guard machines.removeMachine(serverId: serverId, machineId: machineId, now: now()) else {
+            throw ComputersFleetError.machineNotFound
+        }
+        emitMachineUpdated(serverId: serverId, machineId: machineId)
+        return OkResponse()
+    }
+
+    /// `POST /api/servers/:id/machines/:machineId/runtimes/rescan`.
+    public func machineRuntimeRescan(
+        authorization: String?,
+        serverId: String,
+        machineId: String
+    ) throws -> MachineRuntimeRescanResponse {
+        let userId = try requireUser(authorization)
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw ComputersFleetError.serverNotFound
+        }
+        let snapshot = machines.state
+        guard let machine = snapshot.machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
+            throw ComputersFleetError.computerNotFound
+        }
+        let online = snapshot.machineOnline[machineId] == true
+        guard role == "owner" || role == "admin" || machine.userId == userId else {
+            throw ComputersFleetError.runtimeRescanForbidden
+        }
+        guard online else { throw ComputersFleetError.runtimeRescanOffline }
+        return MachineRuntimeRescanResponse()
+    }
+
+    /// `GET /api/servers/:id/model-label-catalog`.
+    public func modelLabelCatalog(authorization: String?, serverId: String) throws -> ModelLabelCatalogResponse {
+        let userId = try requireUser(authorization)
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            throw ComputersFleetError.notAMember
+        }
+        let snapshot = machines.state
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let catalog = snapshot.machines.filter { $0.serverId == serverId }.map { machine -> ModelLabelCatalogMachine in
+            let runtimes = (snapshot.machineRuntimeModels[machine.id] ?? [:])
+                .sorted { $0.key < $1.key }
+                .map { runtime, entry in
+                    ModelLabelCatalogRuntime(
+                        runtime: runtime,
+                        models: entry.models.map { ModelLabelCatalogModel(id: $0.id, label: $0.label) },
+                        updatedAt: formatter.string(from: entry.updatedAt)
+                    )
+                }
+            return ModelLabelCatalogMachine(machineId: machine.id, runtimes: runtimes)
+        }
+        return ModelLabelCatalogResponse(machines: catalog)
+    }
+
+    // MARK: - Computer attach and adoption
+
+    /// `POST /api/computer/attach`. Mints a `sk_computer_*` principal for a
+    /// server Computer. The gate is default-on; the slug resolves the Server in
+    /// the body, and only owner/admin hold the manageMachines capability.
+    public func attachComputer(authorization: String?, request: ComputerAttachRequest) throws -> ComputerAttachResponse {
+        guard dependencies.computerAttachEnabled() else { throw ComputersFleetError.attachDisabled }
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ComputersFleetError.attachAuthRequired
+        }
+        guard let serverSlug = request.serverSlug, !serverSlug.isEmpty else {
+            throw ComputersFleetError.serverSlugRequired
         }
         guard let serverId = oauth.serverIdForSlug(serverSlug),
               let details = oauth.serverDetailsValue(id: serverId),
               let role = oauth.memberRole(serverId: serverId, userId: userId)
-        else {
-            return Self.json(403, "{\"error\":\"Not authorized\",\"code\":\"not_authorized\"}")
-        }
-        guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"This action requires an admin or the owner\",\"code\":\"requires_admin\"}")
-        }
-        let requestedName = (object["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        else { throw ComputersFleetError.notAuthorized }
+        guard role == "owner" || role == "admin" else { throw ComputersFleetError.attachRequiresAdmin }
+        let requestedName = request.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let name = requestedName.isEmpty ? "raft-computer" : requestedName
-        lock.lock()
-        let collides = computers.contains { computer in
-            computer.revokedAt == nil
-                && computer.serverId == serverId
-                && computer.name == name
-                && computerAttachers[computer.machineId ?? ""] == userId
+        let apiKey = EmailLoginDirectory.computerAPIKeyMaterial()
+        switch machines.attachComputer(
+            serverId: serverId,
+            userId: userId,
+            name: name,
+            machineId: Self.newId(),
+            machineApiKey: EmailLoginDirectory.machineAPIKeyMaterial(),
+            computerId: Self.newId(),
+            computerApiKey: apiKey
+        ) {
+        case .nameCollision:
+            throw ComputersFleetError.computerNameCollision
+        case .attached(let machineId, let computerId):
+            return ComputerAttachResponse(
+                apiKey: apiKey,
+                serverMachineId: computerId,
+                machineId: machineId,
+                serverId: serverId,
+                serverSlug: details.slug,
+                name: name
+            )
         }
-        lock.unlock()
-        if collides {
-            return Self.json(409, "{\"error\":\"A Computer with this name already exists\",\"code\":\"COMPUTER_NAME_COLLISION\"}")
-        }
-        let machineId = registerMachine(serverId: serverId, userId: userId, name: name)
-        let apiKey = Self.computerAPIKeyMaterial()
-        lock.lock()
-        let computerId = UUID().uuidString.lowercased()
-        computers.append((id: computerId, serverId: serverId, name: name, apiKey: apiKey, machineId: machineId, revokedAt: nil, online: false, version: nil))
-        computerAttachers[machineId] = userId
-        lock.unlock()
-        return Self.json(201, "{\"apiKey\":\(jsonString(apiKey)),\"serverMachineId\":\(jsonString(computerId)),\"machineId\":\(jsonString(machineId)),\"serverId\":\(jsonString(serverId)),\"serverSlug\":\(jsonString(details.slug)),\"name\":\(jsonString(name)),\"resumed\":false}")
     }
 
     /// `POST /api/computer/adopt-legacy`. One-time migration from a legacy
@@ -201,69 +351,67 @@ extension EmailLoginDirectory {
     /// `registerMachines`) a daemon row on a Server the caller manages. All
     /// three mint a Computer attachment, so all three need the same
     /// owner/admin capability as `/api/computer/attach`.
-    public func adoptLegacyComputer(authorization: String?, body: String) -> HTTPReply {
-        guard computerAttachEnabled() else {
-            return Self.json(404, "{\"error\":\"Not found\",\"code\":\"not_found\"}")
+    public func adoptLegacyComputer(
+        authorization: String?,
+        request: ComputerAdoptLegacyRequest
+    ) throws -> ComputerAdoptResponse {
+        guard dependencies.computerAttachEnabled() else { throw ComputersFleetError.attachDisabled }
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ComputersFleetError.adoptAuthRequired
         }
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Authentication required\",\"code\":\"auth_required\"}")
-        }
-        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
-        func text(_ key: String) -> String? {
-            guard let value = object[key] as? String, !value.isEmpty else { return nil }
-            return value
-        }
-        let hasRawLegacyKey = text("legacyApiKey") != nil
-        let hasRosterIdentity = text("serverSlug") != nil && text("legacyMachineId") != nil && text("apiKeyFingerprint") != nil
-        let hasDaemonIdentity = text("serverSlug") != nil && text("daemonId") != nil
+        let hasRawLegacyKey = request.legacyApiKey != nil
+        let hasRosterIdentity = request.serverSlug != nil
+            && request.legacyMachineId != nil
+            && request.apiKeyFingerprint != nil
+        let hasDaemonIdentity = request.serverSlug != nil && request.daemonId != nil
         guard hasRawLegacyKey || hasRosterIdentity || hasDaemonIdentity else {
-            return Self.json(400, "{\"error\":\"legacyApiKey, fingerprint roster identity, or daemonId identity is required\",\"code\":\"legacy_api_key_required\"}")
+            throw ComputersFleetError.legacyIdentityRequired
         }
         var requestedName: String?
-        if let rawName = object["name"], !(rawName is NSNull) {
-            guard let name = rawName as? String, !name.isEmpty, name.count <= 200 else {
-                return Self.json(400, "{\"error\":\"name must be a non-empty string up to 200 chars\",\"code\":\"name_invalid\"}")
-            }
+        switch request.name {
+        case .absent:
+            break
+        case .invalid:
+            throw ComputersFleetError.nameInvalid
+        case .value(let name):
+            guard !name.isEmpty, name.count <= 200 else { throw ComputersFleetError.nameInvalid }
             requestedName = name
         }
         if hasRosterIdentity {
-            return adoptLegacyComputerByRoster(
+            return try adoptByRoster(
                 userId: userId,
-                serverSlug: text("serverSlug") ?? "",
-                legacyMachineId: text("legacyMachineId") ?? "",
-                fingerprint: text("apiKeyFingerprint") ?? "",
+                serverSlug: request.serverSlug ?? "",
+                legacyMachineId: request.legacyMachineId ?? "",
+                fingerprint: request.apiKeyFingerprint ?? "",
                 requestedName: requestedName
             )
         }
         if hasDaemonIdentity {
-            return adoptLegacyComputerByDaemonId(
+            return try adoptByDaemonId(
                 userId: userId,
-                serverSlug: text("serverSlug") ?? "",
-                daemonId: text("daemonId") ?? "",
+                serverSlug: request.serverSlug ?? "",
+                daemonId: request.daemonId ?? "",
                 requestedName: requestedName
             )
         }
-        return adoptLegacyComputerByRawKey(
+        return try adoptByRawKey(
             userId: userId,
-            rawKey: text("legacyApiKey") ?? "",
+            rawKey: request.legacyApiKey ?? "",
             requestedName: requestedName
         )
     }
 
-    func adoptLegacyComputerByRawKey(userId: String, rawKey: String, requestedName: String?) -> HTTPReply {
+    private func adoptByRawKey(userId: String, rawKey: String, requestedName: String?) throws -> ComputerAdoptResponse {
         // The legacy auth middleware accepts both prefixes, so a real daemon in
         // the wild may still be running on either one.
         guard rawKey.hasPrefix("sk_machine_") || rawKey.hasPrefix("sk_daemon_") else {
-            return Self.json(401, "{\"error\":\"Invalid legacy machine key\",\"code\":\"legacy_key_invalid\"}")
+            throw ComputersFleetError.legacyKeyInvalid
         }
-        lock.lock()
-        let matched = machines.first { $0.apiKey == rawKey }?.id
-        lock.unlock()
-        guard let matched else {
-            return Self.json(401, "{\"error\":\"Invalid legacy machine key\",\"code\":\"legacy_key_invalid\"}")
+        guard let matched = machines.state.machines.first(where: { $0.apiKey == rawKey })?.id else {
+            throw ComputersFleetError.legacyKeyInvalid
         }
         // Possession is proven by the key itself; replay stays a hard conflict.
-        return adoptMatchedLegacyMachine(
+        return try adoptMatched(
             userId: userId,
             machineId: matched,
             requestedName: requestedName,
@@ -271,35 +419,29 @@ extension EmailLoginDirectory {
         )
     }
 
-    func adoptLegacyComputerByRoster(
+    private func adoptByRoster(
         userId: String,
         serverSlug: String,
         legacyMachineId: String,
         fingerprint: String,
         requestedName: String?
-    ) -> HTTPReply {
+    ) throws -> ComputerAdoptResponse {
         guard fingerprint.wholeMatch(of: /^[0-9a-fA-F]{16}$/) != nil else {
-            return Self.json(401, "{\"error\":\"Invalid legacy machine key\",\"code\":\"legacy_key_invalid\"}")
+            throw ComputersFleetError.legacyKeyInvalid
         }
         guard let serverId = oauth.serverIdForSlug(serverSlug),
               oauth.memberRole(serverId: serverId, userId: userId) != nil
-        else {
-            return Self.json(403, "{\"error\":\"Not authorized to adopt this machine\",\"code\":\"not_authorized\"}")
-        }
+        else { throw ComputersFleetError.adoptNotAuthorized }
         // The roster identity is user-scoped: selecting somebody else's row is
         // the same 401 as an unknown key so the roster cannot be probed.
-        lock.lock()
-        let matched = machines.first { machine in
+        let matched = machines.state.machines.first { machine in
             machine.id == legacyMachineId
                 && machine.serverId == serverId
                 && machine.userId == userId
                 && machine.apiKeyFingerprint?.lowercased() == fingerprint.lowercased()
         }?.id
-        lock.unlock()
-        guard let matched else {
-            return Self.json(401, "{\"error\":\"Invalid legacy machine key\",\"code\":\"legacy_key_invalid\"}")
-        }
-        return adoptMatchedLegacyMachine(
+        guard let matched else { throw ComputersFleetError.legacyKeyInvalid }
+        return try adoptMatched(
             userId: userId,
             machineId: matched,
             requestedName: requestedName,
@@ -307,32 +449,27 @@ extension EmailLoginDirectory {
         )
     }
 
-    func adoptLegacyComputerByDaemonId(
+    private func adoptByDaemonId(
         userId: String,
         serverSlug: String,
         daemonId: String,
         requestedName: String?
-    ) -> HTTPReply {
+    ) throws -> ComputerAdoptResponse {
         guard let serverId = oauth.serverIdForSlug(serverSlug),
               let role = oauth.memberRole(serverId: serverId, userId: userId)
-        else {
-            return Self.json(403, "{\"error\":\"Not authorized to adopt this machine\",\"code\":\"not_authorized\"}")
-        }
+        else { throw ComputersFleetError.adoptNotAuthorized }
         let managesMachines = role == "owner" || role == "admin"
-        lock.lock()
-        let row = machines.first { $0.id == daemonId && $0.serverId == serverId }
-        lock.unlock()
-        guard let row else {
+        guard let row = machine(id: daemonId, serverId: serverId) else {
             // Managers learn the row is missing; everybody else collapses into
             // the capability refusal so the route cannot enumerate identities.
-            return managesMachines
-                ? Self.json(404, "{\"error\":\"Legacy machine was not found on this server\",\"code\":\"legacy_machine_not_found\"}")
-                : Self.json(403, "{\"error\":\"Adopting a Computer requires the admin or owner role on this server\",\"code\":\"requires_admin\"}")
+            throw managesMachines
+                ? ComputersFleetError.legacyMachineNotFound
+                : ComputersFleetError.adoptRequiresAdmin
         }
         if row.userId != userId && !managesMachines {
-            return Self.json(403, "{\"error\":\"Adopting a Computer requires the admin or owner role on this server\",\"code\":\"requires_admin\"}")
+            throw ComputersFleetError.adoptRequiresAdmin
         }
-        return adoptMatchedLegacyMachine(
+        return try adoptMatched(
             userId: userId,
             machineId: row.id,
             requestedName: requestedName,
@@ -340,161 +477,147 @@ extension EmailLoginDirectory {
         )
     }
 
-    func adoptMatchedLegacyMachine(
+    private func adoptMatched(
         userId: String,
         machineId: String,
         requestedName: String?,
         allowAlreadyMigratedResume: Bool
-    ) -> HTTPReply {
-        lock.lock()
-        let snapshot = machines.first { $0.id == machineId }
-        lock.unlock()
-        guard let snapshot else {
-            return Self.json(401, "{\"error\":\"Invalid legacy machine key\",\"code\":\"legacy_key_invalid\"}")
+    ) throws -> ComputerAdoptResponse {
+        guard let snapshot = machines.state.machines.first(where: { $0.id == machineId }) else {
+            throw ComputersFleetError.legacyKeyInvalid
         }
         guard let role = oauth.memberRole(serverId: snapshot.serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not authorized to adopt this machine\",\"code\":\"not_authorized\"}")
+            throw ComputersFleetError.adoptNotAuthorized
         }
         let managesMachines = role == "owner" || role == "admin"
         if snapshot.userId != userId && !managesMachines {
-            return Self.json(403, "{\"error\":\"Adopting a Computer requires the admin or owner role on this server\",\"code\":\"requires_admin\"}")
+            throw ComputersFleetError.adoptRequiresAdmin
         }
         let name = Self.adoptedComputerName(requestedName, fallback: snapshot.name)
-        lock.lock()
-        guard let machineIndex = machines.firstIndex(where: { $0.id == machineId }) else {
-            lock.unlock()
-            return Self.json(401, "{\"error\":\"Invalid legacy machine key\",\"code\":\"legacy_key_invalid\"}")
-        }
-        let serverId = machines[machineIndex].serverId
-        let liveComputerIndex = computers.firstIndex { computer in
-            computer.machineId == machineId && computer.serverId == serverId && computer.revokedAt == nil
-        }
-        if machines[machineIndex].legacyKeyMigratedAt != nil {
-            // Roster/daemon selection may retry after the server committed: the
-            // setup did not finish locally, so resume the linked Computer with
-            // a rotated credential instead of demanding the legacy key again.
-            guard allowAlreadyMigratedResume, let liveComputerIndex else {
-                lock.unlock()
-                return Self.json(409, "{\"error\":\"This machine has already been migrated to a Computer attachment\",\"code\":\"legacy_machine_key_migrated\"}")
-            }
-            let apiKey = Self.computerAPIKeyMaterial()
-            computers[liveComputerIndex] = (
-                id: computers[liveComputerIndex].id,
-                serverId: serverId,
-                name: name,
+        let apiKey = EmailLoginDirectory.computerAPIKeyMaterial()
+        switch machines.adoptLegacyMachine(
+            machineId: machineId,
+            userId: userId,
+            name: name,
+            allowAlreadyMigratedResume: allowAlreadyMigratedResume,
+            apiKey: apiKey,
+            newComputerId: Self.newId(),
+            now: now()
+        ) {
+        case .machineMissing:
+            throw ComputersFleetError.legacyKeyInvalid
+        case .alreadyMigrated:
+            throw ComputersFleetError.legacyMachineKeyMigrated
+        case .adopted(let computerId, let serverId, let resumed):
+            return ComputerAdoptResponse(
                 apiKey: apiKey,
+                computerId: computerId,
                 machineId: machineId,
-                revokedAt: nil,
-                online: computers[liveComputerIndex].online,
-                version: computers[liveComputerIndex].version
-            )
-            let computerId = computers[liveComputerIndex].id
-            lock.unlock()
-            return Self.adoptedComputerReply(apiKey: apiKey, computerId: computerId, machineId: machineId, serverId: serverId, resumed: true)
-        }
-        // Atomic mark: only the first caller flips the flag, so concurrent
-        // adoption requests collapse into exactly one winner.
-        machines[machineIndex].legacyKeyMigratedAt = Date()
-        let apiKey = Self.computerAPIKeyMaterial()
-        let computerId: String
-        let resumed: Bool
-        if let liveComputerIndex {
-            computers[liveComputerIndex] = (
-                id: computers[liveComputerIndex].id,
                 serverId: serverId,
-                name: name,
-                apiKey: apiKey,
-                machineId: machineId,
-                revokedAt: nil,
-                online: computers[liveComputerIndex].online,
-                version: computers[liveComputerIndex].version
+                resumed: resumed
             )
-            computerId = computers[liveComputerIndex].id
-            resumed = true
-        } else {
-            computerId = UUID().uuidString.lowercased()
-            computers.append((id: computerId, serverId: serverId, name: name, apiKey: apiKey, machineId: machineId, revokedAt: nil, online: false, version: nil))
-            resumed = false
         }
-        computerAttachers[machineId] = userId
-        lock.unlock()
-        return Self.adoptedComputerReply(apiKey: apiKey, computerId: computerId, machineId: machineId, serverId: serverId, resumed: resumed)
     }
+
+    /// `GET /api/computer/legacy-machines`. A daemon-adoption roster scoped to
+    /// the caller's own machines on one Server. Unknown, deleted and
+    /// non-member servers collapse into one 403 so the roster cannot enumerate
+    /// servers, and credentials never leave through this surface.
+    public func legacyMachines(
+        authorization: String?,
+        serverSlug: String?,
+        includeAll: Bool
+    ) throws -> LegacyMachinesResponse {
+        guard dependencies.computerAttachEnabled() else { throw ComputersFleetError.attachDisabled }
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ComputersFleetError.attachAuthRequired
+        }
+        guard let serverSlug, !serverSlug.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ComputersFleetError.serverSlugRequired
+        }
+        guard let serverId = oauth.serverIdForSlug(serverSlug),
+              let details = oauth.serverDetailsValue(id: serverId),
+              oauth.memberRole(serverId: serverId, userId: userId) != nil
+        else { throw ComputersFleetError.notAuthorized }
+        let rows = machines.state.machines
+            .filter { machine in
+                machine.serverId == serverId
+                    && machine.userId == userId
+                    && (includeAll || machine.apiKeyFingerprint != nil)
+            }
+            .sorted { $0.name < $1.name }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let entries = rows.map { machine in
+            LegacyMachineEntry(
+                daemonId: machine.id,
+                machineName: machine.name,
+                hostname: machine.hostname,
+                lastSeenAt: machine.lastSeenAt.map { formatter.string(from: $0) },
+                hasFingerprint: machine.apiKeyFingerprint != nil,
+                legacyKeyMigratedAt: machine.legacyKeyMigratedAt.map { formatter.string(from: $0) },
+                apiKeyFingerprint: includeAll ? nil : machine.apiKeyFingerprint
+            )
+        }
+        return LegacyMachinesResponse(serverId: serverId, serverSlug: details.slug, entries: entries)
+    }
+
+    // MARK: - Runner control plane
 
     /// `POST /internal/computer/runners/:agentId/credentials`. A live Computer
     /// mints an agent credential for a runner of its own machine only.
-    public func computerMintRunnerCredential(authorization: String?, agentId: String, body: String) -> HTTPReply {
+    public func computerMintRunnerCredential(
+        authorization: String?,
+        agentId: String,
+        request: ComputerRunnerCredentialRequest
+    ) throws -> ComputerRunnerCredentialResponse {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return Self.json(401, "{\"error\":\"Invalid computer credential\"}")
+            throw ComputersFleetError.invalidComputerCredential
         }
         let apiKey = String(authorization.dropFirst("Bearer ".count))
-        guard case .linked(let computerId, let machineId) = computerCredential(apiKey: apiKey) else {
-            return Self.json(401, "{\"error\":\"Invalid computer credential\"}")
+        guard case .linked(let computerId, let machineId) = dependencies.computerCredential(apiKey) else {
+            throw ComputersFleetError.invalidComputerCredential
         }
-        lock.lock()
-        guard let computer = computers.first(where: { $0.id == computerId }),
+        guard let computer = machines.state.computers.first(where: { $0.id == computerId }),
               let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted,
               agent.serverId == computer.serverId,
-              agentMachineIds[agentId] == machineId
-        else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Agent not found\",\"code\":\"agent_missing\"}")
-        }
-        lock.unlock()
-        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
+              agents.state.agentMachineIds[agentId] == machineId
+        else { throw ComputersFleetError.agentMissing }
         let allowed = ["send", "read", "mentions", "tasks", "reactions", "server", "channels", "knowledge", "mcp", "raftbench"]
         let scopes: [String]
-        if let raw = object["scopes"] {
-            guard let list = raw as? [Any], list.allSatisfy({ $0 is String }) else {
-                return Self.json(400, "{\"error\":\"scopes must be an array of capability literals\",\"code\":\"scopes_invalid\"}")
-            }
-            let values = Set(list.compactMap { $0 as? String })
+        switch request.scopes {
+        case .absent:
+            scopes = allowed
+        case .invalid:
+            throw ComputersFleetError.scopesInvalid(message: "scopes must be an array of capability literals")
+        case .list(let list):
+            let values = Set(list)
             guard values.allSatisfy({ allowed.contains($0) }) else {
                 let expected = allowed.joined(separator: ", ")
-                return Self.json(400, "{\"error\":\"scopes must each be one of: \(expected)\",\"code\":\"scopes_invalid\"}")
+                throw ComputersFleetError.scopesInvalid(message: "scopes must each be one of: \(expected)")
             }
-            guard !values.isEmpty else {
-                return Self.json(400, "{\"error\":\"scopes must include at least one capability\",\"code\":\"scopes_empty\"}")
-            }
+            guard !values.isEmpty else { throw ComputersFleetError.scopesEmpty }
             scopes = values.sorted()
-        } else {
-            scopes = allowed
         }
         var name = "computer-runner"
-        if let rawName = object["name"], !(rawName is NSNull) {
-            guard let text = rawName as? String, !text.isEmpty, text.count <= 200 else {
-                return Self.json(400, "{\"error\":\"name must be a non-empty string up to 200 chars\",\"code\":\"name_invalid\"}")
-            }
+        switch request.name {
+        case .absent:
+            break
+        case .invalid:
+            throw ComputersFleetError.nameInvalid
+        case .value(let text):
+            guard !text.isEmpty, text.count <= 200 else { throw ComputersFleetError.nameInvalid }
             name = text
         }
-        let minted = mintAgentCredential(agentId: agentId, scopes: scopes, name: name)
-        lock.lock()
-        let credentialId = agentCredentials[minted]?.id ?? UUID().uuidString.lowercased()
-        lock.unlock()
-        let scopeJSON = scopes.map { jsonString($0) }.joined(separator: ",")
-        return Self.json(201, "{\"credentialId\":\(jsonString(credentialId)),\"apiKey\":\(jsonString(minted)),\"scopes\":[\(scopeJSON)],\"agentId\":\(jsonString(agentId)),\"agentName\":\(jsonString(agent.name)),\"serverId\":\(jsonString(agent.serverId))}")
-    }
-
-    func computerCredentialValid(_ authorization: String?) -> Bool {
-        guard let authorization, authorization.hasPrefix("Bearer ") else { return false }
-        let key = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        defer { lock.unlock() }
-        return computers.contains { $0.apiKey == key && $0.revokedAt == nil }
-    }
-
-    /// Resolves the Computer behind a `sk_computer_*` bearer to its attached
-    /// machine. A revoked, unknown or machine-unlinked credential yields nil.
-    func computerRunnerContext(_ authorization: String?) -> (computerId: String, serverId: String, machineId: String)? {
-        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
-        let apiKey = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        defer { lock.unlock() }
-        guard let computer = computers.first(where: { $0.apiKey == apiKey && $0.revokedAt == nil }),
-              let machineId = computer.machineId,
-              machines.contains(where: { $0.id == machineId })
-        else { return nil }
-        return (computer.id, computer.serverId, machineId)
+        let minted = dependencies.mintAgentCredential(agentId, scopes, name)
+        return ComputerRunnerCredentialResponse(
+            credentialId: minted.credentialId,
+            apiKey: minted.apiKey,
+            scopes: scopes,
+            agentId: agentId,
+            agentName: agent.name,
+            serverId: agent.serverId
+        )
     }
 
     /// `GET /internal/computer/runners`. The §12 control-plane whitelist is
@@ -502,290 +625,253 @@ extension EmailLoginDirectory {
     /// env vars, runtime config) can ever reach the wire — a client-side filter
     /// would not protect against a server dump bug. Default scope is this
     /// Computer's machine; `?scope=server` keeps the legacy server-wide view.
-    public func computerRunners(authorization: String?, scope: String? = nil) -> HTTPReply {
-        guard let context = computerRunnerContext(authorization) else {
-            return Self.json(401, "{\"error\":\"Invalid computer credential\"}")
-        }
+    public func computerRunners(authorization: String?, scope: String? = nil) throws -> ComputerRunnersResponse {
+        let context = try runnerContext(authorization)
         let serverWide = scope == "server"
-        lock.lock()
-        let machineByAgent = agentMachineIds
-        lock.unlock()
-        let agents = oauth.serverAgents(serverId: context.serverId)
+        let machineByAgent = agents.state.agentMachineIds
+        let rows = oauth.serverAgents(serverId: context.serverId)
             .filter { !$0.deleted }
             .sorted { $0.name < $1.name }
-        var rows: [String] = []
-        for agent in agents {
-            if !serverWide, machineByAgent[agent.id] != context.machineId { continue }
-            let status = agent.status
-            let model = Self.runnerModel(from: agent.runtimeConfigJSON)
-            rows.append("{\"agentId\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"status\":\(jsonString(status)),\"model\":\(jsonString(model)),\"runtime\":\(jsonString(agent.runtime))}")
-        }
-        return Self.json(200, "{\"whitelist\":[\"agentId\",\"name\",\"status\",\"model\",\"runtime\"],\"runners\":[\(rows.joined(separator: ","))]}")
+            .filter { serverWide || machineByAgent[$0.id] == context.machineId }
+            .map { agent in
+                ComputerRunnerEntry(
+                    agentId: agent.id,
+                    name: agent.name,
+                    status: agent.status,
+                    model: Self.runnerModel(from: agent.runtimeConfigJSON),
+                    runtime: agent.runtime
+                )
+            }
+        return ComputerRunnersResponse(runners: rows)
     }
 
     /// `POST /internal/computer/runners/:agentId/stop`. A Computer stops only a
     /// runner bound to its own machine on its own Server; anything else answers
     /// the uniform missing-agent 404 so other machines' and servers' agents
     /// cannot be probed.
-    public func computerStopRunner(authorization: String?, agentId: String) -> HTTPReply {
-        guard let context = computerRunnerContext(authorization) else {
-            return Self.json(401, "{\"error\":\"Invalid computer credential\"}")
-        }
+    public func computerStopRunner(authorization: String?, agentId: String) throws -> ComputerRunnerStopResponse {
+        let context = try runnerContext(authorization)
         guard let agent = oauth.agentRuntimeInfo(id: agentId),
               !agent.deleted,
               agent.serverId == context.serverId
-        else {
-            return Self.json(404, "{\"error\":\"Agent not found\",\"code\":\"agent_missing\"}")
+        else { throw ComputersFleetError.agentMissing }
+        guard agents.stopRunner(agentId: agentId, machineId: context.machineId) else {
+            throw ComputersFleetError.agentMissing
         }
-        lock.lock()
-        let bound = agentMachineIds[agentId] == context.machineId
-        lock.unlock()
-        guard bound else {
-            return Self.json(404, "{\"error\":\"Agent not found\",\"code\":\"agent_missing\"}")
-        }
-        lock.lock()
-        if serverAgents[agentId] != nil { serverAgents[agentId]?.status = "inactive" }
-        lock.unlock()
-        return Self.json(200, "{\"agentId\":\(jsonString(agentId))}")
+        return ComputerRunnerStopResponse(agentId: agentId)
     }
 
     /// `DELETE /internal/computer/runners/:agentId/credentials/:credentialId`.
     /// Same machine binding as the stop surface: another machine's runner is a
     /// uniform missing-agent 404, never a credential oracle.
-    public func computerRevokeRunnerCredential(authorization: String?, agentId: String, credentialId: String) -> HTTPReply {
-        guard let context = computerRunnerContext(authorization) else {
-            return Self.json(401, "{\"error\":\"Invalid computer credential\"}")
-        }
+    public func computerRevokeRunnerCredential(
+        authorization: String?,
+        agentId: String,
+        credentialId: String
+    ) throws -> ComputerRunnerCredentialRevokeResponse {
+        let context = try runnerContext(authorization)
         guard let agent = oauth.agentRuntimeInfo(id: agentId),
               !agent.deleted,
               agent.serverId == context.serverId
-        else {
-            return Self.json(404, "{\"error\":\"Agent not found\",\"code\":\"agent_missing\"}")
+        else { throw ComputersFleetError.agentMissing }
+        switch agents.revokeRunnerCredential(
+            agentId: agentId,
+            machineId: context.machineId,
+            credentialId: credentialId,
+            now: now()
+        ) {
+        case .notBound:
+            throw ComputersFleetError.agentMissing
+        case .credentialMissing:
+            throw ComputersFleetError.credentialMissing
+        case .revoked(let revokedCredentialId):
+            return ComputerRunnerCredentialRevokeResponse(
+                agentId: agentId,
+                credentialId: revokedCredentialId,
+                revoked: true
+            )
         }
-        lock.lock()
-        let bound = agentMachineIds[agentId] == context.machineId
-        var revokedCredentialId: String?
-        if bound, let entry = agentCredentials.first(where: { $0.value.id == credentialId && $0.value.agentId == agentId }) {
-            agentCredentials[entry.key]?.revokedAt = entry.value.revokedAt ?? Date()
-            revokedCredentialId = entry.value.id
-        }
-        lock.unlock()
-        guard bound else {
-            return Self.json(404, "{\"error\":\"Agent not found\",\"code\":\"agent_missing\"}")
-        }
-        guard let revokedCredentialId else {
-            return Self.json(404, "{\"error\":\"Credential not found\",\"code\":\"credential_missing\"}")
-        }
-        return Self.json(200, "{\"agentId\":\(jsonString(agentId)),\"credentialId\":\(jsonString(revokedCredentialId)),\"revoked\":true}")
     }
 
-    public func setMachineRuntimeModels(machineId: String, runtime: String, models: [(id: String, label: String)]) {
-        lock.lock()
-        machineRuntimeModels[machineId, default: [:]][runtime] = (models, Date())
-        lock.unlock()
-    }
+    // MARK: - Computer controls
 
-    public func computerAction(authorization: String?, serverId: String, machineId: String, action: String, body: String = "") -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
+    /// `POST /api/servers/:id/machines/:machineId/computer/:action`.
+    public func computerAction(
+        authorization: String?,
+        serverId: String,
+        machineId: String,
+        action: String,
+        request: ComputerActionRequest
+    ) throws -> ComputerActionResponse {
+        let userId = try requireUser(authorization)
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw ComputersFleetError.notAMember
         }
-        guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
-        }
+        guard role == "owner" || role == "admin" else { throw ComputersFleetError.forbidden }
         guard ["restart", "start", "stop", "upgrade"].contains(action) else {
-            return Self.json(400, "{\"error\":\"Unknown computer action\",\"code\":\"unknown_action\"}")
+            throw ComputersFleetError.unknownAction
         }
         if action == "upgrade" {
-            lock.lock()
-            let disabled = remoteUpgradeDisabledServers.contains(serverId)
-            lock.unlock()
-            guard !disabled else {
-                return Self.json(403, "{\"error\":\"Remote upgrade is disabled for this server\",\"code\":\"remote_upgrade_disabled\"}")
+            guard !agents.state.remoteUpgradeDisabledServers.contains(serverId) else {
+                throw ComputersFleetError.remoteUpgradeDisabled
             }
-            let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
-            let target = (object?["targetVersion"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !target.isEmpty else {
-                return Self.json(400, "{\"error\":\"targetVersion is required\",\"code\":\"invalid_target_version\"}")
-            }
+            let target = request.targetVersion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !target.isEmpty else { throw ComputersFleetError.invalidTargetVersion }
         }
-        lock.lock()
-        let machineExists = machines.contains { $0.id == machineId && $0.serverId == serverId }
-        let linked = computers.filter { candidate in
+        let snapshot = machines.state
+        let machineExists = snapshot.machines.contains { $0.id == machineId && $0.serverId == serverId }
+        let linked = snapshot.computers.filter { candidate in
             candidate.serverId == serverId
                 && candidate.machineId == machineId
                 && candidate.revokedAt == nil
         }
         let computer = linked.first { $0.online } ?? linked.first
-        lock.unlock()
-        guard machineExists else {
-            return Self.json(404, "{\"error\":\"Machine not found\"}")
-        }
-        guard let computer else {
-            return Self.json(409, "{\"error\":\"Machine is not a Computer\",\"code\":\"not_a_computer\"}")
-        }
-        guard computer.online else {
-            return Self.json(409, "{\"error\":\"Computer is offline\",\"code\":\"computer_offline\"}")
-        }
+        guard machineExists else { throw ComputersFleetError.machineNotFound }
+        guard let computer else { throw ComputersFleetError.notAComputer }
+        guard computer.online else { throw ComputersFleetError.computerOffline }
         guard let version = computer.version, !version.isEmpty else {
-            return Self.json(409, "{\"error\":\"Raft couldn't verify the Computer version. Reconnect the Computer, then try again.\",\"code\":\"computer_control_unsupported\"}")
+            throw ComputersFleetError.computerControlUnsupported
         }
-        let requestId = UUID().uuidString.lowercased()
+        let requestId = Self.newId()
         if action == "upgrade" {
-            let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
-            let target = (object?["targetVersion"] as? String) ?? ""
-            if let sender = computerUpgradeSender, !sender(machineId, target, requestId) {
-                return Self.json(409, "{\"error\":\"Computer is offline\",\"code\":\"computer_offline\"}")
+            let target = request.targetVersion ?? ""
+            if let sender = snapshot.computerUpgradeSender, !sender(machineId, target, requestId) {
+                throw ComputersFleetError.computerOffline
             }
         }
-        return Self.json(200, "{\"ok\":true,\"action\":\(jsonString(action)),\"requestId\":\(jsonString(requestId)),\"operationId\":\(jsonString(UUID().uuidString.lowercased())),\"computerVersion\":\(jsonString(version))}")
+        return ComputerActionResponse(
+            action: action,
+            requestId: requestId,
+            operationId: Self.newId(),
+            computerVersion: version
+        )
     }
 
-    public func machineRuntimeRescan(authorization: String?, serverId: String, machineId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    /// `POST /api/servers/:id/machines/:machineId/computer-lifecycle-operations`.
+    ///
+    /// The body is validated before the session is read, exactly as the
+    /// published route does: a malformed request is a 400 even without a token.
+    public func computerLifecycleOperation(
+        authorization: String?,
+        serverId: String,
+        machineId: String,
+        request: ComputerLifecycleRequest
+    ) throws -> ComputerLifecycleOperationResponse {
+        guard let action = request.action,
+              ["start", "stop", "restart", "upgrade"].contains(action)
+        else { throw ComputersFleetError.lifecycleUnknownAction }
+        guard let operationId = request.operationId, ServerScope.isUUID(operationId) else {
+            throw ComputersFleetError.invalidOperationId
         }
+        guard let parentOperationId = request.parentOperationId, ServerScope.isUUID(parentOperationId) else {
+            throw ComputersFleetError.invalidParentOperationId
+        }
+        let targetVersion = request.targetVersion
+        if action == "upgrade" {
+            guard !agents.state.remoteUpgradeDisabledServers.contains(serverId) else {
+                throw ComputersFleetError.lifecycleBroadcastDisabled
+            }
+            if let targetVersion, targetVersion.wholeMatch(of: /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/) == nil {
+                throw ComputersFleetError.lifecycleInvalidTargetVersion
+            }
+        } else if targetVersion != nil {
+            throw ComputersFleetError.lifecycleInvalidTargetVersion
+        }
+        if request.completionModePresent {
+            guard action == "upgrade", request.completionMode == "legacy_k_promoted" else {
+                throw ComputersFleetError.invalidCompletionMode
+            }
+        }
+        let userId = try requireUser(authorization)
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
+            throw ComputersFleetError.serverNotFound
         }
-        lock.lock()
-        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Computer not found\"}")
+        let snapshot = machines.state
+        guard let machine = snapshot.machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
+            throw ComputersFleetError.machineNotFoundInServer
         }
-        let online = machineOnline[machineId] == true
-        lock.unlock()
+        let computer = snapshot.computers.first {
+            $0.machineId == machineId && $0.serverId == serverId && $0.revokedAt == nil
+        }
+        let online = snapshot.machineOnline[machineId] == true || computer?.online == true
         guard role == "owner" || role == "admin" || machine.userId == userId else {
-            return Self.json(403, "{\"error\":\"The `editMachines` capability or machine creator authority is required to rescan runtimes\"}")
+            throw ComputersFleetError.lifecycleForbidden
         }
-        guard online else {
-            return Self.json(409, "{\"error\":\"Computer is offline\"}")
-        }
-        return Self.json(200, "{\"requested\":true}")
-    }
-
-    public func modelLabelCatalog(authorization: String?, serverId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
-        lock.lock()
-        let serverMachines = machines.filter { $0.serverId == serverId }
-        let snapshot = machineRuntimeModels
-        lock.unlock()
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let machinesJSON = serverMachines.map { machine -> String in
-            let runtimes = snapshot[machine.id] ?? [:]
-            let runtimesJSON = runtimes.map { runtime, entry -> String in
-                let models = entry.models.map { model in
-                    "{\"id\":\(jsonString(model.id)),\"label\":\(jsonString(model.label))}"
-                }.joined(separator: ",")
-                return "\(jsonString(runtime)):{\"models\":[\(models)],\"updatedAt\":\(jsonString(formatter.string(from: entry.updatedAt)))}"
-            }.joined(separator: ",")
-            return "\(jsonString(machine.id)):{\"runtimes\":{\(runtimesJSON)}}"
-        }.joined(separator: ",")
-        return Self.json(200, "{\"machines\":{\(machinesJSON)}}")
-    }
-
-    public func machineCount(serverId: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return machines.filter { $0.serverId == serverId }.count
-    }
-
-    public func deleteServerMachine(authorization: String?, serverId: String, machineId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
-        lock.lock()
-        guard let index = machines.firstIndex(where: { $0.id == machineId && $0.serverId == serverId }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Machine not found\"}")
-        }
-        if role != "owner", role != "admin", machines[index].userId != userId {
-            lock.unlock()
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
-        }
-        let activeMigration = activeAgentMigrations.values.contains { migration in
-            migration.sourceMachineId == machineId
-                && !["completed", "failed", "aborted", "cancelled"].contains(migration.state)
-        }
-        if activeMigration {
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"Cannot delete computer while an agent migration is in progress. Wait for it to finish or abort it first.\",\"code\":\"MACHINE_HAS_ACTIVE_MIGRATION\"}")
-        }
-        let terminalStates: Set<String> = ["completed", "failed", "aborted", "cancelled"]
-        var profileRemovals: [String] = []
-        var profileUpdates: [String: AgentRuntimeProfileFact] = [:]
-        for (agentId, profile) in agentRuntimeProfiles {
-            let agent = oauth.agentRuntimeInfo(id: agentId)
-            let agentActive = agent != nil && agent?.deleted == false
-            if profile.machineId == machineId {
-                if !agentActive {
-                    profileRemovals.append(agentId)
-                    continue
-                }
-                let assignment = agentMachineIds[agentId]
-                let proof = assignment.map { target in
-                    activeAgentMigrations.values.contains { migration in
-                        migration.agentId == agentId
-                            && migration.sourceMachineId == machineId
-                            && migration.targetMachineId == target
-                            && terminalStates.contains(migration.state)
-                            && migration.state == "completed"
-                    }
-                } ?? false
-                if proof, profile.pendingKind == nil {
-                    profileRemovals.append(agentId)
-                } else {
-                    lock.unlock()
-                    return Self.json(409, "{\"error\":\"Cannot delete computer while runtime profiles still reference active agents. Remove or migrate related agents first.\",\"code\":\"MACHINE_HAS_ACTIVE_RUNTIME_PROFILE\"}")
-                }
-            } else if profile.pendingBeforeMachineId == machineId {
-                if !agentActive {
-                    var updated = profile
-                    updated.pendingBeforeMachineId = nil
-                    profileUpdates[agentId] = updated
-                    continue
-                }
-                let proof = activeAgentMigrations.values.contains { migration in
-                    migration.agentId == agentId
-                        && migration.sourceMachineId == machineId
-                        && migration.targetMachineId == profile.machineId
-                        && migration.state == "completed"
-                }
-                if proof {
-                    var updated = profile
-                    updated.pendingBeforeMachineId = nil
-                    profileUpdates[agentId] = updated
-                } else {
-                    lock.unlock()
-                    return Self.json(409, "{\"error\":\"Cannot delete computer while runtime profiles still reference active agents. Remove or migrate related agents first.\",\"code\":\"MACHINE_HAS_ACTIVE_RUNTIME_PROFILE\"}")
-                }
+        guard computer != nil else { throw ComputersFleetError.lifecycleNotAComputer }
+        if action == "start", online { throw ComputersFleetError.computerAlreadyOnline }
+        if action != "start", !online { throw ComputersFleetError.lifecycleComputerNotOnline }
+        var resolvedTarget = targetVersion
+        if action == "upgrade", resolvedTarget == nil {
+            guard let latest = machines.state.latestComputerRelease?.version else {
+                throw ComputersFleetError.computerUpgradeUnavailable
             }
+            resolvedTarget = latest
         }
-        for agentId in profileRemovals {
-            agentRuntimeProfiles.removeValue(forKey: agentId)
+        if request.completionModePresent { throw ComputersFleetError.lifecycleCompletionReadyPending }
+        return ComputerLifecycleOperationResponse(
+            operationId: operationId,
+            parentOperationId: parentOperationId,
+            serverId: serverId,
+            machineId: machineId,
+            actorUserId: userId,
+            action: action,
+            targetVersion: resolvedTarget
+        )
+    }
+
+    // MARK: - Helpers
+
+    private func requireUser(_ authorization: String?) throws -> String {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw ComputersFleetError.unauthorized
         }
-        for (agentId, profile) in profileUpdates {
-            agentRuntimeProfiles[agentId] = profile
+        return userId
+    }
+
+    private func machine(id: String, serverId: String) -> MachineRecord? {
+        machines.state.machines.first { $0.id == id && $0.serverId == serverId }
+    }
+
+    /// Resolves the Computer behind a `sk_computer_*` bearer to its attached
+    /// machine. A revoked, unknown or machine-unlinked credential is the 401.
+    private func runnerContext(
+        _ authorization: String?
+    ) throws -> (computerId: String, serverId: String, machineId: String) {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            throw ComputersFleetError.invalidComputerCredential
         }
-        machines.remove(at: index)
-        for computerIndex in computers.indices where computers[computerIndex].machineId?.caseInsensitiveCompare(machineId) == .orderedSame {
-            computers[computerIndex].machineId = nil
-            computers[computerIndex].revokedAt = Date()
-        }
-        lock.unlock()
-        emitRealtime("server:\(serverId)", "machine:updated", "{\"serverId\":\(jsonString(serverId)),\"machineId\":\(jsonString(machineId))}")
-        return Self.json(200, "{\"ok\":true}")
+        let apiKey = String(authorization.dropFirst("Bearer ".count))
+        let snapshot = machines.state
+        guard let computer = snapshot.computers.first(where: { $0.apiKey == apiKey && $0.revokedAt == nil }),
+              let machineId = computer.machineId,
+              snapshot.machines.contains(where: { $0.id == machineId })
+        else { throw ComputersFleetError.invalidComputerCredential }
+        return (computer.id, computer.serverId, machineId)
+    }
+
+    private func emitMachineUpdated(serverId: String, machineId: String) {
+        let payload = OrderedJSON.object([
+            OrderedJSONField("serverId", serverId),
+            OrderedJSONField("machineId", machineId),
+        ]).render()
+        dependencies.emitRealtime("server:\(serverId)", "machine:updated", payload)
+    }
+
+    private static func newId() -> String {
+        UUID().uuidString.lowercased()
+    }
+
+    private static func broadcastPolicy(eligibility: String, reasonCode: String) -> OrderedJSON {
+        .object([
+            OrderedJSONField("eligibility", eligibility),
+            OrderedJSONField("targetVersion", .null),
+            OrderedJSONField("policyRevision", .null),
+            OrderedJSONField("reasonCode", reasonCode),
+        ])
+    }
+
+    private static func sha256Hex(_ value: String) -> String {
+        SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     /// `sha256(apiKey)` hex, first 16 characters — the wire identity the legacy
@@ -795,130 +881,39 @@ extension EmailLoginDirectory {
         String(sha256Hex(apiKey).prefix(16))
     }
 
-    /// `GET /api/computer/legacy-machines`. A daemon-adoption roster scoped to
-    /// the caller's own machines on one Server. Unknown, deleted and
-    /// non-member servers collapse into one 403 so the roster cannot enumerate
-    /// servers, and credentials never leave through this surface.
-    public func legacyMachines(authorization: String?, serverSlug: String?, includeAll: Bool) -> HTTPReply {
-        guard computerAttachEnabled() else {
-            return Self.json(404, "{\"error\":\"Not found\",\"code\":\"not_found\"}")
+    static func adoptedComputerName(_ supplied: String?, fallback: String) -> String {
+        if let supplied {
+            let trimmed = supplied.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty, trimmed.count <= 200 { return trimmed }
         }
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
-        }
-        guard let serverSlug, !serverSlug.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return Self.json(400, "{\"error\":\"serverSlug is required\",\"code\":\"server_slug_required\"}")
-        }
-        guard let serverId = oauth.serverIdForSlug(serverSlug),
-              let details = oauth.serverDetailsValue(id: serverId),
-              oauth.memberRole(serverId: serverId, userId: userId) != nil
-        else {
-            return Self.json(403, "{\"error\":\"Not authorized\",\"code\":\"not_authorized\"}")
-        }
-        lock.lock()
-        let rows = machines
-            .filter { machine in
-                machine.serverId == serverId
-                    && machine.userId == userId
-                    && (includeAll || machine.apiKeyFingerprint != nil)
-            }
-            .sorted { $0.name < $1.name }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let entries = rows.map { machine -> String in
-            let seenJSON = machine.lastSeenAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
-            let hostnameJSON = machine.hostname.map(jsonString) ?? "null"
-            let migratedJSON = machine.legacyKeyMigratedAt.map { jsonString(formatter.string(from: $0)) } ?? "null"
-            let fingerprint = (machine.apiKeyFingerprint != nil && includeAll == false)
-                ? machine.apiKeyFingerprint.map(jsonString) ?? "null"
-                : nil
-            var entry = "{\"daemonId\":\(jsonString(machine.id)),\"machineName\":\(jsonString(machine.name)),\"hostname\":\(hostnameJSON),\"lastSeenAt\":\(seenJSON),\"hasFingerprint\":\(machine.apiKeyFingerprint != nil),\"legacyKeyMigratedAt\":\(migratedJSON)"
-            if let fingerprint { entry += ",\"apiKeyFingerprint\":\(fingerprint)" }
-            entry += "}"
-            return entry
-        }
-        lock.unlock()
-        return Self.json(200, "{\"serverId\":\(jsonString(serverId)),\"serverSlug\":\(jsonString(details.slug)),\"entries\":[\(entries.joined(separator: ","))]}")
+        if !fallback.isEmpty, fallback.count <= 200 { return fallback }
+        return "raft-computer"
     }
 
-    public func computerLifecycleOperation(
-        authorization: String?,
-        serverId: String,
-        machineId: String,
-        body: String
-    ) -> HTTPReply {
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let action = object["action"] as? String,
-              ["start", "stop", "restart", "upgrade"].contains(action)
-        else {
-            return Self.json(400, "{\"error\":\"Unknown Computer lifecycle action\",\"code\":\"unknown_action\"}")
-        }
-        guard let operationId = object["operationId"] as? String, ServerScope.isUUID(operationId) else {
-            return Self.json(400, "{\"error\":\"A valid operationId is required\",\"code\":\"invalid_operation_id\"}")
-        }
-        guard let parentOperationId = object["parentOperationId"] as? String, ServerScope.isUUID(parentOperationId) else {
-            return Self.json(400, "{\"error\":\"A valid parentOperationId is required\",\"code\":\"invalid_parent_operation_id\"}")
-        }
-        let targetVersion = object["targetVersion"] as? String
-        if action == "upgrade" {
-            lock.lock()
-            let disabled = remoteUpgradeDisabledServers.contains(serverId)
-            lock.unlock()
-            guard !disabled else {
-                return Self.json(409, "{\"error\":\"Hands could not select a newer alpha release for this Computer.\",\"code\":\"broadcast_disabled\",\"policy\":{\"eligibility\":\"no_broadcast\",\"reasonCode\":\"broadcast_disabled\"}}")
-            }
-            if let targetVersion, targetVersion.wholeMatch(of: /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/) == nil {
-                return Self.json(400, "{\"error\":\"A valid targetVersion is required only for upgrade\",\"code\":\"invalid_target_version\"}")
-            }
-        } else if targetVersion != nil {
-            return Self.json(400, "{\"error\":\"A valid targetVersion is required only for upgrade\",\"code\":\"invalid_target_version\"}")
-        }
-        if let completionMode = object["completionMode"] {
-            guard action == "upgrade", completionMode as? String == "legacy_k_promoted" else {
-                return Self.json(400, "{\"error\":\"Unknown Computer lifecycle completion mode\",\"code\":\"invalid_completion_mode\"}")
-            }
-        }
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
-        }
-        lock.lock()
-        guard let machine = machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Machine not found in this server\"}")
-        }
-        let computer = computers.first { $0.machineId == machineId && $0.serverId == serverId && $0.revokedAt == nil }
-        let online = machineOnline[machineId] == true || computer?.online == true
-        lock.unlock()
-        guard role == "owner" || role == "admin" || machine.userId == userId else {
-            return Self.json(403, "{\"error\":\"The `controlComputers` capability or machine creator authority is required to control Computers\"}")
-        }
-        guard computer != nil else {
-            return Self.json(409, "{\"error\":\"Lifecycle operations are only available for managed Computers\",\"code\":\"not_a_computer\"}")
-        }
-        if action == "start", online {
-            return Self.json(409, "{\"error\":\"Computer is already online\",\"code\":\"computer_already_online\"}")
-        }
-        if action != "start", !online {
-            return Self.json(409, "{\"error\":\"Computer is not online\",\"code\":\"computer_offline\"}")
-        }
-        var resolvedTarget = targetVersion
-        if action == "upgrade", resolvedTarget == nil {
-            lock.lock()
-            let latest = latestComputerRelease?.version
-            lock.unlock()
-            guard let latest else {
-                return Self.json(409, "{\"error\":\"Hands could not select a newer alpha release for this Computer.\",\"code\":\"computer_upgrade_unavailable\"}")
-            }
-            resolvedTarget = latest
-        }
-        if object["completionMode"] != nil {
-            return Self.json(409, "{\"error\":\"The live Computer ready attestation is not visible yet.\",\"code\":\"computer_lifecycle_completion_ready_pending\"}")
-        }
-        let versionJSON = resolvedTarget.map(jsonString) ?? "null"
-        return Self.json(201, "{\"operationId\":\(jsonString(operationId)),\"parentOperationId\":\(jsonString(parentOperationId)),\"serverId\":\(jsonString(serverId)),\"machineId\":\(jsonString(machineId)),\"actorUserId\":\(jsonString(userId)),\"action\":\(jsonString(action)),\"dispatchMode\":\"local\",\"connectionEpochBefore\":null,\"targetVersion\":\(versionJSON)}")
+    /// The `model` the runner whitelist publishes: a string, or the `id` of a
+    /// structured model; anything else (or unreadable config) is empty.
+    static func runnerModel(from runtimeConfigJSON: String?) -> String {
+        guard let runtimeConfigJSON,
+              let config = try? JSONDecoder().decode(RunnerRuntimeConfig.self, from: Data(runtimeConfigJSON.utf8))
+        else { return "" }
+        return config.model
     }
 
+    private struct RunnerRuntimeConfig: Decodable {
+        let model: String
+
+        private enum CodingKeys: String, CodingKey { case model }
+        private struct Structured: Decodable { let id: String }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            if let text = try? container.decode(String.self, forKey: .model) {
+                model = text
+            } else if let structured = try? container.decode(Structured.self, forKey: .model) {
+                model = structured.id
+            } else {
+                model = ""
+            }
+        }
+    }
 }

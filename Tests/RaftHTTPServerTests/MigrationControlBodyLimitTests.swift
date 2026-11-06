@@ -26,12 +26,11 @@ private func controlFixture() -> (accounts: EmailLoginDirectory, computerKey: St
     accounts.addAccount(id: ownerId, email: "control-body-owner@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
     accounts.oauth.addOwnedServer(id: serverId, slug: "control-body", name: "Control Body", ownerId: ownerId)
-    let attach = accounts.attachComputer(
+    let attach = try? accounts.computersFleet.attachComputer(
         authorization: "Bearer \(accounts.mintAccessTokenForTesting(userId: ownerId))",
-        body: "{\"serverSlug\":\"control-body\",\"name\":\"control-body-computer\"}"
+        request: ComputerAttachRequest(serverSlug: "control-body", name: "control-body-computer")
     )
-    let body = (try? JSONSerialization.jsonObject(with: Data(attach.body.utf8))) as? [String: Any] ?? [:]
-    return (accounts, body["apiKey"] as? String ?? "")
+    return (accounts, attach?.apiKey ?? "")
 }
 
 private func controlPost(
