@@ -67,6 +67,12 @@ public struct ComputersFleetService: Sendable {
         self.now = now
     }
 
+    /// Computer-key resolution for transport adapters, from the machine-owner
+    /// rows and their existing exact-key, revocation and linkage predicates.
+    public func computerCredential(apiKey: String) -> ComputerCredentialLookup {
+        machines.computerCredential(apiKey: apiKey)
+    }
+
     // MARK: - Machine roster
 
     /// `DELETE /api/servers/:id/machines/:machineId/workspaces/:directoryName`.

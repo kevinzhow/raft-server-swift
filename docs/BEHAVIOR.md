@@ -2165,3 +2165,9 @@ RFC 074 personal assistant：
 - MachinesAndHostedRuntime 与 RuntimeFormsAndProbes 直接接收原 owners、AuthCore 和两个 relay 能力，不保留目录构造器/live。公开 credential、hosted status/model/retry、runtime form/options、onboarding/notification 与 fallback 的操作代码不变；session 仍为原 AuthCore.authenticate 的 optional 结果。
 - 注册与 API-key 查询直接使用同一个 Machines owner、同一事务，不反取宽机器服务。Provider/realtime relay 每次调用读取当前 slot，connection origin 与配置保持实时；provider 在请求内卸载后，下个 HTTP 请求仍见 unavailable。
 - Computer pre-parser 仍先验凭据再处理较大 manifest，保持 401-before-413；NIO upgrade、Computer denial 五态与 legacy key 握手回归通过，未改变 credential 接受集。
+
+### Transport 的窄凭据能力
+
+- LedgerRealtimeAuth 改持 AuthCore/SocketMembership；token→user 与 token→family 仍分别调用原 pushPrincipal 查询，不额外要求 account 存在或通过 revoked/verified 检查。Handshake 的 server role 仍为原 membership role（包括 guest），visible rooms 和 sync resume 的过滤、顺序及帧字节不变。
+- LedgerMachineLookup 改持 RuntimeForms/ComputersFleet；Computer 的 linked/revoked/machineUnlinked/keyMismatch/notFound 顺序和 denial stage/reason、legacyKeyMigratedAt 保持。Body middleware 只持 RuntimeForms，原 machine/computer Bool 凭据判定、100KiB/576KiB/1MiB 限额、401-before-413 与 JSON 字节不变。
+- 真实 Startup 验收继续执行 socket 入房、Computer CONNECT context、legacy key 迁移后拒绝、daemon online，以及两个独立 RaftServer 的状态隔离和 completion line。特殊 token-row 接受集由原 owner 同一查询保持，未声称新增了该异常 row 的生产 socket fixture。

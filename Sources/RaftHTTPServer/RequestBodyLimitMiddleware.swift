@@ -17,7 +17,7 @@ struct RequestBodyLimitMiddleware: Middleware {
     static let migrationControlLimit = 512 * 1024 + 64 * 1024
     static let scopeAttestationLimit = 1024 * 1024
 
-    var accounts: EmailLoginDirectory
+    let runtimeForms: RuntimeFormsAndProbesService
 
     func respond(to incoming: Request, chainingTo next: any Responder) async throws -> Response {
         var request = incoming
@@ -37,13 +37,13 @@ struct RequestBodyLimitMiddleware: Middleware {
         guard declared > limit else {
             return try await next.respond(to: request)
         }
-        if isScopeAttestation, !accounts.runtimeFormsAndProbes.machineCredentialIsLive(authorization: request.headers[.authorization]) {
+        if isScopeAttestation, !runtimeForms.machineCredentialIsLive(authorization: request.headers[.authorization]) {
             return Self.jsonReply(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
         }
         if isScopeAttestation {
             return Self.jsonReply(413, "{\"error\":\"Scope attestation body is too large\",\"code\":\"scope_attestation_body_too_large\",\"limitBytes\":\(limit)}")
         }
-        if isMigrationControl, !accounts.runtimeFormsAndProbes.computerCredentialIsLive(authorization: request.headers[.authorization]) {
+        if isMigrationControl, !runtimeForms.computerCredentialIsLive(authorization: request.headers[.authorization]) {
             return Self.jsonReply(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
         }
         if isMigrationControl {

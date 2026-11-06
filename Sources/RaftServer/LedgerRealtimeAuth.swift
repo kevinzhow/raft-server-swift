@@ -3,26 +3,27 @@ import RaftRealtime
 
 /// Bridges the in-memory session and channel ledgers onto the realtime server.
 struct LedgerRealtimeAuth: RealtimeAuthorizing {
-    let accounts: EmailLoginDirectory
+    let authCore: AuthCoreService
+    let membership: SocketMembershipService
 
     func userId(forAccessToken token: String) -> String? {
-        accounts.sessionIdentity(accessToken: token)?.userId
+        authCore.sessionIdentity(accessToken: token)?.userId
     }
 
     func sessionFamilyId(forAccessToken token: String) -> String? {
-        accounts.sessionIdentity(accessToken: token)?.familyId
+        authCore.sessionIdentity(accessToken: token)?.familyId
     }
 
     func serverRole(serverId: String, userId: String) -> String? {
-        accounts.oauth.memberRole(serverId: serverId, userId: userId)
+        membership.serverRole(serverId: serverId, userId: userId)
     }
 
     func visibleChannelIds(serverId: String, userId: String) -> [String] {
-        accounts.socketMembership.visibleChannelIds(serverId: serverId, userId: userId).channelIds
+        membership.visibleChannelIds(serverId: serverId, userId: userId).channelIds
     }
 
     func syncResumePayload(serverId: String, userId: String, lastSeq: Int, limit: Int) -> String? {
-        accounts.socketMembership.syncMessages(
+        membership.syncMessages(
             serverId: serverId,
             userId: userId,
             lastSeq: lastSeq,

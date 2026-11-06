@@ -3,10 +3,11 @@ import RaftHTTP
 
 /// Bridges the in-memory ledger onto the NIO `/daemon/connect` auth protocol.
 struct LedgerMachineLookup: MachineCredentialLooking {
-    let accounts: EmailLoginDirectory
+    let runtimeForms: RuntimeFormsAndProbesService
+    let fleet: ComputersFleetService
 
     func findComputer(apiKey: String) async throws -> ComputerAuthResolution {
-        switch accounts.computerCredential(apiKey: apiKey) {
+        switch fleet.computerCredential(apiKey: apiKey) {
         case .linked(let computerId, let machineId):
             return .linked(computerId: computerId, machineId: machineId)
         case .revoked:
@@ -21,17 +22,17 @@ struct LedgerMachineLookup: MachineCredentialLooking {
     }
 
     func machine(id: String) async throws -> MatchedMachine? {
-        accounts.runtimeFormsAndProbes.machineCredential(id: id).map {
+        runtimeForms.machineCredential(id: id).map {
             MatchedMachine(id: $0.machineId, serverId: $0.serverId)
         }
     }
 
     func serverExists(id: String) async throws -> Bool {
-        accounts.runtimeFormsAndProbes.serverExists(id: id)
+        runtimeForms.serverExists(id: id)
     }
 
     func machine(apiKey: String) async throws -> MatchedMachine? {
-        accounts.runtimeFormsAndProbes.machineCredential(apiKey: apiKey).map {
+        runtimeForms.machineCredential(apiKey: apiKey).map {
             MatchedMachine(id: $0.machineId, serverId: $0.serverId, legacyKeyMigratedAt: $0.legacyKeyMigratedAt)
         }
     }

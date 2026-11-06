@@ -20,6 +20,12 @@ public struct AuthCoreService: Sendable {
 
     // MARK: Bearer check
 
+    /// Access-token identity for transport adapters, using the push token-table
+    /// lookup. The optional family id scopes revocation to its connections.
+    public func sessionIdentity(accessToken: String) -> (userId: String, familyId: String?)? {
+        store.pushPrincipal(accessToken: accessToken)
+    }
+
     /// The user behind a live access token. A missing or non-bearer header is
     /// `missingAuthorization`; an unknown token or a revoked family is
     /// `invalidToken`.

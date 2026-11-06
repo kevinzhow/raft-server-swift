@@ -45,6 +45,11 @@ public struct SocketMembershipService: Sendable {
 
     // MARK: - Socket membership: room visibility, sync:resume, room cleanup
 
+    /// Server role read by the transport handshake.
+    public func serverRole(serverId: String, userId: String) -> String? {
+        oauth.memberRole(serverId: serverId, userId: userId)
+    }
+
     /// Channel rooms a socket joins at connect time: regular channels the
     /// viewer can list, and private/DM channels they belong to. Thread rooms
     /// are followed, not joined at connect. Guests only see guest-visible

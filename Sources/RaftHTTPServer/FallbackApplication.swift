@@ -321,7 +321,7 @@ public func configure(_ app: Application, services: FallbackServices) {
     internalSurface.set(InternalSurfacePolicy.snapshot(routes: app.routes.all))
     middleware.use(JSONErrorBoundaryMiddleware())
     middleware.use(ExperimentalSurfaceGate(directory: services.emailAccounts))
-    middleware.use(RequestBodyLimitMiddleware(accounts: services.emailAccounts))
+    middleware.use(RequestBodyLimitMiddleware(runtimeForms: services.emailAccounts.runtimeFormsAndProbes))
     middleware.use(CorsMiddleware(origins: services.corsOrigins))
     middleware.use(PublicSearchMiddleware(
         indexEnabled: services.publicSearchIndexEnabled,

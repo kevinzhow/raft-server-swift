@@ -118,7 +118,7 @@ enum Entrypoint {
             realtimeServer = nil
         } else {
             realtimeServer = try await RealtimeServer.start(
-                auth: LedgerRealtimeAuth(accounts: emailAccounts),
+                auth: LedgerRealtimeAuth(authCore: emailAccounts.authCore, membership: emailAccounts.socketMembership),
                 port: configuredSocketPort
             )
         }
@@ -128,7 +128,7 @@ enum Entrypoint {
             machineServer = nil
         } else {
             machineServer = try await MachineConnectServer.start(
-                lookup: LedgerMachineLookup(accounts: emailAccounts),
+                lookup: LedgerMachineLookup(runtimeForms: emailAccounts.runtimeFormsAndProbes, fleet: emailAccounts.computersFleet),
                 port: configuredDaemonPort,
                 onStatusChange: { machine, online in
                     emailAccounts.setMachineOnline(machineId: machine.id, online: online)
