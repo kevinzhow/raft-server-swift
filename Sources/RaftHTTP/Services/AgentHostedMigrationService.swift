@@ -553,34 +553,6 @@ extension EmailLoginDirectory {
         return migrationTargetReply(record)
     }
 
-    public func machineMigrationCancelGenerationsForTesting(migrationRef: String) -> (cancel: String, transport: String)? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let record = machineMigrations[migrationRef],
-              let cancel = record.cancelGeneration,
-              let transport = record.cancelTransportGeneration
-        else { return nil }
-        return (cancel, transport)
-    }
-
-    public func seedMachineMigrationCancelStateForTesting(
-        migrationRef: String,
-        state: String,
-        cancelGeneration: String,
-        cancelTransportGeneration: String,
-        disposition: String
-    ) {
-        lock.lock()
-        if var record = machineMigrations[migrationRef] {
-            record.state = state
-            record.cancelGeneration = cancelGeneration
-            record.cancelTransportGeneration = cancelTransportGeneration
-            record.cancelDisposition = disposition
-            machineMigrations[migrationRef] = record
-        }
-        lock.unlock()
-    }
-
     public func acknowledgeMigrationCancellation(authorization: String?, migrationRef: String, body: String) -> HTTPReply {
         guard let machineId = computerMachineId(authorization) else {
             return Self.json(401, "{\"code\":\"migration_transport_token_invalid\",\"error\":\"Migration transport token is invalid\"}")
@@ -906,12 +878,6 @@ extension EmailLoginDirectory {
         ))
         lock.unlock()
         return id
-    }
-
-    public func machineRegistrantForTesting(machineId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return machines.first { $0.id == machineId }?.userId
     }
 
 }
