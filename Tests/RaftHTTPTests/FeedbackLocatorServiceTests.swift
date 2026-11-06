@@ -111,7 +111,7 @@ private func locatorService(
         authorization: "Bearer \(fixture.apiKey)",
         body: request
     )
-    #expect(accepted.orderedJSONString() == """
+    #expect(accepted.jsonBody.render() == """
     {"status":"accepted","receipt_id":"00000000-0000-4000-8000-000000000001","report_id":"7a1cb0f2-75b4-4c4e-9c6f-3f7a5d2e9b10","duplicate":false}
     """)
 
@@ -120,7 +120,7 @@ private func locatorService(
         authorization: "Bearer \(fixture.apiKey)",
         body: request
     )
-    #expect(replay.orderedJSONString() == """
+    #expect(replay.jsonBody.render() == """
     {"status":"accepted","receipt_id":"00000000-0000-4000-8000-000000000001","report_id":"7a1cb0f2-75b4-4c4e-9c6f-3f7a5d2e9b10","duplicate":true}
     """)
     #expect(fixture.directory.feedbackStore.feedbackLocatorRecords.count == 1)
@@ -139,7 +139,7 @@ private func locatorService(
     do {
         _ = try service.ingest(authorization: "Bearer \(fixture.apiKey)", body: changed)
     } catch let error as FeedbackLocatorError {
-        #expect(error.orderedJSONString() == """
+        #expect(error.publishedErrorBody.render() == """
         {"status":"failed","reason_code":"report_identity_conflict"}
         """)
     }
@@ -166,7 +166,7 @@ private func locatorService(
         routeBasis: nil,
         limit: nil
     )
-    #expect(listed.orderedJSONString() == """
+    #expect(listed.jsonBody.render() == """
     {"locators":[{"report_id":"18f60b1d-9a4c-4b8a-a8de-2c1e6f4b7d55","receipt_id":"00000000-0000-4000-8000-000000000001","captured_at":"2026-08-09T02:30:00.000Z","runtime":"codex","native_status":"not_attempted","native_lookup_method":"not_attempted","native_locator_kind":"none","has_served_exact":false,"served_exact_sha256":[],"route_basis":"configured_project_channel","route_target":"#proj-feedback"}]}
     """)
 }
@@ -187,7 +187,7 @@ private func locatorService(
         _ = try service.ingest(authorization: nil, body: request)
     } catch let error as FeedbackLocatorError {
         #expect(error.status == 401)
-        #expect(error.orderedJSONString() == """
+        #expect(error.publishedErrorBody.render() == """
         {"error":"Missing or invalid Authorization header","code":"auth_required"}
         """)
     }
@@ -202,7 +202,7 @@ private func locatorService(
         Issue.record("a credential without send must be refused")
     } catch let error as FeedbackLocatorError {
         #expect(error.status == 403)
-        #expect(error.orderedJSONString() == """
+        #expect(error.publishedErrorBody.render() == """
         {"error":"Agent credential is not authorized for this capability","code":"capability_not_authorized","requiredCapability":"send"}
         """)
     }

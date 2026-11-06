@@ -520,7 +520,7 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             ))
         }
         agentApi.get("mcp", "tools") { request async throws -> Response in
-            try respond(errors: ActionCardServiceError.self) {
+            try await respond {
                 try services.emailAccounts.actionCards.managedMCPToolSnapshot(
                     authorization: request.headers[.authorization]
                 )
@@ -529,7 +529,7 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
         agentApi.post("mcp", "call") { request async throws -> Response in
             let body = (try? await request.content.decode(ManagedMCPToolCallRequest.self))
                 ?? ManagedMCPToolCallRequest()
-            return try respond(errors: ActionCardServiceError.self) {
+            return try await respond {
                 try services.emailAccounts.actionCards.callManagedMCPTool(
                     authorization: request.headers[.authorization],
                     body: body
@@ -538,7 +538,7 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
         }
         agentApi.post("feedback-locators") { request async throws -> Response in
             let body = await feedbackLocatorEnvelope(request)
-            return try respond(errors: FeedbackLocatorError.self) {
+            return try await respond {
                 try services.emailAccounts.feedbackLocators.ingest(
                     authorization: request.headers[.authorization],
                     body: body
@@ -546,7 +546,7 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
         }
         agentApi.get("feedback-locators") { request async throws -> Response in
-            try respond(errors: FeedbackLocatorError.self) {
+            try await respond {
                 try services.emailAccounts.feedbackLocators.list(
                     authorization: request.headers[.authorization],
                     reportId: desktopQuery(request.url.query, "report_id"),

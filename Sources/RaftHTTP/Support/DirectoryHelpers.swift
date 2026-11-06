@@ -419,7 +419,7 @@ extension EmailLoginDirectory {
             return Self.json(
                 403,
                 FeedbackLocatorError.capabilityNotAuthorized(capability: capability)
-                    .orderedJSONString()
+                    .publishedErrorBody.render()
             )
         }
     }
@@ -432,7 +432,7 @@ extension EmailLoginDirectory {
         case .missingScope(let scope):
             return Self.json(
                 403,
-                FeedbackLocatorError.missingScope(scope: scope).orderedJSONString()
+                FeedbackLocatorError.missingScope(scope: scope).publishedErrorBody.render()
             )
         }
     }
@@ -466,23 +466,23 @@ extension EmailLoginDirectory {
         case .missingAuthorization:
             return .refused(Self.json(
                 401,
-                FeedbackLocatorError.missingAuthorization.orderedJSONString()
+                FeedbackLocatorError.missingAuthorization.publishedErrorBody.render()
             ))
         case .invalidAccessToken:
             return .refused(Self.json(
                 401,
-                FeedbackLocatorError.invalidAccessToken.orderedJSONString()
+                FeedbackLocatorError.invalidAccessToken.publishedErrorBody.render()
             ))
         case .capabilityNotAuthorized(let capability):
             return .refused(Self.json(
                 403,
                 FeedbackLocatorError.capabilityNotAuthorized(capability: capability)
-                    .orderedJSONString()
+                    .publishedErrorBody.render()
             ))
         case .invalidAgentCredential:
             return .refused(Self.json(
                 401,
-                FeedbackLocatorError.invalidAgentCredential.orderedJSONString()
+                FeedbackLocatorError.invalidAgentCredential.publishedErrorBody.render()
             ))
         }
     }

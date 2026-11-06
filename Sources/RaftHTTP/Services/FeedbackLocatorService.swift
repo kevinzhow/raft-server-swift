@@ -4,10 +4,9 @@ import RaftShared
 /// Domain failure for the feedback-locator operations.
 ///
 /// Every case names the published error object the route answers with. The
-/// bodies are byte-ordered by `orderedJSONString()` because the legacy replies
-/// publish a fixed non-alphabetical key order; `Respond.swift` has one overload
-/// that projects `OrderedJSONDomainError`.
-public enum FeedbackLocatorError: OrderedJSONDomainError, Equatable {
+/// bodies are `OrderedJSON` trees because the legacy replies publish a fixed
+/// non-alphabetical key order; `Respond.swift` prints `errorBody` verbatim.
+public enum FeedbackLocatorError: DomainError, Equatable {
     case missingAuthorization
     case invalidAccessToken
     case capabilityNotAuthorized(capability: String)
@@ -55,39 +54,43 @@ public enum FeedbackLocatorError: OrderedJSONDomainError, Equatable {
         }
     }
 
-    public func orderedJSONString() -> String {
+    public var errorBody: OrderedJSON? {
         switch self {
         case .missingAuthorization:
-            Self.authErrorBody(
+            return Self.authErrorBody(
                 error: "Missing or invalid Authorization header",
                 code: "auth_required"
             )
         case .invalidAccessToken:
-            Self.authErrorBody(error: "Invalid or expired token", code: "auth_required")
+            return Self.authErrorBody(error: "Invalid or expired token", code: "auth_required")
         case .capabilityNotAuthorized(let capability):
-            Self.authErrorBody(
+            return Self.authErrorBody(
                 error: "Agent credential is not authorized for this capability",
                 code: "capability_not_authorized",
                 requiredCapability: capability
             )
         case .invalidAgentCredential:
-            Self.authErrorBody(error: "Invalid agent credential", code: "auth_required")
+            return Self.authErrorBody(error: "Invalid agent credential", code: "auth_required")
         case .missingScope(let scope):
-            "{\"error\":\"missing required scope\",\"requiredScope\":\(jsonString(scope)),\"reason\":\"missing_scope\"}"
+            var body = OrderedJSONObject()
+            body.append("error", "missing required scope")
+            body.append("requiredScope", scope)
+            body.append("reason", "missing_scope")
+            return body.json
         case .invalidPayload:
-            Self.failureBody(reason: "invalid_payload")
+            return Self.failureBody(reason: "invalid_payload")
         case .unknownArtifactKind:
-            Self.failureBody(reason: "unknown_artifact_kind")
+            return Self.failureBody(reason: "unknown_artifact_kind")
         case .unknownEventKind:
-            Self.failureBody(reason: "unknown_event_kind")
+            return Self.failureBody(reason: "unknown_event_kind")
         case .forbiddenField:
-            Self.failureBody(reason: "forbidden_field")
+            return Self.failureBody(reason: "forbidden_field")
         case .invalidRouteRef:
-            Self.failureBody(reason: "invalid_route_ref")
+            return Self.failureBody(reason: "invalid_route_ref")
         case .unknownSchemaVersion:
-            Self.failureBody(reason: "unknown_schema_version")
+            return Self.failureBody(reason: "unknown_schema_version")
         case .reportIdentityConflict:
-            Self.failureBody(reason: "report_identity_conflict")
+            return Self.failureBody(reason: "report_identity_conflict")
         }
     }
 
@@ -97,17 +100,20 @@ public enum FeedbackLocatorError: OrderedJSONDomainError, Equatable {
         error: String,
         code: String,
         requiredCapability: String? = nil
-    ) -> String {
-        var body = "{\"error\":\(jsonString(error)),\"code\":\(jsonString(code))"
-        if let requiredCapability {
-            body += ",\"requiredCapability\":\(jsonString(requiredCapability))"
-        }
-        return body + "}"
+    ) -> OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("error", error)
+        body.append("code", code)
+        body.append("requiredCapability", ifPresent: requiredCapability)
+        return body.json
     }
 
     /// The published validation refusal: `status`, then `reason_code`.
-    public static func failureBody(reason: String) -> String {
-        "{\"status\":\"failed\",\"reason_code\":\(jsonString(reason))}"
+    public static func failureBody(reason: String) -> OrderedJSON {
+        .object([
+            OrderedJSONField("status", "failed"),
+            OrderedJSONField("reason_code", reason),
+        ])
     }
 }
 
