@@ -753,6 +753,34 @@ final class MessagesAndThreadsStore: @unchecked Sendable {
         lock.unlock()
     }
 
+    // MARK: - Share artifacts and message translations
+
+    /// One uploaded share artifact, or nil when no row carries the id.
+    func shareArtifact(id: String) -> ShareArtifactRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.shareArtifacts[id]
+    }
+
+    /// Records the translation outcome for one message in a single critical
+    /// section, so a concurrent batch cannot interleave a half-written row.
+    func recordMessageTranslation(
+        messageId: String,
+        status: String,
+        providerBilledChars: Int,
+        targetLanguage: String,
+        translatedContent: String
+    ) {
+        lock.lock()
+        storage.messageTranslationLedger[messageId] = (
+            status: status,
+            providerBilledChars: providerBilledChars,
+            targetLanguage: targetLanguage,
+            translatedContent: translatedContent
+        )
+        lock.unlock()
+    }
+
     // MARK: - Agent send commit
 
     /// The message's channel id for the idempotency replay response.

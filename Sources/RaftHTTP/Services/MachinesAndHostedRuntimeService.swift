@@ -20,6 +20,28 @@ public struct MachinesAndHostedRuntimeService: Sendable {
 
 extension EmailLoginDirectory {
 
+    public func machineIdForCredential(authorization: String?) -> String? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        defer { lock.unlock() }
+        if let machine = machines.first(where: { $0.apiKey == token }) { return machine.id }
+        if let computer = computers.first(where: { $0.apiKey == token && $0.revokedAt == nil }) {
+            return computer.machineId
+        }
+        return nil
+    }
+
+    func canMachineServeAgent(machineId: String, agent: OAuthLedger.AgentRuntimeInfo) -> Bool {
+        lock.lock()
+        let bound = agentMachineIds[agent.id]
+        let machineServer = machines.first { $0.id == machineId }?.serverId
+        lock.unlock()
+        guard machineServer == agent.serverId else { return false }
+        if let bound { return bound == machineId }
+        return true
+    }
+
     public func machineAPIKey(machineId: String) -> String? {
         lock.lock()
         defer { lock.unlock() }

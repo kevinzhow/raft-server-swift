@@ -65,13 +65,13 @@ extension EmailLoginDirectory {
 
     public func setScopeAttestationSecretForTesting(_ secret: String?) {
         lock.lock()
-        scopeAttestationSecretOverride = .some(secret)
+        authProfileStore.scopeAttestationSecretOverride = .some(secret)
         lock.unlock()
     }
 
     public func setDeploymentEnvironmentForTesting(_ environment: String?) {
         lock.lock()
-        deploymentEnvironmentOverride = .some(environment)
+        authProfileStore.deploymentEnvironmentOverride = .some(environment)
         lock.unlock()
     }
 

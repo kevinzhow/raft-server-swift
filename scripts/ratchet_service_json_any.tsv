@@ -20,4 +20,3 @@ Sources/RaftHTTP/Services/ManagedMCPToolExecutionService.swift	16
 Sources/RaftHTTP/Services/MessageSendService.swift	5
 Sources/RaftHTTP/Services/OAuthFlowsService.swift	14
 Sources/RaftHTTP/Services/ReactionsRealtimeService.swift	9
-Sources/RaftHTTP/Services/ServerProfileAndOrderService.swift	18

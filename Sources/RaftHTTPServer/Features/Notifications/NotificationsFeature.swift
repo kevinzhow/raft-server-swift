@@ -394,7 +394,7 @@ public struct NotificationsFeature: RouteCollection, Sendable {
             let bases = shareArtifactBases(services, request)
             let file = request.parameters.get("file") ?? ""
             if file.hasSuffix(".png") {
-                if let image = services.emailAccounts.shareArtifactImage(id: String(file.dropLast(4))) {
+                if let image = services.emailAccounts.serverProfileAndOrder.shareArtifactImage(id: String(file.dropLast(4))) {
                     var headers = HTTPFields()
                     headers[.contentType] = "image/png"
                     headers[.cacheControl] = "public, immutable, max-age=31536000"
@@ -403,13 +403,18 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                     headers[.contentLength] = String(image.bytes.count)
                     return Response(status: .ok, headers: headers, body: .init(data: image.bytes))
                 }
-            } else if let reply = services.emailAccounts.shareArtifactPage(
+            } else if let page = services.emailAccounts.serverProfileAndOrder.shareArtifactPage(
                 id: file,
                 serverBase: bases.server,
                 shareBase: bases.share,
                 cdnBase: bases.cdn
             ) {
-                return routeResponse(reply)
+                // An HTML page, not a JSON body, so it stays outside `respond`.
+                var headers = HTTPFields()
+                headers[.contentType] = "text/html; charset=utf-8"
+                headers[.cacheControl] = "public, max-age=300"
+                headers[HTTPField.Name("X-Robots-Tag")!] = "noindex, nofollow"
+                return Response(status: .ok, headers: headers, body: .init(string: page.html))
             }
             return Response(status: .notFound, body: .init(string: "Not found"))
         }

@@ -248,11 +248,11 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         channels.get("activity", "snapshot") { _ -> Response in
-            routeResponse(services.emailAccounts.activityContractRejection())
+            routeResponse(activityContractRejection)
         }
 
         channels.get("activity", "difference") { _ -> Response in
-            routeResponse(services.emailAccounts.activityContractRejection())
+            routeResponse(activityContractRejection)
         }
 
         channels.post("saved", "check") { request async throws -> Response in
@@ -592,3 +592,18 @@ private func threadFollowMutation(_ request: Request) async -> ThreadFollowMutat
         parentMessageId: object["parentMessageId"] as? String
     )
 }
+
+/// The refusal both activity-sync routes answer with. The legacy reply
+/// published `Content-Length: 26` for this body, so it stays a fixed reply
+/// instead of passing through `respond`, which would derive the length from the
+/// body and change the published header.
+private let activityContractRejection = HTTPReply(
+    status: 400,
+    headers: [
+        "Content-Type": AppFallback.jsonContentType,
+        "X-Raft-Contract": "raft.activity-sync;revision=2",
+        "Access-Control-Expose-Headers": "X-Raft-Contract",
+        "Content-Length": "26",
+    ],
+    body: "{\"error\":\"invalid contract\"}"
+)

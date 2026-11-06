@@ -33,11 +33,25 @@ extension EmailLoginDirectory {
     }
 
     public func setTranslationProviderForTesting(_ provider: String?) {
-        lock.lock(); translationProviderOverride = provider; lock.unlock()
+        messagesAndThreadsStore.translationProviderOverride = provider
     }
 
     public func messageTranslationForTesting(messageId: String) -> (status: String, providerBilledChars: Int, targetLanguage: String, translatedContent: String)? {
-        lock.lock(); defer { lock.unlock() }
-        return messageTranslationLedger[messageId]
+        messagesAndThreadsStore.messageTranslationLedger[messageId]
+    }
+
+    /// Enables or disables the composer resource references (and so the apps
+    /// list) for one server.
+    public func enableComposerResourceReferences(serverId: String, enabled: Bool = true) {
+        if enabled {
+            serversAndChannelsStore.composerResourceServers.insert(serverId)
+        } else {
+            serversAndChannelsStore.composerResourceServers.remove(serverId)
+        }
+    }
+
+    /// Stores a switcher order and version for one user.
+    public func seedServerSwitcherOrder(userId: String, ids: [String], version: Int) {
+        serversAndChannelsStore.serverSwitcherOrders[userId] = (ids, version)
     }
 }
