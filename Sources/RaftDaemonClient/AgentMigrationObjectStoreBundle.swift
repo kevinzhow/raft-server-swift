@@ -22,7 +22,7 @@ public struct AgentMigrationObjectStoreTopPathCount: Sendable, Equatable {
     }
 }
 
-public final class AgentMigrationObjectStoreEntryCountLimitError: Error, @unchecked Sendable {
+public final class AgentMigrationObjectStoreEntryCountLimitError: Error, Sendable {
     public let code = "MIGRATION_OBJECT_STORE_ENTRY_COUNT_LIMIT_EXCEEDED"
     public let entryCount: Int
     public let maxEntries: Int

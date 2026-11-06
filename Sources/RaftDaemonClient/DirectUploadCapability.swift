@@ -37,7 +37,7 @@ public enum DirectUploadStage: String, Sendable {
     case attestation, create, put
 }
 
-public final class DirectUploadError: Error, @unchecked Sendable {
+public final class DirectUploadError: Error, Sendable {
     public let message: String
     public let stage: DirectUploadStage
     public let httpStatus: Int?
@@ -50,7 +50,7 @@ public final class DirectUploadError: Error, @unchecked Sendable {
     }
 }
 
-public final class HttpStatusError: Error, @unchecked Sendable {
+public final class HttpStatusError: Error, Sendable {
     public let toolName: String
     public let status: Int
     public let serverError: String?

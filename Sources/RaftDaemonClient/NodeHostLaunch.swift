@@ -56,7 +56,7 @@ public struct NodeHostLaunch: Sendable, Equatable {
     }
 }
 
-public final class NodeHostUnavailableError: Error, @unchecked Sendable, CustomStringConvertible {
+public final class NodeHostUnavailableError: Error, Sendable, CustomStringConvertible {
     public let kind = "node_host_unavailable"
     public let hostKind: NodeHostKind
     public let description: String

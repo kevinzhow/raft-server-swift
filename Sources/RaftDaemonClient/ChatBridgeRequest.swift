@@ -10,7 +10,7 @@ import FoundationNetworking
 /// daemon helper.
 public let defaultChatBridgeToolTimeoutMs = 60_000
 
-public final class ChatBridgeToolTimeoutError: Error, @unchecked Sendable, CustomStringConvertible {
+public final class ChatBridgeToolTimeoutError: Error, Sendable, CustomStringConvertible {
     public let toolName: String
     public let target: String?
     public let timeoutMs: Int

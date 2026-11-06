@@ -2094,3 +2094,7 @@ RFC 074 personal assistant：
 - 任务批次编号、claim/revision、reminder CAS/event、join-link 次数与审核记录保留原子配对。兼容字段 setter 只写目标字段，不再把较早的整份 State 覆盖到其他字段的新值上。
 - 消息 read cursor/version、mention 去重/notify claim、follow/unfollow/suppression 保留各自完整事务；reaction 与其他配置字段的并发更新互不覆盖。此项不宣称剩余目录 helper 的跨 Store 操作已经成为原子快照。
 - Public server visibility backfill 与 public ID 分配、email invite 单次消费、visits 去重/上限、join agreement audit 与 analytics 配对保留原顺序；seen 标记仍在 cap 拒绝之前写入。公开目录四项 rollout/search/translation flag 的读取和写入也由同一个状态 Mutex 保护。
+
+### Daemon 不可变错误值的既有契约
+
+- Direct upload 继续保留 attestation/create/put hop、HTTP status 和 cause；HTTP-status 错误保留 tool/status/serverError。Chat-bridge timeout 仍报告原 tool/target/timeout/duration 和说明文本；provider materialization 的 kind/status、Node host unavailable 的 host kind、migration entry-limit 的 count/max/top paths 均不变。六种错误的 stored field 都为不可变 Sendable 值，改为 checked conformance 不改构造、分类或 wire 信息。

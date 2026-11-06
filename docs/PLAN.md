@@ -60,7 +60,7 @@ Phase 5 已完成旧 `EmailLogin/` 文件提取、Feature 路由拆分、同步 
 
 1. 目录只负责依赖装配后，全仓将 `EmailLoginDirectory` 重命名为 `ServiceContainer`，包括测试；删除过渡类型、旧别名和 forwarding 路径。
 2. 清理 daemon-only targets 之外的显式 unchecked conformance，包含目前被棘轮排除的生成 telemetry helper；修生成入口，避免下次生成恢复旧实现。
-3. 对 daemon-only 的 NIO handler、Process 句柄等逐项评估。不预先承诺其 41 处全部清零；保留项必须有具体并发约束、原因和测试证据。
+3. 对 daemon-only 的 NIO handler、Process 句柄等逐项评估。基线 41 处中，六个全 `let`、纯 Sendable 值字段的错误类型已改为 checked；其余 35 处仍需按实际保护和逃逸路径核查。不预先承诺全部清零；保留项必须有具体并发约束、原因和测试证据。
 4. 如实同步文档，再跑最终完整门禁。只在所有目标确实完成后宣布 Phase 6 结束。
 
 ## 3. 切片门禁与工作契约

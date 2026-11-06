@@ -27,7 +27,7 @@ public struct ProviderConnectionLaunch: Sendable, Equatable {
     }
 }
 
-public final class ProviderConnectionMaterializationError: Error, @unchecked Sendable, CustomStringConvertible {
+public final class ProviderConnectionMaterializationError: Error, Sendable, CustomStringConvertible {
     public enum Kind: String, Sendable { case http, invalidPayload = "invalid_payload", invalidEnvironment = "invalid_environment" }
     public let kind: Kind
     public let status: Int?
