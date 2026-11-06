@@ -94,25 +94,25 @@ public enum AgentMigrationStatusPayload: Codable, Sendable, Equatable {
     case machine(MachineAgentMigrationStatus)
     case hosted(HostedAgentMigrationStatus)
 
-    var orderedJSON: OrderedJSON {
+    var jsonBody: OrderedJSON {
         switch self {
-        case .machine(let status): status.orderedJSON
-        case .hosted(let status): status.orderedJSON
+        case .machine(let status): status.jsonBody
+        case .hosted(let status): status.jsonBody
         }
     }
 }
 
 /// `{"migration": …}` for the status and cancel operations. `null` is the
 /// three published bytes when the agent has no migration row.
-public struct AgentMigrationStatusResponse: Codable, Sendable, Equatable, OrderedJSONBody {
+public struct AgentMigrationStatusResponse: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var migration: AgentMigrationStatusPayload?
 
     init(migration: AgentMigrationStatusPayload? = nil) {
         self.migration = migration
     }
 
-    public var orderedJSON: OrderedJSON {
-        .object([OrderedJSONField("migration", migration?.orderedJSON ?? .null)])
+    public var jsonBody: OrderedJSON {
+        .object([OrderedJSONField("migration", migration?.jsonBody ?? .null)])
     }
 }
 
@@ -166,7 +166,7 @@ public struct MachineAgentMigrationStatus: Codable, Sendable, Equatable {
         cancelErrorCode = record.cancelErrorCode
     }
 
-    var orderedJSON: OrderedJSON {
+    var jsonBody: OrderedJSON {
         .object([
             OrderedJSONField("migrationRef", .string(migrationRef)),
             OrderedJSONField("agentId", .string(agentId)),
@@ -182,18 +182,18 @@ public struct MachineAgentMigrationStatus: Codable, Sendable, Equatable {
             OrderedJSONField("abortReason", .null),
             OrderedJSONField("transportErrorCode", .stringOrNull(transportErrorCode)),
             OrderedJSONField("transportErrorMessage", .stringOrNull(transportErrorMessage)),
-            OrderedJSONField("transportLostAt", .timestampOrNull(transportLostAt)),
-            OrderedJSONField("transportTeardownAt", .timestampOrNull(transportTeardownAt)),
+            OrderedJSONField("transportLostAt", .stringOrNull(transportLostAt)),
+            OrderedJSONField("transportTeardownAt", .stringOrNull(transportTeardownAt)),
             OrderedJSONField("readyAt", .null),
-            OrderedJSONField("flippedAt", .timestampOrNull(flippedAt)),
-            OrderedJSONField("arrivedAt", .timestampOrNull(arrivedAt)),
-            OrderedJSONField("completedAt", .timestampOrNull(completedAt)),
+            OrderedJSONField("flippedAt", .stringOrNull(flippedAt)),
+            OrderedJSONField("arrivedAt", .stringOrNull(arrivedAt)),
+            OrderedJSONField("completedAt", .stringOrNull(completedAt)),
             OrderedJSONField("abortedAt", .null),
-            OrderedJSONField("canceledAt", .timestampOrNull(canceledAt)),
+            OrderedJSONField("canceledAt", .stringOrNull(canceledAt)),
             OrderedJSONField("cancelReason", .stringOrNull(cancelReason)),
             OrderedJSONField("cancelNeedsAttention", .bool(false)),
             OrderedJSONField("cancelDispatchAttempts", .int(cancelDispatchAttempts)),
-            OrderedJSONField("cancelLastDispatchAt", .timestampOrNull(cancelLastDispatchAt)),
+            OrderedJSONField("cancelLastDispatchAt", .stringOrNull(cancelLastDispatchAt)),
             OrderedJSONField("cancelErrorCode", .stringOrNull(cancelErrorCode)),
             OrderedJSONField("cancelErrorMessage", .null),
         ])
@@ -227,7 +227,7 @@ public struct HostedAgentMigrationStatus: Codable, Sendable, Equatable {
         cancelErrorCode = record.cancelErrorCode
     }
 
-    var orderedJSON: OrderedJSON {
+    var jsonBody: OrderedJSON {
         .object([
             OrderedJSONField("migrationRef", .string(migrationRef)),
             OrderedJSONField("agentId", .string(agentId)),
@@ -246,11 +246,11 @@ public struct HostedAgentMigrationStatus: Codable, Sendable, Equatable {
             OrderedJSONField("arrivedAt", .null),
             OrderedJSONField("completedAt", .null),
             OrderedJSONField("abortedAt", .null),
-            OrderedJSONField("canceledAt", .timestampOrNull(canceledAt)),
+            OrderedJSONField("canceledAt", .stringOrNull(canceledAt)),
             OrderedJSONField("cancelReason", .stringOrNull(cancelReason)),
             OrderedJSONField("cancelNeedsAttention", .bool(false)),
             OrderedJSONField("cancelDispatchAttempts", .int(cancelDispatchAttempts)),
-            OrderedJSONField("cancelLastDispatchAt", .timestampOrNull(cancelLastDispatchAt)),
+            OrderedJSONField("cancelLastDispatchAt", .stringOrNull(cancelLastDispatchAt)),
             OrderedJSONField("cancelErrorCode", .stringOrNull(cancelErrorCode)),
             OrderedJSONField("cancelErrorMessage", .null),
         ])
@@ -263,7 +263,7 @@ public struct HostedAgentMigrationStatus: Codable, Sendable, Equatable {
 /// zero dispatch attempts and a `null` `canceledAt`) even when the record was
 /// just canceled, so the payload is built from the record's identity and state
 /// only.
-struct AgentMigrationUpdatedPayload: Codable, Sendable, Equatable, OrderedJSONBody {
+struct AgentMigrationUpdatedPayload: Codable, Sendable, Equatable, JSONBodyConvertible {
     var agentId: String
     var migrationRef: String
     var state: String
@@ -278,7 +278,7 @@ struct AgentMigrationUpdatedPayload: Codable, Sendable, Equatable, OrderedJSONBo
         self.updatedAt = AgentMigrationTimestamps.string(updatedAt) ?? ""
     }
 
-    var orderedJSON: OrderedJSON {
+    var jsonBody: OrderedJSON {
         .object([
             OrderedJSONField("agentId", .string(agentId)),
             OrderedJSONField("migrationRef", .string(migrationRef)),
@@ -302,7 +302,7 @@ struct AgentMigrationUpdatedPayload: Codable, Sendable, Equatable, OrderedJSONBo
 
 /// `GET /api/agents/:id/external-diagnostics`: everything the agent panel's
 /// "Copy diagnostic info" shows, without the push endpoint or its secret.
-public struct ExternalAgentDiagnosticsResponse: Codable, Sendable, Equatable, OrderedJSONBody {
+public struct ExternalAgentDiagnosticsResponse: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var agentId: String
     public var provider: ExternalAgentProviderDiagnostics?
     public var presence: ExternalAgentPresenceDiagnostics
@@ -329,16 +329,16 @@ public struct ExternalAgentDiagnosticsResponse: Codable, Sendable, Equatable, Or
         self.connections = connections
     }
 
-    public var orderedJSON: OrderedJSON {
+    public var jsonBody: OrderedJSON {
         .object([
             OrderedJSONField("agentId", .string(agentId)),
             OrderedJSONField("runtime", .string("external")),
-            OrderedJSONField("provider", provider?.orderedJSON ?? .null),
-            OrderedJSONField("presence", presence.orderedJSON),
-            OrderedJSONField("status", status.orderedJSON),
-            OrderedJSONField("push", push.orderedJSON),
-            OrderedJSONField("events", events.orderedJSON),
-            OrderedJSONField("connections", .array(connections.map(\.orderedJSON))),
+            OrderedJSONField("provider", provider?.jsonBody ?? .null),
+            OrderedJSONField("presence", presence.jsonBody),
+            OrderedJSONField("status", status.jsonBody),
+            OrderedJSONField("push", push.jsonBody),
+            OrderedJSONField("events", events.jsonBody),
+            OrderedJSONField("connections", .array(connections.map(\.jsonBody))),
         ])
     }
 }
@@ -371,15 +371,15 @@ public struct ExternalAgentProviderDiagnostics: Codable, Sendable, Equatable {
         self.activatedAt = activatedAt
     }
 
-    var orderedJSON: OrderedJSON {
+    var jsonBody: OrderedJSON {
         .object([
             OrderedJSONField("kind", .string(kind)),
             OrderedJSONField("state", .string(state)),
             OrderedJSONField("providerAgentId", .stringOrNull(providerAgentId)),
             OrderedJSONField("syncPending", .bool(syncPending)),
             OrderedJSONField("lastErrorCode", .stringOrNull(lastErrorCode)),
-            OrderedJSONField("lastErrorAt", .timestampOrNull(lastErrorAt)),
-            OrderedJSONField("activatedAt", .timestampOrNull(activatedAt)),
+            OrderedJSONField("lastErrorAt", .stringOrNull(lastErrorAt)),
+            OrderedJSONField("activatedAt", .stringOrNull(activatedAt)),
         ])
     }
 }
@@ -393,9 +393,9 @@ public struct ExternalAgentPresenceDiagnostics: Codable, Sendable, Equatable {
         self.online = online
     }
 
-    var orderedJSON: OrderedJSON {
+    var jsonBody: OrderedJSON {
         .object([
-            OrderedJSONField("lastSeenAt", .timestampOrNull(lastSeenAt)),
+            OrderedJSONField("lastSeenAt", .stringOrNull(lastSeenAt)),
             OrderedJSONField("online", .bool(online)),
             OrderedJSONField("onlineWindowMs", .int(120_000)),
         ])
@@ -411,10 +411,10 @@ public struct ExternalAgentStatusDiagnostics: Codable, Sendable, Equatable {
         self.statusProtocolAdoptedAt = statusProtocolAdoptedAt
     }
 
-    var orderedJSON: OrderedJSON {
+    var jsonBody: OrderedJSON {
         .object([
             OrderedJSONField("activity", .string(activity)),
-            OrderedJSONField("statusProtocolAdoptedAt", .timestampOrNull(statusProtocolAdoptedAt)),
+            OrderedJSONField("statusProtocolAdoptedAt", .stringOrNull(statusProtocolAdoptedAt)),
         ])
     }
 }
@@ -428,7 +428,7 @@ public struct ExternalAgentPushDiagnostics: Codable, Sendable, Equatable {
         self.endpointHost = endpointHost
     }
 
-    var orderedJSON: OrderedJSON {
+    var jsonBody: OrderedJSON {
         .object([
             OrderedJSONField("registered", .bool(registered)),
             OrderedJSONField("enabled", .bool(registered)),
@@ -453,9 +453,9 @@ public struct ExternalAgentCursorDiagnostics: Codable, Sendable, Equatable {
         self.pendingCursorAckCount = pendingCursorAckCount
     }
 
-    var orderedJSON: OrderedJSON {
+    var jsonBody: OrderedJSON {
         .object([
-            OrderedJSONField("lastCursorPullAt", .timestampOrNull(lastCursorPullAt)),
+            OrderedJSONField("lastCursorPullAt", .stringOrNull(lastCursorPullAt)),
             OrderedJSONField("pendingCursorAckCount", .int(pendingCursorAckCount)),
         ])
     }
@@ -474,7 +474,7 @@ public struct ExternalAgentConnectionDiagnostics: Codable, Sendable, Equatable {
         self.reason = reason
     }
 
-    var orderedJSON: OrderedJSON {
+    var jsonBody: OrderedJSON {
         .object([
             OrderedJSONField("provider", .string(provider)),
             OrderedJSONField("state", .string(state)),

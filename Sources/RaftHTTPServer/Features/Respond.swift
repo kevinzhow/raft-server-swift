@@ -2,188 +2,181 @@ import Foundation
 import RaftHTTP
 import Vapor
 
-/// The feature layer's one adapter from a typed service outcome to `Response`.
+// The feature layer's only adapter from a typed service outcome to `Response`.
+//
+// A service returns a DTO and throws a `DomainError`; this file owns the
+// status, header and body projection so no feature builds JSON, copies the
+// header set or invents its own overload. The API is deliberately small:
+//
+//   respond(status:headers:_:)          plain `Encodable` DTO (sorted keys)
+//   respond(status:headers:_:)          `JSONBodyConvertible` DTO (exact order)
+//   respond(status:headers:_:)          payload-dependent header policy
+//   respond(_:)                         bare 204 (`NoContentResponse`)
+//   respond(status:headers:rawJSON:)    body the domain already rendered
+//
+// Errors are not a separate overload: every `DomainError` carries its exact
+// body (`errorBody`, or the default `{"error": …}`), and the legacy
+// `DomainErrorWithBody` Codable shape keeps its sorted encoding.
+
+/// A plain `Encodable` success body.
 ///
-/// A migrated service returns a `Codable` DTO on success and throws a
-/// `DomainError` on failure. This helper owns the status, header and body
-/// projection, so a feature never builds JSON or copies the auth header set.
-/// Any other error is rethrown to `JSONErrorBoundaryMiddleware`, which keeps
-/// the existing fallback behavior for programming errors.
+/// `JSONEncoder` runs with sorted keys because Linux keyed containers are hash
+/// ordered: sorting is what makes two identical responses byte-identical. A
+/// body whose published order is not alphabetical conforms to
+/// `JSONBodyConvertible` instead and the ordered overload below wins.
 func respond<DTO: Encodable>(
     status: UInt = 200,
-    _ call: () throws -> DTO
-) throws -> Response {
+    headers: ResponseHeaders = .standard(),
+    _ call: () async throws -> DTO
+) async throws -> Response {
     do {
-        return routeResponse(try jsonReply(status: status, payload: try call()))
+        return response(try encodedReply(status: status, payload: try await call(), headers: headers))
     } catch let error as any DomainError {
-        return try domainErrorResponse(error)
+        return domainErrorResponse(error)
+    } catch let error as any DomainErrorWithBody {
+        return try richBodyErrorResponse(error)
     }
 }
 
-/// The same projection as `respond`, plus the extra headers a legacy reply
-/// published (for example `Cache-Control: private, no-store`). Error mapping is
-/// shared with the plain overload, so a typed failure keeps the published
-/// status, body and headers.
+/// A success body whose headers depend on the value just produced.
+///
+/// Use this for a legacy reply whose `Server-Timing`/cache headers are derived
+/// from the payload (the product-feedback receipt is the current caller). The
+/// returned `ResponseHeaders` is the complete policy for the success reply; a
+/// thrown error keeps its own `errorHeaders`.
 func respond<DTO: Encodable>(
     status: UInt = 200,
-    extraHeaders: [String: String],
-    _ call: () throws -> DTO
-) throws -> Response {
+    headers: @escaping (DTO) -> ResponseHeaders,
+    _ call: () async throws -> DTO
+) async throws -> Response {
     do {
-        return routeResponse(try jsonReply(
+        let payload = try await call()
+        return response(try encodedReply(status: status, payload: payload, headers: headers(payload)))
+    } catch let error as any DomainError {
+        return domainErrorResponse(error)
+    } catch let error as any DomainErrorWithBody {
+        return try richBodyErrorResponse(error)
+    }
+}
+
+/// A success body that owns its exact published order.
+///
+/// `JSONBodyConvertible.jsonBody` already knows the member order, so no
+/// `JSONEncoder` runs. Swift selects this overload over the `Encodable` one
+/// when the closure returns a type that conforms to both (the existential
+/// parameter is more specific than the generic one).
+func respond(
+    status: UInt = 200,
+    headers: ResponseHeaders = .standard(),
+    _ call: () async throws -> any JSONBodyConvertible
+) async throws -> Response {
+    do {
+        return response(orderedReply(
             status: status,
-            payload: try call(),
-            extraHeaders: extraHeaders
+            body: try await call().jsonBody.render(),
+            headers: headers
         ))
     } catch let error as any DomainError {
-        return try domainErrorResponse(error)
+        return domainErrorResponse(error)
+    } catch let error as any DomainErrorWithBody {
+        return try richBodyErrorResponse(error)
     }
 }
 
-/// A route whose published success carries no body (204). The marker is not
-/// `Encodable`, so this overload cannot collide with the JSON ones; a thrown
-/// `DomainError` still maps through the same published error shape.
-func respond(_ call: () throws -> NoContentResponse) throws -> Response {
+/// A route whose published success carries no body (204) and the bare
+/// `Content-Length: 0` header set.
+func respond(_ call: () async throws -> NoContentResponse) async throws -> Response {
     do {
-        _ = try call()
-        return routeResponse(HTTPReply(status: 204, headers: ["Content-Length": "0"], body: ""))
+        _ = try await call()
+        return response(HTTPReply(status: 204, headers: ["Content-Length": "0"], body: ""))
     } catch let error as any DomainError {
-        return try domainErrorResponse(error)
+        return domainErrorResponse(error)
+    } catch let error as any DomainErrorWithBody {
+        return try richBodyErrorResponse(error)
     }
 }
 
-/// Overload for domains whose published error object is richer than
-/// `{"error": …}`. The domain passes its typed error so the compiler selects
-/// this mapping; the body is encoded exactly as the service declared it.
-/// `respond` above is unchanged and stays byte-compatible for every
-/// `DomainError`.
-func respond<DTO: Encodable, Failure: DomainErrorWithBody>(
-    errors _: Failure.Type,
-    status: UInt = 200,
-    _ call: () throws -> DTO
-) throws -> Response {
-    do {
-        return routeResponse(try jsonReplySorted(status: status, payload: try call()))
-    } catch let error as Failure {
-        return routeResponse(try jsonReplySorted(
-            status: error.status,
-            payload: error.body,
-            extraHeaders: error.responseHeaders
-        ))
-    }
-}
-
-/// Overload for a domain whose published body has a fixed key order that is not
-/// alphabetical (`OrderedJSONBody`). The DTO prints itself through
-/// `OrderedJSON`, so the bytes are the legacy bytes instead of a
-/// dictionary-ordered `JSONEncoder` object. Swift ranks this overload above the
-/// `Encodable` one because its constraint refines `Encodable`; a DTO that does
-/// not conform keeps the plain overload. A thrown `DomainError` maps to
-/// `code`-then-`error`, the order every legacy coded failure published.
-func respond<DTO: OrderedJSONBody>(
-    status: UInt = 200,
-    _ call: () throws -> DTO
-) throws -> Response {
-    do {
-        return routeResponse(orderedReply(status: status, payload: try call().orderedJSON))
-    } catch let error as any DomainError {
-        return routeResponse(orderedErrorReply(error))
-    }
-}
-
-/// The upstream `{"error": …}` body. Domains with a richer published shape get
-/// their own DTO and a second mapping overload rather than JSON in the service.
+/// A body the domain already serialized (for example a `201` with a custom
+/// header set, or an empty body that still publishes the JSON header set).
 ///
-/// `code` is omitted when the domain publishes none, so every existing error
-/// keeps the exact `{"error": …}` bytes. When present it is appended after
-/// `error`, the order the archive reply uses.
-private struct ErrorBody: Encodable {
-    let error: String
-    let code: String?
+/// The bytes are published unchanged; the policy supplies the headers and
+/// `Content-Length` is always recomputed from `body`.
+func respond(
+    status: UInt = 200,
+    headers: ResponseHeaders = .standard(),
+    rawJSON body: String
+) -> Response {
+    response(orderedReply(status: status, body: body, headers: headers))
+}
 
-    init(error: String, code: String? = nil) {
-        self.error = error
-        self.code = code
+// MARK: - Projection
+
+private func response(_ reply: HTTPReply) -> Response {
+    routeResponse(reply)
+}
+
+private func resolvedHeaders(_ headers: ResponseHeaders, contentLength: Int) -> [String: String] {
+    var resolved: [String: String]
+    switch headers.base {
+    case .standard:
+        resolved = [
+            "X-Robots-Tag": AppFallback.robotsTag,
+            "Content-Type": AppFallback.jsonContentType,
+            "Content-Length": String(contentLength),
+        ]
+    case .exact:
+        resolved = [:]
     }
+    for (name, value) in headers.values { resolved[name] = value }
+    resolved["Content-Length"] = String(contentLength)
+    return resolved
 }
 
-/// One `DomainError` projection shared by every `respond` overload.
-private func domainErrorResponse(_ error: any DomainError) throws -> Response {
-    routeResponse(try jsonReply(
-        status: error.status,
-        payload: ErrorBody(error: error.errorMessage, code: error.errorCode),
-        extraHeaders: error.responseHeaders
-    ))
-}
-
-/// Canonical encoder for the richer domain bodies.
-///
-/// Linux Foundation's `JSONEncoder` stores keyed containers in a dictionary,
-/// so the default `jsonReply` above can emit the same object with different key
-/// order on two calls. The rich overload sorts keys so a body is deterministic
-/// and `Content-Length` stays meaningful; escaping and header bytes are
-/// unchanged from `jsonReply`.
-private func jsonReplySorted<T: Encodable>(
+/// Deterministic `Encodable` projection: sorted keys and the resolved header
+/// policy.
+private func encodedReply<T: Encodable>(
     status: UInt,
     payload: T,
-    extraHeaders: [String: String] = [:]
+    headers: ResponseHeaders
 ) throws -> HTTPReply {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
     let data = try encoder.encode(payload)
-    var headers = [
-        "X-Robots-Tag": AppFallback.robotsTag,
-        "Content-Type": AppFallback.jsonContentType,
-        "Content-Length": String(data.count),
-    ]
-    for (name, value) in extraHeaders { headers[name] = value }
-    return HTTPReply(status: Int(status), headers: headers, body: String(decoding: data, as: UTF8.self))
+    return HTTPReply(
+        status: Int(status),
+        headers: resolvedHeaders(headers, contentLength: data.count),
+        body: String(decoding: data, as: UTF8.self)
+    )
 }
 
-/// The exact header set the auth surface already publishes for JSON replies.
-private func jsonReply<T: Encodable>(
-    status: UInt,
-    payload: T,
-    extraHeaders: [String: String] = [:]
-) throws -> HTTPReply {
-    let data = try JSONEncoder().encode(payload)
-    var headers = [
-        "X-Robots-Tag": AppFallback.robotsTag,
-        "Content-Type": AppFallback.jsonContentType,
-        "Content-Length": String(data.count),
-    ]
-    for (name, value) in extraHeaders { headers[name] = value }
-    return HTTPReply(status: Int(status), headers: headers, body: String(decoding: data, as: UTF8.self))
-}
-
-/// A body the domain already printed in its published key order. No encoder
-/// runs here, so the member order and every literal `null` survive.
+/// Exact-bytes projection; the caller owns the JSON text.
 private func orderedReply(
     status: UInt,
-    payload: OrderedJSON,
-    extraHeaders: [String: String] = [:]
+    body: String,
+    headers: ResponseHeaders
 ) -> HTTPReply {
-    let body = payload.serialized()
-    var headers = [
-        "X-Robots-Tag": AppFallback.robotsTag,
-        "Content-Type": AppFallback.jsonContentType,
-        "Content-Length": String(Data(body.utf8).count),
-    ]
-    for (name, value) in extraHeaders { headers[name] = value }
-    return HTTPReply(status: Int(status), headers: headers, body: body)
+    HTTPReply(
+        status: Int(status),
+        headers: resolvedHeaders(headers, contentLength: body.utf8.count),
+        body: body
+    )
 }
 
-/// A typed failure printed in the legacy order: the machine code first, then
-/// the human message, and no `code` member for a domain that publishes none.
-private func orderedErrorReply(_ error: any DomainError) -> HTTPReply {
-    var fields: [OrderedJSONField] = []
-    if let code = error.errorCode {
-        fields.append(OrderedJSONField("code", .string(code)))
-    }
-    fields.append(OrderedJSONField("error", .string(error.errorMessage)))
-    return orderedReply(
+/// One `DomainError` projection shared by every success overload.
+private func domainErrorResponse(_ error: any DomainError) -> Response {
+    response(orderedReply(
         status: error.status,
-        payload: .object(fields),
-        extraHeaders: error.responseHeaders
-    )
+        body: error.publishedErrorBody.render(),
+        headers: error.errorHeaders
+    ))
+}
+
+/// The retained `DomainErrorWithBody` projection: a synthesized `Codable` error
+/// object is encoded with sorted keys, exactly as before.
+private func richBodyErrorResponse(_ error: any DomainErrorWithBody) throws -> Response {
+    response(try encodedReply(
+        status: error.status,
+        payload: error.body,
+        headers: .standard(extra: error.responseHeaders)
+    ))
 }

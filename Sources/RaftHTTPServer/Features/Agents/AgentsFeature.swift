@@ -275,8 +275,8 @@ public struct AgentsFeature: RouteCollection, Sendable {
                 credentialId: request.parameters.get("credentialId") ?? ""
             ))
         }
-        agents.get(":id", "external-diagnostics") { request throws -> Response in
-            try respond {
+        agents.get(":id", "external-diagnostics") { request async throws -> Response in
+            try await respond {
                 try services.emailAccounts.agentMigrationStatus.externalDiagnostics(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -355,8 +355,8 @@ public struct AgentsFeature: RouteCollection, Sendable {
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
             ))
         }
-        agents.get(":id", "migration") { request throws -> Response in
-            try respond {
+        agents.get(":id", "migration") { request async throws -> Response in
+            try await respond {
                 try services.emailAccounts.agentMigrationStatus.migrationStatus(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -370,7 +370,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
             // here instead of falling back to an empty request.
             let body = (try await jsonBody(AgentMigrationCancelRequest.self, request))
                 ?? AgentMigrationCancelRequest()
-            return try respond {
+            return try await respond {
                 try services.emailAccounts.agentMigrationStatus.cancelMigration(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",

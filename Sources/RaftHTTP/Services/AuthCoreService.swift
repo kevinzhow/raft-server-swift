@@ -786,6 +786,13 @@ extension EmailLoginDirectory {
         )
     }
 
+    /// Product feedback locators for `POST/GET /internal/agent-api/feedback-locators`
+    /// plus the agent credential/grant decisions the rest of the agent API
+    /// shares. The directory only supplies its stores and the OAuth ledger.
+    public var feedbackLocators: FeedbackLocatorService {
+        FeedbackLocatorService(directory: self)
+    }
+
     public var sessionCount: Int {
         lock.lock()
         defer { lock.unlock() }

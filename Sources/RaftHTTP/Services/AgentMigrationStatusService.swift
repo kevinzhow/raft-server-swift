@@ -81,6 +81,17 @@ public enum AgentMigrationStatusError: DomainError, Equatable {
             "MIGRATION_NOT_CANCELABLE"
         }
     }
+
+    /// The legacy coded failure prints the machine code before the message.
+    /// The canonical default is the opposite order, so the domain owns its
+    /// tree; a failure without a code keeps the plain `{"error": …}` bytes.
+    public var errorBody: OrderedJSON? {
+        guard let errorCode else { return nil }
+        return .object([
+            OrderedJSONField("code", errorCode),
+            OrderedJSONField("error", errorMessage),
+        ])
+    }
 }
 
 /// Migration status, cancellation, provider position and the external
@@ -383,7 +394,7 @@ public struct AgentMigrationStatusService: Sendable {
                 revision: revision,
                 updatedAt: now()
             )
-            emitRealtime("user:\(member.id)", "agent:migration-updated", payload.orderedJSON.serialized())
+            emitRealtime("user:\(member.id)", "agent:migration-updated", payload.jsonBody.render())
         }
     }
 }
