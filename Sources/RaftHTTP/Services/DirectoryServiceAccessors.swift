@@ -247,4 +247,26 @@ extension EmailLoginDirectory {
             appendSystemNotice: systemNoticeAppender
         )
     }
+
+    /// The Computer-key lookup `/daemon/connect` and the Computer fleet share.
+    public func computerCredential(apiKey: String) -> ComputerCredentialLookup {
+        machinesAndComputersStore.computerCredential(apiKey: apiKey)
+    }
+
+    /// Whether the bearer is a live (non-revoked) Computer credential; the
+    /// migration control surfaces gate on it.
+    func computerCredentialValid(_ authorization: String?) -> Bool {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return false }
+        let key = String(authorization.dropFirst("Bearer ".count))
+        return machinesAndComputersStore.computerCredentialIsLive(token: key)
+    }
+
+    /// Runtime forms, option sources and probes, runtime account usage, the
+    /// server onboarding/notification settings and machine registration. The
+    /// machine, notification, onboarding and agent rows live in their stores;
+    /// the session lookup, the realtime emitter and `registerMachine` /
+    /// `machineAPIKey` enter as closures (`RuntimeFormsAndProbesDependencies`).
+    public var runtimeFormsAndProbes: RuntimeFormsAndProbesService {
+        RuntimeFormsAndProbesService(directory: self)
+    }
 }

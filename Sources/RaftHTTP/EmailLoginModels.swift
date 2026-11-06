@@ -303,11 +303,6 @@ struct MachineRecord {
         var runtimes: [String] = []
     }
 
-enum RuntimeProbeResolution {
-        case live(models: [RuntimeModelProbeModel], default: String?)
-        case notLive(reason: String)
-    }
-
 struct UserOnboarding {
         var reminderOptOut = false
         var dismissed: [String: Date] = [:]

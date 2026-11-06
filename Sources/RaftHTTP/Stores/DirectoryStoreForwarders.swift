@@ -27,11 +27,9 @@ extension EmailLoginDirectory {
     var announcementImageAssets: [String: AnnouncementImageAsset] { get { notificationsStore.announcementImageAssets } set { notificationsStore.announcementImageAssets = newValue } }
     var announcementImageStorageAvailable: Bool { get { notificationsStore.announcementImageStorageAvailable } set { notificationsStore.announcementImageStorageAvailable = newValue } }
     var announcementDismissals: Set<String> { get { notificationsStore.announcementDismissals } set { notificationsStore.announcementDismissals = newValue } }
-    var serverNotificationPrefs: [String: NotificationsStore.ServerNotificationPref] { get { notificationsStore.serverNotificationPrefs } set { notificationsStore.serverNotificationPrefs = newValue } }
 
     // Profile surface rows live in `AuthProfileStore`.
     var timezoneObservations: [String: TimezoneObservation] { get { authProfileStore.timezoneObservations } set { authProfileStore.timezoneObservations = newValue } }
-    var userOnboardingSettings: [String: UserOnboarding] { get { authProfileStore.userOnboardingSettings } set { authProfileStore.userOnboardingSettings = newValue } }
     var mobileAppEmailContactsByKey: [String: MobileAppEmailContact] { get { authProfileStore.mobileAppEmailContactsByKey } set { authProfileStore.mobileAppEmailContactsByKey = newValue } }
     var storedMobileAppEmailJourneys: [MobileAppEmailJourney] { get { authProfileStore.storedMobileAppEmailJourneys } set { authProfileStore.storedMobileAppEmailJourneys = newValue } }
 
@@ -55,8 +53,6 @@ extension EmailLoginDirectory {
     public var machineRuntimeDetections: [String: (status: String, unfinished: Set<String>)] { get { machinesAndComputersStore.machineRuntimeDetections } set { machinesAndComputersStore.machineRuntimeDetections = newValue } }
     var machineMigrations: [String: MachineMigrationRecord] { get { machinesAndComputersStore.machineMigrations } set { machinesAndComputersStore.machineMigrations = newValue } }
     var machineRuntimeModels: [String: [String: (models: [(id: String, label: String)], updatedAt: Date)]] { get { machinesAndComputersStore.machineRuntimeModels } set { machinesAndComputersStore.machineRuntimeModels = newValue } }
-    var runtimeAccountUsage: [String: (json: String, staleAfter: Date)] { get { machinesAndComputersStore.runtimeAccountUsage } set { machinesAndComputersStore.runtimeAccountUsage = newValue } }
-    var runtimeAccountUsageRefreshAt: [String: Date] { get { machinesAndComputersStore.runtimeAccountUsageRefreshAt } set { machinesAndComputersStore.runtimeAccountUsageRefreshAt = newValue } }
     var machineKeys: [String: (serverId: String, agentId: String)] { get { machinesAndComputersStore.machineKeys } set { machinesAndComputersStore.machineKeys = newValue } }
 
     // Rows for the server-membership, sidebar and channel-authority surface live in `ServersAndChannelsStore`.

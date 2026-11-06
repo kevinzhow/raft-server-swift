@@ -118,8 +118,8 @@ extension EmailLoginDirectory {
         json: String,
         staleAfter: Date
     ) {
-        lock.lock()
-        runtimeAccountUsage["\(machineId)\n\(provider)"] = (json, staleAfter)
-        lock.unlock()
+        var state = machinesAndComputersStore.state
+        state.runtimeAccountUsage["\(machineId)\n\(provider)"] = (json, staleAfter)
+        machinesAndComputersStore.state = state
     }
 }

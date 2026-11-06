@@ -22,10 +22,10 @@ import VaporTesting
     #expect(accounts.machineCredential(apiKey: machineKey)?.machineId == machineId)
     #expect(accounts.machineCredential(apiKey: machineKey)?.serverId == serverId)
     #expect(accounts.machineCredential(apiKey: "sk_machine_unknown") == nil)
-    #expect(accounts.machineCredential(id: machineId)?.serverId == serverId)
-    #expect(accounts.machineCredential(id: "missing-machine") == nil)
-    #expect(accounts.serverExists(id: serverId))
-    #expect(!accounts.serverExists(id: "33333333-3333-4333-8333-333333333667"))
+    #expect(accounts.runtimeFormsAndProbes.machineCredential(id: machineId)?.serverId == serverId)
+    #expect(accounts.runtimeFormsAndProbes.machineCredential(id: "missing-machine") == nil)
+    #expect(accounts.runtimeFormsAndProbes.serverExists(id: serverId))
+    #expect(!accounts.runtimeFormsAndProbes.serverExists(id: "33333333-3333-4333-8333-333333333667"))
 }
 
 @Test func attachedComputerKeyUsesTheUpstreamPrefixAndResolvesToItsMachine() async throws {

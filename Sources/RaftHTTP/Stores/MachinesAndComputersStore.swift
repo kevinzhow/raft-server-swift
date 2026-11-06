@@ -315,6 +315,125 @@ final class MachinesAndComputersStore: @unchecked Sendable {
         }
         return revoked
     }
+
+    // MARK: - Runtime forms, probes and credential liveness
+
+    /// One Computer-owned machine row of one Server, as every runtime-form and
+    /// runtime-probe route resolves it.
+    func machine(id: String, serverId: String) -> MachineRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.machines.first { $0.id == id && $0.serverId == serverId }
+    }
+
+    /// The probe cache the runtime option sources fall back to.
+    func runtimeModels(machineId: String, runtime: String) -> [(id: String, label: String)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.machineRuntimeModels[machineId]?[runtime]?.models ?? []
+    }
+
+    /// Every Computer's cached `builtin` models. Empty when no machine is
+    /// registered, read in one critical section so the two facts agree.
+    func builtinRuntimeModels() -> [(id: String, label: String)] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !storage.machines.isEmpty else { return [] }
+        return Array(storage.machineRuntimeModels.values.flatMap { $0["builtin"]?.models ?? [] })
+    }
+
+    /// The `machineId\nworkspace` keys a Computer deleted.
+    func deletedWorkspaceKeys() -> Set<String> {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.deletedMachineWorkspaces
+    }
+
+    /// Everything the runtime account usage routes read about one machine, in
+    /// one critical section: the machine row, its attaching human, whether the
+    /// Computer is online and the stored usage snapshot.
+    struct RuntimeAccountUsageContext {
+        let machine: MachineRecord
+        let attacher: String?
+        let online: Bool
+        let snapshot: (json: String, staleAfter: Date)?
+    }
+
+    func runtimeAccountUsageContext(
+        machineId: String,
+        serverId: String,
+        provider: String
+    ) -> RuntimeAccountUsageContext? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let machine = storage.machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
+            return nil
+        }
+        return RuntimeAccountUsageContext(
+            machine: machine,
+            attacher: storage.computerAttachers[machineId],
+            online: storage.machineOnline[machineId] == true,
+            snapshot: storage.runtimeAccountUsage["\(machineId)\n\(provider)"]
+        )
+    }
+
+    /// Whether the usage refresh for `key` ran less than `cooldown` seconds ago.
+    func runtimeAccountUsageRefreshInCooldown(key: String, now: Date, cooldown: TimeInterval) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let last = storage.runtimeAccountUsageRefreshAt[key] else { return false }
+        return now.timeIntervalSince(last) < cooldown
+    }
+
+    /// The cooldown check and the attempt stamp as one decision: of two
+    /// concurrent requested refreshes exactly one claims the slot.
+    func claimRuntimeAccountUsageRefresh(key: String, now: Date, cooldown: TimeInterval) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if let last = storage.runtimeAccountUsageRefreshAt[key], now.timeIntervalSince(last) < cooldown {
+            return false
+        }
+        storage.runtimeAccountUsageRefreshAt[key] = now
+        return true
+    }
+
+    /// Stamps a manual refresh attempt that produced no snapshot.
+    func recordRuntimeAccountUsageRefreshAttempt(key: String, at: Date) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.runtimeAccountUsageRefreshAt[key] = at
+    }
+
+    /// Stores a fresh snapshot and its refresh stamp together.
+    func recordRuntimeAccountUsage(key: String, json: String, staleAfter: Date, refreshedAt: Date) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.runtimeAccountUsage[key] = (json, staleAfter)
+        storage.runtimeAccountUsageRefreshAt[key] = refreshedAt
+    }
+
+    /// Whether `token` is a live machine key or a non-revoked Computer key, so
+    /// an oversized body can be refused before any parser sees it.
+    func machineCredentialIsLive(token: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.machines.contains { $0.apiKey == token }
+            || storage.computers.contains { $0.apiKey == token && $0.revokedAt == nil }
+    }
+
+    func computerCredentialIsLive(token: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.computers.contains { $0.apiKey == token && $0.revokedAt == nil }
+    }
+
+    /// The `/daemon/connect` lookup by machine id.
+    func machineCredentialIdentity(id: String) -> MachineCredentialIdentity? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let machine = storage.machines.first(where: { $0.id == id }) else { return nil }
+        return MachineCredentialIdentity(machineId: machine.id, serverId: machine.serverId)
+    }
 }
 
 extension MachinesAndComputersStore {
@@ -533,5 +652,28 @@ extension MachinesAndComputersStore {
             storage.computers[computerIndex].revokedAt = now
         }
         return true
+    }
+}
+
+extension MachinesAndComputersStore {
+    /// Exact key match wins, then a revoked row with the same 16-character
+    /// prefix, then a live row whose key does not verify, then absence; one
+    /// critical section.
+    func computerCredential(apiKey: String) -> ComputerCredentialLookup {
+        lock.lock()
+        defer { lock.unlock() }
+        let length = EmailLoginDirectory.computerAPIKeyPrefixLength
+        let prefix = String(apiKey.prefix(length))
+        let candidates = storage.computers.filter { String($0.apiKey.prefix(length)) == prefix }
+        if let computer = candidates.first(where: { $0.apiKey == apiKey }) {
+            if computer.revokedAt != nil { return .revoked }
+            guard let machineId = computer.machineId,
+                  storage.machines.contains(where: { $0.id == machineId })
+            else { return .machineUnlinked }
+            return .linked(computerId: computer.id, machineId: machineId)
+        }
+        if candidates.contains(where: { $0.revokedAt != nil }) { return .revoked }
+        if !candidates.isEmpty { return .keyMismatch }
+        return .notFound
     }
 }
