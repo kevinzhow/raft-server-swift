@@ -24,11 +24,12 @@ Daemon 的 2616 条用例中，约 1130 条属于 Node 运行时 / 进程管理 
 
 ### 1.3 分层基础（R1–R4）
 
-- **路由**：16 个 `RouteCollection` 模块，位于 `Sources/RaftHTTPServer/Features/`（含 `AgentsFeature`、`ComputersFeature`、`RemindersFeature`，最大 712 行）。
-- **存储**：12 个独立锁领域 `Store`，位于 `Sources/RaftHTTP/Stores/`。
-- **服务**：7 个无 Vapor 依赖的 `Service`，位于 `Sources/RaftHTTP/Services/`。
-- **DTO**：4 个 `Codable` 模块，位于 `Sources/RaftHTTP/DTO/`。
-- **收敛结果**：`Sources/RaftHTTP/EmailLogin.swift` 从 34,306 行压降至 **48 行**（**-99.86%**）；`ForTesting` 基线压降至 **0**。`Features/**` 中同步 `request.body.string` 读取为 **0**，`BufferedRequestBodyMiddleware` 已退役。
+- **路由**：16 个 `RouteCollection` 模块（5,892 行），位于 `Sources/RaftHTTPServer/Features/`（含 `AgentsFeature`、`ComputersFeature`、`RemindersFeature`，最大 748 行）。
+- **存储**：12 个独立锁领域 `Store` + `DirectoryStoreForwarders.swift`，位于 `Sources/RaftHTTP/Stores/`。
+- **服务**：45 个无 Vapor 依赖的 `Service`（32,996 行，最大 1,085 行，上限 1,200），位于 `Sources/RaftHTTP/Services/`。
+- **DTO**：8 个 `Codable` 模块（1,362 行），位于 `Sources/RaftHTTP/DTO/`。
+- **收敛结果**：`Sources/RaftHTTP/EmailLogin.swift` 从 34,306 行压降至 **48 行**（**-99.86%**）；`Sources/RaftHTTP/EmailLogin/` 目录下 `.swift` 文件 **0 个**（原 34 个已全部删除）；`EmailLogin.swift` 内 `ForTesting` 基线为 **0**（`scripts/check_architecture.py` 门禁口径）。`Features/**` 中同步 `request.body.string` 读取为 **0**，`BufferedRequestBodyMiddleware` 已退役。
+- **未收敛项**：`grep -r ForTesting Sources` 全树仍有 **305 处 / 43 个文件**命中（`Services/` 与 `Support/DirectoryTestSeams.swift`、`OAuthLedger.swift` 为主），测试目标 235 个文件引用其中一部分；见 5.4。
 
 ## 2. 下一阶段目标：Phase 5 按域深度架构重构
 
@@ -54,17 +55,17 @@ Daemon 的 2616 条用例中，约 1130 条属于 Node 运行时 / 进程管理 
 
 - `Sources/RaftHTTPServer/Features/**` 中已无同步 `request.body.string ?? ""` 读取，请求体统一走 `try await req.content.decode(<RequestDTO>.self)`。
 - 全局缓冲的 `BufferedRequestBodyMiddleware` 已删除。
-- 引入 `AsyncBearerAuthenticator` 与统一 Server Scope 中间件，替代各 handler 内的重复鉴权与作用域检查。
+- **已放弃**：`AsyncBearerAuthenticator` 与统一 Server Scope 中间件。钉住的 Vapor 快照没有该类型（对应的 `BearerAuthenticator` 会追加 `WWW-Authenticate` 头并改变 token 解析），鉴权与 401→403→404 顺序编码在各 Service 内且已被 parity 锁定，无法在不改行为的前提下上移。改为可选切片：抽出共享的 `bearerToken(_:)`（语义与现有 `hasPrefix("Bearer ")` 完全一致），替换约 53 处重复解析。
 
 ### 5.3 拆分 `NotificationsFeature.swift` 杂糅路由
 
-`NotificationsFeature.swift`（928 行）目前混装 `Agents`、`Computers`、`Reminders` 等路由。按上游 `routes/*.ts` 拆分为独立的：
+`NotificationsFeature.swift` 原为 928 行，混装 `Agents`、`Computers`、`Reminders` 等路由（现已拆分，剩 507 行）。按上游 `routes/*.ts` 拆分为独立的：
 
 - `AgentsFeature.swift`
 - `ComputersFeature.swift`
 - `RemindersFeature.swift`
 
-拆分保持路由路径、方法、状态码与 JSON 不变，仅移动注册点与 handler 归属。
+拆分保持路由路径、方法、状态码与 JSON 不变，仅移动注册点与 handler 归属。（已完成：`AgentsFeature` 505 行、`ComputersFeature` 57 行、`RemindersFeature` 30 行。）
 
 ### 5.4 清理生产类型中的测试后门（`TestSupport`）
 
@@ -73,11 +74,14 @@ Daemon 的 2616 条用例中，约 1130 条属于 Node 运行时 / 进程管理 
 
 ### Phase 5 完成标准
 
-- `Sources/RaftHTTP/EmailLogin/` 下的 `EmailLogin+*.swift` 全部删除，业务逻辑按域收敛到 `<Domain>Service`。
+状态：5.1–5.3 与门禁基线已完成；唯一遗留项为 5.4 的全树 `ForTesting` 清理（后续切片）。
+
+- `Sources/RaftHTTP/EmailLogin/` 下的 `EmailLogin+*.swift` 全部删除，业务逻辑按域收敛到 `<Domain>Service`。（已完成：目录 0 个 `.swift` 文件，`EmailLogin.swift` 48 行。）
 - `Features/**` 中不再有同步 `request.body.string ?? ""` 读取，`BufferedRequestBodyMiddleware` 已移除。（已完成）
 - `NotificationsFeature.swift` 拆分完毕，`Agents`、`Computers`、`Reminders` 路由归属与上游 `routes/*.ts` 一一对应。（已完成）
-- 生产代码中不再有 `*ForTesting`，架构门禁基线归零。
-- 四项门禁全绿，`make parity` 仍为 406 / 406。
+- 架构门禁 `ForTesting` 基线归零。（已完成：`EmailLogin.swift` 0 个标记，`scripts/check_architecture.py` 基线 0。）
+- 全树生产代码不再暴露 `*ForTesting`（5.4）。**未完成**：305 处 / 43 个文件，需新增 `TestSupport` 目标并改写测试引用，属行为无关但体量大的独立后续切片，不并入本次收尾。
+- 四项门禁全绿，`make parity` 仍为 406 / 406。（已验证。）
 
 ## 3. 切片门禁与工作契约（4 大必过门禁）
 

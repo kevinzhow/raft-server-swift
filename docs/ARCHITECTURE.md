@@ -1,10 +1,12 @@
 # Architecture: target Swift layering
 
-**Status**: target design with executable guardrails. The tree is in a
-transitional state: the route surface is registered inline in one file and the
-domain behavior lives in one ledger class. This document defines where feature
-slices move code, and `scripts/check_architecture.py` enforces the measurable
-part of the target.
+**Status**: implemented target design with executable guardrails. The Phase 5
+Strangler-Fig migration (Batches A–F) is complete: `EmailLogin.swift` is a
+48-line composition root, `Sources/RaftHTTP/EmailLogin/` contains zero
+extension files, and the route surface is registered through 16
+`RouteCollection` feature modules. This document defines the layering that is
+now in place, and `scripts/check_architecture.py` enforces the measurable part
+of it.
 
 **Scope**: the HTTP/frame server surface (`RaftHTTP`, `RaftHTTPServer`,
 `RaftRealtime`). The daemon targets (`RaftDaemonClient`, `RaftDaemon`,
@@ -28,25 +30,29 @@ Upstream `raft-source` (`v1.21.23-source.1`) is a modular Express 5 server:
 | `packages/shared` (`@botiverse/raft-shared`) | 116 modules | Request/response/event contracts shared by server, daemon, web, SDK |
 | `__set…ForTests` helpers (guarded by `NODE_ENV === "test"`) | several | Test seams are explicit, exported, and environment-gated |
 
-Our port currently collapses those boundaries into two files:
+The port originally collapsed those boundaries into one composition root and
+one ledger class. The migration replaced them with the layered tree below:
 
-| File (measured 2026-11-05) | Size | Contents |
+| Path (measured 2026-11-06) | Size | Contents |
 | --- | --- | --- |
-| `Sources/RaftHTTPServer/FallbackApplication.swift` | 4,523 lines, 503 inline `app.<verb>(…)` registrations | Composition root **and** every route handler |
-| `Sources/RaftHTTP/EmailLogin.swift` | 31,656 lines, 758 `public func` | Every in-memory domain store, lock, validation rule, serializer, and test seam |
-| `Tests/RaftHTTPServerTests/*.swift` | 471 files | Mostly black-box HTTP tests through `configure(app, services:)` |
+| `Sources/RaftHTTPServer/FallbackApplication.swift` | 594 lines | Composition root: registers feature collections, installs middleware, and keeps the policy catch-alls |
+| `Sources/RaftHTTP/EmailLogin.swift` | 48 lines, 0 `ForTesting` | Composition root for the in-memory ledger: one lock, the 12 store instances, the relay slots, the `OAuthLedger`, and `init()` |
+| `Sources/RaftHTTP/EmailLogin/` | 0 `.swift` files (was 34) | Empty; every extension was deleted after its domain moved |
+| `Sources/RaftHTTPServer/Features/` | 16 modules, 5,892 lines, largest 748 | One `RouteCollection` per upstream route family |
+| `Sources/RaftHTTP/Services/` | 45 modules, 32,996 lines, largest 1,085 | Vapor-free domain orchestration |
+| `Sources/RaftHTTP/Stores/` | 12 stores + `DirectoryStoreForwarders.swift` | Per-domain state, each behind its own lock |
+| `Sources/RaftHTTP/DTO/` | 8 `Codable` modules | Request, response, and event shapes |
+| `Tests/RaftHTTPServerTests/*.swift` | 499 files | Mostly black-box HTTP tests through `configure(app:services:)` |
 
-That is why parallel slices collide: every route slice edits the same two
-files, and a 31k-line class has no isolated write scope. The target layering
-gives each upstream route module a file, each upstream service module a file,
-and each domain store its own lock.
+Parallel slices now have isolated write scopes: one feature module, one service
+module, one store, and one DTO file per domain. No file needs to be 31k lines.
 
 ## 2. Target layers
 
 | Layer | Swift path | Owns | Must not |
 | --- | --- | --- | --- |
 | **Features** | `Sources/RaftHTTPServer/Features/<Name>/<Name>Feature.swift` | A `RouteCollection`: method, path, parameters, headers, body extraction, `routeResponse`/service invocation. One feature per upstream router module. | Contain domain rules, locks, persistence, or ad-hoc JSON string building. |
-| **Services** | `Sources/RaftHTTPServer/Services/` | Orchestration: authorize, validate request shape, call stores, map results to DTOs, choose status/error codes. Vapor-free enough to unit test. | Store state, hold `NSLock`, or import `Vapor`/`RaftRealtime`. |
+| **Services** | `Sources/RaftHTTP/Services/` | Orchestration: authorize, validate request shape, call stores, map results to DTOs, choose status/error codes. Vapor-free enough to unit test. | Store state, hold `NSLock`, or import `Vapor`/`RaftRealtime`. |
 | **Stores** | `Sources/RaftHTTP/Stores/` | Domain state with a per-domain lock (`NSLock` today, `actor` where async is unavoidable), or the Postgres adapter behind the same API. One store per domain. | Build HTTP responses, know about routes, or call other stores while holding a lock. |
 | **DTO** | `Sources/RaftHTTP/DTO/` | `Codable` request/response/event structs and one canonical encoder (`JSONEncoder` configuration or a shared `JSONValue`). Shapes follow upstream JSON exactly. | Hold mutable state or depend on Vapor. |
 | **Test seams** | `Tests/TestSupport/` (test-only SwiftPM target) | Fakes, clocks, deterministic IDs, and hooks needed to assert behavior. | Be imported by a production target; appear as `…ForTesting` members on production types. |
@@ -120,10 +126,13 @@ connections, realtime emitter, migrations, …). Target:
 
 ### 2.4 DTO and JSON
 
-`EmailLogin.swift` currently interleaves `Codable` model structs with hand-built
-JSON strings (`Self.json(200, "{…}")`). Target:
+The ledger originally interleaved `Codable` model structs with hand-built JSON
+strings (`Self.json(200, "{…}")`). The DTO layer is now in place:
 
-- request/response/event shapes are `Codable` structs in `Sources/RaftHTTP/DTO/`;
+- request/response/event shapes are `Codable` structs in `Sources/RaftHTTP/DTO/`
+  (8 modules: `AuthVerificationDTO`, `AuthProfileDTO`, `FeedbackDTO`,
+  `RealtimeEventDTO`, `MessagingAndChannelsDTO`, `ServersAndTasksDTO`,
+  `AgentsAndComputersDTO`, `InternalAgentApiDTO`);
 - one canonical JSON encoder is used for API responses so key order, date
   encoding, and escaping cannot drift between features;
 - a handler that needs an upstream-exact string (for example a webhook body)
@@ -132,9 +141,9 @@ JSON strings (`Self.json(200, "{…}")`). Target:
 
 ### 2.5 Test seams
 
-The production ledger currently carries 243 `…ForTesting` markers. That was
-pragmatic while routes and state shared one class, but it is a public surface
-with no owner. Target:
+The production ledger once carried 243 `…ForTesting` markers. `EmailLogin.swift`
+now has **0**, and the test-only seams live in
+`Sources/RaftHTTP/Support/DirectoryTestSeams.swift`. The rule is:
 
 - deterministic seams live in `Tests/TestSupport/` as fakes/hooks passed through
   `FallbackServices`, not as mutable members on a production type;
@@ -157,15 +166,18 @@ duplicate shapes stay in `RaftHTTP` and are marked for extraction.
 
 ```text
 Sources/
-  RaftShared/                     # new: Codable contracts, zero deps
+  RaftShared/                     # Codable contracts, zero deps (JSONValue)
   RaftHTTP/                       # framework-independent domain
-    Stores/<Domain>Store.swift    # per-domain state + lock
-    DTO/<Domain>DTO.swift         # Codable shapes, canonical JSON
-    JSON/<Encoder>.swift
+    EmailLogin.swift              # composition root only (48 lines)
+    EmailLogin/                   # empty: no extension files remain
+    Stores/<Domain>Store.swift    # 12 per-domain stores + DirectoryStoreForwarders
+    Services/<Domain>Service.swift# 45 Vapor-free domain services
+    DTO/<Domain>DTO.swift         # 8 Codable shape modules
+    Support/                      # DirectoryStatics1-2, DirectoryModelsAndConstants,
+                                  # DirectoryTestSeams, HTTPReply+JSONValue
   RaftHTTPServer/
     FallbackApplication.swift     # composition root only (middleware + register)
-    Features/<Name>/<Name>Feature.swift
-    Services/<Name>Service.swift
+    Features/<Name>/<Name>Feature.swift   # 16 RouteCollection modules
     Middleware/                   # existing middleware, unchanged
   RaftRealtime/                   # frame assembly, consumes RaftShared
 Tests/
