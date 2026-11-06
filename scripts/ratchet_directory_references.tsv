@@ -10,8 +10,6 @@ Sources/RaftHTTP/Services/DirectoryServiceAccessors+Integrations.swift	1
 Sources/RaftHTTP/Services/DirectoryServiceAccessors+ManagedMCP.swift	1
 Sources/RaftHTTP/Services/DirectoryServiceAccessors.swift	1
 Sources/RaftHTTP/Services/JoinLinksAndInvitesService.swift	1
-Sources/RaftHTTP/Services/ManagedMCPAssignmentsService.swift	2
-Sources/RaftHTTP/Services/ManagedMCPToolExecutionService.swift	2
 Sources/RaftHTTP/Services/RuntimeUsageAndAttestationsService.swift	1
 Sources/RaftHTTP/Services/SocketMembershipService.swift	2
 Sources/RaftHTTP/Stores/AgentsRuntimeStore.swift	3

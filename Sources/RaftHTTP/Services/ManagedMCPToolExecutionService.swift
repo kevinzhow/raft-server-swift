@@ -3,38 +3,6 @@ import Foundation
 import FoundationNetworking
 #endif
 
-// MARK: - Injected dependencies
-
-/// Every cross-domain decision the read-state service needs, as injected
-/// closures. The channel rows, read cursors and read-receipt flags are the
-/// stores the service owns; the session lookup, the realtime emitter and the
-/// agent task credential/channel resolution belong to domains that have not
-/// migrated (or whose service another slice owns). `live(directory:)` wires them
-/// to the existing directory entry points at the composition root.
-struct ManagedMCPToolExecutionDependencies: Sendable {
-    var sessionUserId: @Sendable (String?) -> String?
-    var emitRealtime: @Sendable (_ room: String, _ event: String, _ payload: String?) -> Void
-    var taskWriter: @Sendable (_ authorization: String?) -> (agentId: String, serverId: String)?
-    var taskChannel: @Sendable (_ serverId: String, _ agentId: String, _ reference: String) -> String?
-    var agentWriter: @Sendable (_ authorization: String?) -> OAuthLedger.AgentRuntimeInfo?
-    var now: @Sendable () -> Date
-
-    static func live(directory source: EmailLoginDirectory) -> ManagedMCPToolExecutionDependencies {
-        ManagedMCPToolExecutionDependencies(
-            sessionUserId: { source.sessionUserId(authorization: $0) },
-            emitRealtime: { room, event, payload in source.realtimeRelay.emit(room, event, payload) },
-            taskWriter: { source.actionCardExecute.taskWriter(authorization: $0, legacyAgentId: nil) },
-            taskChannel: { serverId, agentId, reference in
-                source.actionCardExecute.taskChannel(serverId: serverId, agentId: agentId, reference: reference)
-            },
-            agentWriter: { [lookup = source.agentCredentialLookup] authorization in
-                lookup.agentWriterAndRole(authorization: authorization, legacyAgentId: nil, scopes: [])?.agent
-            },
-            now: { Date() }
-        )
-    }
-}
-
 // MARK: - Service
 
 /// Saved messages, direct channels, channel detail, read state and the agent
@@ -56,21 +24,12 @@ public struct ManagedMCPToolExecutionService: Sendable {
     private let inboxFacts: InboxFactStore
     private let oauth: OAuthLedger
     private let feedbackLocators: FeedbackLocatorService
-    private let dependencies: ManagedMCPToolExecutionDependencies
-
-    init(directory source: EmailLoginDirectory) {
-        self.init(
-            channels: source.serversAndChannelsStore,
-            messages: source.messagesAndThreadsStore,
-            agents: source.agentsRuntimeStore,
-            profiles: source.authProfileStore,
-            notifications: source.notificationsStore,
-            inboxFacts: source.inboxFactStore,
-            oauth: source.oauth,
-            feedbackLocators: source.feedbackLocators,
-            dependencies: .live(directory: source)
-        )
-    }
+    private let auth: AuthCoreService
+    private let realtime: RealtimeRelayService
+    private let taskCredentials: AgentTaskCredentials
+    private let credentialLookup: AgentCredentialLookup
+    private let suppression: MessageSuppressionService
+    private let now: @Sendable () -> Date
 
     init(
         channels: ServersAndChannelsStore,
@@ -81,7 +40,12 @@ public struct ManagedMCPToolExecutionService: Sendable {
         inboxFacts: InboxFactStore,
         oauth: OAuthLedger,
         feedbackLocators: FeedbackLocatorService,
-        dependencies: ManagedMCPToolExecutionDependencies
+        auth: AuthCoreService,
+        realtime: RealtimeRelayService,
+        taskCredentials: AgentTaskCredentials,
+        credentialLookup: AgentCredentialLookup,
+        suppression: MessageSuppressionService,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.channels = channels
         self.messages = messages
@@ -91,7 +55,12 @@ public struct ManagedMCPToolExecutionService: Sendable {
         self.inboxFacts = inboxFacts
         self.oauth = oauth
         self.feedbackLocators = feedbackLocators
-        self.dependencies = dependencies
+        self.auth = auth
+        self.realtime = realtime
+        self.taskCredentials = taskCredentials
+        self.credentialLookup = credentialLookup
+        self.suppression = suppression
+        self.now = now
     }
 
     private var visibility: ManagedMCPChannelVisibility {
@@ -99,7 +68,7 @@ public struct ManagedMCPToolExecutionService: Sendable {
     }
 
     private func requireSession(_ authorization: String?) throws -> String {
-        guard let userId = dependencies.sessionUserId(authorization) else {
+        guard let userId = try? auth.authenticate(authorization) else {
             throw ManagedMCPToolExecutionError.unauthorized
         }
         return userId
@@ -258,8 +227,8 @@ public struct ManagedMCPToolExecutionService: Sendable {
             oauth.addChannelAgent(channelId: channelId, agentId: agentId)
             channels.upsertDirectChannel(serverId: serverId, channelId: channelId, memberIds: [userId, agentId])
             let payload = OrderedJSON.object([OrderedJSONField("channelId", channelId)]).render()
-            dependencies.emitRealtime("channel:\(channelId)", "dm:new", payload)
-            dependencies.emitRealtime("user:\(userId)", "dm:new", payload)
+            realtime.emit("channel:\(channelId)", "dm:new", payload)
+            realtime.emit("user:\(userId)", "dm:new", payload)
             return DirectChannelResponse(id: channelId, peerId: agentId, peerType: "agent")
         }
         guard let peerId = body.userId, oauth.memberRole(serverId: serverId, userId: peerId) != nil else {
@@ -369,13 +338,12 @@ public struct ManagedMCPToolExecutionService: Sendable {
             OrderedJSONField("peerId", agentId),
             OrderedJSONField("maxReadSeq", maxReadSeq),
         ]).render()
-        dependencies.emitRealtime("channel:\(channelId)", "scope_read:updated", payload)
+        realtime.emit("channel:\(channelId)", "scope_read:updated", payload)
     }
 
     /// Activity suppression is a fact-only query shared with execute and inbox.
     func agentMessageSuppressed(_ message: StoredHumanMessage, agentId: String) -> Bool {
-        MessageSuppressionService(messages: messages, oauth: oauth)
-            .isSuppressed(message, agentId: agentId)
+        suppression.isSuppressed(message, agentId: agentId)
     }
 
     // MARK: - POST /internal/agent-api/channels/archive|unarchive
@@ -388,11 +356,11 @@ public struct ManagedMCPToolExecutionService: Sendable {
         archive: Bool
     ) throws -> AgentChannelArchiveResponse {
         try requireCapability(authorization, "channels")
-        guard let writer = dependencies.taskWriter(authorization) else {
+        guard let writer = taskCredentials.writer(authorization: authorization, legacyAgentId: nil) else {
             throw ChannelMembershipError.agentTokenInvalid
         }
         guard let target = body?.target,
-              let channelId = dependencies.taskChannel(writer.serverId, writer.agentId, target)
+              let channelId = taskCredentials.channel(serverId: writer.serverId, agentId: writer.agentId, reference: target)
         else {
             throw ManagedMCPToolExecutionError.invalidChannelTarget
         }
@@ -408,7 +376,7 @@ public struct ManagedMCPToolExecutionService: Sendable {
         muted: Bool
     ) throws -> AgentChannelMuteResponse {
         try requireCapability(authorization, "channels")
-        guard let writer = dependencies.agentWriter(authorization),
+        guard let writer = credentialLookup.agentWriterAndRole(authorization: authorization, legacyAgentId: nil, scopes: [])?.agent,
               let agent = oauth.agentRuntimeInfo(id: writer.id), !agent.deleted
         else {
             throw ChannelMembershipError.agentTokenInvalid
@@ -721,7 +689,7 @@ public struct ManagedMCPToolExecutionService: Sendable {
             }
             guard ownedSeq > 0 else { throw ChannelMembershipError.channelNotFound }
             oauth.setChannelReadCursor(channelId: channelId, userId: userId, seq: ownedSeq)
-            let version = messages.markInboxScopeDone(channelId: channelId, userId: userId, at: dependencies.now())
+            let version = messages.markInboxScopeDone(channelId: channelId, userId: userId, at: now())
             return ChannelReadAllResponse(seq: ownedSeq, readStateVersion: version)
         }
         let latest = oauth.channelUnreadInfo(channelId: channelId, userId: userId).latestSeq ?? 0

@@ -132,19 +132,34 @@ extension EmailLoginDirectory {
         )
     }
 
-    /// Channel membership, thread creation and the human task routes. The
-    /// channel, read-state and task rows come from their stores; the session
-    /// lookup, the serialized system-notice append and the task-catalog
-    /// projections belong to unmigrated domains and enter as closures
-    /// (`ManagedMCPAssignmentsDependencies`). `publishTaskUpdated` takes the
-    /// claimed task's published JSON so the channel-messaging domain can emit
-    /// `task:updated`.
+    /// Channel membership, thread creation and human tasks, assembled from
+    /// their owners and named domain capabilities. The task frame sink receives
+    /// the claimed task's published JSON.
     public func channelAssignments(
         publishTaskUpdated: @escaping @Sendable (String) -> Void = { _ in }
     ) -> ManagedMCPAssignmentsService {
-        ManagedMCPAssignmentsService(
-            directory: self,
-            appendSystemNotice: systemNoticeAppender,
+        let notices = SystemNoticeAppender(messages: messagesAndThreadsStore, ledger: MessageLedgerPort(oauth: oauth))
+        let visibility = ManagedMCPChannelVisibility(oauth: oauth, channels: serversAndChannelsStore)
+        return ManagedMCPAssignmentsService(
+            channels: serversAndChannelsStore,
+            messages: messagesAndThreadsStore,
+            tasks: tasksAndRemindersStore,
+            agents: agentsRuntimeStore,
+            profiles: authProfileStore,
+            oauth: oauth,
+            auth: authCore,
+            ownership: AssistantOwnershipQuery(agents: agentsRuntimeStore, oauth: oauth),
+            probe: ChannelProbeAccessQuery(
+                channels: serversAndChannelsStore, messages: messagesAndThreadsStore,
+                inboxFacts: inboxFactStore, oauth: oauth
+            ),
+            notices: notices,
+            membership: ChannelMembershipService(
+                auth: authCore, oauth: oauth, channels: serversAndChannelsStore,
+                agents: agentsRuntimeStore, feedbackLocators: feedbackLocators,
+                visibility: visibility, notices: notices
+            ),
+            catalog: taskCatalog,
             publishTaskUpdated: publishTaskUpdated
         )
     }
@@ -152,7 +167,24 @@ extension EmailLoginDirectory {
     /// Saved messages, direct channels, channel detail, read state and the
     /// agent channel archive/mute surface.
     public var managedMCPToolExecution: ManagedMCPToolExecutionService {
-        ManagedMCPToolExecutionService(directory: self)
+        ManagedMCPToolExecutionService(
+            channels: serversAndChannelsStore,
+            messages: messagesAndThreadsStore,
+            agents: agentsRuntimeStore,
+            profiles: authProfileStore,
+            notifications: notificationsStore,
+            inboxFacts: inboxFactStore,
+            oauth: oauth,
+            feedbackLocators: feedbackLocators,
+            auth: authCore,
+            realtime: realtimeRelay,
+            taskCredentials: AgentTaskCredentials(
+                agents: agentsRuntimeStore, machines: machinesAndComputersStore,
+                channels: serversAndChannelsStore, oauth: oauth
+            ),
+            credentialLookup: agentCredentialLookup,
+            suppression: MessageSuppressionService(messages: messagesAndThreadsStore, oauth: oauth)
+        )
     }
 
     // MARK: Channel-visibility and mute forwarders for unmigrated callers

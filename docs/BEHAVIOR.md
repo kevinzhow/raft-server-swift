@@ -2189,3 +2189,9 @@ RFC 074 personal assistant：
 - Members/Profile/Threads 删除目录构造器及 live factories，原三份操作、事务与 helper 正文保持。Human-exists 仍按原 accounts id scan，guest/probe/actor 的权限顺序及 allowed/residue/hidden 映射不变；环境、clock、UUID 和配置保持延迟读取。
 - 同 app 注册服务后提升 role，已存在 Profile 服务按新权限接受 rename，Threads follow/read 使用当前成员事实；随后 family revoke 让三个域继续返回原 401/body/header。构造在先的同一 Members 实例能观察 relay 安装、停用和重装，并发送原 server-room role 帧。
 - Threads follower sink 只绑定实际 messaging 服务，频道与 threadOrder 每次仍来自同一 Channels 快照。Member error 声明和三域 dependencies 按职责分文件，不拆业务操作；sidebar/labs CAS、profile/order、translation/attestation、guest/thread 撤销与 DM/follower 视图字节保持。
+
+### MCP assignments 与 tools 的 typed 能力
+
+- 最后两个 Service 目录构造器及 Dependencies/live 删除；Assignments 直接持 auth/raw ownership/catalog/probe/notice/membership，Tools 直接持 task credentials/lookup/suppression/relay。原 Execute 的 writer/channel 包装本就直通 AgentTaskCredentials，仍用 writer 与 nil legacy id，不额外强制 tasks scope或改错误态；mute Lookup 仍用 nil legacy id/空 scopes。
+- Capability、credential、channel、membership 次序、fallback/grant、raw assistant owner、task 排序/pagination/full-summary JSON 条件保持。Probe 规则只提取一次供 Lifecycle 与 Assignments 复用，public/private/thread/residue 接受集不变。
+- SystemNoticeAppender 仍调用原 Messages.appendMessage，allocator/local append/OAuth mirror/born-read cursor/version 在一次 Messages 事务内，顺序 Messages→OAuth；typed membership ctor仅绑定旧 auth/visibility/notice。公开 notice/mute/unread/task 字节及混合 writers/history/resume、竞争附件和 role notice 回归保持。

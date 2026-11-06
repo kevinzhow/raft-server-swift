@@ -3,56 +3,6 @@ import Foundation
 import FoundationNetworking
 #endif
 
-// MARK: - Injected dependencies
-
-/// Every cross-domain decision the assignment service needs, as injected
-/// closures. The channel rows, read state and task rows are the stores the
-/// service owns; the session lookup, the assistant-owner lookup, the channel
-/// probe, the serialized system-notice append, the agent leave and the task
-/// catalog projections belong to domains that have not migrated (or whose
-/// service another slice owns) and stay behind these closures. `live(directory:)`
-/// wires them to the existing directory entry points at the composition root.
-struct ManagedMCPAssignmentsDependencies: Sendable {
-    var sessionUserId: @Sendable (String?) -> String?
-    var assistantOwner: @Sendable (_ agentId: String) -> String?
-    var channelProbeAccess: @Sendable (_ channelId: String, _ serverId: String, _ userId: String) -> ChannelProbeAccess
-    /// Appends one human-message row and its ledger mirror in the same
-    /// Messages transaction, returning its server-wide sequence.
-    var appendSystemNotice: @Sendable (_ message: StoredHumanMessage, _ bornReadAgentId: String?) -> Int
-    var leaveChannelAsAgent: @Sendable (_ agentId: String, _ serverId: String, _ channelId: String) throws -> OkResponse
-    var orderedTasks: @Sendable (_ serverId: String, _ userId: String, _ status: String?) -> [(task: TaskRecord, channelName: String, channelType: String)]
-    var taskFragment: @Sendable (_ task: TaskRecord, _ channelName: String, _ channelType: String, _ summary: Bool) -> String
-    var now: @Sendable () -> Date
-
-    static func live(
-        directory source: EmailLoginDirectory,
-        appendSystemNotice: @escaping @Sendable (StoredHumanMessage, String?) -> Int
-    ) -> ManagedMCPAssignmentsDependencies {
-        let catalog = source.taskCatalog
-        let ownership = AssistantOwnershipQuery(agents: source.agentsRuntimeStore, oauth: source.oauth)
-        return ManagedMCPAssignmentsDependencies(
-            sessionUserId: { source.sessionUserId(authorization: $0) },
-            assistantOwner: { ownership.rawOwner(agentId: $0) },
-            channelProbeAccess: { channelId, serverId, userId in
-                source.channelProbeAccessLocked(channelId: channelId, serverId: serverId, userId: userId)
-            },
-            appendSystemNotice: appendSystemNotice,
-            leaveChannelAsAgent: { agentId, serverId, channelId in
-                try source.channelMembership.leaveChannel(agentId: agentId, serverId: serverId, channelId: channelId)
-            },
-            orderedTasks: { serverId, userId, status in
-                catalog.orderedTasks(serverId: serverId, userId: userId, status: status)
-            },
-            taskFragment: { task, channelName, channelType, summary in
-                summary
-                    ? catalog.summaryTaskJSON(task, channelName: channelName, channelType: channelType)
-                    : catalog.fullTaskJSON(task, channelName: channelName, channelType: channelType)
-            },
-            now: { Date() }
-        )
-    }
-}
-
 // MARK: - Service
 
 /// Channel membership, thread creation and the human task routes.
@@ -73,29 +23,17 @@ public struct ManagedMCPAssignmentsService: Sendable {
     private let agents: AgentsRuntimeStore
     private let profiles: AuthProfileStore
     private let oauth: OAuthLedger
-    private let dependencies: ManagedMCPAssignmentsDependencies
+    private let auth: AuthCoreService
+    private let ownership: AssistantOwnershipQuery
+    private let probe: ChannelProbeAccessQuery
+    private let notices: SystemNoticeAppender
+    private let membership: ChannelMembershipService
+    private let catalog: TaskCatalogService
+    private let now: @Sendable () -> Date
     private let publishTaskUpdated: @Sendable (String) -> Void
 
-    /// Production wiring. The `task:updated` realtime frame is published by the
-    /// channel-messaging domain, so its sink enters as a closure that takes the
-    /// claimed task's published JSON.
-    init(
-        directory source: EmailLoginDirectory,
-        appendSystemNotice: @escaping @Sendable (StoredHumanMessage, String?) -> Int,
-        publishTaskUpdated: @escaping @Sendable (String) -> Void
-    ) {
-        self.init(
-            channels: source.serversAndChannelsStore,
-            messages: source.messagesAndThreadsStore,
-            tasks: source.tasksAndRemindersStore,
-            agents: source.agentsRuntimeStore,
-            profiles: source.authProfileStore,
-            oauth: source.oauth,
-            dependencies: .live(directory: source, appendSystemNotice: appendSystemNotice),
-            publishTaskUpdated: publishTaskUpdated
-        )
-    }
-
+    /// Explicit production owners and domain capabilities. The outbound task
+    /// frame remains a sink that receives the claimed task's published JSON.
     init(
         channels: ServersAndChannelsStore,
         messages: MessagesAndThreadsStore,
@@ -103,7 +41,13 @@ public struct ManagedMCPAssignmentsService: Sendable {
         agents: AgentsRuntimeStore,
         profiles: AuthProfileStore,
         oauth: OAuthLedger,
-        dependencies: ManagedMCPAssignmentsDependencies,
+        auth: AuthCoreService,
+        ownership: AssistantOwnershipQuery,
+        probe: ChannelProbeAccessQuery,
+        notices: SystemNoticeAppender,
+        membership: ChannelMembershipService,
+        catalog: TaskCatalogService,
+        now: @escaping @Sendable () -> Date = { Date() },
         publishTaskUpdated: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.channels = channels
@@ -112,8 +56,20 @@ public struct ManagedMCPAssignmentsService: Sendable {
         self.agents = agents
         self.profiles = profiles
         self.oauth = oauth
-        self.dependencies = dependencies
+        self.auth = auth
+        self.ownership = ownership
+        self.probe = probe
+        self.notices = notices
+        self.membership = membership
+        self.catalog = catalog
+        self.now = now
         self.publishTaskUpdated = publishTaskUpdated
+    }
+
+    private func taskFragment(_ task: TaskRecord, _ channelName: String, _ channelType: String, _ summary: Bool) -> String {
+        summary
+            ? catalog.summaryTaskJSON(task, channelName: channelName, channelType: channelType)
+            : catalog.fullTaskJSON(task, channelName: channelName, channelType: channelType)
     }
 
     private var visibility: ManagedMCPChannelVisibility {
@@ -124,7 +80,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
 
     /// The human routes' `PublicVisits.authRequired` refusal.
     private func requireUser(_ authorization: String?) throws -> String {
-        guard let userId = dependencies.sessionUserId(authorization) else {
+        guard let userId = try? auth.authenticate(authorization) else {
             throw ChannelMembershipError.authRequired(bearerPresent: authorization?.hasPrefix("Bearer ") == true)
         }
         return userId
@@ -132,7 +88,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
 
     /// The roster and task routes' plain missing-session refusal.
     private func requireSession(_ authorization: String?) throws -> String {
-        guard let userId = dependencies.sessionUserId(authorization) else {
+        guard let userId = try? auth.authenticate(authorization) else {
             throw ManagedMCPAssignmentsError.unauthorized
         }
         return userId
@@ -157,7 +113,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
     }
 
     private func announceMembership(channelId: String, name: String) {
-        _ = dependencies.appendSystemNotice(
+        _ = notices.append(
             StoredHumanMessage(
                 id: UUID().uuidString.lowercased(),
                 channelId: channelId,
@@ -220,7 +176,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
         else {
             throw ChannelMembershipError.agentTokenInvalid
         }
-        return try dependencies.leaveChannelAsAgent(agent.id, agent.serverId, channelId)
+        return try membership.leaveChannel(agentId: agent.id, serverId: agent.serverId, channelId: channelId)
     }
 
     // MARK: - POST /api/channels/:channelId/members/batch
@@ -252,7 +208,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
         if !invalidUserIds.isEmpty {
             throw ManagedMCPAssignmentsError.usersNotInServer(invalidUserIds: invalidUserIds)
         }
-        for agentId in body.agentIds where dependencies.assistantOwner(agentId) != nil {
+        for agentId in body.agentIds where ownership.rawOwner(agentId: agentId) != nil {
             throw ManagedMCPAssignmentsError.assistantChannelForbidden
         }
         var addedUsers: [String] = []
@@ -301,7 +257,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
             throw ChannelMembershipError.notAMember
         }
         try requireChannel(serverId: serverId, channelId: channelId)
-        let probeAccess = dependencies.channelProbeAccess(channelId, serverId, userId)
+        let probeAccess = probe.access(channelId: channelId, serverId: serverId, userId: userId)
         if probeAccess == .residue { throw ChannelMembershipError.forbidden }
         guard probeAccess == .allowed else { throw ChannelMembershipError.channelNotFound }
         try requireNotArchived(channelId)
@@ -334,7 +290,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
             var messageId: String?
             if let content = body?.content, !content.isEmpty {
                 let id = UUID().uuidString.lowercased()
-                _ = dependencies.appendSystemNotice(
+                _ = notices.append(
                     StoredHumanMessage(id: id, channelId: threadId, senderId: userId, content: content, randomId: nil),
                     nil
                 )
@@ -387,14 +343,14 @@ public struct ManagedMCPAssignmentsService: Sendable {
             guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
                 throw ManagedMCPAssignmentsError.invalidAgent
             }
-            if dependencies.assistantOwner(agentId) != nil {
+            if ownership.rawOwner(agentId: agentId) != nil {
                 throw ManagedMCPAssignmentsError.assistantChannelForbidden
             }
             oauth.addChannelAgent(channelId: channelId, agentId: agentId)
             // A human adding an agent is shared channel activity: announce it,
             // and keep it born-read for the acting human only. The added agent
             // stays unread on every transport.
-            let noticeSeq = dependencies.appendSystemNotice(
+            let noticeSeq = notices.append(
                 StoredHumanMessage(
                     id: UUID().uuidString.lowercased(),
                     channelId: channelId,
@@ -642,7 +598,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
             taskId: taskId,
             userId: userId,
             channelDeleted: { channels.postableChannel(id: $0)?.deletedAt != nil },
-            now: dependencies.now()
+            now: now()
         ) {
         case .notFound:
             throw ManagedMCPAssignmentsError.taskNotFound
@@ -684,7 +640,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
             status: status,
             userId: userId,
             channelDeleted: { channels.postableChannel(id: $0)?.deletedAt != nil },
-            now: dependencies.now()
+            now: now()
         ) {
         case .notFound:
             throw ManagedMCPAssignmentsError.taskNotFound
@@ -744,9 +700,9 @@ public struct ManagedMCPAssignmentsService: Sendable {
         case .valid(let value): status = value
         }
         guard let rawQuery else {
-            let ordered = dependencies.orderedTasks(serverId, userId, status)
+            let ordered = catalog.orderedTasks(serverId: serverId, userId: userId, status: status)
             return ServerTasksResponse(
-                taskFragments: ordered.map { dependencies.taskFragment($0.task, $0.channelName, $0.channelType, false) },
+                taskFragments: ordered.map { taskFragment($0.task, $0.channelName, $0.channelType, false) },
                 paginated: false,
                 nextCursor: nil
             )
@@ -775,7 +731,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
             }
             cursor = decoded
         }
-        let ordered = dependencies.orderedTasks(serverId, userId, status)
+        let ordered = catalog.orderedTasks(serverId: serverId, userId: userId, status: status)
         var startIndex = 0
         if let cursor {
             guard let index = ordered.firstIndex(where: {
@@ -796,7 +752,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
         }
         let response = ServerTasksResponse(
             taskFragments: page.map {
-                dependencies.taskFragment($0.task, $0.channelName, $0.channelType, detail == "summary")
+                taskFragment($0.task, $0.channelName, $0.channelType, detail == "summary")
             },
             paginated: limit != nil,
             nextCursor: nextCursor
