@@ -33,7 +33,7 @@ extension EmailLoginDirectory {
 
     public func setMarketplaceReviewerIdsForTesting(_ ids: Set<String>?) {
         lock.lock()
-        marketplaceReviewerOverride = ids
+        feedbackStore.marketplaceReviewerOverride = ids
         lock.unlock()
     }
 

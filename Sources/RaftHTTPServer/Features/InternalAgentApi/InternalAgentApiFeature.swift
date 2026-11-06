@@ -322,22 +322,31 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             ))
         }
         agentApi.get("context") { request -> Response in
-            routeResponse(services.emailAccounts.agentContext(
-                authorization: request.headers[.authorization]
-            ))
+            try respond(errors: ActionCardPrepareError.self) {
+                try services.emailAccounts.actionCardPrepare.agentContext(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         agentApi.get("apps", ":appId", "config") { request -> Response in
-            routeResponse(services.emailAccounts.agentAppConfig(
-                authorization: request.headers[.authorization],
-                appId: request.parameters.get("appId") ?? ""
-            ))
+            try respond(errors: ActionCardPrepareError.self) {
+                try services.emailAccounts.actionCardPrepare.agentAppConfig(
+                    authorization: request.headers[.authorization],
+                    appId: request.parameters.get("appId") ?? ""
+                )
+            }
         }
         agentApi.patch("apps", ":appId", "config") { request async throws -> Response in
-            routeResponse(services.emailAccounts.patchAgentAppConfig(
-                authorization: request.headers[.authorization],
-                appId: request.parameters.get("appId") ?? "",
-                body: try await request.bodyText()
-            ))
+            // A body that does not decode stays `nil`: the service authorizes
+            // before answering the legacy `Invalid config request` 400.
+            let body = try await typedJSONBody(AgentAppConfigPatchRequest.self, request)
+            return try respond(errors: ActionCardPrepareError.self) {
+                try services.emailAccounts.actionCardPrepare.patchAgentAppConfig(
+                    authorization: request.headers[.authorization],
+                    appId: request.parameters.get("appId") ?? "",
+                    body: body
+                )
+            }
         }
         agentApi.post("send") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentSendMessage(
@@ -751,4 +760,13 @@ private func publishReminderEvent(
     for userId in recipients {
         hub.emit(room: "user:\(userId)", event: event, payloadJSON: payload)
     }
+}
+
+/// Decodes one typed JSON body even when the client omitted a JSON
+/// `Content-Type`. The published handler accepted a raw JSON body before the
+/// typed migration, so the fallback keeps that behavior.
+private func typedJSONBody<T: Decodable>(_ type: T.Type, _ request: Request) async throws -> T? {
+    if let decoded = try? await request.content.decode(type) { return decoded }
+    guard let data = try? await request.body.collect() else { return nil }
+    return try? JSONDecoder().decode(type, from: data)
 }

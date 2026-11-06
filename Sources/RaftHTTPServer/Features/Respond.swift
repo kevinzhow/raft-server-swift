@@ -73,6 +73,93 @@ func respond<DTO: Encodable, Failure: DomainErrorWithBody>(
     }
 }
 
+/// Success bodies whose published member order is part of the contract.
+///
+/// Linux `JSONEncoder` does not preserve keyed-container insertion order, so
+/// the domain declares an explicit `JSONBody` tree. This overload writes the
+/// bytes that tree renders (same escaping, separators and header set as the
+/// legacy `Self.json` reply), which keeps the body and `Content-Length`
+/// byte-identical to the pre-migration handler.
+func respond<DTO: ExactJSONBody>(
+    status: UInt = 200,
+    _ call: () throws -> DTO
+) throws -> Response {
+    do {
+        return routeResponse(try exactJSONReply(status: status, body: try call()))
+    } catch let error as any DomainError {
+        return try domainErrorResponse(error)
+    }
+}
+
+/// The exact-body projection with the extra headers a legacy reply published.
+func respond<DTO: ExactJSONBody>(
+    status: UInt = 200,
+    extraHeaders: [String: String],
+    _ call: () throws -> DTO
+) throws -> Response {
+    do {
+        return routeResponse(try exactJSONReply(
+            status: status,
+            body: try call(),
+            extraHeaders: extraHeaders
+        ))
+    } catch let error as any DomainError {
+        return try domainErrorResponse(error)
+    }
+}
+
+/// Exact-body success and exact-body failure in one call.
+///
+/// The failure object keeps the published member order (`error`, `errorCode`,
+/// `currentRevision`, …) instead of the sorted order the generic rich overload
+/// uses, so the migrated error bytes match the archive reply.
+func respond<DTO: ExactJSONBody, Failure: DomainErrorWithExactBody>(
+    errors _: Failure.Type,
+    status: UInt = 200,
+    _ call: () throws -> DTO
+) throws -> Response {
+    try respond(errors: Failure.self, status: status, extraHeaders: [:], call)
+}
+
+/// The exact-body error mapping plus headers the legacy success published (the
+/// failure keeps its own `responseHeaders`).
+func respond<DTO: ExactJSONBody, Failure: DomainErrorWithExactBody>(
+    errors _: Failure.Type,
+    status: UInt = 200,
+    extraHeaders: [String: String],
+    _ call: () throws -> DTO
+) throws -> Response {
+    do {
+        return routeResponse(try exactJSONReply(
+            status: status,
+            body: try call(),
+            extraHeaders: extraHeaders
+        ))
+    } catch let error as Failure {
+        return routeResponse(try exactJSONReply(
+            status: error.status,
+            body: error.exactBody,
+            extraHeaders: error.responseHeaders
+        ))
+    }
+}
+
+/// Render one `ExactJSONBody` with the auth surface's published header set.
+private func exactJSONReply(
+    status: UInt,
+    body: any ExactJSONBody,
+    extraHeaders: [String: String] = [:]
+) throws -> HTTPReply {
+    let text = body.exactJSON
+    var headers = [
+        "X-Robots-Tag": AppFallback.robotsTag,
+        "Content-Type": AppFallback.jsonContentType,
+        "Content-Length": String(Data(text.utf8).count),
+    ]
+    for (name, value) in extraHeaders { headers[name] = value }
+    return HTTPReply(status: Int(status), headers: headers, body: text)
+}
+
 /// The upstream `{"error": …}` body. Domains with a richer published shape get
 /// their own DTO and a second mapping overload rather than JSON in the service.
 ///

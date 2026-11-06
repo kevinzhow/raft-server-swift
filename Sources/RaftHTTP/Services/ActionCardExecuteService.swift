@@ -52,7 +52,7 @@ extension EmailLoginDirectory {
             if let suffixStart = raw.lastIndex(of: ":") { raw = String(raw[..<suffixStart]) }
             if let tilde = raw.firstIndex(of: "~") { raw = String(raw[..<tilde]) }
             lock.lock()
-            let resolution = resolveDMPeerLocked(serverId: identity.serverId, agentId: identity.agentId, name: raw, kind: nil)
+            let resolution = actionCardPrepare.resolveDMPeer(serverId: identity.serverId, agentId: identity.agentId, name: raw, kind: nil)
             lock.unlock()
             guard case .resolved(let peerId, _, _) = resolution, peerId == assistantOwner else {
                 return Self.json(403, "{\"code\":\"assistant_channel_forbidden\",\"error\":\"An assistant can only post in its DM with its owner\"}")
@@ -188,14 +188,14 @@ extension EmailLoginDirectory {
                 raw = String(raw[..<tilde])
             }
             lock.lock()
-            let resolution = resolveDMPeerLocked(serverId: identity.serverId, agentId: identity.agentId, name: raw, kind: kind)
+            let resolution = actionCardPrepare.resolveDMPeer(serverId: identity.serverId, agentId: identity.agentId, name: raw, kind: kind)
             lock.unlock()
-            if let failure = dmPeerFailure(resolution) { return failure }
+            if let failure = dmPeerFailureReply(resolution) { return failure }
             guard case .resolved(let peerId, _, _) = resolution else {
                 return Self.json(404, "{\"error\":\"Channel not found\"}")
             }
             lock.lock()
-            let existing = dmChannelIdLocked(serverId: identity.serverId, agentId: identity.agentId, peerId: peerId)
+            let existing = actionCardPrepare.dmChannelId(serverId: identity.serverId, agentId: identity.agentId, peerId: peerId)
             lock.unlock()
             let dmChannelId: String
             if let existing {
@@ -278,8 +278,8 @@ extension EmailLoginDirectory {
         let requestedSendFreshness = isSendDraft || isContinueAnyway || hasClientSeenBoundary
             || !requestedSeenExactSeqs.isEmpty
             || (object["draftReholdCount"] is NSNumber) || draftReplacedExisting || withheldMode
-        let freshnessEnabled = sendFreshnessInterfaceEnabled(serverId: identity.serverId, agentId: identity.agentId)
-        let forcedFreshness = sendFreshnessModeValue() == "force"
+        let freshnessEnabled = actionCardPrepare.sendFreshnessInterfaceEnabled(serverId: identity.serverId, agentId: identity.agentId)
+        let forcedFreshness = actionCardPrepare.sendFreshnessMode() == "force"
         if !freshnessEnabled && requestedSendFreshness {
             return Self.json(403, "{\"error\":\"Send freshness interface is not enabled for this agent.\"}")
         }
@@ -291,7 +291,7 @@ extension EmailLoginDirectory {
         var cardHoldReasons: [String] = []
         if let seenCards = object["seenCards"] as? [String: Any], !withheldMode {
             lock.lock()
-            let snapshot = channelCardSnapshotLocked(channelId: channelId)
+            let snapshot = actionCardPrepare.channelCardSnapshot(channelId: channelId)
             lock.unlock()
             if let rawChannel = seenCards["channel"], let snapshot {
                 if let seenVersion = rawChannel as? String {
@@ -305,7 +305,7 @@ extension EmailLoginDirectory {
             }
             if let rawPeer = seenCards["peer"] {
                 lock.lock()
-                let peerCard = peerCardJSONLocked(channelId: channelId, agentId: identity.agentId)
+                let peerCard = actionCardPrepare.peerCardJSON(channelId: channelId, agentId: identity.agentId)
                 lock.unlock()
                 if let peerCard, !(rawPeer is String) {
                     seenPeerCardFields = ",\"peerCard\":\(peerCard)"
@@ -388,9 +388,9 @@ extension EmailLoginDirectory {
                 let holdCount = hasModelSeenProof ? attentionCount : min(attentionCount, 3)
                 let omittedCount = hasModelSeenProof ? max(0, attentionCount - shownCount) : 0
                 let showedEveryHeldMessage = shownCount >= attentionCount
-                let conversationIdentity = heldConversationIdentityLocked(channelId: channelId, agentId: identity.agentId)
+                let conversationIdentity = actionCardPrepare.heldConversationIdentity(channelId: channelId, agentId: identity.agentId)
                 let heldMessageJSON = shownRows.map { entry in
-                    heldFreshnessMessageJSONLocked(seq: entry.seq, message: entry.message, conversationIdentity: conversationIdentity)
+                    actionCardPrepare.heldFreshnessMessageJSON(seq: entry.seq, message: entry.message, conversationIdentity: conversationIdentity)
                 }.joined(separator: ",")
                 if !withheldMode, showedEveryHeldMessage {
                     // Every counted message was handed over: the read position

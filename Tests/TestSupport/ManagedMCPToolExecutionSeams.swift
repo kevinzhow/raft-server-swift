@@ -40,7 +40,7 @@ extension EmailLoginDirectory {
 
     public func channelCardRevisionForTesting(channelId: String) -> String? {
         lock.lock(); defer { lock.unlock() }
-        return channelCardSnapshotLocked(channelId: channelId)?.rev
+        return actionCardPrepare.channelCardSnapshot(channelId: channelId)?.rev
     }
 
     public func mentionsForTesting(messageId: String) -> [(targetType: String, targetId: String, handle: String)] {
