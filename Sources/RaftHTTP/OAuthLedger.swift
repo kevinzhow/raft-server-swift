@@ -1533,6 +1533,28 @@ public final class OAuthLedger: @unchecked Sendable {
         ]
     }
 
+    /// The typed projection of `marketplaceInstallableClient` the migrated
+    /// action-card service depends on, so the service layer never handles the
+    /// legacy `[String: Any]` row.
+    public func marketplaceInstallableClientIdentity(recordId: String) -> MarketplaceClientIdentity? {
+        Self.clientIdentity(marketplaceInstallableClient(recordId: recordId))
+    }
+
+    /// The typed projection of `publicIntegrationClient`; same contract as
+    /// `marketplaceInstallableClientIdentity`.
+    public func publicIntegrationClientIdentity(clientId: String) -> MarketplaceClientIdentity? {
+        Self.clientIdentity(publicIntegrationClient(clientId: clientId))
+    }
+
+    private static func clientIdentity(_ row: [String: Any]?) -> MarketplaceClientIdentity? {
+        guard let row,
+              let recordId = row["id"] as? String,
+              let clientKey = row["clientId"] as? String,
+              let name = row["name"] as? String
+        else { return nil }
+        return MarketplaceClientIdentity(recordId: recordId, clientKey: clientKey, name: name)
+    }
+
     public func isClientInstalled(serverId: String, clientRecordId: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }

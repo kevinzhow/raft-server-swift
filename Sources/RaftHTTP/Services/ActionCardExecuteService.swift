@@ -919,32 +919,23 @@ public struct ActionCardExecuteService: Sendable {
     // These are also the bodies behind the directory forwarders the services
     // that have not migrated yet still call, so the policy has one copy.
 
+    private var credentials: AgentTaskCredentials {
+        AgentTaskCredentials(agents: agents, machines: machines, channels: channels, oauth: oauth)
+    }
+
     /// The legacy `agentTaskAuth` credential outcome (401s are `DomainError`s).
     func taskAuth(
         authorization: String?,
         legacyAgentId: String?
     ) throws -> (agentId: String, serverId: String) {
-        guard let authorization, authorization.hasPrefix("Bearer ") else {
+        switch credentials.auth(authorization: authorization, legacyAgentId: legacyAgentId) {
+        case .missingAuthorization:
             throw FeedbackLocatorError.missingAuthorization
+        case .invalidCredential:
+            throw FeedbackLocatorError.invalidAccessToken
+        case .ok(let agentId, let serverId):
+            return (agentId, serverId)
         }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        let credential = agents.agentCredential(token: token)
-        let machine = machines.machine(apiKey: token)
-        if let credential, credential.revokedAt == nil {
-            guard credential.scopes.contains("tasks") else {
-                throw FeedbackLocatorError.invalidAccessToken
-            }
-            guard let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else {
-                throw FeedbackLocatorError.invalidAccessToken
-            }
-            return (agent.id, agent.serverId)
-        }
-        if let machine, let legacyAgentId,
-           let agent = oauth.agentRuntimeInfo(id: legacyAgentId), !agent.deleted,
-           agent.serverId == machine.serverId {
-            return (agent.id, agent.serverId)
-        }
-        throw FeedbackLocatorError.invalidAccessToken
     }
 
     /// The legacy `agentTaskWriter` writer lookup.
@@ -952,40 +943,12 @@ public struct ActionCardExecuteService: Sendable {
         authorization: String?,
         legacyAgentId: String?
     ) -> (agentId: String, serverId: String)? {
-        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        let credential = agents.agentCredential(token: token)
-        let machine = machines.machine(apiKey: token)
-        if let credential, credential.revokedAt == nil,
-           let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted {
-            return (agent.id, agent.serverId)
-        }
-        if let machine, let legacyAgentId,
-           let agent = oauth.agentRuntimeInfo(id: legacyAgentId), !agent.deleted,
-           agent.serverId == machine.serverId {
-            return (agent.id, agent.serverId)
-        }
-        return nil
+        credentials.writer(authorization: authorization, legacyAgentId: legacyAgentId)
     }
 
     /// The legacy `agentTaskChannel` reference resolution (`#name` or a raw id).
     func taskChannel(serverId: String, agentId: String, reference: String) -> String? {
-        let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        if trimmed.hasPrefix("#") {
-            let name = String(trimmed.dropFirst())
-            for (id, channel) in channels.postableChannels {
-                guard channel.serverId == serverId, channel.name == name, channel.deletedAt == nil else { continue }
-                guard channel.kind == "channel"
-                    || channel.memberIds.contains(agentId)
-                    || oauth.channelAgentIds(channelId: id).contains(agentId)
-                else { continue }
-                return id
-            }
-            return nil
-        }
-        guard channels.postableChannels[trimmed]?.serverId == serverId else { return nil }
-        return trimmed
+        credentials.channel(serverId: serverId, agentId: agentId, reference: reference)
     }
 
     /// The task-write freshness gate. `nil` means the write proceeds; a value

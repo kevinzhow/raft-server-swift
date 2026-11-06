@@ -34,7 +34,6 @@ public struct MessagingFeature: RouteCollection, Sendable {
         let attachments = routes.grouped("api", "attachments")
         let actions = routes.grouped("api", "actions")
         let tasks = routes.grouped("api", "tasks")
-        let messageSend = MessageSendService(directory: services.emailAccounts)
         let humanMessageCreate = HumanMessageCreateService(directory: services.emailAccounts)
         let inboxRealtime = ReactionsRealtimeService(directory: services.emailAccounts)
         let inbox = services.emailAccounts.inboxAndWake
@@ -90,20 +89,22 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
-        attachments.get(":id", "url") { request -> Response in
+        attachments.get(":id", "url") { request async throws -> Response in
             if desktopQuery(request.url.query, "previewToken") != nil {
                 return routeResponse(HTTPReply(status: 401, headers: [:], body: "{\"error\":\"Unauthorized\"}"))
             }
             let queryToken = desktopQuery(request.url.query, "token")
             let authorization = request.headers[.authorization] ?? queryToken.map { "Bearer \($0)" }
-            return routeResponse(services.emailAccounts.attachmentDownloadURL(
-                attachmentId: request.parameters.get("id") ?? "",
-                authorization: authorization,
-                serverId: desktopQuery(request.url.query, "serverId") ?? request.headers[HTTPField.Name("X-Server-Id")!],
-                disposition: desktopQuery(request.url.query, "disposition"),
-                download: desktopQuery(request.url.query, "download"),
-                propagateQueryToken: queryToken
-            ))
+            return try await respond {
+                try services.emailAccounts.messageSend.attachmentDownloadURL(
+                    attachmentId: request.parameters.get("id") ?? "",
+                    authorization: authorization,
+                    serverId: desktopQuery(request.url.query, "serverId") ?? request.headers[HTTPField.Name("X-Server-Id")!],
+                    disposition: desktopQuery(request.url.query, "disposition"),
+                    download: desktopQuery(request.url.query, "download"),
+                    propagateQueryToken: queryToken
+                )
+            }
         }
         messages.post("forward") { request async throws -> Response in
             routeResponse(humanMessageCreate.forwardHumanMessage(
@@ -206,12 +207,15 @@ public struct MessagingFeature: RouteCollection, Sendable {
             ))
         }
         actions.post(":messageId", "execute") { request async throws -> Response in
-            routeResponse(services.emailAccounts.executeActionCard(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                messageId: request.parameters.get("messageId") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ActionCardExecuteRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.actionCardIntegrationRegister.executeActionCard(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    messageId: request.parameters.get("messageId") ?? "",
+                    body: body
+                )
+            }
         }
         actions.post(":messageId", "mark-executed") { request async throws -> Response in
             let body = (try? await request.content.decode(MarkActionCardExecutedRequest.self))

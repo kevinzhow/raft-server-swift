@@ -4,7 +4,11 @@ import Foundation
 extension EmailLoginDirectory {
     public func createMigrationReceiptDmForTesting(agentId: String, supportRef: String) -> String? {
         guard let serverId = oauth.agentRuntimeInfo(id: agentId)?.serverId else { return nil }
-        return createMigrationReceiptDm(agentId: agentId, serverId: serverId, supportRef: supportRef)
+        return messageSend.createMigrationReceiptDm(
+            agentId: agentId,
+            serverId: serverId,
+            supportRef: supportRef
+        )
     }
 
     public func seedPostableChannelForTesting(

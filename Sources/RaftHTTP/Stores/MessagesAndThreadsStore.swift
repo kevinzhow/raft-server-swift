@@ -635,6 +635,47 @@ final class MessagesAndThreadsStore: @unchecked Sendable {
         }
     }
 
+    // MARK: - Agent task and inbox reads
+
+    /// The first message row whose id is exactly `prefix` or starts with it,
+    /// but only when it belongs to `channelId`.
+    ///
+    /// The retired converter called `humanMessageRows.first(where:)` with the
+    /// id predicate and then compared the channel, so a prefix that first
+    /// matches a row in another channel is a miss rather than a second lookup.
+    func messageForConvert(prefix: String, channelId: String) -> StoredHumanMessage? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let message = storage.humanMessageRows.first(where: {
+            $0.id == prefix || $0.id.hasPrefix(prefix)
+        }), message.channelId == channelId else {
+            return nil
+        }
+        return message
+    }
+
+    /// One locked snapshot of every ledger the agent inbox projection reads:
+    /// message rows, mentions, read cursors and the followed-thread rows.
+    struct InboxSnapshot {
+        let messages: [StoredHumanMessage]
+        let mentions: [StoredMention]
+        let readCursors: [String: (seq: Int, version: Int)]
+        let threadFollows: [String: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String)]
+        let threadFollowStarts: [String: Date]
+    }
+
+    func inboxSnapshot() -> InboxSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return InboxSnapshot(
+            messages: storage.humanMessageRows,
+            mentions: storage.storedMentions,
+            readCursors: storage.agentChannelReadCursors,
+            threadFollows: storage.threadFollows,
+            threadFollowStarts: storage.threadFollowStarts
+        )
+    }
+
     // MARK: - System attention and share artifacts
 
     /// One recipient's active, not-dismissed attention incidents in the archive
@@ -803,5 +844,107 @@ final class MessagesAndThreadsStore: @unchecked Sendable {
             mentions: storage.storedMentions,
             readCursor: storage.agentChannelReadCursors["\(channelId)\n\(agentId)"] ?? (seq: 0, version: 0)
         )
+    }
+
+    // MARK: - Action-card reply rows
+
+    /// The first human-message id in `channelId` that starts with `idPrefix`,
+    /// in one critical section. The action-card DM-thread resolver uses it as
+    /// the legacy `humanMessageRows.first` anchor lookup.
+    func humanMessageId(channelId: String, idPrefix: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.humanMessageRows.first {
+            $0.channelId == channelId && $0.id.hasPrefix(idPrefix)
+        }?.id
+    }
+
+    /// Appends one mention row under the store lock.
+    func appendMention(_ mention: StoredMention) {
+        lock.lock()
+        storage.storedMentions.append(mention)
+        lock.unlock()
+    }
+
+    // MARK: - Message send: attachment URL and thread-follower undo ledger
+
+    /// The row and the presigner `GET /api/attachments/:id/url` needs, read as
+    /// one snapshot so the mime type and the injected presigner cannot come
+    /// from two different configurations.
+    struct AttachmentDownloadRecord {
+        let attachment: ChannelAttachment
+        let presign: (@Sendable (_ attachmentId: String, _ mimeType: String?, _ ttlSeconds: Int) -> String)?
+    }
+
+    func attachmentDownloadRecord(attachmentId: String) -> AttachmentDownloadRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let attachment = storage.channelAttachments[attachmentId] else { return nil }
+        return AttachmentDownloadRecord(attachment: attachment, presign: storage.attachmentPresign)
+    }
+
+    /// One message row by id, in one critical section.
+    func humanMessageRow(id: String) -> StoredHumanMessage? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.humanMessageRows.first { $0.id.caseInsensitiveCompare(id) == .orderedSame }
+    }
+
+    /// The decision and the write of `DELETE …/threads/:threadId/followers/agents/:agentId`.
+    enum ThreadFollowerRemovalWrite: Sendable, Equatable {
+        /// A row for this thread/agent pair already exists; its token is returned.
+        case replay(undoToken: String)
+        /// This request inserted the row.
+        case created(undoToken: String)
+    }
+
+    /// One locked critical section over the undo ledger: an existing removal for
+    /// the thread/agent pair replays its token, otherwise `undoToken` is
+    /// inserted. Two concurrent removals therefore issue exactly one token.
+    func beginThreadFollowerRemoval(
+        serverId: String,
+        threadId: String,
+        agentId: String,
+        undoToken: String
+    ) -> ThreadFollowerRemovalWrite {
+        lock.lock()
+        defer { lock.unlock() }
+        if let existing = storage.threadFollowerRemovals.first(where: {
+            $0.value.threadChannelId == threadId && $0.value.agentId == agentId
+        }) {
+            return .replay(undoToken: existing.key)
+        }
+        storage.threadFollowerRemovals[undoToken] = (
+            serverId: serverId,
+            threadChannelId: threadId,
+            agentId: agentId
+        )
+        return .created(undoToken: undoToken)
+    }
+
+    /// The decision and the write of the restore route.
+    enum ThreadFollowerRestoreWrite: Sendable, Equatable {
+        /// The token was live for this thread/agent pair and is now consumed.
+        case restored
+        /// Unknown, already consumed, or issued for another thread/agent pair.
+        case notRemoved
+    }
+
+    /// One locked critical section: the token is consumed and marked stale
+    /// together, so a token can restore at most once.
+    func restoreThreadFollower(
+        threadId: String,
+        agentId: String,
+        undoToken: String
+    ) -> ThreadFollowerRestoreWrite {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let record = storage.threadFollowerRemovals[undoToken],
+              record.threadChannelId == threadId,
+              record.agentId == agentId
+        else { return .notRemoved }
+        storage.threadFollowerRemovals.removeValue(forKey: undoToken)
+        storage.staleThreadFollowerUndoTokens.insert(undoToken)
+        return .restored
     }
 }

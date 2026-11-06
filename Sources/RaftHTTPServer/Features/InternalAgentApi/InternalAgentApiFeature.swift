@@ -255,13 +255,15 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 channelId: desktopQuery(request.url.query, "channelId") ?? ""
             ))
         }
-        agentApi.get("inbox", "conversations") { request -> Response in
-            routeResponse(services.emailAccounts.agentInboxConversations(
-                authorization: request.headers[.authorization],
-                limit: desktopQuery(request.url.query, "limit"),
-                beforeSeq: desktopQuery(request.url.query, "before_seq"),
-                view: desktopQuery(request.url.query, "view")
-            ))
+        agentApi.get("inbox", "conversations") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.actionCardMarketplace.inboxConversations(
+                    authorization: request.headers[.authorization],
+                    limit: desktopQuery(request.url.query, "limit"),
+                    beforeSeq: desktopQuery(request.url.query, "before_seq"),
+                    view: desktopQuery(request.url.query, "view")
+                )
+            }
         }
         agentApi.get("attachments", ":attachmentId", "comments") { request -> Response in
             routeResponse(services.emailAccounts.agentAttachmentCommentsList(
@@ -300,10 +302,13 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             ))
         }
         agentApi.post("integrations", "app", "prepare") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentIntegrationAppPrepare(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(IntegrationAppPrepareRequest.self, request)
+            return try await respond(status: 201) {
+                try services.emailAccounts.actionCardIntegrationRegister.agentIntegrationAppPrepare(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         agentApi.post("integrations", "app", "update") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentIntegrationAppUpdate(
@@ -396,23 +401,37 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
         }
         agentApi.post("tasks") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentTasksCreate(
-                authorization: request.headers[.authorization],
-                legacyAgentId: nil,
-                body: try await request.bodyText()
-            ))
+            // The published handler accepted a raw JSON body, so the typed
+            // decode falls back to the collected bytes. The raw text is also
+            // what the idempotency fingerprint covers.
+            let rawBody = try await request.bodyText()
+            let body = (try? await request.content.decode(AgentTaskCreateRequest.self))
+                ?? (try? JSONDecoder().decode(AgentTaskCreateRequest.self, from: Data(rawBody.utf8)))
+            return try await respond(headers: { $0.headers }) {
+                try services.emailAccounts.actionCardMarketplace.createTasks(
+                    authorization: request.headers[.authorization],
+                    body: body,
+                    rawBody: rawBody
+                )
+            }
         }
         agentApi.post("tasks", "resource-receipt") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentTaskResourceReceipt(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(AgentTaskResourceReceiptRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.actionCardMarketplace.resourceReceipt(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         agentApi.post("tasks", "assign") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentTaskAssign(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(AgentTaskAssignRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.actionCardMarketplace.assignTask(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         agentApi.post("tasks", "amend") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentTasksAmend(
@@ -449,16 +468,22 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
         }
         agentApi.post("tasks", "delete") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentTaskDelete(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(AgentTaskDeleteRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.actionCardMarketplace.deleteTask(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         agentApi.post("tasks", "convert") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentTaskConvert(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(AgentTaskConvertRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.actionCardMarketplace.convertTask(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         agentApi.post("channels", ":channelId", "join") { request -> Response in
             routeResponse(services.emailAccounts.agentJoinChannel(
@@ -544,10 +569,23 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             ))
         }
         agentApi.post("prepare-action") { request async throws -> Response in
-            routeResponse(services.emailAccounts.prepareActionCard(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ActionCardPrepareRequest.self, request)
+            return try await respond(
+                status: 201,
+                headers: { result in
+                    result.isIdempotentReplay
+                        ? .exact([
+                            "Content-Type": AppFallback.jsonContentType,
+                            "Cache-Control": "no-store",
+                        ])
+                        : .standard()
+                }
+            ) {
+                try services.emailAccounts.actionCardIntegrationRegister.prepareActionCard(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         agentApi.get("mcp", "tools") { request async throws -> Response in
             try await respond {

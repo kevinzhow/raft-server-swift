@@ -192,6 +192,152 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         return card
     }
 
+    /// The prepared marketplace install card a prepare/execute request is
+    /// about, in one critical section.
+    func marketplaceInstallCard(messageId: String) -> MarketplaceInstallCard? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.marketplaceInstallCards[messageId]
+    }
+
+    /// The prepared integration-registration card, in one critical section.
+    func integrationRegisterCard(messageId: String) -> IntegrationRegisterCard? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.integrationRegisterCards[messageId]
+    }
+
+    /// Inserts one prepared marketplace install card and returns the stored row.
+    @discardableResult
+    func insertMarketplaceInstallCard(_ card: MarketplaceInstallCard) -> MarketplaceInstallCard {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.marketplaceInstallCards[card.messageId] = card
+        return card
+    }
+
+    /// Inserts one prepared integration-registration card and returns it.
+    @discardableResult
+    func insertIntegrationRegisterCard(_ card: IntegrationRegisterCard) -> IntegrationRegisterCard {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.integrationRegisterCards[card.messageId] = card
+        return card
+    }
+
+    /// Inserts one prepared action-card row.
+    func insertActionCardRecord(_ record: ActionCardRecord) {
+        lock.lock()
+        storage.actionCardRecords[record.messageId] = record
+        lock.unlock()
+    }
+
+    /// Marks the marketplace card executed and returns the updated row in one
+    /// critical section, so two executes cannot both write the result.
+    func markMarketplaceInstallCardExecuted(
+        messageId: String,
+        userId: String,
+        resultJSON: String
+    ) -> MarketplaceInstallCard? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var card = storage.marketplaceInstallCards[messageId] else { return nil }
+        if card.state != "executed" {
+            card.state = "executed"
+            card.executedByUserId = userId
+            card.resultJSON = resultJSON
+            storage.marketplaceInstallCards[messageId] = card
+        }
+        return card
+    }
+
+    /// The integration-registration counterpart of
+    /// `markMarketplaceInstallCardExecuted`.
+    func markIntegrationRegisterCardExecuted(
+        messageId: String,
+        userId: String,
+        resultJSON: String
+    ) -> IntegrationRegisterCard? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var card = storage.integrationRegisterCards[messageId] else { return nil }
+        if card.state != "executed" {
+            card.state = "executed"
+            card.executedByUserId = userId
+            card.resultJSON = resultJSON
+            storage.integrationRegisterCards[messageId] = card
+        }
+        return card
+    }
+
+    /// Appends the external-agent action reply event emitted after an execute.
+    func appendPendingActionMessageEvent(agentId: String, messageId: String, content: String) {
+        lock.lock()
+        storage.pendingActionMessageEvents.append((agentId, messageId, content))
+        lock.unlock()
+    }
+
+    // MARK: - Agent-api idempotency
+
+    /// Outcome of one idempotency-key lookup for an agent-api write.
+    enum AgentApiIdempotencyLookup: Sendable, Equatable {
+        case none
+        case replay(status: Int, body: String)
+        case mismatch
+    }
+
+    /// The lookup half of the agent-api idempotency contract, in one critical
+    /// section and with typed values only, so a service never touches
+    /// `HTTPReply` or `[String: Any]`.
+    func agentApiIdempotencyLookup(
+        agentId: String,
+        route: String,
+        key: String,
+        fingerprint: String,
+        now: Date
+    ) -> AgentApiIdempotencyLookup {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let existing = storage.agentApiIdempotencyKeys.first(where: {
+            $0.agentId == agentId && $0.route == route && $0.key == key
+        }), now.timeIntervalSince(existing.createdAt) < EmailLoginDirectory.agentApiIdempotencyTTL
+        else {
+            return .none
+        }
+        guard existing.fingerprint == fingerprint else { return .mismatch }
+        return .replay(status: existing.status, body: existing.responseBody)
+    }
+
+    /// The store half: replace the row for this (agent, route, key) and keep
+    /// the first reply's status and body for an exact replay.
+    func storeAgentApiIdempotency(
+        agentId: String,
+        route: String,
+        key: String,
+        fingerprint: String,
+        status: Int,
+        body: String,
+        now: Date
+    ) {
+        guard status == 200 || status == 201 else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        if let index = storage.agentApiIdempotencyKeys.firstIndex(where: {
+            $0.agentId == agentId && $0.route == route && $0.key == key
+        }) {
+            storage.agentApiIdempotencyKeys.remove(at: index)
+        }
+        storage.agentApiIdempotencyKeys.append(AgentApiIdempotencyRecord(
+            agentId: agentId,
+            route: route,
+            key: key,
+            fingerprint: fingerprint,
+            status: status,
+            responseBody: body,
+            createdAt: now
+        ))
+    }
+
     // MARK: - Managed MCP reads
 
     func managedMCPServers(serverId: String) -> [ManagedMCPServerRecord] {

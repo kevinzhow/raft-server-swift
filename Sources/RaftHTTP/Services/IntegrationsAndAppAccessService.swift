@@ -766,10 +766,17 @@ extension EmailLoginDirectory {
             var actionCardMessageIdJSON = "null"
             if !requestedTarget.isEmpty {
                 guard let resolved = actionCardTarget(serverId: agent.serverId, agentId: agent.id, target: requestedTarget),
-                      let messageId = prepareMarketplaceInstallCard(
+                      let clientRecordId = service["id"] as? String,
+                      let clientKey = service["clientId"] as? String,
+                      let clientName = service["name"] as? String,
+                      let messageId = actionCardIntegrationRegister.prepareMarketplaceInstallCard(
                           serverId: agent.serverId,
                           agent: agent,
-                          client: service,
+                          client: MarketplaceClientIdentity(
+                              recordId: clientRecordId,
+                              clientKey: clientKey,
+                              name: clientName
+                          ),
                           scopes: effectiveScopes,
                           target: resolved
                       )

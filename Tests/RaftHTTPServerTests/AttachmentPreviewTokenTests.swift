@@ -76,14 +76,14 @@ import VaporTesting
                 #expect(try await client.get(URI(string: path)).status == .unauthorized)
             }
 
-            let expired = accounts.mintAttachmentPreviewToken(attachmentId: first, serverId: serverId, actorId: ownerId, expiresIn: -1)
+            let expired = AttachmentPreviewTokens().mint(attachmentId: first, serverId: serverId, actorId: ownerId, expiresIn: -1)
             let expiredResponse = try await client.get(
                 URI(string: "/api/attachments/\(first)/html-preview?serverId=\(serverId)&previewToken=\(expired)")
             )
             #expect(expiredResponse.status == .unauthorized)
-            let wrongAudience = accounts.mintAttachmentPreviewToken(attachmentId: first, serverId: serverId, actorId: ownerId, audience: "attachment-download")
+            let wrongAudience = AttachmentPreviewTokens().mint(attachmentId: first, serverId: serverId, actorId: ownerId, audience: "attachment-download")
             #expect(try await client.get(URI(string: "/api/attachments/\(first)/html-preview?serverId=\(serverId)&previewToken=\(wrongAudience)")).status == .unauthorized)
-            let wrongType = accounts.mintAttachmentPreviewToken(attachmentId: first, serverId: serverId, actorId: ownerId, type: "access")
+            let wrongType = AttachmentPreviewTokens().mint(attachmentId: first, serverId: serverId, actorId: ownerId, type: "access")
             #expect(try await client.get(URI(string: "/api/attachments/\(first)/html-preview?serverId=\(serverId)&previewToken=\(wrongType)")).status == .unauthorized)
 
             let leaked = try await client.get(

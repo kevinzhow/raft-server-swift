@@ -689,4 +689,13 @@ final class AuthProfileStore: @unchecked Sendable {
         // The account table is keyed by normalized email, not user id.
         return accountSurface.accounts.values.first { $0.id == id }?.email
     }
+
+    /// The first account whose public handle matches `exactName` exactly, in
+    /// the account ledger's dictionary order. The action-card DM target
+    /// resolver keeps the legacy case-sensitive `values.first` contract.
+    func firstAccount(exactName: String) -> Account? {
+        lock.lock()
+        defer { lock.unlock() }
+        return accountSurface.accounts.values.first { $0.name == exactName }
+    }
 }

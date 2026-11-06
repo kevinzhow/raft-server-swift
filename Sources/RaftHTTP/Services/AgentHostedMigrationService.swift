@@ -422,7 +422,11 @@ extension EmailLoginDirectory {
         agentMachineIds[completed.agentId] = completed.targetMachineId
         machineMigrations[migrationRef] = completed
         lock.unlock()
-        createMigrationReceiptDm(agentId: completed.agentId, serverId: completed.serverId, supportRef: completed.supportRef)
+        messageSend.createMigrationReceiptDm(
+            agentId: completed.agentId,
+            serverId: completed.serverId,
+            supportRef: completed.supportRef
+        )
         return migrationTargetReply(completed)
     }
 
