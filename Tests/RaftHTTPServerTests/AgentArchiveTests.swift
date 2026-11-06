@@ -105,7 +105,7 @@ private func archiveRecord(_ client: any Client, _ fixture: ArchiveFixture, agen
 
 @Test func archivingKeepsTheWorkspaceAndCancelsScheduledReminders() async throws {
     let f = makeArchiveFixture("001")
-    f.accounts.addReminder(serverId: f.serverId, ownerAgentId: f.agentId, title: "later", fireAt: Date().addingTimeInterval(3_600))
+    f.accounts.addReminderForTesting(serverId: f.serverId, ownerAgentId: f.agentId, title: "later", fireAt: Date().addingTimeInterval(3_600))
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
         try await app.testing { client in

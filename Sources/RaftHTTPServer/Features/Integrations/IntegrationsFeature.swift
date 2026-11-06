@@ -31,79 +31,104 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         let providerConnections = app.grouped("api", "provider-connections")
         let appInstallation = app.grouped("api", "app-installation")
 
-        mcp.get("servers") { request -> Response in
-            routeResponse(services.emailAccounts.listManagedMCPServers(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
-            ))
+        mcp.get("servers") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPControlPlane.listServers(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+                )
+            }
         }
 
         mcp.post("servers") { request async throws -> Response in
-            routeResponse(services.emailAccounts.createManagedMCPServer(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ManagedMCPServerCreateRequest.self, request)
+            return try await respond(status: 201) {
+                try services.emailAccounts.managedMCPControlPlane.createServer(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    body: body
+                )
+            }
         }
 
         mcp.post("servers", "test-configuration") { request async throws -> Response in
-            routeResponse(services.emailAccounts.testManagedMCPConfiguration(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ManagedMCPTestConfigurationRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPControlPlane.testConfiguration(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    body: body
+                )
+            }
         }
 
         mcp.patch("servers", ":id") { request async throws -> Response in
-            routeResponse(services.emailAccounts.patchManagedMCPServer(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                serverIdPath: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ManagedMCPServerPatchRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPControlPlane.patchServer(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    serverIdPath: request.parameters.get("id") ?? "",
+                    body: body
+                )
+            }
         }
 
-        mcp.delete("servers", ":id") { request -> Response in
-            routeResponse(services.emailAccounts.deleteManagedMCPServer(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                serverIdPath: request.parameters.get("id") ?? ""
-            ))
+        mcp.delete("servers", ":id") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPControlPlane.deleteServer(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    serverIdPath: request.parameters.get("id") ?? ""
+                )
+            }
         }
 
-        mcp.get("oauth", "callback") { _ -> Response in
-            routeResponse(services.emailAccounts.managedMCPOAuthCallback())
+        mcp.get("oauth", "callback") { _ async throws -> Response in
+            try await respond(status: { _ in ManagedMCPOAuthCallbackPage.status }, headers: { $0.headers }) {
+                services.emailAccounts.managedMCPControlPlane.oauthCallbackPage()
+            }
         }
 
-        mcp.get("oauth", "client-metadata") { _ -> Response in
-            routeResponse(services.emailAccounts.managedMCPOAuthClientMetadata())
+        mcp.get("oauth", "client-metadata") { _ async throws -> Response in
+            try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
+                services.emailAccounts.managedMCPControlPlane.oauthClientMetadata()
+            }
         }
 
-        mcp.get("agents", ":agentId") { request -> Response in
-            routeResponse(services.emailAccounts.managedMCPAgentCatalog(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                agentId: request.parameters.get("agentId") ?? ""
-            ))
+        mcp.get("agents", ":agentId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPControlPlane.agentCatalog(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    agentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
 
         mcp.put("agents", ":agentId", "assignments") { request async throws -> Response in
-            routeResponse(services.emailAccounts.setManagedMCPAssignments(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                agentId: request.parameters.get("agentId") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ManagedMCPAssignmentsRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPControlPlane.setAssignments(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    agentId: request.parameters.get("agentId") ?? "",
+                    body: body
+                )
+            }
         }
 
         mcp.put("agents", ":agentId", "assignments", ":mcpServerId") { request async throws -> Response in
-            routeResponse(services.emailAccounts.setSingleManagedMCPAssignment(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                agentId: request.parameters.get("agentId") ?? "",
-                mcpServerId: request.parameters.get("mcpServerId") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ManagedMCPSingleAssignmentRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPControlPlane.setSingleAssignment(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    agentId: request.parameters.get("agentId") ?? "",
+                    mcpServerId: request.parameters.get("mcpServerId") ?? "",
+                    body: body
+                )
+            }
         }
 
         integrations.get("clients") { request async throws -> Response in

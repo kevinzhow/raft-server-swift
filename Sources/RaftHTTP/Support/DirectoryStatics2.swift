@@ -448,26 +448,6 @@ extension EmailLoginDirectory {
         return "\(slug.prefix(32))-\(hex)"
     }
 
-    static func managedMCPEndpointError(_ raw: String) -> String? {
-        guard let components = URLComponents(string: raw),
-              components.scheme?.lowercased() == "https",
-              let host = components.host, !host.isEmpty,
-              components.user == nil, components.password == nil,
-              components.query == nil, components.fragment == nil,
-              !raw.contains("?"), !raw.contains("#")
-        else { return "managed_mcp_endpoint_invalid" }
-        return nil
-    }
-
-    static func managedMCPEndpointSanitized(_ raw: String) -> String {
-        guard var components = URLComponents(string: raw) else { return raw }
-        components.query = nil
-        components.fragment = nil
-        components.user = nil
-        components.password = nil
-        return components.string ?? raw
-    }
-
     static func encodeCursor(channelId: String, taskNumber: Int) -> String {
         let payload = "{\"c\":\(jsonString(channelId)),\"n\":\(taskNumber)}"
         return Data(payload.utf8).base64EncodedString()
@@ -509,30 +489,6 @@ extension EmailLoginDirectory {
         let canonical = canonicalJSON(object)
         let data = (try? JSONSerialization.data(withJSONObject: canonical, options: [.sortedKeys])) ?? Data()
         return sha256Hex(String(decoding: data, as: UTF8.self))
-    }
-
-    static func reminderListJSON(_ rows: [ReminderRecord]) -> HTTPReply {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let items = rows.map { reminder in
-            "{\"id\":\(jsonString(reminder.id)),\"title\":\(jsonString(reminder.title)),\"ownerAgentId\":\(jsonString(reminder.ownerAgentId)),\"fireAt\":\(jsonString(formatter.string(from: reminder.fireAt)))}"
-        }.joined(separator: ",")
-        return Self.json(200, "{\"reminders\":[\("\(items)")]}")
-    }
-
-    static func reminderSummaryJSON(
-        _ row: (id: String, status: String, version: Int, title: String),
-        ownerAgentId: String? = nil,
-        fireAt: Date? = nil
-    ) -> String {
-        let fireJSON = fireAt.map { jsonString(ISO8601DateFormatter().string(from: $0)) } ?? "null"
-        let ownerJSON = ownerAgentId.map(jsonString) ?? "null"
-        return "{\"id\":\(jsonString(row.id)),\"reminderId\":\(jsonString(row.id)),\"ownerAgentId\":\(ownerJSON),\"status\":\(jsonString(row.status)),\"version\":\(row.version),\"title\":\(jsonString(row.title)),\"fireAt\":\(fireJSON)}"
-    }
-
-    static func reminderLogJSON(_ events: [(eventType: String, version: Int)]) -> String {
-        let items = events.map { "{\"eventType\":\(jsonString($0.eventType)),\"version\":\($0.version)}" }.joined(separator: ",")
-        return "{\"events\":[\(items)]}"
     }
 
     static func feedbackTimingHeader(elapsedMs: Double, upstreamHeaders: [String: String]) -> String {

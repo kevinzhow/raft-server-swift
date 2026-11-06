@@ -130,7 +130,7 @@ import VaporTesting
             #expect((updated["reminder"] as? [String: Any])?["status"] as? String == "scheduled")
 
             _ = accounts.fireAppReminderForTesting(reminderId: reminderId)
-            #expect(accounts.appReminderRow(id: reminderId)?.status == "fired")
+            #expect(accounts.appReminderRowForTesting(id: reminderId)?.status == "fired")
             let rejectedUpdate = try await client.send(.patch, headers: machineHeaders, to: URI(string: "/internal/agent/\(agentId)/reminders/\(reminderId)")) { request in
                 request.body = .init(string: "{\"title\":\"cannot update fired\"}")
             }
@@ -189,7 +189,7 @@ import VaporTesting
             #expect(create.body.string?.contains("reminders_moved_to_app") == true)
             let list = try await client.get(URI(string: "/internal/agent/\(agentId)/reminders"), headers: headers)
             #expect(list.status == .ok)
-            let existingId = accounts.createAppReminder(serverId: serverId, ownerAgentId: agentId, title: "existing", fireAt: Date())
+            let existingId = accounts.createAppReminderForTesting(serverId: serverId, ownerAgentId: agentId, title: "existing", fireAt: Date())
             let cancel = try await client.send(.delete, headers: headers, to: URI(string: "/internal/agent/\(agentId)/reminders/\(existingId)")) { request in
                 request.body = .init(string: "{\"expectedVersion\":1}")
             }

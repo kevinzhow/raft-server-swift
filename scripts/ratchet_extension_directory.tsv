@@ -13,9 +13,7 @@ Sources/RaftHTTP/Services/InboxAndWakeService.swift	1
 Sources/RaftHTTP/Services/IntegrationsAndAppAccessService.swift	1
 Sources/RaftHTTP/Services/JoinLinksAndInvitesService.swift	1
 Sources/RaftHTTP/Services/MachinesAndHostedRuntimeService.swift	1
-Sources/RaftHTTP/Services/ManagedMCPAgentCatalogService.swift	1
 Sources/RaftHTTP/Services/ManagedMCPAssignmentsService.swift	1
-Sources/RaftHTTP/Services/ManagedMCPControlPlaneService.swift	1
 Sources/RaftHTTP/Services/ManagedMCPToolExecutionService.swift	1
 Sources/RaftHTTP/Services/MessageSendService.swift	1
 Sources/RaftHTTP/Services/OAuthFlowsService.swift	1

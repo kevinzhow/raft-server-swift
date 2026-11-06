@@ -179,6 +179,18 @@ public struct RuntimeFormsAndProbesService: Sendable {
         dependencies.machines.machineCredentialIdentity(id: id)
     }
 
+    /// Keyed lookup shared by `/daemon/connect` and the legacy machine surface.
+    /// A row that was adopted into a Computer attachment carries its migration
+    /// stamp so the connect handshake refuses the legacy key immediately, with
+    /// no TTL window.
+    public func machineCredential(apiKey: String) -> MachineCredentialIdentity? {
+        dependencies.machines.machine(apiKey: apiKey).map {
+            MachineCredentialIdentity(
+                machineId: $0.id, serverId: $0.serverId, legacyKeyMigratedAt: $0.legacyKeyMigratedAt
+            )
+        }
+    }
+
     public func serverExists(id: String) -> Bool {
         dependencies.oauth.serverDetailsValue(id: id) != nil
     }

@@ -78,7 +78,6 @@ extension EmailLoginDirectory {
 
     // Rows for the managed-MCP, action-card and integration surface live in `ManagedMCPAndCardsStore`.
     var managedMCPServers: [ManagedMCPServerRecord] { get { managedMCPAndCardsStore.managedMCPServers } set { managedMCPAndCardsStore.managedMCPServers = newValue } }
-    var managedMCPAssignments: [String: [String: (enabled: Bool, allowedTools: [String]?)]] { get { managedMCPAndCardsStore.managedMCPAssignments } set { managedMCPAndCardsStore.managedMCPAssignments = newValue } }
     var actionCardRecords: [String: ActionCardRecord] { get { managedMCPAndCardsStore.actionCardRecords } set { managedMCPAndCardsStore.actionCardRecords = newValue } }
     var marketplaceInstallCards: [String: MarketplaceInstallCard] { get { managedMCPAndCardsStore.marketplaceInstallCards } set { managedMCPAndCardsStore.marketplaceInstallCards = newValue } }
     var integrationRegisterCards: [String: IntegrationRegisterCard] { get { managedMCPAndCardsStore.integrationRegisterCards } set { managedMCPAndCardsStore.integrationRegisterCards = newValue } }
@@ -144,6 +143,8 @@ extension EmailLoginDirectory {
     var inboxDoneAt: [String: Date] { get { messagesAndThreadsStore.inboxDoneAt } set { messagesAndThreadsStore.inboxDoneAt = newValue } }
     var inboxDoneFrontiers: [String: Int] { get { messagesAndThreadsStore.inboxDoneFrontiers } set { messagesAndThreadsStore.inboxDoneFrontiers = newValue } }
     var deferredUnreadAdvance: [String: Int] { get { messagesAndThreadsStore.deferredUnreadAdvance } set { messagesAndThreadsStore.deferredUnreadAdvance = newValue } }
+    var externalAvatarAssets: [String: ExternalAvatarAsset] { get { messagesAndThreadsStore.externalAvatarAssets } set { messagesAndThreadsStore.externalAvatarAssets = newValue } }
+    var externalAvatarStorageAvailable: Bool { get { messagesAndThreadsStore.externalAvatarStorageAvailable } set { messagesAndThreadsStore.externalAvatarStorageAvailable = newValue } }
 
     // MARK: - Agent registry, hosted runtime and migration rows (AgentsRuntimeStore)
 

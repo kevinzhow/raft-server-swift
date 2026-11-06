@@ -264,11 +264,14 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         channels.post("saved") { request async throws -> Response in
-            routeResponse(services.emailAccounts.saveChannelMessage(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(SaveChannelMessageRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.saveChannelMessage(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    body: body
+                )
+            }
         }
 
         channels.get("saved") { request -> Response in

@@ -43,48 +43,63 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
         let app = routes
         let agentApi = app.grouped("internal", "agent-api")
 
-        agentApi.delete("reminders", ":reminderId") { request -> Response in
-            routeResponse(services.emailAccounts.agentApiReminderCancel(
-                authorization: request.headers[.authorization],
-                reminderId: request.parameters.get("reminderId") ?? ""
-            ))
+        agentApi.delete("reminders", ":reminderId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.agentApiReminderCancel(
+                    authorization: request.headers[.authorization],
+                    reminderId: request.parameters.get("reminderId") ?? ""
+                )
+            }
         }
         agentApi.post("reminders", ":reminderId", "snooze") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentApiReminderSnooze(
-                authorization: request.headers[.authorization],
-                reminderId: request.parameters.get("reminderId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(ReminderSnoozeRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.agentApiReminderSnooze(
+                    authorization: request.headers[.authorization],
+                    reminderId: request.parameters.get("reminderId") ?? "",
+                    body: body
+                )
+            }
         }
         agentApi.patch("reminders", ":reminderId") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentApiReminderUpdate(
-                authorization: request.headers[.authorization],
-                reminderId: request.parameters.get("reminderId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(ReminderUpdateRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.agentApiReminderUpdate(
+                    authorization: request.headers[.authorization],
+                    reminderId: request.parameters.get("reminderId") ?? "",
+                    body: body
+                )
+            }
         }
-        agentApi.get("reminders", ":reminderId", "log") { request -> Response in
-            routeResponse(services.emailAccounts.agentApiReminderLog(
-                authorization: request.headers[.authorization],
-                reminderId: request.parameters.get("reminderId") ?? ""
-            ))
+        agentApi.get("reminders", ":reminderId", "log") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.agentApiReminderLog(
+                    authorization: request.headers[.authorization],
+                    reminderId: request.parameters.get("reminderId") ?? ""
+                )
+            }
         }
-        agentApi.get("reminders") { request -> Response in
-            routeResponse(services.emailAccounts.agentApiReminderList(
-                authorization: request.headers[.authorization],
-                status: desktopQuery(request.url.query, "status")
-            ))
+        agentApi.get("reminders") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.agentApiReminderList(
+                    authorization: request.headers[.authorization],
+                    status: desktopQuery(request.url.query, "status")
+                )
+            }
         }
         agentApi.post("reminders") { request async throws -> Response in
-            let reply = services.emailAccounts.agentApiReminderCreate(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            )
-            if let reminderId = reminderIdFromReply(reply),
-               let agentId = services.emailAccounts.agentIdForReminderTesting(reminderId: reminderId) {
-                publishReminderEvent(reply, event: "reminder:scheduled", reminderId: reminderId, agentId: agentId, services: services)
+            let body = await jsonRequestBody(ReminderCreateRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                let created = try services.emailAccounts.managedMCPAgentCatalog.agentApiReminderCreate(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+                publishReminderEvent(
+                    event: "reminder:scheduled", reminderId: created.reminder.id,
+                    agentId: created.ownerAgentId, services: services
+                )
+                return created
             }
-            return routeResponse(reply)
         }
         agentApi.get("users", "info") { request async throws -> Response in
             var name = ""
@@ -257,17 +272,19 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 authorization: request.headers[.authorization]
             ))
         }
-        agentApi.get("history") { request -> Response in
-            routeResponse(services.emailAccounts.agentHistory(
-                authorization: request.headers[.authorization],
-                channelRef: desktopQuery(request.url.query, "channel"),
-                before: desktopQuery(request.url.query, "before"),
-                after: desktopQuery(request.url.query, "after"),
-                around: desktopQuery(request.url.query, "around"),
-                limit: desktopQuery(request.url.query, "limit"),
-                consume: desktopQuery(request.url.query, "consume"),
-                unread: desktopQuery(request.url.query, "unread") == "true"
-            ))
+        agentApi.get("history") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentHistory.history(
+                    authorization: request.headers[.authorization],
+                    channelRef: desktopQuery(request.url.query, "channel"),
+                    before: desktopQuery(request.url.query, "before"),
+                    after: desktopQuery(request.url.query, "after"),
+                    around: desktopQuery(request.url.query, "around"),
+                    limit: desktopQuery(request.url.query, "limit"),
+                    consume: desktopQuery(request.url.query, "consume"),
+                    unread: desktopQuery(request.url.query, "unread") == "true"
+                )
+            }
         }
         agentApi.get("assistant", "owner-inbox") { request -> Response in
             routeResponse(services.emailAccounts.agentAssistantOwnerInbox(
@@ -833,23 +850,15 @@ private func jsonString(_ value: String) -> String {
     return String(text.dropFirst().dropLast())
 }
 
-private func reminderIdFromReply(_ reply: HTTPReply) -> String? {
-    guard reply.status == 200, let data = reply.body.data(using: .utf8),
-          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let reminder = object["reminder"] as? [String: Any]
-    else { return nil }
-    return reminder["reminderId"] as? String ?? reminder["id"] as? String
-}
-
 private func publishReminderEvent(
-    _ reply: HTTPReply, event: String, reminderId: String, agentId: String, services: FallbackServices
+    event: String, reminderId: String, agentId: String, services: FallbackServices
 ) {
-    guard reply.status == 200, let hub = services.realtime,
+    guard let hub = services.realtime,
           let agent = services.emailAccounts.oauth.agentRuntimeInfo(id: agentId)
     else { return }
     var recipients: Set<String> = []
     if let creator = agent.creatorUserId { recipients.insert(creator) }
-    for member in services.emailAccounts.serverMemberRoles(serverId: agent.serverId)
+    for member in services.emailAccounts.oauth.memberRoles(serverId: agent.serverId)
     where member.role == "owner" || member.role == "admin" {
         recipients.insert(member.userId)
     }

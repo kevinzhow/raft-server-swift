@@ -272,19 +272,39 @@ extension EmailLoginDirectory {
             idempotency: ActionCardTaskIdempotency(
                 lookup: { [self] agentId, route, rawBody in
                     guard let object = (try? JSONSerialization.jsonObject(with: Data(rawBody.utf8))) as? [String: Any],
-                          let reply = agentApiIdempotencyReply(agentId: agentId, route: route, object: object)
+                          let key = (object["idempotencyKey"] as? String)?
+                              .trimmingCharacters(in: .whitespacesAndNewlines),
+                          !key.isEmpty
                     else { return .miss }
-                    if reply.status == 409 { return .conflict(body: reply.body) }
-                    return .replay(body: reply.body)
-                },
-                store: { [self] agentId, route, rawBody, body in
-                    guard let object = (try? JSONSerialization.jsonObject(with: Data(rawBody.utf8))) as? [String: Any]
-                    else { return }
-                    storeAgentApiIdempotency(
+                    switch managedMCPAndCardsStore.agentApiIdempotencyLookup(
                         agentId: agentId,
                         route: route,
-                        object: object,
-                        reply: HTTPReply(status: 200, headers: [:], body: body)
+                        key: key,
+                        fingerprint: Self.agentApiRequestFingerprint(object),
+                        now: Date()
+                    ) {
+                    case .none:
+                        return .miss
+                    case .replay(_, let body):
+                        return .replay(body: body)
+                    case .mismatch:
+                        return .conflict(body: "{\"error\":\"This idempotencyKey was already used for a different request\",\"code\":\"idempotency_key_reused\",\"mismatch\":\"request\",\"suggestedNextAction\":\"Retry with a new idempotencyKey.\"}")
+                    }
+                },
+                store: { [self] agentId, route, rawBody, body in
+                    guard let object = (try? JSONSerialization.jsonObject(with: Data(rawBody.utf8))) as? [String: Any],
+                          let key = (object["idempotencyKey"] as? String)?
+                              .trimmingCharacters(in: .whitespacesAndNewlines),
+                          !key.isEmpty
+                    else { return }
+                    managedMCPAndCardsStore.storeAgentApiIdempotency(
+                        agentId: agentId,
+                        route: route,
+                        key: key,
+                        fingerprint: Self.agentApiRequestFingerprint(object),
+                        status: 200,
+                        body: body,
+                        now: Date()
                     )
                 }
             ),
