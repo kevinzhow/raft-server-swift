@@ -196,4 +196,204 @@ final class AuthProfileStore: @unchecked Sendable {
         get { profileState.storedMobileAppEmailJourneys }
         set { profileState.storedMobileAppEmailJourneys = newValue }
     }
+
+    // MARK: - Account and session surface
+
+    /// Rows that used to be stored inline on `EmailLoginDirectory`: the account
+    /// table, the refresh-session families they mint, the one-time social and
+    /// device handoffs, and the login-platform gates.
+    struct AccountState {
+        var accounts: [String: Account] = [:]
+        var analyticsIds: [String: String] = [:]
+        var sessions: [String: LiveSession] = [:]
+        var rotationReceipts: [String: RotationReceipt] = [:]
+        /// Plain refresh tokens are one-time; the predecessor hash still resolves
+        /// to its family so a legacy logout can revoke the successor.
+        var predecessorFamilies: [String: String] = [:]
+        var revokedFamilies: Set<String> = []
+        var sessionFamilies: [String: SessionFamily] = [:]
+        var retirementReceipts: [String: RetirementReceipt] = [:]
+        var accessTokens: [String: String] = [:]
+        var accessTokenFamilies: [String: String] = [:]
+        var emailVerifications: Int = 0
+        var appLoginRequests: [String: AppLoginRequest] = [:]
+        var socialCompletions: [SocialCompletion] = []
+        var pendingSocialLinks: [String: PendingSocialLink] = [:]
+        var mobileRequests: [String: MobileOAuthRequest] = [:]
+        var providerExchanges: Int = 0
+        var consumedHandoffs: Set<String> = []
+        var deviceGrants: [String: DeviceGrant] = [:]
+        var deviceUserCodes: [String: String] = [:]
+        var appleLoginPlatforms: Set<String> = []
+        var linkedIdentities: [LinkedIdentity] = []
+        /// Injected session-issuance failure: the pending link must roll back
+        /// and stay usable.
+        var failNextSessionIssuance = false
+        /// Forces every experimental surface off when set.
+        var experimentalSurfacesDisabledOverride: Bool? = nil
+    }
+
+    /// Switches that are only reachable through `EmailLogin+TestSeams.swift`;
+    /// the directory body keeps no `ForTesting` storage of its own.
+    struct SeamState {
+        var handsConversationSessionEnabled: Bool? = nil
+        var handsFeedbackWarningSink: ((String) -> Void)? = nil
+    }
+
+    private var accountSurface = AccountState()
+    private var seamSurface = SeamState()
+
+    /// The whole account/session surface. One read or one write is one locked
+    /// critical section, so `EmailLoginDirectory`'s forwarding accessors stay
+    /// atomic.
+    var accountState: AccountState {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return accountSurface
+        }
+        set {
+            lock.lock()
+            accountSurface = newValue
+            lock.unlock()
+        }
+    }
+
+    var seamState: SeamState {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return seamSurface
+        }
+        set {
+            lock.lock()
+            seamSurface = newValue
+            lock.unlock()
+        }
+    }
+
+    var accounts: [String: Account] {
+        get { accountState.accounts }
+        set { accountState.accounts = newValue }
+    }
+
+    var analyticsIds: [String: String] {
+        get { accountState.analyticsIds }
+        set { accountState.analyticsIds = newValue }
+    }
+
+    var sessions: [String: LiveSession] {
+        get { accountState.sessions }
+        set { accountState.sessions = newValue }
+    }
+
+    var rotationReceipts: [String: RotationReceipt] {
+        get { accountState.rotationReceipts }
+        set { accountState.rotationReceipts = newValue }
+    }
+
+    var predecessorFamilies: [String: String] {
+        get { accountState.predecessorFamilies }
+        set { accountState.predecessorFamilies = newValue }
+    }
+
+    var revokedFamilies: Set<String> {
+        get { accountState.revokedFamilies }
+        set { accountState.revokedFamilies = newValue }
+    }
+
+    var sessionFamilies: [String: SessionFamily] {
+        get { accountState.sessionFamilies }
+        set { accountState.sessionFamilies = newValue }
+    }
+
+    var retirementReceipts: [String: RetirementReceipt] {
+        get { accountState.retirementReceipts }
+        set { accountState.retirementReceipts = newValue }
+    }
+
+    var accessTokens: [String: String] {
+        get { accountState.accessTokens }
+        set { accountState.accessTokens = newValue }
+    }
+
+    var accessTokenFamilies: [String: String] {
+        get { accountState.accessTokenFamilies }
+        set { accountState.accessTokenFamilies = newValue }
+    }
+
+    var emailVerifications: Int {
+        get { accountState.emailVerifications }
+        set { accountState.emailVerifications = newValue }
+    }
+
+    var appLoginRequests: [String: AppLoginRequest] {
+        get { accountState.appLoginRequests }
+        set { accountState.appLoginRequests = newValue }
+    }
+
+    var socialCompletions: [SocialCompletion] {
+        get { accountState.socialCompletions }
+        set { accountState.socialCompletions = newValue }
+    }
+
+    var pendingSocialLinks: [String: PendingSocialLink] {
+        get { accountState.pendingSocialLinks }
+        set { accountState.pendingSocialLinks = newValue }
+    }
+
+    var mobileRequests: [String: MobileOAuthRequest] {
+        get { accountState.mobileRequests }
+        set { accountState.mobileRequests = newValue }
+    }
+
+    var providerExchanges: Int {
+        get { accountState.providerExchanges }
+        set { accountState.providerExchanges = newValue }
+    }
+
+    var consumedHandoffs: Set<String> {
+        get { accountState.consumedHandoffs }
+        set { accountState.consumedHandoffs = newValue }
+    }
+
+    var deviceGrants: [String: DeviceGrant] {
+        get { accountState.deviceGrants }
+        set { accountState.deviceGrants = newValue }
+    }
+
+    var deviceUserCodes: [String: String] {
+        get { accountState.deviceUserCodes }
+        set { accountState.deviceUserCodes = newValue }
+    }
+
+    var appleLoginPlatforms: Set<String> {
+        get { accountState.appleLoginPlatforms }
+        set { accountState.appleLoginPlatforms = newValue }
+    }
+
+    var linkedIdentities: [LinkedIdentity] {
+        get { accountState.linkedIdentities }
+        set { accountState.linkedIdentities = newValue }
+    }
+
+    var failNextSessionIssuance: Bool {
+        get { accountState.failNextSessionIssuance }
+        set { accountState.failNextSessionIssuance = newValue }
+    }
+
+    var experimentalSurfacesDisabledOverride: Bool? {
+        get { accountState.experimentalSurfacesDisabledOverride }
+        set { accountState.experimentalSurfacesDisabledOverride = newValue }
+    }
+
+    var handsConversationSessionEnabled: Bool? {
+        get { seamState.handsConversationSessionEnabled }
+        set { seamState.handsConversationSessionEnabled = newValue }
+    }
+
+    var handsFeedbackWarningSink: ((String) -> Void)? {
+        get { seamState.handsFeedbackWarningSink }
+        set { seamState.handsFeedbackWarningSink = newValue }
+    }
 }

@@ -6,13 +6,12 @@ import Testing
 import Vapor
 import VaporTesting
 
-/// The notifications/leftover slice must expose every non-internal `api/*`
-/// pair (plus `share/:file`) that was still registered inline by
-/// `configure(_:services:)` after the earlier feature collections moved out.
-/// This locks the collection's own registration contract; behavioral coverage
-/// stays with the existing per-family tests once the Lead mounts it.
+/// Phase 5.3 split: the former catch-all notifications slice now lives in four
+/// route collections that mirror upstream `routes/*.ts`. Each collection must
+/// own exactly its share of the 96 `method path` pairs the pre-split
+/// `NotificationsFeature` registered, with no pair registered twice.
 ///
-/// The table is a `[String]` inventory so the shared test target never depends
+/// The tables are `[String]` inventories so the shared test target never depends
 /// on tuple literals or RoutingKit path rendering.
 @Test func notificationsFeatureRegistersEveryRemainingFamilyRoute() async throws {
     let services = FallbackServices(
@@ -20,34 +19,81 @@ import VaporTesting
         tracker: DbLivenessTracker(ping: {}),
         pingDatabase: {}
     )
+
+    let agents = try await registeredRoutes(AgentsFeature(services: services))
+    let computers = try await registeredRoutes(ComputersFeature(services: services))
+    let reminders = try await registeredRoutes(RemindersFeature(services: services))
+    let notifications = try await registeredRoutes(NotificationsFeature(services: services))
+
+    // Every collection owns exactly its documented family size.
+    #expect(agents.count == 53)
+    #expect(computers.count == 3)
+    #expect(reminders.count == 1)
+    #expect(notifications.count == 39)
+    #expect(agents == Set(expectedAgentsRoutes))
+    #expect(computers == Set(expectedComputersRoutes))
+    #expect(reminders == Set(expectedRemindersRoutes))
+    #expect(notifications == Set(expectedNotificationsRoutes))
+
+    // The four inventories are complete, duplicate-free and disjoint.
+    let expectedAll =
+        expectedAgentsRoutes
+        + expectedComputersRoutes
+        + expectedRemindersRoutes
+        + expectedNotificationsRoutes
+    #expect(expectedAgentsRoutes.count == 53)
+    #expect(expectedComputersRoutes.count == 3)
+    #expect(expectedRemindersRoutes.count == 1)
+    #expect(expectedNotificationsRoutes.count == 39)
+    #expect(expectedAll.count == 96)
+    #expect(Set(expectedAll).count == 96)
+
+    #expect(agents.isDisjoint(with: computers))
+    #expect(agents.isDisjoint(with: reminders))
+    #expect(agents.isDisjoint(with: notifications))
+    #expect(computers.isDisjoint(with: reminders))
+    #expect(computers.isDisjoint(with: notifications))
+    #expect(reminders.isDisjoint(with: notifications))
+
+    let union = agents.union(computers).union(reminders).union(notifications)
+    #expect(union.count == 96)
+    #expect(union == Set(expectedAll))
+
+    // Mounted together on one router the four collections stay at 96 routes,
+    // which is what `FallbackApplication.configure` composes.
     try await withApp { app in
+        try await app.register(collection: AgentsFeature(services: services))
+        try await app.register(collection: ComputersFeature(services: services))
+        try await app.register(collection: RemindersFeature(services: services))
         try await app.register(collection: NotificationsFeature(services: services))
 
-        let actual = Set(app.routes.all.map { route in
-            "\(route.method.rawValue) \(route.path.map { "\($0)" }.joined(separator: "/"))"
-        })
-        let expected = Set(expectedNotificationsRoutes)
-
-        // The inventory itself must stay complete and duplicate-free.
-        #expect(expectedNotificationsRoutes.count == 96)
-        #expect(expected.count == 96)
-        // One registration for every pair, and nothing outside the slice.
         #expect(app.routes.all.count == 96)
-        #expect(actual == expected)
+        #expect(registeredRouteKeys(app.routes.all) == union)
     }
 }
 
-/// Every `method path` pair this slice owns, derived from the `configure()`
-/// registrations removed by this extraction.
-private let expectedNotificationsRoutes: [String] = [
+/// Register one collection on a throwaway application and return its
+/// `"METHOD path"` inventory.
+private func registeredRoutes(_ feature: any RouteCollection) async throws -> Set<String> {
+    try await withApp { app in
+        try await app.register(collection: feature)
+        return registeredRouteKeys(app.routes.all)
+    }
+}
+
+private func registeredRouteKeys(_ routes: [Route]) -> Set<String> {
+    Set(routes.map { route in
+        "\(route.method.rawValue) " + route.path.map { "\($0)" }.joined(separator: "/")
+    })
+}
+
+/// Every `api/agent*` pair `AgentsFeature` owns (upstream `routes/agents.ts`).
+private let expectedAgentsRoutes: [String] = [
     "DELETE api/agents/:id",
     "DELETE api/agents/:id/assistant-owner",
     "DELETE api/agents/:id/connections/:provider",
     "DELETE api/agents/:id/connections/:provider/connectors/:connectorId",
     "DELETE api/agents/:id/credentials/:credentialId",
-    "DELETE api/notifications/credentials/current",
-    "DELETE api/notifications/devices/:deviceId",
-    "DELETE api/push/registrations/:installationId",
     "GET api/agents",
     "GET api/agents/:id",
     "GET api/agents/:id/activity",
@@ -73,27 +119,6 @@ private let expectedNotificationsRoutes: [String] = [
     "GET api/agents/:id/workspace-files/read",
     "GET api/agents/archived",
     "GET api/agents/manageable",
-    "GET api/announcements/active",
-    "GET api/announcements/images/:imageId",
-    "GET api/avatars/pixel/:file",
-    "GET api/computer/legacy-machines",
-    "GET api/desktop-download",
-    "GET api/desktop-download/platforms",
-    "GET api/email/mobile-app/unsubscribe",
-    "GET api/external-avatars/:file",
-    "GET api/mobile-download",
-    "GET api/notifications/devices",
-    "GET api/notifications/stream",
-    "GET api/product-events/config",
-    "GET api/public/feature-flags",
-    "GET api/push/delivery-status",
-    "GET api/release-notes",
-    "GET api/release-notes/:releaseId",
-    "GET api/reminders",
-    "GET api/slack-bridge/oauth/callback",
-    "GET api/slack-bridge/provisioning",
-    "GET api/version",
-    "GET share/:file",
     "PATCH api/agents/:id",
     "PATCH api/agents/:id/creator",
     "POST api/agent/login",
@@ -113,9 +138,51 @@ private let expectedNotificationsRoutes: [String] = [
     "POST api/agents/:id/reset",
     "POST api/agents/:id/start",
     "POST api/agents/:id/stop",
-    "POST api/announcements/:announcementId/dismiss",
+    "PUT api/agents/:id/assistant-owner",
+    "PUT api/agents/:id/connections/:provider",
+    "PUT api/agents/:id/hosted-runtime/model",
+    "PUT api/agents/:id/scopes",
+]
+
+/// Every `api/computer*` pair `ComputersFeature` owns (upstream
+/// `routes/computers.ts`).
+private let expectedComputersRoutes: [String] = [
+    "GET api/computer/legacy-machines",
     "POST api/computer/adopt-legacy",
     "POST api/computer/attach",
+]
+
+/// Every `api/reminders*` pair `RemindersFeature` owns (upstream
+/// `routes/reminders.ts`).
+private let expectedRemindersRoutes: [String] = [
+    "GET api/reminders",
+]
+
+/// Every pair `NotificationsFeature` still owns after the split.
+private let expectedNotificationsRoutes: [String] = [
+    "DELETE api/notifications/credentials/current",
+    "DELETE api/notifications/devices/:deviceId",
+    "DELETE api/push/registrations/:installationId",
+    "GET api/announcements/active",
+    "GET api/announcements/images/:imageId",
+    "GET api/avatars/pixel/:file",
+    "GET api/desktop-download",
+    "GET api/desktop-download/platforms",
+    "GET api/email/mobile-app/unsubscribe",
+    "GET api/external-avatars/:file",
+    "GET api/mobile-download",
+    "GET api/notifications/devices",
+    "GET api/notifications/stream",
+    "GET api/product-events/config",
+    "GET api/public/feature-flags",
+    "GET api/push/delivery-status",
+    "GET api/release-notes",
+    "GET api/release-notes/:releaseId",
+    "GET api/slack-bridge/oauth/callback",
+    "GET api/slack-bridge/provisioning",
+    "GET api/version",
+    "GET share/:file",
+    "POST api/announcements/:announcementId/dismiss",
     "POST api/email/mobile-app/unsubscribe",
     "POST api/feature-flags/evaluate",
     "POST api/notifications/credentials/rotate",
@@ -132,8 +199,4 @@ private let expectedNotificationsRoutes: [String] = [
     "POST api/slack-bridge/events",
     "POST api/slack-bridge/oauth/start",
     "POST api/v2/messages",
-    "PUT api/agents/:id/assistant-owner",
-    "PUT api/agents/:id/connections/:provider",
-    "PUT api/agents/:id/hosted-runtime/model",
-    "PUT api/agents/:id/scopes",
 ]

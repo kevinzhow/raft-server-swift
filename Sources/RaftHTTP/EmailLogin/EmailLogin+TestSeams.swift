@@ -1136,3 +1136,70 @@ public struct AttachmentCommentRecord: Sendable, Equatable {
         self.hostChannelId = hostChannelId
     }
 }
+
+// MARK: - Store-backed test seams
+
+/// `EmailLogin.swift` keeps no `ForTesting` storage: each of these accessors
+/// forwards to a domain store whose property carries the production name.
+extension EmailLoginDirectory {
+    /// Forces the next session issuance to fail so the pending link rolls back.
+    public var failNextSessionIssuanceForTesting: Bool {
+        get { authProfileStore.failNextSessionIssuance }
+        set { authProfileStore.failNextSessionIssuance = newValue }
+    }
+
+    var handsConversationSessionEnabledForTesting: Bool? {
+        get { authProfileStore.handsConversationSessionEnabled }
+        set { authProfileStore.handsConversationSessionEnabled = newValue }
+    }
+
+    var handsFeedbackWarningSinkForTesting: ((String) -> Void)? {
+        get { authProfileStore.handsFeedbackWarningSink }
+        set { authProfileStore.handsFeedbackWarningSink = newValue }
+    }
+
+    var experimentalSurfacesDisabledForTesting: Bool? {
+        get { authProfileStore.experimentalSurfacesDisabledOverride }
+        set { authProfileStore.experimentalSurfacesDisabledOverride = newValue }
+    }
+
+    var inboxResiduesForTesting: Set<String> {
+        get { messagesAndThreadsStore.inboxResidues }
+        set { messagesAndThreadsStore.inboxResidues = newValue }
+    }
+
+    var userChannelReadCursorsForTesting: [String: Int] {
+        get { messagesAndThreadsStore.userChannelReadCursors }
+        set { messagesAndThreadsStore.userChannelReadCursors = newValue }
+    }
+
+    var agentInboxAvailableForTesting: Bool? {
+        get { agentsRuntimeStore.agentInboxAvailable }
+        set { agentsRuntimeStore.agentInboxAvailable = newValue }
+    }
+
+    var machineBroadcastPoliciesForTesting: [String: String] {
+        get { machinesAndComputersStore.machineBroadcastPolicies }
+        set { machinesAndComputersStore.machineBroadcastPolicies = newValue }
+    }
+
+    var machineModelSeenCapabilityForTesting: Set<String> {
+        get { machinesAndComputersStore.machineModelSeenCapability }
+        set { machinesAndComputersStore.machineModelSeenCapability = newValue }
+    }
+
+    var latestComputerReleaseForTesting: (version: String, notesJSON: String)? {
+        get { machinesAndComputersStore.latestComputerRelease }
+        set { machinesAndComputersStore.latestComputerRelease = newValue }
+    }
+
+    var handsFeedbackAppsJSONForTesting: String? {
+        get { feedbackStore.handsFeedbackAppsJSON }
+        set { feedbackStore.handsFeedbackAppsJSON = newValue }
+    }
+
+    var handsFeedbackLegacyEnvironmentForTesting: [String: String]? {
+        get { feedbackStore.handsFeedbackLegacyEnvironment }
+        set { feedbackStore.handsFeedbackLegacyEnvironment = newValue }
+    }
+}
