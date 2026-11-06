@@ -28,6 +28,16 @@ public struct AuthFeature: RouteCollection, Sendable {
         return try? JSONDecoder().decode(type, from: data)
     }
 
+    /// Decodes one lenient JSON body the way the retired raw parser read it:
+    /// as JSON whatever the `Content-Type` claims. A body that does not decode
+    /// (empty, not an object) is `nil`; the service publishes the same reply
+    /// the old non-object cast did.
+    private func rawJSON<T: Decodable>(_ type: T.Type, _ request: Request) async throws -> T? {
+        if let decoded = try? await request.content.decode(type, using: JSONDecoder()) { return decoded }
+        guard let data = try await request.body.collect() else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
     public func boot(routes: any RoutesBuilder) async throws {
         register(routes: routes)
     }
@@ -47,7 +57,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         let appLoginRequest = appLogin.grouped("requests", ":requestId")
         let me = auth.grouped("me")
         let authCore = AuthCoreService(directory: services.emailAccounts)
-        let identityService = AuthIdentitiesService(directory: services.emailAccounts)
+        let identityService = services.emailAccounts.authIdentities
 
         // `verify-email` and `resend-verification` are literal siblings of the
         // `:provider` auth routes, so they mount from the same `api/auth` group.
@@ -204,14 +214,16 @@ public struct AuthFeature: RouteCollection, Sendable {
             }
             return routeResponse(services.emailAccounts.logout(body: try await request.bodyText()))
         }
-        identities.get { request -> Response in
-            routeResponse(identityService.identities(authorization: request.headers[.authorization]))
+        identities.get { request async throws -> Response in
+            try await respond { try identityService.identities(authorization: request.headers[.authorization]) }
         }
-        identities.delete(":provider") { request -> Response in
-            routeResponse(identityService.unlink(
-                authorization: request.headers[.authorization],
-                provider: request.parameters.get("provider") ?? ""
-            ))
+        identities.delete(":provider") { request async throws -> Response in
+            try await respond {
+                try identityService.unlink(
+                    authorization: request.headers[.authorization],
+                    provider: request.parameters.get("provider") ?? ""
+                )
+            }
         }
         auth.post("reset-password") { request async throws -> Response in
             // The typed body covers the published shape; a body sent without a
@@ -228,57 +240,58 @@ public struct AuthFeature: RouteCollection, Sendable {
             return try await respond { services.emailAccounts.authProfile.cancelPendingLink(body) }
         }
         auth.post("login") { request async throws -> Response in
-            // A typed body needs both required strings; anything else (missing
-            // key, JSON null, non-string value) keeps the raw parser so the
-            // upstream `issues` list is unchanged.
-            if let body = try? await request.content.decode(LoginRequestDTO.self) {
-                return routeResponse(authCore.login(body))
-            }
-            return routeResponse(services.emailAccounts.login(body: try await request.bodyText()))
+            // The lenient decoder keeps every wrong-typed field so the service
+            // can publish the upstream `issues` list; a non-object body is nil.
+            let body = try await rawJSON(LoginRequest.self, request)
+            return try await respond { try identityService.login(body) }
         }
         appLogin.post("start") { request async throws -> Response in
-            if let body = try? await request.content.decode(AppLoginStartRequestDTO.self) {
-                return routeResponse(identityService.appLoginStart(body))
+            let body = (try await rawJSON(AppLoginStartRequest.self, request)) ?? AppLoginStartRequest()
+            return try await respond(status: 201) { try identityService.appLoginStart(body) }
+        }
+        appLoginRequest.get { request async throws -> Response in
+            try await respond {
+                try identityService.appLoginDescribe(
+                    authorization: request.headers[.authorization],
+                    requestId: request.parameters.get("requestId") ?? ""
+                )
             }
-            return routeResponse(services.emailAccounts.appLoginStart(body: try await request.bodyText(default: "{}")))
         }
-        appLoginRequest.get { request -> Response in
-            routeResponse(services.emailAccounts.appLoginDescribe(
-                authorization: request.headers[.authorization],
-                requestId: request.parameters.get("requestId") ?? ""
-            ))
+        appLoginRequest.post("approve") { request async throws -> Response in
+            try await respond {
+                try identityService.appLoginApprove(
+                    authorization: request.headers[.authorization],
+                    requestId: request.parameters.get("requestId") ?? ""
+                )
+            }
         }
-        appLoginRequest.post("approve") { request -> Response in
-            routeResponse(services.emailAccounts.appLoginApprove(
-                authorization: request.headers[.authorization],
-                requestId: request.parameters.get("requestId") ?? ""
-            ))
-        }
-        appLoginRequest.post("deny") { request -> Response in
-            routeResponse(services.emailAccounts.appLoginDeny(
-                authorization: request.headers[.authorization],
-                requestId: request.parameters.get("requestId") ?? ""
-            ))
+        appLoginRequest.post("deny") { request async throws -> Response in
+            try await respond {
+                try identityService.appLoginDeny(
+                    authorization: request.headers[.authorization],
+                    requestId: request.parameters.get("requestId") ?? ""
+                )
+            }
         }
         appLogin.post("complete") { request async throws -> Response in
-            if let body = try? await request.content.decode(AppLoginCompleteRequestDTO.self) {
-                return routeResponse(identityService.appLoginComplete(body))
-            }
-            return routeResponse(services.emailAccounts.appLoginComplete(body: try await request.bodyText(default: "{}")))
+            let body = (try await rawJSON(AppLoginCompleteRequest.self, request)) ?? AppLoginCompleteRequest()
+            return try await respond { try identityService.appLoginComplete(body) }
         }
         auth.get("providers") { request in
             routeResponse(services.emailAccounts.authProviders(platform: desktopQuery(request.url.query, "platform")))
         }
-        me.get { request -> Response in
-            return routeResponse(services.emailAccounts.me(authorization: request.headers[.authorization]))
+        me.get { request async throws -> Response in
+            try await respond { try identityService.me(authorization: request.headers[.authorization]) }
         }
         me.on(.post, "avatar", maxBodySize: "6mb") { request async throws -> Response in
             let data = try await request.body.collect() ?? Data()
-            return routeResponse(services.emailAccounts.uploadAvatar(
-                authorization: request.headers[.authorization],
-                contentType: request.headers[.contentType],
-                body: data
-            ))
+            return try await respond {
+                try identityService.uploadAvatar(
+                    authorization: request.headers[.authorization],
+                    contentType: request.headers[.contentType],
+                    body: data
+                )
+            }
         }
         me.post("complete-profile") { request async throws -> Response in
             routeResponse(services.emailAccounts.completeProfile(
@@ -297,10 +310,12 @@ public struct AuthFeature: RouteCollection, Sendable {
             }
         }
         me.patch { request async throws -> Response in
-            return routeResponse(services.emailAccounts.patch(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
+            // A body that is not a JSON object is nil; the service answers the
+            // published 400 after the session check, as before.
+            let body = try await rawJSON(UpdateProfileRequest.self, request)
+            return try await respond {
+                try identityService.updateProfile(authorization: request.headers[.authorization], body)
+            }
         }
         auth.post("accept-invite") { request async throws -> Response in
             // The typed body keeps the raw parser's tolerance for a missing

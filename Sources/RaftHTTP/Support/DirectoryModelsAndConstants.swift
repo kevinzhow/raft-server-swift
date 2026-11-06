@@ -308,55 +308,10 @@ extension EmailLoginDirectory {
         return fields.isEmpty ? nil : fields
     }
 
-    static func parseDisplayLanguage(_ raw: Any) -> DisplayLanguage {
-        if raw is NSNull { return .value(nil) }
-        guard let string = raw as? String else {
-            return .invalid("displayLanguage must be a string or null")
-        }
-        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return .value(nil) }
-        guard let normalized = normalizeDisplayLocale(trimmed) else {
-            return .invalid("displayLanguage must be a supported UI display locale")
-        }
-        return .value(normalized)
-    }
-
+    /// The `user` object, rendered from the one ordered description in
+    /// `AuthUserDTO` for the domains that still embed it in their own bodies.
     static func userJSON(_ account: Account) -> String {
-        let hash = sha256(account.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
-        let language = account.displayLanguage.map { jsonString($0) } ?? "null"
-        let provider = account.profileSetupProvider.map { jsonString($0) } ?? "null"
-        let displayName = jsonString(account.displayName ?? account.name)
-        let suggestedHandle = account.profileSetupSuggestedHandle.map { jsonString($0) } ?? "null"
-        let completedAt: String
-        if let completed = account.profileSetupCompletedAt {
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            completedAt = jsonString(formatter.string(from: completed))
-        } else {
-            completedAt = "null"
-        }
-        let avatar = account.avatarUrl.map { jsonString($0) } ?? "null"
-        let share: String
-        if let value = account.shareUsageData {
-            share = value ? "true" : "false"
-        } else {
-            share = "null"
-        }
-        let preferredLanguage = account.preferredLanguage.map { jsonString($0) } ?? "null"
-        let preferredTimezone = account.preferredTimezone.map { jsonString($0) } ?? "null"
-        let preferredTimeFormat = account.preferredTimeFormat.map { jsonString($0) } ?? "null"
-        let preferredFontSize = account.preferredMessageBodyFontSize.map { jsonString($0) } ?? "null"
-        let referralSource = account.referralSource.map { jsonString($0) } ?? "null"
-        let referralOther = account.referralSourceOther.map { jsonString($0) } ?? "null"
-        let skippedAt: String
-        if let date = account.referralSourceSkippedAt {
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            skippedAt = jsonString(formatter.string(from: date))
-        } else {
-            skippedAt = "null"
-        }
-        return "{\"id\":\(jsonString(account.id)),\"email\":\(jsonString(account.email)),\"name\":\(jsonString(account.name)),\"emailVerified\":\(account.emailVerified),\"displayName\":\(displayName),\"gravatarHash\":\(jsonString(hash)),\"displayLanguage\":\(language),\"profileSetupCompletedAt\":\(completedAt),\"profileSetupSuggestedHandle\":\(suggestedHandle),\"profileSetupProvider\":\(provider),\"avatarUrl\":\(avatar),\"shareUsageData\":\(share),\"preferredLanguage\":\(preferredLanguage),\"preferredTimezone\":\(preferredTimezone),\"preferredTranslationMode\":\(jsonString(account.preferredTranslationMode)),\"autoTranslationEnabled\":\(account.autoTranslationEnabled),\"preferredTranslationDisplay\":\(jsonString(account.preferredTranslationDisplay)),\"preferredTimeFormat\":\(preferredTimeFormat),\"preferredMessageBodyFontSize\":\(preferredFontSize),\"referralSource\":\(referralSource),\"referralSourceOther\":\(referralOther),\"referralSourceSkippedAt\":\(skippedAt)}"
+        AuthUserDTO(account: account).jsonBody.render()
     }
 
     static func trimHyphens(_ value: String) -> String {
@@ -1064,13 +1019,9 @@ extension EmailLoginDirectory {
         "raft-dev://oauth/callback",
     ]
 
-    static let rejected = json(401, "{\"code\":\"AUTH_INVALID_CREDENTIALS\",\"error\":\"Invalid email or password\"}")
-
     static let missingAuthorization = json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
 
     static let invalidToken = json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
-
-    static let wrongPassword = json(401, "{\"code\":\"AUTH_CURRENT_PASSWORD_INCORRECT\",\"error\":\"Current password is incorrect\"}")
 
     static let linkAuthRequired = json(401, "{\"code\":\"auth_required\",\"error\":\"Authentication is required to link an account\"}")
 

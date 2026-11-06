@@ -154,25 +154,6 @@ extension AuthRequestDTO {
     }
 }
 
-/// `POST /api/auth/login`.
-///
-/// `email` and `password` are required strings. A body with any other shape
-/// (missing key, JSON `null`, or a non-string value) fails to decode, and the
-/// route keeps the directory's raw parser so the published issue list is
-/// unchanged. `pendingLinkToken` is read with `as? String` upstream, so `null`
-/// and an absent key already mean the same thing there.
-public struct LoginRequestDTO: Codable, Sendable, Equatable, AuthRequestDTO {
-    public var email: String
-    public var password: String
-    public var pendingLinkToken: String?
-
-    public init(email: String, password: String, pendingLinkToken: String? = nil) {
-        self.email = email
-        self.password = password
-        self.pendingLinkToken = pendingLinkToken
-    }
-}
-
 /// `POST /api/auth/refresh`.
 ///
 /// `refreshToken` is the only body field; the replay-binding attempt and
@@ -250,34 +231,6 @@ public struct DeviceTokenPollRequestDTO: Codable, Sendable, Equatable, AuthReque
 
     public init(deviceCode: String) {
         self.deviceCode = deviceCode
-    }
-}
-
-/// `POST /api/auth/app-login/start`.
-///
-/// `returnUri` and `codeChallenge` are required strings; `codeChallengeMethod`
-/// is read with `as? String` upstream, so `null` and an absent key already mean
-/// the same thing there.
-public struct AppLoginStartRequestDTO: Codable, Sendable, Equatable, AuthRequestDTO {
-    public var returnUri: String
-    public var codeChallenge: String
-    public var codeChallengeMethod: String?
-
-    public init(returnUri: String, codeChallenge: String, codeChallengeMethod: String? = nil) {
-        self.returnUri = returnUri
-        self.codeChallenge = codeChallenge
-        self.codeChallengeMethod = codeChallengeMethod
-    }
-}
-
-/// `POST /api/auth/app-login/complete`.
-public struct AppLoginCompleteRequestDTO: Codable, Sendable, Equatable, AuthRequestDTO {
-    public var code: String
-    public var codeVerifier: String
-
-    public init(code: String, codeVerifier: String) {
-        self.code = code
-        self.codeVerifier = codeVerifier
     }
 }
 

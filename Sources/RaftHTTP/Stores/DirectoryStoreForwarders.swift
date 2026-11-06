@@ -126,7 +126,6 @@ extension EmailLoginDirectory {
     var accessTokens: [String: String] { get { authProfileStore.accessTokens } set { authProfileStore.accessTokens = newValue } }
     var accessTokenFamilies: [String: String] { get { authProfileStore.accessTokenFamilies } set { authProfileStore.accessTokenFamilies = newValue } }
     var emailVerifications: Int { get { authProfileStore.emailVerifications } set { authProfileStore.emailVerifications = newValue } }
-    var appLoginRequests: [String: AppLoginRequest] { get { authProfileStore.appLoginRequests } set { authProfileStore.appLoginRequests = newValue } }
     var socialCompletions: [SocialCompletion] { get { authProfileStore.socialCompletions } set { authProfileStore.socialCompletions = newValue } }
     var pendingSocialLinks: [String: PendingSocialLink] { get { authProfileStore.pendingSocialLinks } set { authProfileStore.pendingSocialLinks = newValue } }
     var mobileRequests: [String: MobileOAuthRequest] { get { authProfileStore.mobileRequests } set { authProfileStore.mobileRequests = newValue } }

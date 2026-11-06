@@ -253,12 +253,6 @@ extension EmailLoginDirectory {
             .replacingOccurrences(of: "'", with: "&#39;")
     }
 
-    static func timezoneJSON(_ observation: TimezoneObservation) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return "{\"firstObservedTimezone\":\(jsonString(observation.firstTimezone)),\"firstObservedTimezoneAt\":\(jsonString(formatter.string(from: observation.firstAt))),\"lastObservedTimezone\":\(jsonString(observation.lastTimezone)),\"lastObservedTimezoneAt\":\(jsonString(formatter.string(from: observation.lastAt)))}"
-    }
-
     static func attestationString(_ value: Any?) -> String? {
         guard let value = value as? String else { return nil }
         return value

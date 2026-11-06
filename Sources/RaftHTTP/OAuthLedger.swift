@@ -1666,7 +1666,7 @@ public final class OAuthLedger: @unchecked Sendable {
 
     /// Settings list: every App this Server owns or has installed. A published
     /// marketplace App without a local installation is not listed.
-    public func integrationSettingsClients(serverId: String) -> [[String: Any]] {
+    public func integrationSettingsClientRows(serverId: String) -> [IntegrationSettingsClient] {
         lock.lock()
         defer { lock.unlock() }
         return clients.filter { client in
@@ -1676,15 +1676,15 @@ public final class OAuthLedger: @unchecked Sendable {
                 $0.clientId == client.id && $0.serverId == serverId && $0.status == "active"
             }
         }.map { client in
-            [
-                "id": client.id,
-                "clientId": client.clientId,
-                "name": client.name,
-                "appType": client.appType,
-                "description": client.descriptionText as Any,
-                "homepageUrl": client.homepageUrl as Any,
-                "publishStatus": client.publishStatus,
-            ]
+            IntegrationSettingsClient(
+                id: client.id,
+                clientId: client.clientId,
+                name: client.name,
+                appType: client.appType,
+                description: client.descriptionText,
+                homepageUrl: client.homepageUrl,
+                publishStatus: client.publishStatus
+            )
         }
     }
 

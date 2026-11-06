@@ -106,11 +106,13 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             ))
         }
 
-        integrations.get("clients") { request -> Response in
-            routeResponse(services.emailAccounts.integrationSettingsClients(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
-            ))
+        integrations.get("clients") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.authIdentities.integrationSettingsClients(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+                )
+            }
         }
 
         integrations.post("requests", ":requestId", "approve") { request async throws -> Response in
