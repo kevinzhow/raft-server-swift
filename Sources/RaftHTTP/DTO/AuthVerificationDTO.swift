@@ -19,12 +19,3 @@ public struct OkResponse: Codable, Sendable, Equatable {
         self.ok = ok
     }
 }
-
-/// The `{"error":...}` body shared by the verification routes.
-public struct AuthErrorResponse: Codable, Sendable, Equatable {
-    public var error: String
-
-    public init(error: String) {
-        self.error = error
-    }
-}

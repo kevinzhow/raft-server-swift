@@ -706,59 +706,15 @@ extension EmailLoginDirectory {
         return mobileRequests[id]?.profileEmail
     }
 
+    /// `requireVerified` reads this from the profile store; the verification
+    /// service writes it through the same locked store.
     public func isEmailVerified(userId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return accounts.values.first { $0.id == userId }?.emailVerified ?? false
+        authProfileStore.isEmailVerified(userId: userId)
     }
 
     /// The Node fixture marks a row verified without an HTTP call. Retirement refuses an unverified account.
     public func markEmailVerified(userId: String) {
-        lock.lock()
-        if let key = accounts.first(where: { $0.value.id == userId })?.key {
-            accounts[key]?.emailVerified = true
-        }
-        lock.unlock()
-    }
-
-    /// Whether an account row still exists for `userId`.
-    public func accountExists(userId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return accounts.values.contains { $0.id == userId }
-    }
-
-    var authVerificationService: AuthVerificationService {
-        AuthVerificationService(
-            store: authProfileStore,
-            accounts: self,
-            makeToken: { Self.randomHex(32) },
-            hashToken: { Self.sha256($0) }
-        )
-    }
-
-    /// `POST /api/auth/verify-email`. Spends a token and marks its owner verified.
-    public func verifyEmail(token: String?) -> AuthVerificationResult {
-        authVerificationService.verifyEmail(token: token)
-    }
-
-    /// `POST /api/auth/resend-verification`. `requireAuth` runs before the
-    /// resend policy, so a missing or expired session is 401 and writes nothing.
-    public func resendVerificationEmail(authorization: String?) -> AuthVerificationResult {
-        let userId: String
-        switch authorize(authorization) {
-        case .rejected:
-            return .failure(authorization?.hasPrefix("Bearer ") == true ? .invalidAccessToken : .unauthenticated)
-        case .user(let id):
-            userId = id
-        }
-        let result = authVerificationService.resendVerificationEmail(userId: userId)
-        if case .sent = result {
-            lock.lock()
-            emailVerifications += 1
-            lock.unlock()
-        }
-        return result
+        authProfileStore.markEmailVerified(userId: userId)
     }
 
     public func stagingSelfAccountCapabilityHash(userId: String) -> String? {
@@ -800,13 +756,16 @@ extension EmailLoginDirectory {
 
 }
 
-/// The verification service reads and writes account state through this seam.
-/// `EmailLoginDirectory` owns the lock; the service never takes it directly.
-extension EmailLoginDirectory: AuthVerificationAccounts {}
-
-/// Directory counters the startup log and acceptance tests read. Every one is a
-/// locked snapshot; none mutates the row it counts.
+/// Directory services and counters the startup log and acceptance tests read.
+/// Every counter is a locked snapshot; none mutates the row it counts.
 extension EmailLoginDirectory {
+
+    /// Email-verification policy for `POST /api/auth/verify-email` and
+    /// `POST /api/auth/resend-verification`. The feature calls this service;
+    /// the directory only supplies the profile store it reads.
+    public var authVerification: AuthVerificationService {
+        AuthVerificationService(store: authProfileStore)
+    }
 
     public var sessionCount: Int {
         lock.lock()

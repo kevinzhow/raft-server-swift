@@ -12,6 +12,14 @@ struct EmailVerificationRecord: Sendable, Equatable {
     public let expiresAt: Date
 }
 
+/// Result of the locked resend policy. The store decides; the service maps a
+/// refusal to its published `AuthVerificationError`.
+enum IssueOutcome: Equatable, Sendable {
+    case issued
+    case tooManyRequests
+    case cooldown
+}
+
 /// Owns account-profile ledgers: linked identities, password-reset tokens,
 /// email-verification tokens and legal acceptances. HTTP/session/account
 /// decisions stay in `EmailLoginDirectory`; this store serializes only its own
@@ -123,6 +131,42 @@ final class AuthProfileStore: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// The resend policy and its write in one critical section: hourly-cap
+    /// check, cooldown check, token replacement and issue-count increment all
+    /// observe and mutate the same rows under the same lock. Two concurrent
+    /// resends therefore cannot both pass the cap or the cooldown.
+    func issueVerificationTokenIfAllowed(
+        userId: String,
+        token: String,
+        tokenHash: String,
+        now: Date,
+        ttl: TimeInterval,
+        hourlyLimit: Int,
+        cooldown: TimeInterval
+    ) -> IssueOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        let recentIssued = emailVerificationIssueDates[userId]?.filter {
+            $0 >= now.addingTimeInterval(-60 * 60)
+        }.count ?? 0
+        if recentIssued >= hourlyLimit { return .tooManyRequests }
+        if recentIssued > 0,
+           let latest = emailVerificationTokens[userId]?.max(by: { $0.createdAt < $1.createdAt }),
+           now.timeIntervalSince(latest.createdAt) < cooldown {
+            return .cooldown
+        }
+        emailVerificationTokens[userId] = [EmailVerificationRecord(
+            userId: userId,
+            tokenHash: tokenHash,
+            rawToken: token,
+            createdAt: now,
+            expiresAt: now.addingTimeInterval(ttl)
+        )]
+        emailVerificationIssueDates[userId, default: []].append(now)
+        accountSurface.emailVerifications += 1
+        return .issued
+    }
+
     /// Spends one token. An unknown hash returns `nil`. An expired token is
     /// removed and returns `nil`. A valid token removes every verification
     /// token for its owner and returns the owner id.
@@ -145,19 +189,50 @@ final class AuthProfileStore: @unchecked Sendable {
         return userId
     }
 
-    /// The most recently issued live token for inspection and cooldown checks.
+    /// The most recently issued live token, for inspection and the acceptance
+    /// seam. The resend cooldown reads it inside `issueVerificationTokenIfAllowed`.
     func latestVerificationToken(userId: String) -> EmailVerificationRecord? {
         lock.lock()
         defer { lock.unlock() }
         return emailVerificationTokens[userId]?.max { $0.createdAt < $1.createdAt }
     }
 
-    /// How many verification tokens were issued for `userId` at or after
-    /// `since`, including tokens that have since been replaced or consumed.
-    func recentVerificationTokensCount(userId: String, since: Date) -> Int {
+    // MARK: - Verification policy lookups
+
+    /// Whether an account row still exists for `userId`.
+    func accountExists(userId: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return emailVerificationIssueDates[userId]?.filter { $0 >= since }.count ?? 0
+        return accountSurface.accounts.values.contains { $0.id == userId }
+    }
+
+    func isEmailVerified(userId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return accountSurface.accounts.values.first { $0.id == userId }?.emailVerified ?? false
+    }
+
+    /// The Node fixture marks a row verified without an HTTP call. Retirement
+    /// refuses an unverified account.
+    func markEmailVerified(userId: String) {
+        lock.lock()
+        if let key = accountSurface.accounts.first(where: { $0.value.id == userId })?.key {
+            accountSurface.accounts[key]?.emailVerified = true
+        }
+        lock.unlock()
+    }
+
+    /// The account id behind a bearer access token, or `nil` when the token is
+    /// unknown or its session family was revoked.
+    func userId(forAccessToken token: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let userId = accountSurface.accessTokens[token] else { return nil }
+        if let family = accountSurface.accessTokenFamilies[token],
+           accountSurface.revokedFamilies.contains(family) {
+            return nil
+        }
+        return userId
     }
 
     // MARK: - Profile surface

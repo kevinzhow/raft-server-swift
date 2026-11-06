@@ -2,7 +2,6 @@ Sources/RaftHTTP/Services/ActionCardService.swift	44
 Sources/RaftHTTP/Services/AttachmentsAndNotificationsService.swift	172
 Sources/RaftHTTP/Services/AuthCoreService.swift	6
 Sources/RaftHTTP/Services/AuthIdentitiesService.swift	6
-Sources/RaftHTTP/Services/AuthVerificationService.swift	1
 Sources/RaftHTTP/Services/FeedbackLocatorService.swift	15
 Sources/RaftHTTP/Services/FeedbackMultiAppService.swift	12
 Sources/RaftHTTP/Services/FeedbackService.swift	40
