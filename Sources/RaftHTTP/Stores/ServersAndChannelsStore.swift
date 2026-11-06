@@ -1220,6 +1220,16 @@ final class ServersAndChannelsStore: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// The migration receipt DM: one agent-only direct channel named
+    /// `name` whose member set is exactly `memberId`, in one critical section.
+    func directChannelId(name: String, memberId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.postableChannels.first {
+            $0.value.kind == "dm" && $0.value.name == name && $0.value.memberIds == [memberId]
+        }?.key
+    }
+
     private static func joinLinkExpired(_ link: JoinLinkRecord, now: Date) -> Bool {
         if let expiresAt = link.expiresAt, expiresAt <= now { return true }
         return false

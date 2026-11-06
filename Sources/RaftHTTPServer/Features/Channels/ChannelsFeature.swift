@@ -144,23 +144,33 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             }
         }
 
-        channels.delete("threads", ":threadId", "followers", "agents", ":agentId") { request -> Response in
-            routeResponse(services.emailAccounts.removeThreadFollower(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                threadId: request.parameters.get("threadId") ?? "",
-                agentId: request.parameters.get("agentId") ?? ""
-            ))
+        channels.delete("threads", ":threadId", "followers", "agents", ":agentId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.messageSend.removeThreadFollower(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    threadId: request.parameters.get("threadId") ?? "",
+                    agentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
 
         channels.post("threads", ":threadId", "followers", "agents", ":agentId", "restore") { request async throws -> Response in
-            routeResponse(services.emailAccounts.restoreThreadFollower(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                threadId: request.parameters.get("threadId") ?? "",
-                agentId: request.parameters.get("agentId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            // The legacy handler parsed the raw body, so a missing or non-JSON
+            // body is the empty token, not a 400.
+            let restore = (try? JSONDecoder().decode(
+                RestoreThreadFollowerRequest.self,
+                from: Data(try await request.bodyText(default: "{}").utf8)
+            )) ?? RestoreThreadFollowerRequest()
+            return try await respond {
+                try services.emailAccounts.messageSend.restoreThreadFollower(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    threadId: request.parameters.get("threadId") ?? "",
+                    agentId: request.parameters.get("agentId") ?? "",
+                    undoToken: restore.undoToken
+                )
+            }
         }
 
         channels.get("threads", "followers") { request async throws -> Response in

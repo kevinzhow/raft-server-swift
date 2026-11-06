@@ -753,6 +753,44 @@ extension EmailLoginDirectory {
         AuthVerificationService(store: authProfileStore)
     }
 
+    /// The message-send boundary: the attachment download URL, the
+    /// thread-follower undo routes and the migration receipt DM. It reads the
+    /// message/channel/profile stores and the OAuth ledger directly; the
+    /// attachment-visibility policy, the socket emitter and the serialized
+    /// message append still live in unmigrated directory code and enter as
+    /// closures (`MessageSendService.live`).
+    public var messageSend: MessageSendService {
+        MessageSendService(
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            profiles: authProfileStore,
+            oauth: oauth,
+            visibleAttachment: { [self] userId, serverId, attachment in
+                visibleAttachment(userId: userId, serverId: serverId, attachment: attachment)
+            },
+            emitRealtime: { [self] room, event, payload in
+                emitRealtime(room, event, payload)
+            },
+            registerPostableChannel: { [self] serverId, channelId, memberId, kind, name in
+                addPostableChannel(
+                    serverId: serverId,
+                    channelId: channelId,
+                    memberId: memberId,
+                    kind: kind,
+                    name: name
+                )
+            },
+            appendHumanMessage: { [self] message in
+                // The append still serializes with every other message writer
+                // under the directory lock until the channel-message domain
+                // moves its seq stamping into `MessagesAndThreadsStore`.
+                lock.lock()
+                defer { lock.unlock() }
+                return appendHumanMessageLocked(message)
+            }
+        )
+    }
+
     /// Socket room membership: connect-time visibility, thread-room
     /// enumeration, `sync:resume` catch-up and membership revocation. The
     /// directory supplies the channel/message stores and the OAuth ledger; the
