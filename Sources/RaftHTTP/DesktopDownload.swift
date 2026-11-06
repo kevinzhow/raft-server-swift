@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -56,22 +57,17 @@ public struct DesktopDownloadDeps: Sendable {
     }
 }
 
-public final class DesktopFeedCache: @unchecked Sendable {
-    private let lock = NSLock()
-    private var entries: [String: (at: Int, read: FeedRead)] = [:]
+public final class DesktopFeedCache: Sendable {
+    private let entries = Mutex<[String: (at: Int, read: FeedRead)]>([:])
 
     public init() {}
 
     func get(_ key: String) -> (at: Int, read: FeedRead)? {
-        lock.lock()
-        defer { lock.unlock() }
-        return entries[key]
+        entries.withLock { $0[key] }
     }
 
     func set(_ key: String, at: Int, read: FeedRead) {
-        lock.lock()
-        entries[key] = (at, read)
-        lock.unlock()
+        entries.withLock { $0[key] = (at, read) }
     }
 }
 

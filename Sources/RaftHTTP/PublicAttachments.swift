@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Anonymous `GET /api/public/servers/:slug/attachments/:attachmentId`.
 ///
@@ -22,25 +23,24 @@ public struct PublicPresignRequest: Equatable, Sendable {
 
 /// One IP gets 120 public attachment reads per minute. The 121st is refused
 /// before the handler, so a missing file stays a 404 until the budget is spent.
-public final class PublicAttachmentBudget: @unchecked Sendable {
+public final class PublicAttachmentBudget: Sendable {
     public static let maxPerWindow = 120
     public static let windowSeconds: TimeInterval = 60
-    private let lock = NSLock()
-    private var hits: [String: (start: Date, count: Int)] = [:]
+    private let hits = Mutex<[String: (start: Date, count: Int)]>([:])
 
     public init() {}
 
     public func allow(ip: String, now: Date = Date()) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        let next: (start: Date, count: Int)
-        if let existing = hits[ip], now.timeIntervalSince(existing.start) < Self.windowSeconds {
-            next = (existing.start, existing.count + 1)
-        } else {
-            next = (now, 1)
+        hits.withLock { hits in
+            let next: (start: Date, count: Int)
+            if let existing = hits[ip], now.timeIntervalSince(existing.start) < Self.windowSeconds {
+                next = (existing.start, existing.count + 1)
+            } else {
+                next = (now, 1)
+            }
+            hits[ip] = next
+            return next.count <= Self.maxPerWindow
         }
-        hits[ip] = next
-        return next.count <= Self.maxPerWindow
     }
 }
 

@@ -2079,3 +2079,10 @@ RFC 074 personal assistant：
 - 各 Feature 的非法 JSON、错误 Content-Type、空白/空 body 与宽松字段解码保留原鉴权优先级、状态、正文与头；统一解码 helper 不把这些策略统一为另一种行为。
 - 人类发消息时，HTTP ack 与实际 `message:new` 的 attachment 顺序都等于请求选择顺序；相同 randomId 与正文重放返回原消息 id 和附件列表，不发送第二个 live event。该断言观察真实 emitter，不再读取 recorded-event 旁路。
 - Runtime config 的存储、归一化、provider-key 合并与脱敏保持 Foundation 的排序和数值字节，包括 Int64 边界、UInt64 大正数、精细小数、斜杠、布尔/0/1、重复键及嵌套数值；移除输入兼容序列化器中的有损 Int64 转换。
+
+### 公开读取预算与缓存的并发边界
+
+- 同一 IP、固定一分钟窗口内的并发附件请求严格只放行前 120 次；59.999 秒仍在原窗口，60 秒可重新计数，不同 IP 不共享预算。
+- Public search service 的一分钟 rate 预算与 in-flight 槽位相互独立：并发抢占不能超额，重复 release 不把计数降成负值，窗口重置不释放尚占用的槽位；Retry-After 保留原取整规则。
+- 同一桌面 feed cache 的不同 key 并发写入互不丢失，读取保留原 timestamp、version 与 asset 列表；缓存正/负结果 TTL 和上游失败降级仍由原发布路径决定。
+- 服务密钥读取抛错、空集、非法/重复 key、查询超时继续 fail closed；超时后后台读取可以完成，不能改变该次已返回的 unavailable 决策。

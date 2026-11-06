@@ -1,11 +1,7 @@
-Sources/RaftHTTP/DesktopDownload.swift	1
 Sources/RaftHTTP/EmailLogin.swift	1
 Sources/RaftHTTP/OAuthLedger.swift	1
-Sources/RaftHTTP/PublicAttachments.swift	1
-Sources/RaftHTTP/PublicSearchServiceAccess.swift	2
 Sources/RaftHTTP/PublicServerDirectory.swift	1
 Sources/RaftHTTP/PublicVisits.swift	1
-Sources/RaftHTTP/RouteError.swift	1
 Sources/RaftHTTP/Stores/AgentsRuntimeStore.swift	1
 Sources/RaftHTTP/Stores/AuthProfileStore.swift	1
 Sources/RaftHTTP/Stores/FeedbackStore.swift	1
@@ -18,7 +14,6 @@ Sources/RaftHTTP/Stores/ProductEventStore.swift	1
 Sources/RaftHTTP/Stores/ServersAndChannelsStore.swift	1
 Sources/RaftHTTP/Stores/TasksAndRemindersStore.swift	1
 Sources/RaftHTTP/Stores/ThreadFollowStore.swift	1
-Sources/RaftHTTPServer/InternalSurfacePolicy.swift	1
 Sources/RaftMachineSocket/MachineConnectServer.swift	1
 Sources/RaftRealtime/DesktopAttentionEvents.swift	2
 Sources/RaftRealtime/RealtimeServer.swift	3

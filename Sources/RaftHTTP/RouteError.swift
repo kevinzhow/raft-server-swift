@@ -17,7 +17,7 @@ public struct RisingWaveOverloadedError: Error, Equatable, Sendable {
 }
 
 /// One link in the `cause` chain `findRisingWaveOverload` walks.
-public struct CausalRouteError: Error, @unchecked Sendable {
+public struct CausalRouteError: Error, Sendable {
     public var message: String
     public var cause: (any Error)?
 

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import RaftHTTP
 import Vapor
 
@@ -59,19 +60,14 @@ enum InternalSurfacePolicy {
 /// Holds the projection computed once at configuration time, after every route
 /// (including preflight itself) is registered. Written before the server starts
 /// serving, read-only afterwards.
-final class InternalSurfaceBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: InternalSurfaceSnapshot?
+final class InternalSurfaceBox: Sendable {
+    private let stored = Mutex<InternalSurfaceSnapshot?>(nil)
 
     func set(_ value: InternalSurfaceSnapshot) {
-        lock.lock()
-        stored = value
-        lock.unlock()
+        stored.withLock { $0 = value }
     }
 
     var value: InternalSurfaceSnapshot {
-        lock.lock()
-        defer { lock.unlock() }
-        return stored ?? InternalSurfacePolicy.empty
+        stored.withLock { $0 ?? InternalSurfacePolicy.empty }
     }
 }

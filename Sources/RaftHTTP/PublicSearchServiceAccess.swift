@@ -1,5 +1,6 @@
 import Crypto
 import Foundation
+import Synchronization
 
 public struct PublicSearchServiceKey: Sendable, Equatable {
     public var keyId: String
@@ -44,43 +45,47 @@ public protocol PublicSearchInFlightGating: Sendable {
     func release()
 }
 
-public final class PublicSearchMemoryBucketStore: PublicSearchBucketStoring, PublicSearchInFlightGating, @unchecked Sendable {
-    private let lock = NSLock()
+public final class PublicSearchMemoryBucketStore: PublicSearchBucketStoring, PublicSearchInFlightGating, Sendable {
+    private struct State: Sendable {
+        var windowStart: Date
+        var used = 0
+        var inFlight = 0
+    }
+
     private let now: @Sendable () -> Date
-    private var windowStart: Date
-    private var used = 0
-    private var inFlight = 0
+    private let state: Mutex<State>
 
     public init(now: @escaping @Sendable () -> Date = { Date() }) {
         self.now = now
-        self.windowStart = now()
+        self.state = Mutex(State(windowStart: now()))
     }
 
     public func acquire(max: Int) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        guard inFlight < max else { return false }
-        inFlight += 1
-        return true
+        state.withLock { state in
+            guard state.inFlight < max else { return false }
+            state.inFlight += 1
+            return true
+        }
     }
 
     public func release() {
-        lock.lock(); inFlight = max(0, inFlight - 1); lock.unlock()
+        state.withLock { $0.inFlight = max(0, $0.inFlight - 1) }
     }
 
     public func consume(limit: Int) -> PublicSearchBucketDecision {
-        lock.lock()
-        defer { lock.unlock() }
-        let current = now()
-        if current.timeIntervalSince(windowStart) >= 60 {
-            windowStart = current
-            used = 0
+        state.withLock { state in
+            let current = now()
+            if current.timeIntervalSince(state.windowStart) >= 60 {
+                state.windowStart = current
+                state.used = 0
+            }
+            guard state.used < limit else {
+                let retry = max(1, min(60, Int(60 - current.timeIntervalSince(state.windowStart).rounded(.up))))
+                return .rateLimited(retryAfter: retry)
+            }
+            state.used += 1
+            return .allowed
         }
-        guard used < limit else {
-            let retry = max(1, min(60, Int(60 - current.timeIntervalSince(windowStart).rounded(.up))))
-            return .rateLimited(retryAfter: retry)
-        }
-        used += 1
-        return .allowed
     }
 }
 
@@ -120,23 +125,18 @@ public enum PublicSearchServiceAccess {
         let pair = parts[2].split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
         guard pair.count == 2, !pair[0].isEmpty, !pair[1].isEmpty else { return .invalid }
         guard let keySource else { return .unavailable }
-        final class LookupBox: @unchecked Sendable {
-            var rows: [PublicSearchServiceKey] = []
-            var failed = false
-        }
-        let box = LookupBox()
+        let result = Mutex<[PublicSearchServiceKey]?>(nil)
         let semaphore = DispatchSemaphore(value: 0)
         let thread = Thread {
-            do { box.rows = try keySource.keys() } catch { box.failed = true }
+            let rows = try? keySource.keys()
+            result.withLock { $0 = rows }
             semaphore.signal()
         }
         thread.start()
         guard semaphore.wait(timeout: .now() + .milliseconds(max(1, deadlineMs))) == .success else {
             return .unavailable
         }
-        guard !box.failed else { return .unavailable }
-        let rows = box.rows
-        guard !rows.isEmpty, validKeySet(rows) else { return .unavailable }
+        guard let rows = result.withLock({ $0 }), !rows.isEmpty, validKeySet(rows) else { return .unavailable }
         guard rows.contains(where: { $0.expiresAt == nil }) else { return .unavailable }
         guard let row = rows.first(where: { $0.keyId == pair[0] }) else { return .invalid }
         if let expiresAt = row.expiresAt, expiresAt <= clock { return .invalid }

@@ -47,6 +47,8 @@ Phase 5 已完成旧 `EmailLogin/` 文件提取、Feature 路由拆分、同步 
 
 ### 第九批：目录收缩与 Store 并发边界
 
+首个同步边界切片将桌面 feed cache、公开附件预算、搜索 rate/in-flight 状态与线程查询结果、internal-surface snapshot 迁入 Mutex，并移除纯值 causal error 的 unchecked 声明（非生成服务端 28→22）。目录全局锁和领域 Store 的迁移仍是本批工作，不能据此宣布完成。
+
 1. 把剩余目录扩展中的领域逻辑和跨域 helper 移到真正的 Service / Store；删除旧实现和 forwarding 文件，不保留另一层兼容外壳。
 2. 将可变 Store 状态迁到编译器检查的 Mutex 或 actor 隔离。保留 read-modify-write 原子性，不能把一次事务拆成分别锁住的 getter/setter。
 3. 把目录全局锁下的操作逐项迁入拥有状态的领域事务，再删除全局锁。核查跨域调用与锁顺序，保持会话刷新、消息序号、幂等、mention、task 与权限决策。
