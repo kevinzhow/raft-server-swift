@@ -363,4 +363,37 @@ final class MessagesAndThreadsStore: @unchecked Sendable {
         }
         return nil
     }
+
+    // MARK: - Agent delivery ack
+
+    /// Message rows plus the legacy thread-follow rows the delivery ack reads,
+    /// copied in one critical section.
+    struct DeliveryAckMessageSnapshot {
+        let rows: [StoredHumanMessage]
+        let threadFollows: [String: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String)]
+    }
+
+    func deliveryAckMessageSnapshot() -> DeliveryAckMessageSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return DeliveryAckMessageSnapshot(
+            rows: storage.humanMessageRows,
+            threadFollows: storage.threadFollows
+        )
+    }
+
+    /// Read-modify-write of every per-channel agent cursor the ack advanced.
+    /// The previous cursor, the version bump and the write all happen in one
+    /// critical section, so concurrent acks cannot both read version N and
+    /// write N+1.
+    func advanceAgentReadCursors(agentId: String, maxSeqByChannel: [String: Int]) {
+        lock.lock()
+        defer { lock.unlock() }
+        for (channelId, maxSeq) in maxSeqByChannel {
+            let key = "\(channelId)\n\(agentId)"
+            let previous = storage.agentChannelReadCursors[key] ?? (seq: 0, version: 0)
+            guard maxSeq > previous.seq else { continue }
+            storage.agentChannelReadCursors[key] = (maxSeq, previous.version + 1)
+        }
+    }
 }

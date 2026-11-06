@@ -443,4 +443,109 @@ final class AgentsRuntimeStore: @unchecked Sendable {
         storage.hostedMigrations[agentId] = migration
         return .canceled(migration)
     }
+
+    // MARK: - Agent send delivery
+
+    /// Reads one agent credential without changing it. The caller still checks
+    /// `revokedAt` and the agent runtime row.
+    func agentCredential(token: String) -> (agentId: String, scopes: [String], revokedAt: Date?)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let credential = storage.agentCredentials[token] else { return nil }
+        return (credential.agentId, Array(credential.scopes), credential.revokedAt)
+    }
+
+    /// The shared agent-credential check: a present, unrevoked credential is
+    /// marked used and its identity returned in one critical section.
+    func useAgentCredential(token: String, now: Date) -> (agentId: String, scopes: [String])? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let credential = storage.agentCredentials[token], credential.revokedAt == nil else {
+            return nil
+        }
+        storage.agentCredentials[token]?.lastUsedAt = now
+        return (credential.agentId, Array(credential.scopes))
+    }
+
+    /// Hosted-agent membership written by the profile route and read by the
+    /// join-link policy.
+    func markHosted(agentId: String) {
+        lock.lock()
+        storage.hostedAgents.insert(agentId)
+        lock.unlock()
+    }
+
+    /// One activity-ingest pass over an agent's status rows.
+    ///
+    /// The legacy loop updated adopted/occurredAt/activities as it went and
+    /// committed the dedupe set only after the last event, so a later invalid
+    /// status leaves the earlier status writes in place. The outcome preserves
+    /// that: `invalidStatus`/`detailInvalid`/`detailTooLong` return before the
+    /// event-id commit.
+    enum ActivityIngestOutcome: Sendable, Equatable {
+        case applied(accepted: Int, rejected: Int)
+        case invalidStatus
+        case detailInvalid
+        case detailTooLong
+    }
+
+    func applyActivityIngest(
+        agentId: String,
+        events: [AgentActivityEvent],
+        now: @Sendable () -> Date
+    ) -> ActivityIngestOutcome {
+        let standardStatuses: Set<String> = ["working", "thinking", "online", "error", "offline"]
+        lock.lock()
+        defer { lock.unlock() }
+        var accepted = 0
+        var rejected = 0
+        var seen = storage.agentActivityEventIds[agentId] ?? []
+        for event in events {
+            guard let eventId = event.eventId,
+                  let occurred = event.occurredAt
+            else {
+                rejected += 1
+                continue
+            }
+            if seen.contains(eventId) {
+                rejected += 1
+                continue
+            }
+            let status = event.status
+            if let status, !standardStatuses.contains(status), status != "failed" {
+                return .invalidStatus
+            }
+            var detailText = ""
+            if let detail = event.detail {
+                guard case .string(let text) = detail else { return .detailInvalid }
+                if text.count > 200 { return .detailTooLong }
+                detailText = text
+            }
+            let effective = min(occurred, now())
+            seen.insert(eventId)
+            accepted += 1
+            let isStandardStatus = status.map { standardStatuses.contains($0) } ?? false
+            if isStandardStatus, let status {
+                storage.agentStatusAdopted.insert(agentId)
+                if effective >= (storage.agentStatusOccurredAt[agentId] ?? .distantPast) {
+                    storage.agentStatusOccurredAt[agentId] = effective
+                    storage.agentActivities[agentId] = (activity: status, detail: detailText)
+                }
+            } else if let hookName = event.hookEventName, !storage.agentStatusAdopted.contains(agentId) {
+                let hookStatus: String
+                switch hookName {
+                case "PreToolUse": hookStatus = "working"
+                case "PostToolUseFailure": hookStatus = "error"
+                case "Stop", "SessionEnd": hookStatus = "online"
+                default: hookStatus = "working"
+                }
+                if effective >= (storage.agentStatusOccurredAt[agentId] ?? .distantPast) {
+                    storage.agentStatusOccurredAt[agentId] = effective
+                    storage.agentActivities[agentId] = (activity: hookStatus, detail: "")
+                }
+            }
+        }
+        storage.agentActivityEventIds[agentId] = seen
+        return .applied(accepted: accepted, rejected: rejected)
+    }
 }

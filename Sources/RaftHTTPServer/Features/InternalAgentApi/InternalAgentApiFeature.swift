@@ -273,10 +273,12 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 attachmentId: request.parameters.get("attachmentId") ?? ""
             ))
         }
-        agentApi.get("integrations") { request -> Response in
-            routeResponse(services.emailAccounts.agentIntegrationList(
-                authorization: request.headers[.authorization]
-            ))
+        agentApi.get("integrations") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentSendDelivery.agentIntegrationList(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         agentApi.get("integrations", "app") { request -> Response in
             routeResponse(services.emailAccounts.agentIntegrationAppList(
@@ -469,21 +471,29 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             ))
         }
         agentApi.post("activity") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentActivityIngest(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(AgentActivityIngestRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.agentSendDelivery.agentActivityIngest(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
-        agentApi.get("threads") { request -> Response in
-            routeResponse(services.emailAccounts.agentThreadList(
-                authorization: request.headers[.authorization]
-            ))
+        agentApi.get("threads") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentSendDelivery.agentThreadList(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         agentApi.post("threads", "unfollow") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentThreadUnfollow(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(AgentThreadUnfollowRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.agentSendDelivery.agentThreadUnfollow(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         agentApi.get("messages", ":messageId", "mention-deliveries") { request -> Response in
             routeResponse(services.emailAccounts.agentMentionDeliveries(
