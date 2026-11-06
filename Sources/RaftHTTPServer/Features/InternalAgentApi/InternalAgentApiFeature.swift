@@ -537,22 +537,27 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
         }
         agentApi.post("feedback-locators") { request async throws -> Response in
-            routeResponse(services.emailAccounts.ingestFeedbackLocator(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
+            let body = await feedbackLocatorEnvelope(request)
+            return try respond(errors: FeedbackLocatorError.self) {
+                try services.emailAccounts.feedbackLocators.ingest(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
-        agentApi.get("feedback-locators") { request -> Response in
-            routeResponse(services.emailAccounts.listFeedbackLocators(
-                authorization: request.headers[.authorization],
-                reportId: desktopQuery(request.url.query, "report_id"),
-                runtime: desktopQuery(request.url.query, "runtime"),
-                nativeStatus: desktopQuery(request.url.query, "native_status"),
-                nativeLookupMethod: desktopQuery(request.url.query, "native_lookup_method"),
-                servedExactSha256: desktopQuery(request.url.query, "served_exact_sha256"),
-                routeBasis: desktopQuery(request.url.query, "route_basis"),
-                limit: desktopQuery(request.url.query, "limit")
-            ))
+        agentApi.get("feedback-locators") { request async throws -> Response in
+            try respond(errors: FeedbackLocatorError.self) {
+                try services.emailAccounts.feedbackLocators.list(
+                    authorization: request.headers[.authorization],
+                    reportId: desktopQuery(request.url.query, "report_id"),
+                    runtime: desktopQuery(request.url.query, "runtime"),
+                    nativeStatus: desktopQuery(request.url.query, "native_status"),
+                    nativeLookupMethod: desktopQuery(request.url.query, "native_lookup_method"),
+                    servedExactSha256: desktopQuery(request.url.query, "served_exact_sha256"),
+                    routeBasis: desktopQuery(request.url.query, "route_basis"),
+                    limit: desktopQuery(request.url.query, "limit")
+                )
+            }
         }
         agentApi.get("wake-hints") { request -> Response in
             routeResponse(services.emailAccounts.agentWakeHints(
@@ -751,4 +756,17 @@ private func publishReminderEvent(
     for userId in recipients {
         hub.emit(room: "user:\(userId)", event: event, payloadJSON: payload)
     }
+}
+
+/// `POST /internal/agent-api/feedback-locators` accepted a JSON body with or
+/// without a `Content-Type` header, so the typed decode runs first and a
+/// header-less body falls back to the raw bytes. A body that is not a JSON
+/// object stays `nil`, which the service answers with the published
+/// `invalid_payload`.
+private func feedbackLocatorEnvelope(_ request: Request) async -> FeedbackLocatorIngestRequest? {
+    if let typed = try? await request.content.decode(FeedbackLocatorIngestRequest.self) {
+        return typed
+    }
+    guard let raw = try? await request.bodyText() else { return nil }
+    return try? JSONDecoder().decode(FeedbackLocatorIngestRequest.self, from: Data(raw.utf8))
 }
