@@ -146,17 +146,23 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             ))
         }
         agentApi.patch("server") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentUpdateServer(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(AgentServerUpdateRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentChannels.updateServer(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         agentApi.patch("channels", ":channelId") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentUpdateChannel(
-                authorization: request.headers[.authorization],
-                channelId: request.parameters.get("channelId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(AgentChannelUpdateRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentChannels.updateChannel(
+                    authorization: request.headers[.authorization],
+                    channelId: request.parameters.get("channelId") ?? "",
+                    body: body
+                )
+            }
         }
         agentApi.post("channels", "archive") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentChannelArchive(
@@ -187,44 +193,60 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             ))
         }
         agentApi.post("channels", ":channelId", "members") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentChannelMemberWrite(
-                authorization: request.headers[.authorization],
-                channelId: request.parameters.get("channelId") ?? "",
-                body: try await request.bodyText(default: "{}"),
-                remove: false
-            ))
+            let body = await jsonRequestBody(AgentChannelMemberRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentChannels.writeChannelMember(
+                    authorization: request.headers[.authorization],
+                    channelId: request.parameters.get("channelId") ?? "",
+                    body: body,
+                    remove: false
+                )
+            }
         }
         agentApi.delete("channels", ":channelId", "members") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentChannelMemberWrite(
-                authorization: request.headers[.authorization],
-                channelId: request.parameters.get("channelId") ?? "",
-                body: try await request.bodyText(default: "{}"),
-                remove: true
-            ))
+            let body = await jsonRequestBody(AgentChannelMemberRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentChannels.writeChannelMember(
+                    authorization: request.headers[.authorization],
+                    channelId: request.parameters.get("channelId") ?? "",
+                    body: body,
+                    remove: true
+                )
+            }
         }
-        agentApi.get("channel-members") { request -> Response in
-            routeResponse(services.emailAccounts.agentChannelMembers(
-                authorization: request.headers[.authorization],
-                agentId: nil,
-                channelRef: desktopQuery(request.url.query, "channel")
-            ))
+        agentApi.get("channel-members") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentChannels.channelMembers(
+                    authorization: request.headers[.authorization],
+                    agentId: nil,
+                    channelRef: desktopQuery(request.url.query, "channel")
+                )
+            }
         }
-        agentApi.get("server") { request -> Response in
-            routeResponse(services.emailAccounts.agentServerInfo(
-                authorization: request.headers[.authorization]
-            ))
+        agentApi.get("server") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentChannels.serverInfo(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         agentApi.post("resolve-channel") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentResolveChannel(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(AgentResolveChannelRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentChannels.resolveChannel(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         agentApi.post("channels") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentCreateChannel(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(AgentCreateChannelRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentChannels.createChannel(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         agentApi.get("attachment-upload-capabilities") { request -> Response in
             routeResponse(services.emailAccounts.agentAttachmentUploadCapabilities(
@@ -434,11 +456,14 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
         }
         agentApi.post("tasks", "amend") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentTasksAmend(
-                authorization: request.headers[.authorization],
-                legacyAgentId: nil,
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(AgentTaskAmendRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.tasksAndLabs.amendTask(
+                    authorization: request.headers[.authorization],
+                    legacyAgentId: nil,
+                    body: body
+                )
+            }
         }
         agentApi.post("tasks", "claim") { request async throws -> Response in
             // `channel`, `task_numbers`, `message_ids` and `seenUpToSeq` are the
@@ -485,11 +510,13 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.post("channels", ":channelId", "join") { request -> Response in
-            routeResponse(services.emailAccounts.agentJoinChannel(
-                authorization: request.headers[.authorization],
-                channelId: request.parameters.get("channelId") ?? ""
-            ))
+        agentApi.post("channels", ":channelId", "join") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.channelMembership.agentJoinChannel(
+                    authorization: request.headers[.authorization],
+                    channelId: request.parameters.get("channelId") ?? ""
+                )
+            }
         }
         agentApi.post("messages", ":messageId", "reactions") { request async throws -> Response in
             let body = await jsonRequestBody(ProfileReactionRequestDTO.self, request)

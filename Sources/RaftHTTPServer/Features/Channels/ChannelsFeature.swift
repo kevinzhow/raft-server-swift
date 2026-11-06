@@ -37,30 +37,36 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         )
         let inbox = ReactionsRealtimeService(directory: services.emailAccounts)
         let servedInbox = services.emailAccounts.inboxAndWake
-        channels.post(":channelId", "archive") { request -> Response in
-            routeResponse(services.emailAccounts.setChannelArchivedRoute(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: request.parameters.get("channelId") ?? "",
-                archived: true
-            ))
+        channels.post(":channelId", "archive") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.channelMembership.setChannelArchived(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: request.parameters.get("channelId") ?? "",
+                    archived: true
+                )
+            }
         }
 
-        channels.post(":channelId", "unarchive") { request -> Response in
-            routeResponse(services.emailAccounts.setChannelArchivedRoute(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: request.parameters.get("channelId") ?? "",
-                archived: false
-            ))
+        channels.post(":channelId", "unarchive") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.channelMembership.setChannelArchived(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: request.parameters.get("channelId") ?? "",
+                    archived: false
+                )
+            }
         }
 
-        channels.post(":channelId", "join") { request -> Response in
-            routeResponse(services.emailAccounts.joinChannel(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: request.parameters.get("channelId") ?? ""
-            ))
+        channels.post(":channelId", "join") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.channelMembership.joinChannel(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: request.parameters.get("channelId") ?? ""
+                )
+            }
         }
 
         channels.post("inbox", "done") { request async throws -> Response in

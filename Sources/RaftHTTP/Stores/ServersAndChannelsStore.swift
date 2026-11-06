@@ -1249,3 +1249,107 @@ enum SoftDeleteChannelOutcome: Sendable, Equatable {
     case notFound
     case forbidden
 }
+
+// MARK: - Channel archive, membership and agent channel management
+
+extension ServersAndChannelsStore {
+    /// The two facts the archive route reads before it decides: whether the
+    /// caller is a channel admin and whether the channel is a joint projection.
+    func archivePolicy(channelId: String, userId: String) -> (channelAdmin: Bool, jointArchive: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (
+            storage.channelHumanRoles["\(channelId)\n\(userId)"] == "admin",
+            storage.jointProjections.contains { $0.localChannelId == channelId }
+        )
+    }
+
+    /// Marks one channel and every thread under it archived (or not) in one
+    /// critical section.
+    func setArchived(channelId: String, archived: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId]?.archived = archived
+        for (id, var postable) in storage.postableChannels where postable.parentChannelId == channelId {
+            postable.archived = archived
+            storage.postableChannels[id] = postable
+        }
+    }
+
+    /// The archive flag of exactly one projection (no thread cascade).
+    func setArchivedFlag(channelId: String, archived: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId]?.archived = archived
+    }
+
+    func setPostableName(channelId: String, name: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId]?.name = name
+    }
+
+    /// The final name/kind write of a channel update.
+    func updatePostable(channelId: String, name: String, kind: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId]?.name = name
+        storage.postableChannels[channelId]?.kind = kind
+    }
+
+    func isGuestJoinable(channelId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.guestJoinableChannels[channelId] ?? false
+    }
+
+    /// The local channel ids that share the joint canonical channel of
+    /// `channelId` (empty for a non-joint channel), from one snapshot.
+    func jointLinkIds(channelId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let canonical = storage.jointProjections
+            .first(where: { $0.localChannelId == channelId })?.canonicalChannelId
+        else { return [] }
+        return storage.jointProjections.filter { $0.canonicalChannelId == canonical }.map(\.localChannelId)
+    }
+
+    /// Removes one agent from the posting set and answers the channel kind, in
+    /// one critical section.
+    func removeAgentMember(channelId: String, agentId: String) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId]?.memberIds.remove(agentId)
+        return storage.postableChannels[channelId]?.kind ?? "channel"
+    }
+
+    func markChannelDeleted(channelId: String, now: Date) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId]?.deletedAt = now
+    }
+
+    func removeMember(channelId: String, memberId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId]?.memberIds.remove(memberId)
+    }
+
+    /// Adds one human to the posting set, creating the row when the channel has
+    /// none.
+    func insertMember(channelId: String, serverId: String, userId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId, default: PostableChannel(serverId: serverId, memberIds: [])]
+            .memberIds.insert(userId)
+    }
+
+    /// Replaces the posting row of a freshly created channel.
+    func insertCreatedChannel(channelId: String, serverId: String, kind: String, name: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId] = PostableChannel(
+            serverId: serverId, memberIds: [], kind: kind, name: name
+        )
+    }
+}

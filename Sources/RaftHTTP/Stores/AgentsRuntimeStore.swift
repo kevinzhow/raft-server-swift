@@ -621,3 +621,21 @@ final class AgentsRuntimeStore: @unchecked Sendable {
         return true
     }
 }
+
+extension AgentsRuntimeStore {
+    /// Whether the agent has a stored channel membership row.
+    func isChannelAgentMember(channelId: String, agentId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.channelAgentMembers[channelId]?.contains(agentId) == true
+    }
+
+    /// The machine and the last reported activity of one agent, from one
+    /// critical section.
+    func runtimeFacts(agentId: String) -> (machineId: String?, activity: String, detail: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        let activity = storage.agentActivities[agentId] ?? (activity: "offline", detail: "")
+        return (storage.agentMachineIds[agentId], activity.activity, activity.detail)
+    }
+}

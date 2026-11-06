@@ -472,17 +472,12 @@ extension EmailLoginDirectory {
     }
 
     static func taskStatusFilter(_ rawQuery: String?) -> TaskStatusFilterResult {
-        guard let rawQuery else { return .valid(nil) }
-        let statusOccurrences = rawQuery.split(separator: "&").filter { $0.hasPrefix("status=") }
-        guard statusOccurrences.count <= 1 else {
-            return .invalid(Self.json(400, "{\"error\":\"status must be a single valid task status\"}"))
+        switch TasksAndLabsService.statusFilter(rawQuery) {
+        case .valid(let value):
+            return .valid(value)
+        case .invalid:
+            return .invalid(Self.json(400, TasksAndLabsError.invalidTaskStatus.publishedErrorBody.render()))
         }
-        guard let occurrence = statusOccurrences.first else { return .valid(nil) }
-        let value = String(occurrence.dropFirst("status=".count)).removingPercentEncoding ?? ""
-        guard validTaskStatuses.contains(value) else {
-            return .invalid(Self.json(400, "{\"error\":\"status must be a single valid task status\"}"))
-        }
-        return .valid(value)
     }
 
     static func appConfigDefaults() -> [String: Any] {

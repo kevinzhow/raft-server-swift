@@ -388,21 +388,25 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 )
             }
         }
-        tasks.get("channel", ":channelId") { request -> Response in
-            routeResponse(services.emailAccounts.listChannelTasks(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: request.parameters.get("channelId") ?? "",
-                rawQuery: request.url.query
-            ))
+        tasks.get("channel", ":channelId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.tasksAndLabs.listChannelTasks(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: request.parameters.get("channelId") ?? "",
+                    rawQuery: request.url.query
+                )
+            }
         }
-        tasks.get("channel", ":channelId", "number", ":taskNumber") { request -> Response in
-            routeResponse(services.emailAccounts.getChannelTaskByNumber(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: request.parameters.get("channelId") ?? "",
-                taskNumber: Int(request.parameters.get("taskNumber") ?? "") ?? 0
-            ))
+        tasks.get("channel", ":channelId", "number", ":taskNumber") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.tasksAndLabs.getChannelTaskByNumber(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: request.parameters.get("channelId") ?? "",
+                    taskNumber: Int(request.parameters.get("taskNumber") ?? "") ?? 0
+                )
+            }
         }
         tasks.post("channel", ":channelId") { request async throws -> Response in
             let body = try await request.bodyText()
@@ -423,12 +427,17 @@ public struct MessagingFeature: RouteCollection, Sendable {
             ))
         }
         tasks.patch(":taskId", "assignee") { request async throws -> Response in
-            routeResponse(services.emailAccounts.assignTask(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                taskId: request.parameters.get("taskId") ?? "",
-                body: try await request.bodyText()
-            ))
+            // A body sent without a JSON Content-Type was accepted before; a
+            // missing or non-object body stays `nil` (the service's 400).
+            let body = await jsonRequestBody(TaskAssigneePatchRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.tasksAndLabs.assignTask(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    taskId: request.parameters.get("taskId") ?? "",
+                    body: body
+                )
+            }
         }
         tasks.patch(":taskId", "unclaim") { request -> Response in
             routeResponse(services.emailAccounts.unclaimTask(

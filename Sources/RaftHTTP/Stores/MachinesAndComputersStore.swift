@@ -316,3 +316,11 @@ final class MachinesAndComputersStore: @unchecked Sendable {
         return revoked
     }
 }
+
+extension MachinesAndComputersStore {
+    func machine(id: String) -> MachineRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.machines.first { $0.id == id }
+    }
+}

@@ -360,16 +360,3 @@ public struct AgentRuntimeProfileMigrationDTO: Codable, Sendable, Equatable, Age
         self.migrationKey = migrationKey
     }
 }
-
-/// `PATCH /internal/agent/:agentId/server` request body.
-///
-/// `name` is the only key the legacy agent surface reads; the directory answers
-/// `Invalid server update` when it is absent or not a string, so an omitted key
-/// keeps the raw 400.
-public struct LegacyAgentServerPatchDTO: Codable, Sendable, Equatable, AgentsAndComputersRequestDTO {
-    public var name: String?
-
-    public init(name: String? = nil) {
-        self.name = name
-    }
-}
