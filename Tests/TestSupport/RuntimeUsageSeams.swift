@@ -5,6 +5,16 @@ import Foundation
 
 extension EmailLoginDirectory {
 
+    /// Enables the usage-limit attention feed for one Server. Production turns
+    /// this on from the agent-runtime path; the HTTP surface only reads it.
+    public func enableUsageLimitAttentionForServer(_ serverId: String) {
+        serversAndChannelsStore.usageLimitAttentionServers.insert(serverId)
+    }
+
+    public func disableUsageLimitAttentionForServer(_ serverId: String) {
+        serversAndChannelsStore.usageLimitAttentionServers.remove(serverId)
+    }
+
     @discardableResult
     public func addSystemAttentionIncidentForTesting(
         serverId: String,
@@ -15,13 +25,12 @@ extension EmailLoginDirectory {
         activatedAt: Date = Date(),
         resetsAt: Date? = nil
     ) -> String {
-        lock.lock()
-        let generation = (systemAttentionIncidents
+        let generation = (messagesAndThreadsStore.systemAttentionIncidents
             .filter { $0.serverId == serverId && $0.machineId == machineId && $0.provider == provider && $0.windowKey == windowKey }
             .map(\.activationGeneration)
             .max() ?? 0) + 1
         let id = UUID().uuidString.lowercased()
-        systemAttentionIncidents.append(SystemAttentionIncident(
+        messagesAndThreadsStore.systemAttentionIncidents.append(SystemAttentionIncident(
             id: id,
             serverId: serverId,
             machineId: machineId,
@@ -34,7 +43,6 @@ extension EmailLoginDirectory {
             resetsAt: resetsAt,
             state: "active"
         ))
-        lock.unlock()
         return id
     }
 }

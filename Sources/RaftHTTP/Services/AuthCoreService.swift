@@ -769,6 +769,29 @@ extension EmailLoginDirectory {
         )
     }
 
+    /// Server usage, system attention, mention-delivery diagnostics, session
+    /// transcripts, transcript feedback and share artifacts. The directory
+    /// supplies the machine/agent/message stores and the OAuth ledger; session
+    /// lookup and the unmigrated channel access policy enter as closures.
+    public var runtimeUsageAttestations: RuntimeUsageAndAttestationsService {
+        RuntimeUsageAndAttestationsService(
+            machines: machinesAndComputersStore,
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            agents: agentsRuntimeStore,
+            oauth: oauth,
+            sessionUserId: { [self] authorization in
+                sessionUserId(authorization: authorization)
+            },
+            channelAccess: { [self] serverId, channelId, userId in
+                switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
+                case .missing: false
+                case .readOnly, .write: true
+                }
+            }
+        )
+    }
+
     /// Account-profile policy for `POST /api/auth/reset-password`,
     /// `POST /api/auth/pending-link/cancel` and
     /// `POST /api/auth/me/timezone-observation`. The feature calls this

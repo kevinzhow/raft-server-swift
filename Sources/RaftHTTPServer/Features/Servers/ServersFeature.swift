@@ -87,13 +87,30 @@ public struct ServersFeature: RouteCollection, Sendable {
             ))
         }
         servers.post(":id", "machines", ":machineId", "agents", ":agentId", "feedback", ":reportId", "transcript") { request async throws -> Response in
-            routeResponse(services.emailAccounts.submitTranscriptFeedback(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                agentId: request.parameters.get("agentId") ?? "",
-                reportId: request.parameters.get("reportId") ?? "",
-                body: try await request.bodyText()
-            ))
+            // A typed body is the common case; a body without a JSON
+            // Content-Type keeps the raw parser, which is the authority for the
+            // published `Invalid transcript request` and timestamp errors.
+            if let body = try? await request.content.decode(TranscriptFeedbackRequestDTO.self) {
+                return try await respond(status: 202) {
+                    try services.emailAccounts.runtimeUsageAttestations.submitTranscriptFeedback(
+                        authorization: request.headers[.authorization],
+                        serverId: request.parameters.get("id") ?? "",
+                        agentId: request.parameters.get("agentId") ?? "",
+                        reportId: request.parameters.get("reportId") ?? "",
+                        body: body.encodedBody()
+                    )
+                }
+            }
+            let raw = try await request.bodyText()
+            return try await respond(status: 202) {
+                try services.emailAccounts.runtimeUsageAttestations.submitTranscriptFeedback(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    agentId: request.parameters.get("agentId") ?? "",
+                    reportId: request.parameters.get("reportId") ?? "",
+                    body: raw
+                )
+            }
         }
         servers.post(":id", "machines", ":machineId", "computer-lifecycle-operations") { request async throws -> Response in
             routeResponse(services.emailAccounts.computerLifecycleOperation(
@@ -103,32 +120,54 @@ public struct ServersFeature: RouteCollection, Sendable {
                 body: try await request.bodyText()
             ))
         }
-        servers.get(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "mention-delivery", ":messageId") { request -> Response in
-            routeResponse(services.emailAccounts.mentionDeliveryDiagnostic(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? "",
-                agentId: request.parameters.get("agentId") ?? "",
-                messageId: request.parameters.get("messageId") ?? ""
-            ))
+        servers.get(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "mention-delivery", ":messageId") { request async throws -> Response in
+            try await respond(status: 404) {
+                try services.emailAccounts.runtimeUsageAttestations.mentionDeliveryDiagnostic(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? "",
+                    agentId: request.parameters.get("agentId") ?? "",
+                    messageId: request.parameters.get("messageId") ?? ""
+                )
+            }
         }
-        servers.get(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "session-transcript") { request -> Response in
-            routeResponse(services.emailAccounts.agentSessionTranscript(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? "",
-                agentId: request.parameters.get("agentId") ?? ""
-            ))
+        servers.get(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "session-transcript") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.runtimeUsageAttestations.agentSessionTranscript(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? "",
+                    agentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
         servers.post(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "mention-delivery", ":messageId", "redrive") { request async throws -> Response in
-            routeResponse(services.emailAccounts.redriveMentionDelivery(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? "",
-                agentId: request.parameters.get("agentId") ?? "",
-                messageId: request.parameters.get("messageId") ?? "",
-                body: try await request.bodyText()
-            ))
+            // Same split as transcript feedback: a decodable typed body keeps
+            // the route on `content.decode`, and every other spelling (boolean
+            // or zero-fraction numbers included) stays on the legacy parser.
+            if let typed = try? await request.content.decode(MentionRedriveRequestDTO.self) {
+                return try await respond(status: 404) {
+                    try services.emailAccounts.runtimeUsageAttestations.redriveMentionDelivery(
+                        authorization: request.headers[.authorization],
+                        serverId: request.parameters.get("id") ?? "",
+                        machineId: request.parameters.get("machineId") ?? "",
+                        agentId: request.parameters.get("agentId") ?? "",
+                        messageId: request.parameters.get("messageId") ?? "",
+                        body: typed.encodedBody()
+                    )
+                }
+            }
+            let raw = try await request.bodyText()
+            return try await respond(status: 404) {
+                try services.emailAccounts.runtimeUsageAttestations.redriveMentionDelivery(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? "",
+                    agentId: request.parameters.get("agentId") ?? "",
+                    messageId: request.parameters.get("messageId") ?? "",
+                    body: raw
+                )
+            }
         }
         servers.post(":id", "scope-attestation") { request async throws -> Response in
             routeResponse(services.emailAccounts.serverScopeAttestation(
@@ -423,11 +462,13 @@ public struct ServersFeature: RouteCollection, Sendable {
             ))
         }
         registerServerMachineDelete(on: servers)
-        servers.get(":id", "usage") { request -> Response in
-            routeResponse(services.emailAccounts.serverUsage(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "usage") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.runtimeUsageAttestations.serverUsage(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         servers.get(":id", "machines", ":machineId", "workspaces") { request -> Response in
             routeResponse(services.emailAccounts.machineWorkspaces(
@@ -540,35 +581,43 @@ public struct ServersFeature: RouteCollection, Sendable {
                 directoryName: request.parameters.get("directoryName") ?? ""
             ))
         }
-        servers.get(":id", "system-notifications") { request -> Response in
-            var response = routeResponse(services.emailAccounts.serverSystemNotifications(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "system-notifications") { request async throws -> Response in
+            var response = try await respond {
+                try services.emailAccounts.runtimeUsageAttestations.serverSystemNotifications(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
             response.headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
             return response
         }
-        servers.get(":id", "system-notifications-v2") { request -> Response in
-            var response = routeResponse(services.emailAccounts.listSystemAttention(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "system-notifications-v2") { request async throws -> Response in
+            var response = try await respond {
+                try services.emailAccounts.runtimeUsageAttestations.listSystemAttention(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
             response.headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
             return response
         }
-        servers.post(":id", "system-notifications-v2", ":incidentId", "seen") { request -> Response in
-            routeResponse(services.emailAccounts.markSystemAttentionSeen(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                incidentId: request.parameters.get("incidentId") ?? ""
-            ))
+        servers.post(":id", "system-notifications-v2", ":incidentId", "seen") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.runtimeUsageAttestations.markSystemAttentionSeen(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    incidentId: request.parameters.get("incidentId") ?? ""
+                )
+            }
         }
-        servers.post(":id", "system-notifications-v2", ":incidentId", "dismiss") { request -> Response in
-            routeResponse(services.emailAccounts.dismissSystemAttention(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                incidentId: request.parameters.get("incidentId") ?? ""
-            ))
+        servers.post(":id", "system-notifications-v2", ":incidentId", "dismiss") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.runtimeUsageAttestations.dismissSystemAttention(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    incidentId: request.parameters.get("incidentId") ?? ""
+                )
+            }
         }
         servers.post(":id", "machines") { request async throws -> Response in
             routeResponse(services.emailAccounts.registerServerMachine(

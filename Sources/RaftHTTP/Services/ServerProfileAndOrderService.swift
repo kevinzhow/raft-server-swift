@@ -32,8 +32,8 @@ extension EmailLoginDirectory {
         let artifact = shareArtifacts[id.lowercased()]
         lock.unlock()
         guard let artifact else { return nil }
-        let shareURL = Self.shareURL(id: id, shareBase: shareBase)
-        let imageURL = Self.shareImageURL(id: id, serverId: artifact.serverId, serverBase: serverBase, cdnBase: cdnBase)
+        let shareURL = ShareArtifactURL.share(id: id, shareBase: shareBase)
+        let imageURL = ShareArtifactURL.image(id: id, serverId: artifact.serverId, serverBase: serverBase, cdnBase: cdnBase)
         let title = "Slock conversation screenshot"
         let description = "A conversation screenshot shared from Slock."
         let html = """
