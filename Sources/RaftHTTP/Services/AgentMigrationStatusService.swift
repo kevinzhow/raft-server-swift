@@ -118,6 +118,28 @@ public struct AgentMigrationStatusService: Sendable {
     ) -> Void
     private let now: @Sendable () -> Date
 
+    /// Resolves the current cancel dispatcher for each dispatch, after releasing
+    /// the owner's slot lock, so a callback may replace its own installation.
+    init(
+        auth: AuthCoreService,
+        oauth: OAuthLedger,
+        agents: AgentsRuntimeStore,
+        realtime: RealtimeRelayService,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
+        self.init(
+            sessionUserId: { try? auth.authenticate($0) },
+            oauth: oauth,
+            agents: agents,
+            emitRealtime: { room, event, payload in realtime.emit(room, event, payload) },
+            cancelDispatch: { machineId, role, migrationRef, transportGeneration, stopAgent in
+                let dispatch = agents.agentMigrationCancelDispatch
+                dispatch?(machineId, role, migrationRef, transportGeneration, stopAgent)
+            },
+            now: now
+        )
+    }
+
     init(
         sessionUserId: @escaping @Sendable (String?) -> String?,
         oauth: OAuthLedger,

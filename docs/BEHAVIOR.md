@@ -2206,3 +2206,9 @@ RFC 074 personal assistant：
 
 - Fleet 的 session 仍是原 optional AuthCore.authenticate，不新增 verified 判定；attach gate 每次先读 Machines override 再读 environment，room emit 仍逐次读当前 relay。Mint 的 agentId/scopes/name 及 apiKey/credentialId 对应关系不变，Computer credential 仍直接使用原 Machines 五态查询和优先级。
 - Joint-local 查询归 MessageReadProjection，每次从当前 Channels snapshot 构造临时 facts，canonical/server/user 匹配与原 closure 相同。Root 不保存 facts/State，也不执行 mint DTO 投影；Fleet→Lifecycle→Projection/CredentialUse 没有 Fleet 回边。原 attach/adopt、runner、joint attachment/resolve 及凭据拒绝字节保持。
+
+### Agent delivery/migration 的 typed adapters
+
+- Delivery 的 integration services 每次读取当前 OAuth rows，按原序作同一 snapshot 映射；search visibility 仍走原 SearchMentions，raw append 仍进同 Messages→OAuth ledger 事务。API、空 body、附件与拒绝顺序保持。
+- Migration status 每次 dispatch 才复制当前 cancel slot，owner getter 返回并释放锁后调用，source/target 五参次序不变。Hosted migration 按原参 mint 后取 apiKey，receipt DM 仍委托原 MessageSend；optional authenticate 不新增 verified gate，relay 不冻结当前 sink。
+- 三份操作与旧 closure 构造 seams 保持。公开 credential mint→key auth→inventory→revoke、migration/status/receipt 和 daemon export/bundle/guard 输出继续通过；既有 cancel recorder 只属补充证据，不冒充真实 daemon cancel wire 或确定性 slot-install 交错测试。

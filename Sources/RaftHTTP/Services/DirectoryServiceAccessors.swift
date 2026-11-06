@@ -397,24 +397,11 @@ extension EmailLoginDirectory {
     /// directory supplies the agent runtime store (both migration families), the OAuth ledger, and the
     /// realtime/cancel relay seams the unmigrated migration domains own.
     public var agentMigrationStatus: AgentMigrationStatusService {
-        let accounts = self
-        return AgentMigrationStatusService(
-            sessionUserId: { accounts.sessionUserId(authorization: $0) },
+        AgentMigrationStatusService(
+            auth: authCore,
             oauth: oauth,
             agents: agentsRuntimeStore,
-            emitRealtime: { room, event, payload in
-                accounts.realtimeRelay.emit(room, event, payload)
-            },
-            cancelDispatch: { [agents = agentsRuntimeStore] machineId, role, migrationRef, transportGeneration, stopAgent in
-                let dispatch = agents.agentMigrationCancelDispatch
-                dispatch?(
-                    machineId,
-                    role,
-                    migrationRef,
-                    transportGeneration,
-                    stopAgent
-                )
-            }
+            realtime: realtimeRelay
         )
     }
 
@@ -431,19 +418,8 @@ extension EmailLoginDirectory {
             threadFollows: threadFollowStore,
             managedMCP: managedMCPAndCardsStore,
             oauth: oauth,
-            searchVisible: { [self] messageChannelId, serverId, viewer in
-                searchMentions.messageVisible(
-                    messageChannelId: messageChannelId,
-                    serverId: serverId,
-                    viewer: viewer
-                )
-            },
-            appendHumanMessage: { [messages = messagesAndThreadsStore, ledger = MessageLedgerPort(oauth: oauth)] message in
-                messages.appendMessage(message, ledger: ledger)
-            },
-            integrationServices: { [self] serverId in
-                oauth.integrationServices(serverId: serverId).map(AgentIntegrationProjection.snapshot)
-            }
+            search: searchMentions,
+            ledger: MessageLedgerPort(oauth: oauth)
         )
     }
 
@@ -730,14 +706,10 @@ extension EmailLoginDirectory {
             machines: machinesAndComputersStore,
             oauth: oauth,
             dependencies: AgentHostedMigrationDependencies(
-                sessionUserId: { [self] in sessionUserId(authorization: $0) },
-                emitRealtime: { [self] room, event, payload in realtimeRelay.emit(room, event, payload) },
-                mintAgentCredential: { [self] agentId, scopes, name in
-                    agentsRuntimeStore.mintAgentCredential(agentId: agentId, scopes: scopes, name: name).apiKey
-                },
-                createMigrationReceiptDm: { [self] agentId, serverId, supportRef in
-                    messageSend.createMigrationReceiptDm(agentId: agentId, serverId: serverId, supportRef: supportRef)
-                }
+                auth: authCore,
+                agents: agentsRuntimeStore,
+                realtime: realtimeRelay,
+                messageSend: messageSend
             )
         )
     }

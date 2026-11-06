@@ -146,6 +146,41 @@ public struct AgentSendDeliveryService: Sendable {
     private let now: @Sendable () -> Date
     private let makeMessageId: @Sendable () -> String
 
+    /// Binds the delivery domain to its concrete visibility and ledger owners.
+    /// Integration rows are projected on every query, in the ledger's order.
+    init(
+        machines: MachinesAndComputersStore,
+        channels: ServersAndChannelsStore,
+        messages: MessagesAndThreadsStore,
+        agents: AgentsRuntimeStore,
+        threadFollows: ThreadFollowStore,
+        managedMCP: ManagedMCPAndCardsStore,
+        oauth: OAuthLedger,
+        search: SearchMentionsService,
+        ledger: MessageLedgerPort,
+        now: @escaping @Sendable () -> Date = { Date() },
+        makeMessageId: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
+    ) {
+        self.init(
+            machines: machines,
+            channels: channels,
+            messages: messages,
+            agents: agents,
+            threadFollows: threadFollows,
+            managedMCP: managedMCP,
+            oauth: oauth,
+            searchVisible: search.messageVisible,
+            appendHumanMessage: { message in
+                messages.appendMessage(message, ledger: ledger)
+            },
+            integrationServices: { serverId in
+                oauth.integrationServices(serverId: serverId).map(AgentIntegrationProjection.snapshot)
+            },
+            now: now,
+            makeMessageId: makeMessageId
+        )
+    }
+
     init(
         machines: MachinesAndComputersStore,
         channels: ServersAndChannelsStore,

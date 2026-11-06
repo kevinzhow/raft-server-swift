@@ -11,6 +11,25 @@ public struct AgentHostedMigrationDependencies: Sendable {
     public var mintAgentCredential: @Sendable (_ agentId: String, _ scopes: [String], _ name: String) -> String
     public var createMigrationReceiptDm: @Sendable (_ agentId: String, _ serverId: String, _ supportRef: String) -> Void
 
+    /// Keeps credential projection and receipt delivery in the migration domain.
+    init(
+        auth: AuthCoreService,
+        agents: AgentsRuntimeStore,
+        realtime: RealtimeRelayService,
+        messageSend: MessageSendService
+    ) {
+        self.init(
+            sessionUserId: { try? auth.authenticate($0) },
+            emitRealtime: realtime.emit,
+            mintAgentCredential: { agentId, scopes, name in
+                agents.mintAgentCredential(agentId: agentId, scopes: scopes, name: name).apiKey
+            },
+            createMigrationReceiptDm: { agentId, serverId, supportRef in
+                messageSend.createMigrationReceiptDm(agentId: agentId, serverId: serverId, supportRef: supportRef)
+            }
+        )
+    }
+
     public init(
         sessionUserId: @escaping @Sendable (String?) -> String?,
         emitRealtime: @escaping @Sendable (String, String, String?) -> Void,
