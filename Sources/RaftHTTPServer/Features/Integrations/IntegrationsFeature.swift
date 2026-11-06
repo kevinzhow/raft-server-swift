@@ -283,33 +283,41 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             ))
         }
 
-        providerConnections.get() { request -> Response in
-            routeResponse(services.emailAccounts.listProviderConnections(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
-            ))
+        providerConnections.get() { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPProviderConnections.listProviderConnections(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+                )
+            }
         }
 
-        providerConnections.post(":id", "test") { request -> Response in
-            routeResponse(services.emailAccounts.retiredProviderProbe(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
-            ))
+        providerConnections.post(":id", "test") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPProviderConnections.retiredProviderProbe(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+                )
+            }
         }
 
-        providerConnections.get(":id", "models") { request -> Response in
-            routeResponse(services.emailAccounts.retiredProviderProbe(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
-            ))
+        providerConnections.get(":id", "models") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPProviderConnections.retiredProviderProbe(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+                )
+            }
         }
 
-        providerConnections.get(":id", "agents") { request -> Response in
-            routeResponse(services.emailAccounts.listAssignedProviderAgents(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                connectionId: request.parameters.get("id") ?? ""
-            ))
+        providerConnections.get(":id", "agents") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPProviderConnections.listAssignedProviderAgents(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    connectionId: request.parameters.get("id") ?? ""
+                )
+            }
         }
 
         providerConnections.delete(":id", "agents", ":agentId") { request async throws -> Response in
@@ -334,37 +342,38 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         }
 
         providerConnections.patch(":id") { request async throws -> Response in
-            if let body = try? await request.content.decode(ProviderConnectionToggleDTO.self) {
-                return routeResponse(services.emailAccounts.patchProviderConnection(
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPProviderConnections.patchProviderConnection(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     connectionId: request.parameters.get("id") ?? "",
-                    body: body.encodedBody()
-                ))
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.patchProviderConnection(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                connectionId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
         }
 
         providerConnections.post(":id", "credentials", "rotate") { request async throws -> Response in
-            routeResponse(services.emailAccounts.rotateProviderConnectionCredential(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                connectionId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPProviderConnections.rotateProviderConnectionCredential(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    connectionId: request.parameters.get("id") ?? "",
+                    body: body
+                )
+            }
         }
 
         providerConnections.post() { request async throws -> Response in
-            routeResponse(services.emailAccounts.createProviderConnection(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
+            return try await respond(status: 201) {
+                try services.emailAccounts.managedMCPProviderConnections.createProviderConnection(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    body: body
+                )
+            }
         }
 
         appInstallation.get("server") { request -> Response in

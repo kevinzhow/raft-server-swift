@@ -437,24 +437,6 @@ extension EmailLoginDirectory {
         }
     }
 
-    func agentCredentialIdentity(
-        authorization: String?,
-        capability: String
-    ) -> (agentId: String, serverId: String)? {
-        switch FeedbackLocatorService(directory: self)
-            .identityResolution(authorization: authorization, capability: capability) {
-        case .success(let agentId, let serverId):
-            return (agentId: agentId, serverId: serverId)
-        case .missingAuthorization, .invalidAccessToken, .capabilityNotAuthorized,
-             .invalidAgentCredential:
-            return nil
-        }
-    }
-
-    func agentCredentialScopes(authorization: String?) -> [String]? {
-        FeedbackLocatorService(directory: self).credentialScopes(authorization: authorization)
-    }
-
     func feedbackLocatorIdentity(
         authorization: String?,
         capability: String

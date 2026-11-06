@@ -90,7 +90,7 @@ import VaporTesting
             let connections = list?["connections"] as? [[String: Any]] ?? []
             #expect(connections.map { $0["id"] as? String } == [createdId])
             let options = list?["providerOptions"] as? [[String: Any]] ?? []
-            #expect(options.map { $0["id"] as? String } == EmailLoginDirectory.providerConnectionProviderIds)
+            #expect(options.map { $0["id"] as? String } == ManagedMCPProviderConnectionsService.providerConnectionProviderIds)
             #expect(options.first { $0["id"] as? String == "google" }?["providerKind"] as? String == "preset")
             #expect(options.first { $0["id"] as? String == "openai-compatible" }?["providerKind"] as? String == "gateway")
             #expect(options.allSatisfy { (($0["label"] as? String) ?? "").isEmpty == false })

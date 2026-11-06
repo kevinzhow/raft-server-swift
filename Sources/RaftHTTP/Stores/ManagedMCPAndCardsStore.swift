@@ -492,3 +492,83 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         return try body()
     }
 }
+
+// MARK: - Managed MCP lifecycle: provider connection sections
+
+/// The fields `PATCH /api/provider-connections/:id` may change. A `nil` member
+/// leaves the stored value untouched.
+struct ProviderConnectionPatch: Sendable, Equatable {
+    var name: String?
+    var endpointUrl: String?
+    var supportsImageInput: Bool?
+    /// A non-empty replacement API key (the credential rotates).
+    var rotatesCredential: Bool
+}
+
+extension ManagedMCPAndCardsStore {
+    /// Whether the provider-connections surface is enabled for the server.
+    func isProviderConnectionsEnabled(serverId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.providerConnectionsEnabledServers.contains(serverId)
+    }
+
+    /// The server's provider connections, in creation order.
+    func providerConnections(serverId: String) -> [ProviderConnection] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.providerConnections.filter { $0.serverId == serverId }
+    }
+
+    func insertProviderConnection(_ connection: ProviderConnection) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.providerConnections.append(connection)
+    }
+
+    /// Applies a patch in one critical section and answers the stored row, or
+    /// `nil` when the connection is not the server's.
+    func patchProviderConnection(
+        id: String,
+        serverId: String,
+        patch: ProviderConnectionPatch,
+        now: Date
+    ) -> ProviderConnection? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = storage.providerConnections.firstIndex(where: { $0.id == id && $0.serverId == serverId }) else {
+            return nil
+        }
+        if let name = patch.name { storage.providerConnections[index].name = name }
+        if let endpoint = patch.endpointUrl { storage.providerConnections[index].endpointUrl = endpoint }
+        if let supports = patch.supportsImageInput { storage.providerConnections[index].supportsImageInput = supports }
+        if patch.rotatesCredential {
+            storage.providerConnections[index].credentialVersion += 1
+            storage.providerConnections[index].status = "unchecked"
+            storage.providerConnections[index].hasCredential = true
+        }
+        storage.providerConnections[index].updatedAt = now
+        return storage.providerConnections[index]
+    }
+
+    /// Rotates the credential in one critical section and answers the stored
+    /// row, or `nil` when the connection is not the server's.
+    func rotateProviderCredential(id: String, serverId: String, now: Date) -> ProviderConnection? {
+        patchProviderConnection(
+            id: id,
+            serverId: serverId,
+            patch: ProviderConnectionPatch(rotatesCredential: true),
+            now: now
+        )
+    }
+
+    /// Whether the connection exists and the agent assignments it carries, from
+    /// one snapshot.
+    func providerAssignments(serverId: String, connectionId: String) -> (known: Bool, assignments: [ProviderAssignment]) {
+        lock.lock()
+        defer { lock.unlock() }
+        let known = storage.providerConnections.contains { $0.id == connectionId && $0.serverId == serverId }
+        let assignments = storage.providerAssignments.filter { $0.connectionId == connectionId && $0.serverId == serverId }
+        return (known, assignments)
+    }
+}

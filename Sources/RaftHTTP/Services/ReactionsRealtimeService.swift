@@ -18,19 +18,6 @@ public struct ReactionsRealtimeService: Sendable {
         self.directory = directory
     }
 
-    /// `POST /api/read-mutations`.
-    public func acknowledgeReadMutation(
-        _ body: ReadMutationAckRequestDTO,
-        authorization: String?,
-        serverId: String
-    ) -> HTTPReply {
-        directory.postReadMutation(
-            authorization: authorization,
-            serverId: serverId,
-            body: body.encodedBody()
-        )
-    }
-
     /// `POST /api/channels/inbox/done`.
     public func channelInboxDone(
         authorization: String?,

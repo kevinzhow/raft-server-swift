@@ -247,3 +247,44 @@ final class FeedbackStore: @unchecked Sendable {
         return environment
     }
 }
+
+// MARK: - Managed MCP lifecycle: app reminder ledger sections
+
+extension FeedbackStore {
+    /// The message an installation already recorded for the idempotency key.
+    func appAgentReminderMessageId(ledgerKey: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.appAgentReminderLedger[ledgerKey]
+    }
+
+    /// The agent's reminders DM channel id, when one was created.
+    func agentReminderSurfaceChannelId(agentId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.agentReminderSurfaceChannels[agentId]
+    }
+
+    /// Forgets the reminders surface when it still points at `channelId` (it
+    /// was soft-deleted), so the next write creates a fresh one.
+    func clearAgentReminderSurface(agentId: String, ifChannelId channelId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        if storage.agentReminderSurfaceChannels[agentId] == channelId {
+            storage.agentReminderSurfaceChannels.removeValue(forKey: agentId)
+        }
+    }
+
+    func setAgentReminderSurface(agentId: String, channelId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.agentReminderSurfaceChannels[agentId] = channelId
+    }
+
+    /// Records the delivered reminder for the idempotency key.
+    func recordAppAgentReminder(ledgerKey: String, messageId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.appAgentReminderLedger[ledgerKey] = messageId
+    }
+}

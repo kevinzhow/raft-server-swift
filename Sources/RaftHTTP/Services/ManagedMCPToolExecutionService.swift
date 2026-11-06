@@ -683,21 +683,4 @@ extension EmailLoginDirectory {
         oauth.setChannelReadCursor(channelId: channelId, userId: userId, seq: latest)
         return Self.json(200, "{\"ok\":true,\"seq\":\(latest),\"readStateVersion\":\(version)}")
     }
-
-    /// A targeted announcement is only visible inside one of its servers; the
-    /// audience itself is never echoed to the client.
-    func announcementVisibleLocked(
-        _ announcement: (id: String, title: String, pages: [String], startsAt: Date, expiresAt: Date?, status: String, publishedAt: Date?, imageId: String?, audienceServerIds: [String]),
-        userId: String,
-        serverId: String?
-    ) -> Bool {
-        guard !announcement.audienceServerIds.isEmpty else { return true }
-        guard let serverId else { return false }
-        return announcement.audienceServerIds.contains(serverId)
-            && oauth.memberRole(serverId: serverId, userId: userId) != nil
-    }
-
-    /// `server_id` must appear at most once and be a UUID; a duplicate or a
-    /// malformed value never degrades into an unscoped answer.
-
 }

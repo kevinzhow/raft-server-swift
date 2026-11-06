@@ -323,4 +323,90 @@ extension EmailLoginDirectory {
             )
         )
     }
+
+    /// Read mutations, joint-invite accept, the channel list, profile
+    /// completion and the server create/details/analytics routes. The human
+    /// session lookup belongs to the unmigrated auth domain and enters as a
+    /// closure.
+    public var managedMCPLifecycle: ManagedMCPLifecycleService {
+        ManagedMCPLifecycleService(
+            sessionUserId: { [self] in sessionUserId(authorization: $0) },
+            oauth: oauth,
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            profiles: authProfileStore
+        )
+    }
+
+    /// Provider connections (list, create, patch, rotate, retired probe,
+    /// assigned agents).
+    public var managedMCPProviderConnections: ManagedMCPProviderConnectionsService {
+        ManagedMCPProviderConnectionsService(
+            sessionUserId: { [self] in sessionUserId(authorization: $0) },
+            oauth: oauth,
+            providers: managedMCPAndCardsStore
+        )
+    }
+
+    /// Push registration, browser subscription, delivery status, unbind and the
+    /// family-revoke capability.
+    public var managedMCPPush: ManagedMCPPushService {
+        ManagedMCPPushService(
+            oauth: oauth,
+            profiles: authProfileStore,
+            notifications: notificationsStore
+        )
+    }
+
+    /// Announcements, external avatars, channel unread and notification
+    /// settings, the agent user lookups and the app-installation reminder
+    /// write. The session lookup, the agent credential resolution, the guest
+    /// visibility rule and the human-message append belong to unmigrated
+    /// domains and enter as closures.
+    public var managedMCPOAuth: ManagedMCPOAuthService {
+        ManagedMCPOAuthService(dependencies: ManagedMCPOAuthDependencies(
+            sessionUserId: { [self] in sessionUserId(authorization: $0) },
+            agentIdentity: { [self] authorization, capability in
+                switch feedbackLocators.identityResolution(authorization: authorization, capability: capability) {
+                case .success(let agentId, let serverId):
+                    return (agentId: agentId, serverId: serverId)
+                case .missingAuthorization, .invalidAccessToken, .capabilityNotAuthorized,
+                     .invalidAgentCredential:
+                    return nil
+                }
+            },
+            agentScopes: { [self] in feedbackLocators.credentialScopes(authorization: $0) },
+            guestDeniedHiddenChannel: { [self] channelId, serverId, userId in
+                guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId)
+            },
+            appendMessage: { [self] message in
+                lock.lock()
+                defer { lock.unlock() }
+                appendHumanMessageLocked(message)
+            },
+            oauth: oauth,
+            notifications: notificationsStore,
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            feedback: feedbackStore,
+            profiles: authProfileStore,
+            now: { Date() }
+        ))
+    }
+
+    /// `PATCH /api/channels/:id` and `POST /api/channels`. The channel
+    /// visibility predicate belongs to the channel-agent routes and enters as a
+    /// closure.
+    public var managedMCPChannelRoutes: ManagedMCPChannelRoutesService {
+        ManagedMCPChannelRoutesService(
+            sessionUserId: { [self] in sessionUserId(authorization: $0) },
+            channelActorCanSee: { [self] channelId, userId in
+                channelActorCanSee(channelId: channelId, userId: userId)
+            },
+            oauth: oauth,
+            channels: serversAndChannelsStore,
+            messages: messagesAndThreadsStore,
+            profiles: authProfileStore
+        )
+    }
 }

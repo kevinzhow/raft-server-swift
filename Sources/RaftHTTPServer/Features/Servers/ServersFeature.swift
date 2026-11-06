@@ -57,19 +57,15 @@ public struct ServersFeature: RouteCollection, Sendable {
             }
         }
         servers.post() { request async throws -> Response in
-            // `name` and `slug` are the only body fields. A body that does not
-            // carry both strings keeps the directory's raw parser so the
-            // published `Invalid server request` 400 is unchanged.
-            if let body = try? await request.content.decode(ServerCreateRequestDTO.self) {
-                return routeResponse(services.emailAccounts.createServer(
+            // `name` and `slug` are the only body fields; a body that is not a
+            // JSON object is `nil` and publishes `Invalid server request`.
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPLifecycle.createServer(
                     authorization: request.headers[.authorization],
-                    body: body.encodedBody()
-                ))
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.createServer(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
         }
         servers.get() { request async throws -> Response in
             if let ordered = services.emailAccounts.serverProfileAndOrder.orderedServerList(authorization: request.headers[.authorization]) {
@@ -469,18 +465,23 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "product-analytics-settings") { request -> Response in
-            routeResponse(services.emailAccounts.serverProductAnalyticsSettings(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "product-analytics-settings") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPLifecycle.serverProductAnalyticsSettings(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         servers.patch(":id", "product-analytics-settings") { request async throws -> Response in
-            routeResponse(services.emailAccounts.patchServerProductAnalyticsSettings(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPLifecycle.patchServerProductAnalyticsSettings(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    body: body
+                )
+            }
         }
         servers.get(":id", "settings") { request async throws -> Response in
             try await respond {
@@ -769,11 +770,13 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id") { request -> Response in
-            routeResponse(services.emailAccounts.serverDetails(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPLifecycle.serverDetails(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         servers.get(":id", "members", ":memberId", "profile") { request async throws -> Response in
             let id = request.parameters.get("id") ?? ""

@@ -103,11 +103,6 @@ struct ExternalAvatarAsset {
         var active: Bool
     }
 
-enum AnnouncementContext {
-        case success(String?)
-        case failure(HTTPReply)
-    }
-
 struct ResumeAllAgentsContext {
         var targets: [String]
         var dispatch: (@Sendable (_ agentId: String, _ resumePrompt: String?) async throws -> AgentStartDispatchOutcome)?

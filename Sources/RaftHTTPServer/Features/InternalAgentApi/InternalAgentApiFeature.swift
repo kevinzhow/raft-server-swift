@@ -86,7 +86,7 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
             return routeResponse(reply)
         }
-        agentApi.get("users", "info") { request -> Response in
+        agentApi.get("users", "info") { request async throws -> Response in
             var name = ""
             var limit: String?
             var offset: String?
@@ -95,14 +95,16 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 limit = components.queryItems?.first { $0.name == "limit" }?.value
                 offset = components.queryItems?.first { $0.name == "offset" }?.value
             }
-            return routeResponse(services.emailAccounts.agentUserInfo(
-                authorization: request.headers[.authorization],
-                name: name,
-                limit: limit,
-                offset: offset
-            ))
+            return try await respond(headers: { $0.headers }) {
+                try services.emailAccounts.managedMCPOAuth.agentUserInfo(
+                    authorization: request.headers[.authorization],
+                    name: name,
+                    limit: limit,
+                    offset: offset
+                )
+            }
         }
-        agentApi.get("users", ":name", "channels") { request -> Response in
+        agentApi.get("users", ":name", "channels") { request async throws -> Response in
             let name = request.parameters.get("name") ?? ""
             var limit: String?
             var offset: String?
@@ -110,12 +112,14 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 limit = components.queryItems?.first { $0.name == "limit" }?.value
                 offset = components.queryItems?.first { $0.name == "offset" }?.value
             }
-            return routeResponse(services.emailAccounts.agentUserChannels(
-                authorization: request.headers[.authorization],
-                name: name,
-                limit: limit,
-                offset: offset
-            ))
+            return try await respond {
+                try services.emailAccounts.managedMCPOAuth.agentUserChannels(
+                    authorization: request.headers[.authorization],
+                    name: name,
+                    limit: limit,
+                    offset: offset
+                )
+            }
         }
         agentApi.get() { request -> Response in
             routeResponse(services.emailAccounts.agentApiIdentity(

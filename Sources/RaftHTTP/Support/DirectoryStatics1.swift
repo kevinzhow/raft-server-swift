@@ -831,19 +831,6 @@ extension EmailLoginDirectory {
         return env
     }
 
-    static func privateJSON(_ body: String) -> HTTPReply {
-        HTTPReply(
-            status: 200,
-            headers: [
-                "X-Robots-Tag": AppFallback.robotsTag,
-                "Content-Type": AppFallback.jsonContentType,
-                "Cache-Control": "private, no-store",
-                "Content-Length": String(Data(body.utf8).count),
-            ],
-            body: body
-        )
-    }
-
     static func serializeJSON(_ object: [String: Any]) -> String {
         guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
             return "{}"

@@ -35,30 +35,24 @@ public struct MessagingFeature: RouteCollection, Sendable {
         let actions = routes.grouped("api", "actions")
         let tasks = routes.grouped("api", "tasks")
         let humanMessageCreate = HumanMessageCreateService(directory: services.emailAccounts)
-        let inboxRealtime = ReactionsRealtimeService(directory: services.emailAccounts)
         let inbox = services.emailAccounts.inboxAndWake
         readMutations.post { request async throws -> Response in
-            // A typed body re-encodes through the DTO so the directory's
-            // fingerprinting parser reads the same keys; a body that does not
-            // decode keeps the raw path and its published error codes.
-            if let body = try? await request.content.decode(ReadMutationAckRequestDTO.self) {
-                return routeResponse(inboxRealtime.acknowledgeReadMutation(
-                    body,
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request, emptyDefault: "{}")
+            return try await respond(status: { $0.status }, headers: { _ in .standard() }) {
+                try services.emailAccounts.managedMCPLifecycle.postReadMutation(
                     authorization: request.headers[.authorization],
-                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
-                ))
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.postReadMutation(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
         }
-        readMutations.get("frontier") { request -> Response in
-            routeResponse(services.emailAccounts.readMutationFrontier(
-                authorization: request.headers[.authorization],
-                scopeIds: desktopQuery(request.url.query, "scopeIds")
-            ))
+        readMutations.get("frontier") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPLifecycle.readMutationFrontier(
+                    authorization: request.headers[.authorization],
+                    scopeIds: desktopQuery(request.url.query, "scopeIds")
+                )
+            }
         }
         messages.post("mention-actions", "execute") { request async throws -> Response in
             routeResponse(humanMessageCreate.executeMentionActions(

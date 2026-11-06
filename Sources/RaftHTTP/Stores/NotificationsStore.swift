@@ -252,3 +252,110 @@ final class NotificationsStore: @unchecked Sendable {
         muted: false, mentionsOnly: false, mode: "all", version: 0
     )
 }
+
+// MARK: - Managed MCP lifecycle: push registration sections
+
+extension NotificationsStore {
+    /// Inserts or replaces the registration of `(installationId, provider)` in
+    /// one critical section, so two registrations of one installation cannot
+    /// both append a row.
+    func upsertPushRegistration(_ registration: EmailLoginDirectory.PushRegistration) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let index = storage.pushRegistrations.firstIndex(where: {
+            $0.installationId == registration.installationId && $0.provider == registration.provider
+        }) {
+            storage.pushRegistrations[index].env = registration.env
+            storage.pushRegistrations[index].topic = registration.topic
+            storage.pushRegistrations[index].deviceToken = registration.deviceToken
+            storage.pushRegistrations[index].appVersion = registration.appVersion
+            storage.pushRegistrations[index].userId = registration.userId
+            storage.pushRegistrations[index].serverId = registration.serverId
+            storage.pushRegistrations[index].sessionFamilyId = registration.sessionFamilyId
+            storage.pushRegistrations[index].revokeCapability = registration.revokeCapability
+        } else {
+            storage.pushRegistrations.append(registration)
+        }
+    }
+
+    /// Detaches every registration of the installation from its user, server
+    /// and session family and answers how many rows changed.
+    func unbindPushInstallation(installationId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        var unbound = 0
+        for index in storage.pushRegistrations.indices
+        where storage.pushRegistrations[index].installationId == installationId {
+            storage.pushRegistrations[index].userId = nil
+            storage.pushRegistrations[index].serverId = nil
+            storage.pushRegistrations[index].sessionFamilyId = nil
+            unbound += 1
+        }
+        return unbound
+    }
+
+    /// Whether FCM delivery is available and `userId` registered the
+    /// installation for it, from one snapshot.
+    func isFcmActive(installationId: String, userId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.fcmPushAvailable && storage.pushRegistrations.contains {
+            $0.installationId == installationId && $0.provider == "fcm" && $0.userId == userId
+        }
+    }
+
+    /// Records one browser push subscription unless the pair already exists.
+    func recordWebPushSubscription(userId: String, endpoint: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        if !storage.webPushSubscriptions.contains(where: { $0.userId == userId && $0.endpoint == endpoint }) {
+            storage.webPushSubscriptions.append(WebPushSubscription(userId: userId, endpoint: endpoint))
+        }
+    }
+
+    /// Records that `userId` dismissed the announcement.
+    func insertAnnouncementDismissal(userId: String, announcementId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.announcementDismissals.insert("\(userId)\n\(announcementId)")
+    }
+
+    /// The announcement row, the image asset and the storage flags a read
+    /// needs, from one snapshot.
+    func announcementImageSnapshot(
+        imageId: String
+    ) -> (asset: AnnouncementImageAsset?, announcement: AnnouncementRow?, storageAvailable: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        let asset = storage.announcementImageAssets[imageId]
+        let announcement = storage.announcements.first { $0.id == asset?.announcementId }
+        return (asset, announcement, storage.announcementImageStorageAvailable)
+    }
+
+    /// The published, started, unexpired, undismissed announcements in start
+    /// order from one snapshot; `visible` is the audience predicate.
+    func firstActiveAnnouncement(
+        userId: String,
+        after: String?,
+        now: Date,
+        visible: (AnnouncementRow) -> Bool
+    ) -> AnnouncementRow? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.announcements
+            .filter { $0.status == "published" && $0.publishedAt != nil }
+            .filter { $0.startsAt <= now && ($0.expiresAt == nil || $0.expiresAt! > now) }
+            .filter(visible)
+            .filter { !storage.announcementDismissals.contains("\(userId)\n\($0.id)") }
+            .filter { after == nil || $0.id != after }
+            .sorted { $0.startsAt < $1.startsAt }
+            .first
+    }
+
+    /// One announcement by id.
+    func announcement(id: String) -> AnnouncementRow? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.announcements.first { $0.id == id }
+    }
+}
