@@ -20,37 +20,6 @@ public struct AgentMigrationStatusService: Sendable {
 
 extension EmailLoginDirectory {
 
-    public func setAgentStatusProtocolAdoptedForTesting(agentId: String, at date: Date?) {
-        lock.lock()
-        agentStatusProtocolAdoptedAt[agentId] = date
-        lock.unlock()
-    }
-
-    public func setAgentCursorPullStateForTesting(agentId: String, lastPulledAt: Date?, pendingAcks: Int) {
-        lock.lock()
-        if let lastPulledAt {
-            agentCursorPullState[agentId] = (lastPulledAt, pendingAcks)
-        } else {
-            agentCursorPullState[agentId] = nil
-        }
-        lock.unlock()
-    }
-
-    public func setAgentProviderPositionForTesting(
-        agentId: String,
-        provider: String = "antiproton",
-        state: String,
-        providerAgentId: String?,
-        syncPending: Bool = false,
-        lastErrorCode: String? = nil,
-        lastErrorAt: Date? = nil,
-        activatedAt: Date?
-    ) {
-        lock.lock()
-        agentProviderPositions[agentId] = (provider, state, providerAgentId, syncPending, lastErrorCode, lastErrorAt, activatedAt)
-        lock.unlock()
-    }
-
     public func externalAgentDiagnostics(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

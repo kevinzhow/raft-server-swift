@@ -20,20 +20,6 @@ public struct MachinesAndHostedRuntimeService: Sendable {
 
 extension EmailLoginDirectory {
 
-    public func setMachineDescriptionForTesting(machineId: String, description: String?) {
-        lock.lock()
-        if let index = machines.firstIndex(where: { $0.id == machineId }) {
-            machines[index].description = description
-        }
-        lock.unlock()
-    }
-
-    public func machineDescriptionForTesting(machineId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return machines.first { $0.id == machineId }?.description
-    }
-
     public func machineAPIKey(machineId: String) -> String? {
         lock.lock()
         defer { lock.unlock() }
@@ -51,14 +37,6 @@ extension EmailLoginDirectory {
     public func setMachineOnline(machineId: String, online: Bool) {
         lock.lock()
         machineOnline[machineId] = online
-        lock.unlock()
-    }
-
-    public func setMachineRuntimesForTesting(machineId: String, runtimes: [String]) {
-        lock.lock()
-        if let index = machines.firstIndex(where: { $0.id == machineId }) {
-            machines[index].runtimes = runtimes
-        }
         lock.unlock()
     }
 
@@ -189,12 +167,6 @@ extension EmailLoginDirectory {
         ))
     }
 
-    public func setHostedUsageForTesting(agentId: String, json: String) {
-        lock.lock()
-        hostedUsage[agentId] = json
-        lock.unlock()
-    }
-
     public func agentHostedUsage(authorization: String?, serverId: String, agentId: String, query: String?) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -248,18 +220,6 @@ extension EmailLoginDirectory {
         return Self.json(200, body)
     }
 
-    public func setHostedRuntimeForTesting(
-        agentId: String,
-        provider: String = "openai",
-        model: String? = nil,
-        state: String = "active",
-        retryNeedsModel: Bool = false
-    ) {
-        lock.lock()
-        hostedRuntimes[agentId] = (provider, model, state, retryNeedsModel, Date())
-        lock.unlock()
-    }
-
     public func agentHostedRuntime(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")
@@ -288,26 +248,6 @@ extension EmailLoginDirectory {
     public func enableHostedModelPicker(serverId: String) {
         lock.lock()
         hostedModelPickerServers.insert(serverId)
-        lock.unlock()
-    }
-
-    public func hostedRuntimeStateForTesting(agentId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return hostedRuntimes[agentId]?.state
-    }
-
-    public func setHostedRuntimeStateForTesting(
-        agentId: String,
-        state: String,
-        retryNeedsModel: Bool = false
-    ) {
-        lock.lock()
-        if let existing = hostedRuntimes[agentId] {
-            hostedRuntimes[agentId] = (existing.provider, existing.model, state, retryNeedsModel, existing.createdAt)
-        } else {
-            hostedRuntimes[agentId] = ("antiproton", nil, state, retryNeedsModel, Date())
-        }
         lock.unlock()
     }
 
@@ -399,32 +339,6 @@ extension EmailLoginDirectory {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let modelJSON = updated.model.map(jsonString) ?? "null"
         return Self.json(200, "{\"hostedRuntime\":{\"agentId\":\(jsonString(agentId)),\"provider\":\(jsonString(updated.provider)),\"model\":\(modelJSON),\"state\":\(jsonString(updated.state)),\"retryNeedsModel\":\(updated.retryNeedsModel),\"createdAt\":\(jsonString(formatter.string(from: updated.createdAt)))}}")
-    }
-
-    public func setHostedModelForTesting(
-        agentId: String,
-        models: [(id: String, label: String, provider: String)] = [
-            ("deepseek-flash", "DeepSeek Flash", "deepseek"),
-            ("gpt-5.6-luna", "GPT-5.6 Luna", "openai"),
-        ],
-        defaultModel: String? = "deepseek-flash",
-        defaultLabel: String? = "DeepSeek Flash",
-        model: String? = "deepseek-flash",
-        label: String? = "DeepSeek Flash",
-        source: String = "default",
-        locked: Bool = false
-    ) {
-        lock.lock()
-        hostedModels[agentId] = HostedModelState(
-            models: models,
-            defaultModel: defaultModel,
-            defaultLabel: defaultLabel,
-            model: model,
-            label: label,
-            source: source,
-            locked: locked
-        )
-        lock.unlock()
     }
 
     /// Shared guard for the hosted model reads and writes: agent membership,
@@ -551,12 +465,6 @@ extension EmailLoginDirectory {
             lock.unlock()
             return Self.json(200, hostedModelView(state, picker: picker))
         }
-    }
-
-    public func setAgentConnectionOriginForTesting(origin: String) {
-        lock.lock()
-        agentConnectionOrigin = origin
-        lock.unlock()
     }
 
     func agentConnectionProviderCall(
