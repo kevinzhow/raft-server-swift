@@ -8,21 +8,21 @@ import RaftShared
 /// The legacy handler built a JSON array in row order, with each row's members
 /// in the order below. The array is kept as an explicit ordered body so the
 /// bytes (and `Content-Length`) do not depend on Linux `JSONEncoder` key order.
-public struct IntegrationMarketplaceListing: ExactJSONBody, Sendable, Equatable {
+public struct IntegrationMarketplaceListing: JSONBodyConvertible, Sendable, Equatable {
     public var rows: [IntegrationMarketplaceRow]
 
     public init(rows: [IntegrationMarketplaceRow]) {
         self.rows = rows
     }
 
-    public var jsonBody: JSONBody {
+    public var jsonBody: OrderedJSON {
         .array(rows.map(\.jsonBody))
     }
 }
 
 /// One marketplace row. `appNotificationPendingRevisionId` is `null` when the
 /// app has no pending revision.
-public struct IntegrationMarketplaceRow: ExactJSONBody, Sendable, Equatable {
+public struct IntegrationMarketplaceRow: JSONBodyConvertible, Sendable, Equatable {
     public var id: String
     public var clientId: String
     public var name: String
@@ -46,17 +46,17 @@ public struct IntegrationMarketplaceRow: ExactJSONBody, Sendable, Equatable {
         self.canReviewAppNotifications = canReviewAppNotifications
     }
 
-    public var jsonBody: JSONBody {
+    public var jsonBody: OrderedJSON {
         .object([
-            JSONMember("id", .string(id)),
-            JSONMember("clientId", .string(clientId)),
-            JSONMember("name", .string(name)),
-            JSONMember("appNotificationPendingGroups", .array(pendingGroups.map { .string($0) })),
-            JSONMember(
+            OrderedJSONField("id", .string(id)),
+            OrderedJSONField("clientId", .string(clientId)),
+            OrderedJSONField("name", .string(name)),
+            OrderedJSONField("appNotificationPendingGroups", .array(pendingGroups.map { .string($0) })),
+            OrderedJSONField(
                 "appNotificationPendingRevisionId",
-                pendingRevisionId.map(JSONBody.string) ?? .null
+                pendingRevisionId.map(OrderedJSON.string) ?? .null
             ),
-            JSONMember("canReviewAppNotifications", .boolean(canReviewAppNotifications)),
+            OrderedJSONField("canReviewAppNotifications", .bool(canReviewAppNotifications)),
         ])
     }
 }
@@ -96,17 +96,17 @@ public struct ReviewAppNotificationPermissionsRequest: Codable, Sendable, Equata
 }
 
 /// `POST …/permissions/review` success body: `{"ok":true,"groups":[…]}`.
-public struct ReviewAppNotificationPermissionsResponse: ExactJSONBody, Sendable, Equatable {
+public struct ReviewAppNotificationPermissionsResponse: JSONBodyConvertible, Sendable, Equatable {
     public var groups: [String]
 
     public init(groups: [String]) {
         self.groups = groups
     }
 
-    public var jsonBody: JSONBody {
+    public var jsonBody: OrderedJSON {
         .object([
-            JSONMember("ok", .boolean(true)),
-            JSONMember("groups", .array(groups.map { .string($0) })),
+            OrderedJSONField("ok", .bool(true)),
+            OrderedJSONField("groups", .array(groups.map { .string($0) })),
         ])
     }
 }
@@ -117,7 +117,7 @@ public struct ReviewAppNotificationPermissionsResponse: ExactJSONBody, Sendable,
 ///
 /// The route answers `Cache-Control: private, no-store`; the feature supplies
 /// that extra header to `respond`, so the DTO only owns the body bytes.
-public struct LegacyAppAgentJWTResponse: ExactJSONBody, Sendable, Equatable {
+public struct LegacyAppAgentJWTResponse: JSONBodyConvertible, Sendable, Equatable {
     public var scope: String
     public var effectiveEnabled: Bool
     public var audience: String
@@ -128,15 +128,15 @@ public struct LegacyAppAgentJWTResponse: ExactJSONBody, Sendable, Equatable {
         self.audience = audience
     }
 
-    public var jsonBody: JSONBody {
+    public var jsonBody: OrderedJSON {
         .object([
-            JSONMember("scope", .string(scope)),
-            JSONMember("enabled", .boolean(true)),
-            JSONMember("appEnabled", .boolean(true)),
-            JSONMember("effectiveEnabled", .boolean(effectiveEnabled)),
-            JSONMember("canEnable", .boolean(false)),
-            JSONMember("audience", .string(audience)),
-            JSONMember("expiresIn", .integer(300)),
+            OrderedJSONField("scope", .string(scope)),
+            OrderedJSONField("enabled", .bool(true)),
+            OrderedJSONField("appEnabled", .bool(true)),
+            OrderedJSONField("effectiveEnabled", .bool(effectiveEnabled)),
+            OrderedJSONField("canEnable", .bool(false)),
+            OrderedJSONField("audience", .string(audience)),
+            OrderedJSONField("expiresIn", .int(300)),
         ])
     }
 }
@@ -147,7 +147,7 @@ public struct LegacyAppAgentJWTResponse: ExactJSONBody, Sendable, Equatable {
 ///
 /// `prompt` is `null` for a managed agent; an external agent gets the
 /// self-hosted-runner operating guide under `{"audience","text"}`.
-public struct AgentContextResponse: ExactJSONBody, Sendable, Equatable {
+public struct AgentContextResponse: JSONBodyConvertible, Sendable, Equatable {
     public var agent: AgentContextAgent
     public var server: AgentContextServer
     public var capabilities: [String]
@@ -168,23 +168,23 @@ public struct AgentContextResponse: ExactJSONBody, Sendable, Equatable {
         self.features = features
     }
 
-    public var jsonBody: JSONBody {
+    public var jsonBody: OrderedJSON {
         .object([
-            JSONMember("agent", agent.jsonBody),
-            JSONMember("server", server.jsonBody),
-            JSONMember(
+            OrderedJSONField("agent", agent.jsonBody),
+            OrderedJSONField("server", server.jsonBody),
+            OrderedJSONField(
                 "credential",
-                .object([JSONMember("capabilities", .array(capabilities.map { .string($0) }))])
+                .object([OrderedJSONField("capabilities", .array(capabilities.map { .string($0) }))])
             ),
-            JSONMember("prompt", prompt?.jsonBody ?? .null),
-            JSONMember("features", features.jsonBody),
+            OrderedJSONField("prompt", prompt?.jsonBody ?? .null),
+            OrderedJSONField("features", features.jsonBody),
         ])
     }
 }
 
 /// The agent identity block. `description` and `assistantOf` are `null` when
 /// absent; `external` is `runtime == "external"`.
-public struct AgentContextAgent: ExactJSONBody, Sendable, Equatable {
+public struct AgentContextAgent: JSONBodyConvertible, Sendable, Equatable {
     public var id: String
     public var name: String
     public var displayName: String
@@ -214,25 +214,25 @@ public struct AgentContextAgent: ExactJSONBody, Sendable, Equatable {
         self.serverRole = serverRole
     }
 
-    public var jsonBody: JSONBody {
+    public var jsonBody: OrderedJSON {
         .object([
-            JSONMember("id", .string(id)),
-            JSONMember("name", .string(name)),
-            JSONMember("displayName", .string(displayName)),
-            JSONMember("description", description.map(JSONBody.string) ?? .null),
-            JSONMember("runtime", .string(runtime)),
-            JSONMember("external", .boolean(external)),
-            JSONMember(
+            OrderedJSONField("id", .string(id)),
+            OrderedJSONField("name", .string(name)),
+            OrderedJSONField("displayName", .string(displayName)),
+            OrderedJSONField("description", description.map(OrderedJSON.string) ?? .null),
+            OrderedJSONField("runtime", .string(runtime)),
+            OrderedJSONField("external", .bool(external)),
+            OrderedJSONField(
                 "assistantOf",
-                assistantOf.map { .object([JSONMember("userId", .string($0))]) } ?? .null
+                assistantOf.map { .object([OrderedJSONField("userId", .string($0))]) } ?? .null
             ),
-            JSONMember("serverRole", .string(serverRole)),
+            OrderedJSONField("serverRole", .string(serverRole)),
         ])
     }
 }
 
 /// The server identity block.
-public struct AgentContextServer: ExactJSONBody, Sendable, Equatable {
+public struct AgentContextServer: JSONBodyConvertible, Sendable, Equatable {
     public var id: String
     public var slug: String
     public var name: String
@@ -243,17 +243,17 @@ public struct AgentContextServer: ExactJSONBody, Sendable, Equatable {
         self.name = name
     }
 
-    public var jsonBody: JSONBody {
+    public var jsonBody: OrderedJSON {
         .object([
-            JSONMember("id", .string(id)),
-            JSONMember("slug", .string(slug)),
-            JSONMember("name", .string(name)),
+            OrderedJSONField("id", .string(id)),
+            OrderedJSONField("slug", .string(slug)),
+            OrderedJSONField("name", .string(name)),
         ])
     }
 }
 
 /// The external-agent operating guide envelope.
-public struct AgentContextPrompt: ExactJSONBody, Sendable, Equatable {
+public struct AgentContextPrompt: JSONBodyConvertible, Sendable, Equatable {
     public var audience: String
     public var text: String
 
@@ -262,16 +262,16 @@ public struct AgentContextPrompt: ExactJSONBody, Sendable, Equatable {
         self.text = text
     }
 
-    public var jsonBody: JSONBody {
+    public var jsonBody: OrderedJSON {
         .object([
-            JSONMember("audience", .string(audience)),
-            JSONMember("text", .string(text)),
+            OrderedJSONField("audience", .string(audience)),
+            OrderedJSONField("text", .string(text)),
         ])
     }
 }
 
 /// The two server-scoped feature flags the context reply advertises.
-public struct AgentContextFeatures: ExactJSONBody, Sendable, Equatable {
+public struct AgentContextFeatures: JSONBodyConvertible, Sendable, Equatable {
     public var reminderApp: Bool
     public var vaultApp: Bool
 
@@ -280,10 +280,10 @@ public struct AgentContextFeatures: ExactJSONBody, Sendable, Equatable {
         self.vaultApp = vaultApp
     }
 
-    public var jsonBody: JSONBody {
+    public var jsonBody: OrderedJSON {
         .object([
-            JSONMember("reminderApp", .boolean(reminderApp)),
-            JSONMember("vaultApp", .boolean(vaultApp)),
+            OrderedJSONField("reminderApp", .bool(reminderApp)),
+            OrderedJSONField("vaultApp", .bool(vaultApp)),
         ])
     }
 }
@@ -375,90 +375,49 @@ public struct AgentAppConfigPatchRequest: Codable, Sendable, Equatable {
 /// `schema`, `defaults`, `overrides` and `effective` are ordered objects: the
 /// legacy handler emitted them in `enabled`, `threshold_bytes`,
 /// `interval_seconds` order.
-public struct AgentAppConfigResponse: ExactJSONBody, Sendable, Equatable {
+public struct AgentAppConfigResponse: JSONBodyConvertible, Sendable, Equatable {
     public var appId: String
     public var revision: Int
-    public var overrides: [JSONMember]
-    public var effective: [JSONMember]
+    public var overrides: [OrderedJSONField]
+    public var effective: [OrderedJSONField]
 
-    public init(appId: String, revision: Int, overrides: [JSONMember], effective: [JSONMember]) {
+    public init(appId: String, revision: Int, overrides: [OrderedJSONField], effective: [OrderedJSONField]) {
         self.appId = appId
         self.revision = revision
         self.overrides = overrides
         self.effective = effective
     }
 
-    public var jsonBody: JSONBody {
+    public var jsonBody: OrderedJSON {
         .object([
-            JSONMember("appId", .string(appId)),
-            JSONMember("revision", .integer(revision)),
-            JSONMember("schema", Self.schema),
-            JSONMember("defaults", Self.defaults),
-            JSONMember("overrides", .object(overrides)),
-            JSONMember("effective", .object(effective)),
+            OrderedJSONField("appId", .string(appId)),
+            OrderedJSONField("revision", .int(revision)),
+            OrderedJSONField("schema", Self.schema),
+            OrderedJSONField("defaults", Self.defaults),
+            OrderedJSONField("overrides", .object(overrides)),
+            OrderedJSONField("effective", .object(effective)),
         ])
     }
 
     /// The fixed schema string the legacy handler inlined.
-    public static let schema: JSONBody = .object([
-        JSONMember("enabled", .object([JSONMember("type", .string("boolean"))])),
-        JSONMember("threshold_bytes", .object([
-            JSONMember("type", .string("integer")),
-            JSONMember("minimum", .integer(4096)),
-            JSONMember("maximum", .integer(1_073_741_824)),
+    public static let schema: OrderedJSON = .object([
+        OrderedJSONField("enabled", .object([OrderedJSONField("type", .string("boolean"))])),
+        OrderedJSONField("threshold_bytes", .object([
+            OrderedJSONField("type", .string("integer")),
+            OrderedJSONField("minimum", .int(4096)),
+            OrderedJSONField("maximum", .int(1_073_741_824)),
         ])),
-        JSONMember("interval_seconds", .object([
-            JSONMember("type", .string("integer")),
-            JSONMember("minimum", .integer(900)),
-            JSONMember("maximum", .integer(604_800)),
+        OrderedJSONField("interval_seconds", .object([
+            OrderedJSONField("type", .string("integer")),
+            OrderedJSONField("minimum", .int(900)),
+            OrderedJSONField("maximum", .int(604_800)),
         ])),
     ])
 
     /// The fixed defaults object the legacy handler inlined.
-    public static let defaults: JSONBody = .object([
-        JSONMember("enabled", .boolean(true)),
-        JSONMember("threshold_bytes", .integer(65_536)),
-        JSONMember("interval_seconds", .integer(3600)),
+    public static let defaults: OrderedJSON = .object([
+        OrderedJSONField("enabled", .bool(true)),
+        OrderedJSONField("threshold_bytes", .int(65_536)),
+        OrderedJSONField("interval_seconds", .int(3600)),
     ])
-}
-
-/// The published error object for every prepare-route failure.
-///
-/// One ordered shape covers all cases: `error`, then `code` or `errorCode`,
-/// then `requiredCapability` or `currentRevision`. That matches the legacy
-/// member order for each branch (`error`/`code`, `error`/`errorCode`,
-/// `error`/`code`/`requiredCapability`, `error`/`errorCode`/`currentRevision`).
-public struct ActionCardPrepareErrorBody: ExactJSONBody, Sendable, Equatable {
-    public var error: String
-    public var code: String?
-    public var errorCode: String?
-    public var requiredCapability: String?
-    public var currentRevision: Int?
-
-    public init(
-        error: String,
-        code: String? = nil,
-        errorCode: String? = nil,
-        requiredCapability: String? = nil,
-        currentRevision: Int? = nil
-    ) {
-        self.error = error
-        self.code = code
-        self.errorCode = errorCode
-        self.requiredCapability = requiredCapability
-        self.currentRevision = currentRevision
-    }
-
-    public var jsonBody: JSONBody {
-        var members: [JSONMember] = [JSONMember("error", .string(error))]
-        if let code { members.append(JSONMember("code", .string(code))) }
-        if let errorCode { members.append(JSONMember("errorCode", .string(errorCode))) }
-        if let requiredCapability {
-            members.append(JSONMember("requiredCapability", .string(requiredCapability)))
-        }
-        if let currentRevision {
-            members.append(JSONMember("currentRevision", .integer(currentRevision)))
-        }
-        return .object(members)
-    }
 }

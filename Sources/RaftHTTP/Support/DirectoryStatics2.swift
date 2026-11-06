@@ -485,61 +485,6 @@ extension EmailLoginDirectory {
         return .valid(value)
     }
 
-    static func normalizeFeedbackKey(_ key: String) -> String {
-        var result = ""
-        var previous: Character?
-        for character in key {
-            if character == "-" || character == " " {
-                result.append("_")
-            } else if character.isUppercase, let prior = previous, prior.isLowercase {
-                result.append("_")
-                result.append(Character(character.lowercased()))
-            } else {
-                result.append(Character(character.lowercased()))
-            }
-            previous = character
-        }
-        return result
-    }
-
-    static func feedbackContainsForbiddenKey(_ value: Any) -> Bool {
-        if let array = value as? [Any] {
-            return array.contains(where: feedbackContainsForbiddenKey)
-        }
-        guard let object = value as? [String: Any] else { return false }
-        for (key, nested) in object {
-            if feedbackLocatorForbiddenKeys.contains(normalizeFeedbackKey(key)) { return true }
-            if feedbackContainsForbiddenKey(nested) { return true }
-        }
-        return false
-    }
-
-    static func feedbackStableJSON(_ value: Any) -> String {
-        if let array = value as? [Any] {
-            return "[" + array.map { feedbackStableJSON($0) }.joined(separator: ",") + "]"
-        }
-        if let object = value as? [String: Any] {
-            let parts = object.keys.sorted().map { key in
-                "\(jsonString(key)):\(feedbackStableJSON(object[key] as Any))"
-            }
-            return "{" + parts.joined(separator: ",") + "}"
-        }
-        if let number = value as? NSNumber {
-            let type = String(cString: number.objCType)
-            if type == "c" || type == "B" {
-                return number.boolValue ? "true" : "false"
-            }
-            if number.doubleValue == number.doubleValue.rounded(), abs(number.doubleValue) < 1e15 {
-                return String(number.int64Value)
-            }
-            return String(number.doubleValue)
-        }
-        if let string = value as? String {
-            return jsonString(string)
-        }
-        return "null"
-    }
-
     static func appConfigDefaults() -> [String: Any] {
         ["enabled": true, "threshold_bytes": 65536, "interval_seconds": 3600]
     }

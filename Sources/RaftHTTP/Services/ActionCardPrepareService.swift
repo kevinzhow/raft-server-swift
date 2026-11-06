@@ -9,10 +9,10 @@ import RaftShared
 /// routes.
 ///
 /// Every case names the published error object the route answers with; the
-/// feature layer only projects `status`, `exactBody` and headers through
+/// feature layer only projects `status`, `errorBody` and headers through
 /// `Respond.swift`. The bodies keep the legacy member order
 /// (`error`, then `code`/`errorCode`, then `requiredCapability`/`currentRevision`).
-public enum ActionCardPrepareError: DomainErrorWithExactBody, Equatable {
+public enum ActionCardPrepareError: DomainError, Equatable {
     case unauthorized
     case notAMember
     case invalidExpectedRevision
@@ -64,81 +64,84 @@ public enum ActionCardPrepareError: DomainErrorWithExactBody, Equatable {
         }
     }
 
-    public var exactBody: any ExactJSONBody {
+    /// The single published failure object: `error` first, then at most one of
+    /// `code`/`errorCode`, then at most one of
+    /// `requiredCapability`/`currentRevision`. That is the legacy member order
+    /// for every branch this domain publishes.
+    public var errorBody: OrderedJSON? {
+        let published = publishedFields
+        var body = OrderedJSONObject()
+        body.append("error", published.error)
+        body.append("code", ifPresent: published.code)
+        body.append("errorCode", ifPresent: published.errorCode)
+        body.append("requiredCapability", ifPresent: published.requiredCapability)
+        body.append("currentRevision", ifPresent: published.currentRevision)
+        return body.json
+    }
+
+    public var errorMessage: String { publishedFields.error }
+
+    /// The legacy fields each case publishes, in published order.
+    private var publishedFields: (
+        error: String,
+        code: String?,
+        errorCode: String?,
+        requiredCapability: String?,
+        currentRevision: Int?
+    ) {
         switch self {
         case .unauthorized:
-            ActionCardPrepareErrorBody(error: "Unauthorized")
+            ("Unauthorized", nil, nil, nil, nil)
         case .notAMember:
-            ActionCardPrepareErrorBody(error: "Not a member of this server")
+            ("Not a member of this server", nil, nil, nil, nil)
         case .invalidExpectedRevision:
-            ActionCardPrepareErrorBody(
-                error: "expected_revision_id must be a revision UUID",
-                code: "invalid_expected_revision_id"
+            (
+                "expected_revision_id must be a revision UUID",
+                "invalid_expected_revision_id", nil, nil, nil
             )
         case .appNotFound:
-            ActionCardPrepareErrorBody(error: "App not found")
+            ("App not found", nil, nil, nil, nil)
         case .permissionRevisionStale:
-            ActionCardPrepareErrorBody(
-                error: "The permission request changed since it was displayed",
-                code: "permission_revision_stale"
+            (
+                "The permission request changed since it was displayed",
+                "permission_revision_stale", nil, nil, nil
             )
         case .notOwnerOrAdmin:
-            ActionCardPrepareErrorBody(
-                error: "Only server owners and admins can read Agent JWT access"
-            )
+            ("Only server owners and admins can read Agent JWT access", nil, nil, nil, nil)
         case .appNotOnServer:
-            ActionCardPrepareErrorBody(error: "App not found on this Server")
+            ("App not found on this Server", nil, nil, nil, nil)
         case .agentJWTFixed:
-            ActionCardPrepareErrorBody(
-                error: "Agent JWT is built in for every App; there is no setting to change"
+            (
+                "Agent JWT is built in for every App; there is no setting to change",
+                nil, nil, nil, nil
             )
         case .missingAgentAuthorization:
-            ActionCardPrepareErrorBody(
-                error: "Missing or invalid Authorization header",
-                code: "auth_required"
-            )
+            ("Missing or invalid Authorization header", "auth_required", nil, nil, nil)
         case .invalidAccessToken:
-            ActionCardPrepareErrorBody(error: "Invalid or expired token", code: "auth_required")
+            ("Invalid or expired token", "auth_required", nil, nil, nil)
         case .invalidAgentCredential:
-            ActionCardPrepareErrorBody(error: "Invalid agent credential", code: "auth_required")
+            ("Invalid agent credential", "auth_required", nil, nil, nil)
         case .capabilityNotAuthorized(let capability):
-            ActionCardPrepareErrorBody(
-                error: "Agent credential is not authorized for this capability",
-                code: "capability_not_authorized",
-                requiredCapability: capability
+            (
+                "Agent credential is not authorized for this capability",
+                "capability_not_authorized", nil, capability, nil
             )
         case .missingRequiredCapability(let capability):
-            ActionCardPrepareErrorBody(
-                error: "missing required capability",
-                requiredCapability: capability
-            )
+            ("missing required capability", nil, nil, capability, nil)
         case .serverNotFound:
-            ActionCardPrepareErrorBody(error: "Server not found")
+            ("Server not found", nil, nil, nil, nil)
         case .appConfigUnknownApp:
-            ActionCardPrepareErrorBody(
-                error: "Unknown app",
-                errorCode: "RAP_APP_CONFIG_APP_UNKNOWN"
-            )
+            ("Unknown app", nil, "RAP_APP_CONFIG_APP_UNKNOWN", nil, nil)
         case .appConfigInvalid:
-            ActionCardPrepareErrorBody(
-                error: "Invalid config request",
-                errorCode: "RAP_APP_CONFIG_INVALID"
-            )
+            ("Invalid config request", nil, "RAP_APP_CONFIG_INVALID", nil, nil)
         case .appConfigInvalidValue(let key):
-            ActionCardPrepareErrorBody(
-                error: "Invalid value for \(key)",
-                errorCode: "RAP_APP_CONFIG_INVALID"
-            )
+            ("Invalid value for \(key)", nil, "RAP_APP_CONFIG_INVALID", nil, nil)
         case .appConfigUnknownKey:
-            ActionCardPrepareErrorBody(
-                error: "Unknown config key",
-                errorCode: "RAP_APP_CONFIG_INVALID"
-            )
+            ("Unknown config key", nil, "RAP_APP_CONFIG_INVALID", nil, nil)
         case .appConfigRevisionStale(let currentRevision):
-            ActionCardPrepareErrorBody(
-                error: "Config revision is stale; current revision is \(currentRevision)",
-                errorCode: "RAP_APP_CONFIG_REVISION_STALE",
-                currentRevision: currentRevision
+            (
+                "Config revision is stale; current revision is \(currentRevision)",
+                nil, "RAP_APP_CONFIG_REVISION_STALE", nil, currentRevision
             )
         }
     }
@@ -724,14 +727,14 @@ public struct ActionCardPrepareService: Sendable {
         appId: String,
         snapshot: AppConfigSnapshot
     ) -> AgentAppConfigResponse {
-        var members: [JSONMember] = []
-        var effective: [JSONMember] = []
+        var members: [OrderedJSONField] = []
+        var effective: [OrderedJSONField] = []
         for key in Self.appConfigKeyOrder {
             if let value = snapshot.overrides[key] {
-                members.append(JSONMember(key, Self.jsonBody(value)))
+                members.append(OrderedJSONField(key, Self.jsonBody(value)))
             }
             if let current = snapshot.overrides[key] ?? Self.defaultValue(for: key) {
-                effective.append(JSONMember(key, Self.jsonBody(current)))
+                effective.append(OrderedJSONField(key, Self.jsonBody(current)))
             }
         }
         return AgentAppConfigResponse(
@@ -751,10 +754,10 @@ public struct ActionCardPrepareService: Sendable {
         }
     }
 
-    private static func jsonBody(_ value: AppConfigValue) -> JSONBody {
+    private static func jsonBody(_ value: AppConfigValue) -> OrderedJSON {
         switch value {
-        case .boolean(let flag): .boolean(flag)
-        case .integer(let integer): .integer(integer)
+        case .boolean(let flag): .bool(flag)
+        case .integer(let integer): .int(integer)
         }
     }
 

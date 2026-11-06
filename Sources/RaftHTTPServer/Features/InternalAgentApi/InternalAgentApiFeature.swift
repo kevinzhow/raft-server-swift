@@ -321,15 +321,15 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 body: try await request.bodyText()
             ))
         }
-        agentApi.get("context") { request -> Response in
-            try respond(errors: ActionCardPrepareError.self) {
+        agentApi.get("context") { request async throws -> Response in
+            try await respond {
                 try services.emailAccounts.actionCardPrepare.agentContext(
                     authorization: request.headers[.authorization]
                 )
             }
         }
-        agentApi.get("apps", ":appId", "config") { request -> Response in
-            try respond(errors: ActionCardPrepareError.self) {
+        agentApi.get("apps", ":appId", "config") { request async throws -> Response in
+            try await respond {
                 try services.emailAccounts.actionCardPrepare.agentAppConfig(
                     authorization: request.headers[.authorization],
                     appId: request.parameters.get("appId") ?? ""
@@ -340,7 +340,7 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             // A body that does not decode stays `nil`: the service authorizes
             // before answering the legacy `Invalid config request` 400.
             let body = try await typedJSONBody(AgentAppConfigPatchRequest.self, request)
-            return try respond(errors: ActionCardPrepareError.self) {
+            return try await respond {
                 try services.emailAccounts.actionCardPrepare.patchAgentAppConfig(
                     authorization: request.headers[.authorization],
                     appId: request.parameters.get("appId") ?? "",
@@ -529,7 +529,7 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             ))
         }
         agentApi.get("mcp", "tools") { request async throws -> Response in
-            try respond(errors: ActionCardServiceError.self) {
+            try await respond {
                 try services.emailAccounts.actionCards.managedMCPToolSnapshot(
                     authorization: request.headers[.authorization]
                 )
@@ -538,7 +538,7 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
         agentApi.post("mcp", "call") { request async throws -> Response in
             let body = (try? await request.content.decode(ManagedMCPToolCallRequest.self))
                 ?? ManagedMCPToolCallRequest()
-            return try respond(errors: ActionCardServiceError.self) {
+            return try await respond {
                 try services.emailAccounts.actionCards.callManagedMCPTool(
                     authorization: request.headers[.authorization],
                     body: body
@@ -546,22 +546,27 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
         }
         agentApi.post("feedback-locators") { request async throws -> Response in
-            routeResponse(services.emailAccounts.ingestFeedbackLocator(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
+            let body = await feedbackLocatorEnvelope(request)
+            return try await respond {
+                try services.emailAccounts.feedbackLocators.ingest(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
-        agentApi.get("feedback-locators") { request -> Response in
-            routeResponse(services.emailAccounts.listFeedbackLocators(
-                authorization: request.headers[.authorization],
-                reportId: desktopQuery(request.url.query, "report_id"),
-                runtime: desktopQuery(request.url.query, "runtime"),
-                nativeStatus: desktopQuery(request.url.query, "native_status"),
-                nativeLookupMethod: desktopQuery(request.url.query, "native_lookup_method"),
-                servedExactSha256: desktopQuery(request.url.query, "served_exact_sha256"),
-                routeBasis: desktopQuery(request.url.query, "route_basis"),
-                limit: desktopQuery(request.url.query, "limit")
-            ))
+        agentApi.get("feedback-locators") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.feedbackLocators.list(
+                    authorization: request.headers[.authorization],
+                    reportId: desktopQuery(request.url.query, "report_id"),
+                    runtime: desktopQuery(request.url.query, "runtime"),
+                    nativeStatus: desktopQuery(request.url.query, "native_status"),
+                    nativeLookupMethod: desktopQuery(request.url.query, "native_lookup_method"),
+                    servedExactSha256: desktopQuery(request.url.query, "served_exact_sha256"),
+                    routeBasis: desktopQuery(request.url.query, "route_basis"),
+                    limit: desktopQuery(request.url.query, "limit")
+                )
+            }
         }
         agentApi.get("wake-hints") { request -> Response in
             routeResponse(services.emailAccounts.agentWakeHints(
@@ -769,4 +774,17 @@ private func typedJSONBody<T: Decodable>(_ type: T.Type, _ request: Request) asy
     if let decoded = try? await request.content.decode(type) { return decoded }
     guard let data = try? await request.body.collect() else { return nil }
     return try? JSONDecoder().decode(type, from: data)
+}
+
+/// `POST /internal/agent-api/feedback-locators` accepted a JSON body with or
+/// without a `Content-Type` header, so the typed decode runs first and a
+/// header-less body falls back to the raw bytes. A body that is not a JSON
+/// object stays `nil`, which the service answers with the published
+/// `invalid_payload`.
+private func feedbackLocatorEnvelope(_ request: Request) async -> FeedbackLocatorIngestRequest? {
+    if let typed = try? await request.content.decode(FeedbackLocatorIngestRequest.self) {
+        return typed
+    }
+    guard let raw = try? await request.bodyText() else { return nil }
+    return try? JSONDecoder().decode(FeedbackLocatorIngestRequest.self, from: Data(raw.utf8))
 }

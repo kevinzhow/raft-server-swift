@@ -214,8 +214,8 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             ))
         }
 
-        integrations.get("marketplace") { request -> Response in
-            try respond(errors: ActionCardPrepareError.self) {
+        integrations.get("marketplace") { request async throws -> Response in
+            try await respond {
                 try services.emailAccounts.actionCardPrepare.integrationMarketplace(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
@@ -231,7 +231,7 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
                 ReviewAppNotificationPermissionsRequest.self,
                 request
             )
-            return try respond(errors: ActionCardPrepareError.self) {
+            return try await respond {
                 try services.emailAccounts.actionCardPrepare.reviewAppNotificationPermissions(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -245,11 +245,8 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             routeResponse(IntegrationRoutes.integrationAgent(agentId: request.parameters.get("agentId") ?? ""))
         }
 
-        integrations.get("clients", ":clientId", "agent-jwt") { request -> Response in
-            try respond(
-                errors: ActionCardPrepareError.self,
-                extraHeaders: ["Cache-Control": "private, no-store"]
-            ) {
+        integrations.get("clients", ":clientId", "agent-jwt") { request async throws -> Response in
+            try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
                 try services.emailAccounts.actionCardPrepare.legacyAppAgentJWTSettings(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -258,8 +255,8 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             }
         }
 
-        integrations.put("clients", ":clientId", "agent-jwt") { _ -> Response in
-            try respond(errors: ActionCardPrepareError.self) {
+        integrations.put("clients", ":clientId", "agent-jwt") { _ async throws -> Response in
+            try await respond {
                 try services.emailAccounts.actionCardPrepare.refuseLegacyAppAgentJWTWrite()
             }
         }
@@ -314,7 +311,7 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         }
 
         providerConnections.delete(":id", "agents", ":agentId") { request async throws -> Response in
-            try respond(errors: ActionCardServiceError.self) {
+            try await respond {
                 try services.emailAccounts.actionCards.detachProviderAgent(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -325,7 +322,7 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         }
 
         providerConnections.delete(":id") { request async throws -> Response in
-            try respond(errors: ActionCardServiceError.self) {
+            try await respond {
                 try services.emailAccounts.actionCards.deleteProviderConnection(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
