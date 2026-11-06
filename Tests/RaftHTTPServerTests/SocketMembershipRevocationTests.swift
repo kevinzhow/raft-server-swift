@@ -29,16 +29,16 @@ private struct SocketMembershipAuth: RealtimeAuthorizing {
     }
 
     func visibleChannelIds(serverId: String, userId: String) -> [String] {
-        accounts.realtimeVisibleChannelIds(serverId: serverId, userId: userId)
+        accounts.socketMembership.visibleChannelIds(serverId: serverId, userId: userId).channelIds
     }
 
     func syncResumePayload(serverId: String, userId: String, lastSeq: Int, limit: Int) -> String? {
-        accounts.realtimeSyncMessagesPayload(
+        accounts.socketMembership.syncMessages(
             serverId: serverId,
             userId: userId,
             lastSeq: lastSeq,
             limit: limit
-        )
+        )?.jsonBody()
     }
 }
 

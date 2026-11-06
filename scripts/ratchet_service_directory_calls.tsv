@@ -12,5 +12,4 @@ Sources/RaftHTTP/Services/OAuthFlowsService.swift	4
 Sources/RaftHTTP/Services/ProfileAndChannelFilesService.swift	4
 Sources/RaftHTTP/Services/ReactionsRealtimeService.swift	8
 Sources/RaftHTTP/Services/SearchMentionsService.swift	7
-Sources/RaftHTTP/Services/SocketMembershipService.swift	30
 Sources/RaftHTTP/Services/ThreadsService.swift	6
