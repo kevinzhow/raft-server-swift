@@ -53,34 +53,35 @@ private func dependencies(
     )
 }
 
-@Test func productFeedbackErrorEnvelopeKeepsTheLegacyKeyOrderAndEscaping() {
-    let envelope = ProductFeedbackErrorEnvelope(
-        error: "a/b\tc",
-        code: "feedback_invalid",
-        upstreamStatus: 403,
-        upstreamError: "x\ny"
+@Test func productFeedbackErrorBodyKeepsTheLegacyKeyOrderAndEscaping() {
+    #expect(
+        ProductFeedbackSubmissionError.integrationUnavailableForUpstream(status: 403, error: "a/b\tc")
+            .errorBody?.render()
+            == #"{"error":"Feedback integration is temporarily unavailable","code":"feedback_integration_unavailable","upstream_status":403,"upstream_error":"a/b\tc"}"#
     )
     #expect(
-        envelope.bodyJSON
-            == "{\"error\":\"a/b\\tc\",\"code\":\"feedback_invalid\",\"upstream_status\":403,\"upstream_error\":\"x\\ny\"}"
+        ProductFeedbackSubmissionError.integrationUnavailableForUpstream(status: 401, error: "x\ny")
+            .errorBody?.render()
+            == #"{"error":"Feedback integration is temporarily unavailable","code":"feedback_integration_unavailable","upstream_status":401,"upstream_error":"x\ny"}"#
     )
-    #expect(ProductFeedbackSubmissionError.unauthorized.bodyJSON == #"{"error":"Unauthorized"}"#)
     #expect(
-        ProductFeedbackSubmissionError.rateLimited(retryAfter: "60").bodyJSON
+        ProductFeedbackSubmissionError.unauthorized.errorBody?.render()
+            == #"{"error":"Unauthorized"}"#
+    )
+    #expect(
+        ProductFeedbackSubmissionError.rateLimited(retryAfter: "60").errorBody?.render()
             == #"{"error":"Feedback is rate limited","code":"feedback_rate_limited"}"#
-    )
-    #expect(
-        ProductFeedbackSubmissionError.integrationUnavailableForUpstream(status: 401, error: "denied").bodyJSON
-            == #"{"error":"Feedback integration is temporarily unavailable","code":"feedback_integration_unavailable","upstream_status":401,"upstream_error":"denied"}"#
     )
     #expect(ProductFeedbackSubmissionError.accountUnverified.status == 403)
     #expect(
-        ProductFeedbackSubmissionError.rateLimited(retryAfter: "60").responseHeaders["Retry-After"] == "60"
+        ProductFeedbackSubmissionError.rateLimited(retryAfter: "60").errorHeaders
+            == .exact([
+                "Content-Type": AppFallback.jsonContentType,
+                "Cache-Control": "no-store",
+                "Retry-After": "60",
+            ])
     )
-    #expect(
-        ProductFeedbackSubmissionError.rateLimited(retryAfter: "60").responseHeaders["X-Robots-Tag"] == nil
-    )
-    #expect(ProductFeedbackSubmissionError.invalidSubmission.responseHeaders["X-Robots-Tag"] == "noindex, nofollow")
+    #expect(ProductFeedbackSubmissionError.invalidSubmission.errorHeaders == .standard())
 }
 
 @Test func onboardingWizardOptOutReturnsTheAckWithoutAppending() throws {

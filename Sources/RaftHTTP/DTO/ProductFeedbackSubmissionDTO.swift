@@ -59,42 +59,6 @@ public struct ProductFeedbackReceipt: Codable, Sendable, Equatable {
     }
 }
 
-/// The published `{"error": …}` / `{"error": …, "code": …}` envelope.
-///
-/// `error` always precedes `code`; the Hands-rejection envelope appends
-/// `upstream_status` then `upstream_error`. Linux `JSONEncoder` stores keyed
-/// containers in a dictionary and does not preserve that order (`.sortedKeys`
-/// would publish `code` first), so the envelope is serialized in the fixed
-/// legacy order with the port's canonical `jsonString` escaping. This is the
-/// documented upstream-exact-string exception from `docs/ARCHITECTURE.md` §2.4.
-public struct ProductFeedbackErrorEnvelope: Sendable, Equatable {
-    public var error: String
-    public var code: String?
-    public var upstreamStatus: Int?
-    public var upstreamError: String?
-
-    public init(
-        error: String,
-        code: String? = nil,
-        upstreamStatus: Int? = nil,
-        upstreamError: String? = nil
-    ) {
-        self.error = error
-        self.code = code
-        self.upstreamStatus = upstreamStatus
-        self.upstreamError = upstreamError
-    }
-
-    /// The exact published body bytes, in legacy key order.
-    public var bodyJSON: String {
-        var parts = ["\"error\":" + jsonString(error)]
-        if let code { parts.append("\"code\":" + jsonString(code)) }
-        if let upstreamStatus { parts.append("\"upstream_status\":\(upstreamStatus)") }
-        if let upstreamError { parts.append("\"upstream_error\":" + jsonString(upstreamError)) }
-        return "{" + parts.joined(separator: ",") + "}"
-    }
-}
-
 /// Server attribution attached to the Hands metadata when the caller is a
 /// member of the claimed server and the server has a slug.
 public struct ProductFeedbackReporterAttribution: Sendable, Equatable {

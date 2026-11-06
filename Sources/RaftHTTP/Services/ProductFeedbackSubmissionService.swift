@@ -329,7 +329,7 @@ public struct ProductFeedbackSubmissionService: Sendable {
 ///
 /// Every case names the published status, body and header set. The feature
 /// layer only projects it, so the service never builds a wire reply.
-public enum ProductFeedbackSubmissionError: OrderedBodyDomainError, Equatable {
+public enum ProductFeedbackSubmissionError: DomainError, Equatable {
     case unauthorized
     case accountUnverified
     case invalidSubmission
@@ -368,72 +368,93 @@ public enum ProductFeedbackSubmissionError: OrderedBodyDomainError, Equatable {
         }
     }
 
-    public var bodyJSON: String {
-        envelope.bodyJSON
-    }
-
-    public var responseHeaders: [String: String] {
+    public var errorMessage: String {
         switch self {
-        case .rateLimited(let retryAfter), .integrationUnavailableRetryable(let retryAfter):
-            return [
-                "Content-Type": AppFallback.jsonContentType,
-                "Cache-Control": "no-store",
-                "Retry-After": retryAfter,
-            ]
-        default:
-            return [
-                "X-Robots-Tag": AppFallback.robotsTag,
-                "Content-Type": AppFallback.jsonContentType,
-            ]
+        case .unauthorized:
+            "Unauthorized"
+        case .accountUnverified:
+            "Email verification required"
+        case .invalidSubmission:
+            "Invalid feedback submission"
+        case .invalidRequest:
+            "Invalid feedback request"
+        case .diagnosticsInvalid:
+            "Invalid feedback diagnostics"
+        case .diagnosticsRejected:
+            "The diagnostics upload was rejected"
+        case .submissionConflict:
+            "This submission was already sent"
+        case .attachmentTooLarge:
+            "Feedback attachment is too large"
+        case .rateLimited:
+            "Feedback is rate limited"
+        case .notConfigured, .integrationUnavailable, .integrationUnavailableRetryable,
+             .serviceUnavailable:
+            "Feedback service is temporarily unavailable"
+        case .integrationUnavailableForUpstream:
+            "Feedback integration is temporarily unavailable"
+        case .invalidProductEvent:
+            "Invalid product event"
+        case .untrackedOnboardingStep:
+            "Only tracked onboarding wizard steps are accepted"
         }
     }
 
-    private var envelope: ProductFeedbackErrorEnvelope {
+    /// The published `code` for every failure that carries one.
+    public var errorCode: String? {
         switch self {
-        case .unauthorized:
-            ProductFeedbackErrorEnvelope(error: "Unauthorized")
+        case .unauthorized, .invalidProductEvent, .untrackedOnboardingStep:
+            nil
         case .accountUnverified:
-            ProductFeedbackErrorEnvelope(error: "Email verification required", code: "account_unverified")
-        case .invalidSubmission:
-            ProductFeedbackErrorEnvelope(error: "Invalid feedback submission", code: "feedback_invalid")
-        case .invalidRequest:
-            ProductFeedbackErrorEnvelope(error: "Invalid feedback request", code: "feedback_invalid")
+            "account_unverified"
+        case .invalidSubmission, .invalidRequest:
+            "feedback_invalid"
         case .diagnosticsInvalid:
-            ProductFeedbackErrorEnvelope(error: "Invalid feedback diagnostics", code: "feedback_diagnostics_invalid")
+            "feedback_diagnostics_invalid"
         case .diagnosticsRejected:
-            ProductFeedbackErrorEnvelope(error: "The diagnostics upload was rejected", code: "feedback_diagnostics_rejected")
+            "feedback_diagnostics_rejected"
         case .submissionConflict:
-            ProductFeedbackErrorEnvelope(error: "This submission was already sent", code: "feedback_submission_conflict")
+            "feedback_submission_conflict"
         case .attachmentTooLarge:
-            ProductFeedbackErrorEnvelope(error: "Feedback attachment is too large", code: "feedback_attachment_too_large")
+            "feedback_attachment_too_large"
         case .rateLimited:
-            ProductFeedbackErrorEnvelope(error: "Feedback is rate limited", code: "feedback_rate_limited")
+            "feedback_rate_limited"
         case .notConfigured:
-            ProductFeedbackErrorEnvelope(
-                error: "Feedback service is temporarily unavailable",
-                code: "feedback_not_configured"
-            )
-        case .integrationUnavailable, .integrationUnavailableRetryable:
-            ProductFeedbackErrorEnvelope(
-                error: "Feedback service is temporarily unavailable",
-                code: "feedback_integration_unavailable"
-            )
-        case .integrationUnavailableForUpstream(let status, let error):
-            ProductFeedbackErrorEnvelope(
-                error: "Feedback integration is temporarily unavailable",
-                code: "feedback_integration_unavailable",
-                upstreamStatus: status,
-                upstreamError: error
-            )
+            "feedback_not_configured"
+        case .integrationUnavailable, .integrationUnavailableRetryable,
+             .integrationUnavailableForUpstream:
+            "feedback_integration_unavailable"
         case .serviceUnavailable:
-            ProductFeedbackErrorEnvelope(
-                error: "Feedback service is temporarily unavailable",
-                code: "feedback_service_unavailable"
-            )
-        case .invalidProductEvent:
-            ProductFeedbackErrorEnvelope(error: "Invalid product event")
-        case .untrackedOnboardingStep:
-            ProductFeedbackErrorEnvelope(error: "Only tracked onboarding wizard steps are accepted")
+            "feedback_service_unavailable"
+        }
+    }
+
+    /// The published error body keeps the legacy member order: `error`, then
+    /// `code`, then the Hands rejection details. `OrderedJSON` owns the bytes,
+    /// so the domain no longer builds a JSON string by hand.
+    public var errorBody: OrderedJSON? {
+        var body = OrderedJSONObject()
+        body.append("error", errorMessage)
+        body.append("code", ifPresent: errorCode)
+        if case .integrationUnavailableForUpstream(let status, let error) = self {
+            body.append("upstream_status", status)
+            body.append("upstream_error", error)
+        }
+        return body.json
+    }
+
+    /// The retryable failures publish `Retry-After` and no robots tag; every
+    /// other failure keeps the standard JSON header set.
+    public var errorHeaders: ResponseHeaders {
+        switch self {
+        case .rateLimited(let retryAfter), .integrationUnavailableRetryable(let retryAfter):
+            .exact([
+                "Content-Type": AppFallback.jsonContentType,
+                "Cache-Control": "no-store",
+                "Retry-After": retryAfter,
+            ])
+        default:
+            .standard()
         }
     }
 }

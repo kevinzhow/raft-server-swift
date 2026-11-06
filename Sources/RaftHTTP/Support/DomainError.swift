@@ -14,24 +14,49 @@ public protocol DomainError: Error, Sendable {
     var errorMessage: String { get }
     /// Extra response headers; the default JSON header set needs none.
     var responseHeaders: [String: String] { get }
-    /// Optional machine-readable `code` appended to the error body. The
-    /// default keeps the plain `{"error": …}` bytes every existing domain
-    /// publishes.
+    /// Optional machine-readable `code` appended to the default error body. The
+    /// default keeps the plain `{"error": …}` bytes.
     var errorCode: String? { get }
+    /// The exact published body, when the default `{"error": …[, "code": …]}`
+    /// object is not the contract. A domain with a different key order, extra
+    /// keys (`requiredCapability`, `reason_code`, …) or a non-object body
+    /// supplies `OrderedJSON` here.
+    var errorBody: OrderedJSON? { get }
 }
 
 public extension DomainError {
     var responseHeaders: [String: String] { [:] }
     var errorCode: String? { nil }
+    var errorBody: OrderedJSON? { nil }
+
+    /// The complete error header policy. The default keeps the standard JSON
+    /// header set and merges `responseHeaders`; a domain whose legacy reply
+    /// publishes a header set of its own returns `.exact(…)`.
+    var errorHeaders: ResponseHeaders { .standard(extra: responseHeaders) }
+
+    /// The exact published error body.
+    ///
+    /// When the domain supplies `errorBody` that tree is used verbatim (so a
+    /// domain can publish `code` before `error`, or add scope/reason keys).
+    /// Otherwise the default is the legacy order: `error` first, then `code`
+    /// only when `errorCode` is present.
+    var publishedErrorBody: OrderedJSON {
+        if let errorBody { return errorBody }
+        var body = OrderedJSONObject()
+        body.append("error", errorMessage)
+        if let errorCode { body.append("code", errorCode) }
+        return body.json
+    }
 }
 
 /// One typed domain failure whose published body is a `Codable` shape rather
-/// than the default `{"error": …}`.
+/// than a fixed ordered tree.
 ///
-/// `Sources/RaftHTTPServer/Features/Respond.swift` has a second overload that
-/// encodes `body` directly for domains whose upstream error object carries
-/// `code`, `reason` or `suggestedNextAction`. The plain `DomainError` path is
-/// untouched, so its bytes cannot drift.
+/// This is the existing rich-body contract, retained for a domain that already
+/// publishes a synthesized `Codable` error object (currently the action-card
+/// and provider-connection surface). `Respond.swift` encodes `body` with sorted
+/// keys so the bytes are deterministic. New domains use
+/// `DomainError.errorBody`; this protocol is not the ordered-JSON mechanism.
 public protocol DomainErrorWithBody: Error, Sendable {
     /// Status the published error answers with.
     var status: UInt { get }
@@ -42,27 +67,5 @@ public protocol DomainErrorWithBody: Error, Sendable {
 }
 
 public extension DomainErrorWithBody {
-    var responseHeaders: [String: String] { [:] }
-}
-
-/// One typed domain failure whose published body is already serialized in the
-/// legacy key order.
-///
-/// `JSONEncoder` on Linux stores keyed containers in a dictionary, so neither
-/// declaration order nor a custom `encode(to:)` yields a stable key order. A
-/// domain whose upstream body has a fixed non-alphabetical order (for example
-/// `{"error": …}` before `{"code": …}`) carries the exact bytes instead.
-/// `Sources/RaftHTTPServer/Features/Respond.swift` sets `Content-Length` from
-/// `bodyJSON` and keeps `responseHeaders` verbatim.
-public protocol OrderedBodyDomainError: Error, Sendable {
-    /// Status the published error answers with.
-    var status: UInt { get }
-    /// Exact published body bytes, in legacy key order.
-    var bodyJSON: String { get }
-    /// Response headers verbatim; `Content-Length` is added by the projection.
-    var responseHeaders: [String: String] { get }
-}
-
-public extension OrderedBodyDomainError {
     var responseHeaders: [String: String] { [:] }
 }

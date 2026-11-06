@@ -245,7 +245,13 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                     from: Data(raw.utf8)
                 )) ?? ProductEventOnboardingWizardRequest()
             }
-            return try respond(jsonNoContent: ProductFeedbackSubmissionError.self) {
+            return try await respond(
+                status: 204,
+                headers: .exact([
+                    "X-Robots-Tag": AppFallback.robotsTag,
+                    "Content-Type": AppFallback.jsonContentType,
+                ])
+            ) {
                 try services.emailAccounts.productFeedbackSubmissions.recordOnboardingWizard(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",

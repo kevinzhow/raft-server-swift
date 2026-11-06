@@ -99,14 +99,13 @@ public struct FeedbackFeature: RouteCollection, Sendable {
                     ?? ""
             )
             return try await respond(
-                errors: ProductFeedbackSubmissionError.self,
                 status: 201,
                 headers: { receipt in
-                    [
+                    .exact([
                         "Content-Type": AppFallback.jsonContentType,
                         "Cache-Control": "no-store",
                         "Server-Timing": receipt.serverTiming,
-                    ]
+                    ])
                 }
             ) {
                 try await services.emailAccounts.productFeedbackSubmissions.submit(submission)
