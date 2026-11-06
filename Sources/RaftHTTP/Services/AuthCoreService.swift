@@ -896,6 +896,14 @@ extension EmailLoginDirectory {
         FeedbackLocatorService(directory: self)
     }
 
+    /// The served-inbox surface: the channel message page and its sync cursor,
+    /// the mention-delivery diagnostics and the Done inbox page. The directory
+    /// supplies the message and channel stores, the OAuth ledger, and the
+    /// cross-domain closures the service takes at `init`.
+    public var inboxAndWake: InboxAndWakeService {
+        InboxAndWakeService(directory: self)
+    }
+
     public var sessionCount: Int {
         lock.lock()
         defer { lock.unlock() }

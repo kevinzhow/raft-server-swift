@@ -38,7 +38,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
         let humanMessageCreate = HumanMessageCreateService(directory: services.emailAccounts)
         let searchMentions = SearchMentionsService(directory: services.emailAccounts)
         let inboxRealtime = ReactionsRealtimeService(directory: services.emailAccounts)
-        let inbox = InboxAndWakeService(directory: services.emailAccounts)
+        let inbox = services.emailAccounts.inboxAndWake
         readMutations.post { request async throws -> Response in
             // A typed body re-encodes through the DTO so the directory's
             // fingerprinting parser reads the same keys; a body that does not
@@ -113,12 +113,14 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!]
             ))
         }
-        messages.get(":messageId", "mention-deliveries") { request -> Response in
-            routeResponse(inbox.mentionDeliveries(
-                messageId: request.parameters.get("messageId") ?? "",
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!]
-            ))
+        messages.get(":messageId", "mention-deliveries") { request async throws -> Response in
+            try await respond {
+                try inbox.mentionDeliveries(
+                    messageId: request.parameters.get("messageId") ?? "",
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
+            }
         }
         messages.get(":messageId", "reactions", "actors") { request -> Response in
             routeResponse(services.emailAccounts.listReactionActors(
@@ -178,15 +180,17 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 serverId: serverId
             ))
         }
-        messages.get("channel", ":channelId") { request -> Response in
-            routeResponse(inbox.listChannelMessages(
-                channelId: request.parameters.get("channelId") ?? "",
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                limit: desktopQuery(request.url.query, "limit"),
-                before: desktopQuery(request.url.query, "before"),
-                after: desktopQuery(request.url.query, "after")
-            ))
+        messages.get("channel", ":channelId") { request async throws -> Response in
+            try await respond {
+                try inbox.listChannelMessages(
+                    channelId: request.parameters.get("channelId") ?? "",
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+                    limit: desktopQuery(request.url.query, "limit"),
+                    before: desktopQuery(request.url.query, "before"),
+                    after: desktopQuery(request.url.query, "after")
+                )
+            }
         }
         attachments.get("comments", "counts") { request -> Response in
             routeResponse(services.emailAccounts.attachmentCommentCounts(
@@ -237,14 +241,16 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 )
             }
         }
-        messages.get("sync") { request -> Response in
-            routeResponse(inbox.syncChannelMessages(
-                channelId: desktopQuery(request.url.query, "channel_id"),
-                sinceSeq: desktopQuery(request.url.query, "since_seq"),
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                limit: desktopQuery(request.url.query, "limit")
-            ))
+        messages.get("sync") { request async throws -> Response in
+            try await respond {
+                try inbox.syncChannelMessages(
+                    channelId: desktopQuery(request.url.query, "channel_id"),
+                    sinceSeq: desktopQuery(request.url.query, "since_seq"),
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+                    limit: desktopQuery(request.url.query, "limit")
+                )
+            }
         }
         messages.get("search") { request -> Response in
             routeResponse(searchMentions.searchHumanMessages(

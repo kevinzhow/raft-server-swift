@@ -80,6 +80,18 @@ public var errorBody: OrderedJSON? {
 `ResponseHeaders.standard(extra:)` merges the published header set;
 `.exact(…)` replaces it (the domain owns `Content-Type`/`Retry-After`).
 
+## Composition: a typed tree around an unmigrated fragment
+
+A migrated service can own the outer member order while one nested value is
+still rendered by a domain that has not migrated. The fragment enters the
+service as a closure returning `OrderedJSON` (wired in the directory accessor)
+and the DTO places it at the published position; the closure renders it with
+`OrderedJSON.raw` from the existing projection. The container's delimiters stay
+the DTO's: a fragment array is `[<members>]`, a fragment object `{<members>}`,
+so an empty page still prints `[]` / `{}`. This is the canonical API, not a new
+type: `InboxAndWakeDTO` uses it for the reaction buckets, forward metadata,
+action-card metadata and thread summaries the inbox page embeds.
+
 ## Extension: a 204 with a header policy
 
 `respond(_:)` publishes the bare `Content-Length: 0` 204. The onboarding-wizard
