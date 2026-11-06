@@ -163,31 +163,3 @@ private func taskBody(_ fixture: IdemFixture, _ title: String, extra: String = "
         }
     }
 }
-
-@Test func idempotencyLedgerPrunesOnlyExpiredRowsInBoundedBatches() async throws {
-    var fixture = IdemFixture()
-    try fixture.seed()
-    let accounts = fixture.accounts
-    try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
-        try await app.testing { client in
-            for index in 0..<7 {
-                let response = try await post(client, fixture, "tasks", taskBody(fixture, "expired-\(index)").replacingOccurrences(of: "KEY", with: "expired-\(index)"))
-                #expect(response.status == .ok)
-            }
-            accounts.ageAgentApiIdempotencyKeysForTesting(agentId: fixture.agentId, seconds: 24 * 60 * 60 + 3600)
-            for index in 0..<2 {
-                let response = try await post(client, fixture, "tasks", taskBody(fixture, "live-\(index)").replacingOccurrences(of: "KEY", with: "live-\(index)"))
-                #expect(response.status == .ok)
-            }
-            let keysBefore = accounts.agentApiIdempotencyKeysForTesting(agentId: fixture.agentId, route: "taskCreate")
-            #expect(keysBefore.count == 9)
-            #expect(accounts.pruneAgentApiIdempotencyKeysForTesting(batchSize: 3, maxBatches: 2) == 6)
-            #expect(accounts.agentApiIdempotencyKeysForTesting(agentId: fixture.agentId, route: "taskCreate").count == 3)
-            #expect(accounts.pruneAgentApiIdempotencyKeysForTesting(batchSize: 3, maxBatches: 2) == 1)
-            let remaining = accounts.agentApiIdempotencyKeysForTesting(agentId: fixture.agentId, route: "taskCreate").sorted()
-            #expect(remaining == ["live-0", "live-1"])
-            #expect(accounts.pruneAgentApiIdempotencyKeysForTesting(batchSize: 3, maxBatches: 2) == 0)
-        }
-    }
-}

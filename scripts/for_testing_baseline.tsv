@@ -1,8 +1,4 @@
 Sources/RaftHTTP/PublicServerDirectory.swift	1
-Sources/RaftHTTP/Services/ActionCardIntegrationRegisterService.swift	2
-Sources/RaftHTTP/Services/ActionCardMarketplaceService.swift	1
-Sources/RaftHTTP/Services/ActionCardPrepareService.swift	2
-Sources/RaftHTTP/Services/ActionCardService.swift	1
 Sources/RaftHTTP/Services/AgentHostedMigrationService.swift	3
 Sources/RaftHTTP/Services/AgentMachineMigrationControlService.swift	12
 Sources/RaftHTTP/Services/AgentMigrationStatusService.swift	3
@@ -15,11 +11,6 @@ Sources/RaftHTTP/Services/FeedbackLocatorService.swift	2
 Sources/RaftHTTP/Services/FeedbackService.swift	6
 Sources/RaftHTTP/Services/JoinLinksAndInvitesService.swift	4
 Sources/RaftHTTP/Services/MachinesAndHostedRuntimeService.swift	9
-Sources/RaftHTTP/Services/ManagedMCPAgentCatalogService.swift	17
-Sources/RaftHTTP/Services/ManagedMCPAssignmentsService.swift	2
-Sources/RaftHTTP/Services/ManagedMCPControlPlaneService.swift	2
-Sources/RaftHTTP/Services/ManagedMCPOAuthService.swift	9
-Sources/RaftHTTP/Services/ManagedMCPToolExecutionService.swift	9
 Sources/RaftHTTP/Services/RuntimeFormsAndProbesService.swift	14
 Sources/RaftHTTP/Services/RuntimeUsageAndAttestationsService.swift	1
 Sources/RaftHTTP/Services/ServerProfileAndOrderService.swift	6

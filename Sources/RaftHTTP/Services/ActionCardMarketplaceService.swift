@@ -292,17 +292,6 @@ extension EmailLoginDirectory {
         return Self.json(200, taskJSON(task))
     }
 
-
-
-
-    public func setAgentInboxAvailableForTesting(_ value: Bool?) {
-        lock.lock()
-        agentInboxAvailable = value
-        lock.unlock()
-    }
-
-
-
     /// `GET /internal/agent-api/inbox/conversations`.
     public func agentInboxConversations(
         authorization: String?,
@@ -558,8 +547,6 @@ extension EmailLoginDirectory {
     /// `@name` outside markdown code becomes the plain `user:name` label;
     /// backticked spans are literal data and keep their shape.
 
-
-
     func marketplaceInstallActionJSON(_ card: MarketplaceInstallCard, includeDraftHint: Bool = true) -> String {
         let scopes = card.scopes.map(jsonString).joined(separator: ",")
         let draftHint = includeDraftHint
@@ -691,7 +678,6 @@ extension EmailLoginDirectory {
         lock.unlock()
         return messageId
     }
-
 
     func executeIntegrationRegisterCard(
         _ card: IntegrationRegisterCard,

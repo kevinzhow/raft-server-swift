@@ -52,8 +52,6 @@ extension EmailLoginDirectory {
         return "{\"tasks\":[\("\(items)")]}"
     }
 
-
-
     func fullTaskJSON(_ task: TaskRecord, channelName: String, channelType: String) -> String {
         let description = task.description.map { jsonString($0) } ?? "null"
         return "{\"id\":\(jsonString(task.id)),\"channelId\":\(jsonString(task.channelId)),\"channelName\":\(jsonString(channelName)),\"channelType\":\(jsonString(channelType)),\"title\":\(jsonString(task.title)),\"description\":\(description),\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber),\"messageId\":\(jsonString(task.messageId)),\"revision\":\(task.revision)}"
@@ -99,37 +97,7 @@ extension EmailLoginDirectory {
         return "{\"channelId\":\(jsonString(task.channelId)),\"channelName\":\(jsonString(channelName)),\"channelType\":\(jsonString(channelType)),\"claimedAt\":\(claimed),\"claimedById\":\(assignee),\"claimedByName\":\(claimedByName),\"claimedByType\":\(assigneeType),\"completedAt\":\(completed),\"createdAt\":\(createdAt),\"createdById\":\(createdById),\"createdByName\":\(createdByName),\"createdByType\":\(createdByType),\"descriptionBytes\":\(descriptionBytes),\"hasDescription\":\(hasDescription),\"id\":\(jsonString(task.id)),\"isLegacy\":false,\"messageId\":\(jsonString(task.messageId)),\"readOnlyReason\":null,\"revision\":\(task.revision),\"source\":\"tasks\",\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber),\"title\":\(jsonString(task.title)),\"updatedAt\":\(updated)}"
     }
 
-
-
-
-
-
-
-
-    public func taskRevisionForTesting(taskId: String) -> Int? {
-        lock.lock()
-        defer { lock.unlock() }
-        return taskRecords.first(where: { $0.id == taskId })?.revision
-    }
-
-    public func taskClaimedAtForTesting(taskId: String) -> Date? {
-        lock.lock()
-        defer { lock.unlock() }
-        return taskRecords.first(where: { $0.id == taskId })?.claimedAt
-    }
-
-    public func setTaskStatusForTesting(taskId: String, status: String) {
-        lock.lock()
-        if let index = taskRecords.firstIndex(where: { $0.id == taskId }) {
-            taskRecords[index].status = status
-        }
-        lock.unlock()
-    }
-
-
     static let agentApiIdempotencyTTL: TimeInterval = 24 * 60 * 60
-
-
 
     func agentApiIdempotencyReply(agentId: String, route: String, object: [String: Any]) -> HTTPReply? {
         let rawKey = (object["idempotencyKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -166,104 +134,6 @@ extension EmailLoginDirectory {
             status: reply.status, responseBody: reply.body, createdAt: Date()
         ))
         lock.unlock()
-    }
-
-    public func taskCountForTesting(channelId: String) -> Int {
-        lock.lock(); defer { lock.unlock() }
-        return taskRecords.filter { $0.channelId == channelId }.count
-    }
-
-    public func actionCardCountForTesting(agentId: String) -> Int {
-        lock.lock(); defer { lock.unlock() }
-        return actionCardRecords.values.filter { $0.requesterAgentId == agentId }.count
-    }
-
-    public func agentApiIdempotencyKeysForTesting(agentId: String, route: String) -> [String] {
-        lock.lock(); defer { lock.unlock() }
-        return agentApiIdempotencyKeys.filter { $0.agentId == agentId && $0.route == route }.map(\.key)
-    }
-
-    public func ageAgentApiIdempotencyKeysForTesting(agentId: String, seconds: TimeInterval) {
-        lock.lock()
-        for index in agentApiIdempotencyKeys.indices where agentApiIdempotencyKeys[index].agentId == agentId {
-            agentApiIdempotencyKeys[index].createdAt = agentApiIdempotencyKeys[index].createdAt.addingTimeInterval(-seconds)
-        }
-        lock.unlock()
-    }
-
-    @discardableResult
-    public func pruneAgentApiIdempotencyKeysForTesting(now: Date = Date(), batchSize: Int = 3, maxBatches: Int = Int.max) -> Int {
-        var deleted = 0
-        var batches = 0
-        lock.lock()
-        while batches < maxBatches {
-            let expired = agentApiIdempotencyKeys.enumerated()
-                .filter { now.timeIntervalSince($0.element.createdAt) >= Self.agentApiIdempotencyTTL }
-                .sorted { $0.element.createdAt < $1.element.createdAt }
-            guard !expired.isEmpty else { break }
-            let slice = expired.prefix(max(1, batchSize))
-            for entry in slice.reversed() { agentApiIdempotencyKeys.remove(at: entry.offset) }
-            deleted += slice.count
-            batches += 1
-            if slice.count < batchSize { break }
-        }
-        lock.unlock()
-        return deleted
-    }
-
-    public func assigneeChangeEventsForTesting(taskId: String) -> [(
-        assigneeId: String?, assigneeType: String?, previousAssigneeId: String?,
-        previousAssigneeType: String?, actorType: String, actorId: String
-    )] {
-        lock.lock()
-        defer { lock.unlock() }
-        return assigneeChangeEvents.filter { $0.taskId == taskId }.map {
-            ($0.assigneeId, $0.assigneeType, $0.previousAssigneeId, $0.previousAssigneeType, $0.actorType, $0.actorId)
-        }
-    }
-
-    public func taskStatusForTesting(taskId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return taskRecords.first { $0.id == taskId }?.status
-    }
-
-    public func taskCompletedAtForTesting(taskId: String) -> Date? {
-        lock.lock()
-        defer { lock.unlock() }
-        return taskRecords.first { $0.id == taskId }?.completedAt
-    }
-
-    public func taskClosedAtForTesting(taskId: String) -> Date? {
-        lock.lock()
-        defer { lock.unlock() }
-        return taskRecords.first { $0.id == taskId }?.closedAt
-    }
-
-    public func setTaskAssigneeForTesting(taskId: String, type: String, id: String) {
-        lock.lock()
-        if let index = taskRecords.firstIndex(where: { $0.id == taskId }) {
-            taskRecords[index].assigneeType = type
-            taskRecords[index].assigneeId = id
-            taskRecords[index].claimedAt = Date()
-        }
-        lock.unlock()
-    }
-
-    public func reopenTaskForTesting(taskId: String, status: String) {
-        lock.lock()
-        if let index = taskRecords.firstIndex(where: { $0.id == taskId }) {
-            taskRecords[index].status = status
-            taskRecords[index].completedAt = nil
-            taskRecords[index].closedAt = nil
-        }
-        lock.unlock()
-    }
-
-    public func taskEventTypesForTesting(taskId: String) -> [(eventType: String, actorType: String)] {
-        lock.lock()
-        defer { lock.unlock() }
-        return taskEvents.filter { $0.taskId == taskId }.map { ($0.eventType, $0.actorType) }
     }
 
     func closeOrphanTasksLocked(channelId: String, now: Date) {
@@ -322,9 +192,6 @@ extension EmailLoginDirectory {
         return reminderRecords.filter { agentIds.contains($0.ownerAgentId) }
     }
 
-
-
-
     public enum ReminderMutationOutcome: Sendable {
         case ok(version: Int)
         case notFound
@@ -371,12 +238,6 @@ extension EmailLoginDirectory {
         defer { lock.unlock() }
         guard let reminder = reminderRecords.first(where: { $0.id == id }) else { return nil }
         return (reminder.status, reminder.version, reminder.title, reminder.fireAt)
-    }
-
-    public func appReminderEventsForTesting(reminderId: String) -> [(type: String, version: Int)] {
-        lock.lock()
-        defer { lock.unlock() }
-        return reminderEvents.filter { $0.reminderId == reminderId }.map { ($0.type, $0.version) }
     }
 
     public func cancelAppReminder(reminderId: String, ownerAgentId: String, expectedVersion: Int) -> ReminderMutationOutcome {
@@ -455,13 +316,6 @@ extension EmailLoginDirectory {
         return (rows, false)
     }
 
-    public func fireAppReminderForTesting(reminderId: String) -> ReminderMutationOutcome {
-        mutateAppReminder(reminderId: reminderId, ownerAgentId: ownerAgentIdForReminder(reminderId) ?? "",
-                          expectedVersion: appReminderRow(id: reminderId)?.version ?? 0, type: "fired") { reminder in
-            reminder.status = "fired"
-        }
-    }
-
     public func agentIdForReminderTesting(reminderId: String) -> String? {
         ownerAgentIdForReminder(reminderId)
     }
@@ -503,7 +357,6 @@ extension EmailLoginDirectory {
         }
         return agent
     }
-
 
     public func legacyReminderList(authorization: String?, agentId: String, status: String?) -> HTTPReply {
         guard let machine = legacyReminderMachine(authorization) else {
@@ -628,7 +481,6 @@ extension EmailLoginDirectory {
         )
         return reminderMutationReply(outcome, reminderId: reminderId, ownerAgentId: agentId)
     }
-
 
     public func legacyReminderLog(authorization: String?, agentId: String, reminderId: String) -> HTTPReply {
         guard legacyReminderMachine(authorization) != nil else { return Self.json(401, "{\"error\":\"Unauthorized\"}") }
