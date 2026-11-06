@@ -14,8 +14,13 @@ public protocol DomainError: Error, Sendable {
     var errorMessage: String { get }
     /// Extra response headers; the default JSON header set needs none.
     var responseHeaders: [String: String] { get }
+    /// Optional machine-readable `code` appended to the error body. The
+    /// default keeps the plain `{"error": …}` bytes every existing domain
+    /// publishes.
+    var errorCode: String? { get }
 }
 
 public extension DomainError {
     var responseHeaders: [String: String] { [:] }
+    var errorCode: String? { nil }
 }

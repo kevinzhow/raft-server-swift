@@ -401,16 +401,15 @@ public struct MessagingFeature: RouteCollection, Sendable {
             ))
         }
         tasks.post("channel", ":channelId") { request async throws -> Response in
-            let channelId = request.parameters.get("channelId") ?? ""
             let body = try await request.bodyText()
-            let reply = services.emailAccounts.createChannelTasks(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: channelId,
-                body: body
-            )
-            publishTaskCreated(reply, channelId: channelId, body: body, services: services)
-            return routeResponse(reply)
+            return try respond {
+                try services.channelMessaging.createChannelTasks(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: request.parameters.get("channelId") ?? "",
+                    body: body
+                )
+            }
         }
         tasks.delete(":taskId") { request -> Response in
             routeResponse(services.emailAccounts.deleteTask(
@@ -440,7 +439,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 taskId: request.parameters.get("taskId") ?? ""
             )
-            publishTaskUpdated(reply, services: services)
+            services.channelMessaging.publishTaskUpdated(status: reply.status, replyBody: reply.body)
             return routeResponse(reply)
         }
         tasks.patch(":taskId", "status") { request async throws -> Response in
@@ -548,31 +547,6 @@ private func parseAttachmentMultipart(data: Data, boundary: String) -> (channelI
     }
     guard let channelId, !channelId.isEmpty else { return nil }
     return (channelId, files)
-}
-
-private func publishTaskUpdated(_ reply: HTTPReply, services: FallbackServices) {
-    guard reply.status == 200,
-          let emit = services.emailAccounts.realtimeEmitter,
-          let event = ChannelMessagingService.taskUpdatedEvent(fromReplyBody: reply.body)
-    else { return }
-    emit("channel:\(event.channelId)", "task:updated", event.payloadJSON)
-}
-
-private func publishTaskCreated(
-    _ reply: HTTPReply,
-    channelId: String,
-    body: String,
-    services: FallbackServices
-) {
-    guard reply.status == 200,
-          let emit = services.emailAccounts.realtimeEmitter,
-          let event = ChannelMessagingService.taskCreatedEvent(
-              replyBody: reply.body,
-              requestBody: body,
-              channelId: channelId
-          )
-    else { return }
-    emit("channel:\(event.channelId)", "task:created", event.payloadJSON)
 }
 
 private func vaporStreamingResponse(_ reply: HTTPReply) -> Response {

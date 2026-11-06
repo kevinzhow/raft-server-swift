@@ -18,7 +18,7 @@ func respond<DTO: Encodable>(
     } catch let error as any DomainError {
         return routeResponse(try jsonReply(
             status: error.status,
-            payload: ErrorBody(error: error.errorMessage),
+            payload: ErrorBody(error: error.errorMessage, code: error.errorCode),
             extraHeaders: error.responseHeaders
         ))
     }
@@ -26,8 +26,18 @@ func respond<DTO: Encodable>(
 
 /// The upstream `{"error": …}` body. Domains with a richer published shape get
 /// their own DTO and a second mapping overload rather than JSON in the service.
+///
+/// `code` is omitted when the domain publishes none, so every existing error
+/// keeps the exact `{"error": …}` bytes. When present it is appended after
+/// `error`, the order the archive reply uses.
 private struct ErrorBody: Encodable {
     let error: String
+    let code: String?
+
+    init(error: String, code: String? = nil) {
+        self.error = error
+        self.code = code
+    }
 }
 
 /// The exact header set the auth surface already publishes for JSON replies.
