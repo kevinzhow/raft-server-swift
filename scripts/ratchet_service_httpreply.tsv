@@ -1,4 +1,3 @@
-Sources/RaftHTTP/Services/AgentsLifecycleService.swift	28
 Sources/RaftHTTP/Services/AttachmentsAndNotificationsService.swift	25
 Sources/RaftHTTP/Services/AuthCoreService.swift	13
 Sources/RaftHTTP/Services/ManagedMCPAssignmentsService.swift	19

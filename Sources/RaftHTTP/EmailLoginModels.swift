@@ -325,40 +325,6 @@ struct AttachedComputer {
         let apiKey: String
     }
 
-struct AgentLifecycleActor {
-        var userId: String
-        var role: String
-        var info: OAuthLedger.AgentManagementInfo
-    }
-
-enum AgentLifecycleCapability {
-        case controlRuntime
-        case deleteAgent
-
-        var denialMessage: String {
-            switch self {
-            case .controlRuntime:
-                return "The `controlAgentRuntime` capability or human creator authority is required to control agents"
-            case .deleteAgent:
-                return "The `deleteAgents` capability or human creator authority is required to delete agents"
-            }
-        }
-
-        func granted(role: String, isCreator: Bool) -> Bool {
-            switch self {
-            case .controlRuntime:
-                return role != "guest" || isCreator
-            case .deleteAgent:
-                return role == "owner" || role == "admin" || isCreator
-            }
-        }
-    }
-
-enum AgentAuthority {
-        case allowed(userId: String, role: String, info: OAuthLedger.AgentManagementInfo)
-        case denied(HTTPReply)
-    }
-
 enum Auth {
         case user(String)
         case rejected(HTTPReply)

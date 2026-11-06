@@ -1146,3 +1146,109 @@ extension AuthProfileStore {
         return accountSurface.accounts.values.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
     }
 }
+
+// MARK: - Session issue, refresh rotation and analytics identity
+
+extension AuthProfileStore {
+    /// Opens one session family and issues its token pair, in one critical
+    /// section (the refresh table, the family row and both token tables change
+    /// together).
+    func openSession(userId: String) -> IssuedSessionTokens {
+        lock.lock()
+        defer { lock.unlock() }
+        return openSessionLocked(userId: userId)
+    }
+
+    /// One refresh-token rotation. With an attempt and an installation id the
+    /// rotation is durable (a receipt lets the same attempt replay the
+    /// successor); otherwise it is the plain one-time rotation that keeps the
+    /// predecessor hash resolvable to its family. The whole decision and every
+    /// write is one critical section, so two concurrent refreshes of the same
+    /// token cannot both rotate it.
+    func rotateRefresh(refreshToken: String, attemptId: String?, installationId: String?) -> RefreshOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        if let attemptId, let installationId {
+            return durableRefreshLocked(
+                refreshToken: refreshToken,
+                attemptId: attemptId,
+                installationId: installationId
+            )
+        }
+        guard let live = accountSurface.sessions[refreshToken],
+              !accountSurface.revokedFamilies.contains(live.familyId)
+        else {
+            return .rejected
+        }
+        accountSurface.sessions.removeValue(forKey: refreshToken)
+        accountSurface.predecessorFamilies[EmailLoginDirectory.sha256(refreshToken)] = live.familyId
+        let successor = EmailLoginDirectory.token()
+        accountSurface.sessions[successor] = live
+        let accessToken = EmailLoginDirectory.token()
+        accountSurface.accessTokens[accessToken] = live.userId
+        accountSurface.accessTokenFamilies[accessToken] = live.familyId
+        return .rotated(IssuedRefresh(accessToken: accessToken, userId: live.userId), successor)
+    }
+
+    private func durableRefreshLocked(
+        refreshToken: String,
+        attemptId: String,
+        installationId: String
+    ) -> RefreshOutcome {
+        let hash = EmailLoginDirectory.sha256(refreshToken)
+        if let live = accountSurface.sessions.removeValue(forKey: refreshToken) {
+            if accountSurface.revokedFamilies.contains(live.familyId) {
+                return .rejected
+            }
+            let successor = EmailLoginDirectory.token()
+            accountSurface.sessions[successor] = live
+            let ciphertext = EmailLoginDirectory.sealSuccessor(successor)
+            accountSurface.rotationReceipts[hash] = RotationReceipt(
+                attemptId: attemptId,
+                installationId: installationId,
+                userId: live.userId,
+                familyId: live.familyId,
+                successor: successor,
+                ciphertext: ciphertext,
+                expiresAt: Date(timeIntervalSinceNow: 15 * 60)
+            )
+            let accessToken = EmailLoginDirectory.token()
+            accountSurface.accessTokens[accessToken] = live.userId
+            accountSurface.accessTokenFamilies[accessToken] = live.familyId
+            return .rotated(IssuedRefresh(accessToken: accessToken, userId: live.userId), successor)
+        }
+        guard let receipt = accountSurface.rotationReceipts[hash] else { return .rejected }
+        if receipt.attemptId != attemptId || receipt.installationId != installationId { return .rejected }
+        if receipt.expiresAt <= Date() || accountSurface.revokedFamilies.contains(receipt.familyId) {
+            return .rejected
+        }
+        let accessToken = EmailLoginDirectory.token()
+        accountSurface.accessTokens[accessToken] = receipt.userId
+        accountSurface.accessTokenFamilies[accessToken] = receipt.familyId
+        return .rotated(IssuedRefresh(accessToken: accessToken, userId: receipt.userId), receipt.successor)
+    }
+
+    /// The user's analytics id, minted on first use. Lookup and mint are one
+    /// critical section, so two concurrent first events share one id.
+    func analyticsId(userId: String) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        if let existing = accountSurface.analyticsIds[userId] { return existing }
+        let minted = UUID().uuidString.lowercased()
+        accountSurface.analyticsIds[userId] = minted
+        return minted
+    }
+
+    /// Resolves a `push/family-revoke` capability (`<familyId>.<nonce>`)
+    /// without consuming it.
+    func familyRevokeTarget(capability: String) -> (userId: String, familyId: String)? {
+        let parts = capability.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 2 else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let familyId = accountSurface.sessionFamilies.first(where: { $0.value.revokeCapabilityNonce == parts[1] })?.key,
+              let family = accountSurface.sessionFamilies[familyId]
+        else { return nil }
+        return (family.userId, familyId)
+    }
+}

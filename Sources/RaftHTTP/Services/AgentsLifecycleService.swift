@@ -1,215 +1,162 @@
-import Crypto
 import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
+import RaftShared
 
-/// `HTTPReply` is already the value a route returns on a denial. With `Error`
-/// conformance the typed service entry points can report
-/// `Result<Success, HTTPReply>` without inventing a second error type.
-extension HTTPReply: Error {}
+// MARK: - Injected dependencies
 
-/// Agent lifecycle: the session/device core shared by `api/agent/login`,
-/// attachment upload and visibility, client product events, and the agent
-/// authority/lifecycle gates the runtime routes consult.
+/// What the agent lifecycle surface needs from domains that have not migrated.
 ///
-/// These handlers were lifted from `EmailLogin+Agents1.swift`. They stay on
-/// `EmailLoginDirectory` because the directory owns the lock and the domain
-/// stores; `AgentsLifecycleService` is the named, `Sendable` handle for the
-/// domain.
-
-public struct AgentsLifecycleService: Sendable {
-    public let directory: EmailLoginDirectory
-
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
-    }
+/// The agent credential use stamp belongs to the agent private surface, and the
+/// joint-channel projection lookup to the profile/channel-files helpers; both
+/// enter as closures wired by `EmailLoginDirectory.agentsLifecycle`. The
+/// environment and the clock are injectable so a test can pin them.
+struct AgentsLifecycleDependencies: Sendable {
+    var recordAgentCredentialUse: @Sendable (_ token: String) -> Void
+    var jointLocalChannelId: @Sendable (_ canonicalChannelId: String, _ serverId: String?, _ userId: String) -> String?
+    var environment: @Sendable () -> [String: String] = { ProcessInfo.processInfo.environment }
+    var now: @Sendable () -> Date = { Date() }
 }
 
-extension EmailLoginDirectory {
+// MARK: - Service
 
-    func deviceSurfaceDisabled() -> HTTPReply? {
-        if Self.deviceLoginEnabled(deviceLoginGate) { return nil }
-        return Self.json(404, "{\"error\":\"Device login is not enabled\",\"code\":\"device_login_disabled\"}")
+/// Agent lifecycle: the session and credential gates the runtime routes consult,
+/// attachment upload/visibility/read, channel files, client product events, the
+/// Computer preflight and the runtime-provider probe.
+///
+/// The service owns the orchestration and returns the published DTOs; every
+/// refusal is an `AgentsLifecycleError`. It builds no HTTP reply or header set.
+/// A multi-row write (the client-event admission, the session rotation, the
+/// analytics id mint) is one store critical section.
+public struct AgentsLifecycleService: Sendable {
+    let profiles: AuthProfileStore
+    let agents: AgentsRuntimeStore
+    let machines: MachinesAndComputersStore
+    let channels: ServersAndChannelsStore
+    let messages: MessagesAndThreadsStore
+    let inboxFacts: InboxFactStore
+    let productEvents: ProductEventStore
+    let oauth: OAuthLedger
+    let dependencies: AgentsLifecycleDependencies
+
+    init(
+        profiles: AuthProfileStore,
+        agents: AgentsRuntimeStore,
+        machines: MachinesAndComputersStore,
+        channels: ServersAndChannelsStore,
+        messages: MessagesAndThreadsStore,
+        inboxFacts: InboxFactStore,
+        productEvents: ProductEventStore,
+        oauth: OAuthLedger,
+        dependencies: AgentsLifecycleDependencies
+    ) {
+        self.profiles = profiles
+        self.agents = agents
+        self.machines = machines
+        self.channels = channels
+        self.messages = messages
+        self.inboxFacts = inboxFacts
+        self.productEvents = productEvents
+        self.oauth = oauth
+        self.dependencies = dependencies
     }
 
-    func deviceVerification(userCode: String) -> (uri: String, complete: String)? {
-        let trimmed = appURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return nil }
-        let base = trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
-        let uri = "\(base)/login/device"
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.!~*'()"))
-        let encoded = userCode.addingPercentEncoding(withAllowedCharacters: allowed) ?? userCode
-        return (uri, "\(uri)?user_code=\(encoded)")
+    // MARK: - Shared gates
+
+    private static let bearerPrefix = "Bearer "
+
+    private static func bearerToken(_ authorization: String?) -> String? {
+        guard let authorization, authorization.hasPrefix(bearerPrefix) else { return nil }
+        return String(authorization.dropFirst(bearerPrefix.count))
     }
 
-    func makeUserCode() -> String {
-        let alphabet = Array("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
-        var chars = ""
-        for _ in 0..<8 {
-            chars.append(alphabet[Int.random(in: 0..<alphabet.count)])
+    /// The user id behind a live access token. A missing or unknown bearer, or a
+    /// revoked session family, is nil.
+    public func sessionUserId(authorization: String?) -> String? {
+        guard let token = Self.bearerToken(authorization) else { return nil }
+        return profiles.userId(forAccessToken: token)
+    }
+
+    private func requireUser(_ authorization: String?) throws -> String {
+        guard let userId = sessionUserId(authorization: authorization) else {
+            throw AgentsLifecycleError.unauthorized
         }
-        return "\(chars.prefix(4))-\(chars.dropFirst(4))"
+        return userId
     }
 
-    /// Opens one session family. The caller already holds `lock`.
-    func openSessionLocked(userId: String) -> (accessToken: String, refreshToken: String) {
-        let familyId = UUID().uuidString.lowercased()
-        sessionFamilies[familyId] = SessionFamily(userId: userId, revokedAt: nil)
-        let accessToken = Self.token()
-        let refreshToken = Self.token()
-        sessions[refreshToken] = LiveSession(userId: userId, familyId: familyId)
-        accessTokens[accessToken] = userId
-        accessTokenFamilies[accessToken] = familyId
-        return (accessToken, refreshToken)
+    /// The bearer credential of an agent, marking its use.
+    private func agentCredential(_ authorization: String?) -> (agentId: String, scopes: [String])? {
+        guard let token = Self.bearerToken(authorization) else { return nil }
+        return agents.useAgentCredential(token: token, now: dependencies.now())
     }
 
-    /// Retirement auth keeps the access token after the account is retired. A missing bearer is the invalid-token body.
-    func retirementActor(_ authorization: String?) -> String? {
-        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        let id = accessTokens[token]
-        lock.unlock()
+    private func requireUploadsEnabled() throws {
+        let gate = (dependencies.environment()["ATTACHMENT_UPLOAD_ENABLED"] ?? "true")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if ["false", "0", "off"].contains(gate) { throw AgentsLifecycleError.uploadsDisabled }
+    }
+
+    private func uploadLimit(serverId: String) -> Int {
+        let plan = oauth.serverProfile(id: serverId)?.plan ?? "free"
+        return plan == "free" ? 50 * 1024 * 1024 : 200 * 1024 * 1024
+    }
+
+    private func insertAttachment(
+        channelId: String,
+        uploaderId: String,
+        uploaderType: String = "user",
+        filename: String,
+        mimeType: String?,
+        sizeBytes: Int
+    ) -> String {
+        let id = UUID().uuidString.lowercased()
+        messages.insertAttachment(ChannelAttachment(
+            id: id,
+            channelId: channelId,
+            uploaderId: uploaderId,
+            filename: filename,
+            messageId: nil,
+            messagePosition: nil,
+            mimeType: mimeType,
+            sizeBytes: sizeBytes,
+            uploaderType: uploaderType
+        ))
         return id
     }
 
-    func refreshLocked(refreshToken: String, attemptId: String?, installationId: String?) -> RefreshOutcome {
-        if let attemptId, let installationId {
-            return durableRefreshLocked(refreshToken: refreshToken, attemptId: attemptId, installationId: installationId)
-        }
-        guard let live = sessions[refreshToken], !revokedFamilies.contains(live.familyId) else {
-            return .rejected
-        }
-        sessions.removeValue(forKey: refreshToken)
-        predecessorFamilies[Self.sha256(refreshToken)] = live.familyId
-        let successor = Self.token()
-        sessions[successor] = live
-        let accessToken = Self.token()
-        accessTokens[accessToken] = live.userId
-        accessTokenFamilies[accessToken] = live.familyId
-        return .rotated(IssuedRefresh(accessToken: accessToken, userId: live.userId), successor)
+    // MARK: - Agent credential identity
+
+    /// Typed credential resolution for the knowledge routes.
+    public func resolveAgentApiIdentity(authorization: String?) throws -> AgentApiIdentityDTO {
+        try agentApiIdentity(authorization: authorization).identity
     }
 
-    func durableRefreshLocked(refreshToken: String, attemptId: String, installationId: String) -> RefreshOutcome {
-        let hash = Self.sha256(refreshToken)
-        if let live = sessions.removeValue(forKey: refreshToken) {
-            if revokedFamilies.contains(live.familyId) {
-                return .rejected
-            }
-            let successor = Self.token()
-            sessions[successor] = live
-            let ciphertext = Self.sealSuccessor(successor)
-            rotationReceipts[hash] = RotationReceipt(
-                attemptId: attemptId,
-                installationId: installationId,
-                userId: live.userId,
-                familyId: live.familyId,
-                successor: successor,
-                ciphertext: ciphertext,
-                expiresAt: Date(timeIntervalSinceNow: 15 * 60)
-            )
-            let accessToken = Self.token()
-            accessTokens[accessToken] = live.userId
-            accessTokenFamilies[accessToken] = live.familyId
-            return .rotated(IssuedRefresh(accessToken: accessToken, userId: live.userId), successor)
+    /// `GET /internal/agent-api`. The credential use is recorded after the token
+    /// check and before the agent lookup, as upstream does.
+    public func agentApiIdentity(authorization: String?) throws -> AgentApiCredentialResponse {
+        guard let token = Self.bearerToken(authorization) else {
+            throw AgentsLifecycleError.invalidOrExpiredToken
         }
-        guard let receipt = rotationReceipts[hash] else { return .rejected }
-        if receipt.attemptId != attemptId || receipt.installationId != installationId { return .rejected }
-        if receipt.expiresAt <= Date() || revokedFamilies.contains(receipt.familyId) { return .rejected }
-        let accessToken = Self.token()
-        accessTokens[accessToken] = receipt.userId
-        accessTokenFamilies[accessToken] = receipt.familyId
-        return .rotated(IssuedRefresh(accessToken: accessToken, userId: receipt.userId), receipt.successor)
-    }
-
-    /// Primary env wins when it parses to at least one URI. Otherwise the legacy list replaces the defaults. An empty parse falls through.
-    func configuredMobileReturnURIs() -> Set<String> {
-        let primary = Self.parseConfiguredMobileReturnURIs(mobileOAuthReturnURI)
-        if !primary.isEmpty { return primary }
-        let legacy = Self.parseConfiguredMobileReturnURIs(mobileOAuthAllowedReturnURIs)
-        if !legacy.isEmpty { return legacy }
-        return Self.defaultMobileReturnURIs
-    }
-
-    func guestCanSeeScopeLocked(_ scopeId: String) -> Bool {
-        if postableChannels[scopeId]?.kind == "thread",
-           let parentId = postableChannels[scopeId]?.parentChannelId {
-            return guestVisibleChannels[parentId] ?? true
+        guard let credential = agents.agentCredentials[token], credential.revokedAt == nil else {
+            throw AgentsLifecycleError.invalidOrExpiredToken
         }
-        return guestVisibleChannels[scopeId] ?? true
-    }
-
-    /// The validated credential facts both identity entry points share.
-    private struct AgentApiCredentialProjection {
-        let agentId: String
-        let credentialId: String
-        let serverId: String
-        let scopes: [String]
-    }
-
-    /// Typed credential resolution for internal route features.
-    ///
-    /// The route layer needs `agentId`, `serverId` and `scopes`; it must not
-    /// serialize this projection into a JSON body and parse it again. A denial
-    /// is the exact `HTTPReply` the credential endpoint would have returned, so
-    /// the caller forwards it unchanged.
-    public func resolveAgentApiIdentity(
-        authorization: String?
-    ) -> Result<AgentApiIdentityDTO, HTTPReply> {
-        switch agentApiCredentialProjection(authorization: authorization) {
-        case .success(let credential):
-            return .success(AgentApiIdentityDTO(
-                agentId: credential.agentId,
-                serverId: credential.serverId,
-                scopes: credential.scopes
-            ))
-        case .failure(let reply):
-            return .failure(reply)
+        dependencies.recordAgentCredentialUse(token)
+        guard let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else {
+            throw AgentsLifecycleError.invalidOrExpiredToken
         }
-    }
-
-    public func agentApiIdentity(authorization: String?) -> HTTPReply {
-        switch agentApiCredentialProjection(authorization: authorization) {
-        case .success(let credential):
-            let scopesJSON = credential.scopes.map { jsonString($0) }.joined(separator: ",")
-            return Self.json(200, "{\"agentId\":\(jsonString(credential.agentId)),\"credentialId\":\(jsonString(credential.credentialId)),\"serverId\":\(jsonString(credential.serverId)),\"scopes\":[\(scopesJSON)]}")
-        case .failure(let reply):
-            return reply
-        }
-    }
-
-    /// One validation pass shared by the JSON route and the typed accessor.
-    /// `recordAgentCredentialUse` keeps its upstream position: after the token
-    /// check, before the agent lookup.
-    private func agentApiCredentialProjection(
-        authorization: String?
-    ) -> Result<AgentApiCredentialProjection, HTTPReply> {
-        guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return .failure(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
-        }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        guard let credential = agentCredentials[token], credential.revokedAt == nil else {
-            lock.unlock()
-            return .failure(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
-        }
-        let agentId = credential.agentId
-        let credentialId = credential.id
-        let scopes = credential.scopes.sorted()
-        lock.unlock()
-        recordAgentCredentialUse(token: token)
-        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted else {
-            return .failure(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
-        }
-        return .success(AgentApiCredentialProjection(
-            agentId: agentId,
-            credentialId: credentialId,
+        return AgentApiCredentialResponse(
+            agentId: credential.agentId,
+            credentialId: credential.id,
             serverId: agent.serverId,
-            scopes: scopes
-        ))
+            scopes: credential.scopes.sorted()
+        )
     }
 
+    // MARK: - Attachment upload
+
+    /// `POST /internal/agent-api/upload`.
     public func uploadAgentAttachmentIdless(
         authorization: String?,
         channelId: String,
@@ -217,114 +164,90 @@ extension EmailLoginDirectory {
         mimeType: String?,
         sizeBytes: Int,
         bytes: Data
-    ) -> HTTPReply {
-        let gate = (ProcessInfo.processInfo.environment["ATTACHMENT_UPLOAD_ENABLED"] ?? "true")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        if ["false", "0", "off"].contains(gate) {
-            return Self.json(503, "{\"error\":\"File uploads are disabled on this server\",\"errorCode\":\"ATTACHMENT_UPLOAD_DISABLED\"}")
-        }
-        guard let credential = agentCredentialAgent(authorization),
+    ) throws -> AgentAttachmentUploadResponse {
+        try requireUploadsEnabled()
+        guard let credential = agentCredential(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted,
               credential.scopes.contains("send") || credential.scopes.contains("write")
         else {
-            return Self.json(403, "{\"error\":\"Agent credential is not authorized for this capability\",\"code\":\"capability_not_authorized\"}")
+            throw AgentsLifecycleError.capabilityNotAuthorized
         }
-        lock.lock()
-        let channel = postableChannels[channelId]
-        lock.unlock()
+        let channel = channels.postableChannels[channelId]
         guard let channel, channel.serverId == agent.serverId, channel.deletedAt == nil,
               channel.kind == "channel"
                 || channel.memberIds.contains(agent.id)
                 || oauth.channelAgentIds(channelId: channelId).contains(agent.id)
         else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+            throw AgentsLifecycleError.channelNotFound
         }
-        guard sizeBytes > 0 else {
-            return Self.json(400, "{\"error\":\"Empty files are not allowed\"}")
-        }
-        let plan = oauth.serverProfile(id: agent.serverId)?.plan ?? "free"
-        let maxBytes = plan == "free" ? 50 * 1024 * 1024 : 200 * 1024 * 1024
-        if sizeBytes > maxBytes {
-            return Self.json(413, "{\"error\":\"Max 50MB per file\",\"errorCode\":\"ATTACHMENT_TOO_LARGE\",\"maxBytes\":\(maxBytes)}")
-        }
-        let id = addChannelAttachment(
+        guard sizeBytes > 0 else { throw AgentsLifecycleError.emptyFile }
+        let maxBytes = uploadLimit(serverId: agent.serverId)
+        if sizeBytes > maxBytes { throw AgentsLifecycleError.fileTooLarge(maxBytes: maxBytes) }
+        let id = insertAttachment(
             channelId: channelId,
             uploaderId: agent.id,
+            uploaderType: "agent",
             filename: filename,
             mimeType: mimeType,
             sizeBytes: sizeBytes
         )
-        lock.lock()
-        channelAttachments[id]?.uploaderType = "agent"
-        agentAttachmentBytes[id] = bytes
-        lock.unlock()
-        let mimeJSON = mimeType.map(jsonString) ?? "null"
-        return Self.json(200, "{\"id\":\(jsonString(id)),\"filename\":\(jsonString(filename)),\"mimeType\":\(mimeJSON),\"sizeBytes\":\(sizeBytes),\"thumbnailUrl\":null}")
+        agents.storeAgentAttachmentBytes(id: id, bytes: bytes)
+        return AgentAttachmentUploadResponse(id: id, filename: filename, mimeType: mimeType, sizeBytes: sizeBytes)
     }
 
-    public func agentAttachmentUploadCapabilities(authorization: String?) -> HTTPReply {
-        guard let credential = agentCredentialAgent(authorization),
+    /// `GET /internal/agent-api/attachment-upload-capabilities`.
+    public func agentAttachmentUploadCapabilities(
+        authorization: String?
+    ) throws -> AttachmentUploadCapabilitiesResponse {
+        guard let credential = agentCredential(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted,
               let profile = oauth.serverProfile(id: agent.serverId)
         else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            throw AgentsLifecycleError.invalidOrExpiredToken
         }
-        let limit = profile.plan == "free" ? 50 * 1024 * 1024 : 90 * 1024 * 1024
-        return Self.json(200, "{\"directUploadEnabled\":false,\"directUploadThresholdBytes\":null,\"maxBytes\":\(limit),\"sessionExpiresInSeconds\":null}")
+        return AttachmentUploadCapabilitiesResponse(maxBytes: profile.plan == "free" ? 50 * 1024 * 1024 : 90 * 1024 * 1024)
     }
 
+    /// `POST /api/attachments/upload`.
     public func uploadAttachments(
         authorization: String?,
         serverId: String,
         channelId: String,
-        files: [(filename: String, mimeType: String?, sizeBytes: Int)]
-    ) -> HTTPReply {
-        let gate = (ProcessInfo.processInfo.environment["ATTACHMENT_UPLOAD_ENABLED"] ?? "true")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        if ["false", "0", "off"].contains(gate) {
-            return Self.json(503, "{\"error\":\"File uploads are disabled on this server\",\"errorCode\":\"ATTACHMENT_UPLOAD_DISABLED\"}")
-        }
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
+        files: [AttachmentUploadFile]
+    ) throws -> AttachmentUploadListResponse {
+        try requireUploadsEnabled()
+        let userId = try requireUser(authorization)
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw AgentsLifecycleError.notAMember
         }
-        lock.lock()
-        let channel = postableChannels[channelId]
-        lock.unlock()
+        let channel = channels.postableChannels[channelId]
         guard let channel, channel.serverId == serverId, channel.deletedAt == nil,
               channel.kind == "channel" || channel.memberIds.contains(userId)
         else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+            throw AgentsLifecycleError.channelNotFound
         }
-        guard files.count <= 10 else {
-            return Self.json(400, "{\"error\":\"Max 10 files per message\"}")
-        }
-        for file in files where file.sizeBytes <= 0 {
-            return Self.json(400, "{\"error\":\"Empty files are not allowed\"}")
-        }
-        let plan = oauth.serverProfile(id: serverId)?.plan ?? "free"
-        let maxBytes = plan == "free" ? 50 * 1024 * 1024 : 200 * 1024 * 1024
+        guard files.count <= 10 else { throw AgentsLifecycleError.tooManyFiles }
+        if files.contains(where: { $0.sizeBytes <= 0 }) { throw AgentsLifecycleError.emptyFile }
+        let maxBytes = uploadLimit(serverId: serverId)
         if files.contains(where: { $0.sizeBytes > maxBytes }) {
-            return Self.json(413, "{\"error\":\"Max 50MB per file\",\"errorCode\":\"ATTACHMENT_TOO_LARGE\",\"maxBytes\":\(maxBytes)}")
+            throw AgentsLifecycleError.fileTooLarge(maxBytes: maxBytes)
         }
-        var rows: [String] = []
-        for file in files {
-            let id = addChannelAttachment(
-                channelId: channelId,
-                uploaderId: userId,
-                filename: file.filename,
-                mimeType: file.mimeType,
-                sizeBytes: file.sizeBytes
+        let rows = files.map { file in
+            AttachmentUploadListResponse.Row(
+                id: insertAttachment(
+                    channelId: channelId,
+                    uploaderId: userId,
+                    filename: file.filename,
+                    mimeType: file.mimeType,
+                    sizeBytes: file.sizeBytes
+                ),
+                filename: file.filename
             )
-            rows.append("{\"id\":\(jsonString(id)),\"filename\":\(jsonString(file.filename))}")
         }
-        return Self.json(200, "{\"attachments\":[\(rows.joined(separator: ","))]}")
+        return AttachmentUploadListResponse(attachments: rows)
     }
 
+    /// `POST /internal/agent/:agentId/upload`: the Computer-side machine key.
     public func uploadAgentAttachment(
         authorization: String?,
         agentId: String,
@@ -332,80 +255,78 @@ extension EmailLoginDirectory {
         filename: String,
         mimeType: String?,
         sizeBytes: Int
-    ) -> HTTPReply {
-        let gate = (ProcessInfo.processInfo.environment["ATTACHMENT_UPLOAD_ENABLED"] ?? "true")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        if ["false", "0", "off"].contains(gate) {
-            return Self.json(503, "{\"error\":\"File uploads are disabled on this server\",\"errorCode\":\"ATTACHMENT_UPLOAD_DISABLED\"}")
-        }
-        guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        let machine = machines.first { $0.apiKey == token }
+    ) throws -> AttachmentUploadListResponse {
+        try requireUploadsEnabled()
+        guard let token = Self.bearerToken(authorization) else { throw AgentsLifecycleError.unauthorized }
+        let machine = machines.machines.first { $0.apiKey == token }
         let agent = oauth.agentRuntimeInfo(id: agentId)
-        let assigned = agentMachineIds[agentId]
-        let channel = postableChannels[channelId]
-        lock.unlock()
-        guard let agent, !agent.deleted else {
-            return Self.json(404, "{\"code\":\"agent_missing\",\"error\":\"Agent not found\"}")
-        }
+        let assigned = agents.agentMachineIds[agentId]
+        let channel = channels.postableChannels[channelId]
+        guard let agent, !agent.deleted else { throw AgentsLifecycleError.agentMissing }
         guard let machine, machine.serverId == agent.serverId, assigned == machine.id else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            throw AgentsLifecycleError.forbidden
         }
         guard let channel, channel.serverId == agent.serverId, channel.deletedAt == nil,
-              channel.kind == "channel" || channel.memberIds.contains(agentId) || oauth.channelAgentIds(channelId: channelId).contains(agentId)
+              channel.kind == "channel"
+                || channel.memberIds.contains(agentId)
+                || oauth.channelAgentIds(channelId: channelId).contains(agentId)
         else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+            throw AgentsLifecycleError.channelNotFound
         }
-        guard sizeBytes > 0 else {
-            return Self.json(400, "{\"error\":\"Empty files are not allowed\"}")
-        }
-        let plan = oauth.serverProfile(id: agent.serverId)?.plan ?? "free"
-        let maxBytes = plan == "free" ? 50 * 1024 * 1024 : 200 * 1024 * 1024
-        if sizeBytes > maxBytes {
-            return Self.json(413, "{\"error\":\"Max 50MB per file\",\"errorCode\":\"ATTACHMENT_TOO_LARGE\",\"maxBytes\":\(maxBytes)}")
-        }
-        let id = addChannelAttachment(channelId: channelId, uploaderId: agentId, filename: filename, mimeType: mimeType, sizeBytes: sizeBytes)
-        return Self.json(200, "{\"attachments\":[{\"id\":\(jsonString(id)),\"filename\":\(jsonString(filename))}]}")
+        guard sizeBytes > 0 else { throw AgentsLifecycleError.emptyFile }
+        let maxBytes = uploadLimit(serverId: agent.serverId)
+        if sizeBytes > maxBytes { throw AgentsLifecycleError.fileTooLarge(maxBytes: maxBytes) }
+        let id = insertAttachment(
+            channelId: channelId,
+            uploaderId: agentId,
+            filename: filename,
+            mimeType: mimeType,
+            sizeBytes: sizeBytes
+        )
+        return AttachmentUploadListResponse(attachments: [.init(id: id, filename: filename)])
     }
 
-    public func attachmentUploadSessionCreate(authorization: String?, serverId: String) -> HTTPReply {
-        guard sessionUserId(authorization: authorization) != nil else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    /// `POST /api/attachments/upload-sessions`: direct uploads are not offered,
+    /// so a member is always refused.
+    public func attachmentUploadSessionCreate(authorization: String?, serverId: String) throws -> Never {
+        let userId = try requireUser(authorization)
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            throw AgentsLifecycleError.notAMember
         }
-        guard oauth.memberRole(serverId: serverId, userId: sessionUserId(authorization: authorization) ?? "") != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
-        return Self.json(403, "{\"code\":\"UPLOAD_FORBIDDEN\",\"message\":\"The member cannot upload to this channel.\",\"retryable\":false}")
+        throw AgentsLifecycleError.uploadForbidden
     }
 
-    public func attachmentUploadSessionMissing(authorization: String?, uploadId: String) -> HTTPReply {
-        guard sessionUserId(authorization: authorization) != nil else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        return Self.json(404, "{\"code\":\"UPLOAD_SESSION_NOT_FOUND\",\"message\":\"Upload session not found.\",\"retryable\":false}")
+    /// Every other upload-session verb: a session never exists.
+    public func attachmentUploadSessionMissing(authorization: String?, uploadId: String) throws -> Never {
+        _ = try requireUser(authorization)
+        throw AgentsLifecycleError.uploadSessionNotFound
     }
 
-    public func attachmentUploadCapabilities(authorization: String?, serverId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    /// `GET /api/attachments/upload-capabilities`.
+    public func attachmentUploadCapabilities(
+        authorization: String?,
+        serverId: String
+    ) throws -> AttachmentUploadCapabilitiesResponse {
+        let userId = try requireUser(authorization)
+        guard let profile = oauth.serverProfile(id: serverId),
+              oauth.memberRole(serverId: serverId, userId: userId) != nil
+        else {
+            throw AgentsLifecycleError.notAMember
         }
-        guard let profile = oauth.serverProfile(id: serverId), oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
-        let limit = profile.plan == "free" ? 50 * 1024 * 1024 : 90 * 1024 * 1024
-        return Self.json(200, "{\"directUploadEnabled\":false,\"directUploadThresholdBytes\":null,\"maxBytes\":\(limit),\"sessionExpiresInSeconds\":null}")
+        return AttachmentUploadCapabilitiesResponse(maxBytes: profile.plan == "free" ? 50 * 1024 * 1024 : 90 * 1024 * 1024)
     }
 
-    /// Visibility projection for callers that already hold the directory lock.
-    func visibleAttachmentUnlocked(userId: String, serverId: String?, attachment: ChannelAttachment) -> Bool {
+    // MARK: - Attachment and channel visibility
+
+    /// Visibility for callers that only follow the message into its own channel
+    /// (no joint-channel projection).
+    func canSeeAttachmentIgnoringJoint(userId: String, serverId: String?, attachment: ChannelAttachment) -> Bool {
+        let rows = messages.humanMessageRows
+        let channelRows = channels.postableChannels
         let effectiveChannelId = attachment.messageId.flatMap { messageId in
-            humanMessageRows.first { $0.id == messageId }?.channelId
+            rows.first { $0.id == messageId }?.channelId
         } ?? attachment.channelId
-        if let channel = postableChannels[effectiveChannelId],
+        if let channel = channelRows[effectiveChannelId],
            channel.serverId == serverId,
            channel.deletedAt == nil {
             return channel.kind == "channel" || channel.memberIds.contains(userId)
@@ -414,115 +335,126 @@ extension EmailLoginDirectory {
         return oauth.memberRole(serverId: serverId, userId: userId) != nil
     }
 
-    func visibleAttachment(userId: String, serverId: String?, attachment: ChannelAttachment) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        // A linked attachment follows its message into a joint canonical
-        // channel; an unlinked draft stays on its upload channel.
+    /// The attachment-visibility policy. A linked attachment follows its message
+    /// into a joint canonical channel; an unlinked draft stays on its upload
+    /// channel.
+    func canSeeAttachment(userId: String, serverId: String?, attachment: ChannelAttachment) -> Bool {
+        let rows = messages.humanMessageRows
+        let channelState = channels.state
+        let channelRows = channelState.postableChannels
+        let projections = channelState.jointProjections
         let effectiveChannelId = attachment.messageId.flatMap { messageId in
-            humanMessageRows.first { $0.id == messageId }?.channelId
+            rows.first { $0.id == messageId }?.channelId
         } ?? attachment.channelId
-        if let channel = postableChannels[effectiveChannelId],
+        if let channel = channelRows[effectiveChannelId],
            channel.serverId == serverId,
            channel.deletedAt == nil {
             return channel.kind == "channel" || channel.memberIds.contains(userId)
         }
         guard let serverId, let messageId = attachment.messageId else { return false }
         let canonicalId: String?
-        if let link = jointProjections.first(where: { $0.localChannelId == effectiveChannelId }) {
+        if let link = projections.first(where: { $0.localChannelId == effectiveChannelId }) {
             canonicalId = link.canonicalChannelId
-        } else if jointProjections.contains(where: { $0.canonicalChannelId == effectiveChannelId }) {
+        } else if projections.contains(where: { $0.canonicalChannelId == effectiveChannelId }) {
             canonicalId = effectiveChannelId
         } else {
             canonicalId = nil
         }
         guard let canonicalId,
-              humanMessageRows.contains(where: { $0.id == messageId && $0.channelId == canonicalId }),
-              let localId = jointLocalChannelIdLocked(canonicalChannelId: canonicalId, serverId: serverId, userId: userId),
-              let local = postableChannels[localId],
+              rows.contains(where: { $0.id == messageId && $0.channelId == canonicalId }),
+              let localId = dependencies.jointLocalChannelId(canonicalId, serverId, userId),
+              let local = channelRows[localId],
               local.deletedAt == nil
         else { return false }
         return true
     }
 
-    /// A probe on a channel the caller cannot currently read. Missing and
-    /// hidden answer the same way; receiver-owned residue is acknowledged
-    /// with a distinct 403 so the caller can clear Activity.
-    func channelProbeAccessLocked(channelId: String, serverId: String, userId: String) -> ChannelProbeAccess {
-        guard let channel = postableChannels[channelId], channel.serverId == serverId else { return .hidden }
+    /// A probe on a channel the caller cannot currently read. Missing and hidden
+    /// answer the same way; receiver-owned residue is acknowledged with a
+    /// distinct answer so the caller can clear Activity.
+    func channelProbeAccess(channelId: String, serverId: String, userId: String) -> ChannelProbeAccess {
+        let channelRows = channels.postableChannels
+        guard let channel = channelRows[channelId], channel.serverId == serverId else { return .hidden }
         if channel.kind == "channel"
             || channel.memberIds.contains(userId)
             || oauth.channelType(id: channelId) == "channel"
             || oauth.isChannelParticipant(channelId: channelId, userId: userId)
-            || (channel.kind == "thread" && threadFollows["\(serverId)\n\(userId)\n\(channelId)"] != nil) {
+            || (channel.kind == "thread" && messages.threadFollows["\(serverId)\n\(userId)\n\(channelId)"] != nil) {
             return .allowed
         }
-        let residue = inboxResidues.contains("\(userId)\n\(channelId)")
-            || inboxFactStore.all().contains {
+        let residue = messages.inboxResidues.contains("\(userId)\n\(channelId)")
+            || inboxFacts.all().contains {
                 $0.receiverType == "user" && $0.receiverId == userId && $0.channelId == channelId
             }
             || oauth.channelUnreadInfo(channelId: channelId, userId: userId).maxReadSeq > 0
         return residue ? .residue : .hidden
     }
 
+    /// Whether a guest can see a scope: a thread follows its parent channel.
+    func guestCanSeeScope(_ scopeId: String) -> Bool {
+        let state = channels.state
+        if state.postableChannels[scopeId]?.kind == "thread",
+           let parentId = state.postableChannels[scopeId]?.parentChannelId {
+            return state.guestVisibleChannels[parentId] ?? true
+        }
+        return state.guestVisibleChannels[scopeId] ?? true
+    }
+
+    // MARK: - Channel files
+
+    private struct ChannelFilesCursor: Decodable {
+        let createdAt: String
+        let id: String
+    }
+
+    /// `GET /api/channels/:channelId/files`.
     public func channelFiles(
         authorization: String?,
         serverId: String,
         channelId: String,
         limit rawLimit: String? = nil,
         cursor rawCursor: String? = nil
-    ) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
+    ) throws -> ChannelFilesResponse {
+        let userId = try requireUser(authorization)
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw AgentsLifecycleError.notAMember
         }
-        lock.lock()
-        let access = channelProbeAccessLocked(channelId: channelId, serverId: serverId, userId: userId)
-        let channel = postableChannels[channelId]
-        lock.unlock()
-        if access == .residue {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
-        }
+        let access = channelProbeAccess(channelId: channelId, serverId: serverId, userId: userId)
+        let channel = channels.postableChannels[channelId]
+        if access == .residue { throw AgentsLifecycleError.forbidden }
         guard access == .allowed, let channel, channel.deletedAt == nil else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+            throw AgentsLifecycleError.channelNotFound
         }
-        let kind = channel.kind
-        let isMember = channel.memberIds.contains(userId)
-        guard kind == "channel" || isMember else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+        guard channel.kind == "channel" || channel.memberIds.contains(userId) else {
+            throw AgentsLifecycleError.channelNotFound
         }
-        let limit = Self.channelFilesLimit(rawLimit)
+        let limit = EmailLoginDirectory.channelFilesLimit(rawLimit)
         let cursor: (createdAt: Date, id: String)?
         if let rawCursor, !rawCursor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            guard let decoded = Self.channelFilesBase64URLDecode(rawCursor),
-                  let object = (try? JSONSerialization.jsonObject(with: Data(decoded.utf8))) as? [String: Any],
-                  let createdAtRaw = object["createdAt"] as? String,
-                  let createdAt = Self.isoDate(createdAtRaw),
-                  let id = object["id"] as? String
+            guard let decoded = EmailLoginDirectory.channelFilesBase64URLDecode(rawCursor),
+                  let object = try? JSONDecoder().decode(ChannelFilesCursor.self, from: Data(decoded.utf8)),
+                  let createdAt = EmailLoginDirectory.isoDate(object.createdAt)
             else {
-                return Self.json(400, "{\"error\":\"Invalid cursor\"}")
+                throw AgentsLifecycleError.invalidCursor
             }
-            cursor = (createdAt, id)
+            cursor = (createdAt, object.id)
         } else {
             cursor = nil
         }
 
-        lock.lock()
+        let channelRows = channels.postableChannels
+        let messageState = messages.state
         var scopeChannels: Set<String> = [channelId]
-        for (id, candidate) in postableChannels
+        for (id, candidate) in channelRows
         where candidate.serverId == serverId && candidate.kind == "thread"
             && candidate.parentChannelId == channelId && candidate.deletedAt == nil {
             scopeChannels.insert(id)
         }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         var files: [ChannelAttachment] = []
-        for attachment in channelAttachments.values {
+        for attachment in messageState.channelAttachments.values {
             guard scopeChannels.contains(attachment.channelId) else { continue }
             if let messageId = attachment.messageId,
-               !humanMessageRows.contains(where: { $0.id == messageId && $0.channelId == attachment.channelId }) {
+               !messageState.humanMessageRows.contains(where: { $0.id == messageId && $0.channelId == attachment.channelId }) {
                 continue
             }
             if let cursor {
@@ -538,17 +470,18 @@ extension EmailLoginDirectory {
         let page = Array(files.prefix(limit))
         let nextCursor: String?
         if files.count > limit, let last = page.last {
-            let encoded = "{\"createdAt\":\(jsonString(formatter.string(from: last.createdAt))),\"id\":\(jsonString(last.id))}"
-            nextCursor = Self.channelFilesBase64URLEncode(encoded)
+            let encoded = OrderedJSON.object([
+                OrderedJSONField("createdAt", EmailLoginDirectory.isoString(last.createdAt)),
+                OrderedJSONField("id", last.id),
+            ]).render()
+            nextCursor = EmailLoginDirectory.channelFilesBase64URLEncode(encoded)
         } else {
             nextCursor = nil
         }
-        let rows = page.map { attachment -> String in
-            let source = postableChannels[attachment.channelId]
+        let rows = page.map { attachment -> ChannelFilesResponse.File in
+            let source = channelRows[attachment.channelId]
             let isThread = source?.kind == "thread"
             let parentMessageId = isThread ? source?.parentMessageId : nil
-            let parentJSON = parentMessageId.map(jsonString) ?? "null"
-            let parentShort = parentMessageId.map { jsonString(String($0.prefix(8))) } ?? "null"
             let uploaderName: String?
             let uploaderDisplay: String?
             if attachment.uploaderType == "agent" {
@@ -556,62 +489,78 @@ extension EmailLoginDirectory {
                 uploaderName = agent?.name
                 uploaderDisplay = agent?.displayName
             } else if attachment.uploaderType == "user" {
-                let account = accounts.values.first { $0.id == attachment.uploaderId }
+                let account = profiles.account(userId: attachment.uploaderId)
                 uploaderName = account?.name
                 uploaderDisplay = account?.name
             } else {
                 uploaderName = nil
                 uploaderDisplay = nil
             }
-            let nameJSON = uploaderName.map(jsonString) ?? "null"
-            let displayJSON = (uploaderDisplay ?? uploaderName).map(jsonString) ?? "null"
-            let mime = Self.channelFileMimeType(filename: attachment.filename, stored: attachment.mimeType)
-            let size = attachment.sizeBytes.map(String.init) ?? "null"
-            let width = attachment.width.map(String.init) ?? "null"
-            let height = attachment.height.map(String.init) ?? "null"
-            let thumbnail = attachment.thumbnailKey.map { _ in jsonString("/api/attachments/\(attachment.id)/thumbnail") } ?? "null"
-            return "{\"id\":\(jsonString(attachment.id)),\"messageId\":\(jsonString(attachment.messageId ?? "")),\"channelId\":\(jsonString(attachment.channelId)),\"filename\":\(jsonString(attachment.filename)),\"mimeType\":\(jsonString(mime)),\"sizeBytes\":\(size),\"width\":\(width),\"height\":\(height),\"thumbnailUrl\":\(thumbnail),\"createdAt\":\(jsonString(formatter.string(from: attachment.createdAt))),\"uploader\":{\"type\":\(jsonString(attachment.uploaderType == "agent" ? "agent" : "user")),\"id\":\(jsonString(attachment.uploaderId)),\"name\":\(nameJSON),\"displayName\":\(displayJSON)},\"source\":{\"type\":\(jsonString(isThread ? "thread" : "channel")),\"channelId\":\(jsonString(attachment.channelId)),\"parentMessageId\":\(parentJSON),\"parentMessageShortId\":\(parentShort)}}"
+            return ChannelFilesResponse.File(
+                id: attachment.id,
+                messageId: attachment.messageId ?? "",
+                channelId: attachment.channelId,
+                filename: attachment.filename,
+                mimeType: EmailLoginDirectory.channelFileMimeType(filename: attachment.filename, stored: attachment.mimeType),
+                sizeBytes: attachment.sizeBytes,
+                width: attachment.width,
+                height: attachment.height,
+                thumbnailUrl: attachment.thumbnailKey.map { _ in "/api/attachments/\(attachment.id)/thumbnail" },
+                createdAt: EmailLoginDirectory.isoString(attachment.createdAt),
+                uploader: ChannelFilesResponse.Uploader(
+                    type: attachment.uploaderType == "agent" ? "agent" : "user",
+                    id: attachment.uploaderId,
+                    name: uploaderName,
+                    displayName: uploaderDisplay ?? uploaderName
+                ),
+                source: ChannelFilesResponse.Source(
+                    type: isThread ? "thread" : "channel",
+                    channelId: attachment.channelId,
+                    parentMessageId: parentMessageId,
+                    parentMessageShortId: parentMessageId.map { String($0.prefix(8)) }
+                )
+            )
         }
-        lock.unlock()
-        let nextJSON = nextCursor.map(jsonString) ?? "null"
-        return Self.json(200, "{\"files\":[\(rows.joined(separator: ","))],\"nextCursor\":\(nextJSON)}")
+        return ChannelFilesResponse(files: rows, nextCursor: nextCursor)
     }
 
-    public func attachmentQueryTokenStream(attachmentId: String, token: String, serverId: String?) -> HTTPReply {
-        guard ServerScope.isUUID(attachmentId) else {
-            return Self.json(400, "{\"code\":\"invalid_attachment_id\",\"error\":\"Invalid attachment id\"}")
-        }
+    // MARK: - Attachment read
+
+    /// `GET /api/attachments/:id?token=…`: the stored document, for a caller
+    /// that carries the access token in the query.
+    public func attachmentQueryTokenStream(
+        attachmentId: String,
+        token: String,
+        serverId: String?
+    ) throws -> AttachmentStreamBody {
+        guard ServerScope.isUUID(attachmentId) else { throw AgentsLifecycleError.invalidAttachmentId }
         guard let userId = sessionUserId(authorization: "Bearer \(token)") else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+            throw AgentsLifecycleError.unauthorized
         }
-        guard let serverId, !serverId.isEmpty else {
-            return Self.json(400, "{\"error\":\"X-Server-Id header is required\"}")
-        }
+        guard let serverId, !serverId.isEmpty else { throw AgentsLifecycleError.serverIdRequired }
         if !oauth.memberIds(serverId: serverId).isEmpty,
            oauth.memberRole(serverId: serverId, userId: userId) == nil {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw AgentsLifecycleError.notAMember
         }
-        lock.lock()
-        let attachment = channelAttachments[attachmentId]
-        lock.unlock()
-        guard let attachment, visibleAttachment(userId: userId, serverId: serverId, attachment: attachment) else {
-            return Self.json(404, "{\"error\":\"Attachment not found\"}")
+        guard let attachment = messages.channelAttachments[attachmentId],
+              canSeeAttachment(userId: userId, serverId: serverId, attachment: attachment)
+        else {
+            throw AgentsLifecycleError.attachmentNotFound
         }
-        if let body = attachmentPreviewBody?(attachmentId) {
-            return HTTPReply(status: 200, headers: ["Content-Type": "application/octet-stream"], body: body)
+        guard let body = messages.attachmentPreviewBody?(attachmentId) else {
+            throw AgentsLifecycleError.attachmentNotFound
         }
-        return Self.json(404, "{\"error\":\"Attachment not found\"}")
+        return AttachmentStreamBody(body: body)
     }
 
+    /// `GET /api/attachments/:id/html-preview`.
     public func attachmentHTMLPreview(
         attachmentId: String,
         serverId: String,
         previewToken: String?,
         bearerQuery: String?
-    ) -> HTTPReply {
-        if bearerQuery != nil {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
-        }
+    ) throws -> AttachmentHTMLPreview {
+        if bearerQuery != nil { throw AgentsLifecycleError.forbidden }
         guard let previewToken,
               AttachmentPreviewTokens().verify(
                   previewToken,
@@ -619,13 +568,12 @@ extension EmailLoginDirectory {
                   serverId: serverId
               ) != nil
         else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+            throw AgentsLifecycleError.unauthorized
         }
-        guard let original = attachmentPreviewBody?(attachmentId) else {
-            return Self.json(404, "{\"error\":\"Attachment not found\"}")
+        guard let original = messages.attachmentPreviewBody?(attachmentId) else {
+            throw AgentsLifecycleError.attachmentNotFound
         }
-        // The stored document streams unmodified with the bridge appended, and
-        // no Content-Length because the stored size would truncate it. An
+        // The stored document streams unmodified with the bridge appended. An
         // attachment-supplied CSP meta tag keeps governing the document: the
         // bridge goes immediately before it, since meta CSP only applies to the
         // content parsed after it.
@@ -636,15 +584,12 @@ extension EmailLoginDirectory {
         } else {
             body += bridge
         }
-        let origin = ProcessInfo.processInfo.environment["APP_URL"] ?? "http://127.0.0.1:4173"
-        var reply = HTTPReply(status: 200, headers: [
+        let origin = dependencies.environment()["APP_URL"] ?? "http://127.0.0.1:4173"
+        return AttachmentHTMLPreview(body: body, headers: [
             "Content-Type": "text/html; charset=utf-8",
             "Content-Security-Policy": "frame-ancestors 'self' \(origin); connect-src 'none'; form-action 'none'; object-src 'none'",
             "Cache-Control": "private, no-store",
-        ], body: body)
-        reply.headers.removeValue(forKey: "X-Frame-Options")
-        reply.headers.removeValue(forKey: "Content-Length")
-        return reply
+        ])
     }
 
     /// Range of the attachment's own CSP meta tag, if it supplies one.
@@ -657,172 +602,118 @@ extension EmailLoginDirectory {
         return metaStart.lowerBound..<tagEnd.upperBound
     }
 
-    public func readAttachment(authorization: String?, serverId: String?, attachmentId: String, kind: String) -> HTTPReply {
-        guard ServerScope.isUUID(attachmentId) else {
-            return Self.json(400, "{\"code\":\"invalid_attachment_id\",\"error\":\"Invalid attachment id\"}")
-        }
-        if let authorization, authorization.hasPrefix("Bearer sk_computer_") {
-            let key = String(authorization.dropFirst("Bearer ".count))
-            lock.lock()
-            let computerServer = computers.first { $0.apiKey == key && $0.revokedAt == nil }?.serverId
-            let attachment = channelAttachments[attachmentId]
-            let channelServer = attachment.flatMap { channelAttachments[$0.id] }.flatMap { postableChannels[$0.channelId]?.serverId }
-            lock.unlock()
-            guard let computerServer else {
-                return Self.json(401, "{\"error\":\"Unauthorized\"}")
-            }
+    /// `GET /api/attachments/:id` and `…/html-preview-url`.
+    public func readAttachment(
+        authorization: String?,
+        serverId: String?,
+        attachmentId: String,
+        kind: AttachmentReadKind
+    ) throws -> AttachmentReadResponse {
+        guard ServerScope.isUUID(attachmentId) else { throw AgentsLifecycleError.invalidAttachmentId }
+        if let token = Self.bearerToken(authorization), authorization?.hasPrefix("Bearer sk_computer_") == true {
+            let computerServer = machines.computers.first { $0.apiKey == token && $0.revokedAt == nil }?.serverId
+            let attachment = messages.channelAttachments[attachmentId]
+            let channelServer = attachment.flatMap { channels.postableChannels[$0.channelId]?.serverId }
+            guard let computerServer else { throw AgentsLifecycleError.unauthorized }
             let requested = serverId ?? computerServer
-            guard requested == computerServer else {
-                return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            guard requested == computerServer else { throw AgentsLifecycleError.notAMember }
+            guard let attachment, channelServer == requested else {
+                throw AgentsLifecycleError.attachmentNotFound
             }
-            guard attachment != nil, channelServer == requested else {
-                return Self.json(404, "{\"error\":\"Attachment not found\"}")
-            }
-            return Self.json(200, "{\"id\":\(jsonString(attachment!.id)),\"filename\":\(jsonString(attachment!.filename)),\"mimeType\":\(attachment!.mimeType.map { jsonString($0) } ?? "null")}")
+            return .metadata(metadata(of: attachment))
         }
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        let userId = try requireUser(authorization)
+        guard profiles.account(userId: userId)?.retiredAt == nil else {
+            throw AgentsLifecycleError.unauthorized
         }
-        lock.lock()
-        let retired = accounts.values.first { $0.id == userId }?.retiredAt != nil
-        lock.unlock()
-        guard !retired else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let serverId, !serverId.isEmpty else {
-            return Self.json(400, "{\"error\":\"X-Server-Id header is required\"}")
-        }
+        guard let serverId, !serverId.isEmpty else { throw AgentsLifecycleError.serverIdRequired }
         if !oauth.memberIds(serverId: serverId).isEmpty,
            oauth.memberRole(serverId: serverId, userId: userId) == nil {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw AgentsLifecycleError.notAMember
         }
-        lock.lock()
-        let attachment = channelAttachments[attachmentId]
-        lock.unlock()
-        guard let attachment, visibleAttachment(userId: userId, serverId: serverId, attachment: attachment) else {
-            return Self.json(404, "{\"error\":\"Attachment not found\"}")
+        guard let attachment = messages.channelAttachments[attachmentId],
+              canSeeAttachment(userId: userId, serverId: serverId, attachment: attachment)
+        else {
+            throw AgentsLifecycleError.attachmentNotFound
         }
         switch kind {
-        case "url":
-            return Self.json(200, "{\"url\":\"\(jsonString("/api/attachments/\(attachmentId)"))\"}")
-        case "html-preview-url":
+        case .htmlPreviewURL:
             let previewToken = AttachmentPreviewTokens().mint(
                 attachmentId: attachmentId,
                 serverId: serverId,
                 actorId: userId
             )
             let url = "/api/attachments/\(attachmentId)/html-preview?serverId=\(serverId)&previewToken=\(previewToken)"
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            let expiresAt = formatter.string(from: Date().addingTimeInterval(300))
-            return Self.json(200, "{\"url\":\(jsonString(url)),\"expiresAt\":\(jsonString(expiresAt))}")
-        default:
-            return Self.json(200, "{\"id\":\(jsonString(attachment.id)),\"filename\":\(jsonString(attachment.filename)),\"mimeType\":\(attachment.mimeType.map { jsonString($0) } ?? "null")}")
+            let expiresAt = EmailLoginDirectory.isoString(dependencies.now().addingTimeInterval(300))
+            return .htmlPreviewURL(AttachmentHTMLPreviewURLResponse(url: url, expiresAt: expiresAt))
+        case .metadata:
+            return .metadata(metadata(of: attachment))
         }
     }
 
-    /// The user id behind a live access token. A missing or unknown bearer is nil.
-    public func sessionUserId(authorization: String?) -> String? {
-        if case .user(let id) = authorize(authorization) { return id }
-        return nil
+    private func metadata(of attachment: ChannelAttachment) -> AttachmentMetadataResponse {
+        AttachmentMetadataResponse(id: attachment.id, filename: attachment.filename, mimeType: attachment.mimeType)
     }
 
-    /// Access-token identity used by the socket layer. The family id scopes
-    /// revocation to the connection family that owns the token.
-    public func sessionIdentity(accessToken: String) -> (userId: String, familyId: String?)? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let userId = accessTokens[accessToken] else { return nil }
-        return (userId, accessTokenFamilies[accessToken])
-    }
-
-    /// Resolve a `push/family-revoke` capability without consuming it.
-    public func familyRevokeTarget(capability: String) -> (userId: String, familyId: String)? {
-        let parts = capability.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
-        guard parts.count == 2 else { return nil }
-        lock.lock()
-        defer { lock.unlock() }
-        guard let familyId = sessionFamilies.first(where: { $0.value.revokeCapabilityNonce == parts[1] })?.key,
-              let family = sessionFamilies[familyId]
-        else { return nil }
-        return (family.userId, familyId)
-    }
-
-    public func setShareUsageData(userId: String, value: Bool?) {
-        lock.lock()
-        if let key = accounts.first(where: { $0.value.id == userId })?.key {
-            accounts[key]?.shareUsageData = value
-        }
-        lock.unlock()
-    }
-
-    public func recordedProductEvents(subjectId: String) -> [RecordedProductEvent] {
-        productEventStore.productEvents(subjectId: subjectId)
-    }
+    // MARK: - Client product events
 
     /// `GET /api/product-events/config`.
-    public func clientEventsConfig(authorization: String?, serverId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        lock.lock()
-        let allowed = accounts.values.first(where: { $0.id == userId })?.shareUsageData == true
-        lock.unlock()
-        return Self.json(200, "{\"clientEventsAllowed\":\(allowed)}")
+    public func clientEventsConfig(authorization: String?) throws -> ClientEventsConfigResponse {
+        let userId = try requireUser(authorization)
+        return ClientEventsConfigResponse(
+            clientEventsAllowed: profiles.account(userId: userId)?.shareUsageData == true
+        )
     }
 
-    public func recordedClientEvents(serverId: String) -> [ClientEventRecord] {
-        productEventStore.clientEvents(serverId: serverId)
+    private static func isEventUUID(_ value: String) -> Bool {
+        value.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil
     }
 
-    /// `POST /api/product-events/batch`.
+    /// `POST /api/product-events/batch`. `body` is `nil` when the request carried
+    /// no JSON object; the published 400 still follows the opt-in check.
     public func clientEventsBatch(
         authorization: String?,
         serverId: String,
         userAgent: String,
         country: String,
-        body: String
-    ) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        body: ClientEventsBatchRequest?
+    ) throws -> ClientEventsAcceptedResponse {
+        let userId = try requireUser(authorization)
+        guard profiles.account(userId: userId)?.shareUsageData == true else {
+            return ClientEventsAcceptedResponse(accepted: 0)
         }
-        lock.lock()
-        let allowed = accounts.values.first(where: { $0.id == userId })?.shareUsageData == true
-        lock.unlock()
-        guard allowed else {
-            return Self.json(202, "{\"accepted\":0}")
-        }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              object["source"] as? String == "web",
-              let events = object["events"] as? [[String: Any]], !events.isEmpty
+        guard let members = body?.members,
+              members["source"]?.castString == "web",
+              case .array(let rawEvents)? = members["events"], !rawEvents.isEmpty
         else {
-            return Self.json(400, "{\"error\":\"Invalid event batch\"}")
+            throw AgentsLifecycleError.invalidEventBatch
         }
-        let appVersion = object["app_version"] as? String
+        var events: [[String: JSONValue]] = []
+        for raw in rawEvents {
+            guard let event = raw.castObject else { throw AgentsLifecycleError.invalidEventBatch }
+            events.append(event)
+        }
+        let appVersion = members["app_version"]?.castString
         if let appVersion, appVersion.wholeMatch(of: /^[0-9]+\.[0-9]+\.[0-9]+$/) == nil {
-            return Self.json(400, "{\"error\":\"Invalid app_version\"}")
+            throw AgentsLifecycleError.invalidAppVersion
         }
-        let uuidPattern = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let plainFormatter = ISO8601DateFormatter()
-        let now = Date()
-        var rows: [ClientEventRecord] = []
+        let now = dependencies.now()
+        let context = ClientEventDeviceContext(userAgent: userAgent, country: country)
+        var candidates: [ProductEventStore.ClientEventCandidate] = []
         var batchSeen: Set<String> = []
         for event in events {
-            guard let uuid = event["uuid"] as? String, uuid.wholeMatch(of: uuidPattern) != nil,
-                  let name = event["event"] as? String,
-                  let timestamp = event["timestamp"] as? String,
-                  let parsed = formatter.date(from: timestamp) ?? plainFormatter.date(from: timestamp),
-                  let session = event["client_session_id"] as? String,
-                  session.wholeMatch(of: uuidPattern) != nil,
-                  let properties = event["properties"] as? [String: Any]
+            guard let uuid = event["uuid"]?.castString, Self.isEventUUID(uuid),
+                  let name = event["event"]?.castString,
+                  let timestamp = event["timestamp"]?.castString,
+                  let parsed = EmailLoginDirectory.isoDate(timestamp),
+                  let session = event["client_session_id"]?.castString,
+                  Self.isEventUUID(session),
+                  let properties = event["properties"]?.castObject
             else {
-                return Self.json(400, "{\"error\":\"Invalid event batch\"}")
+                throw AgentsLifecycleError.invalidEventBatch
             }
             if now.timeIntervalSince(parsed) > 7 * 24 * 60 * 60 { continue }
-            if productEventStore.containsSeenClientEvent(uuid) || !batchSeen.insert(uuid).inserted { continue }
-            var sanitized: [String: Any] = [:]
+            if productEvents.containsSeenClientEvent(uuid) || !batchSeen.insert(uuid).inserted { continue }
             let allowedKeys: Set<String>
             if name == "activity_open" {
                 allowedKeys = ["from"]
@@ -832,174 +723,169 @@ extension EmailLoginDirectory {
                 continue
             }
             guard Set(properties.keys).isSubset(of: allowedKeys) else { continue }
+            var sanitized: [String: ClientEventPropertyValue] = [:]
             for (key, value) in properties {
-                if let text = value as? String { sanitized[key] = text }
+                if let text = value.castString { sanitized[key] = .text(text) }
             }
-            for (key, value) in Self.deviceContext(userAgent: userAgent, country: country) {
-                sanitized[key] = value
-            }
-            let propertiesJSON: String
-            if let data = try? JSONSerialization.data(withJSONObject: sanitized, options: [.sortedKeys]) {
-                propertiesJSON = String(decoding: data, as: UTF8.self)
-            } else {
-                propertiesJSON = "{}"
-            }
-            let analyticsId: String
-            lock.lock()
-            if let existing = analyticsIds[userId] {
-                analyticsId = existing
-            } else {
-                let minted = UUID().uuidString.lowercased()
-                analyticsIds[userId] = minted
-                analyticsId = minted
-            }
-            lock.unlock()
-            rows.append(ClientEventRecord(
-                event: name,
-                analyticsId: analyticsId,
-                serverId: serverId,
-                source: "web",
-                sessionId: session,
-                appVersion: appVersion,
-                propertiesJSON: propertiesJSON
+            for (key, value) in context.properties { sanitized[key] = value }
+            candidates.append(ProductEventStore.ClientEventCandidate(
+                eventId: uuid,
+                record: ClientEventRecord(
+                    event: name,
+                    analyticsId: profiles.analyticsId(userId: userId),
+                    serverId: serverId,
+                    source: "web",
+                    sessionId: session,
+                    appVersion: appVersion,
+                    propertiesJSON: Self.renderProperties(sanitized)
+                )
             ))
         }
         let seenIDs: [String] = events.compactMap { event in
-            guard let uuid = event["uuid"] as? String, uuid.wholeMatch(of: uuidPattern) != nil else { return nil }
+            guard let uuid = event["uuid"]?.castString, Self.isEventUUID(uuid) else { return nil }
             return uuid
         }
-        productEventStore.appendClientEvents(rows, seenIDs: seenIDs)
-        return Self.json(202, "{\"accepted\":\(rows.count)}")
+        let accepted = productEvents.admitClientEvents(candidates, seenIDs: seenIDs)
+        return ClientEventsAcceptedResponse(accepted: accepted)
     }
 
-    func agentAuthority(_ authorization: String?, agentId: String) -> AgentAuthority {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return .denied(Self.json(401, "{\"error\":\"Unauthorized\"}"))
+    /// One value of the stored event properties: free text, or the numeric
+    /// browser version.
+    enum ClientEventPropertyValue: Encodable, Equatable {
+        case text(String)
+        case integer(Int)
+
+        func encode(to encoder: any Encoder) throws {
+            var container = encoder.singleValueContainer()
+            switch self {
+            case .text(let value): try container.encode(value)
+            case .integer(let value): try container.encode(value)
+            }
         }
-        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted else {
-            return .denied(Self.json(404, "{\"error\":\"Agent not found\"}"))
-        }
-        guard let role = oauth.memberRole(serverId: info.serverId, userId: userId) else {
-            return .denied(Self.json(403, "{\"error\":\"Not a member of this server\"}"))
-        }
-        if role == "owner" || role == "admin" || info.creatorUserId == userId {
-            return .allowed(userId: userId, role: role, info: info)
-        }
-        return .denied(Self.json(403, "{\"error\":\"Forbidden\"}"))
     }
 
-    /// The upstream server capability matrix for the two lifecycle verbs this
-    /// file answers: members hold `controlAgentRuntime`, only owner/admin hold
-    /// `deleteAgents`; the human creator always holds the acting authority.
+    /// The coarse device facts derived from the request headers. The raw user
+    /// agent never reaches the store.
+    struct ClientEventDeviceContext {
+        let properties: [String: ClientEventPropertyValue]
 
-    /// Resolve the caller against a live agent of `serverId`, or the exact
-    /// refusal the upstream route answers before it touches runtime state.
-    func agentLifecycleActor(
-        _ authorization: String?,
-        agentId: String,
-        serverId: String,
-        capability: AgentLifecycleCapability
-    ) -> (actor: AgentLifecycleActor?, reply: HTTPReply?) {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return (nil, Self.json(401, "{\"error\":\"Unauthorized\"}"))
+        init(userAgent: String, country: String) {
+            var context: [String: ClientEventPropertyValue] = [:]
+            if let range = userAgent.range(of: "Chrome/") {
+                let rest = userAgent[range.upperBound...]
+                let major = rest.prefix(while: { $0 != "." && !$0.isWhitespace })
+                context["$browser"] = .text("chrome")
+                if let version = Int(major) { context["$browser_version"] = .integer(version) }
+            } else if userAgent.contains("Firefox/") {
+                context["$browser"] = .text("firefox")
+            } else if userAgent.contains("Safari/") {
+                context["$browser"] = .text("safari")
+            } else {
+                context["$browser"] = .text("unknown")
+            }
+            if userAgent.contains("Windows") {
+                context["$os"] = .text("windows")
+            } else if userAgent.contains("Mac OS X") {
+                context["$os"] = .text("macos")
+            } else if userAgent.contains("Android") {
+                context["$os"] = .text("android")
+            } else if userAgent.contains("iPhone") || userAgent.contains("iPad") {
+                context["$os"] = .text("ios")
+            } else if userAgent.contains("Linux") {
+                context["$os"] = .text("linux")
+            } else {
+                context["$os"] = .text("unknown")
+            }
+            context["$device_type"] = .text(userAgent.contains("Mobile") ? "mobile" : "desktop")
+            let normalizedCountry = country.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if normalizedCountry.wholeMatch(of: /^[A-Z]{2}$/) != nil {
+                context["$country"] = .text(normalizedCountry)
+            }
+            self.properties = context
         }
-        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted else {
-            return (nil, Self.json(404, "{\"error\":\"Agent not found\"}"))
-        }
-        guard serverId.isEmpty || info.serverId == serverId else {
-            return (nil, Self.json(404, "{\"error\":\"Agent not found\"}"))
-        }
-        guard let role = oauth.memberRole(serverId: info.serverId, userId: userId) else {
-            return (nil, Self.json(403, "{\"error\":\"Not a member of this server\"}"))
-        }
-        let isCreator = info.creatorUserId == userId
-        guard capability.granted(role: role, isCreator: isCreator) else {
-            return (nil, Self.json(403, "{\"error\":\(jsonString(capability.denialMessage))}"))
-        }
-        return (AgentLifecycleActor(userId: userId, role: role, info: info), nil)
     }
 
-    func computerAttachEnabled() -> Bool {
-        lock.lock()
-        let override = computerAttachEnabledOverride
-        lock.unlock()
-        if let override { return override }
-        let raw = (ProcessInfo.processInfo.environment["SLOCK_DEVICE_LOGIN_ENABLED"] ?? "")
+    /// The stored properties document: sorted keys, the legacy serializer's
+    /// bytes.
+    static func renderProperties(_ properties: [String: ClientEventPropertyValue]) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(properties) else { return "{}" }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    // MARK: - Computer gate and internal surfaces
+
+    /// Whether the Computer attach flow is on: the injected override, else the
+    /// device-login environment gate.
+    public func computerAttachEnabled() -> Bool {
+        if let override = machines.computerAttachEnabledOverride { return override }
+        let raw = (dependencies.environment()["SLOCK_DEVICE_LOGIN_ENABLED"] ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         return raw != "false"
     }
 
-    /// `POST /internal/computer/preflight`. Read-only principal check for an
-    /// attached Computer credential. The published route-auth projection is
-    /// derived from the live router by the caller, so this surface describes
-    /// what is actually registered instead of a parallel list.
-    public func computerPreflight(authorization: String?, surface: InternalSurfaceSnapshot) -> HTTPReply {
-        guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return Self.json(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
+    /// `POST /internal/computer/preflight`: a read-only principal check for an
+    /// attached Computer credential. The route-auth projection is derived from
+    /// the live router by the caller, so this surface describes what is actually
+    /// registered instead of a parallel list.
+    public func computerPreflight(
+        authorization: String?,
+        surface: InternalSurfaceSnapshot
+    ) throws -> ComputerPreflightResponse {
+        guard let token = Self.bearerToken(authorization) else {
+            throw AgentsLifecycleError.computerUnauthorized
         }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        let computer = computers.first { $0.apiKey == token && $0.revokedAt == nil }
-        lock.unlock()
+        let computer = machines.computers.first { $0.apiKey == token && $0.revokedAt == nil }
         guard let computer, let details = oauth.serverDetailsValue(id: computer.serverId) else {
-            return Self.json(401, "{\"error\":\"Invalid principal for this surface\",\"code\":\"invalid_principal\"}")
+            throw AgentsLifecycleError.invalidPrincipal
         }
-        let claimed = surface.claimedPrefixes.map(jsonString).joined(separator: ",")
-        let principals = surface.registeredPrincipals.map(jsonString).joined(separator: ",")
-        return Self.json(200, "{\"ok\":true,\"surfaceVersion\":\(jsonString(surface.surfaceVersion)),\"claimedPrefixes\":[\(claimed)],\"registeredPrincipals\":[\(principals)],\"computerSurface\":[\(surface.computerSurfaceJSON())],\"serverId\":\(jsonString(computer.serverId)),\"serverSlug\":\(jsonString(details.slug)),\"principal\":{\"kind\":\"computer\",\"id\":\(jsonString(computer.id)),\"name\":\(jsonString(computer.name))}}")
+        return ComputerPreflightResponse(
+            surface: surface,
+            serverId: computer.serverId,
+            serverSlug: details.slug,
+            computerId: computer.id,
+            computerName: computer.name
+        )
     }
 
-    /// `POST /internal/computer/*` for a path the surface registry does not
-    /// claim: a live Computer principal is told the path is unregistered
-    /// instead of receiving a routing 404.
-    public func unregisteredInternalComputerSurface(authorization: String?) -> HTTPReply {
-        guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return Self.json(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
+    /// `/internal/computer/*` for a path the surface registry does not claim: a
+    /// live Computer principal is told the path is unregistered instead of
+    /// receiving a routing 404.
+    public func unregisteredInternalComputerSurface(authorization: String?) throws -> Never {
+        guard let token = Self.bearerToken(authorization) else {
+            throw AgentsLifecycleError.computerUnauthorized
         }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        let live = computers.contains { $0.apiKey == token && $0.revokedAt == nil }
-        lock.unlock()
-        guard live else {
-            return Self.json(401, "{\"error\":\"Invalid principal for this surface\",\"code\":\"invalid_principal\"}")
-        }
-        return Self.json(401, "{\"error\":\"This internal surface is not registered\",\"code\":\"auth_policy_unregistered_path\"}")
+        let live = machines.computers.contains { $0.apiKey == token && $0.revokedAt == nil }
+        guard live else { throw AgentsLifecycleError.invalidPrincipal }
+        throw AgentsLifecycleError.surfaceUnregistered
     }
 
     /// `/internal/agent-api/*` and `/internal/agent/*` for a path the surface
     /// registry does not claim: a live agent credential is told the path is
-    /// unregistered instead of receiving a routing 404, so a missing policy
-    /// entry fails closed on the same envelope as `/internal/computer/*`.
-    public func unregisteredInternalAgentSurface(authorization: String?) -> HTTPReply {
-        guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return Self.json(401, "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
+    /// unregistered on the same envelope as the Computer surface, so a missing
+    /// policy entry fails closed.
+    public func unregisteredInternalAgentSurface(authorization: String?) throws -> Never {
+        guard let token = Self.bearerToken(authorization) else {
+            throw AgentsLifecycleError.computerUnauthorized
         }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        let liveAgent = agentCredentials[token] != nil
-        lock.unlock()
-        guard liveAgent else {
-            return Self.json(401, "{\"error\":\"Invalid principal for this surface\",\"code\":\"invalid_principal\"}")
-        }
-        return Self.json(401, "{\"error\":\"This internal surface is not registered\",\"code\":\"auth_policy_unregistered_path\"}")
+        guard agents.agentCredentials[token] != nil else { throw AgentsLifecycleError.invalidPrincipal }
+        throw AgentsLifecycleError.surfaceUnregistered
     }
 
-    public func agentRuntimeProviderProbe(authorization: String?, serverId: String, kind: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
+    /// `GET /api/runtime-providers/:kind`.
+    public func agentRuntimeProviderProbe(
+        authorization: String?,
+        serverId: String,
+        kind: String
+    ) throws -> RuntimeProviderProbeResponse {
+        let userId = try requireUser(authorization)
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw AgentsLifecycleError.notAMember
         }
-        guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
-        }
-        guard kind == "antiproton" else {
-            return Self.json(404, "{\"error\":\"Unknown runtime provider\"}")
-        }
-        let available = agentsRuntimeStore.hostedProviderAvailable(serverId: serverId)
-        return Self.json(200, "{\"kind\":\"antiproton\",\"available\":\(available)}")
+        guard role == "owner" || role == "admin" else { throw AgentsLifecycleError.forbidden }
+        guard kind == "antiproton" else { throw AgentsLifecycleError.unknownRuntimeProvider }
+        return RuntimeProviderProbeResponse(available: agents.hostedProviderAvailable(serverId: serverId))
     }
-
 }

@@ -311,12 +311,14 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             routeResponse(IntegrationRoutes.marketplaceAppNotifications(clientId: request.parameters.get("clientId") ?? ""))
         }
 
-        runtimeProviders.get(":kind") { request -> Response in
-            routeResponse(services.emailAccounts.agentRuntimeProviderProbe(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                kind: request.parameters.get("kind") ?? ""
-            ))
+        runtimeProviders.get(":kind") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentsLifecycle.agentRuntimeProviderProbe(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    kind: request.parameters.get("kind") ?? ""
+                )
+            }
         }
 
         providerConnections.get() { request async throws -> Response in

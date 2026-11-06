@@ -49,13 +49,14 @@ struct KnowledgeFeature: RouteCollection, Sendable {
         _ services: FallbackServices
     ) -> IdentityResolution {
         let identity: AgentApiIdentityDTO
-        switch services.emailAccounts.resolveAgentApiIdentity(
-            authorization: request.headers[.authorization]
-        ) {
-        case .success(let value):
-            identity = value
-        case .failure(let reply):
-            return .denial(reply)
+        do {
+            identity = try services.emailAccounts.agentsLifecycle.resolveAgentApiIdentity(
+                authorization: request.headers[.authorization]
+            )
+        } catch let error as any DomainError {
+            return .denial(KnowledgeDirectory.reply(Int(error.status), error.publishedErrorBody.render()))
+        } catch {
+            return .denial(KnowledgeDirectory.reply(500, "{\"error\":\"Internal error\"}"))
         }
         guard identity.scopes.contains("knowledge") else {
             let body = KnowledgeDirectory.jsonObject([

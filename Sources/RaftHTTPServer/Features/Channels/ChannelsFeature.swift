@@ -505,14 +505,16 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
 
-        channels.get(":channelId", "files") { request -> Response in
-            routeResponse(services.emailAccounts.channelFiles(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: request.parameters.get("channelId") ?? "",
-                limit: desktopQuery(request.url.query, "limit"),
-                cursor: desktopQuery(request.url.query, "cursor")
-            ))
+        channels.get(":channelId", "files") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentsLifecycle.channelFiles(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: request.parameters.get("channelId") ?? "",
+                    limit: desktopQuery(request.url.query, "limit"),
+                    cursor: desktopQuery(request.url.query, "cursor")
+                )
+            }
         }
 
         channels.get(":channelId", "agents") { request -> Response in
