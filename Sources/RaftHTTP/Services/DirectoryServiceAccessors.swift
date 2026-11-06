@@ -437,31 +437,11 @@ extension EmailLoginDirectory {
             machines: machinesAndComputersStore,
             oauth: oauth,
             dependencies: ProfileAndChannelFilesDependencies(
-                sessionUserId: { [self] authorization in
-                    sessionUserId(authorization: authorization)
-                },
-                agentRead: { [lookup = agentCredentialLookup] authorization in
-                    lookup.profileReadOutcome(authorization)
-                },
-                capabilityDenial: { [locator = feedbackLocators] authorization, capability in
-                    locator.deniedCapability(authorization: authorization, capability: capability)
-                },
-                emitRealtime: { [self] room, event, payload in
-                    realtimeRelay.emit(room, event, payload)
-                },
-                attachmentCommentsEnabled: { [self] serverId, userId in
-                    messageReadProjection.commentsEnabled(serverId: serverId, userId: userId)
-                },
-                attachmentChips: { [messagesAndThreadsStore] ids, commentsVisible in
-                    messagesAndThreadsStore.attachmentCommentSummaries(ids: ids, commentsVisible: commentsVisible)
-                        .map { InboxAttachmentChipDTO(id: $0.attachmentId, commentCount: $0.commentCount) }
-                },
-                commentRef: { [messagesAndThreadsStore] messageId in
-                    messagesAndThreadsStore.commentRef(messageId: messageId).map {
-                        InboxCommentRefDTO(attachmentId: $0.attachmentId, hostMessageId: $0.hostMessageId,
-                            hostSource: InboxCommentSourceDTO(channelId: $0.hostChannelId, rootThreadChannelId: $0.threadChannelId))
-                    }
-                }
+                auth: authCore,
+                lookup: agentCredentialLookup,
+                locator: feedbackLocators,
+                realtime: realtimeRelay,
+                projection: messageReadProjection
             )
         )
     }

@@ -35,6 +35,11 @@ public struct OAuthFlowsService: Sendable {
         self.now = now
     }
 
+    /// Configures the OAuth signing secret at the existing startup boundary.
+    public func configureSigningSecret(_ secret: String) {
+        oauth.jwtSecret = secret
+    }
+
     // MARK: - Provider discovery
 
     /// `GET /api/auth/providers`. A missing platform is web. Anything other than web or mobile is refused first.

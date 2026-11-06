@@ -66,10 +66,7 @@ extension EmailLoginDirectory {
             appendHumanMessage: { [messages = messagesAndThreadsStore, ledger = MessageLedgerPort(oauth: oauth)] message in
                 messages.appendMessage(message, ledger: ledger)
             },
-            serializeReceipt: { payload in
-                guard case .object = payload else { return "{}" }
-                return LegacySortedJSON.render(payload) ?? "{}"
-            }
+            serializeReceipt: MarketplaceReceiptProjection.renderObjectReceipt
         )
     }
 

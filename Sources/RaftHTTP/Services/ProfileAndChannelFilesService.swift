@@ -54,6 +54,26 @@ public struct ProfileAndChannelFilesDependencies: Sendable {
     }
 }
 
+extension ProfileAndChannelFilesDependencies {
+    init(
+        auth: AuthCoreService,
+        lookup: AgentCredentialLookup,
+        locator: FeedbackLocatorService,
+        realtime: RealtimeRelayService,
+        projection: MessageReadProjection
+    ) {
+        self.init(
+            sessionUserId: { try? auth.authenticate($0) },
+            agentRead: lookup.profileReadOutcome,
+            capabilityDenial: locator.deniedCapability,
+            emitRealtime: realtime.emit,
+            attachmentCommentsEnabled: { projection.commentsEnabled(serverId: $0, userId: $1) },
+            attachmentChips: projection.attachments,
+            commentRef: projection.comment
+        )
+    }
+}
+
 /// The message-reaction surface: the human add/remove ACK, the viewer and actor
 /// pages, the two agent reaction routes, and the managed-daemon third-party
 /// delivery report.

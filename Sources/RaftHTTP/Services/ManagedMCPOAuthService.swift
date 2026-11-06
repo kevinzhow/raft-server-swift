@@ -30,6 +30,37 @@ struct ManagedMCPOAuthDependencies: Sendable {
     var now: @Sendable () -> Date
 }
 
+extension ManagedMCPOAuthDependencies {
+    init(
+        auth: AuthCoreService,
+        locator: FeedbackLocatorService,
+        visibility: ManagedMCPChannelVisibility,
+        oauth: OAuthLedger,
+        notifications: NotificationsStore,
+        messages: MessagesAndThreadsStore,
+        channels: ServersAndChannelsStore,
+        feedback: FeedbackStore,
+        profiles: AuthProfileStore,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
+        let ledger = MessageLedgerPort(oauth: oauth)
+        self.init(
+            sessionUserId: { try? auth.authenticate($0) },
+            agentIdentity: locator.optionalAgentIdentity,
+            agentScopes: locator.credentialScopes,
+            guestDeniedHiddenChannel: visibility.guestDeniedHiddenChannel,
+            appendMessage: { messages.appendMessage($0, ledger: ledger, mirrorSystemMetadata: true) },
+            oauth: oauth,
+            notifications: notifications,
+            messages: messages,
+            channels: channels,
+            feedback: feedback,
+            profiles: profiles,
+            now: now
+        )
+    }
+}
+
 // MARK: - Service
 
 /// Announcements, external avatars, channel unread, notification settings, the

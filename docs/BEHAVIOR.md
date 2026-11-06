@@ -2212,3 +2212,9 @@ RFC 074 personal assistant：
 - Delivery 的 integration services 每次读取当前 OAuth rows，按原序作同一 snapshot 映射；search visibility 仍走原 SearchMentions，raw append 仍进同 Messages→OAuth ledger 事务。API、空 body、附件与拒绝顺序保持。
 - Migration status 每次 dispatch 才复制当前 cancel slot，owner getter 返回并释放锁后调用，source/target 五参次序不变。Hosted migration 按原参 mint 后取 apiKey，receipt DM 仍委托原 MessageSend；optional authenticate 不新增 verified gate，relay 不冻结当前 sink。
 - 三份操作与旧 closure 构造 seams 保持。公开 credential mint→key auth→inventory→revoke、migration/status/receipt 和 daemon export/bundle/guard 输出继续通过；既有 cancel recorder 只属补充证据，不冒充真实 daemon cancel wire 或确定性 slot-install 交错测试。
+
+### Files/MCP/integration 的领域结果映射
+
+- Files 使用原 read projections，MCP catalog 复用宽 capability refusal；MCP OAuth 的 optional identity 保原 success tuple 与四种失败 nil，不以宽 predicate 代替严格 resolver。System append 仍用原 true metadata mirror 和同一 Messages allocator/ledger 事务。
+- Marketplace reference 仍先 resolve local/storage pair，失败直接 nil，成功后才 prepare。Receipt renderer 仍只接受 object，按同 LegacySortedJSON 排序，非 object/渲染失败均为 {}；生产仍用同 Cards 幂等 port，fixture 默认 disabled/custom port/clock/IDs/append 不变。两个旧 {} literal 的逐文件预算由 Root 迁到 renderer，总候选数保持169，未放宽扫描规则。
+- JWT_SECRET 的 nonEmpty 分支、执行顺序和 owner setter 相同，只经 OAuthFlows 的命名配置入口。公开 install/card/legacy-scope、reaction/delivery 字节及幂等 replay/conflict/并发验收保持；显式启用真实两进程 startup 是补充接线证据，未声称新增 secret rotation E2E。

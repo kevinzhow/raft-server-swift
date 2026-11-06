@@ -118,6 +118,15 @@ struct AgentIntegrationAppsDependencies: Sendable {
     ) -> String?
 }
 
+extension AgentIntegrationAppsDependencies {
+    init(lookup: AgentCredentialLookup, register: ActionCardIntegrationRegisterService) {
+        self.init(
+            agentCredential: lookup.agentCredentialAgent,
+            prepareMarketplaceInstallCard: register.prepareMarketplaceInstallCardForReference
+        )
+    }
+}
+
 // MARK: - Service
 
 /// The agent-facing integration app surface: the Apps an agent may manage, one

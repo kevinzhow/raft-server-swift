@@ -198,6 +198,18 @@ public struct FeedbackLocatorService: Sendable {
         return .success(agentId: credential.agentId, serverId: agent.serverId)
     }
 
+    /// The optional identity view for callers that own their refusal mapping.
+    /// Capability-only acceptance remains a separate, broader decision.
+    func optionalAgentIdentity(authorization: String?, capability: String) -> (agentId: String, serverId: String)? {
+        switch identityResolution(authorization: authorization, capability: capability) {
+        case .success(let agentId, let serverId):
+            return (agentId: agentId, serverId: serverId)
+        case .missingAuthorization, .invalidAccessToken, .capabilityNotAuthorized,
+             .invalidAgentCredential:
+            return nil
+        }
+    }
+
     /// A missing, malformed or revoked credential passes here; only a live
     /// credential that lacks the capability is a denial, matching the legacy
     /// `agentCapabilityDenial`.

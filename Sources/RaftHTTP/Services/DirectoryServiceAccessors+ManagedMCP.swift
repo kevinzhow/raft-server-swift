@@ -49,23 +49,9 @@ extension EmailLoginDirectory {
     /// domains and enter as closures.
     public var managedMCPOAuth: ManagedMCPOAuthService {
         ManagedMCPOAuthService(dependencies: ManagedMCPOAuthDependencies(
-            sessionUserId: { [self] in sessionUserId(authorization: $0) },
-            agentIdentity: { [self] authorization, capability in
-                switch feedbackLocators.identityResolution(authorization: authorization, capability: capability) {
-                case .success(let agentId, let serverId):
-                    return (agentId: agentId, serverId: serverId)
-                case .missingAuthorization, .invalidAccessToken, .capabilityNotAuthorized,
-                     .invalidAgentCredential:
-                    return nil
-                }
-            },
-            agentScopes: { [self] in feedbackLocators.credentialScopes(authorization: $0) },
-            guestDeniedHiddenChannel: { [self] channelId, serverId, userId in
-                guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId)
-            },
-            appendMessage: { [messages = messagesAndThreadsStore, ledger = MessageLedgerPort(oauth: oauth)] message in
-                messages.appendMessage(message, ledger: ledger, mirrorSystemMetadata: true)
-            },
+            auth: authCore,
+            locator: feedbackLocators,
+            visibility: ManagedMCPChannelVisibility(oauth: oauth, channels: serversAndChannelsStore),
             oauth: oauth,
             notifications: notificationsStore,
             messages: messagesAndThreadsStore,
@@ -103,15 +89,8 @@ extension EmailLoginDirectory {
             agents: agentsRuntimeStore,
             oauth: oauth,
             dependencies: ManagedMCPAgentCatalogDependencies(
-                sessionUserId: { [self] authorization in
-                    sessionUserId(authorization: authorization)
-                },
-                deniedCapability: { [feedbackLocators] authorization, capability in
-                    switch feedbackLocators.capabilityDecision(authorization: authorization, capability: capability) {
-                    case .allowed: nil
-                    case .denied(let denied): denied
-                    }
-                }
+                auth: authCore,
+                locator: feedbackLocators
             )
         )
     }

@@ -69,22 +69,8 @@ extension EmailLoginDirectory {
             oauth: oauth,
             logins: managedMCPAndCardsStore,
             dependencies: AgentIntegrationAppsDependencies(
-                agentCredential: { [lookup = agentCredentialLookup] authorization in
-                    lookup.agentCredentialAgent(authorization)
-                },
-                prepareMarketplaceInstallCard: { [self] agent, client, scopes, target in
-                    let register = actionCardIntegrationRegister
-                    guard let resolved = register.actionCardTarget(
-                        serverId: agent.serverId, agentId: agent.id, target: target
-                    ) else { return nil }
-                    return register.prepareMarketplaceInstallCard(
-                        serverId: agent.serverId,
-                        agent: agent,
-                        client: client,
-                        scopes: scopes,
-                        target: resolved
-                    )
-                }
+                lookup: agentCredentialLookup,
+                register: actionCardIntegrationRegister
             )
         )
     }

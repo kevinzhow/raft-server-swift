@@ -21,6 +21,16 @@ public struct ManagedMCPAgentCatalogDependencies: Sendable {
     }
 }
 
+extension ManagedMCPAgentCatalogDependencies {
+    init(auth: AuthCoreService, locator: FeedbackLocatorService, now: @escaping @Sendable () -> Date = { Date() }) {
+        self.init(
+            sessionUserId: { try? auth.authenticate($0) },
+            deniedCapability: locator.deniedCapability,
+            now: now
+        )
+    }
+}
+
 /// App reminders for the owner list, the internal machine routes and the
 /// agent-api routes, plus the saved-message write.
 ///

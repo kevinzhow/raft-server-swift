@@ -26,10 +26,7 @@ public func makeActionCardMarketplaceService(
         appendHumanMessage: { message in
             directory.messagesAndThreadsStore.appendMessage(message, ledger: .init(oauth: directory.oauth))
         },
-        serializeReceipt: { payload in
-            guard case .object = payload else { return "{}" }
-            return LegacySortedJSON.render(payload) ?? "{}"
-        },
+        serializeReceipt: MarketplaceReceiptProjection.renderObjectReceipt,
         now: now,
         makeId: makeId
     )

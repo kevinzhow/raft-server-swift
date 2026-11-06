@@ -32,10 +32,10 @@ Sources/RaftHTTP/Services/AgentMessageLookupService.swift	2
 Sources/RaftHTTP/Services/AgentPrivateSurfaceError.swift	2
 Sources/RaftHTTP/Services/AgentsLifecycleService.swift	1
 Sources/RaftHTTP/Services/ChannelMessagingService.swift	1
-Sources/RaftHTTP/Services/DirectoryServiceAccessors+ActionCards.swift	2
 Sources/RaftHTTP/Services/FeedbackLocatorService.swift	2
 Sources/RaftHTTP/Services/JoinLinksAndInvitesService.swift	3
 Sources/RaftHTTP/Services/ManagedMCPControlPlaneService.swift	1
+Sources/RaftHTTP/Services/MarketplaceReceiptProjection.swift	2
 Sources/RaftHTTP/Services/ProductFeedbackSubmissionService.swift	1
 Sources/RaftHTTP/Services/ServerMembersAndSidebarService.swift	11
 Sources/RaftHTTP/Services/ServerProfileAndOrderAttestation.swift	1

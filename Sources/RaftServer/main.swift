@@ -100,7 +100,7 @@ enum Entrypoint {
             nodeEnv: nodeEnv
         ))
         if let jwtSecret = nonEmpty(processEnvironment["JWT_SECRET"]) {
-            emailAccounts.oauth.jwtSecret = jwtSecret
+            emailAccounts.oauthFlows.configureSigningSecret(jwtSecret)
         }
         let database = DatabaseHealth(environment: processEnvironment)
         let ping: @Sendable () async throws -> Void = {
