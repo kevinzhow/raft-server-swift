@@ -73,6 +73,29 @@ func respond<DTO: Encodable, Failure: DomainErrorWithBody>(
     }
 }
 
+/// Overload for a domain whose published object has a fixed upstream member
+/// order. The DTO supplies the exact bytes, so this overload never runs a
+/// keyed `JSONEncoder` (which is hash ordered on Linux). A
+/// `CanonicalDomainErrorBody` failure keeps its exact error object; every other
+/// `DomainError` still maps through the shared `{"error": …}` projection.
+func respond<DTO: CanonicalJSONBody>(
+    status: UInt = 200,
+    _ call: () throws -> DTO
+) throws -> Response {
+    do {
+        let body = try call()
+        return routeResponse(canonicalJSONReply(status: status, body: body.jsonBody()))
+    } catch let error as any CanonicalDomainErrorBody {
+        return routeResponse(canonicalJSONReply(
+            status: error.status,
+            body: error.bodyJSON,
+            extraHeaders: error.responseHeaders
+        ))
+    } catch let error as any DomainError {
+        return try domainErrorResponse(error)
+    }
+}
+
 /// The upstream `{"error": …}` body. Domains with a richer published shape get
 /// their own DTO and a second mapping overload rather than JSON in the service.
 ///
@@ -120,6 +143,22 @@ private func jsonReplySorted<T: Encodable>(
     ]
     for (name, value) in extraHeaders { headers[name] = value }
     return HTTPReply(status: Int(status), headers: headers, body: String(decoding: data, as: UTF8.self))
+}
+
+/// The exact-bytes reply used by the `CanonicalJSONBody` overload. The body is
+/// already canonical JSON, so the header set is the only projection this needs.
+private func canonicalJSONReply(
+    status: UInt,
+    body: String,
+    extraHeaders: [String: String] = [:]
+) -> HTTPReply {
+    var headers = [
+        "X-Robots-Tag": AppFallback.robotsTag,
+        "Content-Type": AppFallback.jsonContentType,
+        "Content-Length": String(Data(body.utf8).count),
+    ]
+    for (name, value) in extraHeaders { headers[name] = value }
+    return HTTPReply(status: Int(status), headers: headers, body: body)
 }
 
 /// The exact header set the auth surface already publishes for JSON replies.

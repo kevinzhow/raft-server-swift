@@ -81,7 +81,6 @@ extension EmailLoginDirectory {
     var guestRoleServers: Set<String> { get { serversAndChannelsStore.guestRoleServers } set { serversAndChannelsStore.guestRoleServers = newValue } }
     var proSeats: [String: Int] { get { serversAndChannelsStore.proSeats } set { serversAndChannelsStore.proSeats = newValue } }
     var joinLinks: [String: JoinLinkRecord] { get { serversAndChannelsStore.joinLinks } set { serversAndChannelsStore.joinLinks = newValue } }
-    var usageLimitAttentionServers: Set<String> { get { serversAndChannelsStore.usageLimitAttentionServers } set { serversAndChannelsStore.usageLimitAttentionServers = newValue } }
     var guestVisibleChannels: [String: Bool] { get { serversAndChannelsStore.guestVisibleChannels } set { serversAndChannelsStore.guestVisibleChannels = newValue } }
     var guestJoinableChannels: [String: Bool] { get { serversAndChannelsStore.guestJoinableChannels } set { serversAndChannelsStore.guestJoinableChannels = newValue } }
     var readReceiptsServers: Set<String> { get { serversAndChannelsStore.readReceiptsServers } set { serversAndChannelsStore.readReceiptsServers = newValue } }
@@ -165,8 +164,6 @@ extension EmailLoginDirectory {
     var readMutationOrder: [String] { get { messagesAndThreadsStore.readMutationOrder } set { messagesAndThreadsStore.readMutationOrder = newValue } }
     var readMutationAcks: [String: (scopeId: String, throughSeq: Int)] { get { messagesAndThreadsStore.readMutationAcks } set { messagesAndThreadsStore.readMutationAcks = newValue } }
     var shareArtifacts: [String: ShareArtifactRecord] { get { messagesAndThreadsStore.shareArtifacts } set { messagesAndThreadsStore.shareArtifacts = newValue } }
-    var systemAttentionIncidents: [SystemAttentionIncident] { get { messagesAndThreadsStore.systemAttentionIncidents } set { messagesAndThreadsStore.systemAttentionIncidents = newValue } }
-    var systemAttentionReceipts: [String: SystemAttentionReceipt] { get { messagesAndThreadsStore.systemAttentionReceipts } set { messagesAndThreadsStore.systemAttentionReceipts = newValue } }
     var threadFollows: [String: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String)] { get { messagesAndThreadsStore.threadFollows } set { messagesAndThreadsStore.threadFollows = newValue } }
     var threadUnfollows: [String: ThreadUnfollowRecord] { get { messagesAndThreadsStore.threadUnfollows } set { messagesAndThreadsStore.threadUnfollows = newValue } }
     var threadFollowStarts: [String: Date] { get { messagesAndThreadsStore.threadFollowStarts } set { messagesAndThreadsStore.threadFollowStarts = newValue } }

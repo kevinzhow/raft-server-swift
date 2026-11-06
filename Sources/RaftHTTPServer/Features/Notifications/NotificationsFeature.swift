@@ -329,15 +329,17 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                let buffer = try await request.body.collect(max: .specified(ByteCount(value: 11 * 1024 * 1024))) {
                 parsed = parseShareArtifactMultipart(data: buffer, boundary: boundary)
             }
-            return routeResponse(services.emailAccounts.createShareArtifact(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: parsed.channelId,
-                image: parsed.image,
-                serverBase: bases.server,
-                shareBase: bases.share,
-                cdnBase: bases.cdn
-            ))
+            return try respond {
+                try services.emailAccounts.runtimeUsageAttestations.createShareArtifact(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: parsed.channelId,
+                    image: parsed.image,
+                    serverBase: bases.server,
+                    shareBase: bases.share,
+                    cdnBase: bases.cdn
+                )
+            }
         }
         slackBridge.post("events") { _ -> Response in
             routeResponse(services.emailAccounts.slackBridgeUnavailable())

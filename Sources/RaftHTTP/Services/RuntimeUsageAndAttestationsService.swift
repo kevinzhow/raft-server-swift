@@ -1,260 +1,494 @@
-import Crypto
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 
-/// Server usage, system attention and agent-attestation read models:
-/// share artifacts, transcripts and mention-delivery diagnostics.
+/// Typed failures for the server-usage, system-attention and attested
+/// diagnostic surface.
 ///
-/// These handlers were lifted from `EmailLogin+ComputersUsage1.swift`.
+/// Every case names the published error object. `bodyJSON` keeps the archive's
+/// member order for the multi-key bodies (`{"status": …}`,
+/// `{"error": …,"code": …}` and the 413 upload cap); the single-key
+/// `{"error": …}` cases fall back to `errorMessage`.
+public enum RuntimeUsageAndAttestationsError: CanonicalDomainErrorBody, Equatable {
+    case unauthorized
+    case serverNotFound
+    case notAMemberOfServer
+    case guestsCannotAccessServerManagementData
+    case invalidSystemAttentionIncident
+    case systemAttentionIncidentNotFound
+    case notJoinable
+    case notAccessible
+    case invalidRequest
+    case machineNotFoundInThisServer
+    case agentNotFoundInThisServer
+    case agentNotAssignedToMachine
+    case editAgentsCapabilityRequired
+    case machineOffline
+    case notFound
+    case agentNotFound
+    case forbidden
+    case invalidTranscriptRequest
+    case invalidReportGeneratedAt
+    case guestsCannotCreateShareArtifacts
+    case imageRequired
+    case shareArtifactTooLarge
+    case shareArtifactMustBePNG
+    case channelIdRequired
+    case noChannelAccess
 
-public struct RuntimeUsageAndAttestationsService: Sendable {
-    public let directory: EmailLoginDirectory
+    public var status: UInt {
+        switch self {
+        case .unauthorized:
+            401
+        case .guestsCannotAccessServerManagementData, .notAMemberOfServer,
+             .editAgentsCapabilityRequired, .forbidden,
+             .guestsCannotCreateShareArtifacts, .noChannelAccess:
+            403
+        case .serverNotFound, .systemAttentionIncidentNotFound, .notJoinable,
+             .notAccessible, .machineNotFoundInThisServer, .agentNotFoundInThisServer,
+             .notFound, .agentNotFound:
+            404
+        case .invalidSystemAttentionIncident, .invalidRequest,
+             .agentNotAssignedToMachine, .invalidTranscriptRequest,
+             .invalidReportGeneratedAt, .imageRequired, .channelIdRequired:
+            400
+        case .machineOffline:
+            409
+        case .shareArtifactTooLarge:
+            413
+        case .shareArtifactMustBePNG:
+            415
+        }
+    }
 
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
+    /// The published upstream `error` text. `{"status": …}` failures never use
+    /// it for the wire body; `bodyJSON` is the exact contract.
+    public var errorMessage: String {
+        switch self {
+        case .unauthorized:
+            "Unauthorized"
+        case .serverNotFound:
+            "Server not found"
+        case .notAMemberOfServer:
+            "Not a member of this server"
+        case .guestsCannotAccessServerManagementData:
+            "Guests cannot access server management data"
+        case .invalidSystemAttentionIncident:
+            "Invalid system attention incident"
+        case .systemAttentionIncidentNotFound:
+            "System attention incident not found"
+        case .notJoinable:
+            "NOT_JOINABLE"
+        case .notAccessible:
+            "NOT_ACCESSIBLE"
+        case .invalidRequest:
+            "INVALID_REQUEST"
+        case .machineNotFoundInThisServer:
+            "Machine not found in this server"
+        case .agentNotFoundInThisServer:
+            "Agent not found in this server"
+        case .agentNotAssignedToMachine:
+            "Agent is not assigned to this machine"
+        case .editAgentsCapabilityRequired:
+            "The `editAgents` capability or human creator authority is required to view agent diagnostics"
+        case .machineOffline:
+            "Computer is offline"
+        case .notFound:
+            "Not found"
+        case .agentNotFound:
+            "Agent not found"
+        case .forbidden:
+            "Forbidden"
+        case .invalidTranscriptRequest:
+            "Invalid transcript request"
+        case .invalidReportGeneratedAt:
+            "reportGeneratedAt must be an ISO timestamp"
+        case .guestsCannotCreateShareArtifacts:
+            "Guests cannot create share artifacts"
+        case .imageRequired:
+            "image is required"
+        case .shareArtifactTooLarge:
+            "Max 10MB per image"
+        case .shareArtifactMustBePNG:
+            "Share artifact must be a PNG image"
+        case .channelIdRequired:
+            "channelId is required"
+        case .noChannelAccess:
+            "You do not have access to this channel"
+        }
+    }
+
+    public var errorCode: String? {
+        switch self {
+        case .machineOffline:
+            "machine_offline"
+        default:
+            nil
+        }
+    }
+
+    public var bodyJSON: String {
+        switch self {
+        case .notJoinable:
+            "{\"status\":\"NOT_JOINABLE\"}"
+        case .notAccessible:
+            "{\"status\":\"NOT_ACCESSIBLE\"}"
+        case .invalidRequest:
+            "{\"status\":\"INVALID_REQUEST\"}"
+        case .machineOffline:
+            "{\"error\":\"Computer is offline\",\"code\":\"machine_offline\"}"
+        case .shareArtifactTooLarge:
+            "{\"error\":\"Max 10MB per image\",\"errorCode\":\"SHARE_ARTIFACT_TOO_LARGE\",\"maxBytes\":10485760}"
+        default:
+            "{\"error\":\(jsonString(errorMessage))}"
+        }
     }
 }
 
-extension EmailLoginDirectory {
+/// Server usage, system attention and agent-attestation read models: share
+/// artifacts, transcripts and mention-delivery diagnostics.
+///
+/// The service owns the authorization order and the published read models; the
+/// machine, agent, message and system-attention rows stay in their per-domain
+/// stores, each read behind that store's own lock. It holds no
+/// `EmailLoginDirectory` and no lock of its own.
+public struct RuntimeUsageAndAttestationsService: Sendable {
+    private static let usageLimitAttentionContract = "server-system-attention-v1"
+    private static let systemNotificationsContract = "server-system-notifications-v1"
 
-    public func serverUsage(authorization: String?, serverId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
-        }
-        guard role != "guest" else {
-            return Self.json(403, "{\"error\":\"Guests cannot access server management data\"}")
-        }
-        let agents = oauth.serverAgents(serverId: serverId).count
-        lock.lock()
-        let machinesCount = machines.filter { $0.serverId == serverId }.count
-        lock.unlock()
-        let channels = oauth.channelsForServer(serverId: serverId, userId: userId, includeArchived: true)
-            .filter { ($0.type == "channel" || $0.type == "private") && oauth.channelArchivedAt(id: $0.id) == nil }
-            .count
-        return Self.json(200, "{\"agents\":\(agents),\"machines\":\(machinesCount),\"channels\":\(channels)}")
+    private let machines: MachinesAndComputersStore
+    private let messages: MessagesAndThreadsStore
+    private let channels: ServersAndChannelsStore
+    private let agents: AgentsRuntimeStore
+    private let oauth: OAuthLedger
+    /// Session lookup still lives on the directory; the composition root
+    /// injects it so the service stays directory-free.
+    private let sessionUserId: @Sendable (String?) -> String?
+    /// `taskChannelAccess` is the unmigrated channel write policy; a `false`
+    /// answer is the archive's `.missing` case.
+    private let channelAccess: @Sendable (String, String, String) -> Bool
+    private let now: @Sendable () -> Date
+    private let makeArtifactId: @Sendable () -> String
+
+    init(
+        machines: MachinesAndComputersStore,
+        messages: MessagesAndThreadsStore,
+        channels: ServersAndChannelsStore,
+        agents: AgentsRuntimeStore,
+        oauth: OAuthLedger,
+        sessionUserId: @escaping @Sendable (String?) -> String?,
+        channelAccess: @escaping @Sendable (String, String, String) -> Bool,
+        now: @escaping @Sendable () -> Date = { Date() },
+        makeArtifactId: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
+    ) {
+        self.machines = machines
+        self.messages = messages
+        self.channels = channels
+        self.agents = agents
+        self.oauth = oauth
+        self.sessionUserId = sessionUserId
+        self.channelAccess = channelAccess
+        self.now = now
+        self.makeArtifactId = makeArtifactId
     }
 
-    public func serverSystemNotifications(authorization: String?, serverId: String) -> HTTPReply {        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    // MARK: - Server usage (`GET /api/servers/:id/usage`)
+
+    /// Counts live agents, daemon machines and human channels. A guest gets the
+    /// published 403; a non-member gets the 404 that hides the server.
+    public func serverUsage(authorization: String?, serverId: String) throws -> ServerUsageDTO {
+        guard let userId = sessionUserId(authorization) else {
+            throw RuntimeUsageAndAttestationsError.unauthorized
         }
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw RuntimeUsageAndAttestationsError.serverNotFound
         }
-        let generatedAt = Date()
-        if role == "guest" {
-            return Self.json(200, serverSystemNotificationsBody(generatedAt: generatedAt, notifications: []))
+        guard role != "guest" else {
+            throw RuntimeUsageAndAttestationsError.guestsCannotAccessServerManagementData
         }
-        lock.lock()
-        let rows = machines.filter { $0.serverId == serverId }
-        let online = machineOnline
-        let computerMachineIds = Set(computers.compactMap { computer -> String? in
+        let agentCount = oauth.serverAgents(serverId: serverId).count
+        let machineRows = machines.state.machines
+        let machineCount = machineRows.filter { $0.serverId == serverId }.count
+        let channelCount = oauth.channelsForServer(
+            serverId: serverId,
+            userId: userId,
+            includeArchived: true
+        )
+        .filter {
+            ($0.type == "channel" || $0.type == "private") && oauth.channelArchivedAt(id: $0.id) == nil
+        }
+        .count
+        return ServerUsageDTO(agents: agentCount, machines: machineCount, channels: channelCount)
+    }
+
+    // MARK: - System notifications (`GET /api/servers/:id/system-notifications`)
+
+    /// The per-server machine-offline feed. Managed Computers are excluded
+    /// because their daemon column is not a raw daemon; an offline daemon with
+    /// active agents is an error, one without is a warning.
+    public func serverSystemNotifications(
+        authorization: String?,
+        serverId: String
+    ) throws -> SystemNotificationsDTO {
+        guard let userId = sessionUserId(authorization) else {
+            throw RuntimeUsageAndAttestationsError.unauthorized
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw RuntimeUsageAndAttestationsError.notAMemberOfServer
+        }
+        let generatedAt = now()
+        guard role != "guest" else {
+            return Self.systemNotifications(generatedAt: generatedAt, notifications: [])
+        }
+
+        let machineSnapshot = machines.state
+        let agentSnapshot = agents.state
+        let rows = machineSnapshot.machines.filter { $0.serverId == serverId }
+        let online = machineSnapshot.machineOnline
+        let computerMachineIds = Set(machineSnapshot.computers.compactMap { computer -> String? in
             guard computer.serverId == serverId, computer.revokedAt == nil else { return nil }
             return computer.machineId
         })
         var activeByMachine: [String: Int] = [:]
-        for agent in serverAgents.values where agent.serverId == serverId && agent.status == "active" {
-            if let machineId = agentMachineIds[agent.id] {
+        for agent in agentSnapshot.serverAgents.values
+        where agent.serverId == serverId && agent.status == "active" {
+            if let machineId = agentSnapshot.agentMachineIds[agent.id] {
                 activeByMachine[machineId, default: 0] += 1
             }
         }
-        lock.unlock()
 
         let rawDaemons = rows
             .filter { !computerMachineIds.contains($0.id) }
             .sorted { $0.id < $1.id }
         let offline = rawDaemons.filter { online[$0.id] != true }
-        var notifications: [String] = []
-        if !offline.isEmpty {
-            let activeCount = offline.reduce(0) { $0 + (activeByMachine[$1.id] ?? 0) }
-            let names = offline.map(\.name).joined(separator: ", ")
-            let singular = offline.count == 1
-            let title = "\(names) \(singular ? "is" : "are") offline"
-            let body = activeCount > 0
-                ? "\(activeCount) \(activeCount == 1 ? "agent is" : "agents are") active on \(singular ? "this computer" : "these computers") and can't run until \(singular ? "it reconnects" : "they reconnect")."
-                : "No agents are active on \(singular ? "this computer" : "these computers") right now — reconnect when you need \(singular ? "it" : "them") next."
-            let ids = offline.map(\.id).joined(separator: ",")
-            let machineRefs = offline.map {
-                "{\"id\":\(jsonString($0.id)),\"name\":\(jsonString($0.name))}"
-            }.joined(separator: ",")
-            let copyTitle = singular ? "machine.offline.title.one" : "machine.offline.title.many"
-            let copyBody = activeCount > 0
-                ? (singular ? "machine.offline.body.active.one" : "machine.offline.body.active.many")
-                : (singular ? "machine.offline.body.idle.one" : "machine.offline.body.idle.many")
-            let evaluation = "{\"clock\":\"server\",\"evaluatedAt\":\(jsonString(Self.isoString(generatedAt))),\"offlineAfterMs\":0,\"statusAuthority\":\"canonical_machine_read_model\",\"runKind\":\"raw_daemon\",\"versionAuthority\":\"latest_daemon_release\"}"
-            let notification = "{\"id\":\(jsonString("machine-offline:\(ids)")),\"type\":\"machine.offline\",\"schemaVersion\":1,\"state\":\"active\",\"kind\":\"\(activeCount > 0 ? "error" : "warning")\",\"title\":\(jsonString(title)),\"body\":\(jsonString(body)),\"copy\":{\"titleKey\":\(jsonString(copyTitle)),\"bodyKey\":\(jsonString(copyBody)),\"actionLabelKey\":\"common.view\",\"params\":{\"machineNames\":\(jsonString(names)),\"machineCount\":\(offline.count),\"activeAgentCount\":\(activeCount),\"targetDaemonVersion\":null}},\"action\":{\"label\":\"View\",\"targetType\":\"machine\",\"targetId\":\(jsonString(offline[0].id))},\"payload\":{\"machines\":[\(machineRefs)],\"activeAgentCount\":\(activeCount),\"targetDaemonVersion\":null,\"evaluation\":\(evaluation)}}"
-            notifications.append(notification)
+        guard !offline.isEmpty else {
+            return Self.systemNotifications(generatedAt: generatedAt, notifications: [])
         }
-        return Self.json(200, serverSystemNotificationsBody(generatedAt: generatedAt, notifications: notifications))
+
+        let activeCount = offline.reduce(0) { $0 + (activeByMachine[$1.id] ?? 0) }
+        let names = offline.map(\.name).joined(separator: ", ")
+        let singular = offline.count == 1
+        let title = "\(names) \(singular ? "is" : "are") offline"
+        let body = activeCount > 0
+            ? "\(activeCount) \(activeCount == 1 ? "agent is" : "agents are") active on \(singular ? "this computer" : "these computers") and can't run until \(singular ? "it reconnects" : "they reconnect")."
+            : "No agents are active on \(singular ? "this computer" : "these computers") right now — reconnect when you need \(singular ? "it" : "them") next."
+        let ids = offline.map(\.id).joined(separator: ",")
+        let machineRefs = offline.map { SystemNotificationMachineDTO(id: $0.id, name: $0.name) }
+        let copyTitle = singular ? "machine.offline.title.one" : "machine.offline.title.many"
+        let copyBody = activeCount > 0
+            ? (singular ? "machine.offline.body.active.one" : "machine.offline.body.active.many")
+            : (singular ? "machine.offline.body.idle.one" : "machine.offline.body.idle.many")
+        let notification = SystemNotificationDTO(
+            id: "machine-offline:\(ids)",
+            type: "machine.offline",
+            schemaVersion: 1,
+            state: "active",
+            kind: activeCount > 0 ? "error" : "warning",
+            title: title,
+            body: body,
+            copy: SystemNotificationCopyDTO(
+                titleKey: copyTitle,
+                bodyKey: copyBody,
+                actionLabelKey: "common.view",
+                params: SystemNotificationCopyParamsDTO(
+                    machineNames: names,
+                    machineCount: offline.count,
+                    activeAgentCount: activeCount
+                )
+            ),
+            action: SystemNotificationActionDTO(
+                label: "View",
+                targetType: "machine",
+                targetId: offline[0].id
+            ),
+            payload: SystemNotificationPayloadDTO(
+                machines: machineRefs,
+                activeAgentCount: activeCount,
+                evaluation: SystemNotificationEvaluationDTO(
+                    clock: "server",
+                    evaluatedAt: generatedAt,
+                    offlineAfterMs: 0,
+                    statusAuthority: "canonical_machine_read_model",
+                    runKind: "raw_daemon",
+                    versionAuthority: "latest_daemon_release"
+                )
+            )
+        )
+        return Self.systemNotifications(generatedAt: generatedAt, notifications: [notification])
     }
 
-    func serverSystemNotificationsBody(generatedAt: Date, notifications: [String]) -> String {
-        "{\"contractVersion\":\"server-system-notifications-v1\",\"generatedAt\":\(jsonString(Self.isoString(generatedAt))),\"snapshotMode\":\"replace\",\"clientState\":{\"read\":\"none\",\"dismiss\":\"local_by_notification_id\"},\"notifications\":[\(notifications.joined(separator: ","))]}"
+    static func systemNotifications(
+        generatedAt: Date,
+        notifications: [SystemNotificationDTO]
+    ) -> SystemNotificationsDTO {
+        SystemNotificationsDTO(
+            contractVersion: systemNotificationsContract,
+            generatedAt: generatedAt,
+            snapshotMode: "replace",
+            clientState: SystemNotificationsClientStateDTO(
+                read: "none",
+                dismiss: "local_by_notification_id"
+            ),
+            notifications: notifications
+        )
     }
 
-    public func enableUsageLimitAttentionForServer(_ serverId: String) {
-        lock.lock()
-        usageLimitAttentionServers.insert(serverId)
-        lock.unlock()
-    }
+    // MARK: - System attention (`GET /api/servers/:id/system-notifications-v2`)
 
-    public func disableUsageLimitAttentionForServer(_ serverId: String) {
-        lock.lock()
-        usageLimitAttentionServers.remove(serverId)
-        lock.unlock()
-    }
-
-    public func listSystemAttention(authorization: String?, serverId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    /// The per-recipient usage-limit attention feed. Non-members and members
+    /// without owner/admin authority get the published empty snapshot (not an
+    /// error), matching the archive.
+    public func listSystemAttention(
+        authorization: String?,
+        serverId: String
+    ) throws -> SystemAttentionDTO {
+        guard let userId = sessionUserId(authorization) else {
+            throw RuntimeUsageAndAttestationsError.unauthorized
         }
-        let generatedAt = Date()
+        let generatedAt = now()
         let role = oauth.memberRole(serverId: serverId, userId: userId)
         guard role == "owner" || role == "admin" else {
-            return Self.json(200, systemAttentionBody(generatedAt: generatedAt, notifications: []))
+            return Self.systemAttention(generatedAt: generatedAt, notifications: [])
         }
-        lock.lock()
-        guard usageLimitAttentionServers.contains(serverId) else {
-            lock.unlock()
-            return Self.json(200, systemAttentionBody(generatedAt: generatedAt, notifications: []))
+        guard channels.usageLimitAttentionServers.contains(serverId) else {
+            return Self.systemAttention(generatedAt: generatedAt, notifications: [])
         }
-        let incidents = systemAttentionIncidents
-            .filter { $0.serverId == serverId && $0.state == "active" }
-            .filter { systemAttentionReceipts["\($0.id)\n\(userId)"]?.dismissedAt == nil }
-            .sorted { $0.activatedAt > $1.activatedAt }
-        let notifications = incidents.map { incident -> String in
-            let seenAt = systemAttentionReceipts["\(incident.id)\n\(userId)"]?.seenAt.map { jsonString(Self.isoString($0)) } ?? "null"
-            let resetsAt = incident.resetsAt.map { jsonString(Self.isoString($0)) } ?? "null"
-            let machineName = machines.first { $0.id == incident.machineId }?.name ?? ""
-            let affected = incident.affectedAgentIds.map(jsonString).joined(separator: ",")
-            return "{\"id\":\(jsonString(incident.id)),\"kind\":\"usage_limit_reached\",\"severity\":\"warning\",\"state\":\"active\",\"activatedAt\":\(jsonString(Self.isoString(incident.activatedAt))),\"lastObservedAt\":\(jsonString(Self.isoString(incident.lastObservedAt))),\"seenAt\":\(seenAt),\"machine\":{\"id\":\(jsonString(incident.machineId)),\"name\":\(jsonString(machineName))},\"provider\":\(jsonString(incident.provider)),\"windowKey\":\(jsonString(incident.windowKey)),\"resetsAt\":\(resetsAt),\"affectedAgentIds\":[\(affected)]}"
+        let incidents = messages.systemAttentionNotifications(serverId: serverId, userId: userId)
+        let machineRows = machines.state.machines
+        let notifications = incidents.map { row -> SystemAttentionNotificationDTO in
+            let incident = row.incident
+            let machineName = machineRows.first { $0.id == incident.machineId }?.name ?? ""
+            return SystemAttentionNotificationDTO(
+                id: incident.id,
+                kind: "usage_limit_reached",
+                severity: "warning",
+                state: "active",
+                activatedAt: incident.activatedAt,
+                lastObservedAt: incident.lastObservedAt,
+                seenAt: row.seenAt,
+                machine: SystemAttentionMachineDTO(id: incident.machineId, name: machineName),
+                provider: incident.provider,
+                windowKey: incident.windowKey,
+                resetsAt: incident.resetsAt,
+                affectedAgentIds: incident.affectedAgentIds
+            )
         }
-        lock.unlock()
-        return Self.json(200, systemAttentionBody(generatedAt: generatedAt, notifications: notifications))
+        return Self.systemAttention(generatedAt: generatedAt, notifications: notifications)
     }
 
-    public func markSystemAttentionSeen(authorization: String?, serverId: String, incidentId: String) -> HTTPReply {
-        systemAttentionReceipt(authorization: authorization, serverId: serverId, incidentId: incidentId, dismiss: false)
+    static func systemAttention(
+        generatedAt: Date,
+        notifications: [SystemAttentionNotificationDTO]
+    ) -> SystemAttentionDTO {
+        SystemAttentionDTO(
+            contractVersion: usageLimitAttentionContract,
+            generatedAt: generatedAt,
+            snapshotMode: "replace",
+            unseenCount: notifications.reduce(0) { $0 + ($1.seenAt == nil ? 1 : 0) },
+            notifications: notifications
+        )
     }
 
-    public func dismissSystemAttention(authorization: String?, serverId: String, incidentId: String) -> HTTPReply {
-        systemAttentionReceipt(authorization: authorization, serverId: serverId, incidentId: incidentId, dismiss: true)
+    /// `POST /api/servers/:id/system-notifications-v2/:incidentId/seen`.
+    public func markSystemAttentionSeen(
+        authorization: String?,
+        serverId: String,
+        incidentId: String
+    ) throws -> OkResponse {
+        try systemAttentionReceipt(
+            authorization: authorization,
+            serverId: serverId,
+            incidentId: incidentId,
+            dismiss: false
+        )
     }
 
-    func systemAttentionReceipt(
+    /// `POST /api/servers/:id/system-notifications-v2/:incidentId/dismiss`.
+    public func dismissSystemAttention(
+        authorization: String?,
+        serverId: String,
+        incidentId: String
+    ) throws -> OkResponse {
+        try systemAttentionReceipt(
+            authorization: authorization,
+            serverId: serverId,
+            incidentId: incidentId,
+            dismiss: true
+        )
+    }
+
+    private func systemAttentionReceipt(
         authorization: String?,
         serverId: String,
         incidentId: String,
         dismiss: Bool
-    ) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    ) throws -> OkResponse {
+        guard let userId = sessionUserId(authorization) else {
+            throw RuntimeUsageAndAttestationsError.unauthorized
         }
         guard ServerScope.isUUID(incidentId) else {
-            return Self.json(400, "{\"error\":\"Invalid system attention incident\"}")
+            throw RuntimeUsageAndAttestationsError.invalidSystemAttentionIncident
         }
-        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner"
-                || oauth.memberRole(serverId: serverId, userId: userId) == "admin"
-        else {
-            return Self.json(404, "{\"error\":\"System attention incident not found\"}")
+        let role = oauth.memberRole(serverId: serverId, userId: userId)
+        guard role == "owner" || role == "admin" else {
+            throw RuntimeUsageAndAttestationsError.systemAttentionIncidentNotFound
         }
-        lock.lock()
-        guard usageLimitAttentionServers.contains(serverId),
-              systemAttentionIncidents.contains(where: {
-                  $0.id == incidentId && $0.serverId == serverId && $0.state == "active"
-              })
-        else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"System attention incident not found\"}")
+        // The enabled flag, the incident lookup and the receipt write share one
+        // store critical section, so a concurrent mark cannot resurrect a
+        // dismissal from a stale read.
+        let enabled = channels.usageLimitAttentionServers.contains(serverId)
+        guard messages.recordSystemAttentionReceipt(
+            serverId: serverId,
+            incidentId: incidentId,
+            userId: userId,
+            attentionEnabled: enabled,
+            dismiss: dismiss,
+            now: now()
+        ) else {
+            throw RuntimeUsageAndAttestationsError.systemAttentionIncidentNotFound
         }
-        let key = "\(incidentId)\n\(userId)"
-        let now = Date()
-        var receipt = systemAttentionReceipts[key] ?? SystemAttentionReceipt(seenAt: nil, dismissedAt: nil)
-        if receipt.seenAt == nil { receipt.seenAt = now }
-        if dismiss { receipt.dismissedAt = now }
-        systemAttentionReceipts[key] = receipt
-        lock.unlock()
-        return Self.json(200, "{\"ok\":true}")
+        return OkResponse()
     }
 
-    func systemAttentionBody(generatedAt: Date, notifications: [String]) -> String {
-        let unseen = notifications.reduce(0) { count, notification in
-            count + (notification.contains("\"seenAt\":null") ? 1 : 0)
-        }
-        return "{\"contractVersion\":\"server-system-attention-v1\",\"generatedAt\":\(jsonString(Self.isoString(generatedAt))),\"snapshotMode\":\"replace\",\"unseenCount\":\(unseen),\"notifications\":[\(notifications.joined(separator: ","))]}"
-    }
+    // MARK: - Mention-delivery diagnostics
 
+    /// `GET …/diagnostic/mention-delivery/:messageId`.
+    ///
+    /// The archive answers every outcome with a `{"status": …}` body: a
+    /// malformed message id is `NOT_JOINABLE` before authentication, an unseen
+    /// or unassigned agent is `NOT_ACCESSIBLE`, and the healthy path is
+    /// `NOT_JOINABLE` because delivery diagnostics are not joinable in this
+    /// build.
     public func mentionDeliveryDiagnostic(
         authorization: String?,
         serverId: String,
         machineId: String,
         agentId: String,
         messageId: String
-    ) -> HTTPReply {
+    ) throws -> RuntimeStatusDTO {
         guard ServerScope.isUUID(messageId) else {
-            return Self.json(404, "{\"status\":\"NOT_JOINABLE\"}")
+            return RuntimeStatusDTO(status: "NOT_JOINABLE")
         }
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        guard let userId = sessionUserId(authorization) else {
+            throw RuntimeUsageAndAttestationsError.unauthorized
         }
         guard let role = oauth.memberRole(serverId: serverId, userId: userId),
               let agent = oauth.agentRuntimeInfo(id: agentId),
               agent.serverId == serverId, !agent.deleted
         else {
-            return Self.json(404, "{\"status\":\"NOT_ACCESSIBLE\"}")
+            throw RuntimeUsageAndAttestationsError.notAccessible
         }
-        lock.lock()
-        let machineMatches = machines.contains { $0.id == machineId && $0.serverId == serverId }
-        let assigned = agentMachineIds[agentId] == machineId
-        lock.unlock()
+        let machineRows = machines.state.machines
+        let assigned = agents.state.agentMachineIds[agentId] == machineId
+        let machineMatches = machineRows.contains { $0.id == machineId && $0.serverId == serverId }
         guard machineMatches, assigned else {
-            return Self.json(404, "{\"status\":\"NOT_ACCESSIBLE\"}")
+            throw RuntimeUsageAndAttestationsError.notAccessible
         }
         guard role == "owner" || role == "admin" || agent.creatorUserId == userId else {
-            return Self.json(404, "{\"status\":\"NOT_ACCESSIBLE\"}")
+            throw RuntimeUsageAndAttestationsError.notAccessible
         }
-        return Self.json(404, "{\"status\":\"NOT_JOINABLE\"}")
+        return RuntimeStatusDTO(status: "NOT_JOINABLE")
     }
 
-    public func agentSessionTranscript(
-        authorization: String?,
-        serverId: String,
-        machineId: String,
-        agentId: String
-    ) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(404, "{\"error\":\"Server not found\"}")
-        }
-        lock.lock()
-        let machineExists = machines.contains { $0.id == machineId && $0.serverId == serverId }
-        let assignedMachine = agentMachineIds[agentId]
-        let online = machineOnline[machineId] == true
-        lock.unlock()
-        guard machineExists else {
-            return Self.json(404, "{\"error\":\"Machine not found in this server\"}")
-        }
-        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
-            return Self.json(404, "{\"error\":\"Agent not found in this server\"}")
-        }
-        guard assignedMachine == machineId else {
-            return Self.json(400, "{\"error\":\"Agent is not assigned to this machine\"}")
-        }
-        guard role == "owner" || role == "admin" || agent.creatorUserId == userId else {
-            return Self.json(403, "{\"error\":\"The `editAgents` capability or human creator authority is required to view agent diagnostics\"}")
-        }
-        guard online else {
-            return Self.json(409, "{\"error\":\"Computer is offline\",\"code\":\"machine_offline\"}")
-        }
-        return Self.json(200, "{\"sessionId\":null,\"transcript\":[]}")
-    }
-
+    /// `POST …/diagnostic/mention-delivery/:messageId/redrive`.
     public func redriveMentionDelivery(
         authorization: String?,
         serverId: String,
@@ -262,82 +496,125 @@ extension EmailLoginDirectory {
         agentId: String,
         messageId: String,
         body: String
-    ) -> HTTPReply {
+    ) throws -> RuntimeStatusDTO {
         guard ServerScope.isUUID(messageId) else {
-            return Self.json(404, "{\"status\":\"NOT_JOINABLE\"}")
+            return RuntimeStatusDTO(status: "NOT_JOINABLE")
         }
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        guard let userId = sessionUserId(authorization) else {
+            throw RuntimeUsageAndAttestationsError.unauthorized
         }
         guard let role = oauth.memberRole(serverId: serverId, userId: userId),
               let agent = oauth.agentRuntimeInfo(id: agentId),
               agent.serverId == serverId, !agent.deleted
         else {
-            return Self.json(404, "{\"status\":\"NOT_ACCESSIBLE\"}")
+            throw RuntimeUsageAndAttestationsError.notAccessible
         }
-        lock.lock()
-        let machineMatches = machines.contains { $0.id == machineId && $0.serverId == serverId }
-        let assigned = agentMachineIds[agentId] == machineId
-        lock.unlock()
+        let machineRows = machines.state.machines
+        let assigned = agents.state.agentMachineIds[agentId] == machineId
+        let machineMatches = machineRows.contains { $0.id == machineId && $0.serverId == serverId }
         guard machineMatches, assigned else {
-            return Self.json(404, "{\"status\":\"NOT_ACCESSIBLE\"}")
+            throw RuntimeUsageAndAttestationsError.notAccessible
         }
         guard role == "owner" || role == "admin" || agent.creatorUserId == userId else {
-            return Self.json(404, "{\"status\":\"NOT_ACCESSIBLE\"}")
+            throw RuntimeUsageAndAttestationsError.notAccessible
         }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              object.count == 1,
-              let version = object["expectedVersion"] as? NSNumber,
-              version.doubleValue.rounded() == version.doubleValue,
-              version.intValue >= 0
-        else {
-            return Self.json(400, "{\"status\":\"INVALID_REQUEST\"}")
+        guard RuntimeUsageDiagnosticBody.mentionRedriveAccepted(body) else {
+            throw RuntimeUsageAndAttestationsError.invalidRequest
         }
-        return Self.json(404, "{\"status\":\"NOT_JOINABLE\"}")
+        return RuntimeStatusDTO(status: "NOT_JOINABLE")
     }
 
+    // MARK: - Session transcript
+
+    /// `GET …/agents/:agentId/diagnostic/session-transcript`. The machine must
+    /// exist and be online, the agent must be assigned to it, and the caller
+    /// must be an owner, an admin or the agent's human creator.
+    public func agentSessionTranscript(
+        authorization: String?,
+        serverId: String,
+        machineId: String,
+        agentId: String
+    ) throws -> SessionTranscriptDTO {
+        guard let userId = sessionUserId(authorization) else {
+            throw RuntimeUsageAndAttestationsError.unauthorized
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw RuntimeUsageAndAttestationsError.serverNotFound
+        }
+        let machineSnapshot = machines.state
+        let machineExists = machineSnapshot.machines.contains {
+            $0.id == machineId && $0.serverId == serverId
+        }
+        let assignedMachine = agents.state.agentMachineIds[agentId]
+        let online = machineSnapshot.machineOnline[machineId] == true
+        guard machineExists else {
+            throw RuntimeUsageAndAttestationsError.machineNotFoundInThisServer
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId),
+              agent.serverId == serverId, !agent.deleted
+        else {
+            throw RuntimeUsageAndAttestationsError.agentNotFoundInThisServer
+        }
+        guard assignedMachine == machineId else {
+            throw RuntimeUsageAndAttestationsError.agentNotAssignedToMachine
+        }
+        guard role == "owner" || role == "admin" || agent.creatorUserId == userId else {
+            throw RuntimeUsageAndAttestationsError.editAgentsCapabilityRequired
+        }
+        guard online else {
+            throw RuntimeUsageAndAttestationsError.machineOffline
+        }
+        return SessionTranscriptDTO()
+    }
+
+    // MARK: - Transcript feedback
+
+    /// `POST …/feedback/:reportId/transcript`. Owner, admin or the agent's
+    /// human creator may upload; a present `reportGeneratedAt` must be an ISO
+    /// timestamp.
     public func submitTranscriptFeedback(
         authorization: String?,
         serverId: String,
         agentId: String,
         reportId: String,
         body: String
-    ) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    ) throws -> TranscriptFeedbackAcceptedDTO {
+        guard let userId = sessionUserId(authorization) else {
+            throw RuntimeUsageAndAttestationsError.unauthorized
         }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            throw RuntimeUsageAndAttestationsError.notAMemberOfServer
         }
-        guard reportId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
-            return Self.json(404, "{\"error\":\"Not found\"}")
+        guard reportId.wholeMatch(
+            of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
+        ) != nil else {
+            throw RuntimeUsageAndAttestationsError.notFound
         }
-        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
-            return Self.json(404, "{\"error\":\"Agent not found\"}")
+        guard let agent = oauth.agentRuntimeInfo(id: agentId),
+              agent.serverId == serverId, !agent.deleted
+        else {
+            throw RuntimeUsageAndAttestationsError.agentNotFound
         }
+        let role = oauth.memberRole(serverId: serverId, userId: userId)
         guard role == "owner" || role == "admin" || agent.creatorUserId == userId else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            throw RuntimeUsageAndAttestationsError.forbidden
         }
-        if !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
-                return Self.json(400, "{\"error\":\"Invalid transcript request\"}")
-            }
-            if let raw = object["reportGeneratedAt"], !(raw is NSNull) {
-                let fractional = ISO8601DateFormatter()
-                fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                guard let text = raw as? String,
-                      fractional.date(from: text) != nil || ISO8601DateFormatter().date(from: text) != nil
-                else {
-                    return Self.json(400, "{\"error\":\"reportGeneratedAt must be an ISO timestamp\"}")
-                }
-            }
+        switch RuntimeUsageDiagnosticBody.transcriptFeedback(body) {
+        case .valid:
+            break
+        case .malformed:
+            throw RuntimeUsageAndAttestationsError.invalidTranscriptRequest
+        case .invalidTimestamp:
+            throw RuntimeUsageAndAttestationsError.invalidReportGeneratedAt
         }
-        return Self.json(202, "{\"accepted\":true,\"feedbackReportId\":\(jsonString(reportId)),\"agentId\":\(jsonString(agentId))}")
+        return TranscriptFeedbackAcceptedDTO(feedbackReportId: reportId, agentId: agentId)
     }
 
-    /// `POST /api/share-artifacts/message-selection`. A PNG screenshot becomes a
-    /// public share page plus the image behind it. The image bytes are served
-    /// back exactly as uploaded, so the OG card advertises the real dimensions.
+    // MARK: - Share artifacts (`POST /api/share-artifacts/message-selection`)
+
+    /// A PNG screenshot becomes a public share page plus the image behind it.
+    /// The image bytes are stored exactly as uploaded, so the OG card
+    /// advertises the real dimensions.
     public func createShareArtifact(
         authorization: String?,
         serverId: String,
@@ -346,50 +623,55 @@ extension EmailLoginDirectory {
         serverBase: String,
         shareBase: String,
         cdnBase: String?
-    ) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    ) throws -> ShareArtifactDTO {
+        guard let userId = sessionUserId(authorization) else {
+            throw RuntimeUsageAndAttestationsError.unauthorized
         }
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw RuntimeUsageAndAttestationsError.notAMemberOfServer
         }
         guard role != "guest" else {
-            return Self.json(403, "{\"error\":\"Guests cannot create share artifacts\"}")
+            throw RuntimeUsageAndAttestationsError.guestsCannotCreateShareArtifacts
         }
         let maxBytes = 10 * 1024 * 1024
         guard let image, image.sizeBytes > 0, !image.bytes.isEmpty else {
-            return Self.json(400, "{\"error\":\"image is required\"}")
+            throw RuntimeUsageAndAttestationsError.imageRequired
         }
         guard image.sizeBytes <= maxBytes else {
-            return Self.json(413, "{\"error\":\"Max 10MB per image\",\"errorCode\":\"SHARE_ARTIFACT_TOO_LARGE\",\"maxBytes\":\(maxBytes)}")
+            throw RuntimeUsageAndAttestationsError.shareArtifactTooLarge
         }
-        guard Self.isPNGBytes(image.bytes) else {
-            return Self.json(415, "{\"error\":\"Share artifact must be a PNG image\"}")
+        guard Self.isPNG(image.bytes) else {
+            throw RuntimeUsageAndAttestationsError.shareArtifactMustBePNG
         }
         guard let channelId else {
-            return Self.json(400, "{\"error\":\"channelId is required\"}")
+            throw RuntimeUsageAndAttestationsError.channelIdRequired
         }
-        switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
-        case .missing:
-            return Self.json(403, "{\"error\":\"You do not have access to this channel\"}")
-        case .readOnly, .write:
-            break
+        guard channelAccess(serverId, channelId, userId) else {
+            throw RuntimeUsageAndAttestationsError.noChannelAccess
         }
-        let id = UUID().uuidString.lowercased()
+        let id = makeArtifactId()
         let size = Self.pngDimensions(image.bytes)
-        lock.lock()
-        shareArtifacts[id] = ShareArtifactRecord(
+        messages.insertShareArtifact(
+            id: id,
             bytes: image.bytes,
             width: size.width,
             height: size.height,
             serverId: serverId,
-            createdAt: Date()
+            createdAt: now()
         )
-        lock.unlock()
-        return Self.json(200, "{\"id\":\(jsonString(id)),\"url\":\(jsonString(Self.shareURL(id: id, shareBase: shareBase))),\"imageUrl\":\(jsonString(Self.shareImageURL(id: id, serverId: serverId, serverBase: serverBase, cdnBase: cdnBase)))}")
+        return ShareArtifactDTO(
+            id: id,
+            url: ShareArtifactURL.share(id: id, shareBase: shareBase),
+            imageUrl: ShareArtifactURL.image(
+                id: id,
+                serverId: serverId,
+                serverBase: serverBase,
+                cdnBase: cdnBase
+            )
+        )
     }
 
-    static func isPNGBytes(_ data: Data) -> Bool {
+    static func isPNG(_ data: Data) -> Bool {
         data.count >= 8 && data.prefix(8).elementsEqual([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
     }
 
@@ -401,19 +683,4 @@ extension EmailLoginDirectory {
         let height = bytes[4..<8].reduce(0) { $0 << 8 | Int($1) }
         return (width > 0 ? width : 1, height > 0 ? height : 1)
     }
-
-    static func shareURL(id: String, shareBase: String) -> String {
-        let base = shareBase.hasSuffix("/") ? String(shareBase.dropLast()) : shareBase
-        return base + "/" + id
-    }
-
-    static func shareImageURL(id: String, serverId: String, serverBase: String, cdnBase: String?) -> String {
-        if let cdnBase {
-            let base = cdnBase.hasSuffix("/") ? String(cdnBase.dropLast()) : cdnBase
-            return "\(base)/\(serverId)/share-artifacts/\(id).png"
-        }
-        let base = serverBase.hasSuffix("/") ? String(serverBase.dropLast()) : serverBase
-        return base + "/share/" + id + ".png"
-    }
-
 }

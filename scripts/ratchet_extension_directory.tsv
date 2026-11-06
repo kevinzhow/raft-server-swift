@@ -33,7 +33,6 @@ Sources/RaftHTTP/Services/ProductFeedbackSubmissionService.swift	1
 Sources/RaftHTTP/Services/ProfileAndChannelFilesService.swift	1
 Sources/RaftHTTP/Services/ReactionsRealtimeService.swift	1
 Sources/RaftHTTP/Services/RuntimeFormsAndProbesService.swift	1
-Sources/RaftHTTP/Services/RuntimeUsageAndAttestationsService.swift	1
 Sources/RaftHTTP/Services/SearchMentionsService.swift	1
 Sources/RaftHTTP/Services/ServerMembersAndSidebarService.swift	1
 Sources/RaftHTTP/Services/ServerProfileAndOrderService.swift	1
