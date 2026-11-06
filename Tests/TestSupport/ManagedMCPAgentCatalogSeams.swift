@@ -56,6 +56,12 @@ extension EmailLoginDirectory {
         }
     }
 
+    public func taskMessageIdForTesting(taskId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return taskRecords.first { $0.id == taskId }?.messageId
+    }
+
     public func taskStatusForTesting(taskId: String) -> String? {
         lock.lock()
         defer { lock.unlock() }

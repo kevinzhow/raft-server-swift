@@ -365,25 +365,35 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
         }
         agentApi.post("send") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentSendMessage(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(),
-                v2: false
-            ))
+            // A body that does not decode stays `nil`: the service authorizes
+            // before answering the legacy `Invalid send request` 400.
+            let body = await jsonRequestBody(AgentSendMessageRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.actionCardExecute.agentSendMessage(
+                    authorization: request.headers[.authorization],
+                    body: body,
+                    v2: false
+                )
+            }
         }
         agentApi.post("v2", "send") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentSendMessage(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(),
-                v2: true
-            ))
+            let body = await jsonRequestBody(AgentSendMessageRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.actionCardExecute.agentSendMessage(
+                    authorization: request.headers[.authorization],
+                    body: body,
+                    v2: true
+                )
+            }
         }
-        agentApi.get("tasks") { request -> Response in
-            routeResponse(services.emailAccounts.agentTasksList(
-                authorization: request.headers[.authorization],
-                legacyAgentId: nil,
-                channelRef: desktopQuery(request.url.query, "channel")
-            ))
+        agentApi.get("tasks") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.actionCardExecute.agentTasksList(
+                    authorization: request.headers[.authorization],
+                    legacyAgentId: nil,
+                    channelRef: desktopQuery(request.url.query, "channel")
+                )
+            }
         }
         agentApi.post("tasks") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentTasksCreate(
@@ -413,33 +423,30 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
         }
         agentApi.post("tasks", "claim") { request async throws -> Response in
             // `channel`, `task_numbers`, `message_ids` and `seenUpToSeq` are the
-            // only body fields. A body that does not decode keeps the
-            // directory's raw parser so the published 400 is unchanged.
-            if let body = try? await request.content.decode(AgentTaskClaimDTO.self) {
-                return routeResponse(services.emailAccounts.agentTaskClaim(
+            // only body fields; the request type keeps the legacy per-field
+            // leniency. A missing or non-object body stays `nil`, so the
+            // service authorizes first and then publishes the legacy 400.
+            let body = await jsonRequestBody(AgentTaskClaimRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.actionCardExecute.agentTaskClaim(
                     authorization: request.headers[.authorization],
-                    body: body.encodedBody()
-                ))
+                    legacyAgentId: nil,
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.agentTaskClaim(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
         }
         agentApi.post("tasks", "update-status") { request async throws -> Response in
             // `channel`, `task_number`, `status` and `seenUpToSeq` are the only
-            // body fields; the directory owns the status allow-list and the
-            // warning when no status arrives.
-            if let body = try? await request.content.decode(AgentStatusUpdateDTO.self) {
-                return routeResponse(services.emailAccounts.agentTaskUpdateStatus(
+            // body fields; the service owns the status allow-list and the
+            // legacy 400 when no status arrives.
+            let body = await jsonRequestBody(AgentTaskStatusUpdateRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.actionCardExecute.agentTaskUpdateStatus(
                     authorization: request.headers[.authorization],
-                    body: body.encodedBody()
-                ))
+                    legacyAgentId: nil,
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.agentTaskUpdateStatus(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
         }
         agentApi.post("tasks", "delete") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentTaskDelete(

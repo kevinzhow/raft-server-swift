@@ -19,6 +19,45 @@ public struct ActionCardMarketplaceService: Sendable {
 }
 
 extension EmailLoginDirectory {
+    // Task credential/channel/freshness forwarders for the services that have
+    // not migrated yet. The policy lives in `ActionCardExecuteService`; these
+    // only keep the legacy signatures those callers already hold.
+
+    func agentTaskAuth(authorization: String?, legacyAgentId: String?) -> AgentTaskAuthResult {
+        do {
+            let identity = try actionCardExecute.taskAuth(
+                authorization: authorization,
+                legacyAgentId: legacyAgentId
+            )
+            return .ok(agentId: identity.agentId, serverId: identity.serverId)
+        } catch let error as any DomainError {
+            return .refused(Self.json(Int(error.status), error.publishedErrorBody.render()))
+        } catch {
+            return .refused(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
+        }
+    }
+
+    func agentTaskWriter(_ authorization: String?, legacyAgentId: String?) -> (agentId: String, serverId: String)? {
+        actionCardExecute.taskWriter(authorization: authorization, legacyAgentId: legacyAgentId)
+    }
+
+    func agentTaskChannel(serverId: String, agentId: String, reference: String) -> String? {
+        actionCardExecute.taskChannel(serverId: serverId, agentId: agentId, reference: reference)
+    }
+
+    func taskWriteFreshnessHold(
+        agentId: String,
+        channelId: String,
+        seenUpToSeq: Int?,
+        actionKey: String
+    ) -> AgentTaskWriteHoldResponse? {
+        actionCardExecute.taskWriteHold(
+            agentId: agentId,
+            channelId: channelId,
+            seenUpToSeq: seenUpToSeq,
+            actionKey: actionKey
+        )
+    }
     public func agentTaskDelete(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
         if let denial = agentCapabilityDenial(authorization, required: "tasks") { return denial }
         guard let writer = agentTaskWriter(authorization, legacyAgentId: legacyAgentId)

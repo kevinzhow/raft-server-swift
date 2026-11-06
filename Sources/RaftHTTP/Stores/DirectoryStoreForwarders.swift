@@ -39,7 +39,6 @@ extension EmailLoginDirectory {
     var reminderRecords: [ReminderRecord] { get { tasksAndRemindersStore.reminderRecords } set { tasksAndRemindersStore.reminderRecords = newValue } }
     var reminderEvents: [ReminderEvent] { get { tasksAndRemindersStore.reminderEvents } set { tasksAndRemindersStore.reminderEvents = newValue } }
     var taskRecords: [TaskRecord] { get { tasksAndRemindersStore.taskRecords } set { tasksAndRemindersStore.taskRecords = newValue } }
-    var taskWriteHolds: [String: (seen: Int, latest: Int)] { get { tasksAndRemindersStore.taskWriteHolds } set { tasksAndRemindersStore.taskWriteHolds = newValue } }
     var taskEvents: [(taskId: String, eventType: String, actorType: String)] { get { tasksAndRemindersStore.taskEvents } set { tasksAndRemindersStore.taskEvents = newValue } }
     var lastTaskServerWarning: String? { get { tasksAndRemindersStore.lastTaskServerWarning } set { tasksAndRemindersStore.lastTaskServerWarning = newValue } }
     var assigneeChangeEvents: [(taskId: String, assigneeId: String?, assigneeType: String?, previousAssigneeId: String?, previousAssigneeType: String?, actorType: String, actorId: String)] { get { tasksAndRemindersStore.assigneeChangeEvents } set { tasksAndRemindersStore.assigneeChangeEvents = newValue } }
@@ -100,7 +99,6 @@ extension EmailLoginDirectory {
     var actionCardRecords: [String: ActionCardRecord] { get { managedMCPAndCardsStore.actionCardRecords } set { managedMCPAndCardsStore.actionCardRecords = newValue } }
     var marketplaceInstallCards: [String: MarketplaceInstallCard] { get { managedMCPAndCardsStore.marketplaceInstallCards } set { managedMCPAndCardsStore.marketplaceInstallCards = newValue } }
     var integrationRegisterCards: [String: IntegrationRegisterCard] { get { managedMCPAndCardsStore.integrationRegisterCards } set { managedMCPAndCardsStore.integrationRegisterCards = newValue } }
-    var agentApiSendReceipts: [String: AgentApiSendReceipt] { get { managedMCPAndCardsStore.agentApiSendReceipts } set { managedMCPAndCardsStore.agentApiSendReceipts = newValue } }
     var pendingActionMessageEvents: [(agentId: String, messageId: String, content: String)] { get { managedMCPAndCardsStore.pendingActionMessageEvents } set { managedMCPAndCardsStore.pendingActionMessageEvents = newValue } }
     var agentGrantSets: [String: Set<String>] { get { managedMCPAndCardsStore.agentGrantSets } set { managedMCPAndCardsStore.agentGrantSets = newValue } }
     var agentIntegrationGrants: [String: Bool] { get { managedMCPAndCardsStore.agentIntegrationGrants } set { managedMCPAndCardsStore.agentIntegrationGrants = newValue } }
@@ -203,8 +201,6 @@ extension EmailLoginDirectory {
     var hostedModelPickerServers: Set<String> { get { agentsRuntimeStore.hostedModelPickerServers } set { agentsRuntimeStore.hostedModelPickerServers = newValue } }
     var hostedModels: [String: HostedModelState] { get { agentsRuntimeStore.hostedModels } set { agentsRuntimeStore.hostedModels = newValue } }
     var agentArchiveRecords: [String: AgentArchiveRecord] { get { agentsRuntimeStore.agentArchiveRecords } set { agentsRuntimeStore.agentArchiveRecords = newValue } }
-    var agentChannelJoinedAt: [String: Date] { get { agentsRuntimeStore.agentChannelJoinedAt } set { agentsRuntimeStore.agentChannelJoinedAt = newValue } }
-    var agentChannelPosted: Set<String> { get { agentsRuntimeStore.agentChannelPosted } set { agentsRuntimeStore.agentChannelPosted = newValue } }
     var agentActivities: [String: (activity: String, detail: String)] { get { agentsRuntimeStore.agentActivities } set { agentsRuntimeStore.agentActivities = newValue } }
     var agentLastSeenAt: [String: Date] { get { agentsRuntimeStore.agentLastSeenAt } set { agentsRuntimeStore.agentLastSeenAt = newValue } }
     var agentAttachmentBytes: [String: Data] { get { agentsRuntimeStore.agentAttachmentBytes } set { agentsRuntimeStore.agentAttachmentBytes = newValue } }

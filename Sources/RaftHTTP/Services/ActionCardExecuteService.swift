@@ -1,96 +1,307 @@
 import Crypto
 import Foundation
+import RaftShared
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
 
 /// Action-card execution and the agent task claim / update-status surfaces.
-/// Migrated verbatim from the second half of `EmailLogin+ActionCards1.swift`.
 ///
-/// The handlers stay on `EmailLoginDirectory`, which owns the lock and the
-/// domain ledgers. This type is the named, `Sendable` handle a route can hold
-/// instead of reaching for the composition root; it carries no state of its own.
+/// Every operation owns its policy and its ledger access here: the service
+/// reads `TasksAndRemindersStore`, `MessagesAndThreadsStore`,
+/// `ServersAndChannelsStore`, `AgentsRuntimeStore` and
+/// `MachinesAndComputersStore`, returns the published `JSONBodyConvertible`
+/// DTOs, and throws `DomainError`. The send operation additionally keeps the
+/// legacy single `sendFreshnessCommitLock` critical section in
+/// `ManagedMCPAndCardsStore.withSendCommit`; the domains that have not
+/// migrated yet enter as injected closures (`AgentSendDependencies`).
 public struct ActionCardExecuteService: Sendable {
-    public let directory: EmailLoginDirectory
+    private let tasks: TasksAndRemindersStore
+    private let messages: MessagesAndThreadsStore
+    private let channels: ServersAndChannelsStore
+    private let agents: AgentsRuntimeStore
+    private let machines: MachinesAndComputersStore
+    private let oauth: OAuthLedger
+    private let feedbackLocators: FeedbackLocatorService
+    private let cards: ManagedMCPAndCardsStore
+    private let prepare: ActionCardPrepareService
+    private let dependencies: AgentSendDependencies
+    private let now: @Sendable () -> Date
+    private let makeMessageId: @Sendable () -> String
 
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
+    public init(directory source: EmailLoginDirectory) {
+        self.init(
+            tasks: source.tasksAndRemindersStore,
+            messages: source.messagesAndThreadsStore,
+            channels: source.serversAndChannelsStore,
+            agents: source.agentsRuntimeStore,
+            machines: source.machinesAndComputersStore,
+            oauth: source.oauth,
+            feedbackLocators: FeedbackLocatorService(directory: source),
+            cards: source.managedMCPAndCardsStore,
+            prepare: source.actionCardPrepare,
+            dependencies: .live(directory: source),
+            now: { Date() },
+            makeMessageId: { UUID().uuidString.lowercased() }
+        )
     }
-}
 
-extension EmailLoginDirectory {
-    public func agentSendMessage(authorization: String?, body: String, v2: Bool) -> HTTPReply {
-        let identity: (agentId: String, serverId: String)
-        switch feedbackLocatorIdentity(authorization: authorization, capability: "send") {
-        case .refused(let reply): return reply
-        case .success(let agentId, let serverId): identity = (agentId, serverId)
-        }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let target = object["target"] as? String
+    init(
+        tasks: TasksAndRemindersStore,
+        messages: MessagesAndThreadsStore,
+        channels: ServersAndChannelsStore,
+        agents: AgentsRuntimeStore,
+        machines: MachinesAndComputersStore,
+        oauth: OAuthLedger,
+        feedbackLocators: FeedbackLocatorService,
+        cards: ManagedMCPAndCardsStore,
+        prepare: ActionCardPrepareService,
+        dependencies: AgentSendDependencies,
+        now: @escaping @Sendable () -> Date = { Date() },
+        makeMessageId: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
+    ) {
+        self.tasks = tasks
+        self.messages = messages
+        self.channels = channels
+        self.agents = agents
+        self.machines = machines
+        self.oauth = oauth
+        self.feedbackLocators = feedbackLocators
+        self.cards = cards
+        self.prepare = prepare
+        self.dependencies = dependencies
+        self.now = now
+        self.makeMessageId = makeMessageId
+    }
+
+    // MARK: - GET /internal/agent-api/tasks
+
+    /// The agent task list for one `#channel` reference. Authorization is the
+    /// legacy `agentTaskAuth` credential check, then the grant for `task:read`.
+    public func agentTasksList(
+        authorization: String?,
+        legacyAgentId: String?,
+        channelRef: String?
+    ) throws -> AgentTasksListResponse {
+        let identity = try taskAuth(authorization: authorization, legacyAgentId: legacyAgentId)
+        try requireGrant(agentId: identity.agentId, scope: "task:read")
+        guard let channelRef,
+              let channelId = taskChannel(
+                  serverId: identity.serverId,
+                  agentId: identity.agentId,
+                  reference: channelRef
+              )
         else {
-            return Self.json(400, "{\"error\":\"Invalid send request\"}")
+            throw ActionCardExecuteError.channelNotFound
         }
-        let content = (object["content"] as? String) ?? ""
+        return AgentTasksListResponse(
+            tasks: tasks.taskRows(channelId: channelId).map { task in
+                AgentTasksListResponse.Task(
+                    id: task.id,
+                    channelId: task.channelId,
+                    title: task.title,
+                    status: task.status,
+                    taskNumber: task.taskNumber
+                )
+            }
+        )
+    }
+
+    // MARK: - POST /internal/agent-api/tasks/claim
+
+    /// The claim pass. Authorization (capability, then writer, then grant) runs
+    /// before the body shape and the freshness gate, matching the published
+    /// 401/403 → 400 order.
+    public func agentTaskClaim(
+        authorization: String?,
+        legacyAgentId: String?,
+        body: AgentTaskClaimRequest?
+    ) throws -> AgentTaskClaimOutcome {
+        if let denial = capabilityDenial(authorization, required: "tasks") {
+            throw denial
+        }
+        guard let writer = taskWriter(authorization: authorization, legacyAgentId: legacyAgentId) else {
+            throw FeedbackLocatorError.invalidAccessToken
+        }
+        try requireGrant(agentId: writer.agentId, scope: "task:write")
+        guard let body,
+              let channelRef = body.channel,
+              let channelId = taskChannel(
+                  serverId: writer.serverId,
+                  agentId: writer.agentId,
+                  reference: channelRef
+              )
+        else {
+            throw ActionCardExecuteError.invalidTaskClaim
+        }
+        if let hold = taskWriteHold(
+            agentId: writer.agentId,
+            channelId: channelId,
+            seenUpToSeq: body.seenUpToSeq,
+            actionKey: "claim:\(body.taskNumbers.first ?? 0)"
+        ) {
+            return .held(hold)
+        }
+        let results = tasks.claimTasks(
+            channelId: channelId,
+            agentId: writer.agentId,
+            taskNumbers: body.taskNumbers,
+            messageIds: body.messageIds,
+            now: now()
+        )
+        return .claimed(AgentTaskClaimResponse(results: results.map(Self.claimResult)))
+    }
+
+    // MARK: - POST /internal/agent-api/tasks/update-status
+
+    /// The status write. The non-admin transition rules, the resource-receipt
+    /// gate and the write are one `TasksAndRemindersStore` critical section.
+    public func agentTaskUpdateStatus(
+        authorization: String?,
+        legacyAgentId: String?,
+        body: AgentTaskStatusUpdateRequest?
+    ) throws -> AgentTaskStatusUpdateOutcome {
+        if let denial = capabilityDenial(authorization, required: "tasks") {
+            throw denial
+        }
+        guard let writer = taskWriter(authorization: authorization, legacyAgentId: legacyAgentId) else {
+            throw FeedbackLocatorError.invalidAccessToken
+        }
+        try requireGrant(agentId: writer.agentId, scope: "task:write")
+        guard let body,
+              let channelRef = body.channel,
+              let channelId = taskChannel(
+                  serverId: writer.serverId,
+                  agentId: writer.agentId,
+                  reference: channelRef
+              ),
+              let taskNumber = body.taskNumber,
+              let status = body.status,
+              EmailLoginDirectory.validTaskStatuses.contains(status)
+        else {
+            throw ActionCardExecuteError.invalidTaskStatus
+        }
+        if let hold = taskWriteHold(
+            agentId: writer.agentId,
+            channelId: channelId,
+            seenUpToSeq: body.seenUpToSeq,
+            actionKey: "update:\(taskNumber)"
+        ) {
+            return .held(hold)
+        }
+        let isAdmin = oauth.agentRole(serverId: writer.serverId, agentId: writer.agentId) == "admin"
+        switch tasks.updateTaskStatus(
+            channelId: channelId,
+            taskNumber: taskNumber,
+            status: status,
+            agentId: writer.agentId,
+            isAdmin: isAdmin,
+            now: now()
+        ) {
+        case .notFound:
+            throw ActionCardExecuteError.taskNotFound
+        case .inProgressToTodoForbidden:
+            throw ActionCardExecuteError.inProgressToTodo
+        case .todoToTerminalForbidden(let status):
+            throw ActionCardExecuteError.todoToTerminal(status: status)
+        case .resourceReceiptRequired:
+            throw ActionCardExecuteError.resourceReceiptRequired
+        case .updated(let task):
+            return .updated(AgentTaskStatusUpdateResponse(task: Self.taskDetail(task)))
+        }
+    }
+
+    // MARK: - POST /internal/agent-api/send and /internal/agent-api/v2/send
+
+    /// Posts an agent message to a `#channel`, a `#channel:shortId` thread or a
+    /// `dm:@name[~kind][:shortId]` conversation.
+    ///
+    /// The gate (freshness + channel/peer cards) and the commit it protects run
+    /// under the one `ManagedMCPAndCardsStore.withSendCommit` lock, which is the
+    /// legacy `sendFreshnessCommitLock`: two concurrent first replies cannot both
+    /// pass the gate before either lands. The reply is fully rendered here; the
+    /// feature layer only projects it through `Respond.swift`.
+    public func agentSendMessage(
+        authorization: String?,
+        body: AgentSendMessageRequest?,
+        v2: Bool
+    ) throws -> any JSONBodyConvertible {
+        let identity: (agentId: String, serverId: String)
+        switch feedbackLocators.identityResolution(authorization: authorization, capability: "send") {
+        case .success(let agentId, let serverId):
+            identity = (agentId, serverId)
+        case .missingAuthorization:
+            throw FeedbackLocatorError.missingAuthorization
+        case .invalidAccessToken:
+            throw FeedbackLocatorError.invalidAccessToken
+        case .capabilityNotAuthorized(let capability):
+            throw FeedbackLocatorError.capabilityNotAuthorized(capability: capability)
+        case .invalidAgentCredential:
+            throw FeedbackLocatorError.invalidAgentCredential
+        }
+        guard let body, let target = body.target else {
+            throw AgentSendError.invalidSendRequest
+        }
+        let content = body.content ?? ""
         let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.lowercased().hasPrefix("dm:@reminders") {
-            return Self.json(403, "{\"error\":\"dm:@reminders is your private reminder conversation; nobody else reads it. Act at the reminder's anchor instead.\",\"code\":\"DM_TARGET_NOT_SENDABLE\"}")
+            throw AgentSendError.reminderTargetNotSendable
         }
-        let isSendDraft = object["sendDraft"] as? Bool == true
-        let isContinueAnyway = object["continueAnyway"] as? Bool == true
-        if object["continue"] as? Bool == true {
-            return Self.json(400, "{\"error\":\"--continue is no longer supported. Use normal message send to update a draft, or --send-draft to send the current saved draft.\"}")
+        let isSendDraft = body.sendDraft
+        let isContinueAnyway = body.continueAnyway
+        if body.continueFlag {
+            throw AgentSendError.continueUnsupported
         }
         if isContinueAnyway && !isSendDraft {
-            return Self.json(400, "{\"error\":\"--send-draft --anyway requires a saved draft\"}")
+            throw AgentSendError.continueAnywayRequiresDraft
         }
-        let assistantOwner = assistantOwnerFor(agentId: identity.agentId, serverId: identity.serverId)
-        if let assistantOwner {
+        if let assistantOwner = dependencies.assistantOwner(identity.agentId, identity.serverId) {
             guard trimmed.hasPrefix("dm:@") else {
-                return Self.json(403, "{\"code\":\"assistant_channel_forbidden\",\"error\":\"An assistant can only post in its DM with its owner\"}")
+                throw AgentSendError.assistantChannelForbidden
             }
             var raw = String(trimmed.dropFirst("dm:@".count))
             if let suffixStart = raw.lastIndex(of: ":") { raw = String(raw[..<suffixStart]) }
             if let tilde = raw.firstIndex(of: "~") { raw = String(raw[..<tilde]) }
-            lock.lock()
-            let resolution = actionCardPrepare.resolveDMPeer(serverId: identity.serverId, agentId: identity.agentId, name: raw, kind: nil)
-            lock.unlock()
+            let resolution = prepare.resolveDMPeer(
+                serverId: identity.serverId,
+                agentId: identity.agentId,
+                name: raw,
+                kind: nil
+            )
             guard case .resolved(let peerId, _, _) = resolution, peerId == assistantOwner else {
-                return Self.json(403, "{\"code\":\"assistant_channel_forbidden\",\"error\":\"An assistant can only post in its DM with its owner\"}")
+                throw AgentSendError.assistantChannelForbidden
             }
         }
-        func threadTargetError(_ detail: String) -> HTTPReply {
-            Self.json(404, "{\"error\":\"Thread target not found or not replyable: \(detail)\"}")
-        }
-        let reconcileOnly = object["reconcileOnly"] as? Bool == true
+        let reconcileOnly = body.reconcileOnly
         guard reconcileOnly || !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return Self.json(400, "{\"error\":\"Content is required\"}")
+            throw AgentSendError.contentRequired
         }
         var attachmentIds: [String] = []
-        if let rawAttachments = object["attachmentIds"], !(rawAttachments is NSNull) {
-            guard let list = rawAttachments as? [Any] else {
-                return Self.json(400, "{\"error\":\"Not sent: attachmentIds entry 1 is not a single attachment ID. Send one ID per --attachment-id.\",\"code\":\"attachment_id_invalid\"}")
+        if let rawAttachments = body.attachmentIds, rawAttachments != .null {
+            guard case .array(let values) = rawAttachments else {
+                throw AgentSendError.attachmentIdInvalid(entry: 1)
             }
-            for (index, value) in list.enumerated() {
-                guard let id = value as? String, ServerScope.isUUID(id) else {
-                    let entry = index + 1
-                    return Self.json(400, "{\"error\":\"Not sent: attachmentIds entry \(entry) is not a single attachment ID. Send one ID per --attachment-id.\",\"code\":\"attachment_id_invalid\"}")
+            for (index, value) in values.enumerated() {
+                guard case .string(let id) = value, ServerScope.isUUID(id) else {
+                    throw AgentSendError.attachmentIdInvalid(entry: index + 1)
                 }
                 attachmentIds.append(id)
             }
         }
-        let idempotencyKey = (object["idempotencyKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let idempotencyKey = body.idempotencyKey.trimmingCharacters(in: .whitespacesAndNewlines)
         var sendReceiptKey: String?
         if !idempotencyKey.isEmpty {
             let key = "\(identity.serverId)\n\(identity.agentId)\n\(idempotencyKey)"
             sendReceiptKey = key
-            lock.lock()
-            let receipt = agentApiSendReceipts[key]
-            lock.unlock()
+            let receipt = cards.sendReceipt(key: key)
             if reconcileOnly {
                 guard let receipt else {
-                    return Self.json(200, "{\"ok\":true,\"state\":\"not_found\",\"reconciliation\":true}")
+                    return AgentSendReconcileNotFoundResponse()
                 }
-                return Self.json(200, "{\"ok\":true,\"state\":\"committed\",\"messageId\":\(jsonString(receipt.messageId)),\"messageSeq\":\(receipt.messageSeq),\"reconciliation\":true,\"receiptComplete\":false}")
+                return AgentSendReconcileCommittedResponse(
+                    messageId: receipt.messageId,
+                    messageSeq: receipt.messageSeq
+                )
             }
             if let receipt {
                 let mismatch: String?
@@ -104,12 +315,379 @@ extension EmailLoginDirectory {
                     mismatch = nil
                 }
                 if let mismatch {
-                    return Self.json(409, "{\"error\":\"This idempotencyKey was already used for a different send\",\"code\":\"idempotency_key_reused\",\"mismatch\":\(jsonString(mismatch)),\"suggestedNextAction\":\"Retry with a new idempotencyKey.\"}")
+                    throw AgentSendError.idempotencyKeyReused(mismatch: mismatch)
                 }
-                return Self.json(200, "{\"ok\":true,\"state\":\"sent\",\"messageId\":\(jsonString(receipt.messageId)),\"messageSeq\":\(receipt.messageSeq),\"id\":\(jsonString(receipt.messageId)),\"channelId\":\(jsonString(channelIdForReceipt(receipt.messageId) ?? "")),\"content\":\(jsonString(receipt.content)),\"seq\":\(receipt.messageSeq)}")
+                return AgentSendReceiptResponse(
+                    messageId: receipt.messageId,
+                    messageSeq: receipt.messageSeq,
+                    channelId: messages.channelId(forMessageId: receipt.messageId) ?? "",
+                    content: receipt.content
+                )
             }
         }
-        let channelId: String
+
+        let channelId = try resolveSendChannel(
+            trimmed: trimmed,
+            identity: identity
+        )
+
+        return try cards.withSendCommit { () throws -> any JSONBodyConvertible in
+            if let channel = channels.postableChannels[channelId],
+               channel.name.hasPrefix("migration-receipt-") {
+                throw AgentSendError.migrationReceiptReadOnly
+            }
+
+            // Freshness gate (SMR-006).
+            let seenUpToSeqValue = body.seenUpToSeq
+            let hasClientSeenBoundary = seenUpToSeqValue != nil
+            let clientSeenUpToSeq = hasClientSeenBoundary
+                ? max(0, Int(seenUpToSeqValue!.rounded(.down)))
+                : 0
+            let withheldMode = body.freshnessContextMode == "withheld"
+            let draftReholdCount = max(0, body.draftReholdCount ?? 0)
+            let draftReplacedExisting = body.draftReplacedExisting
+            let requestedSeenExactSeqs: [Int] = {
+                var seen = Set<Int>()
+                var values: [Int] = []
+                for item in body.seenExactSeqs {
+                    guard let number = AgentSendMessageRequest.number(item),
+                          number.isFinite else { continue }
+                    let value = Int(number.rounded(.down))
+                    guard value > 0, seen.insert(value).inserted else { continue }
+                    values.append(value)
+                }
+                return Array(values.prefix(2500))
+            }()
+            let requestedSendFreshness = isSendDraft || isContinueAnyway || hasClientSeenBoundary
+                || !requestedSeenExactSeqs.isEmpty
+                || body.draftReholdCount != nil || draftReplacedExisting || withheldMode
+            let freshnessEnabled = prepare.sendFreshnessInterfaceEnabled(
+                serverId: identity.serverId,
+                agentId: identity.agentId
+            )
+            let forcedFreshness = prepare.sendFreshnessMode() == "force"
+            if !freshnessEnabled && requestedSendFreshness {
+                throw AgentSendError.freshnessInterfaceDisabled
+            }
+
+            var cardFields = AgentSendCardFields()
+            var cardHoldReasons: [String] = []
+            if case .object(let seenCards)? = body.seenCards, !withheldMode {
+                if let rawChannel = seenCards["channel"],
+                   let snapshot = prepare.channelCardSnapshot(channelId: channelId) {
+                    if case .string(let seenVersion) = rawChannel {
+                        if snapshot.rev != seenVersion {
+                            cardFields.channelCard = snapshot.json
+                            cardFields.channelCardChanged = true
+                        }
+                    } else {
+                        cardFields.channelCard = snapshot.json
+                        cardHoldReasons.append("channel_card")
+                    }
+                }
+                if let rawPeer = seenCards["peer"] {
+                    let peerCard = prepare.peerCardJSON(
+                        channelId: channelId,
+                        agentId: identity.agentId
+                    )
+                    if let peerCard, !isString(rawPeer) {
+                        cardFields.peerCard = peerCard
+                        cardHoldReasons.append("peer_card")
+                    }
+                }
+            }
+            let holdForCards = !cardHoldReasons.isEmpty && !isContinueAnyway
+
+            var mentionExemption: (messageId: String, handle: String)?
+            var mentionExemptionMessageCount = 0
+            if freshnessEnabled, (requestedSendFreshness || forcedFreshness), !isContinueAnyway {
+                let snapshot = messages.sendFreshnessSnapshot(
+                    channelId: channelId,
+                    agentId: identity.agentId
+                )
+                let conversation = channels.postableChannels[channelId]
+                let storageChannelId = channels.jointProjections.first {
+                    $0.localChannelId == channelId
+                }?.canonicalChannelId ?? channelId
+                let rows = snapshot.rows.compactMap { message -> (seq: Int, message: StoredHumanMessage)? in
+                    guard message.channelId == storageChannelId else { return nil }
+                    return (message.seq, message)
+                }
+                let latestFromOthers = rows.last { $0.message.senderId != identity.agentId }?.seq ?? 0
+                let threadParentSeq = conversation?.kind == "thread"
+                    ? (conversation?.parentMessageId.flatMap { parentId in
+                        snapshot.rows.first { $0.id == parentId }?.seq
+                    } ?? 0)
+                    : 0
+                let fallbackBoundarySeq = conversation?.kind == "thread" ? threadParentSeq : 0
+                let boundarySeq = min(
+                    hasClientSeenBoundary ? clientSeenUpToSeq : fallbackBoundarySeq,
+                    latestFromOthers
+                )
+                let effectiveExactSeqs = Set(
+                    requestedSeenExactSeqs.filter { $0 > boundarySeq && $0 <= latestFromOthers }
+                )
+                let boundarySource: String
+                if hasClientSeenBoundary {
+                    boundarySource = "client_seen"
+                } else if !effectiveExactSeqs.isEmpty {
+                    boundarySource = "client_seen_exact"
+                } else if fallbackBoundarySeq > 0 {
+                    boundarySource = "thread_parent"
+                } else {
+                    boundarySource = "none"
+                }
+                let hasModelSeenProof = boundarySource == "client_seen"
+                    || boundarySource == "client_seen_exact"
+                let newer = rows.filter {
+                    $0.seq > boundarySeq
+                        && $0.message.senderId != identity.agentId
+                        && !effectiveExactSeqs.contains($0.seq)
+                        && !dependencies.messageSuppressed($0.message, identity.agentId)
+                        && !dependencies.selfCausedExempt($0.message, identity.agentId)
+                }
+                let formalMentionCount = newer.reduce(0) { partial, entry in
+                    partial + (snapshot.mentions.contains {
+                        $0.messageId == entry.message.id
+                            && $0.targetType == "agent"
+                            && $0.targetId == identity.agentId
+                    } ? 1 : 0)
+                }
+                let boundaryMessageId: String? = boundarySeq > 0
+                    ? (conversation?.kind == "thread" && threadParentSeq == boundarySeq
+                        ? conversation?.parentMessageId
+                        : rows.first { $0.seq == boundarySeq }?.message.id)
+                    : nil
+                let legacyReadSeq = snapshot.readCursor.seq
+                let mentionFacts: [(messageId: String, handle: String)] = newer.compactMap { entry in
+                    guard let mention = snapshot.mentions.first(where: {
+                        $0.messageId == entry.message.id
+                            && $0.targetType == "agent"
+                            && $0.targetId == identity.agentId
+                            && $0.senderId == "system"
+                    }) else { return nil }
+                    return (entry.message.id, mention.handle)
+                }
+                if boundarySeq > 0, legacyReadSeq == boundarySeq, !mentionFacts.isEmpty {
+                    mentionExemption = mentionFacts.first
+                    mentionExemptionMessageCount = newer.count
+                }
+                if let latestSeq = newer.last?.seq, mentionExemption == nil {
+                    let attentionCount = newer.count
+                    let shownRows = Array(newer.suffix(3))
+                    let shownCount = shownRows.count
+                    let holdCount = hasModelSeenProof ? attentionCount : min(attentionCount, 3)
+                    let omittedCount = hasModelSeenProof ? max(0, attentionCount - shownCount) : 0
+                    let showedEveryHeldMessage = shownCount >= attentionCount
+                    let conversationIdentity = prepare.heldConversationIdentity(
+                        channelId: channelId,
+                        agentId: identity.agentId
+                    )
+                    let heldMessageJSON = shownRows.map { entry in
+                        prepare.heldFreshnessMessageJSON(
+                            seq: entry.seq,
+                            message: entry.message,
+                            conversationIdentity: conversationIdentity
+                        )
+                    }
+                    if !withheldMode, showedEveryHeldMessage, latestSeq > snapshot.readCursor.seq {
+                        messages.advanceAgentReadCursors(
+                            agentId: identity.agentId,
+                            maxSeqByChannel: [channelId: latestSeq]
+                        )
+                    }
+                    if withheldMode {
+                        return AgentSendWithheldResponse(withheldMessageCount: holdCount)
+                    }
+                    let reason = boundarySource == "none" || boundarySource == "thread_parent"
+                        ? "server_first_touch_context"
+                        : "server_stale_model_boundary"
+                    let producerFactId = EmailLoginDirectory.freshnessDecisionProducerFactId(
+                        agentId: identity.agentId,
+                        target: trimmed,
+                        reason: reason,
+                        pendingMaxSeq: latestSeq,
+                        modelSeenSeq: boundarySource == "client_seen" ? boundarySeq : 0,
+                        heldMessageCount: shownCount,
+                        omittedMessageCount: omittedCount
+                    )
+                    dependencies.recordAttestedSendEvent(
+                        "gate_triggered",
+                        identity.agentId,
+                        newer.last?.message.id,
+                        .gateTriggered(
+                            lastSeenMessageId: boundaryMessageId,
+                            latestMessageId: newer.last?.message.id,
+                            draftReplacedExisting: draftReplacedExisting,
+                            newMessageCount: holdCount,
+                            boundarySource: boundarySource,
+                            boundarySeq: boundarySeq,
+                            latestSeq: latestSeq
+                        )
+                    )
+                    dependencies.recordAgentSendActivity(
+                        identity.agentId,
+                        "Send held by freshness check",
+                        "target: \(trimmed)\n"
+                            + "unreviewed synced context for this target: \(shownCount) messages\n"
+                            + "reason: this target's latest synced context was not yet in your reviewed context\n"
+                            + "action: review the synced context before sending",
+                        producerFactId
+                    )
+                    return AgentSendHeldResponse(
+                        producerFactId: producerFactId,
+                        heldMessages: heldMessageJSON,
+                        newMessageCount: holdCount,
+                        shownMessageCount: shownCount,
+                        omittedMessageCount: omittedCount,
+                        seenUpToSeq: latestSeq,
+                        seenUpToMessageId: newer.last?.message.id,
+                        firstShownSeq: shownRows.first?.seq,
+                        formalMentionCount: formalMentionCount,
+                        continueAnywaySuggested: draftReholdCount >= 3,
+                        holdReasons: holdForCards ? (["unread_messages"] + cardHoldReasons) : nil,
+                        cards: cardFields
+                    )
+                }
+            }
+            if let exemption = mentionExemption {
+                dependencies.recordAttestedSendEvent(
+                    "e1_exempt",
+                    identity.agentId,
+                    exemption.messageId,
+                    .mentionExemption(
+                        mentionMessageId: exemption.messageId,
+                        mentionedHandle: exemption.handle,
+                        newMessageCountSinceLastSeen: mentionExemptionMessageCount
+                    )
+                )
+                dependencies.recordAgentSendActivity(
+                    identity.agentId,
+                    "Send freshness check passed by mention",
+                    "target: \(trimmed)\nreason: direct @\(exemption.handle) mention\nnew messages: \(mentionExemptionMessageCount)",
+                    nil
+                )
+            }
+            if holdForCards {
+                return AgentSendHeldForCardsResponse(holdReasons: cardHoldReasons, cards: cardFields)
+            }
+
+            if let threadChannel = channels.postableChannels[channelId],
+               threadChannel.kind == "thread",
+               let parentChannelId = threadChannel.parentChannelId,
+               let parentMessageId = threadChannel.parentMessageId {
+                var followRows: [(serverId: String, userId: String, threadChannelId: String, parentMessageId: String)] = [
+                    (identity.serverId, identity.agentId, channelId, parentMessageId),
+                ]
+                let parentSender = oauth.historyMessages(channelId: parentChannelId).first {
+                    $0.id == parentMessageId
+                }?.senderId
+                    ?? messages.humanMessageRows.first { $0.id == parentMessageId }?.senderId
+                if let parentSender, parentSender != "system",
+                   oauth.memberRole(serverId: identity.serverId, userId: parentSender) != nil {
+                    followRows.append((identity.serverId, parentSender, channelId, parentMessageId))
+                }
+                messages.ensureThreadFollows(followRows)
+            }
+
+            let typedMentions = body.mentions
+            if v2, EmailLoginDirectory.mentionBindingConflict(typedMentions) {
+                throw AgentSendError.mentionBindingConflict
+            }
+            let mentionResolution = dependencies.resolvedMentions(
+                identity.serverId,
+                identity.agentId,
+                content,
+                v2 ? typedMentions : [],
+                v2
+            )
+            let messageId = makeMessageId()
+            let ownSeq: Int
+            switch dependencies.commitAgentSend(
+                StoredHumanMessage(
+                    id: messageId,
+                    channelId: channelId,
+                    senderId: identity.agentId,
+                    content: content,
+                    randomId: nil,
+                    attachmentIds: attachmentIds,
+                    messageType: "chat",
+                    senderType: "agent"
+                ),
+                attachmentIds,
+                channelId,
+                identity.agentId
+            ) {
+            case .duplicate(let id):
+                throw AgentSendError.attachmentDuplicate(id)
+            case .unavailable(let id):
+                throw AgentSendError.attachmentNotFound(id)
+            case .alreadyLinked(let id):
+                throw AgentSendError.attachmentAlreadyLinked(id)
+            case .committed(let seq):
+                ownSeq = seq
+            }
+            if let sendReceiptKey {
+                cards.setSendReceipt(
+                    AgentApiSendReceipt(
+                        messageId: messageId,
+                        messageSeq: ownSeq,
+                        target: trimmed,
+                        content: content,
+                        attachmentIds: attachmentIds
+                    ),
+                    key: sendReceiptKey
+                )
+            }
+            dependencies.recordMemberMentionRows(
+                messageId,
+                channelId,
+                mentionResolution.mentions
+            )
+
+            let pendingMentionActions = sendMentionReport(
+                content: content,
+                typedMentions: typedMentions,
+                v2: v2,
+                channelId: channelId,
+                serverId: identity.serverId,
+                senderAgentId: identity.agentId,
+                messageId: messageId
+            )
+            let unresolvedMentionHandles = v2 && !mentionResolution.unresolved.isEmpty
+                ? mentionResolution.unresolved
+                : nil
+
+            var attention: AgentSendAttention?
+            let channel = channels.postableChannels[channelId]
+            let joined = agents.agentChannelJoinedAt["\(channelId)\n\(identity.agentId)"]
+            let isChannel = channel?.kind == "channel"
+            let recent = joined.map { now().timeIntervalSince($0) < 7 * 24 * 3600 } ?? false
+            if isChannel, recent,
+               agents.claimFirstAgentPost(channelId: channelId, agentId: identity.agentId) {
+                let mute = "raft channel mute \"#\(channel?.name ?? "")\""
+                let still = "@mentions still reach you, and threads you started stay followed and keep delivering until you unfollow them."
+                attention = AgentSendAttention(muteCommand: mute, stillArrives: [still])
+            }
+
+            return AgentSendSentResponse(
+                messageId: messageId,
+                messageSeq: ownSeq,
+                channelId: channelId,
+                content: content,
+                pendingMentionActions: pendingMentionActions,
+                unresolvedMentionHandles: unresolvedMentionHandles,
+                cards: cardFields,
+                attention: attention
+            )
+        }
+    }
+
+    /// `#channel[:shortId]` and `dm:@name[~kind][:shortId]` target resolution.
+    private func resolveSendChannel(
+        trimmed: String,
+        identity: (agentId: String, serverId: String)
+    ) throws -> String {
         if trimmed.hasPrefix("#") {
             var raw = String(trimmed.dropFirst())
             var suffix: String?
@@ -117,10 +695,10 @@ extension EmailLoginDirectory {
                 suffix = String(raw[raw.index(after: colon)...])
                 raw = String(raw[..<colon])
             }
-            lock.lock()
             var parentId: String?
-            for (id, channel) in postableChannels {
-                guard channel.serverId == identity.serverId, channel.name == raw, channel.deletedAt == nil,
+            for (id, channel) in channels.postableChannels {
+                guard channel.serverId == identity.serverId, channel.name == raw,
+                      channel.deletedAt == nil,
                       channel.kind == "channel" || channel.kind == "private" || channel.kind == "joint"
                 else { continue }
                 if channel.kind == "channel"
@@ -134,20 +712,25 @@ extension EmailLoginDirectory {
             var pendingAnchorId: String?
             if let parentId {
                 if let suffix, !suffix.isEmpty {
-                    let isMember = postableChannels[parentId]?.memberIds.contains(identity.agentId) == true
+                    let isMember = channels.postableChannels[parentId]?.memberIds.contains(identity.agentId) == true
                         || oauth.channelAgentIds(channelId: parentId).contains(identity.agentId)
                     guard isMember else {
-                        let privateParent = postableChannels[parentId]?.kind == "private"
-                        lock.unlock()
-                        return privateParent
-                            ? threadTargetError("the parent message must exist in a channel you can read")
-                            : Self.json(403, "{\"error\":\"Agent is not a member of the parent channel\"}")
+                        let privateParent = channels.postableChannels[parentId]?.kind == "private"
+                        throw privateParent
+                            ? AgentSendError.threadTargetNotFound(
+                                detail: "the parent message must exist in a channel you can read"
+                            )
+                            : AgentSendError.agentNotParentMember
                     }
-                    let anchorId = oauth.historyMessages(channelId: parentId).first { $0.id.hasPrefix(suffix) }?.id
-                        ?? humanMessageRows.first { $0.channelId == parentId && $0.id.hasPrefix(suffix) }?.id
-                    resolved = agentHistoryThread(parentId: parentId, anchorMessageId: anchorId ?? "")
-                        ?? agentHistoryThreadById(parentId: parentId, suffix: suffix)
-                        ?? agentHistoryThreadByAnchorPrefix(parentId: parentId, suffix: suffix)
+                    let anchorId = oauth.historyMessages(channelId: parentId).first {
+                        $0.id.hasPrefix(suffix)
+                    }?.id
+                        ?? messages.humanMessageRows.first {
+                            $0.channelId == parentId && $0.id.hasPrefix(suffix)
+                        }?.id
+                    resolved = dependencies.threadByAnchor(parentId, anchorId ?? "")
+                        ?? dependencies.threadById(parentId, suffix)
+                        ?? dependencies.threadByAnchorPrefix(parentId, suffix)
                     if resolved == nil, let anchorId {
                         pendingAnchorId = anchorId
                     }
@@ -155,27 +738,33 @@ extension EmailLoginDirectory {
                     resolved = parentId
                 }
             }
-            lock.unlock()
             if let parentId, let pendingAnchorId {
-                let threadId = oauth.createThreadChannel(parentChannelId: parentId, parentMessageId: pendingAnchorId)
-                addPostableChannel(
-                    serverId: identity.serverId,
-                    channelId: threadId,
-                    memberId: identity.agentId,
-                    kind: "thread",
+                let threadId = oauth.createThreadChannel(
                     parentChannelId: parentId,
-                    parentMessageId: pendingAnchorId,
-                    name: "thread"
+                    parentMessageId: pendingAnchorId
+                )
+                dependencies.addPostableChannel(
+                    identity.serverId,
+                    threadId,
+                    identity.agentId,
+                    "thread",
+                    parentId,
+                    pendingAnchorId,
+                    "thread"
                 )
                 resolved = threadId
             }
             guard let resolved else {
-                return suffix == nil
-                    ? Self.json(404, "{\"error\":\"Channel not found\"}")
-                    : threadTargetError("the parent message must exist in #\(raw)")
+                if suffix == nil {
+                    throw AgentSendError.channelNotFound
+                }
+                throw AgentSendError.threadTargetNotFound(
+                    detail: "the parent message must exist in #\(raw)"
+                )
             }
-            channelId = resolved
-        } else if trimmed.hasPrefix("dm:@") {
+            return resolved
+        }
+        if trimmed.hasPrefix("dm:@") {
             var raw = String(trimmed.dropFirst("dm:@".count))
             var suffix: String?
             if let colon = raw.lastIndex(of: ":") {
@@ -187,471 +776,120 @@ extension EmailLoginDirectory {
                 kind = String(raw[raw.index(after: tilde)...])
                 raw = String(raw[..<tilde])
             }
-            lock.lock()
-            let resolution = actionCardPrepare.resolveDMPeer(serverId: identity.serverId, agentId: identity.agentId, name: raw, kind: kind)
-            lock.unlock()
-            if let failure = dmPeerFailureReply(resolution) { return failure }
-            guard case .resolved(let peerId, _, _) = resolution else {
-                return Self.json(404, "{\"error\":\"Channel not found\"}")
+            let resolution = prepare.resolveDMPeer(
+                serverId: identity.serverId,
+                agentId: identity.agentId,
+                name: raw,
+                kind: kind
+            )
+            switch resolution {
+            case .resolved:
+                break
+            case .ambiguous(let name):
+                throw AgentSendError.dmTargetAmbiguous(name: name)
+            case .invalidKind(let kind, _):
+                throw AgentSendError.dmTargetInvalidKind(kind: kind)
+            case .notFound:
+                throw AgentSendError.dmTargetNotFound
             }
-            lock.lock()
-            let existing = actionCardPrepare.dmChannelId(serverId: identity.serverId, agentId: identity.agentId, peerId: peerId)
-            lock.unlock()
+            guard case .resolved(let peerId, _, _) = resolution else {
+                throw AgentSendError.channelNotFound
+            }
+            let existing = prepare.dmChannelId(
+                serverId: identity.serverId,
+                agentId: identity.agentId,
+                peerId: peerId
+            )
             let dmChannelId: String
             if let existing {
                 dmChannelId = existing
             } else {
-                dmChannelId = oauth.createDirectChannel(serverId: identity.serverId, firstUserId: identity.agentId, secondUserId: peerId)
-                addPostableChannel(serverId: identity.serverId, channelId: dmChannelId, memberId: identity.agentId, kind: "dm", name: "dm")
-                addPostableChannel(serverId: identity.serverId, channelId: dmChannelId, memberId: peerId, kind: "dm", name: "dm")
+                dmChannelId = oauth.createDirectChannel(
+                    serverId: identity.serverId,
+                    firstUserId: identity.agentId,
+                    secondUserId: peerId
+                )
+                dependencies.addPostableChannel(
+                    identity.serverId, dmChannelId, identity.agentId, "dm", nil, nil, "dm"
+                )
+                dependencies.addPostableChannel(
+                    identity.serverId, dmChannelId, peerId, "dm", nil, nil, "dm"
+                )
                 oauth.addChannelHuman(channelId: dmChannelId, userId: peerId)
             }
             if let suffix, !suffix.isEmpty {
-                lock.lock()
-                let anchorId = oauth.historyMessages(channelId: dmChannelId).first { $0.id.hasPrefix(suffix) }?.id
-                    ?? humanMessageRows.first { $0.channelId == dmChannelId && $0.id.hasPrefix(suffix) }?.id
-                var resolved = agentHistoryThread(parentId: dmChannelId, anchorMessageId: anchorId ?? "")
-                    ?? agentHistoryThreadById(parentId: dmChannelId, suffix: suffix)
-                    ?? agentHistoryThreadByAnchorPrefix(parentId: dmChannelId, suffix: suffix)
-                lock.unlock()
+                let anchorId = oauth.historyMessages(channelId: dmChannelId).first {
+                    $0.id.hasPrefix(suffix)
+                }?.id
+                    ?? messages.humanMessageRows.first {
+                        $0.channelId == dmChannelId && $0.id.hasPrefix(suffix)
+                    }?.id
+                var resolved = dependencies.threadByAnchor(dmChannelId, anchorId ?? "")
+                    ?? dependencies.threadById(dmChannelId, suffix)
+                    ?? dependencies.threadByAnchorPrefix(dmChannelId, suffix)
                 if resolved == nil, let anchorId {
-                    let threadId = oauth.createThreadChannel(parentChannelId: dmChannelId, parentMessageId: anchorId)
-                    addPostableChannel(
-                        serverId: identity.serverId,
-                        channelId: threadId,
-                        memberId: identity.agentId,
-                        kind: "thread",
+                    let threadId = oauth.createThreadChannel(
                         parentChannelId: dmChannelId,
-                        parentMessageId: anchorId,
-                        name: "thread"
+                        parentMessageId: anchorId
                     )
-                    addPostableChannel(serverId: identity.serverId, channelId: threadId, memberId: peerId, kind: "thread", parentChannelId: dmChannelId, parentMessageId: anchorId, name: "thread")
+                    dependencies.addPostableChannel(
+                        identity.serverId, threadId, identity.agentId, "thread",
+                        dmChannelId, anchorId, "thread"
+                    )
+                    dependencies.addPostableChannel(
+                        identity.serverId, threadId, peerId, "thread",
+                        dmChannelId, anchorId, "thread"
+                    )
                     resolved = threadId
                 }
                 guard let resolved else {
-                    return threadTargetError("the parent message must exist in this DM")
+                    throw AgentSendError.threadTargetNotFound(
+                        detail: "the parent message must exist in this DM"
+                    )
                 }
-                channelId = resolved
-            } else {
-                channelId = dmChannelId
+                return resolved
             }
-        } else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+            return dmChannelId
         }
-
-        // A migration receipt DM is a one-way notice written at completion.
-        if let channel = postableChannels[channelId], channel.name.hasPrefix("migration-receipt-") {
-            return Self.json(409, "{\"error\":\"This migration receipt DM is a one-way notice; it cannot be replied to. Message your owner's DM instead.\",\"code\":\"MIGRATION_RECEIPT_READ_ONLY\",\"suggestedNextAction\":\"Read the receipt, then continue in your owner's DM.\"}")
-        }
-
-        // The gate and the commit it protects run under one lock: two
-        // concurrent first replies must not both observe an empty thread.
-        sendFreshnessCommitLock.lock()
-        defer { sendFreshnessCommitLock.unlock() }
-
-        // Freshness gate (SMR-006): a send that names the boundary its model
-        // has seen (`seenUpToSeq`), a saved draft, a reviewer-isolation hold or
-        // a re-hold opt into the gate. Newer messages from anyone but the
-        // sender hold the draft; the response carries the latest bounded
-        // context instead of committing anything.
-        let seenUpToSeqValue = (object["seenUpToSeq"] as? NSNumber)?.doubleValue
-        let hasClientSeenBoundary = seenUpToSeqValue.map { $0.isFinite } ?? false
-        let clientSeenUpToSeq = hasClientSeenBoundary ? max(0, Int(seenUpToSeqValue!.rounded(.down))) : 0
-        let withheldMode = (object["freshnessContextMode"] as? String) == "withheld"
-        let draftReholdCount = max(0, (object["draftReholdCount"] as? NSNumber)?.intValue ?? 0)
-        let draftReplacedExisting = object["draftReplacedExisting"] as? Bool == true
-        // `seenExactSeqs`: sparse exact-seq observations (message check output).
-        // Only seqs above the attested boundary and up to the latest message
-        // count, deduplicated in request order.
-        let requestedSeenExactSeqs: [Int] = {
-            guard let raw = object["seenExactSeqs"] as? [Any] else { return [] }
-            var seen = Set<Int>()
-            var values: [Int] = []
-            for item in raw {
-                guard let number = item as? NSNumber, number.doubleValue.isFinite else { continue }
-                let value = Int(number.doubleValue.rounded(.down))
-                guard value > 0, seen.insert(value).inserted else { continue }
-                values.append(value)
-            }
-            return Array(values.prefix(2500))
-        }()
-        let requestedSendFreshness = isSendDraft || isContinueAnyway || hasClientSeenBoundary
-            || !requestedSeenExactSeqs.isEmpty
-            || (object["draftReholdCount"] is NSNumber) || draftReplacedExisting || withheldMode
-        let freshnessEnabled = actionCardPrepare.sendFreshnessInterfaceEnabled(serverId: identity.serverId, agentId: identity.agentId)
-        let forcedFreshness = actionCardPrepare.sendFreshnessMode() == "force"
-        if !freshnessEnabled && requestedSendFreshness {
-            return Self.json(403, "{\"error\":\"Send freshness interface is not enabled for this agent.\"}")
-        }
-        // Passive channel card (policy "once"): only a client that names the
-        // version its model context saw is checked. Never seen holds the send
-        // once; an older version sends and returns the current card.
-        var seenCardFields = ""
-        var seenPeerCardFields = ""
-        var cardHoldReasons: [String] = []
-        if let seenCards = object["seenCards"] as? [String: Any], !withheldMode {
-            lock.lock()
-            let snapshot = actionCardPrepare.channelCardSnapshot(channelId: channelId)
-            lock.unlock()
-            if let rawChannel = seenCards["channel"], let snapshot {
-                if let seenVersion = rawChannel as? String {
-                    if snapshot.rev != seenVersion {
-                        seenCardFields = ",\"channelCard\":\(snapshot.json),\"channelCardChanged\":true"
-                    }
-                } else {
-                    seenCardFields = ",\"channelCard\":\(snapshot.json)"
-                    cardHoldReasons.append("channel_card")
-                }
-            }
-            if let rawPeer = seenCards["peer"] {
-                lock.lock()
-                let peerCard = actionCardPrepare.peerCardJSON(channelId: channelId, agentId: identity.agentId)
-                lock.unlock()
-                if let peerCard, !(rawPeer is String) {
-                    seenPeerCardFields = ",\"peerCard\":\(peerCard)"
-                    cardHoldReasons.append("peer_card")
-                }
-            }
-        }
-        let holdForCards = !cardHoldReasons.isEmpty && !isContinueAnyway
-        var mentionExemption: (messageId: String, handle: String)?
-        var mentionExemptionMessageCount = 0
-        if freshnessEnabled, (requestedSendFreshness || forcedFreshness), !isContinueAnyway {
-            lock.lock()
-            let conversation = postableChannels[channelId]
-            let storageChannelId = jointProjections.first { $0.localChannelId == channelId }?.canonicalChannelId ?? channelId
-            let rows = humanMessageRows.compactMap { message -> (seq: Int, message: StoredHumanMessage)? in
-                guard message.channelId == storageChannelId else { return nil }
-                return (message.seq, message)
-            }
-            let latestFromOthers = rows.last { $0.message.senderId != identity.agentId }?.seq ?? 0
-            // The thread parent lives in the parent channel; the first reply
-            // seeds its freshness boundary from that message's seq.
-            let threadParentSeq = conversation?.kind == "thread"
-                ? (conversation?.parentMessageId.flatMap { parentId in
-                    humanMessageRows.first { $0.id == parentId }?.seq
-                } ?? 0)
-                : 0
-            let fallbackBoundarySeq = conversation?.kind == "thread" ? threadParentSeq : 0
-            let boundarySeq = min(hasClientSeenBoundary ? clientSeenUpToSeq : fallbackBoundarySeq, latestFromOthers)
-            let effectiveExactSeqs = Set(requestedSeenExactSeqs.filter { $0 > boundarySeq && $0 <= latestFromOthers })
-            let boundarySource: String
-            if hasClientSeenBoundary {
-                boundarySource = "client_seen"
-            } else if !effectiveExactSeqs.isEmpty {
-                boundarySource = "client_seen_exact"
-            } else if fallbackBoundarySeq > 0 {
-                boundarySource = "thread_parent"
-            } else {
-                boundarySource = "none"
-            }
-            let hasModelSeenProof = boundarySource == "client_seen" || boundarySource == "client_seen_exact"
-            let newer = rows.filter {
-                $0.seq > boundarySeq
-                    && $0.message.senderId != identity.agentId
-                    && !effectiveExactSeqs.contains($0.seq)
-                    && !agentMessageSuppressedLocked($0.message, agentId: identity.agentId)
-                    && !isSelfCausedFreshnessExemptLocked($0.message, agentId: identity.agentId)
-            }
-            let formalMentionCount = newer.reduce(0) { partial, entry in
-                partial + (storedMentions.contains {
-                    $0.messageId == entry.message.id && $0.targetType == "agent" && $0.targetId == identity.agentId
-                } ? 1 : 0)
-            }
-            let boundaryMessageId: String? = boundarySeq > 0
-                ? (conversation?.kind == "thread" && threadParentSeq == boundarySeq
-                    ? conversation?.parentMessageId
-                    : rows.first { $0.seq == boundarySeq }?.message.id)
-                : nil
-            // E1: a formal @handle mention inside the left-exclusive
-            // (boundary, latest] range exempts the whole hold for this send.
-            // Existing pre-E1 hold tests use fixture-injected mention rows
-            // (senderId "peer"), so only resolved mention facts count here;
-            // the explicit legacy read mark keeps those fixtures' hold
-            // expectations while the upstream E1 case stays exempt.
-            let legacyReadSeq = agentChannelReadCursors["\(channelId)\n\(identity.agentId)"]?.seq ?? 0
-            let mentionFacts: [(messageId: String, handle: String)] = newer.compactMap { entry in
-                guard let mention = storedMentions.first(where: {
-                    $0.messageId == entry.message.id && $0.targetType == "agent" && $0.targetId == identity.agentId
-                        && $0.senderId == "system"
-                }) else { return nil }
-                return (entry.message.id, mention.handle)
-            }
-            if boundarySeq > 0, legacyReadSeq == boundarySeq, !mentionFacts.isEmpty {
-                mentionExemption = mentionFacts.first
-                mentionExemptionMessageCount = newer.count
-            }
-            if let latestSeq = newer.last?.seq, mentionExemption == nil {
-                let attentionCount = newer.count
-                let shownRows = Array(newer.suffix(3))
-                let shownCount = shownRows.count
-                let holdCount = hasModelSeenProof ? attentionCount : min(attentionCount, 3)
-                let omittedCount = hasModelSeenProof ? max(0, attentionCount - shownCount) : 0
-                let showedEveryHeldMessage = shownCount >= attentionCount
-                let conversationIdentity = actionCardPrepare.heldConversationIdentity(channelId: channelId, agentId: identity.agentId)
-                let heldMessageJSON = shownRows.map { entry in
-                    actionCardPrepare.heldFreshnessMessageJSON(seq: entry.seq, message: entry.message, conversationIdentity: conversationIdentity)
-                }.joined(separator: ",")
-                if !withheldMode, showedEveryHeldMessage {
-                    // Every counted message was handed over: the read position
-                    // may move through them. Omitted ones must stay queued.
-                    let cursorKey = "\(channelId)\n\(identity.agentId)"
-                    let previous = agentChannelReadCursors[cursorKey] ?? (seq: 0, version: 0)
-                    if latestSeq > previous.seq {
-                        agentChannelReadCursors[cursorKey] = (latestSeq, previous.version + 1)
-                    }
-                }
-                lock.unlock()
-                if withheldMode {
-                    return Self.json(200, "{\"state\":\"held\",\"freshnessContextMode\":\"withheld\",\"withheldMessageCount\":\(holdCount)}")
-                }
-                let reason = boundarySource == "none" || boundarySource == "thread_parent"
-                    ? "server_first_touch_context"
-                    : "server_stale_model_boundary"
-                let producerFactId = Self.freshnessDecisionProducerFactId(
-                    agentId: identity.agentId,
-                    target: trimmed,
-                    reason: reason,
-                    pendingMaxSeq: latestSeq,
-                    modelSeenSeq: boundarySource == "client_seen" ? boundarySeq : 0,
-                    heldMessageCount: shownCount,
-                    omittedMessageCount: omittedCount
-                )
-                recordAttestedSendEvent(
-                    "gate_triggered",
-                    agentId: identity.agentId,
-                    messageId: newer.last?.message.id,
-                    metadata: [
-                        "last_seen_msg_id": boundaryMessageId as Any? ?? NSNull(),
-                        "latest_msg_id": newer.last?.message.id as Any? ?? NSNull(),
-                        "has_formal_mention_since_last_seen": false,
-                        "draft_replaced_existing": draftReplacedExisting,
-                        "new_message_count": holdCount,
-                        "boundary_source": boundarySource,
-                        "boundary_seq": boundarySeq,
-                        "latest_seq": latestSeq,
-                    ]
-                )
-                recordAgentSendActivity(
-                    agentId: identity.agentId,
-                    title: "Send held by freshness check",
-                    text: "target: \(trimmed)\n"
-                        + "unreviewed synced context for this target: \(shownCount) messages\n"
-                        + "reason: this target's latest synced context was not yet in your reviewed context\n"
-                        + "action: review the synced context before sending",
-                    producerFactId: producerFactId
-                )
-                var response = "{\"ok\":true,\"state\":\"held\",\"outcome\":\"held\",\"subtype\":\"freshness\",\"reason\":\"newer_messages_available\",\"decision\":\"syncing_hold\",\"producerFactId\":\(jsonString(producerFactId)),\"available_actions\":[\"check_messages\",\"send_draft\",\"send_anyway\"],\"heldMessages\":[\(heldMessageJSON)],\"newMessageCount\":\(holdCount),\"shownMessageCount\":\(shownCount),\"omittedMessageCount\":\(omittedCount),\"seenUpToSeq\":\(latestSeq)"
-                if let latestMessageId = newer.last?.message.id {
-                    response += ",\"seenUpToMessageId\":\(jsonString(latestMessageId))"
-                }
-                if let firstShownSeq = shownRows.first?.seq {
-                    response += ",\"firstShownSeq\":\(firstShownSeq)"
-                }
-                response += ",\"mentionAnnotation\":{\"formalMentionCount\":\(formalMentionCount)}"
-                if draftReholdCount >= 3 {
-                    response += ",\"continueAnywaySuggested\":true"
-                }
-                if holdForCards {
-                    let reasons = (["unread_messages"] + cardHoldReasons).map(jsonString).joined(separator: ",")
-                    response += ",\"holdReasons\":[\(reasons)]"
-                }
-                response += seenCardFields
-                response += seenPeerCardFields
-                response += "}"
-                return Self.json(200, response)
-            }
-            lock.unlock()
-        }
-        if let exemption = mentionExemption {
-            recordAttestedSendEvent(
-                "e1_exempt",
-                agentId: identity.agentId,
-                messageId: exemption.messageId,
-                metadata: [
-                    "mention_message_id": exemption.messageId,
-                    "mentioned_handle": exemption.handle,
-                    "new_message_count_since_last_seen": mentionExemptionMessageCount,
-                ]
-            )
-            recordAgentSendActivity(
-                agentId: identity.agentId,
-                title: "Send freshness check passed by mention",
-                text: "target: \(trimmed)\nreason: direct @\(exemption.handle) mention\nnew messages: \(mentionExemptionMessageCount)",
-                producerFactId: nil
-            )
-        }
-        if holdForCards {
-            let reasons = cardHoldReasons.map(jsonString).joined(separator: ",")
-            return Self.json(200, "{\"ok\":true,\"state\":\"held\",\"holdReasons\":[\(reasons)],\"heldMessages\":[],\"newMessageCount\":0,\"shownMessageCount\":0,\"omittedMessageCount\":0\(seenCardFields)\(seenPeerCardFields)}")
-        }
-        lock.lock()
-        if let threadChannel = postableChannels[channelId], threadChannel.kind == "thread",
-           let parentChannelId = threadChannel.parentChannelId,
-           let parentMessageId = threadChannel.parentMessageId {
-            threadFollows["\(identity.serverId)\n\(identity.agentId)\n\(channelId)"] = (
-                serverId: identity.serverId,
-                userId: identity.agentId,
-                threadChannelId: channelId,
-                parentMessageId: parentMessageId
-            )
-            let parentSender = oauth.historyMessages(channelId: parentChannelId).first { $0.id == parentMessageId }?.senderId
-                ?? humanMessageRows.first { $0.id == parentMessageId }?.senderId
-            if let parentSender, parentSender != "system",
-               oauth.memberRole(serverId: identity.serverId, userId: parentSender) != nil {
-                threadFollows["\(identity.serverId)\n\(parentSender)\n\(channelId)"] = (
-                    serverId: identity.serverId,
-                    userId: parentSender,
-                    threadChannelId: channelId,
-                    parentMessageId: parentMessageId
-                )
-            }
-        }
-        lock.unlock()
-        let typedMentions = Self.mentionInputs(object["mentions"])
-        if v2, Self.mentionBindingConflict(typedMentions) {
-            return Self.json(400, "{\"error\":\"A mention handle is bound to more than one target\",\"code\":\"mention_binding_conflict\"}")
-        }
-        let mentionResolution = resolvedMessageMentions(
-            serverId: identity.serverId,
-            senderId: identity.agentId,
-            content: content,
-            typed: v2 ? typedMentions : [],
-            warnUnresolved: v2
-        )
-        let messageId = UUID().uuidString.lowercased()
-        lock.lock()
-        var seenAttachmentIds = Set<String>()
-        for id in attachmentIds {
-            if seenAttachmentIds.contains(id) {
-                lock.unlock()
-                return Self.json(400, "{\"error\":\"Attachment \(id) was requested more than once. Send each attachment ID exactly once.\",\"code\":\"attachment_duplicate\"}")
-            }
-            seenAttachmentIds.insert(id)
-            guard let row = channelAttachments[id], row.channelId == channelId, row.uploaderId == identity.agentId else {
-                lock.unlock()
-                return Self.json(400, "{\"error\":\"Attachment \(id) is not available for this sender. Re-upload the file and send the new attachment ID.\",\"code\":\"attachment_not_found\"}")
-            }
-            if row.messageId != nil {
-                lock.unlock()
-                return Self.json(400, "{\"error\":\"Attachment \(id) is already attached to another message. Re-upload the file and send the new attachment ID.\",\"code\":\"attachment_already_linked\"}")
-            }
-        }
-        appendHumanMessageLocked(StoredHumanMessage(
-            id: messageId,
-            channelId: channelId,
-            senderId: identity.agentId,
-            content: content,
-            randomId: nil,
-            attachmentIds: attachmentIds,
-            messageType: "chat",
-            senderType: "agent"
-        ))
-        for id in attachmentIds {
-            channelAttachments[id]?.messageId = messageId
-        }
-        let ownSeq = humanMessageRows.last?.seq ?? humanMessageRows.count
-        // Sending is not reading: the cursor may pass the own message only when
-        // no message from someone else below it is still unhanded.
-        let cursorKey = "\(channelId)\n\(identity.agentId)"
-        let cursor = agentChannelReadCursors[cursorKey]?.seq ?? 0
-        let unreadBelow = humanMessageRows.contains { message in
-            message.channelId == channelId
-                && message.senderId != identity.agentId
-                && message.seq > cursor
-                && message.seq < ownSeq
-        }
-        if !unreadBelow, ownSeq > cursor {
-            let previous = agentChannelReadCursors[cursorKey] ?? (seq: 0, version: 0)
-            agentChannelReadCursors[cursorKey] = (ownSeq, previous.version + 1)
-        }
-        if let sendReceiptKey {
-            agentApiSendReceipts[sendReceiptKey] = AgentApiSendReceipt(
-                messageId: messageId,
-                messageSeq: ownSeq,
-                target: trimmed,
-                content: content,
-                attachmentIds: attachmentIds
-            )
-        }
-        lock.unlock()
-        recordMemberMentionRows(messageId: messageId, channelId: channelId, mentions: mentionResolution.mentions)
-        let report = sendMentionReport(
-            content: content,
-            typedMentions: (object["mentions"] as? [[String: Any]]) ?? [],
-            v2: v2,
-            channelId: channelId,
-            serverId: identity.serverId,
-            senderAgentId: identity.agentId,
-            messageId: messageId
-        )
-        let unresolvedJSON = v2 && !mentionResolution.unresolved.isEmpty
-            ? ",\"unresolvedMentionHandles\":[" + mentionResolution.unresolved.map(jsonString).joined(separator: ",") + "]"
-            : ""
-        let attentionJSON: String = {
-            lock.lock()
-            let key = "\(channelId)\n\(identity.agentId)"
-            let channel = postableChannels[channelId]
-            let joined = agentChannelJoinedAt[key]
-            let isChannel = channel?.kind == "channel"
-            let recent = joined.map { Date().timeIntervalSince($0) < 7 * 24 * 3600 } ?? false
-            var payload = ""
-            if isChannel, recent, !agentChannelPosted.contains(key) {
-                agentChannelPosted.insert(key)
-                let mute = "raft channel mute \"#\(channel?.name ?? "")\""
-                let still = "@mentions still reach you, and threads you started stay followed and keep delivering until you unfollow them."
-                payload = ",\"attention\":{\"driveByJoinedToPost\":{\"reason\":\"first_agent_message_with_recent_channel_join\",\"muteCommand\":\(jsonString(mute)),\"stillArrives\":[\(jsonString(still))]}}"
-            }
-            lock.unlock()
-            return payload
-        }()
-        let sent = "{\"ok\":true,\"state\":\"sent\",\"messageId\":\(jsonString(messageId)),\"messageSeq\":\(ownSeq),\"id\":\(jsonString(messageId)),\"channelId\":\(jsonString(channelId)),\"content\":\(jsonString(content)),\"seq\":\(ownSeq)\(report.pendingJSON)\(unresolvedJSON)\(seenCardFields)\(seenPeerCardFields)\(attentionJSON)}"
-        return Self.json(200, sent)
+        throw AgentSendError.channelNotFound
     }
 
-    /// `@handle` tokens outside markdown code, in author order.
+    private func isString(_ value: JSONValue) -> Bool {
+        if case .string = value { return true }
+        return false
+    }
 
-    /// Resolution of authored handles into the sender-only mention facts the
-    /// send response reports: pending actions for a non-member agent (v1) and
-    /// unresolved authored handles (v2). Hidden humans stay cloaked.
-    func sendMentionReport(
+    /// The sender-only mention facts the sent reply reports: pending actions for
+    /// a non-member agent on v1. The unresolved handles come from the typed
+    /// mention resolution, not this report.
+    private func sendMentionReport(
         content: String,
-        typedMentions: [[String: Any]],
+        typedMentions: [MentionInput],
         v2: Bool,
         channelId: String,
         serverId: String,
         senderAgentId: String,
         messageId: String
-    ) -> (pendingJSON: String, unresolvedJSON: String) {
-        let handles = Self.mentionHandlesOutsideCode(content)
-        guard !handles.isEmpty else { return ("", "") }
-        let typedByName: [String: (type: String, id: String)] = Dictionary(
-            uniqueKeysWithValues: typedMentions.compactMap { mention in
-                guard let name = mention["name"] as? String,
-                      let type = mention["type"] as? String,
-                      let id = mention["id"] as? String else { return nil }
-                return (name, (type, id))
-            }
-        )
-        lock.lock()
-        let hiddenHumans = hideHumansFromMembers[serverId] == true
-        lock.unlock()
+    ) -> [String] {
+        let handles = EmailLoginDirectory.mentionHandlesOutsideCode(content)
+        guard !handles.isEmpty else { return [] }
+        var typedByName: [String: (type: String, id: String)] = [:]
+        for mention in typedMentions {
+            typedByName[mention.name] = (mention.type, mention.id)
+        }
         let senderName = oauth.agentRuntimeInfo(id: senderAgentId)?.name ?? ""
         let channelAgents = Set(oauth.channelAgentIds(channelId: channelId))
         let serverAgents = oauth.serverAgents(serverId: serverId)
         var pending: [String] = []
-        var unresolved: [String] = []
         var seen = Set<String>()
         for handle in handles where seen.insert(handle).inserted {
             if handle == senderName { continue }
             if let typed = typedByName[handle] {
                 if typed.type == "agent" {
-                    if !serverAgents.contains(where: { $0.id == typed.id }) {
-                        continue
-                    }
+                    if !serverAgents.contains(where: { $0.id == typed.id }) { continue }
                     if v2 { continue }
                     if !channelAgents.contains(typed.id) {
-                        pending.append(Self.pendingMentionActionJSON(
+                        pending.append(EmailLoginDirectory.pendingMentionActionJSON(
                             messageId: messageId,
                             handle: handle,
                             avatarUrl: oauth.agentRuntimeInfo(id: typed.id)?.avatarUrl
@@ -659,13 +897,12 @@ extension EmailLoginDirectory {
                     }
                     continue
                 }
-                // A typed human is either visible (resolved) or hidden (cloaked).
                 continue
             }
             if let agent = serverAgents.first(where: { $0.name == handle }) {
                 if v2 { continue }
                 if !channelAgents.contains(agent.id) {
-                    pending.append(Self.pendingMentionActionJSON(
+                    pending.append(EmailLoginDirectory.pendingMentionActionJSON(
                         messageId: messageId,
                         handle: handle,
                         avatarUrl: agent.avatarUrl
@@ -673,59 +910,52 @@ extension EmailLoginDirectory {
                 }
                 continue
             }
-            let humanExists = accounts.values.contains { $0.name == handle }
-            if v2, !humanExists || hiddenHumans {
-                unresolved.append("@" + handle)
-            }
         }
-        let pendingJSON = pending.isEmpty ? "" : ",\"pendingMentionActions\":[" + pending.joined(separator: ",") + "]"
-        let unresolvedJSON = unresolved.isEmpty ? "" : ",\"unresolvedMentionHandles\":[" + unresolved.map(jsonString).joined(separator: ",") + "]"
-        return (pendingJSON, unresolvedJSON)
+        return pending
     }
 
+    // MARK: - Shared task decisions
+    //
+    // These are also the bodies behind the directory forwarders the services
+    // that have not migrated yet still call, so the policy has one copy.
 
-    func channelIdForReceipt(_ messageId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return humanMessageRows.first { $0.id == messageId }?.channelId
-    }
-
-
-    func agentTaskAuth(authorization: String?, legacyAgentId: String?) -> AgentTaskAuthResult {
+    /// The legacy `agentTaskAuth` credential outcome (401s are `DomainError`s).
+    func taskAuth(
+        authorization: String?,
+        legacyAgentId: String?
+    ) throws -> (agentId: String, serverId: String) {
         guard let authorization, authorization.hasPrefix("Bearer ") else {
-            return .refused(Self.json(401, "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}"))
+            throw FeedbackLocatorError.missingAuthorization
         }
         let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        let credential = agentCredentials[token]
-        let machine = machines.first { $0.apiKey == token }
-        lock.unlock()
+        let credential = agents.agentCredential(token: token)
+        let machine = machines.machine(apiKey: token)
         if let credential, credential.revokedAt == nil {
             guard credential.scopes.contains("tasks") else {
-                return .refused(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
+                throw FeedbackLocatorError.invalidAccessToken
             }
             guard let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else {
-                return .refused(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
+                throw FeedbackLocatorError.invalidAccessToken
             }
-            return .ok(agentId: agent.id, serverId: agent.serverId)
+            return (agent.id, agent.serverId)
         }
         if let machine, let legacyAgentId,
            let agent = oauth.agentRuntimeInfo(id: legacyAgentId), !agent.deleted,
            agent.serverId == machine.serverId {
-            return .ok(agentId: agent.id, serverId: agent.serverId)
+            return (agent.id, agent.serverId)
         }
-        return .refused(Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}"))
+        throw FeedbackLocatorError.invalidAccessToken
     }
 
-    /// Write routes accept both an `sk_agent_*` credential and the legacy
-    /// machine key plus path agent id.
-    func agentTaskWriter(_ authorization: String?, legacyAgentId: String?) -> (agentId: String, serverId: String)? {
+    /// The legacy `agentTaskWriter` writer lookup.
+    func taskWriter(
+        authorization: String?,
+        legacyAgentId: String?
+    ) -> (agentId: String, serverId: String)? {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
         let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        let credential = agentCredentials[token]
-        let machine = machines.first { $0.apiKey == token }
-        lock.unlock()
+        let credential = agents.agentCredential(token: token)
+        let machine = machines.machine(apiKey: token)
         if let credential, credential.revokedAt == nil,
            let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted {
             return (agent.id, agent.serverId)
@@ -738,14 +968,13 @@ extension EmailLoginDirectory {
         return nil
     }
 
-    func agentTaskChannel(serverId: String, agentId: String, reference: String) -> String? {
+    /// The legacy `agentTaskChannel` reference resolution (`#name` or a raw id).
+    func taskChannel(serverId: String, agentId: String, reference: String) -> String? {
         let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        lock.lock()
-        defer { lock.unlock() }
         if trimmed.hasPrefix("#") {
             let name = String(trimmed.dropFirst())
-            for (id, channel) in postableChannels {
+            for (id, channel) in channels.postableChannels {
                 guard channel.serverId == serverId, channel.name == name, channel.deletedAt == nil else { continue }
                 guard channel.kind == "channel"
                     || channel.memberIds.contains(agentId)
@@ -755,176 +984,109 @@ extension EmailLoginDirectory {
             }
             return nil
         }
-        guard postableChannels[trimmed]?.serverId == serverId else { return nil }
+        guard channels.postableChannels[trimmed]?.serverId == serverId else { return nil }
         return trimmed
     }
 
-    public func agentTasksList(authorization: String?, legacyAgentId: String?, channelRef: String?) -> HTTPReply {
-        let auth: (agentId: String, serverId: String)
-        switch agentTaskAuth(authorization: authorization, legacyAgentId: legacyAgentId) {
-        case .refused(let reply): return reply
-        case .ok(let agentId, let serverId): auth = (agentId, serverId)
-        }
-        if let reply = agentGrantDenial(agentId: auth.agentId, scope: "task:read") { return reply }
-        guard let channelRef,
-              let channelId = agentTaskChannel(serverId: auth.serverId, agentId: auth.agentId, reference: channelRef)
-        else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
-        }
-        lock.lock()
-        let rows = taskRecords.filter { $0.channelId == channelId }.map { task in
-            "{\"id\":\(jsonString(task.id)),\"channelId\":\(jsonString(task.channelId)),\"title\":\(jsonString(task.title)),\"status\":\(jsonString(task.status)),\"taskNumber\":\(task.taskNumber)}"
-        }.joined(separator: ",")
-        lock.unlock()
-        return Self.json(200, "{\"tasks\":[\(rows)]}")
-    }
-
-    func taskWriteFreshnessHold(agentId: String, channelId: String, seenUpToSeq: Int?, actionKey: String) -> HTTPReply? {
+    /// The task-write freshness gate. `nil` means the write proceeds; a value
+    /// is the published `held` body, built from the newer rows read before the
+    /// store decides whether to record the hold.
+    func taskWriteHold(
+        agentId: String,
+        channelId: String,
+        seenUpToSeq: Int?,
+        actionKey: String
+    ) -> AgentTaskWriteHoldResponse? {
         guard let seen = seenUpToSeq else { return nil }
-        lock.lock()
-        let key = "\(agentId)\n\(channelId)\n\(actionKey)"
-        if let held = taskWriteHolds[key], seen == held.seen {
-            taskWriteHolds.removeValue(forKey: key)
-            lock.unlock()
+        let newer = messages.humanMessageRows.filter {
+            $0.channelId == channelId && $0.senderId != agentId && $0.seq > seen
+        }
+        switch tasks.decideTaskWriteHold(
+            agentId: agentId,
+            channelId: channelId,
+            seen: seen,
+            actionKey: actionKey,
+            newerMessages: newer
+        ) {
+        case .proceed:
             return nil
+        case .held(let latest):
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let held = newer.sorted { $0.seq < $1.seq }.prefix(5).map { message in
+                AgentTaskHeldMessage(
+                    id: message.id,
+                    seq: message.seq,
+                    content: message.content,
+                    senderId: message.senderId,
+                    createdAt: formatter.string(from: message.createdAt)
+                )
+            }
+            return AgentTaskWriteHoldResponse(
+                heldMessages: Array(held),
+                newMessageCount: newer.count,
+                seenUpToSeq: latest
+            )
         }
-        let rows = humanMessageRows.filter { $0.channelId == channelId && $0.senderId != agentId && $0.seq > seen }
-        guard !rows.isEmpty else { lock.unlock(); return nil }
-        let latest = rows.map(\.seq).max() ?? seen
-        taskWriteHolds[key] = (latest, latest)
+    }
+
+    // MARK: - Private projections
+
+    private func capabilityDenial(_ authorization: String?, required: String) -> FeedbackLocatorError? {
+        switch feedbackLocators.capabilityDecision(authorization: authorization, capability: required) {
+        case .allowed:
+            return nil
+        case .denied(let capability):
+            return .capabilityNotAuthorized(capability: capability)
+        }
+    }
+
+    private func requireGrant(agentId: String, scope: String) throws {
+        switch feedbackLocators.grantDecision(agentId: agentId, scope: scope) {
+        case .allowed:
+            break
+        case .missingScope(let missing):
+            throw FeedbackLocatorError.missingScope(scope: missing)
+        }
+    }
+
+    private static func claimResult(_ outcome: TasksAndRemindersStore.TaskClaimOutcome) -> AgentTaskClaimResult {
+        switch outcome {
+        case .taskNotFound(let taskNumber):
+            return .taskNotFound(taskNumber: taskNumber)
+        case .taskUnavailable(let taskNumber):
+            return .taskUnavailable(taskNumber: taskNumber)
+        case .alreadyClaimedByYou(let taskNumber):
+            return .alreadyClaimedByYou(taskNumber: taskNumber)
+        case .alreadyClaimed(let taskNumber):
+            return .alreadyClaimed(taskNumber: taskNumber)
+        case .claimed(let taskNumber, let messageId):
+            return .claimed(taskNumber: taskNumber, messageId: messageId)
+        case .messageNotFound(let prefix):
+            return .messageNotFound(prefix: prefix)
+        case .messageAlreadyClaimedByYou(let messageId, let taskNumber):
+            return .messageAlreadyClaimedByYou(messageId: messageId, taskNumber: taskNumber)
+        case .messageAlreadyClaimed(let messageId, let taskNumber):
+            return .messageAlreadyClaimed(messageId: messageId, taskNumber: taskNumber)
+        case .claimedMessage(let messageId, let taskNumber):
+            return .claimedMessage(messageId: messageId, taskNumber: taskNumber)
+        }
+    }
+
+    private static func taskDetail(_ task: TaskRecord) -> AgentTaskDetail {
         let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let heldMessages = rows.sorted { $0.seq < $1.seq }.prefix(5).map { message in
-            "{\"id\":\(jsonString(message.id)),\"seq\":\(message.seq),\"content\":\(jsonString(message.content)),\"senderId\":\(jsonString(message.senderId)),\"createdAt\":\(jsonString(formatter.string(from: message.createdAt)))}"
-        }.joined(separator: ",")
-        let count = rows.count
-        lock.unlock()
-        return Self.json(200, "{\"ok\":true,\"state\":\"held\",\"outcome\":\"held\",\"subtype\":\"freshness\",\"reason\":\"newer_messages_available\",\"decision\":\"syncing_hold\",\"available_actions\":[\"check_messages\",\"retry_action\"],\"heldMessages\":[\(heldMessages)],\"newMessageCount\":\(count),\"seenUpToSeq\":\(latest)}")
+        return AgentTaskDetail(
+            id: task.id,
+            channelId: task.channelId,
+            messageId: task.messageId,
+            title: task.title,
+            status: task.status,
+            taskNumber: task.taskNumber,
+            claimedById: task.assigneeId,
+            claimedByType: task.assigneeType,
+            claimedAt: task.claimedAt.map { formatter.string(from: $0) },
+            revision: task.revision,
+            requiresResourceReceipt: task.requiresResourceReceipt
+        )
     }
-
-    public func agentTaskClaim(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
-        if let denial = agentCapabilityDenial(authorization, required: "tasks") { return denial }
-        guard let writer = agentTaskWriter(authorization, legacyAgentId: legacyAgentId)
-        else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
-        }
-        if let reply = agentGrantDenial(agentId: writer.agentId, scope: "task:write") { return reply }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let channelRef = object["channel"] as? String,
-              let channelId = agentTaskChannel(serverId: writer.serverId, agentId: writer.agentId, reference: channelRef)
-        else {
-            return Self.json(400, "{\"error\":\"Invalid task claim request\"}")
-        }
-        let taskNumbers = (object["task_numbers"] as? [Any])?.compactMap { $0 as? Int } ?? []
-        let messageIds = (object["message_ids"] as? [Any])?.compactMap { $0 as? String } ?? []
-        if let hold = taskWriteFreshnessHold(
-            agentId: writer.agentId, channelId: channelId,
-            seenUpToSeq: object["seenUpToSeq"] as? Int, actionKey: "claim:\(taskNumbers.first ?? 0)"
-        ) { return hold }
-        var results: [String] = []
-        lock.lock()
-        for number in taskNumbers {
-            guard let index = taskRecords.firstIndex(where: { $0.channelId == channelId && $0.taskNumber == number }) else {
-                results.append("{\"taskNumber\":\(number),\"success\":false,\"reason\":\"not found\"}")
-                continue
-            }
-            if !taskRecords[index].hasHostMessage {
-                results.append("{\"taskNumber\":\(number),\"success\":false,\"reason\":\"task not found\"}")
-                continue
-            }
-            if taskRecords[index].assigneeId == writer.agentId {
-                results.append("{\"taskNumber\":\(number),\"success\":false,\"reason\":\"already claimed by you\"}")
-                continue
-            }
-            if let assignee = taskRecords[index].assigneeId, assignee != writer.agentId {
-                results.append("{\"taskNumber\":\(number),\"success\":false,\"reason\":\"already claimed\"}")
-                continue
-            }
-            taskRecords[index].assigneeId = writer.agentId
-            taskRecords[index].assigneeType = "agent"
-            taskRecords[index].claimedAt = Date()
-            if taskRecords[index].status == "todo" { taskRecords[index].status = "in_progress" }
-            taskRecords[index].revision += 1
-            let task = taskRecords[index]
-            results.append("{\"taskNumber\":\(task.taskNumber),\"messageId\":\(jsonString(task.messageId)),\"success\":true}")
-        }
-        for prefix in messageIds {
-            guard let index = taskRecords.firstIndex(where: { $0.channelId == channelId && $0.messageId.hasPrefix(prefix) }) else {
-                results.append("{\"messageId\":\(jsonString(prefix)),\"success\":false,\"reason\":\"not found\"}")
-                continue
-            }
-            let task = taskRecords[index]
-            if task.assigneeId == writer.agentId {
-                results.append("{\"messageId\":\(jsonString(task.messageId)),\"success\":false,\"reason\":\"already claimed by you\",\"taskNumber\":\(task.taskNumber)}")
-                continue
-            }
-            if let assignee = task.assigneeId, assignee != writer.agentId {
-                results.append("{\"messageId\":\(jsonString(task.messageId)),\"success\":false,\"reason\":\"already claimed\",\"taskNumber\":\(task.taskNumber)}")
-                continue
-            }
-            taskRecords[index].assigneeId = writer.agentId
-            taskRecords[index].assigneeType = "agent"
-            taskRecords[index].claimedAt = Date()
-            if taskRecords[index].status == "todo" { taskRecords[index].status = "in_progress" }
-            taskRecords[index].revision += 1
-            let claimed = taskRecords[index]
-            results.append("{\"messageId\":\(jsonString(claimed.messageId)),\"success\":true,\"taskNumber\":\(claimed.taskNumber)}")
-        }
-        lock.unlock()
-        return Self.json(200, "{\"results\":[\(results.joined(separator: ","))]}")
-    }
-
-    public func agentTaskUpdateStatus(authorization: String?, body: String, legacyAgentId: String? = nil) -> HTTPReply {
-        if let denial = agentCapabilityDenial(authorization, required: "tasks") { return denial }
-        guard let writer = agentTaskWriter(authorization, legacyAgentId: legacyAgentId)
-        else {
-            return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
-        }
-        if let reply = agentGrantDenial(agentId: writer.agentId, scope: "task:write") { return reply }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let channelRef = object["channel"] as? String,
-              let channelId = agentTaskChannel(serverId: writer.serverId, agentId: writer.agentId, reference: channelRef),
-              let taskNumber = object["task_number"] as? Int,
-              let status = object["status"] as? String,
-              Self.validTaskStatuses.contains(status)
-        else {
-            return Self.json(400, "{\"error\":\"Invalid task status request\"}")
-        }
-        if let hold = taskWriteFreshnessHold(
-            agentId: writer.agentId, channelId: channelId,
-            seenUpToSeq: object["seenUpToSeq"] as? Int, actionKey: "update:\(taskNumber)"
-        ) { return hold }
-        lock.lock()
-        guard let index = taskRecords.firstIndex(where: { $0.channelId == channelId && $0.taskNumber == taskNumber }),
-              taskRecords[index].hasHostMessage
-        else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Task not found\"}")
-        }
-        let current = taskRecords[index]
-        let isAdmin = oauth.agentRole(serverId: writer.serverId, agentId: writer.agentId) == "admin"
-        if !isAdmin {
-            if status == "todo", current.status == "in_progress", current.assigneeId != writer.agentId {
-                lock.unlock()
-                return Self.json(409, "{\"error\":\"Task cannot transition from in_progress to todo\"}")
-            }
-            if current.status == "todo", ["done", "closed", "in_review", "cancelled"].contains(status) {
-                lock.unlock()
-                return Self.json(409, "{\"error\":\"Task cannot transition from todo to \(status)\"}")
-            }
-        }
-        if status == "done", taskRecords[index].requiresResourceReceipt, taskRecords[index].resourceReceiptJSON == nil {
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"resource receipt required before task can move to done\"}")
-        }
-        taskRecords[index].status = status
-        if status == "done" || status == "closed" { taskRecords[index].completedAt = Date() }
-        if status == "in_progress" { taskRecords[index].claimedAt = Date() }
-        if status == "todo" { taskRecords[index].claimedAt = nil }
-        taskRecords[index].revision += 1
-        let task = taskRecords[index]
-        lock.unlock()
-        return Self.json(200, taskJSON(task))
-    }
-
 }

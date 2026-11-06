@@ -74,7 +74,9 @@ extension EmailLoginDirectory {
 
     public func setAgentChannelJoinedAtForTesting(agentId: String, channelId: String, at: Date) {
         lock.lock()
-        agentChannelJoinedAt["\(channelId)\n\(agentId)"] = at
+        var joined = agentsRuntimeStore.agentChannelJoinedAt
+        joined["\(channelId)\n\(agentId)"] = at
+        agentsRuntimeStore.agentChannelJoinedAt = joined
         lock.unlock()
     }
 }

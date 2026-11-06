@@ -881,6 +881,14 @@ extension EmailLoginDirectory {
         )
     }
 
+    /// Agent task list, claim and update-status. The service owns the task
+    /// policy and reads the task/message/channel/agent/machine stores; the
+    /// directory accessor stays here so the feature layer never touches the
+    /// composition root.
+    public var actionCardExecute: ActionCardExecuteService {
+        ActionCardExecuteService(directory: self)
+    }
+
     /// Product feedback locators for `POST/GET /internal/agent-api/feedback-locators`
     /// plus the agent credential/grant decisions the rest of the agent API
     /// shares. The directory only supplies its stores and the OAuth ledger.

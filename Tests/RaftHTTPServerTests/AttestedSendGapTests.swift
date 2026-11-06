@@ -557,12 +557,17 @@ struct AttestedSendGapTests {
                 let results = SendResults()
                 DispatchQueue.concurrentPerform(iterations: 2) { index in
                     let key = index == 0 ? fixture.agentKey : fixture.peerKey
-                    let reply = fixture.accounts.agentSendMessage(
+                    let request = try? JSONDecoder().decode(
+                        AgentSendMessageRequest.self,
+                        from: Data(body.utf8)
+                    )
+                    let reply = try? fixture.accounts.actionCardExecute.agentSendMessage(
                         authorization: "Bearer \(key)",
-                        body: body,
+                        body: request,
                         v2: true
                     )
-                    let parsed = (try? JSONSerialization.jsonObject(with: Data(reply.body.utf8))) as? [String: Any] ?? [:]
+                    let replyBody = reply?.jsonBody.render() ?? ""
+                    let parsed = (try? JSONSerialization.jsonObject(with: Data(replyBody.utf8))) as? [String: Any] ?? [:]
                     results.append(parsed)
                 }
                 let bodies = results.all()

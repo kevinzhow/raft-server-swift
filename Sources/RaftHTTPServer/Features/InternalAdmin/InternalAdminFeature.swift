@@ -227,18 +227,24 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             ))
         }
         agent.post("tasks", "claim") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentTaskClaim(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}"),
-                legacyAgentId: request.parameters.get("agentId")
-            ))
+            let body = await jsonRequestBody(AgentTaskClaimRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.actionCardExecute.agentTaskClaim(
+                    authorization: request.headers[.authorization],
+                    legacyAgentId: request.parameters.get("agentId"),
+                    body: body
+                )
+            }
         }
         agent.post("tasks", "update-status") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentTaskUpdateStatus(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}"),
-                legacyAgentId: request.parameters.get("agentId")
-            ))
+            let body = await jsonRequestBody(AgentTaskStatusUpdateRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.actionCardExecute.agentTaskUpdateStatus(
+                    authorization: request.headers[.authorization],
+                    legacyAgentId: request.parameters.get("agentId"),
+                    body: body
+                )
+            }
         }
         agent.post("tasks", "delete") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentTaskDelete(
