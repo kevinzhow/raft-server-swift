@@ -107,6 +107,18 @@ extension EmailLoginDirectory {
         return Self.json(200, "{\"ok\":true}")
     }
 
+    /// A thread is readable only through its parent's current visibility.
+    ///
+    /// Moved here with the reactions/inbox surface, which still resolves thread
+    /// scopes on the directory; `ThreadsService` owns the migrated copy of the
+    /// same policy for the thread routes.
+    func threadParentVisibleLocked(threadId: String, userId: String) -> Bool {
+        guard let thread = postableChannels[threadId], thread.kind == "thread" else { return false }
+        guard let parentId = thread.parentChannelId else { return true }
+        guard let parent = postableChannels[parentId] else { return false }
+        return parent.kind == "channel" || parent.memberIds.contains(userId)
+    }
+
     public func threadInboxUndone(authorization: String?, serverId: String?, body: String) -> HTTPReply {
         guard let userId = sessionUserId(authorization: authorization) else {
             return Self.json(401, "{\"error\":\"Unauthorized\"}")

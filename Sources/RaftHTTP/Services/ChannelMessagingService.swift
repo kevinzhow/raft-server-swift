@@ -211,9 +211,14 @@ public struct ChannelMessagingService: Sendable {
 
     /// `POST /api/channels/threads/follow|unfollow`: publish
     /// `thread:followers-updated` for the thread channel.
-    public func publishThreadFollowers(status: Int, body: String) {
-        guard status == 200, let event = Self.threadFollowersUpdatedEvent(fromBody: body) else { return }
-        sink.emit("channel:\(event.threadChannelId)", "thread:followers-updated", event.payloadJSON)
+    ///
+    /// The thread service owns the resolved mutation and publishes only after a
+    /// successful write, so this entry point takes the typed payload the frame
+    /// already carries instead of re-decoding a reply body.
+    public func publishThreadFollowers(_ payload: ThreadFollowersUpdatedPayload) {
+        guard !payload.threadChannelId.isEmpty,
+              let payloadJSON = Self.encode(payload) else { return }
+        sink.emit("channel:\(payload.threadChannelId)", "thread:followers-updated", payloadJSON)
     }
 
     private func publishTaskCreated(taskIds: [String], requestBody: String, channelId: String) {
@@ -254,13 +259,6 @@ public struct ChannelMessagingService: Sendable {
 
     // MARK: - Realtime events
 
-    /// `thread:followers-updated` for one thread channel. The thread id is both
-    /// the room suffix and the payload field, so both are returned together.
-    private struct ThreadFollowersUpdatedEvent: Sendable, Equatable {
-        let threadChannelId: String
-        let payloadJSON: String
-    }
-
     /// `channel:updated` for one created channel.
     private struct ChannelUpdatedEvent: Sendable, Equatable {
         let channelId: String
@@ -271,17 +269,6 @@ public struct ChannelMessagingService: Sendable {
     private struct TaskUpdatedEvent: Sendable, Equatable {
         let channelId: String
         let payloadJSON: String
-    }
-
-    private static func threadFollowersUpdatedEvent(fromBody body: String) -> ThreadFollowersUpdatedEvent? {
-        guard let payload = decode(ThreadFollowersUpdatedPayload.self, from: body),
-              !payload.threadChannelId.isEmpty,
-              let payloadJSON = encode(payload)
-        else { return nil }
-        return ThreadFollowersUpdatedEvent(
-            threadChannelId: payload.threadChannelId,
-            payloadJSON: payloadJSON
-        )
     }
 
     /// A `POST /api/channels` reply omits the description even though it stores

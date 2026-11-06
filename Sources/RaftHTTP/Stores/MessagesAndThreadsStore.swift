@@ -321,6 +321,110 @@ final class MessagesAndThreadsStore: @unchecked Sendable {
         }
     }
 
+    // MARK: - Thread follow ledger
+
+    /// One `(thread, parent message)` follow row, copied out of the ledger.
+    struct ThreadFollowRow: Sendable, Equatable {
+        let threadChannelId: String
+        let parentMessageId: String
+    }
+
+    /// The thread a parent message already follows, searched across the whole
+    /// ledger exactly as the legacy resolver did.
+    func threadId(serverId: String, parentMessageId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.threadFollows.values.first {
+            $0.serverId == serverId && $0.parentMessageId == parentMessageId
+        }?.threadChannelId
+    }
+
+    /// A user's active follows on one server, with inbox-done scopes filtered
+    /// out under the same lock that reads the rows.
+    func activeThreadFollows(serverId: String, userId: String) -> [ThreadFollowRow] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.threadFollows.values
+            .filter {
+                $0.serverId == serverId
+                    && $0.userId == userId
+                    && !storage.inboxDoneScopes.contains("\(userId)\n\($0.threadChannelId)")
+            }
+            .map { ThreadFollowRow(threadChannelId: $0.threadChannelId, parentMessageId: $0.parentMessageId) }
+    }
+
+    func isThreadFollowed(serverId: String, userId: String, threadChannelId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.threadFollows["\(serverId)\n\(userId)\n\(threadChannelId)"] != nil
+    }
+
+    /// Unread-eligible personal mention ids for one user. The followed-thread
+    /// projection intersects these with the thread's unread replies.
+    func unreadMentionMessageIds(userId: String) -> Set<String> {
+        lock.lock()
+        defer { lock.unlock() }
+        return Set(storage.storedMentions.lazy.filter {
+            $0.targetType == "user" && $0.targetId == userId && $0.notifiableAtSend
+        }.map(\.messageId))
+    }
+
+    /// One user's unfollow suppression rows on a server, newest first is left
+    /// to the caller.
+    func threadUnfollowRecords(serverId: String, userId: String) -> [ThreadUnfollowRecord] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.threadUnfollows.values.filter {
+            $0.serverId == serverId && $0.userId == userId
+        }
+    }
+
+    /// The follow/unfollow write: follow row, follow start and the unfollow
+    /// suppression row change in one critical section. The legacy handler read
+    /// the follow start, filtered the frozen replies and wrote the suppression
+    /// row under the directory lock; splitting those reads here would let two
+    /// concurrent writes interleave a follow and a suppression row.
+    func applyThreadFollow(
+        serverId: String,
+        userId: String,
+        threadChannelId: String,
+        parentMessageId: String,
+        follow: Bool,
+        now: Date
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = "\(serverId)\n\(userId)\n\(threadChannelId)"
+        if follow {
+            storage.threadFollows[key] = (
+                serverId: serverId,
+                userId: userId,
+                threadChannelId: threadChannelId,
+                parentMessageId: parentMessageId
+            )
+            if storage.threadFollowStarts[key] == nil {
+                storage.threadFollowStarts[key] = now
+            }
+            storage.threadUnfollows.removeValue(forKey: key)
+            return
+        }
+        storage.threadFollows.removeValue(forKey: key)
+        let startedAt = storage.threadFollowStarts.removeValue(forKey: key) ?? .distantPast
+        let frozen = storage.humanMessageRows
+            .filter { $0.channelId == threadChannelId && $0.createdAt >= startedAt }
+            .map { (id: $0.id, content: $0.content) }
+        storage.threadUnfollows[key] = ThreadUnfollowRecord(
+            serverId: serverId,
+            userId: userId,
+            threadChannelId: threadChannelId,
+            parentMessageId: parentMessageId,
+            unfollowedAt: now,
+            latestMessageId: frozen.last?.id ?? parentMessageId,
+            replyCount: frozen.count,
+            frozenMessages: frozen
+        )
+    }
+
     /// Attachment chip counts for one replayed message, in request order.
     struct AttachmentCommentSummary {
         let attachmentId: String

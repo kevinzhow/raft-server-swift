@@ -29,7 +29,12 @@ public struct ChannelsFeature: RouteCollection, Sendable {
     /// Synchronous mount for `configure`, whose call sites are not `async`.
     public func register(routes: any RoutesBuilder) {
         let channels = routes.grouped("api", "channels")
-        let threads = ThreadsService(directory: services.emailAccounts)
+        let threads = ThreadsService(
+            directory: services.emailAccounts,
+            publishFollowersUpdated: { payload in
+                services.channelMessaging.publishThreadFollowers(payload)
+            }
+        )
         let inbox = ReactionsRealtimeService(directory: services.emailAccounts)
         let servedInbox = InboxAndWakeService(directory: services.emailAccounts)
         channels.post(":channelId", "archive") { request -> Response in
@@ -105,15 +110,15 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
 
-        channels.get("inbox", "unfollowed") { request -> Response in
-            var response = routeResponse(threads.unfollowedInbox(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                limit: desktopQuery(request.url.query, "limit"),
-                query: desktopQuery(request.url.query, "q")
-            ))
-            response.headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
-            return response
+        channels.get("inbox", "unfollowed") { request async throws -> Response in
+            try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
+                try threads.unfollowedInbox(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    limit: desktopQuery(request.url.query, "limit"),
+                    query: desktopQuery(request.url.query, "q")
+                )
+            }
         }
 
         channels.get("inbox") { request -> Response in
@@ -154,89 +159,72 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
 
-        channels.get("threads", "followers") { request -> Response in
-            routeResponse(threads.threadFollowerRoster(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                threadChannelIds: desktopQuery(request.url.query, "threadChannelIds")
-            ))
+        channels.get("threads", "followers") { request async throws -> Response in
+            try await respond {
+                try threads.threadFollowerRoster(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    threadChannelIds: desktopQuery(request.url.query, "threadChannelIds")
+                )
+            }
         }
 
         channels.post("threads", "follow") { request async throws -> Response in
-            // A decoded follow body is re-encoded for the directory's resolver
-            // and for the follower event published from the same canonical
-            // body; a body that does not decode keeps the raw path.
-            if let mutation = try? await request.content.decode(ThreadFollowMutationDTO.self) {
-                let body = mutation.encodedBody()
-                let reply = threads.setThreadFollow(
-                    mutation,
+            let body = await threadFollowMutation(request)
+            return try await respond {
+                try threads.setThreadFollow(
+                    body,
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     follow: true
                 )
-                services.channelMessaging.publishThreadFollowers(status: reply.status, body: body)
-                return routeResponse(reply)
             }
-            let body = try await request.bodyText(default: "{}")
-            let reply = services.emailAccounts.setThreadFollow(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: body,
-                follow: true
-            )
-            services.channelMessaging.publishThreadFollowers(status: reply.status, body: body)
-            return routeResponse(reply)
         }
 
         channels.post("threads", "unfollow") { request async throws -> Response in
-            if let mutation = try? await request.content.decode(ThreadFollowMutationDTO.self) {
-                let body = mutation.encodedBody()
-                let reply = threads.setThreadFollow(
-                    mutation,
+            let body = await threadFollowMutation(request)
+            return try await respond {
+                try threads.setThreadFollow(
+                    body,
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     follow: false
                 )
-                services.channelMessaging.publishThreadFollowers(status: reply.status, body: body)
-                return routeResponse(reply)
             }
-            let body = try await request.bodyText(default: "{}")
-            let reply = services.emailAccounts.setThreadFollow(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: body,
-                follow: false
-            )
-            services.channelMessaging.publishThreadFollowers(status: reply.status, body: body)
-            return routeResponse(reply)
         }
 
-        channels.get("threads", "followed") { request -> Response in
-            routeResponse(threads.followedThreads(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                limit: desktopQuery(request.url.query, "limit"),
-                cursor: desktopQuery(request.url.query, "cursor"),
-                unreadOnly: desktopQuery(request.url.query, "unreadOnly")
-            ))
+        channels.get("threads", "followed") { request async throws -> Response in
+            try await respond {
+                try threads.followedThreads(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    limit: desktopQuery(request.url.query, "limit"),
+                    cursor: desktopQuery(request.url.query, "cursor"),
+                    unreadOnly: desktopQuery(request.url.query, "unreadOnly")
+                )
+            }
         }
 
-        channels.get(":channelId", "threads", ":messageId") { request -> Response in
-            routeResponse(threads.threadInfo(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: request.parameters.get("channelId") ?? "",
-                messageId: request.parameters.get("messageId") ?? ""
-            ))
+        channels.get(":channelId", "threads", ":messageId") { request async throws -> Response in
+            try await respond {
+                try threads.threadInfo(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: request.parameters.get("channelId") ?? "",
+                    messageId: request.parameters.get("messageId") ?? ""
+                )
+            }
         }
 
-        channels.get(":channelId", "threads") { request -> Response in
-            routeResponse(threads.channelThreadSummaries(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                channelId: request.parameters.get("channelId") ?? "",
-                parentMessageIds: desktopQuery(request.url.query, "parentMessageIds")
-            ))
+        channels.get(":channelId", "threads") { request async throws -> Response in
+            try await respond {
+                try threads.channelThreadSummaries(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+                    channelId: request.parameters.get("channelId") ?? "",
+                    parentMessageIds: desktopQuery(request.url.query, "parentMessageIds")
+                )
+            }
         }
 
         channels.get("activity", "snapshot") { _ -> Response in
@@ -560,4 +548,27 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
     }
+}
+
+/// `POST /api/channels/threads/follow|unfollow` accepted a JSON body with or
+/// without a `Content-Type` header, so the typed decode runs first and a
+/// header-less body falls back to the raw bytes. The raw pass keeps the legacy
+/// per-field `as? String` acceptance: a body whose named thread is not a string
+/// still falls through to the `parentMessageId` lookup instead of failing the
+/// whole mutation, and a body that is not a JSON object stays `nil` for the
+/// published `Thread not found`.
+private func threadFollowMutation(_ request: Request) async -> ThreadFollowMutationDTO? {
+    if let typed = try? await request.content.decode(ThreadFollowMutationDTO.self) {
+        return typed
+    }
+    guard let raw = try? await request.bodyText(),
+          let data = raw.data(using: .utf8),
+          let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    else {
+        return nil
+    }
+    return ThreadFollowMutationDTO(
+        threadChannelId: object["threadChannelId"] as? String,
+        parentMessageId: object["parentMessageId"] as? String
+    )
 }
