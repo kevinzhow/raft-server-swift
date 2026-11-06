@@ -698,16 +698,21 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 return response
             }
         }
-        agentApi.get("mention-actions", "pending") { request -> Response in
-            routeResponse(services.emailAccounts.agentMentionActionsPending(
-                authorization: request.headers[.authorization]
-            ))
+        agentApi.get("mention-actions", "pending") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.humanMessageCreate.agentMentionActionsPending(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         agentApi.post("mention-actions", "execute") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentMentionActionsExecute(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(MentionActionsRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.humanMessageCreate.agentMentionActionsExecute(
+                    authorization: request.headers[.authorization],
+                    body
+                )
+            }
         }
         agentApi.get("events") { request -> Response in
             routeResponse(services.emailAccounts.agentThirdPartyEvents(authorization: request.headers[.authorization]))

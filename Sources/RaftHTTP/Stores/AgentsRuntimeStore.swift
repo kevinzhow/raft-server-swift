@@ -778,3 +778,33 @@ extension AgentsRuntimeStore {
         return .revoked(credentialId: entry.value.id)
     }
 }
+
+// MARK: - Human message create: delivery ledger
+
+extension AgentsRuntimeStore {
+    /// A DM delivery to a stopped agent is dropped as `wake_suppressed` and
+    /// reported to the v2 sender. The status check and the ledger append are
+    /// one critical section, so a stop that lands between them cannot leave a
+    /// delivery for an agent that was not stopped.
+    func recordStoppedAgentDelivery(agentId: String, messageId: String, channelType: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard storage.serverAgents[agentId]?.status == "stopped" else { return false }
+        storage.storedAgentDeliveries.append((agentId: agentId, messageId: messageId, channelType: channelType))
+        return true
+    }
+
+    /// A claimed mention action reaches its agent target: an `add` joins the
+    /// agent to the channel roster and the delivery is appended, both under one
+    /// lock.
+    func recordMentionDelivery(agentId: String, messageId: String, joiningChannelId: String?) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let joiningChannelId {
+            var agents = storage.channelAgentMembers[joiningChannelId] ?? []
+            agents.insert(agentId)
+            storage.channelAgentMembers[joiningChannelId] = agents
+        }
+        storage.storedAgentDeliveries.append((agentId: agentId, messageId: messageId, channelType: "channel"))
+    }
+}

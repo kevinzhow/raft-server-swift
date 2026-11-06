@@ -376,12 +376,15 @@ public struct NotificationsFeature: RouteCollection, Sendable {
             try await respond(status: 503) { services.emailAccounts.joinLinksAndInvites.slackBridgeUnavailable() }
         }
         v2.post("messages") { request async throws -> Response in
-            routeResponse(services.emailAccounts.createHumanMessage(
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                contract: "v2"
-            ))
+            let body = await jsonRequestBody(HumanMessageCreateRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.humanMessageCreate.createHumanMessage(
+                    body,
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+                    contract: .v2
+                )
+            }
         }
         app.get("api", "version") { request in
             vaporResponse(APIVersion.reply(

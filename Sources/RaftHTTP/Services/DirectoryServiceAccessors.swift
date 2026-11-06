@@ -60,6 +60,15 @@ extension EmailLoginDirectory {
         InboxAndWakeService(directory: self)
     }
 
+    /// Human message create, the sender-side mention actions and the forward
+    /// write. The directory supplies the message, channel, agent and profile
+    /// stores and the OAuth ledger; the message append, mention resolution and
+    /// the forwarded-item projection still belong to unmigrated domains and
+    /// enter as closures.
+    public var humanMessageCreate: HumanMessageCreateService {
+        HumanMessageCreateService(directory: self)
+    }
+
     public var sessionCount: Int {
         lock.lock()
         defer { lock.unlock() }

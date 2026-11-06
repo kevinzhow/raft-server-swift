@@ -79,8 +79,6 @@ extension EmailLoginDirectory {
     var channelAuthorityRevisions: [String: Int] { get { serversAndChannelsStore.channelAuthorityRevisions } set { serversAndChannelsStore.channelAuthorityRevisions = newValue } }
     var sidebarReadAllEnabled: Bool { get { serversAndChannelsStore.sidebarReadAllEnabled } set { serversAndChannelsStore.sidebarReadAllEnabled = newValue } }
     var jointInvites: [(id: String, hostServerId: String, hostChannelId: String, targetServerId: String, targetChannelId: String, targetOwnerId: String, status: String)] { get { serversAndChannelsStore.jointInvites } set { serversAndChannelsStore.jointInvites = newValue } }
-    var composerResourceServers: Set<String> { get { serversAndChannelsStore.composerResourceServers } set { serversAndChannelsStore.composerResourceServers = newValue } }
-    var installedServerApps: [String: Set<String>] { get { serversAndChannelsStore.installedServerApps } set { serversAndChannelsStore.installedServerApps = newValue } }
 
     // Rows for the managed-MCP, action-card and integration surface live in `ManagedMCPAndCardsStore`.
     var managedMCPServers: [ManagedMCPServerRecord] { get { managedMCPAndCardsStore.managedMCPServers } set { managedMCPAndCardsStore.managedMCPServers = newValue } }

@@ -1535,3 +1535,14 @@ extension ServersAndChannelsStore {
         )
     }
 }
+
+// MARK: - Human message create: channel membership grant
+
+extension ServersAndChannelsStore {
+    /// A claimed `add` mention action makes a human target a channel member.
+    func addChannelMember(channelId: String, userId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.postableChannels[channelId]?.memberIds.insert(userId)
+    }
+}
