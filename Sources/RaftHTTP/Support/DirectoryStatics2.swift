@@ -91,54 +91,6 @@ extension EmailLoginDirectory {
         return "MIGRATION_SOURCE_WORKSPACE_ARCHIVE_FAILED"
     }
 
-    static func isAgentConnectionIdentifier(_ value: String) -> Bool {
-        value.range(of: agentConnectionIDPattern, options: .regularExpression) != nil
-    }
-
-    static func parseConnectionStatus(_ body: String) -> HostedConnectionStatusRecord? {
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
-            return nil
-        }
-        let connected = object["connected"] as? Bool ?? false
-        var connectors: [HostedConnectionConnectorRecord] = []
-        if let raw = object["connectors"] as? [Any] {
-            for entry in raw {
-                guard let row = entry as? [String: Any],
-                      let id = row["id"] as? String,
-                      isAgentConnectionIdentifier(id)
-                else { continue }
-                connectors.append(HostedConnectionConnectorRecord(
-                    id: id,
-                    account: row["account"] as? String ?? "",
-                    creatorRaftUserId: row["creatorRaftUserId"] as? String,
-                    createdAt: row["createdAt"] as? String,
-                    current: row["current"] as? Bool ?? false
-                ))
-                if connectors.count >= 100 { break }
-            }
-        }
-        let rawConnectorId = object["connectorId"] as? String
-        let connectorId = connected ? rawConnectorId.flatMap { isAgentConnectionIdentifier($0) ? $0 : nil } : nil
-        return HostedConnectionStatusRecord(
-            connected: connected,
-            account: object["account"] as? String,
-            connectedAt: object["connectedAt"] as? String,
-            connectedBy: object["connectedBy"] as? String,
-            scopes: (object["scopes"] as? [Any])?.compactMap { $0 as? String } ?? [],
-            connectorId: connectorId,
-            connectors: connectors
-        )
-    }
-
-    static func providerErrorParts(_ body: String) -> (code: String?, message: String?) {
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let error = object["error"] as? [String: Any]
-        else {
-            return (nil, nil)
-        }
-        return (error["code"] as? String, error["message"] as? String)
-    }
-
     static func machineAPIKeyMaterial() -> String {
         machineAPIKeyPrefix + credentialHex64()
     }

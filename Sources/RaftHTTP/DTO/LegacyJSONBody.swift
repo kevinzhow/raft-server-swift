@@ -27,9 +27,24 @@ public struct LegacyJSONObjectBody: Decodable, Sendable, Equatable {
         }
         self.members = members
     }
+
+    /// A member by key; present exactly when the request carried it, an
+    /// explicit `null` included.
+    public subscript(key: String) -> JSONValue? {
+        members[key]
+    }
+
+    public func string(_ key: String) -> String? {
+        members[key]?.legacyString
+    }
 }
 
 extension JSONValue {
+    var isNull: Bool {
+        if case .null = self { return true }
+        return false
+    }
+
     /// `value as? String`: JSON strings only.
     var castString: String? {
         if case .string(let value) = self { return value }

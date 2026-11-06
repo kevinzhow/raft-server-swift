@@ -286,17 +286,21 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.get("assistant", "owner-inbox") { request -> Response in
-            routeResponse(services.emailAccounts.agentAssistantOwnerInbox(
-                authorization: request.headers[.authorization],
-                rawQuery: request.url.query
-            ))
+        agentApi.get("assistant", "owner-inbox") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentSurface.agentAssistantOwnerInbox(
+                    authorization: request.headers[.authorization],
+                    rawQuery: request.url.query
+                )
+            }
         }
-        agentApi.get("assistant", "owner-messages") { request -> Response in
-            routeResponse(services.emailAccounts.agentAssistantOwnerMessages(
-                authorization: request.headers[.authorization],
-                channelId: desktopQuery(request.url.query, "channelId") ?? ""
-            ))
+        agentApi.get("assistant", "owner-messages") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentSurface.agentAssistantOwnerMessages(
+                    authorization: request.headers[.authorization],
+                    channelId: desktopQuery(request.url.query, "channelId") ?? ""
+                )
+            }
         }
         agentApi.get("inbox", "conversations") { request async throws -> Response in
             try await respond {
@@ -702,42 +706,46 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 limit: desktopQuery(request.url.query, "limit")
             ))
         }
-        agentApi.get("wake-hints", "stream") { request -> Response in
-            switch services.emailAccounts.beginAgentWakeHintsStream(
-                authorization: request.headers[.authorization],
-                since: request.headers[HTTPField.Name("Last-Event-ID")!] ?? desktopQuery(request.url.query, "since")
-            ) {
-            case .refused(let reply):
-                return routeResponse(reply)
-            case .start(let token, let cursorSeq, let firstFrame):
-                var headers = HTTPFields()
-                headers[.contentType] = "text/event-stream"
-                headers[.cacheControl] = "no-cache, no-transform"
-                headers[HTTPField.Name("X-Accel-Buffering")!] = "no"
-                let pollMs = services.nodeEnv == "test" ? 50 : 1_000
-                // Tests bound the loop so a streaming task cannot outlive the suite.
-                let boundedTicks = services.nodeEnv == "test" ? 200 : Int.max
-                var response = Response(status: .ok, headers: headers)
-                response.body = Response.Body { writer in
-                    try await writer.write(firstFrame)
-                    var cursor = cursorSeq
-                    var ticks = 0
-                    while !Task.isCancelled {
-                        try await Task.sleep(nanoseconds: UInt64(pollMs) * 1_000_000)
-                        services.emailAccounts.refreshAgentWakeStreamCredential(token: token)
-                        guard let batch = services.emailAccounts.agentWakeStreamBatch(token: token, after: cursor) else { return }
-                        if batch.frames.isEmpty {
-                            try await writer.write(": heartbeat\n\n")
-                        } else {
-                            try await writer.write(batch.frames)
-                            cursor = batch.cursorSeq
-                        }
-                        ticks += 1
-                        if ticks >= boundedTicks { return }
-                    }
-                }
-                return response
+        agentApi.get("wake-hints", "stream") { request async throws -> Response in
+            // The refusal projects through `respond`; the open stream is the one
+            // reply `respond` cannot express (a chunked SSE body).
+            var started: AgentWakeStreamStart?
+            let refusal = try await respond { () throws -> OkResponse in
+                started = try services.emailAccounts.agentSurface.beginAgentWakeHintsStream(
+                    authorization: request.headers[.authorization],
+                    since: request.headers[HTTPField.Name("Last-Event-ID")!] ?? desktopQuery(request.url.query, "since")
+                )
+                return OkResponse()
             }
+            guard let started else { return refusal }
+            let token = started.token
+            var headers = HTTPFields()
+            headers[.contentType] = "text/event-stream"
+            headers[.cacheControl] = "no-cache, no-transform"
+            headers[HTTPField.Name("X-Accel-Buffering")!] = "no"
+            let pollMs = services.nodeEnv == "test" ? 50 : 1_000
+            // Tests bound the loop so a streaming task cannot outlive the suite.
+            let boundedTicks = services.nodeEnv == "test" ? 200 : Int.max
+            var response = Response(status: .ok, headers: headers)
+            response.body = Response.Body { writer in
+                try await writer.write(started.firstFrame)
+                var cursor = started.cursorSeq
+                var ticks = 0
+                while !Task.isCancelled {
+                    try await Task.sleep(nanoseconds: UInt64(pollMs) * 1_000_000)
+                    services.emailAccounts.agentSurface.recordAgentCredentialUse(token: token)
+                    guard let batch = services.emailAccounts.agentSurface.agentWakeStreamBatch(token: token, after: cursor) else { return }
+                    if batch.frames.isEmpty {
+                        try await writer.write(": heartbeat\n\n")
+                    } else {
+                        try await writer.write(batch.frames)
+                        cursor = batch.cursorSeq
+                    }
+                    ticks += 1
+                    if ticks >= boundedTicks { return }
+                }
+            }
+            return response
         }
         agentApi.get("mention-actions", "pending") { request -> Response in
             routeResponse(services.emailAccounts.agentMentionActionsPending(
@@ -763,10 +771,12 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
         }
         agentApi.put("push-webhook") { request async throws -> Response in
-            routeResponse(services.emailAccounts.putAgentPushWebhook(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
+            try await respond {
+                try services.emailAccounts.agentSurface.putAgentPushWebhook(
+                    authorization: request.headers[.authorization],
+                    body: await jsonRequestBody(LegacyJSONObjectBody.self, request)
+                )
+            }
         }
         agentApi.post("upload") { request async throws -> Response in
             guard let contentType = request.headers[.contentType],

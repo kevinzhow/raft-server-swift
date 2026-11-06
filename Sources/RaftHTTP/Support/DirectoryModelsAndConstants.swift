@@ -954,13 +954,6 @@ extension EmailLoginDirectory {
         public var attachmentIds: [String]
     }
 
-    public enum AgentWakeStreamStart {
-        /// `cursorSeq` is the last hint seq already replayed; the stream then
-        /// only pushes hints newer than it.
-        case start(token: String, cursorSeq: Int?, firstFrame: String)
-        case refused(HTTPReply)
-    }
-
     public struct TimezoneObservation: Sendable {
         public var firstTimezone: String
         public var firstAt: Date
@@ -1052,9 +1045,7 @@ extension EmailLoginDirectory {
     /// A `starting` row is observed, not re-dispatched, inside this window.
     static let migrationAutoStartLease: TimeInterval = 30
 
-    static let agentConnectionProviders: Set<String> = ["github"]
 
-    static let agentConnectionIDPattern = "^[A-Za-z0-9_.~-]{1,200}$"
 
     static let machineAPIKeyPrefix = "sk_machine_"
 

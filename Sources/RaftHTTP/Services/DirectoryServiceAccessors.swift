@@ -60,6 +60,114 @@ extension EmailLoginDirectory {
         InboxAndWakeService(directory: self)
     }
 
+    /// Machine credential lookups, the onboarding identity adoption, the hosted
+    /// runtime and the provider account connections. The directory supplies its
+    /// stores; the session lookup, the realtime emitter and the provider relay
+    /// enter as closures.
+    public var machinesAndHostedRuntime: MachinesAndHostedRuntimeService {
+        MachinesAndHostedRuntimeService(directory: self)
+    }
+
+    public func machineIdForCredential(authorization: String?) -> String? {
+        machinesAndHostedRuntime.machineIdForCredential(authorization: authorization)
+    }
+
+    func canMachineServeAgent(machineId: String, agent: OAuthLedger.AgentRuntimeInfo) -> Bool {
+        machinesAndHostedRuntime.canMachineServeAgent(machineId: machineId, agent: agent)
+    }
+
+    public func machineAPIKey(machineId: String) -> String? {
+        machinesAndHostedRuntime.machineAPIKey(machineId: machineId)
+    }
+
+    public func bumpMachineStatusVersion(machineId: String) -> Int {
+        machinesAndHostedRuntime.bumpMachineStatusVersion(machineId: machineId)
+    }
+
+    public func setMachineOnline(machineId: String, online: Bool) {
+        machinesAndHostedRuntime.setMachineOnline(machineId: machineId, online: online)
+    }
+
+    public func enableHostedModelPicker(serverId: String) {
+        machinesAndHostedRuntime.enableHostedModelPicker(serverId: serverId)
+    }
+
+    /// Agent records and their private surfaces: creation, listing, the profile
+    /// patch, credentials, the wake-hint stream and the assistant-owner reads.
+    /// The directory supplies its stores; the session lookup, the realtime
+    /// emitter, the hosted provider flag, the wake-hint projection and the role
+    /// notice enter as closures.
+    public var agentSurface: AgentPrivateSurfaceService {
+        AgentPrivateSurfaceService(directory: self)
+    }
+
+    func recordAgentCredentialUse(token: String) {
+        agentSurface.recordAgentCredentialUse(token: token)
+    }
+
+    func assistantOwnerFor(agentId: String, serverId: String) -> String? {
+        agentSurface.assistantOwner(agentId: agentId, serverId: serverId)
+    }
+
+    func assistantOwnerRaw(_ agentId: String) -> String? {
+        agentSurface.assistantOwnerRaw(agentId: agentId)
+    }
+
+    /// The content-free wake hints of one agent. The projection spans the
+    /// channel, message, joint and suppression ledgers, so it still runs under
+    /// the directory lock.
+    func pendingWakeHints(
+        agentId: String,
+        agent: OAuthLedger.AgentRuntimeInfo,
+        sinceSeq: Int?,
+        limit: Int
+    ) -> [AgentWakeHintRow] {
+        lock.lock()
+        defer { lock.unlock() }
+        return pendingWakeHintRowsLocked(agentId: agentId, agent: agent, sinceSeq: sinceSeq, limit: limit)
+            .rows.map { AgentWakeHintRow(seq: $0.seq, json: $0.json) }
+    }
+
+    /// A real server-role change on an agent posts a system notice into the
+    /// actor's DM with the agent (creating the DM when needed). The account,
+    /// channel and message ledgers change together, so this stays one directory
+    /// critical section.
+    func postAgentRoleNotice(
+        serverId: String,
+        actorUserId: String,
+        agentId: String,
+        agentName: String,
+        from: String,
+        to: String
+    ) {
+        lock.lock()
+        let actorName = accounts.values.first { $0.id == actorUserId }?.name ?? "Someone"
+        var dmId = postableChannels.first { _, channel in
+            channel.serverId == serverId && channel.kind == "dm"
+                && channel.memberIds.contains(actorUserId) && channel.memberIds.contains(agentId)
+        }?.key
+        if dmId == nil {
+            dmId = oauth.createDirectChannel(serverId: serverId, firstUserId: actorUserId, secondUserId: agentId)
+            if let created = dmId {
+                postableChannels[created] = PostableChannel(serverId: serverId, memberIds: [actorUserId, agentId], kind: "dm", name: "dm")
+                oauth.addChannelAgent(channelId: created, agentId: agentId)
+                oauth.addChannelHuman(channelId: created, userId: actorUserId)
+            }
+        }
+        if let dmId {
+            appendHumanMessageLocked(StoredHumanMessage(
+                id: UUID().uuidString.lowercased(),
+                channelId: dmId,
+                senderId: actorUserId,
+                content: "@\(actorName) changed @\(agentName)'s server role from \(from) to \(to).",
+                messageType: "system",
+                senderType: "user",
+                actionKind: "agent.server_role_changed"
+            ))
+        }
+        lock.unlock()
+    }
+
     public var sessionCount: Int {
         lock.lock()
         defer { lock.unlock() }

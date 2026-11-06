@@ -1,9 +1,7 @@
-Sources/RaftHTTP/Services/AgentPrivateSurfaceService.swift	17
 Sources/RaftHTTP/Services/AgentsLifecycleService.swift	28
 Sources/RaftHTTP/Services/AttachmentsAndNotificationsService.swift	25
 Sources/RaftHTTP/Services/AuthCoreService.swift	13
 Sources/RaftHTTP/Services/HumanMessageCreateService.swift	14
-Sources/RaftHTTP/Services/MachinesAndHostedRuntimeService.swift	19
 Sources/RaftHTTP/Services/ManagedMCPAssignmentsService.swift	19
 Sources/RaftHTTP/Services/ManagedMCPToolExecutionService.swift	13
 Sources/RaftHTTP/Services/MessageSendService.swift	5

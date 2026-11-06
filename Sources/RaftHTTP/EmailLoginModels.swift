@@ -317,22 +317,6 @@ struct HostedConnectionConnectorRecord {
         var current: Bool
     }
 
-enum AgentConnectionLoadResult {
-        case loaded(agentId: String, userId: String, role: String)
-        case refused(HTTPReply)
-    }
-
-enum HostedModelGuardResult {
-        case allowed(String)
-        case refused(HTTPReply)
-    }
-
-struct OnboardingAdoptionChange {
-        var field: String
-        var before: String?
-        var after: String?
-    }
-
 struct AttachedComputer {
         let id: String
         let serverId: String
