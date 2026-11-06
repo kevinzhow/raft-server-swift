@@ -449,16 +449,6 @@ extension EmailLoginDirectory {
         return "\(base)\(separator)provider=\(provider)&mode=\(mode)&code=\(code)\(hash)"
     }
 
-    static func redirect(_ location: String, cookie: String? = nil) -> HTTPReply {
-        var headers = [
-            "X-Robots-Tag": AppFallback.robotsTag,
-            "Location": location,
-            "Content-Length": "0",
-        ]
-        if let cookie { headers["Set-Cookie"] = cookie }
-        return HTTPReply(status: 302, headers: headers, body: "")
-    }
-
     static func isMobileUnsubscribeUserId(_ value: String) -> Bool {
         value.wholeMatch(of: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.ignoresCase()) != nil
     }
@@ -646,13 +636,6 @@ extension EmailLoginDirectory {
             return "/"
         }
         return input
-    }
-
-    static func returnToField(_ body: String) -> String? {
-        guard let data = body.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        return object["returnTo"] as? String
     }
 
     static func formFields(_ body: String) -> [String: String] {
@@ -1005,13 +988,9 @@ extension EmailLoginDirectory {
 
     static let linkMismatch = json(403, "{\"code\":\"link_user_mismatch\",\"error\":\"Social auth link does not match the authenticated user\"}")
 
-    static let mobileLinkMismatch = json(403, "{\"code\":\"link_user_mismatch\",\"error\":\"Mobile OAuth link request does not match the authenticated user\"}")
-
     static let legalObject = "{\"termsVersion\":\"\(termsVersion)\",\"privacyVersion\":\"\(privacyVersion)\",\"termsUrl\":\"\(termsURL)\",\"privacyUrl\":\"\(privacyURL)\"}"
 
     static let legalRequired = json(422, "{\"error\":\"LEGAL_ACCEPTANCE_REQUIRED\",\"legal\":\(legalObject)}")
-
-    static let returnURINotAllowed = json(400, "{\"code\":\"return_uri_not_allowed\",\"error\":\"Mobile OAuth return URI is not allowed\"}")
 
     static let termsChanged = json(409, "{\"error\":\"TERMS_CHANGED\",\"legal\":\(legalObject)}")
 

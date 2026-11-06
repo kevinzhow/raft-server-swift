@@ -94,42 +94,6 @@ public struct EnrollmentGrantRequestDTO: Codable, Sendable, Equatable {
     }
 }
 
-/// `POST /api/feature-flags/evaluate` request body.
-///
-/// `buildNumber` stays a `String` because the published contract accepts the
-/// decimal string clients send; a numeric build number does not decode and the
-/// route falls back to the raw body, which keeps the existing number handling.
-public struct FeatureFlagsEvaluateDTO: Codable, Sendable, Equatable {
-    public var keys: [String]?
-    public var key: String?
-    public var serverId: String?
-    public var platform: String?
-    public var os: String?
-    public var appVersion: String?
-    public var buildNumber: String?
-    public var buildType: String?
-
-    public init(
-        keys: [String]? = nil,
-        key: String? = nil,
-        serverId: String? = nil,
-        platform: String? = nil,
-        os: String? = nil,
-        appVersion: String? = nil,
-        buildNumber: String? = nil,
-        buildType: String? = nil
-    ) {
-        self.keys = keys
-        self.key = key
-        self.serverId = serverId
-        self.platform = platform
-        self.os = os
-        self.appVersion = appVersion
-        self.buildNumber = buildNumber
-        self.buildType = buildType
-    }
-}
-
 /// One canonical encoder call for the feedback DTOs so the feature and the
 /// service cannot drift on formatting. `JSONEncoder` is a mutable value, so a
 /// fresh instance is created per call and never shared across concurrent

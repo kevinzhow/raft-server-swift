@@ -6,5 +6,4 @@ Sources/RaftHTTP/Services/AuthCoreService.swift	16
 Sources/RaftHTTP/Services/FeedbackService.swift	4
 Sources/RaftHTTP/Services/ManagedMCPAssignmentsService.swift	12
 Sources/RaftHTTP/Services/ManagedMCPToolExecutionService.swift	16
-Sources/RaftHTTP/Services/OAuthFlowsService.swift	14
 Sources/RaftHTTP/Services/ReactionsRealtimeService.swift	9

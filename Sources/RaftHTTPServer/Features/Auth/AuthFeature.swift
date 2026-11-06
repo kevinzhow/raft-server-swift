@@ -58,6 +58,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         let me = auth.grouped("me")
         let authCore = AuthCoreService(directory: services.emailAccounts)
         let identityService = services.emailAccounts.authIdentities
+        let oauthFlows = services.emailAccounts.oauthFlows
 
         // `verify-email` and `resend-verification` are literal siblings of the
         // `:provider` auth routes, so they mount from the same `api/auth` group.
@@ -84,66 +85,85 @@ public struct AuthFeature: RouteCollection, Sendable {
         }
 
         mobileAppleNative.post("start") { request async throws -> Response in
-            routeResponse(services.emailAccounts.startNativeApple(
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization]
-            ))
+            let body = (try await rawJSON(NativeAppleStartRequest.self, request)) ?? NativeAppleStartRequest()
+            return try await respond(status: 201) {
+                try oauthFlows.startNativeApple(body, authorization: request.headers[.authorization])
+            }
         }
         mobileAppleNative.post("authorize") { request async throws -> Response in
-            let reply = await services.emailAccounts.authorizeNativeApple(
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization]
-            )
-            return routeResponse(reply)
+            let body = (try await rawJSON(NativeAppleAuthorizeRequest.self, request)) ?? NativeAppleAuthorizeRequest()
+            return try await respond {
+                try await oauthFlows.authorizeNativeApple(body, authorization: request.headers[.authorization])
+            }
         }
         mobileOAuth.post("start") { request async throws -> Response in
-            return routeResponse(services.emailAccounts.startMobileOAuth(body: try await request.bodyText()))
+            let body = (try await rawJSON(MobileOAuthStartRequest.self, request)) ?? MobileOAuthStartRequest()
+            return try await respond(status: 201) { try oauthFlows.startMobileOAuth(body) }
         }
         mobileProvider.post("link", "start") { request async throws -> Response in
-            return routeResponse(services.emailAccounts.startMobileOAuthLink(
-                provider: request.parameters.get("provider") ?? "",
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization]
-            ))
+            let body = (try await rawJSON(MobileOAuthStartRequest.self, request)) ?? MobileOAuthStartRequest()
+            return try await respond(status: 201) {
+                try oauthFlows.startMobileOAuthLink(
+                    provider: request.parameters.get("provider") ?? "",
+                    body: body,
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         mobileProvider.post("link", "complete") { request async throws -> Response in
-            return routeResponse(services.emailAccounts.completeMobileOAuthLink(
-                provider: request.parameters.get("provider") ?? "",
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization]
-            ))
+            let body = (try await rawJSON(MobileOAuthCompleteRequest.self, request)) ?? MobileOAuthCompleteRequest()
+            return try await respond {
+                try oauthFlows.completeMobileOAuthLink(
+                    provider: request.parameters.get("provider") ?? "",
+                    body: body,
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
-        provider.get("start") { request in
-            routeResponse(services.emailAccounts.startWebOAuth(
-                provider: request.parameters.get("provider") ?? "",
-                returnTo: desktopQuery(request.url.query, "returnTo"),
-                linkOnConflict: desktopQuery(request.url.query, "linkOnConflict") == "1"
-            ))
+        provider.get("start") { request async throws -> Response in
+            try await respond(status: { $0.status }, headers: { $0.headers }) {
+                try oauthFlows.startWebOAuth(
+                    provider: request.parameters.get("provider") ?? "",
+                    returnTo: desktopQuery(request.url.query, "returnTo"),
+                    linkOnConflict: desktopQuery(request.url.query, "linkOnConflict") == "1"
+                )
+            }
         }
         provider.post("link", "start") { request async throws -> Response in
-            routeResponse(services.emailAccounts.startWebOAuthLink(
-                provider: request.parameters.get("provider") ?? "",
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization]
-            ))
+            let body = (try await rawJSON(WebOAuthLinkStartRequest.self, request)) ?? WebOAuthLinkStartRequest()
+            return try await respond(headers: { $0.headers }) {
+                try oauthFlows.startWebOAuthLink(
+                    provider: request.parameters.get("provider") ?? "",
+                    body: body,
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         provider.post("callback") { request async throws -> Response in
-            routeResponse(services.emailAccounts.webOAuthCallback(
-                provider: request.parameters.get("provider") ?? "",
-                body: try await request.bodyText(),
-                cookie: request.headers[.cookie]
-            ))
+            // A form post (`application/x-www-form-urlencoded`), not JSON: the
+            // service parses the raw text with the legacy field parser.
+            let body = try await request.bodyText()
+            return try await respond(status: { $0.status }, headers: { $0.headers }) {
+                try oauthFlows.webOAuthCallback(
+                    provider: request.parameters.get("provider") ?? "",
+                    body: body,
+                    cookie: request.headers[.cookie]
+                )
+            }
         }
-        provider.get("callback") { request -> Response in
-            return routeResponse(services.emailAccounts.mobileOAuthCallback(
-                provider: request.parameters.get("provider") ?? "",
-                code: desktopQuery(request.url.query, "code"),
-                state: desktopQuery(request.url.query, "state"),
-                providerError: desktopQuery(request.url.query, "error")
-            ))
+        provider.get("callback") { request async throws -> Response in
+            try await respond(status: { $0.status }, headers: { $0.headers }) {
+                try oauthFlows.mobileOAuthCallback(
+                    provider: request.parameters.get("provider") ?? "",
+                    code: desktopQuery(request.url.query, "code"),
+                    state: desktopQuery(request.url.query, "state"),
+                    providerError: desktopQuery(request.url.query, "error")
+                )
+            }
         }
         mobileOAuth.post("complete") { request async throws -> Response in
-            return routeResponse(services.emailAccounts.completeMobileOAuth(body: try await request.bodyText()))
+            let body = (try await rawJSON(MobileOAuthCompleteRequest.self, request)) ?? MobileOAuthCompleteRequest()
+            return try await respond { try oauthFlows.completeMobileOAuth(body) }
         }
         provider.post("complete") { request async throws -> Response in
             return routeResponse(services.emailAccounts.completeSocial(
@@ -277,8 +297,10 @@ public struct AuthFeature: RouteCollection, Sendable {
             let body = (try await rawJSON(AppLoginCompleteRequest.self, request)) ?? AppLoginCompleteRequest()
             return try await respond { try identityService.appLoginComplete(body) }
         }
-        auth.get("providers") { request in
-            routeResponse(services.emailAccounts.authProviders(platform: desktopQuery(request.url.query, "platform")))
+        auth.get("providers") { request async throws -> Response in
+            try await respond {
+                try oauthFlows.authProviders(platform: desktopQuery(request.url.query, "platform"))
+            }
         }
         me.get { request async throws -> Response in
             try await respond { try identityService.me(authorization: request.headers[.authorization]) }

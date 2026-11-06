@@ -123,15 +123,6 @@ extension EmailLoginDirectory {
         return .rotated(IssuedRefresh(accessToken: accessToken, userId: receipt.userId), receipt.successor)
     }
 
-    /// Primary env wins when it parses to at least one URI. Otherwise the legacy list replaces the defaults. An empty parse falls through.
-    func configuredMobileReturnURIs() -> Set<String> {
-        let primary = Self.parseConfiguredMobileReturnURIs(mobileOAuthReturnURI)
-        if !primary.isEmpty { return primary }
-        let legacy = Self.parseConfiguredMobileReturnURIs(mobileOAuthAllowedReturnURIs)
-        if !legacy.isEmpty { return legacy }
-        return Self.defaultMobileReturnURIs
-    }
-
     func guestCanSeeScopeLocked(_ scopeId: String) -> Bool {
         if postableChannels[scopeId]?.kind == "thread",
            let parentId = postableChannels[scopeId]?.parentChannelId {

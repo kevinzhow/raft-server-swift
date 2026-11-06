@@ -119,18 +119,16 @@ public struct NotificationsFeature: RouteCollection, Sendable {
             }
         }
         featureFlags.post("evaluate") { request async throws -> Response in
-            // Typed bodies go through the DTO; a body the typed decoder rejects
-            // keeps the raw path so the existing validator owns the reply.
-            let body: String
-            if let typed = try? await request.content.decode(FeatureFlagsEvaluateDTO.self) {
-                body = FeedbackJSONCoding.string(typed)
-            } else {
-                body = try await request.bodyText()
+            // A body that does not decode (empty, not JSON) reads as an empty
+            // request, which the service answers with its published 400.
+            let body = await jsonRequestBody(FeatureFlagsEvaluateRequest.self, request)
+                ?? FeatureFlagsEvaluateRequest()
+            return try await respond {
+                try services.emailAccounts.oauthFlows.evaluateFeatureFlags(
+                    body,
+                    authorization: request.headers[.authorization]
+                )
             }
-            return routeResponse(services.emailAccounts.evaluateFeatureFlags(
-                body: body,
-                authorization: request.headers[.authorization]
-            ))
         }
         app.get("api", "mobile-download") { request async in
             routeResponse(await MobileDownload.reply(
