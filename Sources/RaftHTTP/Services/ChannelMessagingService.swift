@@ -91,9 +91,8 @@ public enum ChannelTaskAccess: Sendable, Equatable {
     case write
 }
 
-/// Directory-backed operations the task-create route still calls in their
-/// not-yet-migrated domain. The feature wires them at the composition root, so
-/// this service owns no directory state and no directory call site.
+/// Domain operations used by task creation, bound to their concrete owners.
+/// The adapter keeps authorization and archive decisions out of composition.
 public struct ChannelMessagingDependencies: Sendable {
     public var sessionUserId: @Sendable (String?) -> String?
     public var memberRole: @Sendable (_ serverId: String, _ userId: String) -> String?
@@ -109,6 +108,20 @@ public struct ChannelMessagingDependencies: Sendable {
         _ descriptions: [String?]?,
         _ creatorId: String?
     ) -> [String]
+
+    /// Bind live owner operations without taking an authorization, membership or
+    /// archive snapshot. The catalog keeps its existing task policy and allocator.
+    public init(auth: AuthCoreService, oauth: OAuthLedger, catalog: TaskCatalogService) {
+        self.init(
+            sessionUserId: { try? auth.authenticate($0) },
+            memberRole: { oauth.memberRole(serverId: $0, userId: $1) },
+            taskChannelAccess: { catalog.channelTaskAccess(serverId: $0, channelId: $1, userId: $2) },
+            isChannelArchived: { oauth.channelArchivedAt(id: $0) != nil },
+            addTasks: { channelId, titles, descriptions, creatorId in
+                catalog.addTasks(channelId: channelId, titles: titles, descriptions: descriptions, creatorId: creatorId)
+            }
+        )
+    }
 
     public init(
         sessionUserId: @escaping @Sendable (String?) -> String?,
@@ -147,6 +160,21 @@ public struct ChannelMessagingService: Sendable {
     ) {
         self.dependencies = dependencies
         self.sink = sink
+    }
+
+    /// Derive the user transport for one Fallback value while preserving the
+    /// domain operations and the general relay. The base and other copies keep
+    /// their original user bindings; no transport is installed into shared state.
+    public func bindingUserDelivery(
+        emitToUser: @escaping @Sendable (String, String, String) -> Void,
+        joinUserSessions: @escaping @Sendable (String, String) -> Void
+    ) -> Self {
+        Self(
+            dependencies: dependencies,
+            sink: ChannelRealtimeSink(
+                emit: sink.emit, emitToUser: emitToUser, joinUserSessions: joinUserSessions
+            )
+        )
     }
 
     // MARK: - POST /api/tasks/channel/:channelId
@@ -200,6 +228,12 @@ public struct ChannelMessagingService: Sendable {
         else { return }
         sink.joinUserSessions(userId, "channel:\(event.channelId)")
         sink.emitToUser(userId, "channel:updated", event.payloadJSON)
+    }
+
+    /// A committed assignment has already passed its mutation guards. Keep the
+    /// successful reply convention in the publisher instead of the HTTP Feature.
+    public func publishCommittedTaskUpdated(_ json: String) {
+        publishTaskUpdated(status: 200, replyBody: json)
     }
 
     /// `PATCH /api/tasks/:taskId/claim`: publish `task:updated` for the task's

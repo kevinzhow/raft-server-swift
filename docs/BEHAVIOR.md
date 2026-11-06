@@ -2224,3 +2224,9 @@ RFC 074 personal assistant：
 - Transport 的 multi-app direct flags 保原 key、nil client facts 和 kill/conversation 判定；未 verified session 不新增 OAuthFlows HTTP flag gate。Submission attribution 保 UUID→profile→member→nonemptySlug→account fallback 的原序。
 - Config 仍按 env→conversation→同一 FeedbackStore snapshot 取值，configured OR URL-key-exists 公式不变；warning 每次复制当前 sink、锁外 invoke，缺席才返回 false，调用后 true，保持原 fallback print。默认 now/UUID 继续延迟执行，不在构造时读配置或生成值。
 - 真实 HTTP multipart/provider、动态 attribution/敏感信息 scrub、同一预构造 submission 后配 provider/sink、warning 自清重入再安装影响后续 provider 的公开输出通过。首轮 web→android 更正属于旧 legacy-web 契约下的验收场景纠正，未作为业务 bug 修复或伪造网络红→绿。
+
+### ChannelMessaging 的 fixed user Hub 与 live room relay
+
+- Typed dependencies 保 optional AuthCore session、raw memberRole、archiveAt!=nil 及原 catalog access/addTasks，权限与 session 每次重读。Committed-task publisher 只包原 status200，JSON 原样且只发一次；task 编号、created/updated 帧顺序保持。
+- bindingUserDelivery 只复制原 dependencies/general emitter，替换本 Fallback 固定可选 Hub 的 join/emit，仍 join→user emit。没有新字段、owner、slot 或 install；同一 Root 的 A/B/nil Fallback 均注册后仍各投自身 Hub，nil 不继承上一次绑定，general relay 发送时仍读当前 slot。
+- 真实 Socket/HTTP 的实例隔离、入房、A/B relay 替换、custom raw role、archive/access 和 logout 失效均有输出及额外帧负断言。TaskStore 原子区、notifications read observer 的 last-write 与 ServerMembership 的固定 Hub hooks 本片未改；未声称 user join/emit 是并发 session 原子 cohort，也未声称整条 task 调用链不存在锁内 callback。

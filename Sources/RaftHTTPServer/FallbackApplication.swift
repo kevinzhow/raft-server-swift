@@ -96,44 +96,24 @@ public struct FallbackServices: Sendable {
         self.cdnBaseURL = cdnBaseURL
     }
 
-    /// Channel-messaging domain: task creation plus the realtime frames the
-    /// channel and task routes publish. The sinks and the not-yet-migrated
-    /// channel/task policy calls are wired here, so the service file owns the
-    /// orchestration without a directory or transport dependency.
+    /// Typed domain dependencies and transport bindings for this Fallback value.
+    /// General room delivery follows the live relay; user delivery keeps this Hub.
     public var channelMessaging: ChannelMessagingService {
         let accounts = emailAccounts
-        let catalog = accounts.taskCatalog
+        let relay = accounts.realtimeRelay
         let hub = realtime
         return ChannelMessagingService(
             dependencies: ChannelMessagingDependencies(
-                sessionUserId: { accounts.sessionUserId(authorization: $0) },
-                memberRole: { serverId, userId in
-                    accounts.oauth.memberRole(serverId: serverId, userId: userId)
-                },
-                taskChannelAccess: { serverId, channelId, userId in
-                    catalog.channelTaskAccess(serverId: serverId, channelId: channelId, userId: userId)
-                },
-                isChannelArchived: { accounts.oauth.channelArchivedAt(id: $0) != nil },
-                addTasks: { channelId, titles, descriptions, creatorId in
-                    catalog.addTasks(
-                        channelId: channelId,
-                        titles: titles,
-                        descriptions: descriptions,
-                        creatorId: creatorId
-                    )
-                }
+                auth: accounts.authCore, oauth: accounts.oauth, catalog: accounts.taskCatalog
             ),
-            sink: ChannelRealtimeSink(
-                emit: { room, event, payload in
-                    accounts.realtimeRelay.emit(room, event, payload)
-                },
-                emitToUser: { userId, event, payload in
-                    hub?.emit(room: "user:\(userId)", event: event, payloadJSON: payload)
-                },
-                joinUserSessions: { userId, room in
-                    hub?.joinUserSessions(userId: userId, room: room)
-                }
-            )
+            sink: ChannelRealtimeSink(emit: relay.emit)
+        ).bindingUserDelivery(
+            emitToUser: { userId, event, payload in
+                hub?.emit(room: "user:\(userId)", event: event, payloadJSON: payload)
+            },
+            joinUserSessions: { userId, room in
+                hub?.joinUserSessions(userId: userId, room: room)
+            }
         )
     }
 }

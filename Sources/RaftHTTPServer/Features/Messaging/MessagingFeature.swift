@@ -38,9 +38,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
         // The claim publishes `task:updated` through the channel-messaging
         // domain; the service hands it the claimed task's published JSON.
         let assignments = services.emailAccounts.channelAssignments(
-            publishTaskUpdated: { replyBody in
-                services.channelMessaging.publishTaskUpdated(status: 200, replyBody: replyBody)
-            }
+            publishTaskUpdated: services.channelMessaging.publishCommittedTaskUpdated
         )
         let inbox = services.emailAccounts.inboxAndWake
         readMutations.post { request async throws -> Response in
