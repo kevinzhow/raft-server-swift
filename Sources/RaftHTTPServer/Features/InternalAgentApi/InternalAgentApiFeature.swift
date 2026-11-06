@@ -26,6 +26,15 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
         self.services = services
     }
 
+    /// Decodes one typed JSON body even when the client omitted a JSON
+    /// `Content-Type`; the published handler accepted a raw JSON body before
+    /// the typed migration.
+    private func typedJSONBody<T: Decodable>(_ type: T.Type, _ request: Request) async throws -> T? {
+        if let decoded = try? await request.content.decode(type) { return decoded }
+        guard let data = try await request.body.collect() else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
     public func boot(routes: any RoutesBuilder) async throws {
         register(routes: routes)
     }
@@ -113,17 +122,22 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 authorization: request.headers[.authorization]
             ))
         }
-        agentApi.get("profile") { request -> Response in
-            routeResponse(services.emailAccounts.agentProfileShow(
-                authorization: request.headers[.authorization],
-                target: desktopQuery(request.url.query, "target")
-            ))
+        agentApi.get("profile") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.joinLinksAndInvites.agentProfileShow(
+                    authorization: request.headers[.authorization],
+                    target: desktopQuery(request.url.query, "target")
+                )
+            }
         }
         agentApi.post("profile") { request async throws -> Response in
-            routeResponse(services.emailAccounts.updateAgentProfile(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
+            let body = try await typedJSONBody(AgentProfileUpdateRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.joinLinksAndInvites.updateAgentProfile(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         agentApi.post("channels", ":channelId", "leave") { request -> Response in
             routeResponse(services.emailAccounts.agentLeaveChannel(

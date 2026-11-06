@@ -65,8 +65,12 @@ public struct AuthFeature: RouteCollection, Sendable {
             }
         }
 
-        auth.get("invite-info") { request -> Response in
-            routeResponse(services.emailAccounts.inviteInfo(token: desktopQuery(request.url.query, "token")))
+        auth.get("invite-info") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.joinLinksAndInvites.inviteInfo(
+                    token: desktopQuery(request.url.query, "token")
+                )
+            }
         }
 
         mobileAppleNative.post("start") { request async throws -> Response in
@@ -299,6 +303,11 @@ public struct AuthFeature: RouteCollection, Sendable {
             ))
         }
         auth.post("accept-invite") { request async throws -> Response in
+            // The typed body keeps the raw parser's tolerance for a missing
+            // Content-Type; the public server directory reads the same buffered
+            // bytes first and a 404 still falls through to this handler.
+            let body = (try await jsonBody(JoinLinkAcceptRequest.self, request))
+                ?? JoinLinkAcceptRequest()
             if let directory = services.publicServerDirectory {
                 let reply = directory.acceptInvite(
                     authorization: request.headers[.authorization],
@@ -308,10 +317,12 @@ public struct AuthFeature: RouteCollection, Sendable {
                     return routeResponse(reply)
                 }
             }
-            return routeResponse(services.emailAccounts.acceptInvite(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
+            return try await respond {
+                try services.emailAccounts.joinLinksAndInvites.acceptInvite(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
     }
 }

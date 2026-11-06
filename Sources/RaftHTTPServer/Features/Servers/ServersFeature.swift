@@ -18,6 +18,16 @@ public struct ServersFeature: RouteCollection, Sendable {
         self.services = services
     }
 
+    /// Decodes one typed JSON body even when the client omitted a JSON
+    /// `Content-Type`. The published handlers accepted a raw JSON body before
+    /// the typed migration, so the fallback keeps that behavior without a
+    /// second raw parser in the service.
+    private func typedJSONBody<T: Decodable>(_ type: T.Type, _ request: Request) async throws -> T? {
+        if let decoded = try? await request.content.decode(type) { return decoded }
+        guard let data = try await request.body.collect() else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
     public func boot(routes: any RoutesBuilder) async throws {
         register(routes: routes)
     }
@@ -233,107 +243,121 @@ public struct ServersFeature: RouteCollection, Sendable {
             ))
         }
         servers.post(":id", "join-links") { request async throws -> Response in
-            // `expiresAt` and `maxUses` are the only fields. A fractional or
-            // string `maxUses` does not decode, so that request keeps the raw
-            // parser and its `maxUses must be a positive integer` 400.
-            if let body = try? await request.content.decode(JoinLinkCreateDTO.self) {
-                return routeResponse(services.emailAccounts.createJoinLink(
+            // `expiresAt` and `maxUses` are the only fields. The typed decoder
+            // keeps the raw parser's tolerance: a wrong-typed field reads as
+            // absent and an invalid cap still answers the published 400.
+            let body = (try await typedJSONBody(CreateJoinLinkRequest.self, request)) ?? CreateJoinLinkRequest()
+            return try await respond {
+                try services.emailAccounts.joinLinksAndInvites.createJoinLink(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",
-                    body: body.encodedBody()
-                ))
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.createJoinLink(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
         }
-        servers.get(":id", "join-links") { request -> Response in
-            routeResponse(services.emailAccounts.listJoinLinks(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "join-links") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.joinLinksAndInvites.listJoinLinks(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
-        servers.delete(":id", "join-links", ":linkId") { request -> Response in
-            routeResponse(services.emailAccounts.revokeJoinLink(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                linkId: request.parameters.get("linkId") ?? ""
-            ))
+        servers.delete(":id", "join-links", ":linkId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.joinLinksAndInvites.revokeJoinLink(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    linkId: request.parameters.get("linkId") ?? ""
+                )
+            }
         }
-        servers.get(":id", "invites") { request -> Response in
-            routeResponse(services.emailAccounts.listServerInvites(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "invites") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.joinLinksAndInvites.listServerInvites(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         servers.post(":id", "invites") { request async throws -> Response in
-            // `email` is required and `role` defaults to `member` in both
-            // paths. A body that does not decode keeps the raw parser so the
-            // published invite errors are unchanged.
-            if let body = try? await request.content.decode(ServerInviteCreateDTO.self) {
-                return routeResponse(services.emailAccounts.createServerInvite(
+            // `email` is required and `role` defaults to `member`. A body that
+            // is not a JSON object falls back to the empty request, which is
+            // the published invite error for a missing address.
+            let body = try await typedJSONBody(CreateServerInviteRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.joinLinksAndInvites.createServerInvite(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",
-                    body: body.encodedBody()
-                ))
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.createServerInvite(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
         }
         servers.post(":id", "setup-reset") { request async throws -> Response in
             // The reset selects its target by path and reads no body fields.
             // Decoding states that empty contract; a malformed body still
             // resolves through the same path-only authorization.
             _ = try? await request.content.decode(ServerSetupResetDTO.self)
-            return routeResponse(services.emailAccounts.serverSetupReset(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+            return try await respond {
+                try services.emailAccounts.joinLinksAndInvites.serverSetupReset(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
-        servers.post(":id", "setup-handoff") { request -> Response in
-            routeResponse(services.emailAccounts.serverSetupHandoff(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.post(":id", "setup-handoff") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.joinLinksAndInvites.serverSetupHandoff(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
-        servers.delete(":id", "invites", ":inviteId") { request -> Response in
-            routeResponse(services.emailAccounts.revokeServerInvite(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                inviteId: request.parameters.get("inviteId") ?? ""
-            ))
+        servers.delete(":id", "invites", ":inviteId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.joinLinksAndInvites.revokeServerInvite(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    inviteId: request.parameters.get("inviteId") ?? ""
+                )
+            }
         }
-        servers.post(":id", "leave") { request -> Response in
+        servers.post(":id", "leave") { request async throws -> Response in
             let serverId = request.parameters.get("id") ?? ""
             let authorization = request.headers[.authorization]
             let userId = services.emailAccounts.sessionUserId(authorization: authorization)
-            let reply = services.emailAccounts.leaveServer(
-                authorization: authorization,
-                serverId: serverId
-            )
-            if reply.status == 200, let userId {
-                services.emailAccounts.socketMembership.revokeServerMembershipResources(serverId: serverId, userId: userId)
-                services.realtime?.removeServerMembership(serverId: serverId, userId: userId)
+            return try await respond {
+                let result = try services.emailAccounts.joinLinksAndInvites.leaveServer(
+                    authorization: authorization,
+                    serverId: serverId
+                )
+                if let userId {
+                    services.emailAccounts.socketMembership.revokeServerMembershipResources(
+                        serverId: serverId,
+                        userId: userId
+                    )
+                    services.realtime?.removeServerMembership(serverId: serverId, userId: userId)
+                }
+                return result
             }
-            return routeResponse(reply)
         }
-        servers.get(":id", "setup-projection") { request -> Response in
-            routeResponse(services.emailAccounts.serverSetupProjection(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "setup-projection") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.joinLinksAndInvites.serverSetupProjection(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         servers.post(":id", "setup-transition") { request async throws -> Response in
-            routeResponse(services.emailAccounts.serverSetupTransition(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = try await typedJSONBody(ServerSetupTransitionRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.joinLinksAndInvites.serverSetupTransition(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    body: body
+                )
+            }
         }
         servers.patch(":id", "members", ":memberId") { request async throws -> Response in
             // `role` is the only field; the directory owns the membership and

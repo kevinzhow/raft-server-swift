@@ -671,4 +671,22 @@ final class AuthProfileStore: @unchecked Sendable {
         get { configState.deploymentEnvironmentOverride }
         set { configState.deploymentEnvironmentOverride = newValue }
     }
+
+    // MARK: - Join-link / agent-profile account reads
+
+    /// Accounts whose public handle matches one already-lowercased name, in the
+    /// ledger's dictionary order. The caller still filters by server
+    /// membership, exactly like the retired extension did.
+    func accountsMatching(name loweredName: String) -> [Account] {
+        lock.lock()
+        defer { lock.unlock() }
+        return accountSurface.accounts.values.filter { $0.name.lowercased() == loweredName }
+    }
+
+    func accountEmail(id: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        // The account table is keyed by normalized email, not user id.
+        return accountSurface.accounts.values.first { $0.id == id }?.email
+    }
 }
