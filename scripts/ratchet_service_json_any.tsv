@@ -8,8 +8,7 @@ Sources/RaftHTTP/Services/AttachmentsAndNotificationsService.swift	9
 Sources/RaftHTTP/Services/AuthCoreService.swift	16
 Sources/RaftHTTP/Services/AuthIdentitiesService.swift	7
 Sources/RaftHTTP/Services/ComputersFleetService.swift	14
-Sources/RaftHTTP/Services/FeedbackMultiAppService.swift	16
-Sources/RaftHTTP/Services/FeedbackService.swift	8
+Sources/RaftHTTP/Services/FeedbackService.swift	4
 Sources/RaftHTTP/Services/HumanMessageCreateService.swift	12
 Sources/RaftHTTP/Services/IntegrationsAndAppAccessService.swift	16
 Sources/RaftHTTP/Services/MachinesAndHostedRuntimeService.swift	14

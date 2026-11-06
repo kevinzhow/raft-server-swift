@@ -20,17 +20,6 @@ public struct FeedbackSubmissionResponse: Codable, Sendable, Equatable {
     }
 }
 
-/// Fixed upstream error envelope (`{"error": "...", "code": "..."}`).
-public struct FeedbackErrorResponse: Codable, Sendable, Equatable {
-    public var error: String
-    public var code: String
-
-    public init(error: String, code: String) {
-        self.error = error
-        self.code = code
-    }
-}
-
 /// `POST /api/app-installation/agent-reminder-messages` request body.
 ///
 /// The service still validates the raw body for parity with the upstream
