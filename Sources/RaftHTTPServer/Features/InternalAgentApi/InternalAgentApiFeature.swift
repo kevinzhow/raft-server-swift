@@ -387,13 +387,31 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             ))
         }
         agentApi.post("tasks", "claim") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentTaskClaim(
+            // `channel`, `task_numbers`, `message_ids` and `seenUpToSeq` are the
+            // only body fields. A body that does not decode keeps the
+            // directory's raw parser so the published 400 is unchanged.
+            if let body = try? await request.content.decode(AgentTaskClaimDTO.self) {
+                return routeResponse(services.emailAccounts.agentTaskClaim(
+                    authorization: request.headers[.authorization],
+                    body: body.encodedBody()
+                ))
+            }
+            return routeResponse(services.emailAccounts.agentTaskClaim(
                 authorization: request.headers[.authorization],
                 body: try await request.bodyText(default: "{}")
             ))
         }
         agentApi.post("tasks", "update-status") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentTaskUpdateStatus(
+            // `channel`, `task_number`, `status` and `seenUpToSeq` are the only
+            // body fields; the directory owns the status allow-list and the
+            // warning when no status arrives.
+            if let body = try? await request.content.decode(AgentStatusUpdateDTO.self) {
+                return routeResponse(services.emailAccounts.agentTaskUpdateStatus(
+                    authorization: request.headers[.authorization],
+                    body: body.encodedBody()
+                ))
+            }
+            return routeResponse(services.emailAccounts.agentTaskUpdateStatus(
                 authorization: request.headers[.authorization],
                 body: try await request.bodyText(default: "{}")
             ))
@@ -417,7 +435,17 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             ))
         }
         agentApi.post("messages", ":messageId", "reactions") { request async throws -> Response in
-            routeResponse(services.emailAccounts.mutateAgentApiMessageReaction(
+            // `emoji` is the only body field on both verbs; the directory owns
+            // the trim, the 16-unit cap and the `A valid emoji is required` 400.
+            if let body = try? await request.content.decode(AgentMessageReactionDTO.self) {
+                return routeResponse(services.emailAccounts.mutateAgentApiMessageReaction(
+                    messageId: request.parameters.get("messageId") ?? "",
+                    body: body.encodedBody(),
+                    authorization: request.headers[.authorization],
+                    remove: false
+                ))
+            }
+            return routeResponse(services.emailAccounts.mutateAgentApiMessageReaction(
                 messageId: request.parameters.get("messageId") ?? "",
                 body: try await request.bodyText(),
                 authorization: request.headers[.authorization],
@@ -425,7 +453,15 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             ))
         }
         agentApi.delete("messages", ":messageId", "reactions") { request async throws -> Response in
-            routeResponse(services.emailAccounts.mutateAgentApiMessageReaction(
+            if let body = try? await request.content.decode(AgentMessageReactionDTO.self) {
+                return routeResponse(services.emailAccounts.mutateAgentApiMessageReaction(
+                    messageId: request.parameters.get("messageId") ?? "",
+                    body: body.encodedBody(),
+                    authorization: request.headers[.authorization],
+                    remove: true
+                ))
+            }
+            return routeResponse(services.emailAccounts.mutateAgentApiMessageReaction(
                 messageId: request.parameters.get("messageId") ?? "",
                 body: try await request.bodyText(),
                 authorization: request.headers[.authorization],

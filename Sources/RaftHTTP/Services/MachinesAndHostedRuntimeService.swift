@@ -4,8 +4,21 @@ import Foundation
 import FoundationNetworking
 #endif
 
-extension EmailLoginDirectory {
+/// Machine registration surfaces and the hosted runtime: onboarding
+/// identity adoption, hosted usage/runtime/model state, provisioning retry
+/// and provider connections.
+///
+/// These handlers were lifted from `EmailLogin+MachinesAndRuntime1.swift`.
 
+public struct MachinesAndHostedRuntimeService: Sendable {
+    public let directory: EmailLoginDirectory
+
+    public init(directory: EmailLoginDirectory) {
+        self.directory = directory
+    }
+}
+
+extension EmailLoginDirectory {
 
     public func setMachineDescriptionForTesting(machineId: String, description: String?) {
         lock.lock()
@@ -48,7 +61,6 @@ extension EmailLoginDirectory {
         }
         lock.unlock()
     }
-
 
     func onboardingAdoptionState(
         serverId: String,
@@ -547,10 +559,6 @@ extension EmailLoginDirectory {
         lock.unlock()
     }
 
-
-
-
-
     func agentConnectionProviderCall(
         method: String,
         action: String,
@@ -602,7 +610,6 @@ extension EmailLoginDirectory {
         return .loaded(agentId: agentId, userId: userId, role: role)
     }
 
-
     func connectionMemberIdentity(serverId: String, userId: String) -> (name: String, displayName: String)? {
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else { return nil }
         lock.lock()
@@ -651,7 +658,6 @@ extension EmailLoginDirectory {
         let connectorId = parsed.connectorId.map(jsonString) ?? "null"
         return "{\"provider\":\(jsonString(provider)),\"supported\":true,\"connected\":\(parsed.connected),\"account\":\(account),\"connectedAt\":\(connectedAt),\"connectedBy\":\(connectedBy),\"scopes\":[\(scopes)],\"connectorId\":\(connectorId),\"connectors\":[\(connectors)]}"
     }
-
 
     func redactProviderMessage(_ message: String?) -> String? {
         guard let message else { return nil }

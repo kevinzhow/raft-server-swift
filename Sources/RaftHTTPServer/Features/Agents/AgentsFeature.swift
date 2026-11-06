@@ -27,7 +27,13 @@ public struct AgentsFeature: RouteCollection, Sendable {
         let agents = routes.grouped("api", "agents")
 
         agentGroup.post("login") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentLogin(
+            if let body = try? await request.content.decode(AgentLoginRequestDTO.self) {
+                return routeResponse(services.emailAccounts.agentLogin(
+                    authorization: request.headers[.authorization],
+                    body: body.encodedBody()
+                ))
+            }
+            return routeResponse(services.emailAccounts.agentLogin(
                 authorization: request.headers[.authorization],
                 body: try await request.bodyText()
             ))
@@ -117,7 +123,14 @@ public struct AgentsFeature: RouteCollection, Sendable {
             ))
         }
         agents.post(":id", "assign-machine") { request async throws -> Response in
-            routeResponse(services.emailAccounts.assignAgentMachine(
+            if let body = try? await request.content.decode(AgentAssignMachineDTO.self) {
+                return routeResponse(services.emailAccounts.assignAgentMachine(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("id") ?? "",
+                    body: body.encodedBody()
+                ))
+            }
+            return routeResponse(services.emailAccounts.assignAgentMachine(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("id") ?? "",
                 body: try await request.bodyText()
@@ -214,7 +227,15 @@ public struct AgentsFeature: RouteCollection, Sendable {
             ))
         }
         agents.patch(":id", "creator") { request async throws -> Response in
-            routeResponse(services.emailAccounts.patchAgentCreator(
+            if let body = try? await request.content.decode(AgentCreatorPatchDTO.self) {
+                return routeResponse(services.emailAccounts.patchAgentCreator(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    agentId: request.parameters.get("id") ?? "",
+                    body: body.encodedBody()
+                ))
+            }
+            return routeResponse(services.emailAccounts.patchAgentCreator(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 agentId: request.parameters.get("id") ?? "",
@@ -277,12 +298,22 @@ public struct AgentsFeature: RouteCollection, Sendable {
             return response
         }
         agents.put(":id", "hosted-runtime", "model") { request async throws -> Response in
-            var response = routeResponse(services.emailAccounts.setAgentHostedModel(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                agentId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
+            var response: Response
+            if let body = try? await request.content.decode(AgentHostedModelDTO.self) {
+                response = routeResponse(services.emailAccounts.setAgentHostedModel(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    agentId: request.parameters.get("id") ?? "",
+                    body: body.encodedBody()
+                ))
+            } else {
+                response = routeResponse(services.emailAccounts.setAgentHostedModel(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    agentId: request.parameters.get("id") ?? "",
+                    body: try await request.bodyText()
+                ))
+            }
             response.headers[HTTPField.Name("Cache-Control")!] = "no-store"
             return response
         }

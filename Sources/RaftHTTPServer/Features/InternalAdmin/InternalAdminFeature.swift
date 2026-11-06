@@ -115,7 +115,14 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             ))
         }
         agent.post("runtime-profile", "migration-done") { request async throws -> Response in
-            routeResponse(services.emailAccounts.runtimeProfileMigrationDone(
+            if let body = try? await request.content.decode(AgentRuntimeProfileMigrationDTO.self) {
+                return routeResponse(services.emailAccounts.runtimeProfileMigrationDone(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    body: body.encodedBody()
+                ))
+            }
+            return routeResponse(services.emailAccounts.runtimeProfileMigrationDone(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("agentId") ?? "",
                 body: try await request.bodyText()
@@ -128,7 +135,14 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             ))
         }
         agent.patch("server") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentUpdateServer(
+            if let body = try? await request.content.decode(LegacyAgentServerPatchDTO.self) {
+                return routeResponse(services.emailAccounts.agentUpdateServer(
+                    authorization: request.headers[.authorization],
+                    body: body.encodedBody(),
+                    legacyAgentId: request.parameters.get("agentId") ?? ""
+                ))
+            }
+            return routeResponse(services.emailAccounts.agentUpdateServer(
                 authorization: request.headers[.authorization],
                 body: try await request.bodyText(default: "{}"),
                 legacyAgentId: request.parameters.get("agentId") ?? ""

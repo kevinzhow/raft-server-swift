@@ -4,8 +4,21 @@ import Foundation
 import FoundationNetworking
 #endif
 
-extension EmailLoginDirectory {
+/// Hosted and machine-migration transport: chunk receipts, target views,
+/// the flip/arrival/cancel callbacks, agent machine assignment and agent
+/// credential minting.
+///
+/// These handlers were lifted from `EmailLogin+AgentMigrations2.swift`.
 
+public struct AgentHostedMigrationService: Sendable {
+    public let directory: EmailLoginDirectory
+
+    public init(directory: EmailLoginDirectory) {
+        self.directory = directory
+    }
+}
+
+extension EmailLoginDirectory {
 
     public func getMigrationControlManifest(authorization: String?, migrationRef: String) -> HTTPReply {
         guard computerCredentialValid(authorization) else {
@@ -107,8 +120,6 @@ extension EmailLoginDirectory {
         defer { lock.unlock() }
         return computers.first { $0.apiKey == key && $0.revokedAt == nil }?.machineId
     }
-
-
 
     func migrationTargetViewJSON(_ record: MachineMigrationRecord, targetMachineId: String) -> String {
         let formatter = ISO8601DateFormatter()

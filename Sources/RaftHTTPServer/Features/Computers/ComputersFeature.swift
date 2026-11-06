@@ -23,13 +23,25 @@ public struct ComputersFeature: RouteCollection, Sendable {
         let computers = routes.grouped("api", "computer")
 
         computers.post("adopt-legacy") { request async throws -> Response in
-            routeResponse(services.emailAccounts.adoptLegacyComputer(
+            if let body = try? await request.content.decode(ComputerAdoptLegacyRequestDTO.self) {
+                return routeResponse(services.emailAccounts.adoptLegacyComputer(
+                    authorization: request.headers[.authorization],
+                    body: body.encodedBody()
+                ))
+            }
+            return routeResponse(services.emailAccounts.adoptLegacyComputer(
                 authorization: request.headers[.authorization],
                 body: try await request.bodyText(default: "{}")
             ))
         }
         computers.post("attach") { request async throws -> Response in
-            routeResponse(services.emailAccounts.attachComputer(
+            if let body = try? await request.content.decode(ComputerAttachRequestDTO.self) {
+                return routeResponse(services.emailAccounts.attachComputer(
+                    authorization: request.headers[.authorization],
+                    body: body.encodedBody()
+                ))
+            }
+            return routeResponse(services.emailAccounts.attachComputer(
                 authorization: request.headers[.authorization],
                 body: try await request.bodyText()
             ))

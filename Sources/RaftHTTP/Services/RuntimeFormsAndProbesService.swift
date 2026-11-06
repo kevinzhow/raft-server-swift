@@ -4,8 +4,21 @@ import Foundation
 import FoundationNetworking
 #endif
 
-extension EmailLoginDirectory {
+/// Runtime form definitions, option sources and probes, machine runtime
+/// account usage, and the server settings/notification projections the
+/// runtime routes read.
+///
+/// These handlers were lifted from `EmailLogin+MachinesAndRuntime2.swift`.
 
+public struct RuntimeFormsAndProbesService: Sendable {
+    public let directory: EmailLoginDirectory
+
+    public init(directory: EmailLoginDirectory) {
+        self.directory = directory
+    }
+}
+
+extension EmailLoginDirectory {
 
     public func agentRuntimeForm(
         authorization: String?,
@@ -669,10 +682,6 @@ extension EmailLoginDirectory {
         }
     }
 
-
-
-
-
     func runtimeProbeResolution(machineId: String, runtimeId: String, refresh: Bool) -> RuntimeProbeResolution {
         Self.resolveRuntimeModelProbe(
             machineId: machineId,
@@ -688,7 +697,6 @@ extension EmailLoginDirectory {
             }
         )
     }
-
 
     func builtinModelSource(protocolVersion: Int, expected: String) -> HTTPReply {
         let mode = builtinCatalogMode
@@ -722,7 +730,6 @@ extension EmailLoginDirectory {
         let options = models.map { "{\"value\":\(jsonString($0.id)),\"label\":\(jsonString($0.label))}" }.joined(separator: ",")
         return "{\"deepseek\":[\(options)]}"
     }
-
 
     public func setRuntimeAccountUsageForTesting(
         machineId: String,

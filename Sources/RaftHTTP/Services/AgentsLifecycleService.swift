@@ -9,14 +9,24 @@ import FoundationNetworking
 /// `Result<Success, HTTPReply>` without inventing a second error type.
 extension HTTPReply: Error {}
 
+/// Agent lifecycle: the session/device core shared by `api/agent/login`,
+/// attachment upload and visibility, client product events, and the agent
+/// authority/lifecycle gates the runtime routes consult.
+///
+/// These handlers were lifted from `EmailLogin+Agents1.swift`. They stay on
+/// `EmailLoginDirectory` because the directory owns the lock and the domain
+/// stores; `AgentsLifecycleService` is the named, `Sendable` handle for the
+/// domain.
+
+public struct AgentsLifecycleService: Sendable {
+    public let directory: EmailLoginDirectory
+
+    public init(directory: EmailLoginDirectory) {
+        self.directory = directory
+    }
+}
+
 extension EmailLoginDirectory {
-
-
-
-
-
-
-
 
     func deviceSurfaceDisabled() -> HTTPReply? {
         if Self.deviceLoginEnabled(deviceLoginGate) { return nil }
@@ -42,9 +52,6 @@ extension EmailLoginDirectory {
         return "\(chars.prefix(4))-\(chars.dropFirst(4))"
     }
 
-
-
-
     /// Opens one session family. The caller already holds `lock`.
     func openSessionLocked(userId: String) -> (accessToken: String, refreshToken: String) {
         let familyId = UUID().uuidString.lowercased()
@@ -66,11 +73,6 @@ extension EmailLoginDirectory {
         lock.unlock()
         return id
     }
-
-
-
-
-
 
     func refreshLocked(refreshToken: String, attemptId: String?, installationId: String?) -> RefreshOutcome {
         if let attemptId, let installationId {
@@ -129,24 +131,6 @@ extension EmailLoginDirectory {
         if !legacy.isEmpty { return legacy }
         return Self.defaultMobileReturnURIs
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     public func removeChannelMemberForTesting(channelId: String, userId: String) {
         oauth.removeChannelHuman(channelId: channelId, userId: userId)
@@ -521,11 +505,6 @@ extension EmailLoginDirectory {
         return true
     }
 
-
-
-
-
-
     /// A probe on a channel the caller cannot currently read. Missing and
     /// hidden answer the same way; receiver-owned residue is acknowledged
     /// with a distinct 403 so the caller can clear Activity.
@@ -794,7 +773,6 @@ extension EmailLoginDirectory {
         }
     }
 
-
     /// The user id behind a live access token. A missing or unknown bearer is nil.
     public func sessionUserId(authorization: String?) -> String? {
         if case .user(let id) = authorize(authorization) { return id }
@@ -946,8 +924,6 @@ extension EmailLoginDirectory {
         return Self.json(202, "{\"accepted\":\(rows.count)}")
     }
 
-
-
     func agentAuthority(_ authorization: String?, agentId: String) -> AgentAuthority {
         guard let userId = sessionUserId(authorization: authorization) else {
             return .denied(Self.json(401, "{\"error\":\"Unauthorized\"}"))
@@ -967,7 +943,6 @@ extension EmailLoginDirectory {
     /// The upstream server capability matrix for the two lifecycle verbs this
     /// file answers: members hold `controlAgentRuntime`, only owner/admin hold
     /// `deleteAgents`; the human creator always holds the acting authority.
-
 
     /// Resolve the caller against a live agent of `serverId`, or the exact
     /// refusal the upstream route answers before it touches runtime state.

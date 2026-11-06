@@ -4,8 +4,21 @@ import Foundation
 import FoundationNetworking
 #endif
 
-extension EmailLoginDirectory {
+/// Machine-migration control plane: migration seeding, control manifests,
+/// the private agent surface and scopes, workspace/archive actions, the
+/// runtime verbs and the machine migration dispatch.
+///
+/// These handlers were lifted from `EmailLogin+AgentMigrations1.swift`.
 
+public struct AgentMachineMigrationControlService: Sendable {
+    public let directory: EmailLoginDirectory
+
+    public init(directory: EmailLoginDirectory) {
+        self.directory = directory
+    }
+}
+
+extension EmailLoginDirectory {
 
     public func enableAgentMigrationForTesting(serverId: String) {
         lock.lock()
@@ -294,8 +307,6 @@ extension EmailLoginDirectory {
         lock.unlock()
         return id
     }
-
-
 
     /// Hides where a turn came from when the viewer cannot see the source
     /// channel or DM. The trigger's own text must not survive the projection.

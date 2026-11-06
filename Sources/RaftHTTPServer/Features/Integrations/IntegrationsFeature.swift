@@ -114,7 +114,14 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         }
 
         integrations.post("requests", ":requestId", "approve") { request async throws -> Response in
-            routeResponse(services.emailAccounts.approveAgentAccessRequest(
+            if let body = try? await request.content.decode(AgentAccessRequestApproveDTO.self) {
+                return routeResponse(services.emailAccounts.approveAgentAccessRequest(
+                    authorization: request.headers[.authorization],
+                    requestId: request.parameters.get("requestId") ?? "",
+                    body: body.encodedBody()
+                ))
+            }
+            return routeResponse(services.emailAccounts.approveAgentAccessRequest(
                 authorization: request.headers[.authorization],
                 requestId: request.parameters.get("requestId") ?? "",
                 body: try await request.bodyText(default: "{}")
@@ -122,7 +129,14 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         }
 
         integrations.post("agents", ":agentId", "grants") { request async throws -> Response in
-            routeResponse(services.emailAccounts.createAgentGrant(
+            if let body = try? await request.content.decode(AgentGrantCreateDTO.self) {
+                return routeResponse(services.emailAccounts.createAgentGrant(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    body: body.encodedBody()
+                ))
+            }
+            return routeResponse(services.emailAccounts.createAgentGrant(
                 authorization: request.headers[.authorization],
                 agentId: request.parameters.get("agentId") ?? "",
                 body: try await request.bodyText(default: "{}")
@@ -299,7 +313,15 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         }
 
         providerConnections.patch(":id") { request async throws -> Response in
-            routeResponse(services.emailAccounts.patchProviderConnection(
+            if let body = try? await request.content.decode(ProviderConnectionToggleDTO.self) {
+                return routeResponse(services.emailAccounts.patchProviderConnection(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    connectionId: request.parameters.get("id") ?? "",
+                    body: body.encodedBody()
+                ))
+            }
+            return routeResponse(services.emailAccounts.patchProviderConnection(
                 authorization: request.headers[.authorization],
                 serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                 connectionId: request.parameters.get("id") ?? "",
