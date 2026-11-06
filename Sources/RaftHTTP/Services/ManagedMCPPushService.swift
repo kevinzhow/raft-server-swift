@@ -61,7 +61,7 @@ public struct ManagedMCPPushService: Sendable {
             else { throw ManagedMCPLifecycleError.invalidPushRegistration }
         }
         let family = profiles.ensurePushRevokeCapability(userId: principal.userId, familyId: principal.familyId)
-        notifications.upsertPushRegistration(EmailLoginDirectory.PushRegistration(
+        notifications.upsertPushRegistration(PushRegistration(
             installationId: installationId,
             provider: provider,
             env: env,

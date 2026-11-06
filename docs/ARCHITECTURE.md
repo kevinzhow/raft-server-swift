@@ -1,6 +1,6 @@
 # Architecture: target Swift layering
 
-**Status**: Phase 6 has removed directory state forwarding and the global transaction lock. `EmailLoginDirectory` is a 28-line owner assembly root, but six extensions still contain factories or nested contracts and services/tests still reference that type. Explicit service composition and the final `ServiceContainer` migration remain; the empty old directory and smaller root do not establish completion. The remaining milestones live in `docs/PLAN.md`.
+**Status**: Phase 6 has removed directory state forwarding and the global transaction lock. `EmailLoginDirectory` is a 28-line owner assembly root, but six extensions still contain factories and transitional helper methods and services/tests still reference that type. Explicit service composition and the final `ServiceContainer` migration remain; the empty old directory and smaller root do not establish completion. The remaining milestones live in `docs/PLAN.md`.
 
 **Specification**: observable HTTP status codes, JSON bytes, response headers, and socket frames asserted by the upstream suite at `v1.21.23-source.1`. Refactoring preserves those contracts, including validation order, omission versus null, input coercion, and stored JSON fingerprints.
 
@@ -23,7 +23,7 @@ The upstream server separates route modules, services, database schema, middlewa
 | `Sources/RaftShared/` | Shared value contracts, including `JSONValue` |
 | `Tests/TestSupport/` | Test-only seams, deterministic setup, and injected dependencies; never a production dependency |
 
-`Sources/RaftHTTP/EmailLogin/` has no Swift files. The six remaining directory extensions are under `Services/`; the Store forwarding file has been deleted. They contain service factories or a nested contract and still need migration to explicit composition. Mutex state and typed owner transactions protect domain operations independently of the old directory lock.
+`Sources/RaftHTTP/EmailLogin/` has no Swift files. The six remaining directory extensions are under `Services/`; the Store forwarding file has been deleted. They contain service factories and transitional helper methods and still need migration to explicit composition. PushRegistration is an independent notification DTO; Stores and push registration no longer depend on a directory-nested record. Mutex state and typed owner transactions protect domain operations independently of the old directory lock.
 
 ## 2. Target layers
 
@@ -144,7 +144,7 @@ For a new metric, expanded scope, or a reviewed pure file move, `--print-ratchet
 
 ### 3.2 Snapshot and exclusions
 
-The current handwritten-source snapshot has six directory extension occurrences, zero forwarding lines/properties, 60 server reply tokens, 94 server JSON-any text occurrences, 83 directory type references, and 169 string-literal candidates. Services have zero reply tokens; the combined Services/DTO JSON-any occurrence and the remaining Services `directory.` occurrence are comments. Source-level transport/string construction, factory captures, and nested directory contracts remain outside those narrow zeros.
+The current handwritten-source snapshot has six directory extension occurrences, zero forwarding lines/properties, 60 server reply tokens, 94 server JSON-any text occurrences, 76 directory type references, and 169 string-literal candidates. Services have zero reply tokens; the combined Services/DTO JSON-any occurrence and the remaining Services `directory.` occurrence are comments. Source-level transport/string construction, factory captures, and transitional directory helpers remain outside those narrow zeros.
 
 The unchecked conformance ratchet now covers all Sources, including Generated: 28 declarations, all daemon-only; the complete server dependency closure is zero. Stores, public directories, caches, the immutable directory root, the realtime hub/session/attention state, connect state, and generated knowledge telemetry use checked storage. The realtime parser handler is deliberately non-Sendable and transferred only through SDK `NIOLoopBound` for synchronous installation on its channel loop; every entry checks that loop. Connect tasks capture immutable values and checked connection state, with channel writes/status callbacks on the owning loop. Session terminal writes and attention callbacks use a single ordered drainer outside their state locks. Session drains process at most 64 frames per batch; only backlog schedules a 1 ms continuation, so continuous HTTP broadcasts cannot keep one immediate task running indefinitely or prevent the selector from polling other connections. Idle admission still schedules its first drain immediately.
 
@@ -156,4 +156,4 @@ The 28 retained daemon declarations are not certified safe merely because they a
 
 Every accepted slice runs relevant published-path regressions, `make test`, `make test-e2e`, `scripts/smoke-server.sh`, `make architecture`, and `make parity-check`. Smoke is supplemental evidence for real-process wiring, not proof of every locked module. Coverage progress comes from `make parity` and the qualifications in `docs/PARITY.tsv`.
 
-The remaining work is explicit construction of Services, removal of factory captures and nested directory contracts, migration of raw ledger operations in Features, and replacement of the old type with a pure `ServiceContainer`. The current owner root has no global lock or field proxies; that does not complete those composition boundaries. Unresolved daemon boundaries remain documented separately. The detailed phase order belongs in `docs/PLAN.md`. None of these steps changes the pinned Vapor revision, replaces the SwiftNIO listeners, or changes the no-database `/health` 503 contract.
+The remaining work is explicit construction of Services, removal of factory captures and transitional directory helpers, migration of raw ledger operations in Features, and replacement of the old type with a pure `ServiceContainer`. The current owner root has no global lock or field proxies; that does not complete those composition boundaries. Unresolved daemon boundaries remain documented separately. The detailed phase order belongs in `docs/PLAN.md`. None of these steps changes the pinned Vapor revision, replaces the SwiftNIO listeners, or changes the no-database `/health` 503 contract.

@@ -1,14 +1,9 @@
 import Foundation
 import Synchronization
 
-/// Owns the notification, announcement and push rows that used to be stored
-/// inline on `EmailLoginDirectory`.
-///
-/// HTTP decisions stay in the directory extensions; this store serializes only
-/// its own rows behind a private lock and hands back strong Swift values.
-/// `EmailLoginDirectory` keeps computed accessors that forward here so the
-/// existing extension files and tests keep their property names while the
-/// directory body stays a composition root.
+/// Owns notification, announcement and push records behind checked Mutex state.
+/// Domain services make HTTP and delivery decisions; compound row mutations
+/// borrow this owner's State for the complete operation.
 final class NotificationsStore: Sendable {
     /// One announcement row. Kept as a tuple because every existing projection
     /// treats it as an anonymous record rather than a named model.
@@ -36,7 +31,7 @@ final class NotificationsStore: Sendable {
     /// whole store snapshot; each accessor below copies it, which is cheap
     /// because the collections are copy-on-write.
     struct State: Sendable {
-        var pushRegistrations: [EmailLoginDirectory.PushRegistration] = []
+        var pushRegistrations: [PushRegistration] = []
         var fcmPushAvailable = true
         var webPushEnabled = true
         var webPushSubscriptions: [WebPushSubscription] = []
@@ -45,8 +40,7 @@ final class NotificationsStore: Sendable {
         var announcementImageStorageAvailable = true
         var announcementDismissals: Set<String> = []
         var serverNotificationPrefs: [String: ServerNotificationPref] = [:]
-        // Injectable notification/mobile-email configuration that used to live
-        // inline on `EmailLoginDirectory`.
+        // Live notification and mobile-email deployment cohorts and callbacks.
         var mobileEmailDeployment = MobileAppEmailUnsubscribe.DeploymentConfiguration()
         var nativeDeployment = NativeNotificationsService.DeploymentConfiguration()
         var cancelMobileAppEmail: (@Sendable (String) -> Void)? = nil
@@ -68,7 +62,7 @@ final class NotificationsStore: Sendable {
         set { storage.withLock { $0 = newValue } }
     }
 
-    var pushRegistrations: [EmailLoginDirectory.PushRegistration] {
+    var pushRegistrations: [PushRegistration] {
         get { storage.withLock { $0.pushRegistrations } }
         set { storage.withLock { $0.pushRegistrations = newValue } }
     }
@@ -223,7 +217,7 @@ extension NotificationsStore {
     /// Inserts or replaces the registration of `(installationId, provider)` in
     /// one critical section, so two registrations of one installation cannot
     /// both append a row.
-    func upsertPushRegistration(_ registration: EmailLoginDirectory.PushRegistration) {
+    func upsertPushRegistration(_ registration: PushRegistration) {
         storage.withLock { storage -> Void in
             if let index = storage.pushRegistrations.firstIndex(where: {
                 $0.installationId == registration.installationId && $0.provider == registration.provider

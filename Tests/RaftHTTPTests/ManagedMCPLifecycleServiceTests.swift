@@ -167,7 +167,7 @@ private func lifecycleDirectory(slug: String, ownerId: String, serverId: String)
     await withTaskGroup(of: Void.self) { group in
         for index in 0..<16 {
             group.addTask {
-                store.upsertPushRegistration(EmailLoginDirectory.PushRegistration(
+                store.upsertPushRegistration(PushRegistration(
                     installationId: "install-1", provider: "apns", env: "sandbox", topic: "t",
                     deviceToken: "token-\(index)", appVersion: nil, userId: "u", serverId: "s",
                     sessionFamilyId: "f", revokeCapability: "f.n"

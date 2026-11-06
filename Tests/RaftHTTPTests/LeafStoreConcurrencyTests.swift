@@ -81,7 +81,7 @@ private func leafStoreRace<Result: Sendable>(
     let store = NotificationsStore()
     _ = await leafStoreRace(32) { index in
         let marker = "value-\(index)"
-        store.upsertPushRegistration(EmailLoginDirectory.PushRegistration(
+        store.upsertPushRegistration(PushRegistration(
             installationId: "installation", provider: "fcm", env: marker, topic: marker,
             deviceToken: marker, appVersion: marker, userId: marker, serverId: marker,
             sessionFamilyId: marker, revokeCapability: marker

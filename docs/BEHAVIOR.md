@@ -2142,3 +2142,8 @@ RFC 074 personal assistant：
 
 - TaskCatalogService 显式持有原 Tasks/Profile/OAuth 实例，六处 Source 目录构造调用与旧类型删除。任务可见频道、archive 过滤与 channel-name/task-number/id 排序保持；full/summary 的成员顺序、null、UTF-8 descriptionBytes、毫秒时间和当前 claimed/creator 姓名保持。
 - Fallback 建任务、MCP server task list 和 usage channel-read 判定均复用该任务边界；只读 public channel 仍可读而不能写，private/nonmember 拒绝顺序不变。批次 task number 扫描和 append 仍一次 Tasks 事务，25 路双任务批次得到唯一 1…50。Catalog 长期值只持 owner 引用，未冻结 task、profile 或 OAuth 状态。
+
+### Push registration 独立记录
+
+- PushRegistration 从目录嵌套声明移到独立通知 DTO，不留旧类型别名。十个字段及其可变性不变，APNs/FCM 的 tuple 校验、安装标识 upsert、session family/revoke capability、unbind 和 delivery-status 字节保持。
+- Notifications owner 的 registration 查找和完整十字段更新仍在一次 Mutex 内；同 installation/provider 的 16/32 路并发注册只保留一条完整 row，不混出不同写入者字段。该记录不需要目录或 action-card 类型即可用于通知 Store。

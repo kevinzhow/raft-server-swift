@@ -18,7 +18,6 @@ Sources/RaftHTTP/Services/InboxAndWakeService.swift	2
 Sources/RaftHTTP/Services/JoinLinksAndInvitesService.swift	1
 Sources/RaftHTTP/Services/MachinesAndHostedRuntimeService.swift	2
 Sources/RaftHTTP/Services/ManagedMCPAssignmentsService.swift	2
-Sources/RaftHTTP/Services/ManagedMCPPushService.swift	1
 Sources/RaftHTTP/Services/ManagedMCPToolExecutionService.swift	2
 Sources/RaftHTTP/Services/OAuthFlowsService.swift	1
 Sources/RaftHTTP/Services/ReactionsRealtimeService.swift	2
@@ -36,7 +35,6 @@ Sources/RaftHTTP/Stores/FeedbackStore.swift	3
 Sources/RaftHTTP/Stores/MachinesAndComputersStore.swift	3
 Sources/RaftHTTP/Stores/ManagedMCPAndCardsStore.swift	2
 Sources/RaftHTTP/Stores/MessagesAndThreadsStore.swift	3
-Sources/RaftHTTP/Stores/NotificationsStore.swift	6
 Sources/RaftHTTP/Stores/ProductEventStore.swift	1
 Sources/RaftHTTP/Stores/ServersAndChannelsStore.swift	2
 Sources/RaftHTTP/Stores/TasksAndRemindersStore.swift	2
