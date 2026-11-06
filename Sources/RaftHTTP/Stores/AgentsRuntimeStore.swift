@@ -120,6 +120,15 @@ final class AgentsRuntimeStore: @unchecked Sendable {
         }
     }
 
+    /// Runs `body` on the owned state in ONE critical section, for a decision
+    /// that reads and writes several rows and must not interleave with another
+    /// request.
+    func withState<Result>(_ body: (inout State) -> Result) -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&storage)
+    }
+
     var serverAgents: [String: ServerAgent] {
         get { state.serverAgents }
         set { state.serverAgents = newValue }

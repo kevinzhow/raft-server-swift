@@ -21,6 +21,15 @@ extension EmailLoginDirectory {
         lock.unlock()
     }
 
+    /// Stamps every credential of the agent as just used.
+    public func markAgentCredentialUsed(agentId: String) {
+        lock.lock()
+        for key in agentCredentials.keys where agentCredentials[key]?.agentId == agentId {
+            agentCredentials[key]?.lastUsedAt = Date()
+        }
+        lock.unlock()
+    }
+
     public func agentCredentialLastUsedAtForTesting(apiKey: String) -> Date? {
         lock.lock()
         defer { lock.unlock() }

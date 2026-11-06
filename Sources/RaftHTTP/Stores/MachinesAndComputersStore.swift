@@ -300,6 +300,47 @@ final class MachinesAndComputersStore: @unchecked Sendable {
         return storage.machines.first { $0.apiKey == apiKey }
     }
 
+    // MARK: - Machine credential lookups
+
+    /// The Machine a bearer token authenticates: a Machine key, else a live
+    /// Computer key's Machine.
+    func machineId(forToken token: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let machine = storage.machines.first(where: { $0.apiKey == token }) { return machine.id }
+        if let computer = storage.computers.first(where: { $0.apiKey == token && $0.revokedAt == nil }) {
+            return computer.machineId
+        }
+        return nil
+    }
+
+    func machineServerId(machineId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.machines.first { $0.id == machineId }?.serverId
+    }
+
+    func machineAPIKey(machineId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.machines.first { $0.id == machineId }?.apiKey
+    }
+
+    /// One increment-and-read: two concurrent bumps never return the same version.
+    func bumpMachineStatusVersion(machineId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let next = (storage.machineStatusVersions[machineId] ?? 0) + 1
+        storage.machineStatusVersions[machineId] = next
+        return next
+    }
+
+    func setMachineOnline(machineId: String, online: Bool) {
+        lock.lock()
+        storage.machineOnline[machineId] = online
+        lock.unlock()
+    }
+
     // MARK: - Server setup reset
 
     /// Revokes every live Computer of one server and returns how many of them

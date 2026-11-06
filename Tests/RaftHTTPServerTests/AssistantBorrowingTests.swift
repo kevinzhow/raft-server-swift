@@ -173,11 +173,11 @@ private func ownerInbox(_ client: any Client, _ f: AssistantFixture, token: Stri
     let f = makeAssistantFixture("002")
     let accounts = f.accounts
     accounts.createFeatureFlagForTesting(key: assistantFlag, defaultEnabled: true)
-    _ = accounts.agentAssistantOwner(
+    _ = try accounts.agentSurface.agentAssistantOwner(
         authorization: "Bearer \(accounts.mintAccessTokenForTesting(userId: f.ownerId))",
         serverId: f.serverId,
         agentId: f.assistantId,
-        method: "PUT"
+        remove: false
     )
     let agentKey = accounts.mintAgentCredential(agentId: f.assistantId, scopes: ["read"], name: "assistant-read")
     let ownerToken = accounts.mintAccessTokenForTesting(userId: f.ownerId)
@@ -214,11 +214,11 @@ private func ownerInbox(_ client: any Client, _ f: AssistantFixture, token: Stri
     let f = makeAssistantFixture("003")
     let accounts = f.accounts
     accounts.createFeatureFlagForTesting(key: assistantFlag, defaultEnabled: true)
-    _ = accounts.agentAssistantOwner(
+    _ = try accounts.agentSurface.agentAssistantOwner(
         authorization: "Bearer \(accounts.mintAccessTokenForTesting(userId: f.ownerId))",
         serverId: f.serverId,
         agentId: f.assistantId,
-        method: "PUT"
+        remove: false
     )
     let agentKey = accounts.mintAgentCredential(agentId: f.assistantId, scopes: ["read"], name: "assistant-read")
     let ownerToken = accounts.mintAccessTokenForTesting(userId: f.ownerId)

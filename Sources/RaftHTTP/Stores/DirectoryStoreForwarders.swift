@@ -43,7 +43,6 @@ extension EmailLoginDirectory {
 
     // Rows for the machine, Computer and migration surface live in `MachinesAndComputersStore`.
     var machines: [MachineRecord] { get { machinesAndComputersStore.machines } set { machinesAndComputersStore.machines = newValue } }
-    var machineStatusVersions: [String: Int] { get { machinesAndComputersStore.machineStatusVersions } set { machinesAndComputersStore.machineStatusVersions = newValue } }
     var machineOnline: [String: Bool] { get { machinesAndComputersStore.machineOnline } set { machinesAndComputersStore.machineOnline = newValue } }
     var computers: [(id: String, serverId: String, name: String, apiKey: String, machineId: String?, revokedAt: Date?, online: Bool, version: String?)] { get { machinesAndComputersStore.computers } set { machinesAndComputersStore.computers = newValue } }
     var computerAttachers: [String: String] { get { machinesAndComputersStore.computerAttachers } set { machinesAndComputersStore.computerAttachers = newValue } }

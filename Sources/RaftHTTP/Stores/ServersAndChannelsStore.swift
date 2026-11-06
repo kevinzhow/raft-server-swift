@@ -1382,6 +1382,15 @@ final class ServersAndChannelsStore: @unchecked Sendable {
         return OnboardingSnapshot(agentId: server.agentId, greeting: server.greeting, user: user)
     }
 
+    /// Makes `agentId` the server's onboarding agent. The greeting flag is kept
+    /// (it defaults on), so the read and the write are one critical section.
+    func bindOnboardingAgent(serverId: String, agentId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        let greeting = storage.serverOnboardingSettings[serverId]?.greeting ?? true
+        storage.serverOnboardingSettings[serverId] = (agentId: agentId, greeting: greeting)
+    }
+
     /// The whole onboarding patch as one critical section: the server row (for
     /// an admin) and the member row are read, updated and written together,
     /// and the stored result is returned so the reply reflects exactly it.
